@@ -7,6 +7,14 @@ cd "$ROOT_DIR"
 CARGO="${DEEPCODE_MACOS_CARGO:-$(command -v cargo || printf '%s/bin/cargo' "${CARGO_HOME:-$HOME/.cargo}")}"
 NODE="${DEEPCODE_MACOS_NODE_BIN:-$(command -v node)}"
 command -v "$CARGO" >/dev/null || { printf 'Set DEEPCODE_MACOS_CARGO to the installed cargo executable.\n' >&2; exit 1; }
+if [ "${1:-}" = --computer-use ]; then
+  [ "$#" -eq 2 ] || exit 2
+  export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
+  python3 scripts/macos_signing.py
+  "$CARGO" build --release -p deepcode-computer-use
+  python3 scripts/computer_use_package.py --native "$CARGO_TARGET_DIR/release" --output "$2/macos-arm64"
+  exit 0
+fi
 for tool in xcrun codesign strip python3 pkgbuild; do command -v "$tool" >/dev/null; done
 xcrun --find clang >/dev/null
 xcrun --sdk macosx --show-sdk-path >/dev/null
@@ -19,7 +27,7 @@ python3 scripts/macos_signing.py
 SHARED="$1"
 OUTPUT="$2"
 export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
-"$CARGO" build --release -p deepcode-kernel-daemon -p deepcode-first-party-tools -p deepcode-host-web -p deepcode-cli -p deepcode-tui
+"$CARGO" build --release -p deepcode-kernel-daemon -p deepcode-first-party-tools -p deepcode-host-web -p deepcode-cli -p deepcode-tui -p deepcode-computer-use
 "$CARGO" build --release --manifest-path "$ROOT_DIR/shells/deepcode-gui/src-tauri/Cargo.toml"
 STAGE="$(mktemp -d "$(dirname "$SHARED")/macos-arm64.XXXXXX")"
 trap 'rm -rf -- "$STAGE"' EXIT

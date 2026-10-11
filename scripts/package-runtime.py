@@ -13,6 +13,7 @@ import tempfile
 import zipfile
 
 from macos_signing import sign_app, signing_identity
+from computer_use_package import assemble as assemble_computer_use, APP_NAME as COMPUTER_USE_APP
 
 
 def copy_js_package(source, target):
@@ -109,6 +110,7 @@ exec "$APP_DIR/MacOS/deepcode-''' + shell.lower() + '''" "$@"
 ''')
             launcher.chmod(0o755)
         sign_app(app, identity, native_components=True)
+        assemble_computer_use(root, args.native, stage, identity)
     documentation = 'DeepCode-GUI.app/Contents/Resources/docs/' if macos else 'docs/'
     (stage / 'README.md').write_text((root / 'docs/distribution.md').read_text().replace('(product/', '(' + documentation + 'product/'))
 
@@ -116,6 +118,7 @@ exec "$APP_DIR/MacOS/deepcode-''' + shell.lower() + '''" "$@"
 # Only program entries belong to the publisher. config/runtime/logs/sessions and
 # other user-created entries are never copied, removed or put into the archive.
 PROGRAM_ENTRIES = {
+    COMPUTER_USE_APP,
     'DeepCode.app', 'DeepCode-GUI.app', 'DeepCode', 'DeepCode.exe', 'DeepCode-GUI', 'DeepCode-GUI.exe',
     'DeepCode-CLI.command', 'DeepCode-TUI.command', 'deepcode', 'libexec',
     'deepcode-cli.bat', 'deepcode-tui.bat', 'deepcode.cmd',

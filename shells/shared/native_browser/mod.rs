@@ -10,8 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, WebviewUrl};
-#[cfg(target_os = "macos")]
-mod computer_macos;
 mod services;
 
 static PAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -83,6 +81,8 @@ pub struct NativeBrowser {
     services: Mutex<HashMap<String, services::DevelopmentService>>,
     self_bootstrap: String,
     on_stop: Box<dyn Fn() + Send + Sync>,
+    #[cfg(target_os = "macos")]
+    computer: deepcode_host_connection::computer_use::ComputerUseHost,
 }
 
 impl NativeBrowser {
@@ -91,6 +91,10 @@ impl NativeBrowser {
             return;
         }
         (self.on_stop)();
+        #[cfg(target_os = "macos")]
+        if let Err(error) = self.computer.stop() {
+            eprintln!("{error}");
+        }
         if let Ok(mut services) = self.services.lock() {
             services.clear();
         }
@@ -115,6 +119,8 @@ pub fn start(
         .map_err(|error| error.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     app.manage(NativeBrowser {
+        #[cfg(target_os = "macos")]
+        computer: deepcode_host_connection::computer_use::ComputerUseHost::new(host_instance_id.clone(), token.clone())?,
         directories,
         binding: HostBinding {
             host_instance_id,
@@ -152,35 +158,27 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
     let read = BufReader::new((&stream).take(1024 * 1024)).read_line(&mut line);
-    let mut command = String::new();
     let response = read.map_err(|error| error.to_string()).and_then(|_| {
         let request: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
         if request.get("token").and_then(Value::as_str) != Some(token) {
             return Err("native_browser_connection_rejected".into());
         }
-        command = request["input"]["action"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        if request["input"]["action"].as_str().is_some_and(|action| action.starts_with("computer:")) {
+            checked_binding(&app, &request["binding"])?;
+            #[cfg(target_os = "macos")]
+            return app.state::<NativeBrowser>().computer.call(&request["binding"], &request["input"]);
+            #[cfg(not(target_os = "macos"))]
+            return Err("External computer control currently requires macOS.".into());
+        }
         tauri::async_runtime::block_on(execute(
             app,
             request["binding"].clone(),
             request["input"].clone(),
-        ))
+        )).map(|data| json!({"ok":true,"data":data}))
     });
     let envelope = match response {
-        Ok(data) => json!({"ok":true,"data":data}),
-        Err(message) => {
-            let mut failure = json!({"ok":false,"message":message});
-            #[cfg(target_os = "macos")]
-            if command.starts_with("computer:") {
-                failure["diagnostics"] = match computer_macos::status() {
-                    Ok(status) => json!({"phase":command,"native":status}),
-                    Err(error) => json!({"phase":command,"statusError":error}),
-                };
-            }
-            failure
-        }
+        Ok(envelope) => envelope,
+        Err(message) => json!({"ok":false,"message":message}),
     };
     if let Ok(mut encoded) = serde_json::to_vec(&envelope) {
         encoded.push(b'\n');
@@ -369,10 +367,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
     let binding = checked_binding(&app, &binding)?;
     let action = string(&input, "action")?;
     if action.starts_with("computer:") {
-        #[cfg(target_os = "macos")]
-        return computer_macos::execute(&app, &input);
-        #[cfg(not(target_os = "macos"))]
-        return Err("External computer control currently requires a macOS GUI Host.".into());
+        return Err("Computer control requires the Kernel native transport.".into());
     }
     if action.starts_with("service") {
         let directory = app
@@ -389,11 +384,15 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         return services::execute(&mut services, directory, session_id.as_deref(), &input);
     }
     if action == "hostStatus" {
+        #[cfg(target_os = "macos")]
+        let computer_available = app.state::<NativeBrowser>().computer.available();
+        #[cfg(not(target_os = "macos"))]
+        let computer_available = false;
         return Ok(json!({
             "binding": binding,
             "ready": true,
             "captureAvailable": cfg!(target_os = "macos"),
-            "computerControlAvailable": cfg!(target_os = "macos"),
+            "computerControlAvailable": computer_available,
         }));
     }
     if action == "refreshInterface" {

@@ -97,6 +97,10 @@ function desktopEvidence(snapshot: LoopSnapshot, args: Record<string, unknown>) 
           && (args.x as number) < rect.x + rect.width && (args.y as number) < rect.y + rect.height;
       }) : undefined;
     return { observationId: output.observationId, app: output.app, window: output.window,
+      mode: output.mode,
+      selectedElement: typeof args.elementId === 'string' && Array.isArray(output.elements)
+        ? output.elements.find(element => element && typeof element === 'object' && !Array.isArray(element) && element.elementId === args.elementId)
+        : undefined,
       capturedAt: output.capturedAt, coordinateSpace: output.coordinateSpace, elementsAtPoint: elements,
       accessibility: output.accessibility,
       priorOperations: desktopOperationHistory(snapshot, args.app),

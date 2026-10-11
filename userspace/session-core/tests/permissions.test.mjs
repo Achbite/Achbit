@@ -448,9 +448,9 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
 test('desktop review uses the exact observation as evidence without treating Agent assurances as authority or replaying images', () => {
   const runId = 'run:desktop-review', callId = 'call:click';
   const args = { action: 'click', app: 'example.app', observationId: 'frame:exact', x: 12, y: 18 };
-  const observed = { observationId: 'frame:exact', app: args.app, window: { title: 'Requested form' },
+  const observed = { observationId: 'frame:exact', app: args.app, mode: 'background', window: { title: 'Requested form' },
     contentRef: '/private/archive/frame.png', image: 'pixels-must-not-be-replayed', capturedAt: '123',
-    elements: [{ title: 'Submit', bounds: { x: 10, y: 10, width: 20, height: 20 } },
+    elements: [{ elementId: 'element:1', title: 'Submit', bounds: { x: 10, y: 10, width: 20, height: 20 } },
       { title: 'Other control', bounds: { x: 100, y: 100, width: 20, height: 20 } }] };
   const snapshot = { state: { ...emptySessionState('session:desktop-review'), run: { runId, workspaceBindings: [] } }, events: [
     { type: 'tool.completed', payload: { record: { toolName: 'computer.control', outcome: 'completed', output: observed } } },
@@ -486,6 +486,12 @@ test('desktop review uses the exact observation as evidence without treating Age
   assert.match(request.messages[0].content, /never allow solely because the requester promises safety/);
   assert.match(request.messages[0].content, /return ask to withhold automatic approval/);
   assert.deepEqual(request.tools, []);
+  args.action = 'press'; args.elementId = 'element:1'; delete args.x; delete args.y;
+  const semantic = JSON.parse(prepare().messages[1].content).observedTarget;
+  assert.equal(semantic.mode, 'background');
+  assert.deepEqual(semantic.selectedElement, observed.elements[0]);
+  args.elementId = 'element:missing';
+  assert.equal(JSON.parse(prepare().messages[1].content).observedTarget.selectedElement, undefined);
   args.observationId = 'frame:missing';
   assert.equal(JSON.parse(prepare().messages[1].content).observedTarget, undefined, 'No latest-frame substitute for missing observation');
 });

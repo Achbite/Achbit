@@ -367,11 +367,13 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
             write(stage, 'DeepCode-GUI.app/Contents/MacOS/deepcode-cli', stub)
             (stage / 'DeepCode-GUI.app/Contents/MacOS/deepcode-cli').chmod(0o755)
             write(stage, 'DeepCode-GUI.app/Contents/Resources/session-core/dist/index.js', b'Session')
+            write(stage, 'DeepCode Computer Use.app/Contents/MacOS/DeepCode-Computer-Use', b'Computer Use')
             def inspect(command, **kwargs):
                 self.assertEqual(command[0], 'pkgbuild')
                 payload = Path(command[command.index('--root') + 1])
                 app = payload / 'Applications/DeepCode-GUI.app'
                 self.assertEqual((app / 'Contents/MacOS/deepcode-cli').read_bytes(), stub)
+                self.assertEqual((payload / 'Applications/DeepCode Computer Use.app/Contents/MacOS/DeepCode-Computer-Use').read_bytes(), b'Computer Use')
                 launcher = (payload / 'usr/local/bin/deepcode').read_text()
                 # Only relocate the declared installation root; execute the remaining launcher unchanged.
                 install_root = '/Applications/DeepCode-GUI.app'

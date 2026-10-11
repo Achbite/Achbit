@@ -10,6 +10,7 @@ members = [
   "crates/deepcode-host-connection",
   "shells/cli",
   "shells/tui",
+  "plugins/computer-use/native",
 ]
 resolver = "2"
 

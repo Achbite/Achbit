@@ -1,4 +1,4 @@
-//! Physical macOS I/O only. Kernel must authorize every invocation before this driver runs.
+//! Physical macOS I/O in the independently signed helper. Kernel admits every call.
 use objc2::{class, msg_send, runtime::AnyObject, AnyThread};
 use objc2_app_kit::NSBitmapImageRep;
 use objc2_foundation::{NSData, NSString};
@@ -14,21 +14,21 @@ use std::{
 type Ref = *const c_void;
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
-struct Point {
-    x: f64,
-    y: f64,
+pub(crate) struct Point {
+    pub x: f64,
+    pub y: f64,
 }
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
-struct Size {
-    width: f64,
-    height: f64,
+pub(crate) struct Size {
+    pub width: f64,
+    pub height: f64,
 }
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
-struct Rect {
-    origin: Point,
-    size: Size,
+pub(crate) struct Rect {
+    pub origin: Point,
+    pub size: Size,
 }
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -37,12 +37,13 @@ extern "C" {
     fn AXUIElementCopyAttributeValue(element: Ref, name: Ref, result: *mut Ref) -> i32;
     fn AXUIElementSetAttributeValue(element: Ref, name: Ref, value: Ref) -> i32;
     fn AXUIElementPerformAction(element: Ref, action: Ref) -> i32;
+    fn AXUIElementCopyActionNames(element: Ref, result: *mut Ref) -> i32;
+    fn AXUIElementIsAttributeSettable(element: Ref, name: Ref, result: *mut bool) -> i32;
+    fn CGRectMakeWithDictionaryRepresentation(dictionary: Ref, rect: *mut Rect) -> bool;
     fn AXUIElementSetMessagingTimeout(element: Ref, timeout: f32) -> i32;
     fn AXValueGetValue(value: Ref, kind: u32, result: *mut c_void) -> bool;
     fn CGPreflightScreenCaptureAccess() -> bool;
-    fn CGMainDisplayID() -> u32;
     fn CGWindowListCopyWindowInfo(options: u32, relative_to: u32) -> Ref;
-    fn CGDisplayBounds(display: u32) -> Rect;
     fn CGEventCreateMouseEvent(source: Ref, kind: u32, position: Point, button: u32) -> Ref;
     fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
     fn CGEventKeyboardSetUnicodeString(event: Ref, length: usize, text: *const u16);
@@ -53,6 +54,7 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFRelease(value: Ref);
+    fn CFRetain(value: Ref) -> Ref;
     fn CFEqual(left: Ref, right: Ref) -> bool;
     fn CFGetTypeID(value: Ref) -> usize;
     fn CFStringGetTypeID() -> usize;
@@ -90,24 +92,27 @@ struct Observation {
     pid: i32,
     at: Instant,
     bounds: Rect,
-    display_id: u32,
+    window_id: u32,
+    foreground: bool,
+    binding: Value,
     image_width: f64,
     image_height: f64,
 }
 static OBSERVATION: Mutex<Option<Observation>> = Mutex::new(None);
 
-// The mutex serializes physical operations. Only the GUI thread owns AX refs;
+// The mutex serializes physical operations. Only the AppKit thread owns AX refs;
 // this is the retained window of that one observation, not a second session.
 struct ObservedWindow {
     element: Owned,
     bounds: Rect,
+    elements: Vec<Owned>,
 }
 thread_local! {
     static OBSERVED_WINDOW: RefCell<Option<ObservedWindow>> = const { RefCell::new(None) };
 }
 
 fn on_main_thread<T: Send + 'static>(
-    app: &tauri::AppHandle,
+    app: &crate::runtime::MainThread,
     operation: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -120,7 +125,7 @@ fn on_main_thread<T: Send + 'static>(
 }
 
 fn with_accessibility<T: Send + 'static>(
-    app: &tauri::AppHandle,
+    app: &crate::runtime::MainThread,
     pid: i32,
     operation: impl FnOnce(Ref) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -299,7 +304,7 @@ impl ObservedWindow {
 }
 
 fn with_observed_window<T: Send + 'static>(
-    gui: &tauri::AppHandle,
+    gui: &crate::runtime::MainThread,
     pid: i32,
     operation: impl FnOnce(Ref, &ObservedWindow) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -317,7 +322,7 @@ fn with_observed_window<T: Send + 'static>(
 }
 
 unsafe fn restore_observed_window(
-    gui: &tauri::AppHandle,
+    gui: &crate::runtime::MainThread,
     saved: &Observation,
 ) -> Result<(), String> {
     with_observed_window(gui, saved.pid, |root, window| {
@@ -381,12 +386,13 @@ unsafe fn tree_item(element: Ref, depth: usize) -> Result<Value, String> {
     }
     Ok(item)
 }
-unsafe fn tree(root: Ref) -> (Vec<Value>, Value) {
+unsafe fn tree(root: Ref) -> (Vec<Value>, Value, Vec<Owned>) {
     // Arrays own their children while on the stack. No fixed element/depth cap.
     let mut stack: Vec<(Owned, isize, usize)> = vec![];
     let mut current = Some((root, 0));
     let started = Instant::now();
     let mut items = vec![];
+    let mut handles = vec![];
     let mut errors = vec![];
     while let Some((element, depth)) = current.take() {
         if started.elapsed() > Duration::from_secs(4) {
@@ -394,7 +400,52 @@ unsafe fn tree(root: Ref) -> (Vec<Value>, Value) {
             break;
         }
         match tree_item(element, depth) {
-            Ok(item) => items.push(item),
+            Ok(mut item) => {
+                item["elementId"] = json!(format!("element:{}", handles.len()));
+                let retained = match Owned::new(CFRetain(element)) {
+                    Ok(retained) => retained,
+                    Err(message) => {
+                        errors.push(json!({"depth":depth,"message":message}));
+                        break;
+                    }
+                };
+                handles.push(retained);
+                let mut actions = std::ptr::null();
+                let error = AXUIElementCopyActionNames(element, &mut actions);
+                if error == 0 {
+                    match Owned::new(actions) {
+                        Ok(actions) if CFGetTypeID(actions.0) == CFArrayGetTypeID() => {
+                            let names = (0..CFArrayGetCount(actions.0))
+                                .map(|i| text_value(CFArrayGetValueAtIndex(actions.0, i)))
+                                .collect::<Result<Vec<_>, _>>();
+                            match names {
+                                Ok(names) => item["actions"] = json!(names),
+                                Err(message) => {
+                                    errors.push(json!({"depth":depth,"message":message}))
+                                }
+                            }
+                        }
+                        Ok(_) => errors
+                            .push(json!({"depth":depth,"message":"AX actions are not an array"})),
+                        Err(message) => errors.push(json!({"depth":depth,"message":message})),
+                    }
+                } else if error != -25206 {
+                    errors.push(json!({"depth":depth,"message":format!("Could not read AX actions (AX error {error})")}));
+                }
+                let name = NSString::from_str("AXValue");
+                let mut settable = false;
+                let error = AXUIElementIsAttributeSettable(
+                    element,
+                    (&*name as *const NSString).cast(),
+                    &mut settable,
+                );
+                if error == 0 {
+                    item["valueSettable"] = json!(settable);
+                } else if error != -25205 {
+                    errors.push(json!({"depth":depth,"message":format!("Could not inspect AXValue (AX error {error})")}));
+                }
+                items.push(item);
+            }
             Err(message) => errors.push(json!({"depth":depth,"message":message})),
         }
         match attribute(element, "AXChildren") {
@@ -416,7 +467,11 @@ unsafe fn tree(root: Ref) -> (Vec<Value>, Value) {
             stack.pop();
         }
     }
-    (items, json!({"complete":errors.is_empty(),"errors":errors}))
+    (
+        items,
+        json!({"complete":errors.is_empty(),"errors":errors}),
+        handles,
+    )
 }
 fn point(input: &Value, x: &str, y: &str, observation: &Observation) -> Result<Point, String> {
     let value = Point {
@@ -452,48 +507,92 @@ unsafe fn image_size(path: &Path) -> Result<(f64, f64), String> {
     Ok((width as f64, height as f64))
 }
 
+unsafe fn select_window(
+    root: Ref,
+    window_id: Option<u32>,
+    pid: i32,
+) -> Result<(Owned, u32, Rect), String> {
+    let element = if let Some(id) = window_id {
+        let windows = attribute(root, "AXWindows")?.ok_or("Application has no AX windows")?;
+        if CFGetTypeID(windows.0) != CFArrayGetTypeID() {
+            return Err("AXWindows is not an array".into());
+        }
+        let mut matches = Vec::new();
+        for index in 0..CFArrayGetCount(windows.0) {
+            let window = CFArrayGetValueAtIndex(windows.0, index);
+            if crate::window_identity::id(window)? == id {
+                matches.push(Owned::new(CFRetain(window))?);
+            }
+        }
+        if matches.len() != 1 {
+            return Err(format!("WindowServer window {id} has {} exact AX matches; observe an available, unambiguous window", matches.len()));
+        }
+        matches.pop().expect("one window")
+    } else {
+        attribute(root, "AXFocusedWindow")?.ok_or("Target application has no focused window")?
+    };
+    let id = crate::window_identity::id(element.0)?;
+    let (owner, bounds) = window_snapshot(id)?;
+    if owner != pid {
+        return Err("Window does not belong to the requested app".into());
+    }
+    // Geometry validates the observation, not the window's identity.
+    if window_bounds(element.0)? != bounds {
+        return Err("Window geometry changed while binding the observation; observe again".into());
+    }
+    Ok((element, id, bounds))
+}
+
+fn rect_json(bounds: Rect) -> Value {
+    json!({"x":bounds.origin.x,"y":bounds.origin.y,"width":bounds.size.width,"height":bounds.size.height})
+}
+
 unsafe fn observe(
-    app: &tauri::AppHandle,
+    app: &crate::runtime::MainThread,
     input: &Value,
     bundle: &str,
     pid: i32,
+    binding: &Value,
 ) -> Result<(Observation, Value), String> {
-    if !CGPreflightScreenCaptureAccess() {
-        return Err(
-            "macOS 屏幕录制权限未授予 DeepCode-GUI。请在系统设置 → 隐私与安全性 → 屏幕录制中授权。"
-                .into(),
-        );
-    }
-    let (mut items, accessibility, window_info) = with_accessibility(app, pid, |root| {
-        if !frontmost(root)? {
-            return Err("Target application is no longer frontmost; observe the intended application explicitly".into());
-        }
-        let element = attribute(root, "AXFocusedWindow")?
-            .ok_or("Target application has no focused window to observe")?;
-        let bounds = window_bounds(element.0)?;
-        let window_info = json!({"title":text_attribute(element.0, "AXTitle")?,
-            "bounds":{"x":bounds.origin.x,"y":bounds.origin.y,"width":bounds.size.width,"height":bounds.size.height}});
-        OBSERVED_WINDOW.with(|slot| *slot.borrow_mut() = Some(ObservedWindow { element, bounds }));
-        let (items, accessibility) = tree(root);
-        Ok((items, accessibility, window_info))
-    })?;
-    let display_id = CGMainDisplayID();
-    let bounds = CGDisplayBounds(display_id);
-    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-        return Err("Primary display has invalid bounds".into());
-    }
-    let (id, path, width, height) = capture_pixels(app, input)?;
-    with_observed_window(app, pid, move |root, window| {
+    let window_id = input["windowId"].as_u64().map(|id| id as u32);
+    let foreground = input["mode"].as_str().unwrap_or(if window_id.is_some() {
+        "background"
+    } else {
+        "foreground"
+    }) == "foreground";
+    let (mut items, accessibility, window_info, window_id, bounds) = with_accessibility(
+        app,
+        pid,
+        move |root| {
+            let (element, window_id, bounds) = select_window(root, window_id, pid)?;
+            if foreground {
+                set_true(element.0, "AXMain")?;
+                set_true(root, "AXFrontmost")?;
+                raise(element.0)?;
+            }
+            crate::indicator::show(window_id, None)?;
+            let window_info = json!({"windowId":window_id,"title":text_attribute(element.0, "AXTitle")?,"bounds":rect_json(bounds)});
+            let (items, accessibility, elements) = tree(element.0);
+            OBSERVED_WINDOW.with(|slot| {
+                *slot.borrow_mut() = Some(ObservedWindow {
+                    element,
+                    bounds,
+                    elements,
+                })
+            });
+            Ok((items, accessibility, window_info, window_id, bounds))
+        },
+    )?;
+    let mut capture = input.clone();
+    capture["windowId"] = json!(window_id);
+    let (id, path, width, height) = capture_pixels(app, &capture)?;
+    with_observed_window(app, pid, move |_, window| {
         window.validate_geometry()?;
-        if !window.focused(root)?
-            || CGMainDisplayID() != display_id
-            || CGDisplayBounds(display_id) != bounds
-        {
-            return Err("Target window or display changed during capture; observe again".into());
+        if window_snapshot(window_id)? != (pid, bounds) {
+            return Err("Target window changed during capture; observe again".into());
         }
         Ok(())
     })?;
-    // AX bounds and model actions use the same archived screenshot's coordinate space.
     let sx = width / bounds.size.width;
     let sy = height / bounds.size.height;
     for item in &mut items {
@@ -506,13 +605,17 @@ unsafe fn observe(
     }
     let captured_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
+        .map_err(|e| e.to_string())?
         .as_millis()
         .to_string();
-    let output = json!({"observationId":id,"app":bundle,"window":window_info,"elements":items,"accessibility":accessibility,
+    let mode = if foreground {
+        "foreground"
+    } else {
+        "background"
+    };
+    let output = json!({"observationId":id,"app":bundle,"window":window_info,"mode":mode,"elements":items,"accessibility":accessibility,
         "contentRef":path,"contentType":"image/png","width":width,"height":height,"capturedAt":captured_at,
-        "coordinateSpace":"screenshot pixels",
-        "display":{"x":bounds.origin.x,"y":bounds.origin.y,"width":bounds.size.width,"height":bounds.size.height}});
+        "coordinateSpace":"window screenshot pixels"});
     Ok((
         Observation {
             id,
@@ -520,7 +623,9 @@ unsafe fn observe(
             pid,
             at: Instant::now(),
             bounds,
-            display_id,
+            window_id,
+            foreground,
+            binding: binding.clone(),
             image_width: width,
             image_height: height,
         },
@@ -528,11 +633,11 @@ unsafe fn observe(
     ))
 }
 unsafe fn capture_pixels(
-    app: &tauri::AppHandle,
+    app: &crate::runtime::MainThread,
     input: &Value,
 ) -> Result<(String, std::path::PathBuf, f64, f64), String> {
     if !CGPreflightScreenCaptureAccess() {
-        return Err("macOS screen recording access is not granted to the executing GUI process; inspect computer.control status for its identity".into());
+        return Err("macOS screen recording access is not granted to the executing Computer Use App; inspect computer.control status for its identity".into());
     }
     let directory = Path::new(
         input["captureDirectory"]
@@ -540,8 +645,7 @@ unsafe fn capture_pixels(
             .ok_or("Missing archive directory")?,
     );
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let state = tauri::Manager::state::<super::NativeBrowser>(app);
-    let id = super::resource_id(&state.binding, "computer");
+    let id = app.resource_id();
     let path = directory.join(format!("{id}.png"));
     let mut command = std::process::Command::new("/usr/sbin/screencapture");
     command.args(["-x", "-t", "png"]);
@@ -588,7 +692,8 @@ pub fn status() -> Result<Value, String> {
             "executor":{"pid":std::process::id(),"executable":std::env::current_exe().map_err(|error|error.to_string())?,
                 "bundleId":string(identifier),"bundlePath":string(path)},
             "permissions":{"accessibility":AXIsProcessTrusted(),"screenCapture":CGPreflightScreenCaptureAccess()},
-            "capabilities":{"capture":true,"accessibility":true,"input":true}
+            "capabilities":{"capture":true,"accessibility":true,"input":true,
+                "exactWindowIdentity":crate::window_identity::available()}
         }))
     })
 }
@@ -597,6 +702,33 @@ unsafe fn dictionary_value(dictionary: Ref, name: &str) -> *mut AnyObject {
     let key = NSString::from_str(name);
     msg_send![dictionary as *mut AnyObject, objectForKey:&*key]
 }
+pub(crate) unsafe fn window_snapshot(window_id: u32) -> Result<(i32, Rect), String> {
+    let list = Owned::new(CGWindowListCopyWindowInfo(8 | 16, window_id))?;
+    if CFArrayGetCount(list.0) != 1 {
+        return Err("Target window is closed or unavailable; observe again".into());
+    }
+    let item = CFArrayGetValueAtIndex(list.0, 0);
+    let visible: bool = msg_send![dictionary_value(item, "kCGWindowIsOnscreen"), boolValue];
+    if !visible {
+        return Err("Target window is minimized or off-screen; observe again".into());
+    }
+    let owner: i32 = msg_send![dictionary_value(item, "kCGWindowOwnerPID"), intValue];
+    let mut bounds = Rect {
+        origin: Point { x: 0.0, y: 0.0 },
+        size: Size {
+            width: 0.0,
+            height: 0.0,
+        },
+    };
+    if !CGRectMakeWithDictionaryRepresentation(
+        dictionary_value(item, "kCGWindowBounds").cast(),
+        &mut bounds,
+    ) {
+        return Err("WindowServer returned invalid geometry".into());
+    }
+    Ok((owner, bounds))
+}
+
 unsafe fn windows() -> Result<Value, String> {
     if !CGPreflightScreenCaptureAccess() {
         return Err("Screen recording access is required to inspect external windows; inspect computer.control status".into());
@@ -611,9 +743,22 @@ unsafe fn windows() -> Result<Value, String> {
         }
         let pid: i32 = msg_send![dictionary_value(item, "kCGWindowOwnerPID"), intValue];
         let window_id: u32 = msg_send![dictionary_value(item, "kCGWindowNumber"), unsignedIntValue];
+        let mut bounds = Rect {
+            origin: Point { x: 0.0, y: 0.0 },
+            size: Size {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        if !CGRectMakeWithDictionaryRepresentation(
+            dictionary_value(item, "kCGWindowBounds").cast(),
+            &mut bounds,
+        ) {
+            return Err("WindowServer returned invalid geometry".into());
+        }
         let title = string(dictionary_value(item, "kCGWindowName").cast());
         let owner = string(dictionary_value(item, "kCGWindowOwnerName").cast());
-        windows.push(json!({"windowId":window_id,"pid":pid,"owner":owner,"title":title}));
+        windows.push(json!({"windowId":window_id,"pid":pid,"owner":owner,"title":title,"bounds":rect_json(bounds)}));
     }
     Ok(json!({"windows":windows}))
 }
@@ -687,7 +832,11 @@ fn key(value: &str) -> Result<(u16, u64), String> {
     Ok((code, flags))
 }
 
-pub fn execute(gui: &tauri::AppHandle, input: &Value) -> Result<Value, String> {
+pub fn execute(
+    gui: &crate::runtime::MainThread,
+    binding: &Value,
+    input: &Value,
+) -> Result<Value, String> {
     // One physical desktop observation at a time, across all bound sessions.
     let mut observation = OBSERVATION
         .lock()
@@ -729,10 +878,10 @@ pub fn execute(gui: &tauri::AppHandle, input: &Value) -> Result<Value, String> {
             });
         }
         if !AXIsProcessTrusted() {
-            return Err("macOS 辅助功能授权未被当前 GUI 执行进程识别。请先使用 computer.control status 核对进程和应用身份；系统设置中的同名开关不能确认当前实例的状态。".into());
+            return Err("macOS 辅助功能授权未被当前 Computer Use 辅助 App识别。请先使用 computer.control status 核对进程和应用身份；系统设置中的同名开关不能确认当前实例的状态。".into());
         }
         if !CGPreflightScreenCaptureAccess() {
-            return Err("macOS screen recording access is not granted to the executing GUI process; inspect computer.control status for its identity".into());
+            return Err("macOS screen recording access is not granted to the executing Computer Use App; inspect computer.control status for its identity".into());
         }
         let bundle = input["app"].as_str().ok_or("Missing app")?;
         let target_bundle = bundle.to_string();
@@ -742,46 +891,7 @@ pub fn execute(gui: &tauri::AppHandle, input: &Value) -> Result<Value, String> {
         })?;
         if action == "observe" {
             *observation = None;
-            with_accessibility(gui, pid, |root| {
-                let name = NSString::from_str("AXFrontmost");
-                let result = AXUIElementSetAttributeValue(
-                    root,
-                    (&*name as *const NSString).cast(),
-                    kCFBooleanTrue,
-                );
-                if result != 0 {
-                    return Err(format!(
-                        "Could not activate the target application (AX error {result})"
-                    ));
-                }
-                Ok(())
-            })?;
-            let started = Instant::now();
-            loop {
-                if with_accessibility(gui, pid, |root| frontmost(root))? {
-                    break;
-                }
-                if started.elapsed() > Duration::from_secs(2) {
-                    return Err("Application did not become frontmost".into());
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            // Activation can change the menu bar while leaving the document
-            // covered. Raise the app's focused window before capturing pixels.
-            with_accessibility(gui, pid, |root| {
-                let window = attribute(root, "AXFocusedWindow")?
-                    .ok_or("Target application has no focused window to observe")?;
-                let raise = NSString::from_str("AXRaise");
-                let result =
-                    AXUIElementPerformAction(window.0, (&*raise as *const NSString).cast());
-                if result != 0 {
-                    return Err(format!(
-                        "Could not raise the target window (AX error {result})"
-                    ));
-                }
-                Ok(())
-            })?;
-            let (fresh, output) = observe(gui, input, bundle, pid)?;
+            let (fresh, output) = observe(gui, input, bundle, pid, binding)?;
             *observation = Some(fresh);
             return Ok(output);
         }
@@ -791,29 +901,82 @@ pub fn execute(gui: &tauri::AppHandle, input: &Value) -> Result<Value, String> {
         if input["observationId"] != saved.id
             || saved.app != bundle
             || saved.pid != pid
+            || saved.binding != *binding
             || saved.at.elapsed() > Duration::from_secs(120)
         {
             return Err("Observation is stale; observe again before acting".into());
         }
-        restore_observed_window(gui, &saved)?;
+        let semantic = matches!(action, "press" | "setValue");
+        if !semantic && !saved.foreground {
+            return Err("This input requires an explicit foreground observation; background mode supports press and setValue only".into());
+        }
+        if !semantic {
+            restore_observed_window(gui, &saved)?;
+        }
         let arguments = input.clone();
+        let saved_for_input = saved.clone();
         with_observed_window(gui, pid, move |root, window| {
             window.validate_geometry()?;
-            if !window.focused(root)? {
-                return Err("Observed window lost focus before input; observe again".into());
-            }
-            if CGMainDisplayID() != saved.display_id
-                || CGDisplayBounds(saved.display_id) != saved.bounds
+            if window_snapshot(saved_for_input.window_id)?
+                != (saved_for_input.pid, saved_for_input.bounds)
             {
-                return Err("Display mapping changed; observe again before acting".into());
+                return Err("Target window changed; observe again before acting".into());
             }
-            dispatch_input(&arguments, &saved)
+            if semantic {
+                let id = arguments["elementId"].as_str().ok_or("Missing elementId")?;
+                let index = id
+                    .strip_prefix("element:")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or("Invalid elementId")?;
+                let element = window
+                    .elements
+                    .get(index)
+                    .ok_or("Unknown elementId; observe again")?;
+                let item = tree_item(element.0, 0)?;
+                let marker = item["bounds"].as_object().and_then(|_| {
+                    Some(Point {
+                        x: item["bounds"]["x"].as_f64()? + item["bounds"]["width"].as_f64()? / 2.0,
+                        y: item["bounds"]["y"].as_f64()? + item["bounds"]["height"].as_f64()? / 2.0,
+                    })
+                });
+                crate::indicator::show(saved_for_input.window_id, marker)?;
+                let error = if arguments["action"] == "computer:press" {
+                    let action = NSString::from_str("AXPress");
+                    AXUIElementPerformAction(element.0, (&*action as *const NSString).cast())
+                } else {
+                    let name = NSString::from_str("AXValue");
+                    let value =
+                        NSString::from_str(arguments["text"].as_str().ok_or("Missing text")?);
+                    AXUIElementSetAttributeValue(
+                        element.0,
+                        (&*name as *const NSString).cast(),
+                        (&*value as *const NSString).cast(),
+                    )
+                };
+                if error != 0 {
+                    return Err(format!("AX operation returned error {error}; effect is not confirmed. Observe before deciding any further action; no HID fallback was attempted."));
+                }
+                Ok(())
+            } else {
+                if !window.focused(root)? {
+                    return Err("Observed window lost focus before input; observe again".into());
+                }
+                crate::indicator::show(saved_for_input.window_id, None)?;
+                dispatch_input(&arguments, &saved_for_input)
+            }
         })?;
         // A short bounded delay lets the application process dispatched input. A
         // screenshot remains an observation, not a claim that backend work settled.
         std::thread::sleep(Duration::from_millis(200));
         let mut result = json!({"app":bundle,"action":action,"dispatched":true});
-        match observe(gui, input, bundle, pid) {
+        let mut next = input.clone();
+        next["windowId"] = json!(saved.window_id);
+        next["mode"] = json!(if saved.foreground {
+            "foreground"
+        } else {
+            "background"
+        });
+        match observe(gui, &next, bundle, pid, binding) {
             Ok((fresh, mut output)) => {
                 *observation = Some(fresh);
                 output["action"] = json!(action);
@@ -826,6 +989,13 @@ pub fn execute(gui: &tauri::AppHandle, input: &Value) -> Result<Value, String> {
             }
         }
     });
+    let indicator_cleanup = on_main_thread(gui, || {
+        crate::indicator::hide();
+        Ok(())
+    });
+    if let Err(error) = indicator_cleanup {
+        eprintln!("computer_indicator_cleanup_failed: {error}");
+    }
     if observation.is_none() {
         let cleanup = on_main_thread(gui, || {
             OBSERVED_WINDOW.with(|slot| slot.borrow_mut().take());
