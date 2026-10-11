@@ -1725,7 +1725,7 @@ function decodeProviderOutputBlock(
       if (
         !providerCallId
         || item.status !== 'completed' && item.status !== 'failed'
-        || !isRecord(item.action)
+        || item.action !== undefined && !isRecord(item.action)
       ) {
         throw new LoopFailure(
           'provider_hosted_search_item_invalid',
@@ -1811,7 +1811,7 @@ function completedAssistantDraftBlock(
       if (
         status !== 'completed'
         && status !== 'failed'
-        || !isRecord(action)
+        || action !== undefined && !isRecord(action)
       ) {
         throw new LoopFailure(
           'provider_hosted_search_item_invalid',
@@ -1824,7 +1824,7 @@ function completedAssistantDraftBlock(
         providerCallId: block.providerCallId,
         providerToolType: 'web_search',
         status,
-        action: structuredClone(action),
+        ...(action === undefined ? {} : { action: structuredClone(action) }),
       };
     }
   }

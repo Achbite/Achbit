@@ -3750,6 +3750,29 @@ test('resource notifications use explicit references and preserve stream failure
   assert.deepEqual(changes, [[0], [0]]);
 });
 
+test('GUI hosted search projections preserve omitted action and reject invalid action values', async () => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const projection = projectSession(emptySessionState('session:hosted-action'));
+  const hosted = { providerCallId: 'ws_omitted', providerToolType: 'web_search' };
+  projection.assistantDraft = { runId: 'run:search', turnId: 'turn:search', blocks: [
+    { outputIndex: 0, kind: 'providerHosted', ...hosted, status: 'completed' },
+  ] };
+  projection.activities = [{ activityId: 'activity:search', kind: 'providerHosted', status: 'completed',
+    label: 'web.search', runId: 'run:search', sequence: 1, providerHosted: hosted }];
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  const explicit = structuredClone(projection);
+  explicit.assistantDraft.blocks[0].action = { type: 'search', queries: ['compiler release'] };
+  explicit.activities[0].providerHosted.action = structuredClone(explicit.assistantDraft.blocks[0].action);
+  assert.deepEqual(await decodeGuiProjection(explicit), explicit);
+  for (const select of [p => p.assistantDraft.blocks[0], p => p.activities[0].providerHosted]) {
+    for (const invalid of [null, 'search', []]) {
+      const malformed = structuredClone(projection);
+      select(malformed).action = invalid;
+      await assert.rejects(decodeGuiProjection(malformed), /conversation_projection_invalid/);
+    }
+  }
+});
+
 test('tool groups and nested details keep manual disclosure across output and settlement', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -3763,8 +3786,9 @@ test('tool groups and nested details keep manual disclosure across output and se
     tool:{operation:'process',resources:[]}}));
   const render = (hosted = false) => renderToStaticMarkup(createElement(ConversationVirtualRow, {
     rowKey:'manual-tools', eager:true, virtualizer:{layout:()=>layout}, children:()=>hosted
-      ? createElement(ProviderHostedDraftGroup, {blocks:activities.slice(0,2).map(a=>({kind:'providerHosted',
-        providerCallId:a.callId,providerToolType:'web_search',status:a.status,action:{query:a.label}})),language:'en-US',onExpand(){}})
+      ? createElement(ProviderHostedDraftGroup, {blocks:activities.slice(0,2).map((a,index)=>({kind:'providerHosted',
+        providerCallId:a.callId,providerToolType:'web_search',status:'completed',
+        ...(index === 0 ? {} : {action:{query:a.label}})})),language:'en-US',onExpand(){}})
       : createElement(ToolActivityGroup,{activities,language:'en-US',onExpand(){},onOpenWorkspaceResource(){}}),
   }));
   assert.equal(render().includes('tool-entry-heading'),false);
@@ -3787,6 +3811,9 @@ test('tool groups and nested details keep manual disclosure across output and se
   assert.equal(render(true).includes('tool-entry-heading'),false);
   layout.state.set('hosted-group:expanded',true);
   assert.equal((render(true).match(/tool-entry-heading/g)||[]).length,2);
+  layout.state.set('hosted:A:expanded',true);
+  assert.match(render(true), /<code>A<\/code>/);
+  assert.match(render(true), /<code>web_search<\/code>/);
 });
 
 test('settled managed processes render stored output without live output', async t => {

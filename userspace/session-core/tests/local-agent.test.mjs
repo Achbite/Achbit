@@ -791,6 +791,10 @@ test('run binding exposes hosted search once and replays its Provider item uncha
     id: 'ws_2',
     status: 'failed',
     action: { type: 'open_page', url: 'https://example.com/unavailable' },
+  }, {
+    type: 'web_search_call',
+    id: 'ws_3',
+    status: 'completed',
   }];
   const preparation = fakeRunPreparation({
     apiSurface: 'responses',
@@ -926,7 +930,6 @@ test('Responses output items preserve narrative, hosted activity, and final-mess
     type: 'web_search_call',
     id: 'provider-search:first',
     status: 'completed',
-    action: { type: 'search', queries: ['current compiler release'] },
   }, {
     type: 'message',
     id: 'provider-message:search-follow-up',
@@ -1033,6 +1036,8 @@ test('Responses output items preserve narrative, hosted activity, and final-mess
     streamingProjection.assistantDraft.blocks.map((block) => block.outputIndex),
     [0, 1, 2, 3, 4],
   );
+  assert.equal(Object.hasOwn(streamingProjection.assistantDraft.blocks[1], 'action'), false);
+  assert.deepEqual(streamingProjection.assistantDraft.blocks[3].action, nativeItems[3].action);
   completeFirstTurn();
   const firstProjection = await waitForProjection(
     actor,
@@ -1108,6 +1113,10 @@ test('Responses output items preserve narrative, hosted activity, and final-mess
     ))?.kind),
     ['providerHosted', 'providerHosted'],
   );
+  const hostedActivities = [...activityIds].map(activityId => firstProjection.activities
+    .find(activity => activity.activityId === activityId).providerHosted);
+  assert.equal(Object.hasOwn(hostedActivities[0], 'action'), false);
+  assert.deepEqual(hostedActivities[1].action, nativeItems[3].action);
   assert.equal(
     firstProjection.messages.find((message) => message.messageId === finalMessageId)?.content,
     finalText,

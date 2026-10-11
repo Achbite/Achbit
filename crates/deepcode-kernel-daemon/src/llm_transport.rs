@@ -483,7 +483,8 @@ pub(crate) fn valid_responses_hosted_search_item(item: &Value) -> bool {
             item.get("status").and_then(Value::as_str),
             Some("completed" | "failed")
         )
-        && item.get("action").is_some_and(Value::is_object)
+        // Responses may complete a search without exposing its action details.
+        && item.get("action").is_none_or(Value::is_object)
 }
 
 fn valid_responses_replay_item(item: &Value) -> bool {
@@ -2148,6 +2149,11 @@ mod tests {
             "status": "failed",
             "action": { "type": "open_page", "url": "https://example.com/unavailable" },
         });
+        let item_without_action = json!({
+            "type": "web_search_call",
+            "id": "ws_3",
+            "status": "completed",
+        });
         let prepared = prepare_test_request(
             &profile,
             &provider_input(json!({
@@ -2156,7 +2162,7 @@ mod tests {
                     {
                         "role": "assistant",
                         "content": "The current release is available.",
-                        "providerItems": [item.clone(), failed_item.clone()]
+                        "providerItems": [item.clone(), failed_item.clone(), item_without_action.clone()]
                     }
                 ],
                 "tools": [],
@@ -2175,7 +2181,8 @@ mod tests {
         assert_eq!(body["tools"], json!([{ "type": "web_search" }]));
         assert_eq!(body["input"][1], item);
         assert_eq!(body["input"][2], failed_item);
-        assert_eq!(body["input"][3]["role"], "assistant");
+        assert_eq!(body["input"][3], item_without_action);
+        assert_eq!(body["input"][4]["role"], "assistant");
         assert_eq!(
             normalize_responses_base_url(&profile),
             "https://api.deepseek.com/responses"

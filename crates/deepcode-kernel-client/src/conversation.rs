@@ -717,7 +717,6 @@ impl SessionProjection {
                     && activity.provider_hosted.as_ref().is_none_or(|hosted| {
                         hosted.provider_tool_type != "web_search"
                             || hosted.provider_call_id.is_empty()
-                            || !hosted.action.is_object()
                     })
                 || activity.tool.as_ref().is_some_and(|tool| {
                     tool.operation.is_empty()
@@ -1434,7 +1433,8 @@ pub enum AssistantDraftBlockProjection {
         #[serde(rename = "providerToolType")]
         provider_tool_type: String,
         status: String,
-        action: Value,
+        #[serde(default, deserialize_with = "deserialize_hosted_search_action")]
+        action: Option<serde_json::Map<String, Value>>,
     },
 }
 
@@ -1487,13 +1487,11 @@ impl AssistantDraftBlockProjection {
                 provider_call_id,
                 provider_tool_type,
                 status,
-                action,
                 ..
             } => {
                 provider_call_id.is_empty()
                     || provider_tool_type != "web_search"
                     || !matches!(status.as_str(), "completed" | "failed")
-                    || !action.is_object()
             }
         }
     }
@@ -1881,7 +1879,18 @@ pub struct ToolInputIssueProjection {
 pub struct ProviderHostedActivityProjection {
     pub provider_tool_type: String,
     pub provider_call_id: String,
-    pub action: Value,
+    #[serde(default, deserialize_with = "deserialize_hosted_search_action")]
+    pub action: Option<serde_json::Map<String, Value>>,
+}
+
+// Missing details are allowed; an explicitly supplied value must be an object.
+fn deserialize_hosted_search_action<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Map::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2885,6 +2894,47 @@ mod tests {
         let projection: SessionProjection =
             serde_json::from_value(value).expect("provider-hosted tool projection decodes");
         assert_eq!(projection.validate(), Ok(()));
+    }
+
+    #[test]
+    fn hosted_search_projection_preserves_optional_action() {
+        let activity = json!({
+            "providerToolType": "web_search", "providerCallId": "ws_optional",
+        });
+        let draft = json!({
+            "kind": "providerHosted", "outputIndex": 0,
+            "providerToolType": "web_search", "providerCallId": "ws_optional",
+            "status": "completed",
+        });
+        let decoded: ProviderHostedActivityProjection =
+            serde_json::from_value(activity.clone()).unwrap();
+        assert!(decoded.action.is_none());
+        let decoded: AssistantDraftBlockProjection = serde_json::from_value(draft.clone()).unwrap();
+        assert!(!decoded.invalid());
+        assert!(matches!(
+            decoded,
+            AssistantDraftBlockProjection::ProviderHosted { action: None, .. }
+        ));
+        for action in [
+            json!({"type": "search"}),
+            json!(null),
+            json!("search"),
+            json!([]),
+        ] {
+            let mut with_activity = activity.clone();
+            with_activity["action"] = action.clone();
+            let mut with_draft = draft.clone();
+            with_draft["action"] = action.clone();
+            let decoded = serde_json::from_value::<ProviderHostedActivityProjection>(with_activity);
+            let decoded_draft = serde_json::from_value::<AssistantDraftBlockProjection>(with_draft);
+            if action.is_object() {
+                assert_eq!(decoded.unwrap().action.as_ref(), action.as_object());
+                assert!(!decoded_draft.unwrap().invalid());
+            } else {
+                assert!(decoded.is_err());
+                assert!(decoded_draft.is_err());
+            }
+        }
     }
 
     #[test]

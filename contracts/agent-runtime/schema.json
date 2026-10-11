@@ -223,7 +223,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "outputIndex", "kind", "providerCallId", "providerToolType", "status", "action"
+            "outputIndex", "kind", "providerCallId", "providerToolType", "status"
           ],
           "properties": {
             "outputIndex": { "type": "integer", "minimum": 0 },
@@ -3787,7 +3787,7 @@
         "providerHosted": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["providerToolType", "providerCallId", "action"],
+          "required": ["providerToolType", "providerCallId"],
           "properties": {
             "providerToolType": {"const": "web_search"},
             "providerCallId": {"$ref": "#/$defs/Id"},

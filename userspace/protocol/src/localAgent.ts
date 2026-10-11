@@ -1094,7 +1094,8 @@ export type AssistantDraftBlockProjection =
       providerCallId: string;
       providerToolType: 'web_search';
       status: 'completed' | 'failed';
-      action: JsonObject;
+      /** Present only when supplied by the Provider. */
+      action?: JsonObject;
     };
 
 /** Session-owned, non-durable presentation for the one Provider turn currently streaming. */
@@ -1212,7 +1213,8 @@ export interface ToolOutputProjection {
 export interface ProviderHostedActivityProjection {
   providerToolType: 'web_search';
   providerCallId: string;
-  action: JsonObject;
+  /** Present only when supplied by the Provider. */
+  action?: JsonObject;
 }
 
 export interface ActivityResourceProjection {

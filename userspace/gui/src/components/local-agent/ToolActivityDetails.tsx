@@ -156,7 +156,7 @@ const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, statu
               <dd><code>{actionType}</code></dd>
             </div>
           )}
-          {Object.entries(hosted.action).filter(([field]) => field !== 'type').map(([field, value]) => (
+          {hosted.action !== undefined && Object.entries(hosted.action).filter(([field]) => field !== 'type').map(([field, value]) => (
             <div key={field}>
               <dt>{fieldLabels[field] ? t(language, fieldLabels[field]) : field}</dt>
               <dd><code>{typeof value === 'string'

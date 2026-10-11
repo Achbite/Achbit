@@ -812,13 +812,13 @@ function isAssistantDraftBlock(value: unknown): value is AssistantDraftBlockProj
   }
   return value.kind === 'providerHosted'
     && isExactRecord(value, [
-      'outputIndex', 'kind', 'providerCallId', 'providerToolType', 'status', 'action',
-    ])
+      'outputIndex', 'kind', 'providerCallId', 'providerToolType', 'status',
+    ], ['action'])
     && isIdentifier(value.providerCallId)
     && isNaturalNumber(value.outputIndex)
     && value.providerToolType === 'web_search'
     && (value.status === 'completed' || value.status === 'failed')
-    && isRecord(value.action);
+    && (value.action === undefined || isRecord(value.action));
 }
 
 function isInteraction(value: unknown): boolean {
@@ -1351,10 +1351,10 @@ function isInputRejection(value: unknown): boolean {
 }
 
 function isProviderHostedActivity(value: unknown): boolean {
-  return isExactRecord(value, ['providerToolType', 'providerCallId', 'action'])
+  return isExactRecord(value, ['providerToolType', 'providerCallId'], ['action'])
     && value.providerToolType === 'web_search'
     && isIdentifier(value.providerCallId)
-    && isRecord(value.action);
+    && (value.action === undefined || isRecord(value.action));
 }
 
 function isToolActivity(value: unknown, activityStatus: string): boolean {

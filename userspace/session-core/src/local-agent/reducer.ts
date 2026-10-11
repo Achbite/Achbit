@@ -939,7 +939,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
           const action = block.item.action;
           if (
             status !== 'completed' && status !== 'failed'
-            || !isRecord(action)
+            || action !== undefined && !isRecord(action)
           ) throw new Error('provider_hosted_search_item_invalid');
           next.activities[block.activityId] = {
             activityId: block.activityId,
@@ -951,7 +951,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
             providerHosted: {
               providerToolType: block.providerToolType,
               providerCallId: block.providerCallId,
-              action: structuredClone(action),
+              ...(action === undefined ? {} : { action: structuredClone(action) }),
             },
           };
         }
@@ -1914,7 +1914,8 @@ function cloneActivity(activity: ActivityProjection): ActivityProjection {
       ? {
           providerHosted: {
             ...activity.providerHosted,
-            action: structuredClone(activity.providerHosted.action),
+            ...(activity.providerHosted.action === undefined
+              ? {} : { action: structuredClone(activity.providerHosted.action) }),
           },
         }
       : {}),

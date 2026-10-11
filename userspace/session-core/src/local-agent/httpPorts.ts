@@ -770,7 +770,7 @@ function decodeProviderFrame(frame: string): ProviderEvent {
         || !isNonEmptyText(value.data.item.id)
         || value.data.item.status !== 'completed'
           && value.data.item.status !== 'failed'
-        || !isRecord(value.data.item.action)
+        || value.data.item.action !== undefined && !isRecord(value.data.item.action)
       ) throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');
       break;
     case 'completed':

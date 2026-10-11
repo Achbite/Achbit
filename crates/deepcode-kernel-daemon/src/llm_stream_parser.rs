@@ -1636,6 +1636,11 @@ mod tests {
             "status": "failed",
             "action": { "type": "open_page", "url": "https://example.com/unavailable" },
         });
+        let item_without_action = json!({
+            "type": "web_search_call",
+            "id": "ws_3",
+            "status": "completed",
+        });
         parser
             .ingest_payload(
                 json!({
@@ -1669,6 +1674,21 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap();
+        let emissions = parser
+            .ingest_payload(
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 3,
+                    "item": item_without_action.clone(),
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .unwrap();
+        assert!(emissions.iter().any(|emission| {
+            emission.event["type"] == "output_item_completed"
+                && emission.event["item"] == item_without_action
+        }));
         parser
             .ingest_payload(
                 br#"{"type":"response.completed","response":{"usage":{"input_tokens":30,"output_tokens":6,"input_tokens_details":{"cached_tokens":18}}}}"#,
@@ -1687,7 +1707,7 @@ mod tests {
         assert_eq!(result.output.content, "Current result.");
         assert_eq!(
             result.output.hosted_web_search_calls,
-            vec![item.clone(), failed_item.clone()]
+            vec![item.clone(), failed_item.clone(), item_without_action]
         );
         assert_eq!(
             result.completion.usage,
