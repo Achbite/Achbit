@@ -5,6 +5,7 @@ import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
+import { admitModelView } from './modelView.js';
 
 /** New writes are admitted here; replay preserves already-recorded failure facts. */
 export function admitSessionEvents(
@@ -172,6 +173,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     case 'context.composed': {
       if (pendingProvider) throw new Error('provider_turn_still_active');
+      admitModelView(event.payload, events);
       const compaction = events.some((item) => item.type === 'context.compaction.requested'
         && item.runId === runId && item.payload.providerRequestId === event.payload.providerRequestId);
       if (event.payload.purpose === 'approvalReview' && (!state.pendingApproval || event.payload.tools.length)) throw new Error('approval_review_context_invalid');

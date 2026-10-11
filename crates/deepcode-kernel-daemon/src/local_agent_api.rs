@@ -129,7 +129,7 @@ impl LocalAgentRuntime {
         })?;
         let previous = prepared_runs
             .get(&key)
-            .and_then(|views| views.last())
+            .and_then(|views| views.iter().rev().find(|view| view.mcp.is_some()))
             .cloned();
         let mut settings = previous
             .as_ref()
@@ -212,7 +212,8 @@ impl LocalAgentRuntime {
             }
             if let Some(existing) = prepared_runs.get(&key).and_then(|views| {
                 views.iter().find(|view| {
-                    view.requested_plugin_identity == requested_plugin_identity
+                    view.mcp.is_some()
+                        && view.requested_plugin_identity == requested_plugin_identity
                         && view.plugin_selection.same_inputs(&plugin_selection)
                         && view.response.pointer("/environment/hostBinding") == requested_host
                 })
@@ -331,10 +332,14 @@ impl LocalAgentRuntime {
                     RunPreparationError::new("extension_snapshot_prepare_failed", message)
                 })?;
         let mcp = if let Some(previous) = &previous {
-            previous.mcp.extend_selected_sources(
-                &plugin_selection.mcp_sources,
-                plugin_selection.mcp_plugin_instances(),
-            )
+            previous
+                .mcp
+                .as_ref()
+                .expect("live prepared view")
+                .extend_selected_sources(
+                    &plugin_selection.mcp_sources,
+                    plugin_selection.mcp_plugin_instances(),
+                )
         } else {
             crate::local_agent_mcp::McpRuntime::from_selected_sources(
                 &plugin_selection.mcp_sources,
@@ -503,14 +508,12 @@ impl LocalAgentRuntime {
             &request.run_id,
             provider_binding.clone(),
         ) {
-            let _ = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+            return Err(self.rollback_run_preparation(
+                RunPreparationError::new("provider_runtime_bind_failed", message),
                 &request.session_id,
                 &request.run_id,
                 &kernel_catalog_snapshot_ref,
-            ));
-            return Err(RunPreparationError::new(
-                "provider_runtime_bind_failed",
-                message,
+                false,
             ));
         }
         if let Err(message) = approval_reviewer_binding
@@ -520,19 +523,12 @@ impl LocalAgentRuntime {
                     .bind(&request.session_id, &request.run_id, binding.clone())
             })
         {
-            let _ = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+            return Err(self.rollback_run_preparation(
+                RunPreparationError::new("approval_reviewer_bind_failed", message),
                 &request.session_id,
                 &request.run_id,
                 &kernel_catalog_snapshot_ref,
-            ));
-            if previous.is_none() {
-                let _ = self
-                    .provider_runtimes
-                    .release(&request.session_id, &request.run_id);
-            }
-            return Err(RunPreparationError::new(
-                "approval_reviewer_bind_failed",
-                message,
+                previous.is_none(),
             ));
         }
         plugin_config["extensionGenerationRef"] = json!(extension_generation_ref.clone());
@@ -578,9 +574,91 @@ impl LocalAgentRuntime {
                 provider_binding,
                 approval_reviewer_binding,
                 plugin_selection,
-                mcp,
+                mcp: Some(mcp),
             });
         Ok(response)
+    }
+
+    fn retire_tool_views(
+        &self,
+        request: RetireToolViewsRequest,
+    ) -> Result<Value, RunPreparationError> {
+        let _transition = self.runtime_transition().map_err(|message| {
+            RunPreparationError::new("runtime_transition_lock_failed", message)
+        })?;
+        let key = PreparedRunKey {
+            session_id: request.session_id.clone(),
+            run_id: request.run_id.clone(),
+        };
+        let mut prepared_runs = self.prepared_runs.lock().map_err(|_| {
+            RunPreparationError::new(
+                "prepared_run_registry_lock_failed",
+                "Prepared run registry 锁已损坏。",
+            )
+        })?;
+        let views = prepared_runs.get_mut(&key).ok_or_else(|| {
+            RunPreparationError::new("prepared_run_missing", "当前 run 没有已准备的工具视图。")
+        })?;
+        if !views.iter().any(|view| {
+            view.mcp.is_some()
+                && view.kernel_catalog_snapshot_ref == request.keep_kernel_catalog_snapshot_ref
+        }) {
+            return Err(RunPreparationError::new(
+                "tool_catalog_keep_binding_missing",
+                "保留的工具视图不存在或已退役。",
+            ));
+        }
+        let result = self.kernel.retire_tool_views(
+            &request.session_id,
+            &request.run_id,
+            &request.keep_kernel_catalog_snapshot_ref,
+        );
+        // Kernel has accepted retirement even when a disposer reports failure. Never reuse
+        // those physical views; keep their original response identities for final release.
+        if result
+            .as_ref()
+            .err()
+            .is_none_or(|error| error.code == "tool_view_retire_failed")
+        {
+            for view in views.iter_mut().filter(|view| {
+                view.kernel_catalog_snapshot_ref != request.keep_kernel_catalog_snapshot_ref
+            }) {
+                view.mcp = None;
+            }
+        }
+        result.map_err(RunPreparationError::from)?;
+        Ok(
+            json!({ "sessionId": request.session_id, "runId": request.run_id,
+            "keepKernelCatalogSnapshotRef": request.keep_kernel_catalog_snapshot_ref }),
+        )
+    }
+
+    fn rollback_run_preparation(
+        &self,
+        mut failure: RunPreparationError,
+        session_id: &str,
+        run_id: &str,
+        catalog_ref: &str,
+        release_provider: bool,
+    ) -> RunPreparationError {
+        if let Err(error) = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+            session_id,
+            run_id,
+            catalog_ref,
+        )) {
+            failure.message.push_str(&format!(
+                "；初始化回滚清理失败 {}: {}",
+                error.code, error.message
+            ));
+        }
+        if release_provider {
+            if let Err(message) = self.provider_runtimes.release(session_id, run_id) {
+                failure.message.push_str(&format!(
+                    "；初始化回滚清理失败 provider_runtime_release_failed: {message}"
+                ));
+            }
+        }
+        failure
     }
 
     fn release_run_runtime(
@@ -610,28 +688,43 @@ impl LocalAgentRuntime {
                 ));
             }
         }
+        let mut failures = Vec::new();
         if let Some(views) = prepared_runs.get(&key) {
             for view in views.iter().filter(|view| {
                 view.kernel_catalog_snapshot_ref != request.kernel_catalog_snapshot_ref()
             }) {
-                self.kernel
-                    .release_catalog(ReleaseToolCatalogRequest::new(
-                        &key.session_id,
-                        &key.run_id,
-                        &view.kernel_catalog_snapshot_ref,
-                    ))
-                    .map_err(RunPreparationError::from)?;
+                if let Err(error) = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+                    &key.session_id,
+                    &key.run_id,
+                    &view.kernel_catalog_snapshot_ref,
+                )) {
+                    failures.push(RunPreparationError::from(error));
+                }
             }
         }
         let response = self
             .kernel
             .release_catalog(request)
-            .map_err(RunPreparationError::from)?;
-        self.provider_runtimes
-            .release(&key.session_id, &key.run_id)
-            .map_err(|message| {
-                RunPreparationError::new("provider_runtime_release_failed", message)
-            })?;
+            .map_err(RunPreparationError::from);
+        if let Err(message) = self.provider_runtimes.release(&key.session_id, &key.run_id) {
+            failures.push(RunPreparationError::new(
+                "provider_runtime_release_failed",
+                message,
+            ));
+        }
+        if let Err(error) = &response {
+            failures.push(RunPreparationError::new(error.code, error.message.clone()));
+        }
+        if !failures.is_empty() {
+            let mut failure = failures.remove(0);
+            for error in failures {
+                failure
+                    .message
+                    .push_str(&format!("；{}: {}", error.code, error.message));
+            }
+            return Err(failure);
+        }
+        let response = response?;
         prepared_runs.remove(&key);
         Ok(response)
     }
@@ -691,10 +784,19 @@ struct PreparedRunRecord {
     approval_reviewer_binding:
         Result<crate::local_agent_provider_runtime::ProviderRuntimeBinding, String>,
     plugin_selection: crate::local_agent_plugins::ResolvedPluginSelection,
-    mcp: crate::local_agent_mcp::McpRuntime,
+    // None after retirement; immutable response identity remains available for restore/release.
+    mcp: Option<crate::local_agent_mcp::McpRuntime>,
     kernel_catalog_snapshot_ref: String,
     requested_plugin_identity: Value,
     response: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RetireToolViewsRequest {
+    session_id: String,
+    run_id: String,
+    keep_kernel_catalog_snapshot_ref: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -990,6 +1092,20 @@ pub(crate) async fn local_agent_run_runtime_prepare(
         .prepare_run_runtime(&state.gui, state.session_service.clone(), body)
     {
         Ok(runtime) => ApiResponse::ok(runtime),
+        Err(error) => ApiResponse::error(error.code, error.message),
+    }
+}
+
+pub(crate) async fn local_agent_tool_views_retire(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RetireToolViewsRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.retire_tool_views(body) {
+        Ok(retired) => ApiResponse::ok(retired),
         Err(error) => ApiResponse::error(error.code, error.message),
     }
 }

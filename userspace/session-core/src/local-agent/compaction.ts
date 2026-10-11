@@ -18,12 +18,12 @@ export type ContextCompactionRequestEvent = Extract<
 
 export interface PreparedContextCompaction {
   request: ProviderRequest;
-  receipt: ContextCompositionReceipt;
+  receipt: Extract<ContextCompositionReceipt, { purpose: 'agent' | 'contextCompaction' }>;
 }
 
-const COMPACTION_INSTRUCTIONS = `Summarize the supplied Session history into a factual handoff that another agent can continue from.
-Preserve the user's goal, confirmed decisions, constraints, unresolved issues, exact identifiers, paths, commands, errors, completed and pending work, active Plan and Todo state, and tool results.
-Separate facts, inferences, and unknowns. Do not answer the task, call tools, or take action. Return only the concise Markdown summary; omit repetitive logs and obsolete details rather than copying the transcript.`;
+const COMPACTION_INSTRUCTIONS = `Summarize the supplied conversation into a factual handoff for continuing the user's task.
+Preserve the user's goal, confirmed decisions and plans, constraints, unresolved questions, necessary identifiers, paths, commands, errors, completed and pending work, and relevant tool results.
+Separate facts, inferences, and unknowns. Do not answer the task, call tools, or take action. Return only the concise Markdown summary; omit internal runtime phases, repeated progress snapshots, repetitive logs, and obsolete details.`;
 
 export function prepareContextCompaction(input: {
   sessionId: string;
@@ -32,7 +32,8 @@ export function prepareContextCompaction(input: {
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   events: readonly SessionEvent[];
   requestEvent: ContextCompactionRequestEvent;
-}): PreparedContextCompaction {
+}, signal?: AbortSignal): PreparedContextCompaction {
+  signal?.throwIfAborted();
   const cutoff = input.requestEvent.payload.coveredThroughSequence;
   const sourceEvents = input.events.filter((event) => event.sequence <= cutoff);
   const focus = 'focus' in input.requestEvent.payload
@@ -43,6 +44,7 @@ export function prepareContextCompaction(input: {
     runId: input.runId,
     runtime: input.runtime,
     events: sourceEvents,
+    modelViewEvents: input.events,
     workspaceBindings: input.workspaceBindings,
     providerRequestId: input.requestEvent.payload.providerRequestId,
     purpose: 'contextCompaction',
@@ -50,6 +52,7 @@ export function prepareContextCompaction(input: {
     summaryInstruction: COMPACTION_INSTRUCTIONS + (focus
       ? `\n\nPrioritize existing facts relevant to the following future-work focus, but do not answer it:\n${focus}` : ''),
   });
+  signal?.throwIfAborted();
   return { request, receipt };
 }
 

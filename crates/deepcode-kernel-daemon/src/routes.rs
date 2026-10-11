@@ -82,6 +82,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             post(local_agent_run_runtime_release),
         )
         .route(
+            "/api/local-agent/runtime/retire-tool-views",
+            post(local_agent_tool_views_retire),
+        )
+        .route(
             "/api/local-agent/kernel/processes",
             post(local_agent_processes),
         )

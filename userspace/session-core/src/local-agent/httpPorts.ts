@@ -18,6 +18,7 @@ import type {
   ProviderRequest,
   ReleaseRunRuntimeRequest,
   ReleaseRunRuntimeResult,
+  RetireToolViewsRequest,
   RunPreparationPort,
   RunRuntimeSnapshot,
   SelectedPluginSnapshot,
@@ -470,6 +471,17 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         throw new AggregateError([error, releaseError], 'run_runtime_prepare_rollback_failed');
       }
       throw error;
+    }
+  }
+
+  async retireToolViews(request: RetireToolViewsRequest): Promise<void> {
+    const value = await this.json('/api/local-agent/runtime/retire-tool-views', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    if (!isExactRecord(value, ['sessionId', 'runId', 'keepKernelCatalogSnapshotRef'])
+      || value.sessionId !== request.sessionId || value.runId !== request.runId
+      || value.keepKernelCatalogSnapshotRef !== request.keepKernelCatalogSnapshotRef) {
+      throw new Error('tool_views_retired_invalid');
     }
   }
 

@@ -562,7 +562,17 @@ export interface ContextCompositionPartitionProjection
 
 export type ProviderResponseConstraint = 'normal' | 'answerOnly';
 
-export interface ContextCompositionReceipt {
+/** A derived Provider view of an existing journal fact, fixed when first prepared. */
+export interface ContextModelViewContribution {
+  contributionId: string;
+  contributionKind: ContextCompositionMessageKind;
+  label: string;
+  sourceSequence: number;
+  /** Already encoded with the original request's tool and workspace bindings. */
+  message: ModelMessage;
+}
+
+export interface ContextCompositionMetadata {
   kernelCatalogSnapshotRef?: string;
   providerRequestId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
@@ -573,6 +583,18 @@ export interface ContextCompositionReceipt {
   tools: ContextCompositionTool[];
   partitions: ContextCompositionPartitionReceipt[];
 }
+
+export type ContextCompositionReceipt = ContextCompositionMetadata & (
+  | {
+    purpose: 'agent' | 'contextCompaction';
+    /** Only newly selected history fragments; excludes transient image selections. */
+    modelView: {
+      throughSequence: number;
+      additions: ContextModelViewContribution[];
+    };
+  }
+  | { purpose: 'approvalReview'; modelView?: never }
+);
 
 interface ContextCompositionProjectionBase {
   providerRequestId: string;
@@ -1663,9 +1685,17 @@ export interface ReleaseRunRuntimeResult {
   alreadyReleased: boolean;
 }
 
+export interface RetireToolViewsRequest {
+  sessionId: string;
+  runId: string;
+  keepKernelCatalogSnapshotRef: string;
+}
+
 /** Host composition root owns atomic run preparation across Provider and Kernel generations. */
 export interface RunPreparationPort {
   prepare(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime>;
+  /** Old logical requests/approvals are settled; physical jobs retain their original lease. */
+  retireToolViews(request: RetireToolViewsRequest): Promise<void>;
   release(request: ReleaseRunRuntimeRequest): Promise<ReleaseRunRuntimeResult>;
 }
 

@@ -130,7 +130,7 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
   if (event.type === 'context.composed') {
     // Keep context structure and usage; native reasoning and instruction bodies
     // are not part of this product transcript view.
-    const receipt = event.payload;
+    const { modelView: _modelView, ...receipt } = event.payload;
     const usage = events.find((candidate) => candidate.type === 'context.updated'
       && candidate.payload.providerRequestId === receipt.providerRequestId);
     return { ...base, providerRequestId: receipt.providerRequestId,

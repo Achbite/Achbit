@@ -14,7 +14,9 @@ import {
   HttpProviderPort,
   HttpRunPreparationPort,
 } from './local-agent/httpPorts.js';
-import { SessionService } from './local-agent/service.js';
+import { isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createSessionService, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
 
 declare const process: {
   env: Record<string, string | undefined>;
@@ -46,11 +48,29 @@ async function main(): Promise<void> {
     serviceToken,
     stableCoreInstructions,
   });
-  const service = new SessionService(journal, {
-    create: async () => ({
-      composition: { provider, kernel, runPreparation, async dispose() {} },
-    }),
+  const factory = await loadSessionServiceFactory();
+  const candidate: unknown = await factory({
+    journal,
+    compositions: {
+      create: async () => ({
+        composition: { provider, kernel, runPreparation, async dispose() {} },
+      }),
+    },
   });
+  let service: SessionServicePort;
+  try {
+    assertSessionServicePort(candidate);
+    service = candidate;
+  } catch (error) {
+    if (isRecord(candidate) && typeof candidate.dispose === 'function') {
+      try {
+        await candidate.dispose();
+      } catch (disposeError) {
+        throw new AggregateError([error, disposeError], 'session_service_port_initialization_failed');
+      }
+    }
+    throw error;
+  }
 
   let shutdownRequest: BridgeRequest | undefined;
   const pending = new Set<Promise<void>>();
@@ -91,7 +111,7 @@ async function main(): Promise<void> {
 }
 
 async function dispatch(
-  service: SessionService,
+  service: SessionServicePort,
   request: BridgeRequest,
 ): Promise<unknown> {
   switch (request.operation) {
@@ -131,6 +151,29 @@ async function dispatch(
       );
     case 'shutdown':
       return { stopped: true };
+  }
+}
+
+async function loadSessionServiceFactory(): Promise<SessionServiceFactory> {
+  const modulePath = process.env.DEEPCODE_SESSION_SERVICE_MODULE;
+  if (modulePath === undefined) return createSessionService;
+  if (!isAbsolute(modulePath)) throw new Error('session_service_module_path_invalid');
+  const module: unknown = await import(pathToFileURL(modulePath).href);
+  if (!isRecord(module) || typeof module.createSessionService !== 'function') {
+    throw new Error('session_service_factory_missing');
+  }
+  return module.createSessionService as SessionServiceFactory;
+}
+
+/** Validate the loaded implementation once, before announcing readiness. */
+function assertSessionServicePort(value: unknown): asserts value is SessionServicePort {
+  if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
+  const methods = [
+    'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'activity',
+    'contextComposition', 'read', 'replaceCapabilities', 'dispose',
+  ] as const satisfies readonly (keyof SessionServicePort)[];
+  for (const method of methods) {
+    if (typeof value[method] !== 'function') throw new Error(`session_service_port_invalid:${method}`);
   }
 }
 
@@ -553,5 +596,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 void main().catch((error) => {
   process.exitCode = 1;
-  process.stderr.write(`[session-service] ${bridgeError(error).code}\n`);
+  const diagnostic = {
+    ...bridgeError(error),
+    ...(error instanceof AggregateError ? { causes: error.errors.map(bridgeError) } : {}),
+  };
+  process.stderr.write(`[session-service] ${JSON.stringify(diagnostic)}\n`);
 });

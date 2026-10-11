@@ -3293,6 +3293,15 @@
         "messages": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionMessage"}},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionItem"}},
         "tools": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionTool"}},
+        "modelView": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["throughSequence", "additions"],
+          "properties": {
+            "throughSequence": {"type": "integer", "minimum": 1},
+            "additions": {"type": "array", "items": {"$ref": "#/$defs/ContextModelViewContribution"}}
+          }
+        },
         "partitions": {
           "type": "array",
           "minItems": 7,
@@ -3300,6 +3309,21 @@
           "items": {"$ref": "#/$defs/ContextCompositionPartitionReceipt"}
         },
         "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"}
+      },
+      "if": {"properties": {"purpose": {"enum": ["agent", "contextCompaction"]}}},
+      "then": {"required": ["modelView"]},
+      "else": {"not": {"required": ["modelView"]}}
+    },
+    "ContextModelViewContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contributionId", "contributionKind", "label", "sourceSequence", "message"],
+      "properties": {
+        "contributionId": {"$ref": "#/$defs/Id"},
+        "contributionKind": {"$ref": "#/$defs/ContextCompositionMessage/properties/contributionKind"},
+        "label": {"type": "string"},
+        "sourceSequence": {"type": "integer", "minimum": 1},
+        "message": {"$ref": "#/$defs/ModelMessage"}
       }
     },
     "ContextCompositionPartitionReceipt": {

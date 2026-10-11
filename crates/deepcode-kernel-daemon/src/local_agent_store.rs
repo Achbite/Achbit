@@ -1880,7 +1880,7 @@ fn validate_new_event(
                     "tools",
                     "partitions",
                 ],
-                &["kernelCatalogSnapshotRef"],
+                &["kernelCatalogSnapshotRef", "modelView"],
             )?;
             validate_id(
                 "providerRequestId",
@@ -1914,6 +1914,9 @@ fn validate_new_event(
             )?;
             validate_context_tools(payload.get("tools").expect("validated tools"))?;
             validate_context_partitions(payload.get("partitions").expect("validated partitions"))?;
+            if let Some(view) = payload.get("modelView") {
+                validate_context_model_view(view)?;
+            }
         }
         "provider.turn.settled" => {
             let payload = event.get("payload").expect("validated payload");
@@ -2974,6 +2977,42 @@ fn validate_todo_items(value: &Value) -> Result<(), LocalAgentStoreError> {
                 "Todo text 或 status 无效。",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_context_model_view(value: &Value) -> Result<(), LocalAgentStoreError> {
+    exact_object(value, &["throughSequence", "additions"], &[])?;
+    required_u64(value, "throughSequence")?;
+    let additions = value["additions"].as_array().ok_or_else(|| {
+        LocalAgentStoreError::new("session_event_invalid", "modelView additions 必须是数组。")
+    })?;
+    for contribution in additions {
+        exact_object(
+            contribution,
+            &[
+                "contributionId",
+                "contributionKind",
+                "label",
+                "sourceSequence",
+                "message",
+            ],
+            &[],
+        )?;
+        for field in ["contributionId", "contributionKind", "label"] {
+            required_string(contribution, field)?;
+        }
+        required_u64(contribution, "sourceSequence")?;
+        // Shape only: Session admission owns source selection and immutability.
+        serde_json::from_value::<crate::local_agent_api::LocalProviderMessage>(
+            contribution["message"].clone(),
+        )
+        .map_err(|error| {
+            LocalAgentStoreError::new(
+                "session_event_invalid",
+                format!("modelView message 无效：{error}"),
+            )
+        })?;
     }
     Ok(())
 }

@@ -14,6 +14,7 @@ const started = event('run.started', { inputMessageId: 'message:input', workspac
 const composition = event('context.composed', {
   providerRequestId: 'request:one', purpose: 'agent', responseConstraint: 'normal',
   dynamicInstructionBytes: 0, messages: [], workspaceBindings: [], tools: [],
+  modelView: { throughSequence: 4, additions: [] },
   partitions: ['instructions', 'sessionControls', 'tools', 'workspaceBindings', 'contextProviders', 'journalMessages', 'filesystemReferences']
     .map((kind) => ({ kind, itemCount: kind === 'instructions' ? 1 : 0, requestShapeUnits: kind === 'instructions' ? 24 : 0 })),
 });
@@ -38,6 +39,11 @@ async function snapshot(...events) {
 test('Session admission rejects late queued input and an unfinished Provider without changing the input snapshot', async () => {
   const initial = await snapshot();
   assert.throws(() => admitSessionEvents(initial.current, [queued]), /session_event_run_not_active/);
+  const active = await snapshot(started);
+  const missingView = structuredClone(composition);
+  delete missingView.payload.modelView;
+  assert.throws(() => admitSessionEvents(active.current, [missingView]), /context_model_view_missing/);
+  assert.doesNotThrow(() => admitSessionEvents(active.current, [composition]));
   const { current } = await snapshot(started, composition);
   const before = structuredClone(current);
   assert.throws(() => admitSessionEvents(current, [finishing]), /run_finishing_state_invalid/);

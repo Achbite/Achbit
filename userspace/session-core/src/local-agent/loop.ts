@@ -38,15 +38,12 @@ import {
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
 } from '@deepcode/protocol';
-import type { AgentComposition } from './plugins.js';
+import type { AgentComposition, SessionCapabilities } from './plugins.js';
+import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
 import {
   pendingContextCompaction,
-  prepareContextCompaction,
-  pressureCompactionCutoff,
-  estimateContextInput,
   type ContextCompactionRequestEvent,
 } from './compaction.js';
-import { buildAgentProviderRequest } from './contextComposer.js';
 import { errorFact, LoopFailure, ProviderCompletedFailure, ProviderReportedFailure } from './loopFailure.js';
 import {
   canonicalJsonValue,
@@ -57,12 +54,9 @@ import { recoverSession, type SessionState } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { PlanPreviewBuffer } from './planPreview.js';
-import { publishPlan, confirmationFacts } from './planStage.js';
-import { presentArtifacts } from './deliverables.js';
+import { confirmationFacts } from './planStage.js';
 import type { ArtifactPresentationInput } from './sessionControls.js';
-import { todoUpdateFact } from './todoState.js';
 import {
-  decodeSessionControlCall,
   SessionControlError,
   type PlanPublicationDraft,
   type PlanScopeExtension,
@@ -105,6 +99,7 @@ export type LoopResult =
 
 export interface AgentLoopDeps {
   composition: AgentComposition;
+  capabilities?: SessionCapabilityManager;
   readSnapshot(): Promise<LoopSnapshot>;
   syncProcesses?(): Promise<void>;
   waitProcesses?(signal: AbortSignal): Promise<void>;
@@ -429,289 +424,313 @@ export async function runAgentLoop(
       throwIfAborted(signal);
       await deps.syncProcesses?.();
       snapshot = await deps.readSnapshot();
+      try {
+        await deps.composition.runPreparation.retireToolViews({
+          sessionId: snapshot.state.sessionId, runId,
+          keepKernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+        });
+      } catch (error) {
+        throw new ToolViewRetirementFailure(error);
+      }
       const processRevisions = new Map(Object.values(snapshot.state.processes)
         .filter(job => job.runId === runId).map(job => [job.jobId, job.revision]));
-      const preparedProviderRequest = await buildAgentProviderRequest({
-        sessionId: snapshot.state.sessionId,
-        runId,
-        runtime,
-        events: snapshot.events,
-        responseConstraint: 'normal',
-        workspaceBindings: runWorkspaceBindings(snapshot, runId),
-        providerRequestId: deps.nextId('provider-request'),
-      });
-      const pressureCutoff = pressureCompactionCutoff(
-        snapshot,
-        runId,
-        preparedProviderRequest.receipt,
-        runtime,
-      );
-      if (pressureCutoff !== null) {
+      const lease = acquireCapabilities(deps);
+      let requestFailure: { error: unknown } | undefined;
+      try {
+        const capabilities = lease.implementation;
+        const preparedProviderRequest = await capabilities.context.prepare({
+          sessionId: snapshot.state.sessionId,
+          runId,
+          runtime,
+          events: snapshot.events,
+          responseConstraint: 'normal',
+          workspaceBindings: runWorkspaceBindings(snapshot, runId),
+          providerRequestId: deps.nextId('provider-request'),
+        }, signal);
+        const pressureCutoff = capabilities.compaction.pressureCutoff(
+          snapshot,
+          runId,
+          preparedProviderRequest.receipt,
+          runtime,
+        );
+        if (pressureCutoff !== null) {
+          throwIfAborted(signal);
+          await commit({
+            type: 'context.compaction.requested',
+            sessionId: snapshot.state.sessionId,
+            runId,
+            payload: {
+              compactionId: deps.nextId('compaction'),
+              providerRequestId: deps.nextId('provider-request'),
+              trigger: 'pressure',
+              coveredThroughSequence: pressureCutoff,
+            },
+          });
+          continue;
+        }
+        if (capabilities.compaction.estimateInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= runtime.provider.contextWindowTokens) {
+          throw new LoopFailure('context_input_budget_exceeded', '当前输入与工具定义加上输出预留已达到上下文预算；没有可继续压缩的历史。原始输入与资源保持完整。');
+        }
         throwIfAborted(signal);
         await commit({
-          type: 'context.compaction.requested',
+          type: 'context.composed',
           sessionId: snapshot.state.sessionId,
           runId,
-          payload: {
-            compactionId: deps.nextId('compaction'),
-            providerRequestId: deps.nextId('provider-request'),
-            trigger: 'pressure',
-            coveredThroughSequence: pressureCutoff,
-          },
+          payload: preparedProviderRequest.receipt,
         });
-        continue;
-      }
-      if (estimateContextInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= runtime.provider.contextWindowTokens) {
-        throw new LoopFailure('context_input_budget_exceeded', '当前输入与工具定义加上输出预留已达到上下文预算；没有可继续压缩的历史。原始输入与资源保持完整。');
-      }
-      throwIfAborted(signal);
-      await commit({
-        type: 'context.composed',
-        sessionId: snapshot.state.sessionId,
-        runId,
-        payload: preparedProviderRequest.receipt,
-      });
-      const turn = await consumeProvider(
-        preparedProviderRequest.request,
-        preparedProviderRequest.toolCodec,
-        runId,
-        deps,
-        signal,
-      );
-      const providerCallFacts: NewSessionEvent[] = [];
-      const completionDerivedFacts: NewSessionEvent[] = [];
-      const turnNarratives = [
-        ...(turn.narratives ?? []),
-        ...('narrative' in turn && turn.narrative
-          ? [{ narrativeId: deps.nextId('narrative'), content: turn.narrative }]
-          : []),
-      ];
-      for (const narrative of turnNarratives) {
-        completionDerivedFacts.push({
-          type: 'narrative.committed',
-          sessionId: snapshot.state.sessionId,
+        const turn = await consumeProvider(
+          preparedProviderRequest.request,
+          preparedProviderRequest.toolCodec,
           runId,
-          payload: {
-            narrativeId: narrative.narrativeId,
-            content: narrative.content,
-            providerRequestId: turn.completion.providerRequestId,
-          },
-        });
-      }
-      if (turn.contextUsage) {
-        completionDerivedFacts.unshift({
-          type: 'context.updated',
-          sessionId: snapshot.state.sessionId,
-          runId,
-          payload: turn.contextUsage,
-        });
-      }
-      switch (turn.kind) {
-        case 'artifactPresent': {
-          let fact: NewSessionEvent;
-          try {
-            fact = presentArtifacts(snapshot.state, runId, turn.callId, turn.providerCallId, turn.items, deps.nextId);
-          } catch (error) {
-            fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
-              providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_ARTIFACT_PRESENT,
-              input: { items: turn.items }, error: localAgentError(error) });
-          }
-          await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
-          break;
+          deps,
+          signal,
+          capabilities.controls,
+        );
+        const providerCallFacts: NewSessionEvent[] = [];
+        const completionDerivedFacts: NewSessionEvent[] = [];
+        const turnNarratives = [
+          ...(turn.narratives ?? []),
+          ...('narrative' in turn && turn.narrative
+            ? [{ narrativeId: deps.nextId('narrative'), content: turn.narrative }]
+            : []),
+        ];
+        for (const narrative of turnNarratives) {
+          completionDerivedFacts.push({
+            type: 'narrative.committed',
+            sessionId: snapshot.state.sessionId,
+            runId,
+            payload: {
+              narrativeId: narrative.narrativeId,
+              content: narrative.content,
+              providerRequestId: turn.completion.providerRequestId,
+            },
+          });
         }
-        case 'pluginActivate': {
-          let prepared: PreparedRunRuntime;
-          try {
-            const uris = [...new Set([...runtime.selectedPlugins.plugins.map(plugin => plugin.uri), ...turn.pluginUris])];
-            prepared = await deps.composition.runPreparation.prepare({
-              sessionId: snapshot.state.sessionId, runId, profileId: runtime.provider.profileId,
-              environment: runtime.environment,
-              ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
-              pluginSelections: uris.map(uri => ({ selectionId: deps.nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) })),
-            });
-          } catch (error) {
+        if (turn.contextUsage) {
+          completionDerivedFacts.unshift({
+            type: 'context.updated',
+            sessionId: snapshot.state.sessionId,
+            runId,
+            payload: turn.contextUsage,
+          });
+        }
+        switch (turn.kind) {
+          case 'artifactPresent': {
+            let fact: NewSessionEvent;
+            try {
+              fact = capabilities.controls.presentArtifacts(snapshot.state, runId, turn.callId, turn.providerCallId, turn.items, deps.nextId);
+            } catch (error) {
+              fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
+                providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_ARTIFACT_PRESENT,
+                input: { items: turn.items }, error: localAgentError(error) });
+            }
+            await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
+            break;
+          }
+          case 'pluginActivate': {
+            let prepared: PreparedRunRuntime;
+            try {
+              const uris = [...new Set([...runtime.selectedPlugins.plugins.map(plugin => plugin.uri), ...turn.pluginUris])];
+              prepared = await deps.composition.runPreparation.prepare({
+                sessionId: snapshot.state.sessionId, runId, profileId: runtime.provider.profileId,
+                environment: runtime.environment,
+                ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
+                pluginSelections: uris.map(uri => ({ selectionId: deps.nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) })),
+              });
+            } catch (error) {
+              await commit([
+                controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
+                  providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLUGIN_ACTIVATE,
+                  input: { pluginUris: turn.pluginUris }, error: localAgentError(error) }),
+                providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+                ...completionDerivedFacts,
+              ]);
+              break;
+            }
+            const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
+              toolPromptContributions, providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
             await commit([
-              controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
-                providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLUGIN_ACTIVATE,
-                input: { pluginUris: turn.pluginUris }, error: localAgentError(error) }),
+              { type: 'session.plugins.activated', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                payload: { providerCallId: turn.providerCallId, pluginUris: turn.pluginUris } },
+              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+              ...completionDerivedFacts,
+              { type: 'run.tools.prepared', sessionId: snapshot.state.sessionId, runId,
+                payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
+                  toolPromptContributions, providerToolAliases, selectedPlugins } } },
+            ]);
+            break;
+          }
+          case 'continuation': {
+            await commit([
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
             ]);
             break;
           }
-          const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-            toolPromptContributions, providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
-          await commit([
-            { type: 'session.plugins.activated', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
-              payload: { providerCallId: turn.providerCallId, pluginUris: turn.pluginUris } },
-            providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-            ...completionDerivedFacts,
-            { type: 'run.tools.prepared', sessionId: snapshot.state.sessionId, runId,
-              payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-                toolPromptContributions, providerToolAliases, selectedPlugins } } },
-          ]);
-          break;
-        }
-        case 'continuation': {
-          await commit([
-            providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-            ...completionDerivedFacts,
-          ]);
-          break;
-        }
-        case 'interaction': {
-          const interactionFact: NewSessionEvent = {
-            type: 'interaction.requested',
-            sessionId: snapshot.state.sessionId,
-            runId,
-            callId: turn.callId,
-            payload: {
+          case 'interaction': {
+            const interactionFact: NewSessionEvent = {
+              type: 'interaction.requested',
+              sessionId: snapshot.state.sessionId,
+              runId,
+              callId: turn.callId,
+              payload: {
+                interactionId: turn.interactionId,
+                providerCallId: turn.providerCallId,
+                ...turn.request,
+              },
+            };
+            await commit([
+              ...orderedProviderCallFacts(
+                turn.completion,
+                [...providerCallFacts, interactionFact],
+              ),
+              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+              ...completionDerivedFacts,
+              ...(turn.request.mode === 'continue' ? [] : [{
+                type: 'run.waiting',
+                sessionId: snapshot.state.sessionId,
+                runId,
+                payload: { reason: 'userInput', detail: turn.request.prompt },
+              } as const]),
+            ]);
+            if (turn.request.mode === 'continue') break;
+            return {
+              status: 'waiting',
+              runId,
+              reason: 'userInput',
               interactionId: turn.interactionId,
-              providerCallId: turn.providerCallId,
-              ...turn.request,
-            },
-          };
-          await commit([
-            ...orderedProviderCallFacts(
-              turn.completion,
-              [...providerCallFacts, interactionFact],
-            ),
-            providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-            ...completionDerivedFacts,
-            ...(turn.request.mode === 'continue' ? [] : [{
-              type: 'run.waiting',
-              sessionId: snapshot.state.sessionId,
-              runId,
-              payload: { reason: 'userInput', detail: turn.request.prompt },
-            } as const]),
-          ]);
-          if (turn.request.mode === 'continue') break;
-          return {
-            status: 'waiting',
-            runId,
-            reason: 'userInput',
-            interactionId: turn.interactionId,
-          };
-        }
-        case 'plan': {
-          const fact = publishPlan(
-            snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
-            runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
-          );
-          await commit([
-            ...orderedProviderCallFacts(turn.completion, [...providerCallFacts, fact]),
-            providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-            ...completionDerivedFacts,
-          ]);
-          if (fact.type !== 'plan.published') break;
-          await commit(current => runRuntimeSnapshot(current, runId).permissions['agent.permissions.workspaceMutation'] === 'allow'
-            ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('agent-decision'), 'agent', deps.nextId)
-            : [{ type: 'run.waiting', sessionId: current.state.sessionId, runId, payload: { reason: 'plan', detail: fact.payload.title } }]);
-          if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
-          break;
-        }
-        case 'answer': {
-          await deps.syncProcesses?.();
-          snapshot = await deps.readSnapshot();
-          const jobs = Object.values(snapshot.state.processes).filter(job => job.runId === runId);
-          if (jobs.some(job => job.status === 'active' || job.revision !== processRevisions.get(job.jobId))) {
-            await commit([ ...orderedProviderCallFacts(turn.completion, providerCallFacts),
-              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts ]);
-            await deps.waitProcesses?.(signal);
-            continue nextTurn;
+            };
           }
-          const messageId = turn.messageId ?? deps.nextId('message');
-          const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
-          await commit((current) => [
-            ...orderedProviderCallFacts(turn.completion, providerCallFacts),
-            providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-            ...completionDerivedFacts,
-            {
-              type: 'message.committed',
-              sessionId: snapshot.state.sessionId,
-              runId,
-              payload: {
-                messageId,
-                role: 'assistant',
-                content: turn.content,
-                providerRequestId: turn.completion.providerRequestId,
-              },
-            },
-            ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
-              : current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
-                type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
-                payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
-              } as const] : [{
-              type: 'run.finishing',
-              sessionId: snapshot.state.sessionId,
-              runId,
-              payload: settlement,
-            } as const]),
-          ]);
-          if (snapshot.state.run?.status === 'waiting') return { status: 'waiting', runId, reason: 'userInput' };
-          if (!snapshot.state.pendingRunSettlements[runId]) break;
-          return finishingResult(runId, settlement);
-        }
-        case 'tools': {
-          const seenCalls = new Set<string>();
-          const callFacts: NewSessionEvent[] = [...providerCallFacts];
-          // Commit reported progress before executing the accompanying ordinary calls.
-          if (turn.progress) {
-            callFacts.push(turn.progress.kind === 'todoUpdate'
-              ? todoUpdateFact(snapshot.state.sessionId, runId, snapshot.state.todoList, turn.progress.items, turn.progress)
-              : controlRejectionFact(snapshot.state.sessionId, runId, turn.progress.rejection));
+          case 'plan': {
+            const fact = capabilities.controls.publishPlan(
+              snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
+              runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
+            );
+            await commit([
+              ...orderedProviderCallFacts(turn.completion, [...providerCallFacts, fact]),
+              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+              ...completionDerivedFacts,
+            ]);
+            if (fact.type !== 'plan.published') break;
+            await commit(current => runRuntimeSnapshot(current, runId).permissions['agent.permissions.workspaceMutation'] === 'allow'
+              ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('agent-decision'), 'agent', deps.nextId)
+              : [{ type: 'run.waiting', sessionId: current.state.sessionId, runId, payload: { reason: 'plan', detail: fact.payload.title } }]);
+            if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
+            break;
           }
-          for (const call of turn.calls) {
-            if (seenCalls.has(call.callId)) {
-              throw new LoopFailure('provider_tool_call_duplicate', 'Provider 重复了工具调用标识。');
+          case 'answer': {
+            await deps.syncProcesses?.();
+            snapshot = await deps.readSnapshot();
+            const jobs = Object.values(snapshot.state.processes).filter(job => job.runId === runId);
+            if (jobs.some(job => job.status === 'active' || job.revision !== processRevisions.get(job.jobId))) {
+              await commit([ ...orderedProviderCallFacts(turn.completion, providerCallFacts),
+                providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts ]);
+              await lease.release();
+              await deps.waitProcesses?.(signal);
+              continue nextTurn;
             }
-            seenCalls.add(call.callId);
-            callFacts.push({
-              type: 'tool.requested',
-              sessionId: snapshot.state.sessionId,
-              runId,
-              callId: call.callId,
-              payload: {
-                providerCallId: call.providerCallId,
-                attemptId: deps.nextId('attempt'),
-                toolName: call.name,
-                input: call.input,
+            const messageId = turn.messageId ?? deps.nextId('message');
+            const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
+            await commit((current) => [
+              ...orderedProviderCallFacts(turn.completion, providerCallFacts),
+              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+              ...completionDerivedFacts,
+              {
+                type: 'message.committed',
+                sessionId: snapshot.state.sessionId,
+                runId,
+                payload: {
+                  messageId,
+                  role: 'assistant',
+                  content: turn.content,
+                  providerRequestId: turn.completion.providerRequestId,
+                },
               },
-            });
+              ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
+                : current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
+                  type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
+                  payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
+                } as const] : [{
+                type: 'run.finishing',
+                sessionId: snapshot.state.sessionId,
+                runId,
+                payload: settlement,
+              } as const]),
+            ]);
+            if (snapshot.state.run?.status === 'waiting') return { status: 'waiting', runId, reason: 'userInput' };
+            if (!snapshot.state.pendingRunSettlements[runId]) break;
+            return finishingResult(runId, settlement);
           }
-          const events = orderedProviderCallFacts(turn.completion, callFacts);
-          events.push(providerTurnSettledEvent(
-            snapshot.state.sessionId,
-            runId,
-            turn.completion,
-          ));
-          events.push(...completionDerivedFacts);
-          await commit(events);
-          break;
-        }
-        case 'controlRejected': {
-          const rejectionEvent = controlRejectionFact(snapshot.state.sessionId, runId, turn.rejection);
-          await commit([
-            ...orderedProviderCallFacts(
+          case 'tools': {
+            const seenCalls = new Set<string>();
+            const callFacts: NewSessionEvent[] = [...providerCallFacts];
+            // Commit reported progress before executing the accompanying ordinary calls.
+            if (turn.progress) {
+              callFacts.push(turn.progress.kind === 'todoUpdate'
+                ? capabilities.controls.updateTodo(snapshot.state.sessionId, runId, snapshot.state.todoList, turn.progress.items, turn.progress)
+                : controlRejectionFact(snapshot.state.sessionId, runId, turn.progress.rejection));
+            }
+            for (const call of turn.calls) {
+              if (seenCalls.has(call.callId)) {
+                throw new LoopFailure('provider_tool_call_duplicate', 'Provider 重复了工具调用标识。');
+              }
+              seenCalls.add(call.callId);
+              callFacts.push({
+                type: 'tool.requested',
+                sessionId: snapshot.state.sessionId,
+                runId,
+                callId: call.callId,
+                payload: {
+                  providerCallId: call.providerCallId,
+                  attemptId: deps.nextId('attempt'),
+                  toolName: call.name,
+                  input: call.input,
+                },
+              });
+            }
+            const events = orderedProviderCallFacts(turn.completion, callFacts);
+            events.push(providerTurnSettledEvent(
+              snapshot.state.sessionId,
+              runId,
               turn.completion,
-              [...providerCallFacts, rejectionEvent],
-            ),
-            providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-            ...completionDerivedFacts,
-          ]);
-          break;
+            ));
+            events.push(...completionDerivedFacts);
+            await commit(events);
+            break;
+          }
+          case 'controlRejected': {
+            const rejectionEvent = controlRejectionFact(snapshot.state.sessionId, runId, turn.rejection);
+            await commit([
+              ...orderedProviderCallFacts(
+                turn.completion,
+                [...providerCallFacts, rejectionEvent],
+              ),
+              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+              ...completionDerivedFacts,
+            ]);
+            break;
+          }
         }
+      } catch (error) {
+        requestFailure = { error };
+        throw error;
+      } finally {
+        await releaseCapabilities(lease, requestFailure);
       }
     }
   } catch (error) {
+    // Finalization facts have already been admitted; cleanup errors cannot replace them.
+    if (snapshot.state.pendingRunSettlements[runId]) throw error;
+    const releaseFailed = error instanceof CapabilityReleaseFailure || error instanceof ToolViewRetirementFailure;
+    const requestError = error instanceof CapabilityReleaseFailure && error.requestFailure ? error.requestFailure.error : error;
     const userCancelled = signal.aborted
       && (signal.reason === 'user_cancelled' || signal.reason === 'user_cancelled_plan');
     const pendingProvider = uncompletedProviderComposition(snapshot, runId);
     const completedAttempt = pendingProvider && Object.values(snapshot.state.providerAttempts).some((attempt) => (
       attempt.providerRequestId === pendingProvider.providerRequestId && attempt.phase === 'completed'
     ));
-    if (error instanceof ProviderReportedFailure || error instanceof ProviderCompletedFailure
-      || completedAttempt && !(signal.aborted && error === signal.reason)) {
+    if (requestError instanceof ProviderReportedFailure || requestError instanceof ProviderCompletedFailure
+      || completedAttempt && !(signal.aborted && requestError === signal.reason)) {
       const failure = localAgentError(error);
       if (!hasSettlement(snapshot.events, runId)) {
         await commit([
@@ -744,7 +763,9 @@ export async function runAgentLoop(
           message: userCancelled ? '已收到取消请求，本次生成未完成；Provider 最终完成结果未知。'
             : `Provider request ${unknownTurn.providerRequestId} 的完成结果不可判定；原始错误 ${cause.code}：${cause.message}`,
           diagnostics: { source: 'session', phase: 'provider', category: userCancelled ? 'cancelled' : 'unknown', retryable: false,
-            causes: [{ message: `${cause.code}: ${cause.message}` }], ...(signal.aborted ? { stopReason: String(signal.reason) } : {}) },
+            causes: [{ message: `${cause.code}: ${cause.message}` }],
+            ...(cause.diagnostics?.secondary ? { secondary: cause.diagnostics.secondary } : {}),
+            ...(signal.aborted ? { stopReason: String(signal.reason) } : {}) },
         },
       };
       await commit([
@@ -767,11 +788,13 @@ export async function runAgentLoop(
     if (
       signal.aborted
       && signal.reason === 'session_service_stopped'
+      && !releaseFailed
       && !(error instanceof LoopFailure && error.code === 'tool_cancel_cleanup_failed')
     ) {
       return { status: 'suspended', runId };
     }
     if (userCancelled
+      && !releaseFailed
       && !(error instanceof LoopFailure && error.code === 'tool_cancel_cleanup_failed')) {
       return await cancelRun(snapshot, { type: 'cancel', runId }, deps, commit);
     }
@@ -788,6 +811,40 @@ export async function runAgentLoop(
   }
 }
 
+function acquireCapabilities(deps: AgentLoopDeps): SessionCapabilityLease {
+  if (deps.capabilities) return deps.capabilities.acquire();
+  // Direct Loop callers own their composition. Actors always provide the manager.
+  return {
+    implementation: deps.composition.capabilities ?? createSessionCapabilities(),
+    async release() {},
+  };
+}
+
+async function releaseCapabilities(
+  lease: SessionCapabilityLease,
+  failure?: { error: unknown },
+): Promise<void> {
+  try {
+    await lease.release();
+  } catch (error) {
+    throw new CapabilityReleaseFailure(failure?.error === error ? undefined : failure, error);
+  }
+}
+
+/** Keeps request classification while reporting an additional implementation cleanup failure. */
+class CapabilityReleaseFailure extends AggregateError {
+  constructor(readonly requestFailure: { error: unknown } | undefined, releaseError: unknown) {
+    super(requestFailure ? [requestFailure.error, releaseError] : [releaseError], 'session_capability_release_failed');
+  }
+}
+
+/** Resource cleanup failure must remain visible even if cancellation arrives concurrently. */
+class ToolViewRetirementFailure extends AggregateError {
+  constructor(error: unknown) {
+    super([error], 'tool_view_retire_failed');
+  }
+}
+
 async function performContextCompaction(
   snapshot: LoopSnapshot,
   requestEvent: ContextCompactionRequestEvent,
@@ -796,50 +853,59 @@ async function performContextCompaction(
   signal: AbortSignal,
   commit: (event: NewSessionEvent | readonly NewSessionEvent[]) => Promise<void>,
 ): Promise<void> {
-  const cutoff = requestEvent.payload.coveredThroughSequence;
-  const runtime = runRuntimeSnapshot(snapshot, runId);
-  const prepared = prepareContextCompaction({
-    sessionId: snapshot.state.sessionId,
-    runId,
-    runtime,
-    workspaceBindings: runWorkspaceBindings(snapshot, runId),
-    events: snapshot.events,
-    requestEvent,
-  });
-  throwIfAborted(signal);
-  await commit({
-    type: 'context.composed',
-    sessionId: snapshot.state.sessionId,
-    runId,
-    payload: prepared.receipt,
-  });
-  const compacted = await consumeTextProvider(prepared.request, deps, signal);
-  const facts: NewSessionEvent[] = [providerTurnSettledEvent(
-    snapshot.state.sessionId,
-    runId,
-    compacted.completion,
-  )];
-  if (compacted.contextUsage) {
-    facts.push({
-      type: 'context.updated',
+  const lease = acquireCapabilities(deps);
+  let requestFailure: { error: unknown } | undefined;
+  try {
+    const cutoff = requestEvent.payload.coveredThroughSequence;
+    const runtime = runRuntimeSnapshot(snapshot, runId);
+    const prepared = await lease.implementation.compaction.prepare({
       sessionId: snapshot.state.sessionId,
       runId,
-      payload: compacted.contextUsage,
+      runtime,
+      workspaceBindings: runWorkspaceBindings(snapshot, runId),
+      events: snapshot.events,
+      requestEvent,
+    }, signal);
+    throwIfAborted(signal);
+    await commit({
+      type: 'context.composed',
+      sessionId: snapshot.state.sessionId,
+      runId,
+      payload: prepared.receipt,
     });
+    const compacted = await consumeTextProvider(prepared.request, deps, signal);
+    const facts: NewSessionEvent[] = [providerTurnSettledEvent(
+      snapshot.state.sessionId,
+      runId,
+      compacted.completion,
+    )];
+    if (compacted.contextUsage) {
+      facts.push({
+        type: 'context.updated',
+        sessionId: snapshot.state.sessionId,
+        runId,
+        payload: compacted.contextUsage,
+      });
+    }
+    facts.push({
+      type: 'context.compacted',
+      sessionId: snapshot.state.sessionId,
+      runId,
+      payload: {
+        compactionId: requestEvent.payload.compactionId,
+        providerRequestId: requestEvent.payload.providerRequestId,
+        trigger: requestEvent.payload.trigger,
+        coveredThroughSequence: cutoff,
+        summary: compacted.summary,
+      },
+    });
+    await commit(facts);
+  } catch (error) {
+    requestFailure = { error };
+    throw error;
+  } finally {
+    await releaseCapabilities(lease, requestFailure);
   }
-  facts.push({
-    type: 'context.compacted',
-    sessionId: snapshot.state.sessionId,
-    runId,
-    payload: {
-      compactionId: requestEvent.payload.compactionId,
-      providerRequestId: requestEvent.payload.providerRequestId,
-      trigger: requestEvent.payload.trigger,
-      coveredThroughSequence: cutoff,
-      summary: compacted.summary,
-    },
-  });
-  await commit(facts);
 }
 
 async function consumeTextProvider(request: ProviderRequest, deps: AgentLoopDeps, signal: AbortSignal) {
@@ -1003,9 +1069,10 @@ async function consumeProvider(
   runId: string,
   deps: AgentLoopDeps,
   signal: AbortSignal,
+  controls: SessionCapabilities['controls'],
 ): Promise<ProviderTurn> {
   return withProviderAttempts(request, deps, signal, (attempt, onCompleted) => (
-    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted)
+    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls)
   ));
 }
 
@@ -1016,6 +1083,7 @@ async function consumeProviderOutput(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   onCompleted: () => void,
+  controls: SessionCapabilities['controls'],
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
   deps = { ...deps, updateAssistantDraft: activity.updateDraft };
@@ -1493,7 +1561,7 @@ async function consumeProviderOutput(
   let progress: Extract<ProviderTurn, { kind: 'tools' }>['progress'];
   for (const call of calls) {
     try {
-      const control = decodeSessionControlCall(call.callId, call.name, call.input);
+      const control = controls.decode(call.callId, call.name, call.input);
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
       else kernelCalls.push(call);

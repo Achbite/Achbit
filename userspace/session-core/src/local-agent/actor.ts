@@ -26,7 +26,8 @@ import {
   COMMAND_REPLY_VERSION,
   SESSION_EVENT_VERSION,
 } from '@deepcode/protocol';
-import type { AgentComposition } from './plugins.js';
+import type { AgentComposition, SessionCapabilities } from './plugins.js';
+import { SessionCapabilityManager } from './sessionCapabilities.js';
 import {
   loopSnapshot,
   runAgentLoop,
@@ -55,12 +56,14 @@ const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
 export class SessionActor {
   readonly #journal: CommandJournalPort;
   readonly #composition: AgentComposition;
+  readonly #capabilities: SessionCapabilityManager;
   readonly #profileId?: string;
   readonly #nextId: (kind: string) => string;
   #mailbox = Promise.resolve();
   #writes = Promise.resolve();
   #active?: ActiveRun;
   #disposed = false;
+  #disposeTask?: Promise<void>;
   #processes?: ManagedProcesses;
   #loopFailure?: Error;
   #snapshot?: LoopSnapshot;
@@ -78,14 +81,17 @@ export class SessionActor {
   ) {
     this.#journal = journal;
     this.#composition = composition;
+    this.#capabilities = new SessionCapabilityManager(composition.capabilities);
     this.#profileId = options.profileId;
     this.#nextId = options.nextId ?? defaultIdFactory(sessionId);
     this.#initialEvents = options.initialEvents;
   }
 
-  async recover(): Promise<void> {
+  async recover(signal?: AbortSignal): Promise<void> {
     await this.enqueue(async () => {
+      signal?.throwIfAborted();
       const snapshot = await this.loadSnapshot();
+      signal?.throwIfAborted();
       const run = snapshot.state.run;
       if (!run) return;
       if (isTerminal(run.status)) return;
@@ -96,6 +102,7 @@ export class SessionActor {
         return;
       }
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
+      signal?.throwIfAborted();
       if (restored && run.status === 'running') {
         this.startLoop({ type: 'recover', runId: run.runId });
       }
@@ -132,8 +139,18 @@ export class SessionActor {
       || (run != null && !isTerminal(run.status));
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.#disposeTask) return this.#disposeTask;
     this.#disposed = true;
+    this.#active?.controller.abort('session_service_stopped');
+    this.#disposeTask = this.disposeResources();
+    return this.#disposeTask;
+  }
+
+  private async disposeResources(): Promise<void> {
+    // Commands already admitted to the mailbox may still be preparing a run.
+    // Drain them, then also stop any Loop they started before releasing ports.
+    await this.#mailbox;
     this.#active?.controller.abort('session_service_stopped');
     const errors: unknown[] = [];
     try {
@@ -147,11 +164,23 @@ export class SessionActor {
       errors.push(error);
     }
     try {
+      await this.#capabilities.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await this.#composition.dispose();
     } catch (error) {
       errors.push(error);
     }
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
+  }
+
+  /** Trusted operator entry; never exposed through the model's callable catalog. */
+  async replaceCapabilities(implementation: SessionCapabilities): Promise<void> {
+    if (this.#disposed) throw new Error('session_actor_disposed');
+    this.assertOperational();
+    await this.#capabilities.replace(implementation);
   }
 
   private async handleCommand(command: ConversationCommand): Promise<CommandReply> {
@@ -910,6 +939,7 @@ export class SessionActor {
       command,
       {
         composition: this.#composition,
+        capabilities: this.#capabilities,
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
         waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),

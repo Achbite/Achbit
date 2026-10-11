@@ -37,13 +37,18 @@ export function actorWith(
 
 export function fakeRunPreparation(options = {}) {
   const prepared = [];
+  const retired = [];
   const released = [];
   const snapshots = [];
   return {
     prepared,
+    retired,
     released,
     snapshots,
     port: {
+      async retireToolViews(request) {
+        retired.push(structuredClone(request));
+      },
       async prepare(request) {
         prepared.push(structuredClone(request));
         const snapshot = runtimeSnapshot(request.runId, {

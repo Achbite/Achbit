@@ -12,7 +12,7 @@ import type {
   WorkspaceBindingDisplay,
 } from '@deepcode/protocol';
 import { SessionActor } from './actor.js';
-import type { AgentComposition } from './plugins.js';
+import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
 import { emptySessionState, projectSession, recoverSession, reduceSession, type SessionState } from './reducer.js';
 
@@ -25,9 +25,33 @@ export interface SessionCompositionFactory {
   }>;
 }
 
+/** Complete Host-facing surface; a service implementation is selected only at startup. */
+export interface SessionServicePort extends ConversationPort {
+  createSession: SessionService['createSession'];
+  deleteSession: SessionService['deleteSession'];
+  snapshot: SessionService['snapshot'];
+  statuses: SessionService['statuses'];
+  activity: SessionService['activity'];
+  contextComposition: SessionService['contextComposition'];
+  read: SessionService['read'];
+  replaceCapabilities: SessionService['replaceCapabilities'];
+  dispose(): Promise<void>;
+}
+
+export type SessionServiceFactory = (input: {
+  journal: CommandJournalPort;
+  compositions: SessionCompositionFactory;
+}) => Promise<SessionServicePort>;
+
+export const createSessionService: SessionServiceFactory = async ({ journal, compositions }) => (
+  new SessionService(journal, compositions)
+);
+
 export class SessionService implements ConversationPort {
   readonly #actors = new Map<string, Promise<SessionActor>>();
   readonly #statusStates = new Map<string, SessionState>();
+  readonly #lifetime = new AbortController();
+  #disposeTask?: Promise<void>;
 
   constructor(
     readonly journal: CommandJournalPort,
@@ -40,6 +64,7 @@ export class SessionService implements ConversationPort {
     workspaceBindings: WorkspaceBindingDisplay[];
     profileId?: string;
   }): Promise<SessionProjection> {
+    this.assertOpen();
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
@@ -56,6 +81,7 @@ export class SessionService implements ConversationPort {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
+    this.assertOpen();
     const actorPromise = this.#actors.get(sessionId);
     if (actorPromise) {
       let actor: SessionActor | undefined;
@@ -76,12 +102,22 @@ export class SessionService implements ConversationPort {
         if (this.#actors.get(sessionId) === actorPromise) this.#actors.delete(sessionId);
       }
     }
+    this.assertOpen();
     await this.journal.deleteSession(sessionId);
     this.#statusStates.delete(sessionId);
   }
 
   async submit(command: ConversationCommand): Promise<CommandReply> {
-    return await (await this.actor(command.sessionId)).submit(command);
+    const actor = await this.actor(command.sessionId);
+    this.assertOpen();
+    return await actor.submit(command);
+  }
+
+  /** Same-process operator API; control calls and conversation commands cannot install code. */
+  async replaceCapabilities(sessionId: string, implementation: SessionCapabilities): Promise<void> {
+    const actor = await this.actor(sessionId);
+    this.assertOpen();
+    await actor.replaceCapabilities(implementation);
   }
 
   async snapshot(sessionId: string): Promise<SessionProjection> {
@@ -145,26 +181,35 @@ export class SessionService implements ConversationPort {
     return await readConversation(this.journal, query);
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.#disposeTask) return this.#disposeTask;
+    this.#lifetime.abort(new Error('session_service_disposed'));
+    this.#disposeTask = this.disposeActors();
+    return this.#disposeTask;
+  }
+
+  private async disposeActors(): Promise<void> {
     const actorPromises = [...this.#actors.values()];
     this.#actors.clear();
     this.#statusStates.clear();
-    const actorResults = await Promise.allSettled(actorPromises);
-    const errors: unknown[] = actorResults.flatMap((result) => (
+    const results = await Promise.allSettled(actorPromises.map(async pending => {
+      let actor: SessionActor;
+      try {
+        actor = await pending;
+      } catch (error) {
+        if (error !== this.#lifetime.signal.reason) throw error;
+        return;
+      }
+      await actor.dispose();
+    }));
+    const errors = results.flatMap((result) => (
       result.status === 'rejected' ? [result.reason] : []
     ));
-    const disposeResults = await Promise.allSettled(
-      actorResults.flatMap((result) => (
-        result.status === 'fulfilled' ? [result.value.dispose()] : []
-      )),
-    );
-    errors.push(...disposeResults.flatMap((result) => (
-      result.status === 'rejected' ? [result.reason] : []
-    )));
     if (errors.length > 0) throw new AggregateError(errors, 'session_service_dispose_failed');
   }
 
   private async actor(sessionId: string): Promise<SessionActor> {
+    this.assertOpen();
     let actor = this.#actors.get(sessionId);
     if (!actor) {
       actor = this.openActor(sessionId);
@@ -177,7 +222,9 @@ export class SessionService implements ConversationPort {
   }
 
   private async openActor(sessionId: string): Promise<SessionActor> {
+    this.assertOpen();
     const events = await readSessionEvents(this.journal, sessionId);
+    this.assertOpen();
     const first = events[0];
     if (!first) throw new Error('session_not_found');
     if (first.type !== 'session.created') throw new Error('session_creation_event_missing');
@@ -191,7 +238,9 @@ export class SessionService implements ConversationPort {
       ...(profileId ? { profileId } : {}),
     });
     try {
-      await actor.recover();
+      this.assertOpen();
+      await actor.recover(this.#lifetime.signal);
+      this.assertOpen();
       return actor;
     } catch (error) {
       try {
@@ -204,6 +253,10 @@ export class SessionService implements ConversationPort {
       }
       throw error;
     }
+  }
+
+  private assertOpen(): void {
+    this.#lifetime.signal.throwIfAborted();
   }
 }
 

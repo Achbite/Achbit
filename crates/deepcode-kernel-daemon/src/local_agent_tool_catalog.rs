@@ -13,7 +13,6 @@ use deepcode_kernel_tools::{
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -414,35 +413,94 @@ impl ToolProvider for McpToolProvider {
 }
 
 struct CatalogResources {
-    disposers: Mutex<Option<Vec<ExactDisposer>>>,
+    state: Mutex<CatalogResourceState>,
+}
+
+struct CatalogResourceState {
+    disposers: Vec<ExactDisposer>,
+    active_attempts: usize,
+    retired: bool,
+    disposal: Option<Result<(), ToolCatalogError>>,
 }
 
 impl CatalogResources {
     fn new(disposers: Vec<ExactDisposer>) -> Self {
         Self {
-            disposers: Mutex::new(Some(disposers)),
+            state: Mutex::new(CatalogResourceState {
+                disposers,
+                active_attempts: 0,
+                retired: false,
+                disposal: None,
+            }),
         }
     }
 
-    fn dispose(&self) -> Result<(), ToolCatalogError> {
-        let mut guard = self.disposers.lock().map_err(|_| {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, CatalogResourceState>, ToolCatalogError> {
+        self.state.lock().map_err(|_| {
             ToolCatalogError::new(
                 "tool_provider_disposer_lock_failed",
                 "ToolProvider disposer 状态锁已损坏。",
             )
-        })?;
-        let Some(disposers) = guard.take() else {
-            return Ok(());
-        };
-        drop(guard);
+        })
+    }
 
+    fn acquire(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        if state.retired {
+            return Err(ToolCatalogError::new(
+                "tool_catalog_retired",
+                "旧工具视图已退役，不能接纳新的物理调用。",
+            ));
+        }
+        state.active_attempts += 1;
+        Ok(())
+    }
+
+    fn release(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        debug_assert!(
+            state.active_attempts > 0,
+            "physical attempt lease underflow"
+        );
+        state.active_attempts -= 1;
+        if state.retired && state.active_attempts == 0 {
+            return Self::dispose_locked(&mut state);
+        }
+        Ok(())
+    }
+
+    fn retire(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        state.retired = true;
+        if state.active_attempts == 0 {
+            return Self::dispose_locked(&mut state);
+        }
+        Ok(())
+    }
+
+    fn dispose(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        if state.active_attempts != 0 {
+            return Err(ToolCatalogError::new(
+                "tool_catalog_generation_busy",
+                "Kernel catalog generation 仍有物理 attempt lease。",
+            ));
+        }
+        state.retired = true;
+        Self::dispose_locked(&mut state)
+    }
+
+    fn dispose_locked(state: &mut CatalogResourceState) -> Result<(), ToolCatalogError> {
+        if let Some(result) = &state.disposal {
+            return result.clone();
+        }
         let mut errors = Vec::new();
-        for dispose in disposers.into_iter().rev() {
+        for dispose in std::mem::take(&mut state.disposers).into_iter().rev() {
             if let Err(error) = dispose() {
                 errors.push(error);
             }
         }
-        if errors.is_empty() {
+        let result = if errors.is_empty() {
             Ok(())
         } else {
             let message = errors
@@ -454,7 +512,23 @@ impl CatalogResources {
                 "tool_provider_dispose_failed",
                 message,
             ))
-        }
+        };
+        state.disposal = Some(result.clone());
+        result
+    }
+}
+
+/** Retains only physical cleanup ownership/results, not the old catalog or execution bindings. */
+#[derive(Clone)]
+pub(crate) struct CatalogRetirement(Arc<CatalogResources>);
+
+impl CatalogRetirement {
+    pub(crate) fn retire(&self) -> Result<(), ToolCatalogError> {
+        self.0.retire()
+    }
+
+    pub(crate) fn finish(&self) -> Result<(), ToolCatalogError> {
+        self.0.dispose()
     }
 }
 
@@ -486,8 +560,7 @@ pub(crate) struct ToolCatalogSnapshot {
     snapshot_ref: String,
     tools: BTreeMap<String, CatalogToolEntry>,
     bindings: BTreeMap<String, String>,
-    resources: CatalogResources,
-    active_attempts: AtomicUsize,
+    resources: Arc<CatalogResources>,
 }
 
 impl ToolCatalogSnapshot {
@@ -538,33 +611,32 @@ impl ToolCatalogSnapshot {
             let installed = match provider.install() {
                 Ok(installed) => installed,
                 Err(error) => {
-                    dispose_all(disposers);
-                    return Err(error);
+                    return Err(rollback_installation(error, disposers));
                 }
             };
+            disposers.push(installed.dispose);
             for contribution in installed.tools {
                 if contributions
                     .insert(contribution.name.clone(), contribution)
                     .is_some()
                 {
-                    dispose_all(disposers);
-                    let _ = (installed.dispose)();
-                    return Err(ToolCatalogError::new(
-                        "tool_catalog_name_conflict",
-                        "多个 ToolProvider 注册了相同 canonical tool name。",
+                    return Err(rollback_installation(
+                        ToolCatalogError::new(
+                            "tool_catalog_name_conflict",
+                            "多个 ToolProvider 注册了相同 canonical tool name。",
+                        ),
+                        disposers,
                     ));
                 }
             }
-            disposers.push(installed.dispose);
         }
 
         let snapshot_ref = match crate::utils::new_runtime_ref("kernel-catalog") {
             Ok(reference) => reference,
             Err(message) => {
-                dispose_all(disposers);
-                return Err(ToolCatalogError::new(
-                    "tool_catalog_identity_failed",
-                    message,
+                return Err(rollback_installation(
+                    ToolCatalogError::new("tool_catalog_identity_failed", message),
+                    disposers,
                 ));
             }
         };
@@ -600,8 +672,7 @@ impl ToolCatalogSnapshot {
             snapshot_ref,
             tools,
             bindings,
-            resources: CatalogResources::new(disposers),
-            active_attempts: AtomicUsize::new(0),
+            resources: Arc::new(CatalogResources::new(disposers)),
         }))
     }
 
@@ -672,17 +743,11 @@ impl ToolCatalogSnapshot {
         })
     }
 
-    pub(crate) fn active_attempts(&self) -> usize {
-        self.active_attempts.load(Ordering::Acquire)
+    pub(crate) fn retirement(&self) -> CatalogRetirement {
+        CatalogRetirement(Arc::clone(&self.resources))
     }
 
     pub(crate) fn dispose(&self) -> Result<(), ToolCatalogError> {
-        if self.active_attempts() != 0 {
-            return Err(ToolCatalogError::new(
-                "tool_catalog_generation_busy",
-                "Kernel catalog generation 仍有物理 attempt lease。",
-            ));
-        }
         self.resources.dispose()
     }
 }
@@ -1152,11 +1217,11 @@ impl PreparedCatalogBinding {
         }
     }
 
-    pub(crate) fn begin_attempt(&self) -> PhysicalAttemptLease {
-        self.snapshot.active_attempts.fetch_add(1, Ordering::AcqRel);
-        PhysicalAttemptLease {
+    pub(crate) fn begin_attempt(&self) -> Result<PhysicalAttemptLease, ToolCatalogError> {
+        self.snapshot.resources.acquire()?;
+        Ok(PhysicalAttemptLease {
             snapshot: Arc::clone(&self.snapshot),
-        }
+        })
     }
 }
 
@@ -1166,8 +1231,9 @@ pub(crate) struct PhysicalAttemptLease {
 
 impl Drop for PhysicalAttemptLease {
     fn drop(&mut self) {
-        let previous = self.snapshot.active_attempts.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "physical attempt lease underflow");
+        // release caches the original disposal result. The next retire or final run release
+        // reports it without changing this attempt's canonical effect outcome.
+        let _ = self.snapshot.resources.release();
     }
 }
 
@@ -1402,10 +1468,19 @@ fn availability_name(availability: ToolAvailability) -> &'static str {
     }
 }
 
-fn dispose_all(disposers: Vec<ExactDisposer>) {
+fn rollback_installation(
+    mut failure: ToolCatalogError,
+    disposers: Vec<ExactDisposer>,
+) -> ToolCatalogError {
     for dispose in disposers.into_iter().rev() {
-        let _ = dispose();
+        if let Err(error) = dispose() {
+            failure.message.push_str(&format!(
+                "；初始化回滚清理失败 {}: {}",
+                error.code, error.message
+            ));
+        }
     }
+    failure
 }
 
 fn validate_ref(field: &str, value: &str) -> Result<(), ToolCatalogError> {

@@ -2,6 +2,7 @@ import { advanceTodoList } from './todoState.js';
 import { appendInputFileBindings } from './workspaceBindings.js';
 import type {
   ContextCompositionMessage,
+  ContextCompositionMetadata,
   ContextCompositionReceipt,
   ContextCompositionTool,
   ModelMessage,
@@ -22,6 +23,7 @@ import {
   SESSION_CONTROL_ARTIFACT_PRESENT,
 } from '@deepcode/protocol';
 import { LoopFailure } from './loopFailure.js';
+import { journalModelViews } from './modelView.js';
 import type {
   ContextMessageContribution,
 } from './plugins.js';
@@ -43,7 +45,7 @@ import { visualContextInstruction, visualContextMessages } from './visualContext
 
 export interface PreparedProviderRequest {
   request: ProviderRequest;
-  receipt: ContextCompositionReceipt;
+  receipt: Extract<ContextCompositionReceipt, { purpose: 'agent' | 'contextCompaction' }>;
   toolCodec: ProviderToolCodec;
 }
 
@@ -57,14 +59,19 @@ type ConversationRequestInput = {
   runId: string;
   runtime: RunRuntimeSnapshot;
   events: readonly SessionEvent[];
+  /** Compaction selects a prefix but reuses views already recorded by later receipts. */
+  modelViewEvents?: readonly SessionEvent[];
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   providerRequestId: string;
 };
 
 export async function buildAgentProviderRequest(input: ConversationRequestInput & {
   responseConstraint: 'normal';
-}): Promise<PreparedProviderRequest> {
-  return buildConversationProviderRequest({ ...input, purpose: 'agent' });
+}, signal?: AbortSignal): Promise<PreparedProviderRequest> {
+  signal?.throwIfAborted();
+  const prepared = buildConversationProviderRequest({ ...input, purpose: 'agent' });
+  signal?.throwIfAborted();
+  return prepared;
 }
 
 /** Agent and summary requests share one conversation prefix and tool codec. */
@@ -109,7 +116,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     input.runtime.providerToolAliases,
     input.workspaceBindings,
   );
-  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings);
+  const modelViewEvents = input.modelViewEvents ?? input.events;
+  const fixedViews = journalModelViews(modelViewEvents).contributions;
+  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
   const instructions = [...input.runtime.instructions]
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
@@ -168,12 +177,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
-  const resolvedQuestions = new Set(input.events.flatMap(event => event.type === 'interaction.resolved' ? [event.payload.interactionId] : []));
-  const pendingQuestions = input.events.flatMap(event => event.type === 'interaction.requested' && event.runId === input.runId
-    && event.payload.mode === 'continue' && !resolvedQuestions.has(event.payload.interactionId)
-    ? [{ interactionId: event.payload.interactionId, prompt: event.payload.prompt, options: event.payload.options }] : []);
-  if (pendingQuestions.length) selected.push({ contributionId: 'session:unanswered-questions', contributionKind: 'sessionControls',
-    label: 'Unanswered questions', message: { role: 'system', content: `These questions remain unanswered. Continue independent work only; do not choose an answer for the user. When independent work is complete, explain what is ready and what awaits the user; Session will wait. ${JSON.stringify(pendingQuestions)}` } });
   if (input.purpose === 'contextCompaction') selected.push({
     contributionId: `context-compaction:${input.providerRequestId}:instructions`,
     contributionKind: 'sessionControls', label: '上下文压缩指令',
@@ -183,7 +186,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
   const providerSelected = selected.map<ContextMessageContribution>((contribution) => ({
     ...contribution,
-    message: encodeProviderMessage(contribution.message, toolCodec, journalCodecsByCallId),
+    message: fixedViews.has(contribution.contributionId)
+      ? cloneModelMessage(fixedViews.get(contribution.contributionId)!.message)
+      : encodeProviderMessage(contribution.message, toolCodec, journalCodecsByCallId),
   }));
   const request: ProviderRequest = {
     protocolVersion: LOCAL_AGENT_PROTOCOL_VERSION,
@@ -211,7 +216,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   return {
     request,
     toolCodec,
-    receipt: buildContextCompositionReceipt(
+    receipt: { ...buildContextCompositionReceipt(
       request.requestId,
       input.purpose,
       input.responseConstraint,
@@ -224,7 +229,13 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       input.runtime,
       input.workspaceBindings,
       input.events,
-    ),
+    ), modelView: {
+      throughSequence: input.events.at(-1)?.sequence ?? 0,
+      additions: providerSelected.flatMap(contribution => contribution.sourceSequence !== undefined
+        && !fixedViews.has(contribution.contributionId)
+        ? [{ ...contribution, sourceSequence: contribution.sourceSequence, message: cloneModelMessage(contribution.message) }]
+        : []),
+    } },
   };
 }
 
@@ -232,8 +243,12 @@ export function messagesFromJournal(
   events: readonly SessionEvent[],
   runId: string,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
+  modelViewEvents: readonly SessionEvent[] = events,
 ): ContextMessageContribution[] {
   const messages: ContextMessageContribution[] = [];
+  const fixed = journalModelViews(modelViewEvents);
+  const throughSequence = events.at(-1)?.sequence ?? 0;
+  const retained: ContextMessageContribution[] = [];
   const pendingHostRebinds: ContextMessageContribution[] = [];
   const pendingProcessUpdates = new Map<string, ContextMessageContribution>();
   const flushProcessUpdates = () => {
@@ -284,12 +299,22 @@ export function messagesFromJournal(
       event.type === 'context.compacted'
     ));
   if (checkpoint) {
-    messages.push({
-      contributionId: `context-checkpoint:${checkpoint.payload.compactionId}`,
+    const contributionId = `context-checkpoint:${checkpoint.payload.compactionId}`;
+    retained.push(fixed.contributions.get(contributionId) ?? {
+      contributionId,
       contributionKind: 'journalMessages',
       label: '上下文压缩摘要',
+      sourceSequence: checkpoint.sequence,
       message: { role: 'system', content: checkpoint.payload.summary },
     });
+  }
+  for (const contribution of fixed.contributions.values()) {
+    if (contribution.contributionId.startsWith('context-checkpoint:')
+      || contribution.sourceSequence > throughSequence) continue;
+    if (checkpoint && contribution.sourceSequence <= checkpoint.payload.coveredThroughSequence
+      && contribution.contributionId !== `message:${retainedRunInputId}`
+      && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`) continue;
+    retained.push({ ...contribution, message: cloneModelMessage(contribution.message) });
   }
   let todoList: TodoListProjection | null = null;
   for (const event of events) {
@@ -314,6 +339,10 @@ export function messagesFromJournal(
       && event.sequence <= checkpoint.payload.coveredThroughSequence
       && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId)
     ) continue;
+    if (event.sequence <= fixed.throughSequence
+      && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId
+        && !fixed.contributions.has(`message:${retainedRunInputId}`))) continue;
+    const firstNewMessage = messages.length;
     if (event.type === 'message.committed') {
       if (
         event.payload.role === 'assistant'
@@ -374,9 +403,10 @@ export function messagesFromJournal(
       });
       if (event.payload.mode === 'continue') completionResults.set(event.callId, {
         contributionId: `interaction-pending:${event.payload.interactionId}`, contributionKind: 'journalMessages',
+        sourceSequence: event.sequence,
         label: 'Question awaiting user', message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ interactionId: event.payload.interactionId, status: 'pending',
-            nextAction: 'Continue independent work. The answer will arrive as user input; do not assume an answer or repeat this question.' }) },
+            nextAction: 'Continue independent work without assuming an answer or repeating the question. When that work is complete, explain what awaits the user.' }) },
       });
     } else if (event.type === 'interaction.resolved') {
       if (interactions.get(event.payload.interactionId)?.payload.mode === 'continue') continue;
@@ -485,12 +515,16 @@ export function messagesFromJournal(
         });
         completionResults.set(event.callId, {
           contributionId: `todo-update:${event.callId}`,
+          sourceSequence: event.sequence,
           contributionKind: 'journalMessages', label: 'Todo update result',
           message: {
             role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-            content: JSON.stringify({ accepted: true, type: 'todo.current', ...todoList }),
+            content: JSON.stringify({ accepted: true }),
           },
         });
+        for (let index = firstNewMessage; index < messages.length; index += 1) {
+          messages[index]!.sourceSequence ??= event.sequence;
+        }
         continue;
       }
       if (todoList) messages.push({
@@ -501,8 +535,6 @@ export function messagesFromJournal(
           role: 'user',
           content: JSON.stringify({
             type: 'todo.current',
-            runId: todoList.runId,
-            revision: todoList.revision,
             items: todoList.items,
           }),
         },
@@ -514,6 +546,7 @@ export function messagesFromJournal(
       });
       completionResults.set(event.callId, {
         contributionId: `artifact-presentation:${event.callId}`, contributionKind: 'journalMessages', label: 'Artifacts presented',
+        sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ accepted: true, items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
@@ -524,8 +557,9 @@ export function messagesFromJournal(
       }
       completionResults.set(event.callId, {
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
+        sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ activated: event.payload.pluginUris, scope: 'run', runId: event.runId }) },
+          content: JSON.stringify({ activated: event.payload.pluginUris }) },
       });
     } else if (event.type === 'session.control.rejected') {
       if (!orderedProviderCallIds.has(event.callId)) {
@@ -538,6 +572,7 @@ export function messagesFromJournal(
       }
       completionResults.set(event.callId, {
         contributionId: `session-control-rejection:${event.callId}`,
+        sourceSequence: event.sequence,
         contributionKind: 'journalMessages',
         label: 'Session control 拒绝结果',
         message: {
@@ -601,6 +636,7 @@ export function messagesFromJournal(
       // snapshot stays in history; a later status must not rewrite a tool result.
       pendingProcessUpdates.set(event.payload.job.jobId, {
         contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
+        sourceSequence: event.sequence,
         label: 'Managed process update', message: { role: 'user',
           content: JSON.stringify({ type: 'process.updated', process: processContext(event.payload.job) }) },
       });
@@ -608,7 +644,8 @@ export function messagesFromJournal(
       // Rebinding happens while a tool is waiting. Its notice belongs to the next
       // Agent request, after the pending result, not inside the call/result pair.
       pendingHostRebinds.push({ contributionId: `host-rebind:${event.sequence}`, contributionKind: 'journalMessages', label: 'GUI target changed',
-        message: { role: 'user', content: `The user explicitly selected a new GUI window for subsequent calls: ${JSON.stringify(event.payload.hostBinding)}. All earlier observationId and previewId handles belong to the previous GUI and are invalid here. Observe again or open a new preview before interacting; do not replay previous actions.` } });
+        sourceSequence: event.sequence,
+        message: { role: 'user', content: 'The user selected a new GUI target. Earlier observationId and previewId handles are invalid. Observe again or open a new preview before interacting; do not replay previous actions.' } });
     } else if (event.type === 'context.composed' && event.payload.purpose === 'agent') {
       flushProcessUpdates();
       messages.push(...pendingHostRebinds.splice(0));
@@ -682,6 +719,9 @@ export function messagesFromJournal(
         completionResults.delete(callId);
       }
     }
+    for (let index = firstNewMessage; index < messages.length; index += 1) {
+      messages[index]!.sourceSequence ??= event.sequence;
+    }
   }
   flushProcessUpdates();
   messages.push(...pendingHostRebinds);
@@ -692,12 +732,12 @@ export function messagesFromJournal(
     );
   }
   applyProviderTurnCompletions(messages, events);
-  return messages;
+  return [...retained, ...messages];
 }
 
-export function buildContextCompositionReceipt(
+export function buildContextCompositionReceipt<Purpose extends ContextCompositionReceipt['purpose']>(
   providerRequestId: string,
-  purpose: ContextCompositionReceipt['purpose'],
+  purpose: Purpose,
   responseConstraint: ContextCompositionReceipt['responseConstraint'],
   selected: readonly ContextMessageContribution[],
   kernelTools: readonly ProviderToolDefinition[],
@@ -708,7 +748,7 @@ export function buildContextCompositionReceipt(
   runtime: RunRuntimeSnapshot,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   events: readonly SessionEvent[],
-): ContextCompositionReceipt {
+): Omit<ContextCompositionMetadata, 'purpose'> & { purpose: Purpose } {
   const filesystemReferenceFactsByContributionId = new Map<string, Array<{
     referenceId: string;
     displayName: string;
@@ -949,6 +989,7 @@ function mergeNarrativeIntoProviderCall(
   targets[0]!.contributionId = `narrative:${narrative.payload.narrativeId}`;
   targets[0]!.label = '运行叙述';
   targets[0]!.message.content = narrative.payload.content;
+  targets[0]!.sourceSequence = narrative.sequence;
   return true;
 }
 
@@ -1182,13 +1223,11 @@ function messageContentForModel(
 
 function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown> {
   if (record.outcome === 'completed') {
-    const output = structuredClone(record.output);
-    if (isRecord(output)) { delete output.fileChanges; }
+    const output = toolOutputForModel(record, record.output);
     return { recordId: record.recordId, outcome: record.outcome, output };
   }
   if (record.outcome === 'failed') {
-    const output = record.output === undefined ? undefined : structuredClone(record.output);
-    if (isRecord(output)) { delete output.fileChanges; }
+    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
     return {
       recordId: record.recordId,
       outcome: record.outcome,
@@ -1205,16 +1244,47 @@ function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown
   };
 }
 
+/** Project only known first-party storage fields; extension business output is opaque. */
+function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknown {
+  const output = structuredClone(value);
+  if (!isRecord(output)) return output;
+  if (['fs.write', 'fs.edit', 'fs.delete', 'bash', 'powershell', 'container', 'document.render', 'browser.capture'].includes(record.toolName)) {
+    delete output.fileChanges;
+  }
+  if (['artifact.prepare', 'artifact.preview', 'document.render', 'browser.capture', 'browser.observe', 'computer.control'].includes(record.toolName)
+    && Array.isArray(output.artifacts)) {
+    const archivedPaths = new Set<string>();
+    for (const artifact of output.artifacts) {
+      if (!isRecord(artifact) || typeof artifact.artifactId !== 'string'
+        || artifact.uri !== `artifact://${artifact.artifactId}` || typeof artifact.contentRef !== 'string') continue;
+      archivedPaths.add(artifact.contentRef);
+      delete artifact.contentRef;
+    }
+    if (typeof output.contentRef === 'string' && archivedPaths.has(output.contentRef)) delete output.contentRef;
+  }
+  if ((record.toolName === 'web.search' || record.toolName === 'web.fetch') && isRecord(output.archive)) {
+    delete output.archive.timelinePath;
+    if (Object.keys(output.archive).length === 0) delete output.archive;
+  }
+  if (record.toolName === 'computer.control' && record.input.action !== 'status'
+    && isRecord(output.diagnostics) && isRecord(output.diagnostics.native)) {
+    delete output.diagnostics.native.executor;
+  }
+  return output;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function processContext(job: import('@deepcode/protocol').ManagedProcessSnapshot): unknown {
   // Bound each appended snapshot; the complete output remains in Kernel storage.
-  const { result, output, ...status } = job;
+  const { result, output } = job;
   const details = isRecord(result) ? { ...result } : result;
   if (isRecord(details)) { delete details.stdout; delete details.stderr; }
-  return { ...status, output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
+  return { jobId: job.jobId, command: job.command, status: job.status,
+    ...(job.error ? { error: job.error } : {}),
+    output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
     truncated: output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000 },
     ...(details !== undefined ? { result: details } : {}) };
 }

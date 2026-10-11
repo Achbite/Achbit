@@ -3,8 +3,8 @@ mod file_permissions;
 use crate::local_agent_mcp::McpRuntime;
 use crate::local_agent_store::{LocalAgentJournal, LocalAgentStoreError};
 use crate::local_agent_tool_catalog::{
-    CatalogEffectScope, PreparedCatalogBinding, PreparedToolInput, ToolCatalogError,
-    ToolCatalogSnapshot,
+    CatalogEffectScope, CatalogRetirement, PhysicalAttemptLease, PreparedCatalogBinding,
+    PreparedToolInput, ToolCatalogError, ToolCatalogSnapshot,
 };
 use deepcode_kernel_runtime::executors::{
     resolved_network_target, KernelCancellationToken, KernelExecutorConfig,
@@ -422,7 +422,7 @@ struct KernelGenerationState {
 }
 
 struct ReleasedRunBinding {
-    dispose_error: Option<LocalAgentKernelError>,
+    retirement: Option<CatalogRetirement>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -614,6 +614,69 @@ impl LocalAgentKernel {
         Ok(catalog_prepare_reply(&request, &generation.catalog))
     }
 
+    /// Session calls only after old logical requests and approvals have settled.
+    /// Physical attempts/jobs retain their existing lease; this never cancels them.
+    pub(crate) fn retire_tool_views(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        keep_catalog_ref: &str,
+    ) -> Result<(), LocalAgentKernelError> {
+        validate_id("sessionId", session_id)?;
+        validate_id("runId", run_id)?;
+        validate_id("keepKernelCatalogSnapshotRef", keep_catalog_ref)?;
+        let mut state = self.lock_generations()?;
+        let keep = RunCatalogKey {
+            session_id: session_id.to_owned(),
+            run_id: run_id.to_owned(),
+            snapshot_ref: keep_catalog_ref.to_owned(),
+        };
+        if !state.run_bindings.contains_key(&keep) {
+            return Err(LocalAgentKernelError::new(
+                "tool_catalog_keep_binding_missing",
+                "当前请求保留的工具视图不存在或已退役。",
+            ));
+        }
+        let keys: Vec<_> = state
+            .run_bindings
+            .keys()
+            .filter(|key| key.session_id == session_id && key.run_id == run_id && **key != keep)
+            .cloned()
+            .collect();
+        for key in keys {
+            let generation = state
+                .run_bindings
+                .remove(&key)
+                .expect("selected binding exists");
+            let still_pinned = state
+                .run_bindings
+                .values()
+                .any(|candidate| Arc::ptr_eq(candidate, &generation));
+            let retirement = (!still_pinned).then(|| generation.catalog.retirement());
+            state
+                .released_run_bindings
+                .insert(key, ReleasedRunBinding { retirement });
+        }
+        let mut errors = Vec::new();
+        for (key, released) in &state.released_run_bindings {
+            if key.session_id == session_id && key.run_id == run_id {
+                if let Some(retirement) = &released.retirement {
+                    if let Err(error) = retirement.retire() {
+                        errors.push(format!("{}: {}", error.code, error.message));
+                    }
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(LocalAgentKernelError::new(
+                "tool_view_retire_failed",
+                errors.join("；"),
+            ))
+        }
+    }
+
     pub(crate) fn release_catalog(
         &self,
         request: ReleaseToolCatalogRequest,
@@ -633,88 +696,42 @@ impl LocalAgentKernel {
             run_id: request.run_id.clone(),
             snapshot_ref: request.kernel_catalog_snapshot_ref.clone(),
         };
-        let has_live_binding = {
+        {
             let state = self.lock_generations()?;
-            if let Some(released) = state.released_run_bindings.get(&key) {
-                if let Some(error) = released.dispose_error.clone() {
-                    return Err(error);
-                }
-                return Ok(catalog_release_reply(&request, true));
-            } else {
-                if let Some(generation) = state.run_bindings.get(&key) {
-                    if generation.catalog.snapshot_ref() != request.kernel_catalog_snapshot_ref {
-                        return Err(LocalAgentKernelError::new(
-                            "tool_catalog_release_identity_conflict",
-                            "KernelCatalogSnapshotRef 与当前 run 的 catalog lease 不一致。",
-                        ));
-                    }
-                    true
-                } else {
-                    false
-                }
+            if !state.run_bindings.contains_key(&key)
+                && !state.released_run_bindings.contains_key(&key)
+            {
+                return Err(LocalAgentKernelError::new(
+                    "tool_catalog_run_binding_not_found",
+                    "当前 run 的物理 catalog 绑定已丢失，无法确认旧实例已经释放。",
+                ));
             }
-        };
-        if !has_live_binding {
-            return Err(LocalAgentKernelError::new(
-                "tool_catalog_run_binding_not_found",
-                "当前 run 的物理 catalog 绑定已丢失，无法确认旧实例已经释放。",
-            ));
         }
+        // Final run cleanup still drains jobs even when the requested initial view retired earlier.
         self.cancel_and_drain_attempts(Some((&request.session_id, &request.run_id)))?;
         self.jobs
             .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
-        let already_released = {
-            let mut state = self.lock_generations()?;
-            if let Some(released) = state.released_run_bindings.get(&key) {
-                if let Some(error) = released.dispose_error.clone() {
-                    return Err(error);
-                }
-                true
-            } else {
-                let generation = state.run_bindings.get(&key).ok_or_else(|| {
-                    LocalAgentKernelError::new(
-                        "tool_catalog_run_binding_not_found",
-                        "当前 run 没有可释放的 catalog lease。",
-                    )
-                })?;
-                if generation.catalog.snapshot_ref() != request.kernel_catalog_snapshot_ref {
-                    return Err(LocalAgentKernelError::new(
-                        "tool_catalog_release_identity_conflict",
-                        "KernelCatalogSnapshotRef 与当前 run 的 catalog lease 不一致。",
-                    ));
-                }
-                if generation.catalog.active_attempts() != 0 {
-                    return Err(LocalAgentKernelError::new(
-                        "tool_catalog_release_cleanup_incomplete",
-                        "当前 run 的物理 attempt lease 尚未归零，不能释放 catalog。",
-                    ));
-                }
-                let generation = state
-                    .run_bindings
-                    .remove(&key)
-                    .expect("validated run binding exists");
-                let still_pinned = state
-                    .run_bindings
-                    .values()
-                    .any(|candidate| Arc::ptr_eq(candidate, &generation));
-                let dispose_error = if still_pinned {
-                    None
-                } else {
-                    generation.catalog.dispose().err().map(catalog_error)
-                };
-                state.released_run_bindings.insert(
-                    key,
-                    ReleasedRunBinding {
-                        dispose_error: dispose_error.clone(),
-                    },
-                );
-                if let Some(error) = dispose_error {
-                    return Err(error);
-                }
-                false
-            }
-        };
+        let mut state = self.lock_generations()?;
+        let already_released = state.released_run_bindings.contains_key(&key);
+        if let Some(generation) = state.run_bindings.remove(&key) {
+            let still_pinned = state
+                .run_bindings
+                .values()
+                .any(|candidate| Arc::ptr_eq(candidate, &generation));
+            let retirement = (!still_pinned).then(|| generation.catalog.retirement());
+            state
+                .released_run_bindings
+                .insert(key.clone(), ReleasedRunBinding { retirement });
+        }
+        if let Some(retirement) = &state
+            .released_run_bindings
+            .get(&key)
+            .expect("validated run binding exists")
+            .retirement
+        {
+            retirement.finish().map_err(catalog_error)?;
+        }
         Ok(catalog_release_reply(&request, already_released))
     }
 
@@ -1000,16 +1017,26 @@ impl LocalAgentKernel {
             }
             generations
         };
-        if generations
-            .iter()
-            .any(|generation| generation.catalog.active_attempts() != 0)
-        {
-            return Err(LocalAgentKernelError::new(
-                "tool_runtime_busy",
-                "Kernel 仍有物理 attempt lease，不能释放 ToolProvider。",
-            ));
+        let mut errors = Vec::new();
+        if let Err(error) = dispose_generations(generations) {
+            errors.push(format!("{}: {}", error.code, error.message));
         }
-        dispose_generations(generations)
+        let state = self.lock_generations()?;
+        for released in state.released_run_bindings.values() {
+            if let Some(retirement) = &released.retirement {
+                if let Err(error) = retirement.finish() {
+                    errors.push(format!("{}: {}", error.code, error.message));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(LocalAgentKernelError::new(
+                "tool_provider_dispose_failed",
+                errors.join("；"),
+            ))
+        }
     }
 
     fn cancel_and_drain_attempts(
@@ -2012,6 +2039,22 @@ impl LocalAgentKernel {
         cancellation: KernelCancellationToken,
         progress: deepcode_kernel_runtime::executors::KernelProgressSink,
     ) -> Result<KernelToolExecutionResult, String> {
+        let lease = prepared
+            .binding
+            .begin_attempt()
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        self.execute_with_lease(prepared, request, authority, cancellation, progress, lease)
+    }
+
+    fn execute_with_lease(
+        &self,
+        prepared: &PreparedEffect,
+        request: &LocalToolExecutionRequest,
+        authority: &Value,
+        cancellation: KernelCancellationToken,
+        progress: deepcode_kernel_runtime::executors::KernelProgressSink,
+        lease: PhysicalAttemptLease,
+    ) -> Result<KernelToolExecutionResult, String> {
         if prepared.source_binding.is_some() {
             let kernel = self.clone();
             let mut inner = prepared.clone();
@@ -2019,8 +2062,7 @@ impl LocalAgentKernel {
             let invocation_id = request.attempt_id.clone();
             let request = request.clone();
             let authority = authority.clone();
-            // Hold the catalog until the spawned invocation has released every owned resource.
-            let lease = inner.binding.begin_attempt();
+            // Transfer the already acquired lease; retirement cannot interrupt this owned job.
             let command = match &inner.input {
                 PreparedToolInput::Builtin(
                     KernelCanonicalInvocation::ProcessShell { command, .. }
@@ -2038,10 +2080,14 @@ impl LocalAgentKernel {
                 "targets": inner.logical_targets,
             });
             let job = self.jobs.start(snapshot, move |cancellation, progress| {
-                let result =
-                    kernel.execute_prepared(&inner, &request, &authority, cancellation, progress);
-                drop(lease);
-                result
+                kernel.execute_with_lease(
+                    &inner,
+                    &request,
+                    &authority,
+                    cancellation,
+                    progress,
+                    lease,
+                )
             })?;
             return Ok(KernelToolExecutionResult {
                 invocation_id,
@@ -2104,7 +2150,6 @@ impl LocalAgentKernel {
         } else {
             None
         };
-        let lease = prepared.binding.begin_attempt();
         let result = prepared
             .binding
             .invoke(

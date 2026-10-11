@@ -698,7 +698,9 @@ test('new runs refresh execution facts while restart and compaction retain each 
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
     runtimeExecutables: { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' } };
   const saved = environmentInstruction(observed);
-  assert.deepEqual(JSON.parse(saved.text.split('\n')[1]).runtimeExecutables, observed.runtimeExecutables);
+  assert.equal(JSON.parse(saved.text.split('\n')[1]).runtimeExecutables, undefined);
+  assert.deepEqual(observed.runtimeExecutables,
+    { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' });
   const preparation = fakeRunPreparation();
   const port = {
     ...preparation.port,
@@ -763,6 +765,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
   for (const [index, run] of runs.entries()) {
     assert.deepEqual(run.payload.runtimeSnapshot.instructions.find((item) => item.id === saved.id),
       index === 0 ? saved : environmentInstruction(observed));
+    assert.deepEqual(run.payload.runtimeSnapshot.environment.runtimeExecutables, observed.runtimeExecutables);
   }
   const compacting = requests.find(request => request.purpose === 'contextCompaction');
   assert.equal(compacting.providerRuntimeRef, agentRequests[3].providerRuntimeRef);
@@ -2190,12 +2193,11 @@ test('a run without workspace bindings never exposes workspace-scoped tools', as
     'interaction_request',
     'mcp_echo',
   ]);
-  const guidance = capturedRequest.messages.find((message) => (
-    message.role === 'system' && message.content.includes(tools.find(tool => tool.name === 'web.search').description)
-  ));
-  assert.ok(guidance);
-  assert.match(guidance.content, /\bweb_search\b/u);
-  assert.doesNotMatch(guidance.content, /\bfs_read\b|\bbash\b/u);
+  const searchDescription = tools.find(tool => tool.name === 'web.search').description;
+  assert.equal(capturedRequest.tools.find(tool => tool.name === 'web_search').description, searchDescription);
+  assert.equal(capturedRequest.messages.some(message => (
+    message.role === 'system' && message.content.includes(searchDescription)
+  )), false, 'the tool description is not duplicated in system guidance');
   assert.deepEqual(capturedRequest.hostedTools, []);
   assert.equal(capturedRequest.tools.some((tool) => (
     tool.inputSchema?.properties?.workspaceId !== undefined || tool.inputSchema?.properties?.workspace !== undefined
@@ -5094,12 +5096,17 @@ test('explicit GUI rebind preserves waiting and uses the new catalog only for su
   const resumed = requests[1].messages;
   const callIndex = resumed.findIndex(m => m.providerOutputBlocks?.some(b => b.providerCallId === 'native:question'));
   const resultIndex = resumed.findIndex(m => m.role === 'tool' && m.providerCallId === 'native:question');
-  const noticeIndex = resumed.findIndex(m => m.content.includes('gui:new') && m.content.includes('observationId'));
+  const noticeIndex = resumed.findIndex(m => m.content.includes('The user selected a new GUI target.')
+    && m.content.includes('observationId') && m.content.includes('previewId'));
   assert.ok(callIndex >= 0 && resultIndex > callIndex && noticeIndex > resultIndex,
     'the GUI rebind notice must follow the pending native tool result, not split the call/result pair');
+  assert.doesNotMatch(resumed[noticeIndex].content, /gui:new|hostInstanceId|windowLabel/u);
   assert.deepEqual(requests[2].messages.slice(0, resumed.length), resumed,
     'later requests retain the same binding-notice position in the completed history');
   assert.equal(requests[1].providerRuntimeRef, requests[0].providerRuntimeRef);
-  assert.equal((await readEvents(journal, sessionId)).filter(e => e.type === 'run.host.rebound').length, 1);
+  const rebindEvents = (await readEvents(journal, sessionId)).filter(e => e.type === 'run.host.rebound');
+  assert.equal(rebindEvents.length, 1);
+  assert.deepEqual(rebindEvents[0].payload.hostBinding, newBinding);
+  assert.equal(rebindEvents[0].payload.toolView.kernelCatalogSnapshotRef, 'catalog:new-gui');
   assert.equal((await actor.submit({ ...command, commandId: 'command:finished' })).error.code, 'host_rebind_not_waiting');
 });

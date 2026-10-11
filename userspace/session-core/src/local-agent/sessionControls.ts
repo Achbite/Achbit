@@ -37,7 +37,7 @@ export function sessionControlInstructions(
   const delivery = ` Tool artifacts are archived runtime resources, not automatically user deliverables. Use ${names.artifactPresent} to explicitly select completed results or review materials the user should see. Temporary scripts, logs and observation screenshots stay intermediate unless requested as results. For a file or URL without an artifact reference, first use artifact.prepare for a file or artifact.preview for a live URL. Present updated versions under the same deliveryId; cite the returned resource URI in final prose, using Markdown images for visual review. Presentation does not resend pixels to the model.`;
   const progress = ` For multi-step work, use ${names.todoUpdate} when useful. Keep phases few and meaningful, merging similar work; choose the count to fit the task. Skip trivial work and unchanged updates; no update is required per tool call or before answering. Send the complete current list in one update, optionally alongside ordinary calls. Todo grants no permissions and does not gate completion; keep unfinished work honest.`;
   if (!hasWorkspaceBindings) {
-    return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} must be the only call in its turn. No workspace is bound to this run; do not invent a workspace handle or request workspace operations.${progress}${decisions}${plugins}${delivery}`;
+    return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} must be the only call in its turn. No workspace is bound to this run; do not invent a workspace handle or request workspace operations.${decisions}${plugins}${delivery}`;
   }
   return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} and ${names.planPublish} must each be the only call in their turn. Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.${progress}${decisions}${plugins}${delivery}`;
 }
@@ -220,7 +220,7 @@ export function sessionControlToolDefinitions(): readonly ProviderToolDefinition
     },
     {
       name: SESSION_CONTROL_INTERACTION_REQUEST,
-      description: 'Ask the user for missing information or a required decision, then pause the run.',
+      description: 'Ask the user for missing information or a required decision. Use mode to wait for the answer or continue independent work.',
       inputSchema: structuredClone(INTERACTION_SCHEMA) as JsonObject,
     },
     {
