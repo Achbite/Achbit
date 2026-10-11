@@ -57,6 +57,8 @@ CLI usage ranges use UTC dates explicitly. GUI queries send the local IANA timez
 
 Attach PNG, JPEG, WebP or GIF through the existing Files and folders control, or use CLI `--file`. The Host snapshots the file read-only. Session carries its image reference alongside the message; the Provider boundary resolves bytes into Responses `input_image`, Chat Completions `image_url`, Anthropic image blocks or Ollama images. The journal retains references, not base64 payloads. Input snapshots are never made writable to obtain vision support.
 
+Attachment pixels enter one successful Agent request; retries of that logical request retain the same images. Later requests carry archived references instead of repeatedly appending old image bytes. The Agent can explicitly reopen exact images with `session.read` for another look or comparison. Supplemental images wait for a successful request that actually includes them. This lifecycle also applies to GUI observations and does not delete the archived files.
+
 The built-in DeepSeek Flash and GPT-6 Astra presets declare image input. Other/custom models can explicitly enable it under the model's advanced settings when supported by the service. An unsupported model reports an error instead of silently receiving filenames as images. The current local image read limit is 8 MiB per image. The request size limit includes the encoded image data.
 
 Available service adapters are listed in Models and services. Display plugins can customize the supported settings panels; they do not add model transport or execution permissions.

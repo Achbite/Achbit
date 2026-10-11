@@ -65,8 +65,13 @@ The same package includes terminal interfaces:
 ./deepcode-cli connections
 ./deepcode-cli auth login openai-codex browser
 ./deepcode-cli ask -C /path/to/project "Explain this project"
+./deepcode-cli sessions
+./deepcode-cli resume session:<full-id>
+./deepcode-cli new -C /path/to/project
 ./deepcode-tui -C /path/to/project
 ```
+
+In both the TUI and CLI chat, use `/sessions` to list conversations, `/resume <number or full ID>` to open one, and `/new` to start one in the startup directory. The TUI picker supports arrow keys, Enter and Esc; numbers refer to the displayed list. Switching does not cancel background work or copy another session's directories or permissions.
 
 After installation with PKG or Windows Setup, use `deepcode-cli` and `deepcode-tui` directly in a terminal; on Windows, open a new terminal so it receives the updated PATH.
 
@@ -75,7 +80,7 @@ After installation with PKG or Windows Setup, use `deepcode-cli` and `deepcode-t
 <details>
 <summary>Platform dependencies, permissions, and local data</summary>
 
-Windows Setup installs WebView2 Evergreen Runtime if it is missing; portable Windows packages require it to be installed separately. Linux GUI requires GTK/WebKitGTK. macOS builds and UI updates reuse a persistent signing identity so normal updates can retain Accessibility and Screen Recording authorization. Switching from an earlier ad-hoc build may require authorization once. Verify the executing GUI with `computer.control status`. Configuration, persistent data, caches, temporary files and logs use separate platform directories. See [installation and user files](docs/distribution.md).
+Windows Setup installs WebView2 Evergreen Runtime if it is missing; portable Windows packages require it to be installed separately. Linux GUI requires GTK/WebKitGTK. macOS builds and UI updates reuse a persistent signing identity so normal updates can retain Accessibility and Screen Recording authorization. Switching from an earlier ad-hoc build may require authorization once. The independent **DeepCode Computer Use** App owns desktop operations and requires its own initial system grants. Update it separately with `bash build.sh --stage computer-use`; verify the executor with `computer.control status`. Configuration, persistent data, caches, temporary files and logs use separate platform directories. See [installation and user files](docs/distribution.md).
 
 </details>
 

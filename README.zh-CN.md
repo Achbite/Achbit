@@ -65,8 +65,13 @@ GUI 支持向消息附加文件或文件夹、查看产物和 diff，以及让 A
 ./deepcode-cli connections
 ./deepcode-cli auth login openai-codex browser
 ./deepcode-cli ask -C /path/to/project "分析一下这个项目"
+./deepcode-cli sessions
+./deepcode-cli resume session:<完整ID>
+./deepcode-cli new -C /path/to/project
 ./deepcode-tui -C /path/to/project
 ```
+
+TUI 和 CLI 交互中均可用 `/sessions` 查看会话、`/resume <序号或完整 ID>` 进入、`/new` 沿用启动目录新建。TUI 列表支持方向键、Enter 和 Esc；序号对应本次显示的列表。切换不取消后台任务，也不复制其他会话的目录或权限。
 
 通过 PKG 或 Windows Setup 安装后，可在终端直接使用 `deepcode-cli` 和 `deepcode-tui`；Windows 需重新打开终端以读取更新后的 PATH。
 
@@ -75,7 +80,7 @@ GUI 支持向消息附加文件或文件夹、查看产物和 diff，以及让 A
 <details>
 <summary>平台依赖、权限与本地数据</summary>
 
-Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版需自行准备该依赖。Linux GUI 需要 GTK/WebKitGTK。macOS 全量打包和 UI 更新复用固定签名身份，使正常更新可以保留辅助功能和屏幕录制授权；从早期 ad-hoc 构建切换时可能需要授权一次。通过 `computer.control status` 核对实际 GUI 进程。配置、持久数据、缓存、临时文件和日志分别使用对应的平台目录，详见[安装与用户文件](docs/distribution.md)。
+Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版需自行准备该依赖。Linux GUI 需要 GTK/WebKitGTK。macOS 全量打包和 UI 更新复用固定签名身份，使正常更新可以保留辅助功能和屏幕录制授权；从早期 ad-hoc 构建切换时可能需要授权一次。桌面控制由独立的 **DeepCode Computer Use** App 执行，首次需为它单独授权；之后可用 `bash build.sh --stage computer-use` 单独更新，通过 `computer.control status` 核对实际执行进程。配置、持久数据、缓存、临时文件和日志分别使用对应的平台目录，详见[安装与用户文件](docs/distribution.md)。
 
 </details>
 
