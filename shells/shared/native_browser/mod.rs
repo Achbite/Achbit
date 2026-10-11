@@ -154,10 +154,14 @@ pub fn start(
 }
 
 fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
-    let read = BufReader::new((&stream).take(1024 * 1024)).read_line(&mut line);
+    // Darwin can inherit the listener's nonblocking flag. Framed worker reads
+    // use blocking I/O with deadlines, independently of the accept loop.
+    let read = stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(Duration::from_secs(5))))
+        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(5))))
+        .and_then(|()| BufReader::new((&stream).take(1024 * 1024)).read_line(&mut line));
     let response = read.map_err(|error| error.to_string()).and_then(|_| {
         let request: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
         if request.get("token").and_then(Value::as_str) != Some(token) {

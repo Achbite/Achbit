@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::PathBuf,
     process::Command,
     sync::Mutex,
@@ -12,31 +13,111 @@ use std::{
 
 struct Connection {
     stream: BufReader<TcpStream>,
+    process_exit: OwnedFd,
     executable_modified: SystemTime,
     failure: Option<String>,
 }
 
 impl Connection {
     fn stop(&mut self) -> Result<(), String> {
-        self.stream
-            .get_mut()
-            .shutdown(Shutdown::Write)
-            .map_err(|e| e.to_string())?;
-        self.stream
-            .get_mut()
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| e.to_string())?;
+        let result = self.stop_and_wait();
+        if let Err(error) = &result {
+            self.failure.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
+    fn stop_and_wait(&mut self) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        if let Err(error) = self.stream.get_mut().shutdown(Shutdown::Write) {
+            if error.kind() != std::io::ErrorKind::NotConnected {
+                return Err(format!("computer_component_shutdown_failed: {error}"));
+            }
+        }
         // A failed call may still have a response in flight. Drain it only to
         // await owner-channel closure, never turn it into a successful tool result.
         let mut bytes = [0; 8192];
         loop {
+            self.stream
+                .get_mut()
+                .set_read_timeout(Some(
+                    deadline
+                        .checked_duration_since(Instant::now())
+                        .ok_or("computer_component_shutdown_timeout")?,
+                ))
+                .map_err(|e| format!("computer_component_shutdown_failed: {e}"))?;
             match self.stream.read(&mut bytes) {
-                Ok(0) => return Ok(()),
+                Ok(0) => break,
                 Ok(_) => {}
                 Err(error) => return Err(format!("computer_component_shutdown_failed: {error}")),
             }
         }
+        // EOF confirms channel closure, not App exit: termination is dispatched
+        // asynchronously on the component's main thread. This watch was attached
+        // to the handshake process before any call, so PID reuse cannot replace it.
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("computer_component_exit_timeout")?;
+        let timeout = libc::timespec {
+            tv_sec: remaining.as_secs() as _,
+            tv_nsec: remaining.subsec_nanos() as _,
+        };
+        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
+        match unsafe {
+            libc::kevent(
+                self.process_exit.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                event.as_mut_ptr(),
+                1,
+                &timeout,
+            )
+        } {
+            1 => Ok(()),
+            0 => Err("computer_component_exit_timeout".into()),
+            _ => Err(format!(
+                "computer_component_exit_wait_failed: {}",
+                std::io::Error::last_os_error()
+            )),
+        }
     }
+}
+
+fn watch_process_exit(pid: libc::pid_t) -> Result<OwnedFd, String> {
+    let descriptor = unsafe { libc::kqueue() };
+    if descriptor < 0 {
+        return Err(format!(
+            "computer_component_exit_watch_failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let queue = unsafe { OwnedFd::from_raw_fd(descriptor) };
+    let event = libc::kevent {
+        ident: pid as _,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    if unsafe { libc::fcntl(queue.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0
+        || unsafe {
+            libc::kevent(
+                queue.as_raw_fd(),
+                &event,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        } < 0
+    {
+        return Err(format!(
+            "computer_component_exit_watch_failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(queue)
 }
 
 pub struct ComputerUseHost {
@@ -75,13 +156,13 @@ impl ComputerUseHost {
     }
 
     pub fn stop(&self) -> Result<(), String> {
-        if let Some(mut connection) = self
+        let mut slot = self
             .connection
             .lock()
-            .map_err(|_| "computer_component_state_unavailable")?
-            .take()
-        {
+            .map_err(|_| "computer_component_state_unavailable")?;
+        if let Some(connection) = slot.as_mut() {
             connection.stop()?;
+            *slot = None;
         }
         Ok(())
     }
@@ -144,24 +225,30 @@ impl ComputerUseHost {
             .read_line(&mut handshake)
             .map_err(|e| format!("computer_component_handshake_failed: {e}"))?;
         let handshake: Value = serde_json::from_str(&handshake).map_err(|e| e.to_string())?;
-        if handshake["token"] != self.token || !handshake["pid"].is_u64() {
+        let pid = handshake["pid"]
+            .as_u64()
+            .and_then(|value| libc::pid_t::try_from(value).ok())
+            .filter(|pid| *pid > 0);
+        if handshake["token"] != self.token || pid.is_none() {
             return Err("computer_component_handshake_invalid".into());
         }
+        let process_exit = watch_process_exit(pid.expect("validated component PID"))?;
         Ok(Connection {
             stream: reader,
+            process_exit,
             executable_modified: modified,
             failure: None,
         })
     }
 
     pub fn call(&self, binding: &Value, input: &Value) -> Result<Value, String> {
-        let modified = std::fs::metadata(self.executable())
-            .and_then(|m| m.modified())
-            .map_err(|e| format!("computer_component_unavailable: {e}"))?;
         let mut slot = self
             .connection
             .lock()
             .map_err(|_| "computer_component_state_unavailable")?;
+        let modified = std::fs::metadata(self.executable())
+            .and_then(|m| m.modified())
+            .map_err(|e| format!("computer_component_unavailable: {e}"))?;
         // An explicit package replacement is observed only between calls. Retire
         // the old process before starting the replacement; never replay an input.
         if slot

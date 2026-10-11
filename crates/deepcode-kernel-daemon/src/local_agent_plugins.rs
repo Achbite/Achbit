@@ -444,7 +444,7 @@ fn plugin_catalog(
         serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
             .map_err(|error| format!("plugin_config_invalid: {error}"))?;
     let disabled = disabled_plugins.iter().any(|value| value == uri);
-    let guide = include_str!("../../../plugins/computer-use/README.md");
+    let guide = include_str!("../../../plugins/computer-use/AGENT_GUIDE.md");
     insert_plugin_source(
         &mut sources,
         PluginCatalogEntry::Loaded(PluginSource {

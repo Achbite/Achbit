@@ -2,6 +2,8 @@
 
 First-party Host plugin: `plugin://computer-use@builtin`.
 
+The Kernel loads [AGENT_GUIDE.md](AGENT_GUIDE.md) as the stable model-facing guidance. This README documents implementation, development, packaging and signing details; it is not injected into model context.
+
 Choose CLI, MCP or GUI by the task. Use a program's CLI or installed MCP tools for supported program operations; Git operations do not require clicking a Git GUI. Use GUI control for interface-specific actions or visual confirmation. Combine strategies when needed, such as changing state via CLI/MCP then checking the rendered result. Screenshots belong to GUI steps, not every programmatic call. Preserve each interface's actual results and errors.
 
 When these tools are absent from the current request, discover with `plugin.search` using a short capability such as `browser`, `desktop` or `截图`, then load the returned URI with `plugin.activate`. Search requires every whitespace-separated keyword to match; an empty result is a query miss. Narrow the query or browse the catalog when needed, following `nextOffset` with the same query. Once loaded, use the current tools instead of searching again. User attachment-menu mentions also select the plugin. Activation applies to the current run; a later run selects its needed capabilities again. Tools belong to the current Kernel catalog and the conversation's bound GUI Host. Activation does not grant execution permission.
