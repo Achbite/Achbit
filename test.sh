@@ -102,7 +102,7 @@ case "$profile" in
   cli)
     run_required
     printf '[test] CLI 与 daemon 正式入口\n'
-    cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli
+    cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py

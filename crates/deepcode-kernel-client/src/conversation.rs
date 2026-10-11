@@ -5,6 +5,49 @@ use std::collections::HashSet;
 pub const CONVERSATION_COMMAND_VERSION: &str = "deepcode.command.v3";
 pub const SESSION_PROJECTION_VERSION: &str = "deepcode.session-projection.v6";
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationCatalog {
+    pub projects: Vec<ConversationProject>,
+    pub sessions: Vec<ConversationSessionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationProject {
+    pub id: String,
+    pub title: String,
+    pub workspace_bindings: Vec<WorkspaceBindingDisplay>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationSessionSummary {
+    pub id: String,
+    pub title: String,
+    pub project_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub workspace_bindings: Vec<WorkspaceBindingDisplay>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ConversationCatalog {
+    pub fn validate(&self) -> Result<(), String> {
+        let mut ids = HashSet::new();
+        if self.sessions.iter().any(|session| {
+            session.id.trim().is_empty()
+                || session.id.chars().any(char::is_whitespace)
+                || !ids.insert(&session.id)
+        }) {
+            return Err("conversation catalog session identities are invalid".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationSessionRequest {

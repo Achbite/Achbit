@@ -7,6 +7,7 @@ import http.server
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import threading
@@ -85,6 +86,65 @@ def workspace_rows(config_root: Path, session_id: str):
 
 def is_descendant(path: Path, root: Path) -> bool:
     return any(parent.samefile(root) for parent in path.resolve().parents)
+
+
+def check_session_navigation(daemon, provider, session_id: str, other_id: str, root: Path) -> None:
+    # The registered CLI profile runs in the Linux development container.
+    import pty
+    base = ["--api", daemon.base_url, "--no-auto-start-kernel"]
+    environment = fixture.shell_environment(daemon)
+    before = request(daemon, "/api/conversation/catalog")
+    provider_count = len(provider.requests)
+    listed = subprocess.run([str(fixture.CLI_BINARY), *base, "sessions"], env=environment,
+                            text=True, capture_output=True, timeout=15)
+    require(listed.returncode == 0 and session_id in listed.stdout and other_id in listed.stdout,
+            f"CLI did not list shared sessions: {listed.stdout}\n{listed.stderr}")
+    ordered = sorted(before["sessions"], key=lambda item: item["id"])
+    ordered.sort(key=lambda item: item["updatedAt"], reverse=True)
+    ordinal = next(index + 1 for index, item in enumerate(ordered) if item["id"] == other_id)
+    master, slave = pty.openpty()
+    process = None
+    try:
+        process = subprocess.Popen([str(fixture.CLI_BINARY), *base, "resume", session_id],
+                                   stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env=environment, text=True)
+        os.close(slave)
+        slave = -1
+        commands = f"/sessions\n/resume {ordinal}\n/show\n/resume session:missing-navigation\n/show\n/new\n/show\n/quit\n"
+        os.write(master, commands.encode())
+        stdout, stderr = process.communicate(timeout=20)
+        require(process.returncode == 0, f"CLI navigation failed: {stdout}\n{stderr}")
+        require(other_id in stdout and "session:missing-navigation" in stderr,
+                f"CLI did not open the selected Session or preserve the missing-session error: {stdout}\n{stderr}")
+    finally:
+        if slave >= 0:
+            os.close(slave)
+        os.close(master)
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate()
+    after = request(daemon, "/api/conversation/catalog")
+    new_ids = {item["id"] for item in after["sessions"]} - {item["id"] for item in before["sessions"]}
+    require(len(new_ids) == 1, "CLI /new did not create exactly one Session")
+    new_id = next(iter(new_ids))
+    created = request(daemon, session_path(new_id) + "/projection")
+    require(not created["workspaceBindings"] and not created["messages"],
+            "CLI /new copied another Session's directories or messages")
+    request(daemon, session_path(new_id), method="DELETE")
+
+    # Plain TUI exercises the same command path without creating a new draft in storage.
+    workspace = root / "startup-directory"
+    workspace.mkdir()
+    tui = subprocess.run([str(fixture.TUI_BINARY), *base, "--language", "en-US", "-C", str(workspace)],
+                         input=f"/sessions\n/resume {other_id}\n/show\n/resume session:missing-navigation\n/show\n/new\n/show\n/quit\n",
+                         env=environment, text=True, capture_output=True, timeout=20)
+    require(tui.returncode == 0 and other_id in tui.stdout and "New conversation ready" in tui.stdout,
+            f"TUI navigation failed: {tui.stdout}\n{tui.stderr}")
+    require("session:missing-navigation" in tui.stdout, "TUI hid the original missing-session error")
+    require(request(daemon, "/api/conversation/catalog") == before,
+            "Listing, resuming or opening an unsent TUI draft mutated the catalog")
+    require(len(provider.requests) == provider_count, "Navigation unexpectedly started a Provider request")
+    print("[PASS] shared CLI/TUI catalog, resume, missing target, new and no implicit execution", flush=True)
 
 
 def run_storage_checks(root: Path, server, provider) -> None:
@@ -186,6 +246,7 @@ def run_storage_checks(root: Path, server, provider) -> None:
         require(reopened_rows == rows, "Restart or next message changed registered storage")
         require(reopened_rows[workdir_id] == (workdir, True), "Working directory was not reused")
         require(snapshot.read_text(encoding="utf-8") == "original attachment\n", "Restart lost the snapshot")
+        check_session_navigation(reopened, provider, session_id, second_id, root)
         request(reopened, session_path(session_id), method="DELETE")
         require(not workspace_rows(config_root, session_id), "Session deletion retained owned catalog entries")
         require(not attachments_root.exists(), "Session deletion retained the attachment directory")

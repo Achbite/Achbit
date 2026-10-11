@@ -6,6 +6,8 @@ mod i18n;
 use i18n::Language;
 mod markdown;
 mod renderer;
+#[path = "../../shared/session_navigation.rs"]
+mod session_navigation;
 
 use app::{TuiApp, TuiHostOptions};
 use crossterm::{
@@ -233,7 +235,9 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         false
                     }
                     KeyCode::Esc => {
-                        if app.model_picker_open() {
+                        if app.session_picker_open() {
+                            app.close_session_picker();
+                        } else if app.model_picker_open() {
                             app.model_picker_back();
                         } else if app.plugin_picker_open() {
                             app.dismiss_plugin_picker();
@@ -247,7 +251,10 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         true
                     }
                     KeyCode::Enter => {
-                        if app.model_picker_open() {
+                        if app.session_picker_open() {
+                            app.session_picker_select().await;
+                            true
+                        } else if app.model_picker_open() {
                             app.model_picker_select();
                             true
                         } else if app.plugin_picker_open() && app.plugin_picker_select() {
@@ -258,13 +265,23 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         }
                     }
                     KeyCode::Tab => {
-                        if app.model_picker_open() {
+                        if app.session_picker_open() {
+                            app.session_picker_move(1);
+                        } else if app.model_picker_open() {
                             app.model_picker_select();
                         } else if app.plugin_picker_open() {
                             app.plugin_picker_select();
                         } else {
                             app.push_input('\t');
                         }
+                        true
+                    }
+                    KeyCode::Up if app.session_picker_open() => {
+                        app.session_picker_move(-1);
+                        true
+                    }
+                    KeyCode::Down if app.session_picker_open() => {
+                        app.session_picker_move(1);
                         true
                     }
                     KeyCode::Up if app.model_picker_open() => {

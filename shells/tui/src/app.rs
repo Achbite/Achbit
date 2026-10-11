@@ -2,8 +2,8 @@ use crate::i18n::Language;
 use crate::renderer::Renderer;
 use deepcode_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, ConversationResourceReadResult,
-    CreateConversationSessionRequest, HttpKernelClient, PluginCatalogItem, PluginCatalogProjection,
-    PluginSelectionInput, SessionProjection,
+    ConversationSessionSummary, CreateConversationSessionRequest, HttpKernelClient,
+    PluginCatalogItem, PluginCatalogProjection, PluginSelectionInput, SessionProjection,
 };
 use serde_json::json;
 use std::cell::Cell;
@@ -63,6 +63,8 @@ pub struct TuiApp {
     model_connections: Option<deepcode_kernel_client::ModelConnections>,
     model_profiles: Vec<deepcode_kernel_client::ModelProfile>,
     model_picker: Option<ModelPicker>,
+    session_list: Option<Vec<ConversationSessionSummary>>,
+    session_picker: Option<usize>,
     plugin_catalog: Option<PluginCatalogProjection>,
     selected_plugins: Vec<PluginSelectionInput>,
     selected_mentions: Vec<SelectedMention>,
@@ -92,6 +94,8 @@ impl TuiApp {
             model_connections: None,
             model_profiles: Vec::new(),
             model_picker: None,
+            session_list: None,
+            session_picker: None,
             plugin_catalog: None,
             selected_plugins: Vec::new(),
             selected_mentions: Vec::new(),
@@ -108,61 +112,60 @@ impl TuiApp {
     }
 
     pub async fn bootstrap(&mut self) -> Result<(), String> {
+        if let Some(path) = self.host.workspace_path.as_mut() {
+            *path = path.canonicalize().map_err(|error| {
+                self.host
+                    .language
+                    .format("tui.workspaceUnavailable", &[error.to_string()])
+            })?;
+        }
+        if self.host.session_id.is_some() {
+            self.ensure_session().await?;
+        }
+        let catalog = self
+            .client
+            .conversation_plugin_catalog()
+            .await
+            .map_err(|error| {
+                self.host
+                    .language
+                    .format("tui.pluginCatalogLoadFailed", &[error.to_string()])
+            })?;
+        self.selected_plugins =
+            plugin_selections_from_uris(self.host.language, &catalog, &self.host.plugin_uris)?;
+        self.plugin_catalog = Some(catalog);
+        self.status = self.host.language.text("tui.readyHelp").to_string();
+        Ok(())
+    }
+
+    // Opening the shell is a local draft. Persist a Session only for an explicit
+    // session action; the shared Session service remains its sole owner.
+    async fn ensure_session(&mut self) -> Result<(), String> {
+        if self.projection.is_some() {
+            return Ok(());
+        }
         let result = if let Some(session_id) = self.host.session_id.as_deref() {
             self.client.conversation_projection(session_id).await
         } else {
-            let workspace_paths = match self.host.workspace_path.as_ref() {
-                Some(path) => match path.canonicalize() {
-                    Ok(root) => Some(vec![root.to_string_lossy().to_string()]),
-                    Err(error) => {
-                        self.status = self
-                            .host
-                            .language
-                            .format("tui.workspaceUnavailable", &[format!("{}", error)]);
-                        return Err(self.status.clone());
-                    }
-                },
-                None => None,
-            };
             self.client
                 .create_conversation_session(&CreateConversationSessionRequest {
                     session_id: None,
-                    workspace_paths,
+                    workspace_paths: self
+                        .host
+                        .workspace_path
+                        .as_ref()
+                        .map(|path| vec![path.to_string_lossy().to_string()]),
                     project_id: None,
                     profile_id: None,
                 })
                 .await
         };
-        match result {
-            Ok(projection) => {
-                let catalog = self
-                    .client
-                    .conversation_plugin_catalog()
-                    .await
-                    .map_err(|error| {
-                        self.host
-                            .language
-                            .format("tui.pluginCatalogLoadFailed", &[format!("{}", error)])
-                    })?;
-                let selected_plugins = plugin_selections_from_uris(
-                    self.host.language,
-                    &catalog,
-                    &self.host.plugin_uris,
-                )?;
-                self.status = self.host.language.text("tui.readyHelp").to_string();
-                self.projection = Some(projection);
-                self.plugin_catalog = Some(catalog);
-                self.selected_plugins = selected_plugins;
-                Ok(())
-            }
-            Err(error) => {
-                self.status = self
-                    .host
-                    .language
-                    .format("tui.sessionInitializationFailed", &[format!("{}", error)]);
-                Err(self.status.clone())
-            }
-        }
+        self.projection = Some(result.map_err(|error| {
+            self.host
+                .language
+                .format("tui.sessionInitializationFailed", &[error.to_string()])
+        })?);
+        Ok(())
     }
 
     pub async fn poll(&mut self) {
@@ -196,6 +199,12 @@ impl TuiApp {
         self.transcript_scroll.set(None);
         match input {
             "/quit" | "/exit" => return false,
+            "/sessions" | "/resume" => self.open_sessions().await,
+            "/new" => self.new_session(),
+            value if value.starts_with("/resume ") => {
+                self.resume_session(value.trim_start_matches("/resume ").trim())
+                    .await
+            }
             "/help" => {
                 self.context_open = false;
                 self.tasks_open = false;
@@ -242,6 +251,7 @@ impl TuiApp {
                 self.read_detail(value, true).await
             }
             "/close" => {
+                self.session_picker = None;
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
@@ -301,7 +311,145 @@ impl TuiApp {
         true
     }
 
+    async fn open_sessions(&mut self) {
+        self.session_picker = None;
+        self.session_list = None;
+        match self.client.conversation_catalog().await {
+            Ok(catalog) => {
+                let sessions = crate::session_navigation::ordered_sessions(catalog);
+                let selected = sessions
+                    .iter()
+                    .position(|session| {
+                        self.projection
+                            .as_ref()
+                            .is_some_and(|projection| projection.session_id == session.id)
+                    })
+                    .unwrap_or(0);
+                self.session_list = Some(sessions);
+                self.model_picker = None;
+                self.plugin_picker = None;
+                self.session_picker = Some(selected);
+                self.status = self.host.language.text("tui.sessionsHint").into();
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    // A view change never submits a cancellation or copies authority to another Session.
+    fn reset_session_view(&mut self) {
+        self.clear_input();
+        self.next_message_profile_id = None;
+        self.model_picker = None;
+        self.session_picker = None;
+        self.connection_error = None;
+        self.resource_preview = None;
+        self.context_open = false;
+        self.tasks_open = false;
+        self.detail_preview = None;
+        self.detail_scroll = 0;
+        self.transcript_scroll.set(None);
+        self.transcript_scroll_max.set(0);
+    }
+
+    fn new_session(&mut self) {
+        let background = crate::session_navigation::background_notice(
+            self.host.language,
+            self.projection.as_ref(),
+        );
+        self.reset_session_view();
+        self.host.session_id = None;
+        self.projection = None;
+        self.status = self.host.language.text("tui.sessionNew").into();
+        if let Some(notice) = background {
+            self.status.push_str(&format!(" · {notice}"));
+        }
+    }
+
+    async fn resume_session(&mut self, selector: &str) {
+        let session_id = match crate::session_navigation::resolve_selector(
+            self.host.language,
+            selector,
+            self.session_list.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.session_id == session_id)
+        {
+            self.session_picker = None;
+            self.status = self
+                .host
+                .language
+                .format("tui.sessionOpened", &[session_id]);
+            return;
+        }
+        match self.client.conversation_projection(&session_id).await {
+            Ok(projection) => {
+                let background = crate::session_navigation::background_notice(
+                    self.host.language,
+                    self.projection.as_ref(),
+                );
+                self.reset_session_view();
+                self.host.session_id = Some(session_id.clone());
+                self.projection = Some(projection);
+                self.status = self
+                    .host
+                    .language
+                    .format("tui.sessionOpened", &[session_id]);
+                if let Some(notice) = background {
+                    self.status.push_str(&format!(" · {notice}"));
+                }
+            }
+            Err(error) => self.status = format!("{session_id}: {error}"),
+        }
+    }
+
+    pub fn session_picker_open(&self) -> bool {
+        self.session_picker.is_some()
+    }
+    pub fn close_session_picker(&mut self) {
+        self.session_picker = None;
+    }
+    pub fn session_picker_entries(&self) -> Vec<(String, bool)> {
+        let current = self
+            .projection
+            .as_ref()
+            .map(|projection| projection.session_id.as_str());
+        self.session_list
+            .iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, session)| {
+                (
+                    crate::session_navigation::session_label(index + 1, session, current),
+                    self.session_picker == Some(index),
+                )
+            })
+            .collect()
+    }
+    pub fn session_picker_move(&mut self, delta: isize) {
+        let count = self.session_list.as_ref().map_or(0, Vec::len);
+        if let Some(selected) = self.session_picker.as_mut().filter(|_| count > 0) {
+            *selected = (*selected as isize + delta).rem_euclid(count as isize) as usize;
+        }
+    }
+    pub async fn session_picker_select(&mut self) {
+        if let Some(selected) = self.session_picker {
+            self.resume_session(&(selected + 1).to_string()).await;
+        }
+    }
+
     async fn submit_contextual_input(&mut self, text: &str) {
+        if let Err(error) = self.ensure_session().await {
+            self.status = error;
+            return;
+        }
         let Some(projection) = self.projection.as_ref() else {
             self.status = self
                 .host
@@ -718,6 +866,10 @@ impl TuiApp {
     async fn attach_directory(&mut self, path: &str) {
         if path.is_empty() {
             self.status = self.host.language.text("tui.attachUsage").to_string();
+            return;
+        }
+        if let Err(error) = self.ensure_session().await {
+            self.status = error;
             return;
         }
         let Some(session_id) = self
@@ -1276,7 +1428,7 @@ impl TuiApp {
             .unwrap_or_else(|| {
                 self.host
                     .language
-                    .text("tui.sessionNotInitialized")
+                    .text("agent.session.newTitle")
                     .to_string()
             })
     }
@@ -1384,6 +1536,65 @@ mod input_tests {
             },
         )
     }
+    #[tokio::test]
+    async fn session_navigation_preserves_failed_targets_and_new_draft_is_isolated() {
+        for (field, decision, _, _, _) in pending_decisions() {
+            let mut app = test_app();
+            app.host.workspace_path = Some(PathBuf::from("/startup"));
+            app.host.session_id = Some("session:test".into());
+            app.projection = Some(waiting_projection(field, decision));
+            app.next_message_profile_id = Some("profile:old".into());
+            app.push_input_text("draft");
+            app.detail_preview = Some("old detail".into());
+            let before = app.projection.clone();
+            app.resume_session("session:missing").await;
+            assert_eq!(app.projection, before);
+            assert_eq!(app.input, "draft");
+            assert!(app.status.contains("daemon request failed"));
+            app.new_session();
+            assert!(app.projection.is_none());
+            assert!(app.host.session_id.is_none());
+            assert_eq!(app.host.workspace_path, Some(PathBuf::from("/startup")));
+            assert!(app.input.is_empty());
+            assert!(app.next_message_profile_id.is_none());
+            assert!(app.detail_preview.is_none());
+            assert!(app.status.contains("仍在后台运行"));
+        }
+    }
+
+    #[test]
+    fn session_picker_wraps_and_plain_output_keeps_the_displayed_numbers() {
+        let mut app = test_app();
+        app.session_list = Some(
+            (1..=12)
+                .map(|number| {
+                    serde_json::from_value(json!({
+                        "id":format!("session:{number}"), "title":format!("Title {number}"),
+                        "workspaceBindings":[], "createdAt":"1", "updatedAt":"1"
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        );
+        app.session_picker = Some(0);
+        app.session_picker_move(-1);
+        assert!(app.session_picker_entries()[11].1);
+        assert!(app.renderer().render_plain(&app).contains("12. Title 12"));
+        app.session_picker_move(1);
+        assert!(app.session_picker_entries()[0].1);
+        app.close_session_picker();
+        assert!(!app.session_picker_open());
+        assert_eq!(
+            crate::session_navigation::resolve_selector(
+                Language::ZhCn,
+                "12",
+                app.session_list.as_deref()
+            )
+            .unwrap(),
+            "session:12"
+        );
+    }
+
     #[test]
     fn pending_plain_input_queues_while_explicit_reply_keeps_decision_semantics() {
         for (field, decision, command_type, response_field, expected) in pending_decisions() {
@@ -1522,6 +1733,82 @@ mod input_tests {
             assert!(!text.contains("**读文件**"));
             assert!(!text.contains("run [completed]"));
             assert!(!text.contains("⠋"));
+        }
+        assert_eq!(app.projection, before);
+    }
+
+    #[test]
+    fn transcript_keeps_decisions_once_in_their_recorded_position() {
+        let mut app = test_app();
+        let mut projection = waiting_projection("pendingPlan", serde_json::Value::Null);
+        projection.run.as_mut().unwrap().status = "completed".into();
+        for (id, role, content, sequence) in [
+            ("request", "user", "检查项目", 1),
+            ("followup", "user", "停止检查", 8),
+            ("answer", "assistant", "已停止，没有修改文件", 10),
+        ] {
+            projection.messages.push(
+                serde_json::from_value(json!({
+                    "messageId":id,"role":role,"content":content,"filesystemReferences":[],
+                    "pluginSelections":[],"sequence":sequence,"createdAt":"now"
+                }))
+                .unwrap(),
+            );
+        }
+        for (id, kind, status, label, sequence) in [
+            ("approval:read", "approval", "completed", "读取目录权限", 3),
+            ("tool:read", "tool", "completed", "目录已读取", 2),
+            ("approval:write", "approval", "denied", "修改目录权限", 5),
+            (
+                "question:scope",
+                "interaction",
+                "completed",
+                "选择检查范围",
+                6,
+            ),
+        ] {
+            projection.activities.push(
+                serde_json::from_value(json!({
+                    "activityId":id,"kind":kind,"status":status,"label":label,
+                    "runId":"run:test","callId":id,"sequence":sequence
+                }))
+                .unwrap(),
+            );
+        }
+        projection.timeline = serde_json::from_value(json!([
+            {"kind":"message","timelineId":"request","sequence":1,"messageId":"request"},
+            {"kind":"toolGroup","timelineId":"read","sequence":3,"providerRequestId":"provider:read",
+                "activityIds":["approval:read","tool:read"]},
+            {"kind":"toolGroup","timelineId":"write","sequence":5,"providerRequestId":"provider:write",
+                "activityIds":["approval:write","question:scope"]},
+            {"kind":"message","timelineId":"followup","sequence":8,"messageId":"followup"},
+            {"kind":"message","timelineId":"answer","sequence":10,"messageId":"answer"}
+        ])).unwrap();
+        app.projection = Some(projection);
+        let before = app.projection.clone();
+        let plain = app.renderer().render_plain(&app);
+        for text in [plain, screen_rows(&app, 120, 40).join("\n")] {
+            let labels = [
+                "检查项目",
+                "读取目录权限",
+                "目录已读取",
+                "修改目录权限",
+                "选择检查范围",
+                "停止检查",
+                "已停止，没有修改文件",
+            ];
+            let mut previous = 0;
+            for label in labels {
+                assert_eq!(text.matches(label).count(), 1, "{label}: {text}");
+                let position = text.find(label).unwrap();
+                assert!(position >= previous, "{label}: {text}");
+                previous = position;
+            }
+            assert!(text.contains("授权 读取目录权限 [已完成]"), "{text}");
+            assert!(text.contains("授权 修改目录权限 [已拒绝]"), "{text}");
+            assert!(text.contains("交互 选择检查范围 [已完成]"), "{text}");
+            let final_reply = text.find("已停止，没有修改文件").unwrap();
+            assert!(!text[final_reply..].contains("权限"), "{text}");
         }
         assert_eq!(app.projection, before);
     }

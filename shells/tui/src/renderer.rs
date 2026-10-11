@@ -380,20 +380,37 @@ pub(crate) fn failure_details(
     text
 }
 
-fn push_tool_summary(language: Language, lines: &mut Vec<Line<'_>>, activity: &ActivityProjection) {
-    let operation = activity
-        .tool
-        .as_ref()
-        .map(|tool| tool.operation.as_str())
-        .unwrap_or(&activity.label);
-    lines.push(Line::from(Span::styled(
+fn activity_summary(language: Language, activity: &ActivityProjection) -> String {
+    if activity.kind == "tool" {
+        let operation = activity
+            .tool
+            .as_ref()
+            .map(|tool| tool.operation.as_str())
+            .unwrap_or(&activity.label);
         language.format(
             "tui.toolSummary",
             &[
-                format!("{}", operation),
-                status_label(language, &activity.status).to_string(),
+                operation.to_owned(),
+                status_label(language, &activity.status).to_owned(),
             ],
-        ),
+        )
+    } else {
+        format!(
+            "{} {} [{}]",
+            kind_label(language, &activity.kind),
+            activity.label,
+            status_label(language, &activity.status),
+        )
+    }
+}
+
+fn push_activity_summary(
+    language: Language,
+    lines: &mut Vec<Line<'_>>,
+    activity: &ActivityProjection,
+) {
+    lines.push(Line::from(Span::styled(
+        activity_summary(language, activity),
         Style::default().fg(activity_color(&activity.status)),
     )));
     for error in tool_error_lines(activity) {
@@ -448,7 +465,7 @@ pub(crate) fn tool_details(
         return language.format("tui.toolMissing", &[format!("{}", activity_id)]);
     };
     let mut text = String::new();
-    render_tool_plain(language, &mut text, activity);
+    render_activity_plain(language, &mut text, activity);
     text
 }
 
@@ -511,9 +528,9 @@ mod layout_tests {
             "liveOutput":{"stdout":"执行中\n", "stderr":"诊断\n", "stdoutBytes":10, "stderrBytes":7, "truncated":true}
         })).unwrap();
         let mut plain = String::new();
-        render_tool_plain(Language::ZhCn, &mut plain, &activity);
+        render_activity_plain(Language::ZhCn, &mut plain, &activity);
         let mut lines = Vec::new();
-        push_tool_summary(Language::ZhCn, &mut lines, &activity);
+        push_activity_summary(Language::ZhCn, &mut lines, &activity);
         let styled = lines
             .iter()
             .map(|line| line.to_string())
@@ -531,7 +548,7 @@ mod layout_tests {
         activity.status = "completed".into();
         activity.live_output = None;
         let mut terminal = String::new();
-        render_tool_plain(Language::ZhCn, &mut terminal, &activity);
+        render_activity_plain(Language::ZhCn, &mut terminal, &activity);
         assert!(terminal.contains("[已完成]"));
         assert!(!terminal.contains("执行中"));
         assert!(!terminal.contains("实时输出"));
@@ -572,9 +589,9 @@ mod layout_tests {
                 .extend(fields.as_object().unwrap().clone());
             let activity: ActivityProjection = serde_json::from_value(value).unwrap();
             let mut plain = String::new();
-            render_tool_plain(Language::ZhCn, &mut plain, &activity);
+            render_activity_plain(Language::ZhCn, &mut plain, &activity);
             let mut lines = Vec::new();
-            push_tool_summary(Language::ZhCn, &mut lines, &activity);
+            push_activity_summary(Language::ZhCn, &mut lines, &activity);
             assert!(plain.contains(expected));
             assert!(lines.iter().any(|line| line.to_string().contains(expected)));
         }
@@ -707,6 +724,9 @@ impl Renderer {
         if app.model_picker_open() {
             self.draw_model_picker(frame, rows[1], app);
         }
+        if app.session_picker_open() {
+            self.draw_session_picker(frame, rows[1], app);
+        }
         self.draw_footer(frame, rows[5], app);
     }
 
@@ -782,7 +802,7 @@ impl Renderer {
                     }
                     TimelineItem::ToolGroup { activities, .. } => {
                         for activity in activities {
-                            render_tool_plain(language, &mut output, activity);
+                            render_activity_plain(language, &mut output, activity);
                         }
                     }
                 }
@@ -834,18 +854,6 @@ impl Renderer {
                 output.push_str(&decision_details(language, Some(projection)));
                 output.push('\n');
             }
-            for activity in projection
-                .activities
-                .iter()
-                .filter(|activity| activity.kind != "tool")
-            {
-                output.push_str(&format!(
-                    "{} [{}]: {}\n",
-                    kind_label(language, &activity.kind),
-                    status_label(language, &activity.status),
-                    activity.label
-                ));
-            }
             render_todo_plain(language, &mut output, projection);
             if !app.context_open() {
                 output.push_str(&language.format(
@@ -859,7 +867,8 @@ impl Renderer {
                 output.push('\n');
             }
         } else {
-            output.push_str(language.text("tui.sessionNotInitializedPlain"));
+            output.push_str(language.text("agent.session.newTitle"));
+            output.push('\n');
         }
         let selected_plugins = app.selected_plugin_labels();
         if !selected_plugins.is_empty() {
@@ -867,6 +876,20 @@ impl Renderer {
                 "tui.nextPlugins",
                 &[format!("{}", selected_plugins.join(", "))],
             ));
+        }
+        if app.session_picker_open() {
+            output.push_str(&format!("{}\n", app.language().text("tui.sessionsTitle")));
+            let entries = app.session_picker_entries();
+            if entries.is_empty() {
+                output.push_str(app.language().text("tui.sessionsEmpty"));
+                output.push('\n');
+            }
+            for (label, _) in entries {
+                output.push_str(&label);
+                output.push('\n');
+            }
+            output.push_str(app.language().text("tui.sessionsHint"));
+            output.push('\n');
         }
         if app.model_picker_open() {
             output.push_str(&format!("{}：\n", app.model_picker_title()));
@@ -1276,7 +1299,7 @@ impl Renderer {
                     }
                     TimelineItem::ToolGroup { activities, .. } => {
                         for activity in activities {
-                            push_tool_summary(language, &mut lines, activity);
+                            push_activity_summary(language, &mut lines, activity);
                         }
                     }
                 }
@@ -1329,30 +1352,6 @@ impl Renderer {
                         lines.push(Line::from(""));
                     }
                 }
-            }
-            for activity in projection.activities.iter().filter(|activity| {
-                activity.kind != "tool"
-                    && !(activity.kind == "run"
-                        && matches!(
-                            activity.status.as_str(),
-                            "requested" | "active" | "completed"
-                        ))
-            }) {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "{} [{}] · {}",
-                        kind_label(language, &activity.kind),
-                        status_label(language, &activity.status),
-                        activity.label
-                    ),
-                    Style::default().fg(if activity.status == "completed" {
-                        Color::Green
-                    } else if matches!(activity.status.as_str(), "failed" | "indeterminate") {
-                        Color::Red
-                    } else {
-                        Color::Yellow
-                    }),
-                )));
             }
         }
         if let Some(error) = app.projection().and_then(|p| p.terminal_error.as_ref()) {
@@ -1430,6 +1429,38 @@ impl Renderer {
             inner,
         );
         frame.set_cursor_position((inner.x + column.min(inner.width - 1), inner.y + row));
+    }
+
+    fn draw_session_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
+        let entries = app.session_picker_entries();
+        let visible = usize::from(area.height.saturating_sub(2)).max(1);
+        let selected = entries
+            .iter()
+            .position(|(_, selected)| *selected)
+            .unwrap_or(0);
+        let start = selected.saturating_sub(visible - 1);
+        let mut lines: Vec<Line<'_>> = entries
+            .iter()
+            .skip(start)
+            .take(visible)
+            .map(|(label, selected)| {
+                Line::from(Span::styled(
+                    format!("{} {label}", if *selected { ">" } else { " " }),
+                    Style::default().fg(if *selected { Color::Cyan } else { Color::Reset }),
+                ))
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(app.language().text("tui.sessionsEmpty")));
+        }
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
+                " {} · ↑/↓ · Enter · Esc ",
+                app.language().text("tui.sessionsTitle")
+            ))),
+            area,
+        );
     }
 
     fn draw_model_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
@@ -2024,19 +2055,9 @@ fn push_timeline_plan_lines(language: Language, lines: &mut Vec<Line<'_>>, plan:
     }
 }
 
-fn render_tool_plain(language: Language, output: &mut String, activity: &ActivityProjection) {
-    let operation = activity
-        .tool
-        .as_ref()
-        .map(|tool| tool.operation.as_str())
-        .unwrap_or(activity.label.as_str());
-    output.push_str(&language.format(
-        "tui.toolSummaryPlain",
-        &[
-            format!("{}", operation),
-            status_label(language, &activity.status).to_string(),
-        ],
-    ));
+fn render_activity_plain(language: Language, output: &mut String, activity: &ActivityProjection) {
+    output.push_str(&activity_summary(language, activity));
+    output.push('\n');
     for error in tool_error_lines(activity) {
         output.push_str(&error);
         output.push('\n');

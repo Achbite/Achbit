@@ -6,6 +6,8 @@ mod conversation_input;
 mod i18n;
 mod model_services;
 mod render;
+#[path = "../../shared/session_navigation.rs"]
+mod session_navigation;
 
 use deepcode_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, CreateConversationSessionRequest,
@@ -106,6 +108,7 @@ enum Command {
     },
     Ask(String),
     Chat,
+    Sessions,
     Show,
     Read {
         query: Value,
@@ -255,6 +258,13 @@ impl Args {
                     .parse()
                     .map_err(|_| "diff index must be a nonnegative integer")?,
             },
+            Some("sessions") if positional.len() == 1 && session_id.is_none() && workspace.is_none() => Command::Sessions,
+            Some("new") if positional.len() == 1 && session_id.is_none() => Command::Chat,
+            Some("resume") if positional.len() == 2 && session_id.is_none() && workspace.is_none() => {
+                session_id = Some(session_navigation::resolve_selector(i18n::Language::ZhCn, &positional[1], None)?);
+                Command::Chat
+            }
+            Some("sessions" | "new" | "resume") => return Err("用法：sessions | new [-C <workspace>] | resume <完整 session: ID>；不可同时指定 --session。".into()),
             Some("chat") => Command::Chat,
             Some("show") => Command::Show,
             Some("read") => {
@@ -467,6 +477,14 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
     }
     match args.command {
         Command::Help => Ok(Outcome::Done),
+        Command::Sessions => {
+            let catalog = client
+                .conversation_catalog()
+                .await
+                .map_err(|error| error.to_string())?;
+            print_sessions(&session_navigation::ordered_sessions(catalog), None);
+            Ok(Outcome::Done)
+        }
         Command::Connections => model_services::connections(client).await,
         Command::AuthLogin {
             selector,
@@ -870,6 +888,24 @@ async fn wait_for_projection(
     }
 }
 
+fn print_sessions(
+    sessions: &[deepcode_kernel_client::ConversationSessionSummary],
+    current: Option<&str>,
+) {
+    let language = i18n::Language::ZhCn;
+    println!("{}", language.text("tui.sessionsTitle"));
+    if sessions.is_empty() {
+        println!("{}", language.text("tui.sessionsEmpty"));
+    }
+    for (index, session) in sessions.iter().enumerate() {
+        println!(
+            "{}",
+            session_navigation::session_label(index + 1, session, current)
+        );
+    }
+    println!("{}", language.text("tui.sessionsHint"));
+}
+
 async fn run_chat(
     client: &HttpKernelClient,
     session_id: Option<&str>,
@@ -891,6 +927,8 @@ async fn run_chat(
         plugin_binding_from_catalog(plugin_catalog.clone(), initial_plugin_uris)?.selections
     };
     println!("session: {}", projection.session_id);
+    render_projection(&mut io::stdout().lock(), &projection).map_err(|error| error.to_string())?;
+    println!("/sessions 列出会话；/resume <序号或完整 ID> 进入；/new 沿用启动目录新建；切换不会取消后台任务。");
     println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/cancel；/quit。");
     render_action_required_if_any(&mut io::stdout().lock(), &projection)
         .map_err(|error| error.to_string())?;
@@ -899,6 +937,7 @@ async fn run_chat(
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut output = CliRenderState::after(&projection);
     let mut rendered_revision = projection.revision;
+    let mut session_list: Option<Vec<deepcode_kernel_client::ConversationSessionSummary>> = None;
     let mut next_message_profile_id: Option<String> = initial_profile_id.map(str::to_owned);
     let mut prompt_needed = true;
     loop {
@@ -959,6 +998,66 @@ async fn run_chat(
         }
         match input {
             "/quit" | "/exit" => return Ok(Outcome::Done),
+            "/sessions" | "/resume" => {
+                session_list = None;
+                match client.conversation_catalog().await {
+                    Ok(catalog) => {
+                        let sessions = session_navigation::ordered_sessions(catalog);
+                        print_sessions(&sessions, Some(&projection.session_id));
+                        session_list = Some(sessions);
+                    }
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
+            value if value == "/new" || value.starts_with("/resume ") => {
+                let target = if value == "/new" {
+                    None
+                } else {
+                    match session_navigation::resolve_selector(
+                        i18n::Language::ZhCn,
+                        value.trim_start_matches("/resume ").trim(),
+                        session_list.as_deref(),
+                    ) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            eprintln!("{error}");
+                            continue;
+                        }
+                    }
+                };
+                if target.as_deref() == Some(projection.session_id.as_str()) {
+                    continue;
+                }
+                match open_session(
+                    client,
+                    target.as_deref(),
+                    if target.is_none() { workspace } else { None },
+                    None,
+                )
+                .await
+                {
+                    Ok(next) => {
+                        output
+                            .finish_text(&mut io::stdout().lock())
+                            .map_err(|error| error.to_string())?;
+                        if let Some(notice) = session_navigation::background_notice(
+                            i18n::Language::ZhCn,
+                            Some(&projection),
+                        ) {
+                            println!("{notice}");
+                        }
+                        projection = next;
+                        selected_plugins.clear();
+                        next_message_profile_id = None;
+                        output = CliRenderState::after(&projection);
+                        rendered_revision = projection.revision;
+                        println!("session: {}", projection.session_id);
+                        render_projection(&mut io::stdout().lock(), &projection)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Err(error) => eprintln!("{}: {error}", target.as_deref().unwrap_or("/new")),
+                }
+            }
             "/show" => render_projection(&mut io::stdout().lock(), &projection)
                 .map_err(|error| error.to_string())?,
             "/cancel-plan" => {
@@ -1228,6 +1327,9 @@ fn print_help() {
 用法：
   deepcode-cli ask [-C <workspace>] [--session <id>] [--file <path>]... [--directory <path>]... [--plugin <plugin://uri>]... [--plain] <message-or-response>
   deepcode-cli chat [-C <workspace>] [--session <id>] [--plugin <plugin://uri>]...
+  deepcode-cli sessions
+  deepcode-cli new [-C <workspace>]
+  deepcode-cli resume <完整 session: ID>
   deepcode-cli show --session <id>
   deepcode-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
   deepcode-cli cancel-plan --session <id>
@@ -1241,6 +1343,7 @@ fn print_help() {
   deepcode-cli status
 
 使用 -C/--workspace 为新对话指定工作目录；已有对话通过 attach-directory/detach-directory 管理目录。
+chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启动目录新建；切换不会取消原会话或复制权限。序号仅对应本进程最后显示的列表。
 chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，/reply <说明> 修改计划或回答问题，/reply 1/2 允许/拒绝操作；cancel-plan 取消计划。
 权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
 文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
@@ -1252,6 +1355,31 @@ ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现�
 mod tests {
     use super::*;
     use crate::conversation_input::fixtures::{pending_decisions, waiting_projection};
+
+    #[test]
+    fn session_commands_parse_without_rebinding_existing_workspaces() {
+        let parse =
+            |args: &[&str]| Args::parse(args.iter().map(|value| value.to_string()).collect());
+        assert_eq!(parse(&["sessions"]).unwrap().command, Command::Sessions);
+        let new = parse(&["new", "-C", "/project"]).unwrap();
+        assert_eq!(new.command, Command::Chat);
+        assert!(new.session_id.is_none());
+        assert_eq!(
+            parse(&["resume", "session:known"])
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("session:known")
+        );
+        for args in [
+            &["resume", "1"][..],
+            &["resume", "session:x", "-C", "/other"],
+            &["new", "--session", "session:x"],
+            &["sessions", "--session", "session:x"],
+        ] {
+            assert!(parse(args).is_err());
+        }
+    }
 
     #[tokio::test]
     async fn long_focus_upload_preserves_the_task_and_existing_references() {
