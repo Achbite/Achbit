@@ -3580,6 +3580,56 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   assert.equal(container.children.length, 0);
 });
 
+test('usage widget restores the summary position after temporary Reader docking', async (t) => {
+  const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t);
+  let input = { visibility: 'summary', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
+    labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+  const view = mount(input, { signal: new AbortController().signal,
+    quota: { async read() { return { windows: [] }; } }, actions: {},
+  });
+  await Promise.resolve();
+  const root = container.children[0];
+  const original = root.getBoundingClientRect();
+  const toggleReader = () => {
+    input = { ...input, visibility: 'collapsed' }; view.update(input);
+    container.clientWidth = 360; view.update(input);
+    assert.equal(parseFloat(root.style.left), 342, 'the handle docks at the narrower conversation edge');
+    // Visibility and ResizeObserver layout notifications can arrive separately.
+    input = { ...input, visibility: 'summary' }; view.update(input);
+    container.clientWidth = 800; view.update(input);
+  };
+  toggleReader();
+  assert.equal(parseFloat(root.style.left), original.left, 'default summary returns to the right edge');
+  assert.equal(parseFloat(root.style.top), original.top, 'temporary docking preserves its height');
+
+  root.listeners.get('keydown')({ target: root.querySelectorAll('.dc-usage__body')[0],
+    key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
+  const moved = root.getBoundingClientRect();
+  assert.equal(moved.left, original.left - 40);
+  toggleReader();
+  assert.equal(parseFloat(root.style.left), moved.left, 'layout constraints do not overwrite a user-chosen position');
+  assert.equal(parseFloat(root.style.top), moved.top);
+  dispose();
+});
+
+test('usage widget mounted with Reader open expands at the full boundary right edge', async (t) => {
+  const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t);
+  container.clientWidth = 360;
+  const input = { visibility: 'collapsed', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
+    labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+  const view = mount(input, { signal: new AbortController().signal,
+    quota: { async read() { return { windows: [] }; } }, actions: {},
+  });
+  await Promise.resolve();
+  assert.equal(parseFloat(container.children[0].style.left), 342);
+  container.clientWidth = 800;
+  view.update({ ...input, visibility: 'summary' });
+  assert.equal(parseFloat(container.children[0].style.left), 584, 'initial compact geometry is not a saved summary position');
+  dispose();
+});
+
 for (const billingMode of ['subscription', 'metered']) {
   test(`usage widget preserves ${billingMode} read failures until a reopened request succeeds`, async (t) => {
     const { container, usageWidgetLabels, mount, dispose, listeners } = await createUsageWidgetHarness(t);

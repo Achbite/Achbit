@@ -35,11 +35,13 @@ export default { apply(context) {
       root.style.setProperty('--dc-usage-boundary-width', `${width}px`);
       const box = root.getBoundingClientRect();
       // The compact handle docks at an edge; the summary opens into the panel.
-      position ??= { x: width - box.width - 16, centerY: height - 16 - box.height / 2 };
+      // Layout changes constrain rendering, not the user's remembered position.
+      // Until moved, the summary follows the current right edge.
+      position ??= { x: null, centerY: height - 16 - box.height / 2 };
       const docked = input.visibility === 'collapsed' && !drag?.started;
-      const x = docked ? dock === 'left' ? 0 : width - box.width : clamp(position.x, 8, width - box.width - 8);
+      const x = docked ? dock === 'left' ? 0 : width - box.width
+        : clamp(position.x ?? width - box.width - 16, 8, width - box.width - 8);
       const y = clamp(position.centerY - box.height / 2, 8, height - box.height - 8);
-      if (docked) position.x = x;
       root.dataset.dock = dock;
       const handle = root.querySelectorAll('.dc-usage__handle')[0];
       if (handle) handle.textContent = dock === 'left' ? '›' : '‹';
@@ -79,6 +81,7 @@ export default { apply(context) {
       if (moved && input.visibility === 'collapsed') {
         const box = root.getBoundingClientRect();
         dock = position.x + box.width / 2 < container.clientWidth / 2 ? 'left' : 'right';
+        position.x = dock === 'left' ? 0 : container.clientWidth - box.width;
         place();
       }
     };
@@ -96,6 +99,7 @@ export default { apply(context) {
       const box = root.getBoundingClientRect(), bounds = container.getBoundingClientRect();
       position = { x: clamp(box.left - bounds.left + offset[0] * step, 8, container.clientWidth - box.width - 8),
         centerY: clamp(box.top - bounds.top + box.height / 2 + offset[1] * step, box.height / 2 + 8, container.clientHeight - box.height / 2 - 8) };
+      if (input.visibility === 'collapsed') position.x = dock === 'left' ? 0 : container.clientWidth - box.width;
       place();
     });
     const sizeObserver = new ResizeObserver(place);
