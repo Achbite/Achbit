@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   ConversationProject,
   ConversationSessionSummary,
@@ -42,6 +42,8 @@ interface DeepCodeSidebarProps {
   onOpenSettings: () => void;
 }
 
+const PROJECT_SESSION_PREVIEW_LIMIT = 6;
+
 const DeepCodeSidebar: React.FC<DeepCodeSidebarProps> = ({
   language,
   projects,
@@ -67,6 +69,18 @@ const DeepCodeSidebar: React.FC<DeepCodeSidebarProps> = ({
   onOpenSettings,
 }) => {
   const listRef = useRef<HTMLElement>(null);
+  const projectListId = useId();
+  const [expandedProjectLists, setExpandedProjectLists] = useState<ReadonlySet<string>>(() => new Set());
+  const projectGroups = useMemo(() => projects.map((project) => {
+    const projectSessions = sessions.filter((session) => session.projectId === project.id);
+    const expanded = expandedProjectLists.has(project.id);
+    const activeIndex = projectSessions.findIndex((session) => session.id === activeSessionId);
+    const visibleSessions = expanded ? projectSessions
+      : activeIndex >= PROJECT_SESSION_PREVIEW_LIMIT
+        ? [...projectSessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT - 1), projectSessions[activeIndex]]
+        : projectSessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT);
+    return { project, projectSessions, visibleSessions, expanded };
+  }), [activeSessionId, expandedProjectLists, projects, sessions]);
   const activeProjectId = activeSessionId
     ? sessions.find((session) => session.id === activeSessionId)?.projectId
     : draftProjectId;
@@ -155,13 +169,13 @@ const DeepCodeSidebar: React.FC<DeepCodeSidebarProps> = ({
   const standalone = sessions.filter((session) => !session.projectId);
   const [commandPressed, setCommandPressed] = useState(false);
   const shortcutSessions = useMemo(() => [
-    ...projects.flatMap((project) => (
+    ...projectGroups.flatMap(({ project, visibleSessions }) => (
       collapsedProjectIds.has(project.id)
         ? []
-        : sessions.filter((session) => session.projectId === project.id)
+        : visibleSessions
     )),
     ...sessions.filter((session) => !session.projectId),
-  ].slice(0, 9), [collapsedProjectIds, projects, sessions]);
+  ].slice(0, 9), [collapsedProjectIds, projectGroups, sessions]);
   const shortcutBySessionId = useMemo(
     () => new Map(shortcutSessions.map((session, index) => [session.id, index + 1])),
     [shortcutSessions],
@@ -297,9 +311,9 @@ const DeepCodeSidebar: React.FC<DeepCodeSidebarProps> = ({
           </div>
         ) : (
           <div className="deepcode-gui-project-archive-list">
-            {projects.map((project) => {
+            {projectGroups.map(({ project, projectSessions, visibleSessions, expanded }) => {
               const collapsed = collapsedProjectIds.has(project.id);
-              const projectSessions = sessions.filter((session) => session.projectId === project.id);
+              const sessionsId = `${projectListId}-${project.id}`;
               const current = draftProjectId === project.id
                 || projectSessions.some((session) => session.id === activeSessionId);
               return (
@@ -352,11 +366,37 @@ const DeepCodeSidebar: React.FC<DeepCodeSidebarProps> = ({
                   </div>
                   {!collapsed && (
                     <div className="deepcode-gui-project-archive-group__sessions">
-                      {projectSessions.length === 0 ? (
-                        <div className="deepcode-gui-sidebar-empty deepcode-gui-sidebar-empty--nested">
-                          {t(language, 'deepcodeGui.sidebar.noChats')}
-                        </div>
-                      ) : projectSessions.map(renderSession)}
+                      <div
+                        id={sessionsId}
+                        className="deepcode-gui-project-session-list"
+                        data-expanded={expanded || undefined}
+                        style={{ '--dc-project-session-limit': PROJECT_SESSION_PREVIEW_LIMIT } as React.CSSProperties}
+                      >
+                        {projectSessions.length === 0 ? (
+                          <div className="deepcode-gui-sidebar-empty deepcode-gui-sidebar-empty--nested">
+                            {t(language, 'deepcodeGui.sidebar.noChats')}
+                          </div>
+                        ) : visibleSessions.map(renderSession)}
+                      </div>
+                      {projectSessions.length > PROJECT_SESSION_PREVIEW_LIMIT && (
+                        <button
+                          type="button"
+                          className="deepcode-gui-project-sessions-toggle"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => setExpandedProjectLists((current) => {
+                            const next = new Set(current);
+                            if (next.has(project.id)) next.delete(project.id);
+                            else next.add(project.id);
+                            return next;
+                          })}
+                          aria-expanded={expanded}
+                          aria-controls={sessionsId}
+                        >
+                          {t(language, expanded ? 'deepcodeGui.sidebar.showLess' : 'deepcodeGui.sidebar.showMore', {
+                            count: projectSessions.length - visibleSessions.length,
+                          })}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

@@ -241,6 +241,8 @@
     "deepcodeGui.sidebar.project": "项目",
     "deepcodeGui.sidebar.chats": "对话",
     "deepcodeGui.sidebar.noChats": "暂无对话",
+    "deepcodeGui.sidebar.showMore": "展开更多（{count}）",
+    "deepcodeGui.sidebar.showLess": "收起",
     "deepcodeGui.sidebar.orderError": "排序未保存：{detail}",
     "deepcodeGui.sidebar.statusError": "会话状态读取失败：{detail}",
     "deepcodeGui.project.empty": "暂无项目",

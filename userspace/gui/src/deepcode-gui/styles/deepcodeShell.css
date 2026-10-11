@@ -520,6 +520,35 @@
   padding-left: 9px;
 }
 
+.deepcode-gui-project-session-list {
+  max-height: calc(var(--dc-project-session-limit) * 31px);
+  overflow: hidden;
+}
+
+.deepcode-gui-project-session-list[data-expanded='true'] {
+  max-height: none;
+  overflow: visible;
+}
+
+.deepcode-gui-project-sessions-toggle {
+  display: block;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--dc-radius-control);
+  background: transparent;
+  color: var(--dc-faint);
+  font: inherit;
+  font-size: var(--dc-font-caption);
+  text-align: left;
+  cursor: pointer;
+}
+
+.deepcode-gui-project-sessions-toggle:hover {
+  background: var(--dc-surface-hover);
+  color: var(--dc-foreground);
+}
+
 .deepcode-gui-session-row {
   position: relative;
   display: grid;
