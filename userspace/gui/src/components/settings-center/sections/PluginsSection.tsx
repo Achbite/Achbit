@@ -15,6 +15,7 @@ import { UiPluginShowcase } from '../../../ui-plugins/UiPluginShowcase';
 import { errorText } from '../../../ui-plugins/runtime';
 import DeepCodeShellIcon from '../../shared/DeepCodeShellIcon';
 import ProjectFolderDialog from '../../workspace-open-dialog/ProjectFolderDialog';
+import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../shared/interactionFocus';
 
 type Source = {
   id?: string;
@@ -68,10 +69,12 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
   const [candidate, setCandidate] = useState<LocalPluginInspection | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const readButton = useRef<HTMLButtonElement>(null);
-  const inspectionTrigger = useRef<HTMLButtonElement | null>(null);
+  const interaction = useInteractionFocus();
+  const inspectionTrigger = useRef<FocusReturn | null>(null);
   useEffect(() => {
     if (!candidate && !busy && inspectionTrigger.current) {
-      inspectionTrigger.current.focus({ preventScroll: true });
+      if (interaction) interaction.restore(inspectionTrigger.current);
+      else returnInteractionFocus(inspectionTrigger.current, true);
       inspectionTrigger.current = null;
     }
   }, [candidate, busy]);
@@ -224,7 +227,8 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
     }
   };
   const inspect = async (path: string) => {
-    inspectionTrigger.current = choosing ? addButton.current : readButton.current;
+    const trigger = choosing ? addButton.current : readButton.current;
+    inspectionTrigger.current = interaction ? interaction.capture(trigger) : captureFocusReturn(trigger);
     setChoosing(false);
     setBusy(true);
     setError(null);
