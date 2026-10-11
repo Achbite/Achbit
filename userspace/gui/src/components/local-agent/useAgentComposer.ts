@@ -290,7 +290,7 @@ export function useAgentComposer(
           return;
         }
         if (pendingInteraction) {
-          await respondInteraction(submittedText);
+          await respondInteraction(submittedText, pendingInteraction.interactionId);
           return;
         }
         const focusMatch = submittedText.match(/^\/focus(?:\s+)([\s\S]+)$/u);

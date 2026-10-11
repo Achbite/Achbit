@@ -28,6 +28,7 @@ import { MessageActions } from './MessageActions';
 import { RunFailureDetails, ProviderRetryStatus } from './RunFailureDetails';
 import { ApprovalActivity } from './ApprovalActivity';
 import { InteractionCard } from './InteractionCard';
+import { messageDisplayText } from './interactionPresentation';
 
 interface ConversationTranscriptProps {
   language: UiLanguage;
@@ -46,6 +47,7 @@ interface ConversationTranscriptProps {
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   canEditMessage?: boolean;
   onEditMessage?: (message: SessionProjection['messages'][number]) => void;
+  composerInteractionId?: string;
 }
 
 export function ConversationTranscript({
@@ -65,6 +67,7 @@ export function ConversationTranscript({
   setUiActionError,
   canEditMessage = false,
   onEditMessage,
+  composerInteractionId,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
@@ -225,7 +228,7 @@ export function ConversationTranscript({
                       item.value.displayContent ?? item.value.content,
                       presentation.content(`message:${item.value.messageId}:content`),
                     )
-                  : item.value.replyToInteraction ? <MarkdownContent>{item.value.content}</MarkdownContent>
+                  : item.value.replyToInteraction ? <MarkdownContent>{messageDisplayText(item.value, projection?.interactions ?? [])}</MarkdownContent>
                   : presentation.content(`message:${item.value.messageId}:content`)}
               </div>
             )}
@@ -254,7 +257,7 @@ export function ConversationTranscript({
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
             <MessageActions message={item.value} language={language} copied={copiedMessageId === item.value.messageId}
-              busy={submitting} canEdit={canEditMessage} onCopy={() => void copyMessage(item.value.messageId, item.value.displayContent ?? item.value.content)}
+              busy={submitting} canEdit={canEditMessage} onCopy={() => void copyMessage(item.value.messageId, messageDisplayText(item.value, projection?.interactions ?? []))}
               onFeedback={(feedback) => void updateMessageFeedback(item.value.messageId, feedback)}
               onEdit={() => onEditMessage?.(item.value)} />
           )}
@@ -281,7 +284,7 @@ export function ConversationTranscript({
           onToggle={onPlanToggle}
         />
       ) : item.type === 'interaction' ? (
-        <InteractionCard interaction={item.value} language={language} />
+        <InteractionCard interaction={item.value} language={language} answerInComposer={item.value.interactionId === composerInteractionId} />
       ) : item.type === 'approval' ? (
         <ApprovalActivity activity={item.value} language={language}
           pending={projection?.pendingApproval?.callId === item.value.callId}
@@ -335,7 +338,7 @@ export function ConversationTranscript({
   const rounds = useMemo(() => conversationRounds(conversationItems, draftItems, projection?.run?.runId), [conversationItems, draftItems, projection?.run?.runId]);
   const sessionKey = projection?.sessionId ?? '';
   const virtualizer = useMemo(() => new ConversationVirtualizer(layouts.current.session(sessionKey), viewport.preserveReadingPosition), [sessionKey, viewport.preserveReadingPosition]);
-  const navigation = useMemo(() => conversationNavigation(rounds), [rounds]);
+  const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
   const eagerRows = useMemo(() => new Set(rounds.flatMap((round) => round.rows).slice(-12).map((row) => row.key)), [rounds]);
   useLayoutEffect(() => {
     if (viewport.bodyRef.current) virtualizer.connect(viewport.bodyRef.current);

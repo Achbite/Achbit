@@ -1213,6 +1213,7 @@
     "agent.hostRebind.description": "此任务仍绑定先前的窗口。切换只作用于后续的新调用，且需要重新观察画面。当前等待中的操作仍使用原目标；回答或审批仍需单独提交。",
     "agent.hostRebind.action": "使用当前 GUI 继续",
     "agent.question.title": "待澄清问题",
+    "agent.question.open": "查看下方问题",
     "agent.question.pending": "等待你的回答",
     "agent.question.answered": "已回答",
     "agent.question.closed": "已关闭",

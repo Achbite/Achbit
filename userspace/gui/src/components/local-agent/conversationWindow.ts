@@ -1,8 +1,10 @@
 import type { ConversationRound } from './conversationItems';
+import type { InteractionProjection } from '@deepcode/protocol';
+import { messageDisplayText } from './interactionPresentation';
 
 export interface ConversationNavigationEntry { key: string; rowIndex: number; label: string }
 
-export function conversationNavigation(rounds: ConversationRound[]): ConversationNavigationEntry[] {
+export function conversationNavigation(rounds: ConversationRound[], interactions: InteractionProjection[] = []): ConversationNavigationEntry[] {
   const entries: ConversationNavigationEntry[] = [];
   let rowIndex = 0;
   for (const round of rounds) for (const row of round.rows) {
@@ -10,7 +12,7 @@ export function conversationNavigation(rounds: ConversationRound[]): Conversatio
       entries.push({
         key: row.key,
         rowIndex,
-        label: row.item.value.content.trim().slice(0, 180)
+        label: messageDisplayText(row.item.value, interactions).trim().slice(0, 180)
           || row.item.value.filesystemReferences.map((reference) => reference.displayName).join(', ').slice(0, 180),
       });
     }

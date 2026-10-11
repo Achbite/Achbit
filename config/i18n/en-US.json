@@ -1213,6 +1213,7 @@
     "agent.hostRebind.description": "This task is bound to a previous window. Selecting this window changes subsequent calls and requires a new observation. Pending operations still use their original target; your answer or approval is a separate decision.",
     "agent.hostRebind.action": "Continue in this window",
     "agent.question.title": "Clarification",
+    "agent.question.open": "View question below",
     "agent.question.pending": "Awaiting your answer",
     "agent.question.answered": "Answered",
     "agent.question.closed": "Closed",
