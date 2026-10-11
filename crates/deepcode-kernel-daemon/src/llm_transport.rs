@@ -342,6 +342,13 @@ fn responses_request_body(
             .count();
         input.drain(..prefix_len);
         for item in input {
+            // Codex accepts reasoning content, but not its output-only status.
+            // Encode a request copy; the original Provider item stays in the journal.
+            if item["type"] == "reasoning" {
+                item.as_object_mut()
+                    .expect("validated reasoning item")
+                    .remove("status");
+            }
             if item["role"] == "system" {
                 item["role"] = json!("developer");
             }
@@ -2265,6 +2272,35 @@ mod tests {
                 "output": "{\"ok\":true}",
             })
         );
+    }
+
+    #[test]
+    fn codex_reasoning_replay_omits_status_without_mutating_native_facts() {
+        let item = json!({"type":"reasoning", "id":"rs_history", "status":"completed",
+            "summary":[{"type":"summary_text", "text":"Inspect the project."}],
+            "content":[{"type":"reasoning_text", "text":"Retained content."}],
+            "encrypted_content":"opaque-reasoning"});
+        let messages: Vec<LocalProviderMessage> = serde_json::from_value(json!([
+            {"role":"system", "content":"Summarize the conversation."},
+            {"role":"user", "content":"Continue."},
+            {"role":"assistant", "content":"", "providerOutputBlocks":[{
+                "outputIndex":0, "kind":"reasoning", "item":item
+            }]}
+        ]))
+        .unwrap();
+        let mut profile = test_profile("responses");
+        let generic = responses_request_body(&profile, &messages, &[], &[], true).unwrap();
+        assert_eq!(generic["input"][2], item);
+        profile.connection.adapter_id = "openai-codex".into();
+        let codex = responses_request_body(&profile, &messages, &[], &[], true).unwrap();
+        let mut expected = item.clone();
+        expected.as_object_mut().unwrap().remove("status");
+        assert_eq!(codex["input"][1], expected);
+        assert_eq!(
+            messages[2].provider_output_blocks.as_ref().unwrap()[0]["item"],
+            item
+        );
+        assert_eq!(codex["instructions"], "Summarize the conversation.");
     }
 
     #[test]

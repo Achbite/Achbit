@@ -38,7 +38,7 @@ test('queued file snapshots join the next request without changing in-flight or 
       const inputs = calls.map(call => typeof call.input === 'string' ? JSON.parse(call.input) : call.input);
       assert.deepEqual(inputs.map(input => input.workspace), ['primary', 'workspace3']);
       assert.deepEqual(history(request).slice(0, history(requests[1]).length), history(requests[1]));
-      assert.equal(request.messages.filter(message => message.images?.length).length, turn === 3 ? 1 : 0);
+      assert.equal(request.messages.filter(message => message.images?.length).length, 0);
       yield providerEvent(request.requestId, 'text.delta', { text: 'Read the supplied screenshot and notes.' });
     }
     yield providerEvent(request.requestId, 'completed', {});

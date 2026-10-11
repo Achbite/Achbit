@@ -38,7 +38,7 @@ const settle = (append, providerRequestId, outcome = 'completed', purpose = 'age
   append('provider.turn.settled', { providerRequestId, purpose, outcome })
 );
 
-test('GUI observations are consumed by a successful request and exact archived images can be reopened once', () => {
+test('attachments and GUI observations are consumed by a successful request and archived images can be reopened once', () => {
   const { events, append } = history();
   append('message.committed', { role: 'user', messageId: 'input', filesystemReferences: [file('design')] }, { runId: undefined });
   append('run.started', { inputMessageId: 'input' });
@@ -51,9 +51,9 @@ test('GUI observations are consumed by a successful request and exact archived i
   append('tool.completed', { record: { toolName: 'fs.read', input: {}, outcome: 'completed', output: { content: 'code' } } });
   assert.deepEqual(ids(visualContextMessages(events, runId)), ['design', 'before', 'detail']);
   settle(append, request);
-  assert.deepEqual(ids(visualContextMessages(events, runId)), ['design']);
+  assert.deepEqual(ids(visualContextMessages(events, runId)), []);
   observe(append, 'after');
-  assert.deepEqual(ids(visualContextMessages(events, runId)), ['design', 'after']);
+  assert.deepEqual(ids(visualContextMessages(events, runId)), ['after']);
   choose(append, ['before', 'after']);
   const compared = visualContextMessages(events, runId);
   assert.deepEqual(ids(compared), ['before', 'after']);
@@ -85,13 +85,16 @@ test('reference images retain their lifetime and unrelated or unsuccessful reque
   assert.equal(imageCatalog(events).size, 2, 'consumption never deletes archived references');
 });
 
-test('only the observations actually selected into a completed request are consumed', () => {
+test('only attachments and observations actually selected into a completed request are consumed', () => {
   const { events, append } = history();
+  append('message.committed', { role: 'user', messageId: 'input', filesystemReferences: [file('initial')] });
   observe(append, 'first');
   const first = compose(append, events);
+  append('message.committed', { role: 'user', messageId: 'supplement', filesystemReferences: [file('added')] });
   observe(append, 'second');
   settle(append, first);
-  assert.deepEqual(ids(visualContextMessages(events, runId)), ['second']);
+  assert.deepEqual(ids(visualContextMessages(events, runId)), ['added', 'second']);
+  assert.equal(imageCatalog(events).size, 4);
 });
 
 test('explicit GUI rebind clears old observation selection and keeps the archive readable', () => {
@@ -106,7 +109,7 @@ test('explicit GUI rebind clears old observation selection and keeps the archive
   assert.deepEqual(ids(visualContextMessages(events, runId)), ['design', 'new-window']);
 });
 
-test('the Session loop sends an observation once while subsequent tool history retains its archive reference', async t => {
+test('the Session loop sends attachments and observations once while subsequent history retains their references', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:image-lifetime';
   await createSession(journal, sessionId, [workspaceBinding]);
   const requests = [], executions = [];
@@ -131,13 +134,18 @@ test('the Session loop sends an observation once while subsequent tool history r
       : { content: 'Notes contain no images.' });
   } }), fakeRunPreparation({ tools: [tool], contextWindowTokens: 32768 }).port, 'image-lifetime');
   t.after(() => actor.dispose());
-  await actor.submit(messageCommand(sessionId, 'command:start', 'Inspect the screenshot, then read the notes.'));
+  const submitted = await actor.submit({ ...messageCommand(sessionId, 'command:start', 'Inspect the screenshot, then read the notes.'),
+    filesystemReferences: [{ ...file('design'), byteLength: 8 }] });
+  assert.equal(submitted.status, 'accepted');
   await waitForProjection(actor, state => state.run?.status === 'completed');
   assert.equal(requests.length, 3);
   assert.deepEqual(requests.map(request => request.messages.flatMap(message => message.toolImages ?? [])),
     [[], [{ callId: executions[0].callId, artifactId: 'artifact:screen' }], []]);
+  assert.deepEqual(requests.map(request => request.messages.flatMap(message => message.images ?? [])),
+    [[{ workspaceId: 'input:images', logicalPath: 'design.png', mediaType: 'image/png' }], [], []]);
   assert.ok(requests[2].messages.some(message => message.role === 'tool' && message.content.includes('artifact:screen')));
-  assert.equal(imageCatalog(await readEvents(journal, sessionId)).size, 1);
+  assert.ok(requests[2].messages.some(message => message.content.includes('design.png')));
+  assert.equal(imageCatalog(await readEvents(journal, sessionId)).size, 2);
 });
 
 test('a new run carries references without pixels and can reopen images across a compaction', () => {
@@ -176,7 +184,6 @@ test('retry preserves selected attachment and observation images in the request 
   append('message.committed', { role: 'user', messageId: 'input', filesystemReferences: [file('attachment')] }, { runId: undefined });
   append('run.started', { inputMessageId: 'input' });
   observe(append, 'observation');
-  choose(append, ['attachment', 'observation']);
   const selected = visualContextMessages(events, runId);
   assert.deepEqual(ids(selected), ['attachment', 'observation']);
   const requests = [], facts = [];
