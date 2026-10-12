@@ -18,6 +18,8 @@ macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕�
 
 GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运行微软安装器；无法完成时会显示错误。解压版使用同一套用户目录，GUI 入口为 `DeepCode-GUI.exe`，命令入口为 `deepcode-cli.bat` 和 `deepcode-tui.bat`。卸载移除程序和本安装添加的 PATH 项，保留用户文件。
 
+桌面截图与操作由程序目录中的 `DeepCode-Computer-Use.exe` 执行，GUI 在首次调用时启动它并随 GUI 退出回收。Windows 不需要单独授予辅助功能或屏幕录制权限；以管理员身份运行的程序窗口不能由普通权限的 DeepCode 观察或操作。替换该文件后，下一次调用前 GUI 会结束旧组件并启动新版本，旧观察句柄需重新获取。
+
 ## Linux
 
 解压后使用包内 `DeepCode-GUI`、`deepcode-cli` 或 `deepcode-tui`。桌面环境需要 GTK 和 WebKitGTK。工作区 Shell 的环境要求见[执行环境](product/execution-environments.md)。

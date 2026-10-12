@@ -403,6 +403,23 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
                 installers.macos(stage, root / 'DeepCode.pkg', '0.6.2')
                 packager.run.assert_called_once()
 
+    def test_windows_computer_use_update_renames_the_running_image_aside(self):
+        import computer_use_package
+        with tempfile.TemporaryDirectory(prefix='deepcode-cu-update-') as directory:
+            root = Path(directory)
+            native = root / 'native.exe'
+            native.write_bytes(b'new executor')
+            destination = root / 'win64'
+            write(destination, computer_use_package.WINDOWS_EXECUTABLE, b'old executor')
+            stale = destination / (computer_use_package.WINDOWS_RETIRED + '1')
+            stale.write_bytes(b'no longer mapped')
+            computer_use_package.update_windows(native, destination, strip=None)
+            self.assertEqual((destination / computer_use_package.WINDOWS_EXECUTABLE).read_bytes(), b'new executor')
+            retired = list(destination.glob(computer_use_package.WINDOWS_RETIRED + '*'))
+            self.assertEqual([path.read_bytes() for path in retired], [b'old executor'])
+            self.assertFalse(stale.exists())
+            self.assertFalse(any(path.name.endswith('.new') for path in destination.iterdir()))
+
     def test_windows_setup_compiles_from_current_runtime(self):
         with tempfile.TemporaryDirectory(prefix='deepcode-nsis-') as directory:
             root = Path(directory)

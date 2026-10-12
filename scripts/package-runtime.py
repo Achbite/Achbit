@@ -15,6 +15,9 @@ import zipfile
 from macos_signing import sign_app, signing_identity
 from computer_use_package import assemble as assemble_computer_use, APP_NAME as COMPUTER_USE_APP
 
+# The GUI Host resolves this name next to DeepCode-GUI.exe.
+WINDOWS_COMPUTER_USE = 'DeepCode-Computer-Use.exe'
+
 
 def copy_js_package(source, target):
     target.mkdir(parents=True)
@@ -71,6 +74,9 @@ def assemble(args):
     shutil.copytree(args.shared, resources, dirs_exist_ok=True)
     suffix = '.exe' if windows else ''
     names = {'deepcode-kernel-daemon': 'deepcode-kernel', 'deepcode-first-party-provider': 'deepcode-first-party-provider', 'deepcode-host-web': 'deepcode-host-web', 'deepcode-cli': 'deepcode-cli', 'deepcode-tui': 'deepcode-tui', 'DeepCode-GUI': 'DeepCode-GUI'}
+    if windows:
+        # macOS ships the executor as a separately signed App; Windows uses a sibling program.
+        names['DeepCode-Computer-Use'] = WINDOWS_COMPUTER_USE.removesuffix('.exe')
     for source, target in names.items():
         destination = binaries / (target + suffix)
         if windows:
@@ -118,7 +124,7 @@ exec "$APP_DIR/MacOS/deepcode-''' + shell.lower() + '''" "$@"
 # Only program entries belong to the publisher. config/runtime/logs/sessions and
 # other user-created entries are never copied, removed or put into the archive.
 PROGRAM_ENTRIES = {
-    COMPUTER_USE_APP,
+    COMPUTER_USE_APP, WINDOWS_COMPUTER_USE,
     'DeepCode.app', 'DeepCode-GUI.app', 'DeepCode', 'DeepCode.exe', 'DeepCode-GUI', 'DeepCode-GUI.exe',
     'DeepCode-CLI.command', 'DeepCode-TUI.command', 'deepcode', 'libexec',
     'deepcode-cli.bat', 'deepcode-tui.bat', 'deepcode.cmd',
