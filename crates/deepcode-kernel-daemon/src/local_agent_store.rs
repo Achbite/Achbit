@@ -260,6 +260,83 @@ impl LocalAgentJournal {
         Ok(events)
     }
 
+    /// Project journal fields only. Run status semantics belong to Session.
+    pub(crate) fn read_run_lifecycle(
+        &self,
+        session_id: &str,
+        after: u64,
+    ) -> Result<Value, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let connection = self.lock()?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT (SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id=?1)
+                 FROM sessions WHERE session_id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
+        // Extract before materialization: runtime snapshots, messages, tool results
+        // and display text are never decoded or returned by this read path.
+        let mut statement = connection.prepare(
+            "SELECT sequence, event_type, run_id, call_id,
+             CASE
+               WHEN event_type='run.waiting' THEN json_object('reason', json_extract(payload_json, '$.reason'))
+               WHEN event_type='run.settled' THEN json_object('outcome', json_extract(payload_json, '$.outcome'))
+               WHEN event_type='interaction.requested' THEN
+                 CASE WHEN json_type(payload_json, '$.mode') IS NULL
+                 THEN json_object('interactionId', json_extract(payload_json, '$.interactionId'))
+                 ELSE json_object('interactionId', json_extract(payload_json, '$.interactionId'), 'mode', json_extract(payload_json, '$.mode')) END
+               WHEN event_type='interaction.resolved' THEN json_object('interactionId', json_extract(payload_json, '$.interactionId'))
+               WHEN event_type IN ('plan.published','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated')
+                 THEN json_object('planId', json_extract(payload_json, '$.planId'), 'revision', json_extract(payload_json, '$.revision'))
+               WHEN event_type='approval.requested' THEN json_object('approvalId', json_extract(payload_json, '$.approvalId'))
+               WHEN event_type='approval.resolved' THEN
+                 json_patch(json_object('approvalId', json_extract(payload_json, '$.approvalId'),
+                   'decision', json_extract(payload_json, '$.decision'), 'authorityId', json_extract(payload_json, '$.authorityId')),
+                   CASE WHEN json_type(payload_json, '$.authorizationScope') IS NULL THEN '{}'
+                   ELSE json_object('authorizationScope', json_extract(payload_json, '$.authorizationScope')) END)
+               WHEN event_type='approval.revoked' THEN json_object('authorityId', json_extract(payload_json, '$.authorityId'))
+               WHEN event_type='conversation.revised' THEN json_object('fromSequence', json_extract(payload_json, '$.fromSequence'), 'throughSequence', json_extract(payload_json, '$.throughSequence'))
+               ELSE '{}'
+             END
+             FROM session_events WHERE session_id=?1 AND sequence>?2 AND sequence<=?3
+             AND event_type IN ('run.started','run.waiting','run.finishing','run.runtime.release_failed','run.runtime.released','run.settled',
+               'interaction.requested','interaction.resolved','plan.published','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated',
+               'approval.requested','approval.resolved','approval.revoked','tool.completed','session.permissions.updated','conversation.revised')
+             ORDER BY sequence ASC",
+        ).map_err(sql_error("session_lifecycle_read_prepare_failed"))?;
+        let after = i64::try_from(after).unwrap_or(i64::MAX);
+        let rows = statement
+            .query_map(params![session_id, after, revision], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql_error("session_lifecycle_read_failed"))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (sequence, event_type, run_id, call_id, payload) =
+                row.map_err(sql_error("session_lifecycle_read_failed"))?;
+            let mut event = json!({"sessionId":session_id, "sequence":sequence,
+                "type":event_type, "payload":decode_json(&payload, "session_event_corrupt")?});
+            if let Some(run_id) = run_id {
+                event["runId"] = json!(run_id);
+            }
+            if let Some(call_id) = call_id {
+                event["callId"] = json!(call_id);
+            }
+            events.push(event);
+        }
+        Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
+    }
+
     pub(crate) fn read_command(
         &self,
         session_id: &str,
@@ -5138,6 +5215,113 @@ mod tests {
         assert!(validate_todo_items(&json!([{"text":"Task","status":"invented"}])).is_err());
         validate_todo_items(&json!([])).unwrap();
         validate_todo_items(&json!([{"text":"Task","status":"blocked"}])).unwrap();
+    }
+
+    #[test]
+    fn compact_run_lifecycle_projects_fields_and_preserves_journal_revision() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let session_id = "session:compact-status";
+        let run_id = "run:compact-status";
+        journal
+            .create_session(session_id, "Stored title", &json!([]), None, None)
+            .unwrap();
+        journal
+            .append(&json!({"type":"message.committed","sessionId":session_id,
+            "payload":{"messageId":"message:compact","role":"user","content":"Stored body"}}))
+            .unwrap();
+        let runtime = runtime_snapshot();
+        let mut expected = Vec::new();
+        let mut append = |event: Value, payload: Value| {
+            let stored = journal.append(&event).unwrap();
+            let mut narrow = json!({"sessionId":session_id,"sequence":stored["sequence"],
+                "type":event["type"],"payload":payload});
+            for key in ["runId", "callId"] {
+                if let Some(value) = event.get(key) {
+                    narrow[key] = value.clone();
+                }
+            }
+            expected.push(narrow);
+        };
+        append(
+            json!({"type":"run.started","sessionId":session_id,"runId":run_id,
+            "payload":{"inputMessageId":"message:compact","workspaceBindings":[],"runtimeSnapshot":runtime}}),
+            json!({}),
+        );
+        for (suffix, mode) in [("blocking", None), ("deferred", Some("continue"))] {
+            let interaction_id = format!("interaction:{suffix}");
+            let mut event = json!({"type":"interaction.requested","sessionId":session_id,"runId":run_id,
+                "callId":format!("call:{suffix}"),"payload":{"interactionId":interaction_id,
+                "providerCallId":format!("provider:{suffix}"),"kind":"question","prompt":"Stored prompt","allowFreeform":true}});
+            let mut payload = json!({"interactionId":interaction_id});
+            if let Some(mode) = mode {
+                event["payload"]["mode"] = json!(mode);
+                payload["mode"] = json!(mode);
+            }
+            append(event, payload);
+        }
+        append(
+            json!({"type":"run.waiting","sessionId":session_id,"runId":run_id,
+            "payload":{"reason":"userInput","detail":"Stored detail"}}),
+            json!({"reason":"userInput"}),
+        );
+        append(
+            json!({"type":"run.finishing","sessionId":session_id,"runId":run_id,
+            "payload":{"outcome":"cancelled"}}),
+            json!({}),
+        );
+        append(
+            json!({"type":"run.runtime.released","sessionId":session_id,"runId":run_id,
+            "payload":{"runRuntimeSnapshotRef":runtime["runRuntimeSnapshotRef"],
+            "extensionGenerationRef":runtime["extensionGenerationRef"],"kernelCatalogSnapshotRef":runtime["kernelCatalogSnapshotRef"],
+            "providerRuntimeRef":runtime["provider"]["providerRuntimeRef"],"pluginInstanceRefs":[],"alreadyReleased":false}}),
+            json!({}),
+        );
+        append(
+            json!({"type":"run.settled","sessionId":session_id,"runId":run_id,
+            "payload":{"outcome":"cancelled"}}),
+            json!({"outcome":"cancelled"}),
+        );
+        append(
+            json!({"type":"conversation.revised","sessionId":session_id,
+            "payload":{"commandId":"command:edit","messageId":"message:compact","fromSequence":2,"throughSequence":9}}),
+            json!({"fromSequence":2,"throughSequence":9}),
+        );
+        journal.append(&json!({"type":"session.model-settings.updated","sessionId":session_id,
+            "payload":{"commandId":"command:settings","settings":{"profileId":"profile:stored","reasoningEffortOverride":null}}})).unwrap();
+        let read = journal.read_run_lifecycle(session_id, 0).unwrap();
+        assert_eq!(
+            read,
+            json!({"sessionId":session_id,"revision":11,"events":expected})
+        );
+        let encoded = read.to_string();
+        for excluded in [
+            "Stored",
+            "runtimeSnapshot",
+            "kernelCatalogSnapshotRef",
+            "occurredAt",
+            "eventId",
+            "profileId",
+        ] {
+            assert!(
+                !encoded.contains(excluded),
+                "unexpected full payload field: {excluded}"
+            );
+        }
+        assert_eq!(
+            journal.read_run_lifecycle(session_id, 8).unwrap(),
+            json!({"sessionId":session_id,"revision":11,"events":expected[6..]})
+        );
+        assert_eq!(
+            journal.read_run_lifecycle(session_id, 11).unwrap(),
+            json!({"sessionId":session_id,"revision":11,"events":[]})
+        );
+        assert_eq!(
+            journal
+                .read_run_lifecycle("session:missing", 0)
+                .unwrap_err()
+                .code,
+            "session_not_found"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { advanceTodoList } from './todoState.js';
 import { appendInputFileBindings } from './workspaceBindings.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { projectRunLifecycleEvent, reduceRunLifecycle } from './runLifecycle.js';
 import { projectDraftSourceContent, projectSourceContent } from './sourceReferences.js';
 import type {
   ActivityProjection,
@@ -161,6 +162,14 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
   if (event.sequence !== previous.revision + 1) throw new Error('session_event_sequence_gap');
 
   const next: SessionState = { ...previous, revision: event.sequence };
+  const lifecycleEvent = projectRunLifecycleEvent(event);
+  const lifecycle = lifecycleEvent ? reduceRunLifecycle({
+    run: previous.run ? { runId: previous.run.runId, status: previous.run.status,
+      ...(previous.run.waitingReason ? { waitingReason: previous.run.waitingReason } : {}) } : null,
+    pendingInteractions: previous.interactions.filter(item => item.status === 'pending'),
+    pendingPlan: previous.pendingPlan,
+    pendingApproval: previous.pendingApproval,
+  }, lifecycleEvent) : null;
 
   switch (event.type) {
     case 'provider.attempt.updated': {
@@ -224,7 +233,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
     case 'session.permissions.updated':
       validatePermissionPatches(event.payload.patches);
       next.permissionOverrides = { ...next.permissionOverrides, ...event.payload.patches };
-      if (next.run?.status === 'waiting' && next.run.waitingReason === 'approval') resumeRun(next, next.run.runId);
       break;
     case 'approval.revoked':
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.authorityId !== event.payload.authorityId);
@@ -299,10 +307,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         );
       }
       next.run = {
-        runId: event.runId,
+        ...lifecycle!.run!,
         ...(event.payload.runtimeSnapshot.environment.hostBinding
           ? { hostBinding: structuredClone(event.payload.runtimeSnapshot.environment.hostBinding) as unknown as NonNullable<RunProjection['hostBinding']> } : {}),
-        status: 'running',
         workspaceBindings: event.payload.workspaceBindings.map((binding) => ({ ...binding })),
         profileId: event.payload.runtimeSnapshot.provider.profileId,
       };
@@ -452,10 +459,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.interactions = next.interactions.map(item => item === interaction
         ? { ...item, status: 'answered', response: event.payload.response } : item);
       settleActivity(next, interactionActivityId(event.payload.interactionId), 'completed');
-      if (next.run?.status === 'waiting' && next.run.waitingReason === 'userInput'
-        && !next.interactions.some(item => item.runId === event.runId && item.status === 'pending' && item.mode !== 'continue')) {
-        resumeRun(next, event.runId);
-      }
       break;
     }
     case 'plan.published': {
@@ -512,7 +515,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planActivityId(event.payload.planId, event.payload.revision),
         'completed',
       );
-      resumeRun(next, event.runId);
       break;
     case 'plan.revision.requested':
       assertPendingPlan(next, event);
@@ -529,7 +531,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planActivityId(event.payload.planId, event.payload.revision),
         'completed',
       );
-      resumeRun(next, event.runId);
       break;
     case 'plan.cancelled':
       assertPendingPlan(next, event);
@@ -546,7 +547,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planActivityId(event.payload.planId, event.payload.revision),
         'cancelled',
       );
-      resumeRun(next, event.runId);
       break;
     case 'plan.superseded':
       if (!['confirmed', 'revisionRequested'].includes(
@@ -565,7 +565,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planFor(next, event.payload.planId, event.payload.revision).status,
       )) throw new Error('plan_invalidation_state_invalid');
       {
-        const invalidatedPending = samePlanRef(next.pendingPlan, event.payload);
         updatePlan(next, event.payload.planId, event.payload.revision, (plan) => ({
           ...plan,
           status: 'invalidated',
@@ -579,7 +578,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
           planActivityId(event.payload.planId, event.payload.revision),
           'failed',
         );
-        if (invalidatedPending) resumeRun(next, event.runId);
       }
       break;
     case 'artifacts.presented': {
@@ -667,9 +665,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       }
       next.pendingApproval = null;
       settleActivity(next, approvalActivityId(event.payload.approvalId), event.payload.decision === 'allow' ? 'completed' : 'denied');
-      // Conversation grants also replay after an edit removes their original run.
-      if (event.payload.decision !== 'allow' || !(event.payload.authorizationScope && isSessionAuthorizationScope(event.payload.authorizationScope))
-        || next.run?.runId === event.runId) resumeRun(next, event.runId);
       break;
     case 'tool.input-rejected':
       settleActivity(next, toolActivityId(event.callId), 'rejected');
@@ -687,7 +682,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       if (next.pendingApproval?.callId === event.callId) {
         settleActivity(next, approvalActivityId(next.pendingApproval.approvalId), 'completed');
         next.pendingApproval = null;
-        resumeRun(next, event.runId);
       }
       settleActivity(
         next,
@@ -1040,13 +1034,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       break;
     }
     case 'run.waiting':
-      next.run = {
-        runId: event.runId,
-        status: 'waiting',
-        waitingReason: event.payload.reason,
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: requiredRunRuntimeSnapshot(next, event.runId).provider.profileId,
-      };
+      assertCurrentRun(next, event.runId, 'run_workspace_snapshot_missing');
       break;
     case 'run.finishing':
       next.pendingRunSettlements = { ...next.pendingRunSettlements };
@@ -1061,12 +1049,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       }
       next.pendingRunSettlements[event.runId] = cloneRunSettlement(event.payload);
       next.activePlanRef = null;
-      next.run = {
-        runId: event.runId,
-        status: 'releasing',
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: requiredRunRuntimeSnapshot(next, event.runId).provider.profileId,
-      };
       closeInteractions(next, event.runId);
       next.pendingApproval = null;
       break;
@@ -1082,12 +1064,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         || event.payload.kernelCatalogSnapshotRef !== runtime.kernelCatalogSnapshotRef
         || event.payload.providerRuntimeRef !== runtime.provider.providerRuntimeRef
       ) throw new Error('run_runtime_release_failure_state_invalid');
-      next.run = {
-        runId: event.runId,
-        status: 'releaseFailed',
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: runtime.provider.profileId,
-      };
       next.terminalError = { ...event.payload.error };
       break;
     }
@@ -1114,16 +1090,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         ...event.payload,
         pluginInstanceRefs: [...event.payload.pluginInstanceRefs],
       };
-      next.run = {
-        runId: event.runId,
-        status: 'releasing',
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: runtime.provider.profileId,
-      };
       next.terminalError = null;
       break;
     }
     case 'run.settled':
+      assertCurrentRun(next, event.runId, 'run_workspace_snapshot_missing');
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.runId !== event.runId || isSessionAuthorizationScope(grant.scope));
       next.tokenUsageHistory = { ...next.tokenUsageHistory };
       next.pendingRunSettlements = { ...next.pendingRunSettlements };
@@ -1140,12 +1111,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         completedAt: event.occurredAt,
         outcome: event.payload.outcome,
       };
-      next.run = {
-        runId: event.runId,
-        status: event.payload.outcome,
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: requiredRunRuntimeSnapshot(next, event.runId).provider.profileId,
-      };
       closeInteractions(next, event.runId);
       next.pendingApproval = null;
       settleActivity(next, runActivityId(event.runId), event.payload.outcome);
@@ -1155,6 +1120,10 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         : null;
       delete next.pendingRunSettlements[event.runId];
       break;
+  }
+  if (lifecycle?.run && next.run) {
+    const { waitingReason: _waitingReason, ...run } = next.run;
+    next.run = { ...run, ...lifecycle.run };
   }
   if (next.run) {
     const provider = requiredRunRuntimeSnapshot(next, next.run.runId).provider;
@@ -1346,11 +1315,6 @@ function effectiveWorkspaceBindings(state: Pick<
   ];
 }
 
-function currentRunBindings(state: SessionState, runId: string): WorkspaceBindingDisplay[] {
-  if (!state.run || state.run.runId !== runId) throw new Error('run_workspace_snapshot_missing');
-  return state.run.workspaceBindings.map((binding) => ({ ...binding }));
-}
-
 function cloneRun(run: NonNullable<SessionProjection['run']>): NonNullable<SessionProjection['run']> {
   return {
     ...run,
@@ -1381,6 +1345,7 @@ function cloneRunRuntimeSnapshot(snapshot: RunRuntimeSnapshot): RunRuntimeSnapsh
   }));
   return {
     ...snapshot,
+    ...(snapshot.agentCapabilities !== undefined ? { agentCapabilities: structuredClone(snapshot.agentCapabilities) } : {}),
     environment: structuredClone(snapshot.environment),
     provider: { ...snapshot.provider },
     ...(snapshot.approvalReviewer ? { approvalReviewer: { ...snapshot.approvalReviewer } } : {}),
@@ -2030,16 +1995,6 @@ function assertRunningRun(state: SessionState, runId: string, code: string): voi
   if (!state.run || state.run.runId !== runId || state.run.status !== 'running') {
     throw new Error(code);
   }
-}
-
-function resumeRun(state: SessionState, runId: string): void {
-  assertCurrentRun(state, runId, 'run_resume_identity_mismatch');
-  state.run = {
-    runId,
-    status: 'running',
-    workspaceBindings: state.run!.workspaceBindings.map((binding) => ({ ...binding })),
-    profileId: state.run!.profileId,
-  };
 }
 
 function settleActivity(

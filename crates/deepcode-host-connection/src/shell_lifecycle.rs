@@ -28,10 +28,15 @@ pub struct OwnedHostChildren {
 
 impl OwnedHostChildren {
     pub fn attach_client(&mut self) -> io::Result<()> {
-        self.client_lease = Some(HostClientLease::connect(
+        self.attach_client_until(std::time::Instant::now() + std::time::Duration::from_secs(8))
+    }
+
+    pub fn attach_client_until(&mut self, deadline: std::time::Instant) -> io::Result<()> {
+        self.client_lease = Some(HostClientLease::connect_until(
             &self.daemon_identity.address,
             &self.daemon_token,
             false,
+            deadline,
         )?);
         #[cfg(windows)]
         if let Some(daemon) = self.daemon.as_ref() {

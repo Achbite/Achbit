@@ -289,6 +289,7 @@ export function forwardingJournal(delegate, read) {
     append: (event) => delegate.append(event),
     appendBatch: (events) => delegate.appendBatch(events),
     read,
+    readRunLifecycle: (sessionId, afterSequence) => delegate.readRunLifecycle(sessionId, afterSequence),
     readCommand: (sessionId, commandId) => delegate.readCommand(sessionId, commandId),
     commitCommand: (command, events, reply) => delegate.commitCommand(command, events, reply),
   };

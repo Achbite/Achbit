@@ -77,9 +77,12 @@ async fn main() {
             plugin_uris: args.plugins,
         },
     );
-    if let Err(error) = app.bootstrap().await {
-        eprintln!("{}", language.format("tui.initializationFailed", &[error]));
-        std::process::exit(1);
+    let interactive = !args.smoke && io::stdin().is_terminal() && io::stdout().is_terminal();
+    if !interactive {
+        if let Err(error) = app.bootstrap().await {
+            eprintln!("{}", language.format("tui.initializationFailed", &[error]));
+            std::process::exit(1);
+        }
     }
 
     if args.smoke {
@@ -87,7 +90,7 @@ async fn main() {
         return;
     }
 
-    let result = if io::stdin().is_terminal() && io::stdout().is_terminal() {
+    let result = if interactive {
         run_terminal(app).await.map(|_| None)
     } else {
         run_plain(app).await
@@ -206,7 +209,34 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = ratatui::Terminal::new(backend)?;
     terminal.clear()?;
+    // The existing initialization view is visible before selected history is read.
+    terminal.draw(|frame| app.renderer().draw(frame, &app))?;
     let mut input_task = spawn_terminal_event_task();
+    let initialization = {
+        let initialize = app.bootstrap();
+        tokio::pin!(initialize);
+        loop {
+            tokio::select! {
+                result = &mut initialize => break result.map(|_| true).map_err(|error| {
+                    io::Error::other(language.format("tui.initializationFailed", &[error]))
+                }),
+                result = &mut input_task => {
+                    input_task = spawn_terminal_event_task();
+                    match terminal_event_result(language, result) {
+                        Ok(Some(CrosstermEvent::Key(key))) if key.kind == KeyEventKind::Press
+                            && key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(false),
+                        Err(error) => break Err(error),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+    if !matches!(initialization, Ok(true)) {
+        let pump = terminal_event_result(language, input_task.await).map(|_| ());
+        return initialization.map(|_| ()).and(pump);
+    }
     let mut refresh = tokio::time::interval(Duration::from_millis(150));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let loop_result = async {

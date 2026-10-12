@@ -38,7 +38,8 @@ struct TranscriptKey {
 #[derive(Clone)]
 struct TranscriptCache {
     key: TranscriptKey,
-    text: Text<'static>,
+    paragraph: Paragraph<'static>,
+    line_count: usize,
 }
 
 impl Default for Renderer {
@@ -1190,20 +1191,21 @@ impl Renderer {
         };
         let mut cache = self.transcript.borrow_mut();
         if cache.as_ref().is_none_or(|cache| cache.key != key) {
+            let paragraph =
+                Paragraph::new(self.transcript_text(body, app)).wrap(Wrap { trim: false });
+            let line_count = paragraph.line_count(body.width);
             *cache = Some(TranscriptCache {
                 key,
-                text: self.transcript_text(body, app),
+                paragraph,
+                line_count,
             });
         }
-        let paragraph =
-            Paragraph::new(cache.as_ref().unwrap().text.clone()).wrap(Wrap { trim: false });
-        let height = paragraph.line_count(body.width);
-        let maximum = height.saturating_sub(usize::from(body.height));
+        let cache = cache.as_mut().unwrap();
+        let maximum = cache.line_count.saturating_sub(usize::from(body.height));
         let offset = app.transcript_offset(maximum);
-        frame.render_widget(
-            paragraph.scroll((offset.min(u16::MAX as usize) as u16, 0)),
-            body,
-        );
+        cache.paragraph =
+            std::mem::take(&mut cache.paragraph).scroll((offset.min(u16::MAX as usize) as u16, 0));
+        frame.render_widget(&cache.paragraph, body);
         if maximum > 0 {
             frame.render_stateful_widget(
                 Scrollbar::default()
@@ -1947,41 +1949,57 @@ fn round_change_lines(
 }
 
 fn timeline_items(projection: &SessionProjection) -> Vec<TimelineItem<'_>> {
+    let messages: std::collections::HashMap<_, _> = projection
+        .messages
+        .iter()
+        .map(|message| (message.message_id.as_str(), message))
+        .collect();
+    let narratives: std::collections::HashMap<_, _> = projection
+        .narratives
+        .iter()
+        .map(|narrative| (narrative.narrative_id.as_str(), narrative))
+        .collect();
+    let plans: std::collections::HashMap<_, _> = projection
+        .plans
+        .iter()
+        .map(|plan| ((plan.plan_id.as_str(), plan.revision), plan))
+        .collect();
+    let activities: std::collections::HashMap<_, _> = projection
+        .activities
+        .iter()
+        .map(|activity| (activity.activity_id.as_str(), activity))
+        .collect();
     projection
         .timeline
         .iter()
         .map(|item| match item {
             SessionTimelineItem::Message { message_id, .. } => TimelineItem::Message {
-                value: projection
-                    .messages
-                    .iter()
-                    .find(|message| message.message_id == *message_id)
+                value: messages
+                    .get(message_id.as_str())
+                    .copied()
                     .expect("validated Session timeline message reference"),
             },
             SessionTimelineItem::Narrative { narrative_id, .. } => TimelineItem::Narrative {
-                value: projection
-                    .narratives
-                    .iter()
-                    .find(|narrative| narrative.narrative_id == *narrative_id)
+                value: narratives
+                    .get(narrative_id.as_str())
+                    .copied()
                     .expect("validated Session timeline narrative reference"),
             },
             SessionTimelineItem::Plan {
                 plan_id, revision, ..
             } => TimelineItem::Plan {
-                value: projection
-                    .plans
-                    .iter()
-                    .find(|plan| plan.plan_id == *plan_id && plan.revision == *revision)
+                value: plans
+                    .get(&(plan_id.as_str(), *revision))
+                    .copied()
                     .expect("validated Session timeline plan reference"),
             },
             SessionTimelineItem::ToolGroup { activity_ids, .. } => TimelineItem::ToolGroup {
                 activities: activity_ids
                     .iter()
                     .map(|activity_id| {
-                        projection
-                            .activities
-                            .iter()
-                            .find(|activity| activity.activity_id == *activity_id)
+                        activities
+                            .get(activity_id.as_str())
+                            .copied()
                             .expect("validated Session timeline activity reference")
                     })
                     .collect(),

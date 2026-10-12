@@ -8,7 +8,7 @@ import { ConversationSessionScope } from './ConversationSessionScope';
 import { InteractionCard } from './InteractionCard';
 import { PlanCardContent } from './PlanCard';
 import { planScopeAddition } from './planReview';
-import { useAgentChildConversation } from './useAgentChildConversation';
+import { childNeedsBackgroundRead, useAgentChildConversation } from './useAgentChildConversation';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ArtifactLinks } from './ArtifactLinks';
 import { requestWorkspacePreview } from './readerState';
@@ -49,7 +49,8 @@ function AgentChildView({ sessionId, tasks, instance, language, panelExpanded, o
   const [conversationExpanded, setConversationExpanded] = useState(false);
   const [descendantNeedsInput, setDescendantNeedsInput] = useState(false);
   const revision = tasks.map(task => `${task.taskId}:${task.childRunId ?? ''}:${task.status}`).join('|');
-  const child = useAgentChildConversation(sessionId, revision, tasks.some(task => task.status === 'running'), panelExpanded && expanded);
+  const child = useAgentChildConversation(sessionId, revision, tasks.some(task => task.status === 'running'), panelExpanded && expanded,
+    childNeedsBackgroundRead(instance, tasks));
   const projection = child.projection;
   const pending = descendantNeedsInput || Boolean(projection?.pendingApproval || projection?.pendingPlan || projection?.interactions.some(item => item.status === 'pending'));
   useEffect(() => { onNeedsInput(sessionId, pending); }, [onNeedsInput, sessionId, pending]);
@@ -97,7 +98,7 @@ export function AgentConversationHistory({ projection, name, language, expanded,
   return <details className="agent-tasks__conversation" open={expanded}
     onToggle={event => { event.stopPropagation(); onExpandedChange(event.currentTarget.open); }}>
     <summary>{t(language, 'agent.team.conversation')}</summary>
-    {projection.timeline.flatMap(item => {
+    {expanded && projection.timeline.flatMap(item => {
       if (item.kind === 'message') {
         const message = projection.messages.find(message => message.messageId === item.messageId);
         return message && (message.role === 'user' || message.role === 'assistant') ? [{
@@ -113,7 +114,7 @@ export function AgentConversationHistory({ projection, name, language, expanded,
     }).map(message => <article key={message.key}>
       <header>{message.label}</header><MarkdownContent>{message.content}</MarkdownContent>
     </article>)}
-    {projection.assistantDraft?.blocks.map(block => block.kind !== 'providerHosted' && <article key={block.streamId}>
+    {expanded && projection.assistantDraft?.blocks.map(block => block.kind !== 'providerHosted' && <article key={block.streamId}>
       <header>{name}</header><MarkdownContent streaming>{block.displayContent ?? block.content}</MarkdownContent>
     </article>)}
   </details>;

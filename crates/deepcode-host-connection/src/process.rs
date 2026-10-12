@@ -7,7 +7,7 @@ use std::os::windows::{
     process::CommandExt,
 };
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::HANDLE,
@@ -79,6 +79,29 @@ pub fn terminate_owned_process_tree_checked(process: &mut OwnedHostProcess) -> s
         process.job.close_checked()?;
     }
     process.child.wait().map(|_| ())
+}
+
+/// Startup retries may only proceed after the previous owned tree has disappeared.
+pub fn terminate_owned_process_tree_until(
+    process: &mut OwnedHostProcess,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    signal_owned_process_group(process, libc::SIGKILL)?;
+    #[cfg(windows)]
+    process.job.close_checked()?;
+    loop {
+        let child_exited = process.child.try_wait()?.is_some();
+        #[cfg(unix)]
+        let tree_exited = !owned_process_group_exists(process.process_group_id);
+        #[cfg(not(unix))]
+        let tree_exited = child_exited;
+        if child_exited && tree_exited {
+            return Ok(());
+        }
+        let left = crate::startup::remaining(deadline)?;
+        std::thread::sleep(Duration::from_millis(10).min(left));
+    }
 }
 
 #[cfg(unix)]

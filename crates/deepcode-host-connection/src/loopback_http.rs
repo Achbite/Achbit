@@ -2,7 +2,7 @@
 use serde::de::DeserializeOwned;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn parse_port(value: &str) -> io::Result<u16> {
     value.parse::<u16>().map_err(|error| {
@@ -14,6 +14,10 @@ pub fn parse_port(value: &str) -> io::Result<u16> {
 }
 
 pub fn connect_loopback(host: &str, port: &str, timeout: Duration) -> io::Result<TcpStream> {
+    connect_loopback_until(host, port, Instant::now() + timeout)
+}
+
+pub fn connect_loopback_until(host: &str, port: &str, deadline: Instant) -> io::Result<TcpStream> {
     let port = parse_port(port)?;
     let addresses = (host, port)
         .to_socket_addrs()
@@ -23,7 +27,7 @@ pub fn connect_loopback(host: &str, port: &str, timeout: Duration) -> io::Result
         "Host address did not resolve",
     );
     for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
+        match TcpStream::connect_timeout(&address, crate::startup::remaining(deadline)?) {
             Ok(stream) => return Ok(stream),
             Err(error) => {
                 let unavailable = matches!(
@@ -82,6 +86,10 @@ pub fn request_connected_json<T: DeserializeOwned>(
             "Host HTTP response exceeds 64 KiB",
         ));
     }
+    decode_response(&response)
+}
+
+fn decode_response<T: DeserializeOwned>(response: &[u8]) -> io::Result<T> {
     let body_offset = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -109,10 +117,89 @@ pub fn request_connected_json<T: DeserializeOwned>(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+/// One absolute deadline covers connect, every write, and every read.
+pub fn request_loopback_json_until<T: DeserializeOwned>(
+    host: &str,
+    port: &str,
+    request: &str,
+    deadline: Instant,
+) -> io::Result<T> {
+    let stream = connect_loopback_until(
+        host,
+        port,
+        deadline.min(Instant::now() + Duration::from_millis(180)),
+    )?;
+    request_connected_json_until(stream, request, deadline)
+}
+
+pub fn request_connected_json_until<T: DeserializeOwned>(
+    mut stream: TcpStream,
+    request: &str,
+    deadline: Instant,
+) -> io::Result<T> {
+    let mut bytes = request.as_bytes();
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(crate::startup::remaining(deadline)?))?;
+        let count = stream.write(bytes)?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "Host request write returned zero",
+            ));
+        }
+        bytes = &bytes[count..];
+    }
+    let mut response = Vec::with_capacity(4096);
+    let mut buffer = [0; 4096];
+    loop {
+        stream.set_read_timeout(Some(crate::startup::remaining(deadline)?))?;
+        let count = stream.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..count]);
+        if response.len() > 64 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Host HTTP response exceeds 64 KiB",
+            ));
+        }
+    }
+    decode_response(&response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn startup_http_deadline_bounds_a_trickling_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            stream.read(&mut request).unwrap();
+            for _ in 0..10 {
+                if stream.write_all(b" ").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        });
+        let start = Instant::now();
+        let error = request_loopback_json_until::<serde_json::Value>(
+            "127.0.0.1",
+            &port,
+            "GET / HTTP/1.1\r\nConnection: close\r\n\r\n",
+            start + Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(crate::startup::transport_pending(&error));
+        assert!(start.elapsed() < Duration::from_millis(300));
+        server.join().unwrap();
+    }
 
     #[test]
     fn listener_probe_keeps_invalid_ports_distinct_from_absent_listeners() {

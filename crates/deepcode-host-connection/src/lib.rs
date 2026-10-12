@@ -11,6 +11,7 @@ pub mod process;
 #[cfg(test)]
 mod regression_tests;
 pub mod shell_lifecycle;
+pub mod startup;
 pub use client_lease::{HostClientLease, HOST_LIFETIME_ENV};
 use deepcode_kernel_abi::{
     is_valid_host_instance_id, is_valid_host_shell_token, HostProcessIdentity,
@@ -200,12 +201,25 @@ impl LocalHostConnection {
     /// A refused or timed-out connection is not reusable. A live listener must
     /// prove the exact instance; the daemon root lease still prevents a second owner.
     pub fn discover(root: &Path) -> io::Result<Option<Self>> {
-        Self::discover_with_connector(root, TcpStream::connect_timeout)
+        Self::discover_until(root, Instant::now() + Duration::from_secs(5))
     }
 
+    pub fn discover_until(root: &Path, deadline: Instant) -> io::Result<Option<Self>> {
+        Self::discover_with_connector_until(root, TcpStream::connect_timeout, deadline)
+    }
+
+    #[cfg(test)]
     fn discover_with_connector(
         root: &Path,
         connect: impl FnOnce(&SocketAddr, Duration) -> io::Result<TcpStream>,
+    ) -> io::Result<Option<Self>> {
+        Self::discover_with_connector_until(root, connect, Instant::now() + Duration::from_secs(5))
+    }
+
+    fn discover_with_connector_until(
+        root: &Path,
+        connect: impl FnOnce(&SocketAddr, Duration) -> io::Result<TcpStream>,
+        deadline: Instant,
     ) -> io::Result<Option<Self>> {
         let path = root.join(CONNECTION_FILE);
         let context = |operation: &str, error| {
@@ -235,7 +249,10 @@ impl LocalHostConnection {
             })?;
         connection.validate()?;
         let address = connection.address()?;
-        let mut stream = match connect(&address, Duration::from_millis(500)) {
+        let stream = match connect(
+            &address,
+            Duration::from_millis(500).min(startup::remaining(deadline)?),
+        ) {
             Ok(stream) => stream,
             Err(error)
                 if matches!(
@@ -259,31 +276,15 @@ impl LocalHostConnection {
                 ))
             }
         };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| context("Set Host identity read timeout for", error))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| context("Set Host identity write timeout for", error))?;
-        write!(
-            stream,
+        let request = format!(
             "GET /api/host/identity HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        );
+        let envelope: serde_json::Value = loopback_http::request_connected_json_until(
+            stream,
+            &request,
+            deadline.min(Instant::now() + Duration::from_secs(2)),
         )
-        .map_err(|error| context("Write Host identity request for", error))?;
-        let mut response = String::new();
-        stream
-            .take(16 * 1024)
-            .read_to_string(&mut response)
-            .map_err(|error| context("Read Host identity response for", error))?;
-        let body = response
-            .split_once("\r\n\r\n")
-            .filter(|(header, _)| header.starts_with("HTTP/1.1 200 "))
-            .map(|(_, body)| body)
-            .ok_or_else(|| {
-                io::Error::other("Recorded Host did not provide its process identity")
-            })?;
-        let envelope: serde_json::Value = serde_json::from_str(body)
-            .map_err(|_| io::Error::other("Invalid Host identity response"))?;
+        .map_err(|error| context("Read Host identity response for", error))?;
         let actual = envelope
             .get("data")
             .cloned()
@@ -321,9 +322,12 @@ pub struct HostStartGuard {
 
 impl HostStartGuard {
     pub fn acquire(root: &Path) -> io::Result<Self> {
+        Self::acquire_until(root, Instant::now() + Duration::from_secs(10))
+    }
+
+    pub fn acquire_until(root: &Path, deadline: Instant) -> io::Result<Self> {
         let path = root.join("agent-runtime/host-start.lock");
         let file = Self::open(&path)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             match lock_file(&file) {
                 Ok(()) => return Ok(Self { _file: file }),
@@ -337,7 +341,9 @@ impl HostStartGuard {
                             ),
                         ));
                     }
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(
+                        Duration::from_millis(50).min(startup::remaining(deadline)?),
+                    );
                 }
                 Err(error) => {
                     return Err(host_io_error(

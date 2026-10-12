@@ -2032,10 +2032,44 @@ export interface KernelPort {
   readRecord(callId: string): Promise<ToolExecutionRecord | null>;
 }
 
+type RunLifecycleEventFields<Event extends SessionEvent, Field extends keyof Event['payload'] = never> =
+  Omit<Event, 'schemaVersion' | 'eventId' | 'occurredAt' | 'payload'>
+  & { payload: Pick<Event['payload'], Field> };
+
+/** Read-only field projection of journal facts, never a separately stored status. */
+export type RunLifecycleEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.started' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.waiting' }>, 'reason'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.finishing' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.runtime.release_failed' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.runtime.released' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.settled' }>, 'outcome'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'interaction.requested' }>, 'interactionId' | 'mode'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'interaction.resolved' }>, 'interactionId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.published' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.confirmed' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.revision.requested' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.cancelled' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.invalidated' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.requested' }>, 'approvalId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.resolved' }>, 'approvalId' | 'decision' | 'authorizationScope' | 'authorityId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.revoked' }>, 'authorityId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.completed' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.permissions.updated' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'conversation.revised' }>, 'fromSequence' | 'throughSequence'>;
+
+export interface RunLifecycleRead {
+  sessionId: string;
+  /** Latest journal sequence, including events omitted from the field projection. */
+  revision: number;
+  events: RunLifecycleEvent[];
+}
+
 export interface JournalPort {
   append(event: NewSessionEvent): Promise<SessionEvent>;
   appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]>;
   read(sessionId: string, afterSequence?: number): AsyncIterable<SessionEvent>;
+  readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
 }
 
 export interface StoredCommand {

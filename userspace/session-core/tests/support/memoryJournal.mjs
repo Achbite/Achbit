@@ -1,5 +1,6 @@
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import { assertRuntimeContract } from './runtimeContract.mjs';
+import { projectRunLifecycleEvent } from '../../dist/local-agent/runLifecycle.js';
 
 /** Test storage adapter. SQLite atomicity is verified by the store tests. */
 export class InMemoryCommandJournal {
@@ -53,6 +54,17 @@ export class InMemoryCommandJournal {
   async readCommand(sessionId, commandId) {
     const stored = this.#commands.get(commandKey(sessionId, commandId));
     return stored ? structuredClone(stored) : null;
+  }
+
+  async readRunLifecycle(sessionId, afterSequence = 0) {
+    const events = this.#events.get(sessionId);
+    if (!events) throw new Error('session_not_found');
+    return { sessionId, revision: events.at(-1)?.sequence ?? 0,
+      events: events.filter(event => event.sequence > afterSequence).flatMap(event => {
+        const projected = projectRunLifecycleEvent(event);
+        return projected ? [projected] : [];
+      }),
+    };
   }
 
   async commitCommand(

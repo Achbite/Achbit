@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConversationCommand, SessionProjection } from '@deepcode/protocol';
+import type { AgentChildProjection, AgentTaskProjection, ConversationCommand, SessionProjection } from '@deepcode/protocol';
 import { getLocalAgentProjection, submitLocalAgentCommand } from '../../services/localAgentApi';
 import { startProjectionPolling } from './useProjectionPolling';
 
@@ -7,8 +7,13 @@ export type ChildDecisionCommand = Extract<ConversationCommand, {
   type: 'interaction.respond' | 'approval.respond' | 'plan.respond' | 'session.permissions.set';
 }>;
 
+/** Only a closed leaf can have no pending work outside the parent's task list. */
+export function childNeedsBackgroundRead(instance: AgentChildProjection | undefined, tasks: readonly AgentTaskProjection[]): boolean {
+  return !instance?.closed || instance.capabilities.delegation || tasks.some(task => task.status === 'running');
+}
+
 /** This is a view of a child Session, not a child execution owner. */
-export function useAgentChildConversation(sessionId: string, taskRevision: string, running: boolean, expanded: boolean) {
+export function useAgentChildConversation(sessionId: string, taskRevision: string, running: boolean, expanded: boolean, backgroundRead: boolean) {
   const [projection, setProjection] = useState<SessionProjection | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
@@ -52,7 +57,8 @@ export function useAgentChildConversation(sessionId: string, taskRevision: strin
     lifetime.current = controller;
     return () => { controller.abort(); lifetime.current = null; };
   }, [sessionId]);
-  useEffect(() => { void refresh(); }, [refresh, taskRevision]);
+  const readRequired = expanded || backgroundRead;
+  useEffect(() => { if (readRequired) void refresh(); }, [refresh, taskRevision, readRequired]);
   const live = running || Boolean(projection?.run && ['running', 'waiting', 'releasing'].includes(projection.run.status))
     || Boolean(projection?.agentTasks?.some(task => task.status === 'running'));
   useEffect(() => {

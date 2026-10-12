@@ -1639,6 +1639,14 @@ test('continuous conversation keeps every message anchor while mounting nearby c
   assert.equal(transcript.includes('查看较新的内容'), false);
   assert.ok((transcript.match(/data-virtual-rendered="false"/g) ?? []).length > 0, 'offscreen rows retain placeholders instead of mounting all content');
   assert.ok((transcript.match(/data-virtual-rendered="true"/g) ?? []).length > 0, 'the recent tail is mounted immediately');
+  const withChanges = renderToStaticMarkup(createElement(ConversationTranscript, { ...props,
+    displaySettledRunIds: new Set(['run:long']), projection: { ...props.projection,
+      fileChangeRounds: [{ runId: 'run:long', recordIds: ['record:old'] }],
+      activities: [{ tool: { recordId: 'record:old', fileChanges: [{ workspaceId: 'workspace:session', path: 'old-history.txt',
+        kind: 'create', before: { exists: false }, after: { exists: true, sizeBytes: 5 } }] } }],
+    } }));
+  assert.match(withChanges, /data-conversation-anchor="run:long:file-changes"[^>]*data-virtual-rendered="false"/);
+  assert.equal(withChanges.includes('old-history.txt'), false, 'historical file reads mount through the same virtual surface');
   const starting = renderToStaticMarkup(createElement(ConversationTranscript, { ...props, conversationItems: [], projection: { ...props.projection, run: { runId: 'run:starting', status: 'running' } } }));
   assert.match(starting, /data-conversation-anchor="run:starting:provider-status"/, 'a starting run retains its live status slot');
 });
@@ -3782,6 +3790,67 @@ test('child file changes render with the scoped Session even when no main Sessio
     createElement(FileChanges, { activities })));
   assert.match(html, /child-work\.txt/);
   assert.match(html, /conversation-change-file/);
+});
+
+test('collapsed child history defers closed leaves but retains potential decisions and descendants', async t => {
+  const { childNeedsBackgroundRead } = await loadGuiModule(t, '/src/components/local-agent/useAgentChildConversation.ts');
+  const leaf = { agentSessionId: 'session:leaf', displayName: 'Leaf', closed: true,
+    capabilities: { messaging: false, continuation: false, delegation: false } };
+  const settled = [{ status: 'completed' }];
+  assert.equal(childNeedsBackgroundRead(leaf, settled), false, 'a closed terminal leaf has no unseen active work');
+  assert.equal(childNeedsBackgroundRead(leaf, [{ status: 'running' }]), true, 'a running task may be waiting for a user decision');
+  assert.equal(childNeedsBackgroundRead({ ...leaf, closed: false }, settled), true, 'an open child can receive another continuation');
+  assert.equal(childNeedsBackgroundRead({ ...leaf, capabilities: { ...leaf.capabilities, delegation: true } }, settled), true,
+    'parent terminality alone does not prove every descendant has settled');
+  assert.equal(childNeedsBackgroundRead(undefined, settled), true, 'a task reference without its direct instance cannot prove closure');
+});
+
+test('child conversation details mount their canonical messages only when expanded', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentConversationHistory } = await loadGuiModule(t, '/src/components/local-agent/AgentTasksPanel.tsx');
+  const base = { name: 'Writer', language: 'en-US', onExpandedChange() {} };
+  const closed = renderToStaticMarkup(createElement(AgentConversationHistory, { ...base, expanded: false,
+    projection: { get timeline() { throw new Error('closed history must not be traversed'); },
+      get assistantDraft() { throw new Error('closed draft must not be traversed'); } } }));
+  assert.match(closed, /<summary>/);
+  assert.equal(closed.includes('<article'), false);
+  const projection = { messages: [
+    { messageId: 'second', role: 'assistant', content: 'Second answer' },
+    { messageId: 'first', role: 'user', content: 'First request' },
+  ], narratives: [], timeline: [
+    { kind: 'message', timelineId: 'timeline:1', messageId: 'first' },
+    { kind: 'message', timelineId: 'timeline:2', messageId: 'second' },
+  ], assistantDraft: { blocks: [{ kind: 'text', streamId: 'draft:1', content: 'Live continuation' }] } };
+  const before = structuredClone(projection);
+  const expanded = renderToStaticMarkup(createElement(AgentConversationHistory, { ...base, projection, expanded: true }));
+  assert.ok(expanded.indexOf('First request') < expanded.indexOf('Second answer'));
+  assert.match(expanded, /Live continuation/);
+  assert.deepEqual(projection, before, 'presentation must not rewrite the Session projection');
+});
+
+test('historical file change content waits for its virtual row to become visible', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const [{ ConversationVirtualRow }, { FileChanges }, { ConversationSessionScope }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ConversationVirtualRow.tsx', '/src/components/local-agent/FileChanges.tsx',
+    '/src/components/local-agent/ConversationSessionScope.tsx',
+  ]);
+  const activities = [{ tool: { recordId: 'record:history', fileChanges: [{ workspaceId: 'workspace:session',
+    path: 'history.txt', kind: 'create', before: { exists: false }, after: { exists: true, sizeBytes: 5 } }] } }];
+  let mounts = 0;
+  const render = eager => renderToStaticMarkup(createElement(ConversationSessionScope.Provider, { value: 'session:history' },
+    createElement(ConversationVirtualRow, { rowKey: 'run:history:file-changes', eager,
+      virtualizer: { layout: () => ({ height: 80, state: new Map() }) }, children: () => {
+        mounts++; return createElement(FileChanges, { activities });
+      } })));
+  const offscreen = render(false);
+  assert.equal(mounts, 0);
+  assert.match(offscreen, /data-conversation-anchor="run:history:file-changes"/);
+  assert.equal(offscreen.includes('history.txt'), false);
+  const visible = render(true);
+  assert.equal(mounts, 1);
+  assert.match(visible, /history\.txt/);
 });
 
 test('resource notifications use explicit references and preserve stream failures', async (t) => {

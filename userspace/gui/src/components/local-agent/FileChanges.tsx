@@ -6,6 +6,7 @@ import type { ActivityProjection } from '@deepcode/protocol';
 import { useConversationHost, useConversationTheme } from './ConversationHost';
 import { loadCodeLanguage } from './codeLanguage';
 import { useConversationSessionId } from './ConversationSessionScope';
+import { useConversationRowState } from './ConversationVirtualRow';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
@@ -16,10 +17,14 @@ export function FileChanges({ activities, compact = false }: { activities: Activ
   const language = useUiLanguage();
   const { readChange } = useConversationHost();
   const sessionId = useConversationSessionId();
-  const [expanded, setExpanded] = useState(!compact);
-  const [showAll, setShowAll] = useState(false);
-  useEffect(() => { setShowAll(false); }, [sessionId]);
-  useEffect(() => { setExpanded(!compact); }, [compact]);
+  const [expanded, setExpanded] = useConversationRowState('file-changes:expanded', !compact);
+  const [showAll, setShowAll] = useConversationRowState('file-changes:show-all', false);
+  const previousView = useRef({ sessionId, compact });
+  useEffect(() => {
+    if (previousView.current.sessionId !== sessionId) setShowAll(false);
+    if (previousView.current.compact !== compact) setExpanded(!compact);
+    previousView.current = { sessionId, compact };
+  }, [sessionId, compact, setShowAll, setExpanded]);
   const all = changedFiles(activities);
   const signature = JSON.stringify(all.map((file) => [file.key, file.changes.map((entry) => [entry.recordId, entry.index])]));
   const [statistics, setStatistics] = useState<{ signature: string; files: Map<string, FileChangeStatistics>; errors: Map<string, string> }>({ signature: '', files: new Map(), errors: new Map() });

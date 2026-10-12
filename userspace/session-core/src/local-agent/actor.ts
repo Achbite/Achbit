@@ -1,4 +1,4 @@
-import { isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
 import { ManagedProcesses } from './managedProcesses.js';
 import { validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { confirmationFacts } from './planStage.js';
@@ -125,7 +125,7 @@ export class SessionActor {
   async agentCapabilities(runId: string): Promise<import('@deepcode/protocol').AgentCapabilities> {
     const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
-    return structuredClone(runtime.agentCapabilities);
+    return decodeAgentCapabilities(runtime.agentCapabilities);
   }
 
   async snapshot(): Promise<SessionProjection> {
@@ -1098,6 +1098,7 @@ export class SessionActor {
   private async restoreRunRuntime(snapshot: LoopSnapshot, runId: string): Promise<boolean> {
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
+    decodeAgentCapabilities(runtime.agentCapabilities);
     let prepared;
     try {
       prepared = await this.#composition.runPreparation.prepare({

@@ -406,8 +406,9 @@ export function ConversationTranscript({
         }));
         if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
         if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
+        const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
         return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows} displaySettled={displaySettled} followingLatest={viewport.followingLatest} rows={rows}>
-          {(displaySettled || terminal) && <FileChanges activities={roundChangeActivities(projection, round.runId)} />}
+          {changeActivities.some(activity => activity.tool?.fileChanges?.length) && <FileChanges activities={changeActivities} />}
         </ConversationRoundView>;
       })}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
@@ -445,7 +446,9 @@ function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, dis
       <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} eager={eagerRows.has(row.key)} live={row.live || row.required}
         hidden={row.process && !expanded && !row.required}>{row.content}</ConversationVirtualRow>
     </React.Fragment>)}
-    {children}
+    {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} virtualizer={virtualizer}>
+      {() => children}
+    </ConversationVirtualRow>}
   </section>;
 }
 

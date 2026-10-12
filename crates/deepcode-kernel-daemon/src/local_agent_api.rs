@@ -1176,6 +1176,25 @@ pub(crate) async fn local_agent_events_read(
     }
 }
 
+pub(crate) async fn local_agent_run_lifecycle_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<LocalSessionEventsQuery>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state
+        .local_agent
+        .journal
+        .read_run_lifecycle(&session_id, query.after.unwrap_or(0))
+    {
+        Ok(read) => ApiResponse::ok(read),
+        Err(error) => store_error(error),
+    }
+}
+
 pub(crate) async fn local_agent_command_read(
     State(state): State<AppState>,
     headers: HeaderMap,

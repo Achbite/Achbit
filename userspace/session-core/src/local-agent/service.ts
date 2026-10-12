@@ -17,7 +17,9 @@ import type {
 import { SessionActor } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { emptySessionState, projectSession, recoverSession, reduceSession, type SessionState } from './reducer.js';
+import { projectSession, recoverSession } from './reducer.js';
+import { activeConversationEvents } from './conversationHistory.js';
+import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 
 export interface SessionCompositionFactory {
   create(input: {
@@ -61,7 +63,7 @@ export class SessionDeletionError extends AggregateError {
 
 export class SessionService implements ConversationPort {
   readonly #actors = new Map<string, Promise<SessionActor>>();
-  readonly #statusStates = new Map<string, SessionState>();
+  readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
   readonly #deletingSessionIds = new Set<string>();
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
   readonly #lifetime = new AbortController();
@@ -243,27 +245,27 @@ export class SessionService implements ConversationPort {
 
   async statuses(sessionIds: readonly string[]): Promise<ConversationSessionStatus[]> {
     return await Promise.all(sessionIds.map(async (sessionId) => {
-      // Reuse the canonical reducer and read only new events after the first read.
-      // Sidebar reads must not open Actors or resume waiting/running conversations.
-      let state = this.#statusStates.get(sessionId) ?? emptySessionState(sessionId);
-      for await (const event of this.journal.read(sessionId, state.revision)) {
-        if (event.type === 'conversation.revised') {
-          state = recoverSession(sessionId, await readSessionEvents(this.journal, sessionId));
-          break;
-        }
-        state = reduceSession(state, event);
+      // This cache contains no message, tool result, runtime or Actor state.
+      const previous = this.#statusStates.get(sessionId);
+      let read = await this.journal.readRunLifecycle(sessionId, previous?.revision ?? 0);
+      let lifecycle = previous?.lifecycle ?? emptyRunLifecycle();
+      if (read.events.some(event => event.type === 'conversation.revised')) {
+        if (previous) read = await this.journal.readRunLifecycle(sessionId);
+        lifecycle = emptyRunLifecycle();
       }
+      if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+      for (const event of activeConversationEvents(read.events)) {
+        if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+        lifecycle = reduceRunLifecycle(lifecycle, event);
+      }
+      const state = { revision: read.revision, lifecycle };
       if (state.revision === 0) throw new Error('session_not_found');
       if (state.revision >= (this.#statusStates.get(sessionId)?.revision ?? 0)) {
         this.#statusStates.set(sessionId, state);
       }
       return {
         sessionId, revision: state.revision,
-        run: state.run ? {
-          runId: state.run.runId,
-          status: state.run.status,
-          ...(state.run.waitingReason ? { waitingReason: state.run.waitingReason } : {}),
-        } : null,
+        run: lifecycle.run ? { ...lifecycle.run } : null,
       };
     }));
   }

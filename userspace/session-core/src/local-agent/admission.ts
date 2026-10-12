@@ -1,4 +1,4 @@
-import { isManagedProcessSnapshot } from '@deepcode/protocol';
+import { decodeAgentCapabilities, isManagedProcessSnapshot } from '@deepcode/protocol';
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
 import { permissionSettings } from '@deepcode/protocol';
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
@@ -77,6 +77,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (state.revision !== 0) throw new Error('session_creation_duplicate');
       break;
     case 'run.started':
+      decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
       if (state.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(state.run.status)) {
         throw new Error('session_run_already_active');
       }

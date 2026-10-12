@@ -33,6 +33,123 @@ import { AgentManager } from '../dist/local-agent/agentManager.js';
 const ALL_AGENT_CAPS = { messaging: true, continuation: true, delegation: true };
 const NO_AGENT_CAPS = { messaging: false, continuation: false, delegation: false };
 
+test('compact statuses share canonical lifecycle transitions without full journal reads', async (t) => {
+  const sessionId = 'session:compact-lifecycle', runId = 'run:compact-lifecycle';
+  const journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  const reads = [];
+  const narrow = forwardingJournal(journal, async function* () { throw new Error('status_read_loaded_full_payloads'); });
+  narrow.readRunLifecycle = async (id, after = 0) => {
+    reads.push(after);
+    const result = await journal.readRunLifecycle(id, after);
+    assert.equal(/runtimeSnapshot|Stored body|Stored result|Stored prompt/u.test(JSON.stringify(result)), false);
+    return result;
+  };
+  const service = new SessionService(narrow, { async create() { throw new Error('status_read_opened_actor'); } });
+  t.after(() => service.dispose());
+  const events = await readEvents(journal, sessionId);
+  let canonical = recoverSession(sessionId, events);
+  const check = async expected => {
+    const actual = (await service.statuses([sessionId]))[0];
+    const run = canonical.run ? { runId: canonical.run.runId, status: canonical.run.status,
+      ...(canonical.run.waitingReason ? { waitingReason: canonical.run.waitingReason } : {}) } : null;
+    assert.deepEqual(actual, { sessionId, revision: canonical.revision, run });
+    if (expected !== undefined) assert.equal(actual.run?.status ?? null, expected);
+  };
+  const append = async (type, payload, meta = {}, expected) => {
+    const event = await journal.append({ type, sessionId, payload, ...meta });
+    events.push(event);
+    canonical = event.type === 'conversation.revised' ? recoverSession(sessionId, events) : reduceSession(canonical, event);
+    await check(expected);
+  };
+  await check(null);
+  const runtime = runtimeSnapshot(runId);
+  await append('message.committed', { messageId: 'message:compact', role: 'user', content: 'Stored body' });
+  await append('run.started', { inputMessageId: 'message:compact', workspaceBindings: [], runtimeSnapshot: runtime }, { runId }, 'running');
+  for (const [id, mode] of [['first', 'wait'], ['second', 'wait'], ['continued', 'continue']]) {
+    await append('interaction.requested', { interactionId: `interaction:${id}`, providerCallId: `provider:${id}`,
+      kind: 'question', prompt: 'Stored prompt', allowFreeform: true, mode }, { runId, callId: `call:${id}` });
+  }
+  await append('run.waiting', { reason: 'userInput', detail: 'Stored prompt' }, { runId }, 'waiting');
+  for (const id of ['first', 'second']) {
+    await append('input.accepted', { commandId: `command:${id}`, messageId: `message:${id}`, text: 'Stored body' });
+    await append('interaction.resolved', { interactionId: `interaction:${id}`, commandId: `command:${id}`, response: 'Stored body' },
+      { runId }, id === 'first' ? 'waiting' : 'running');
+  }
+  for (const operation of ['confirmed', 'revision.requested', 'cancelled', 'invalidated']) {
+    const planId = `plan:${operation}`, callId = `call:plan:${operation}`;
+    await append('plan.published', { planId, revision: 1, providerCallId: `provider:plan:${operation}`, title: 'Plan', summary: 'Stored body',
+      steps: [{ stepId: 'step:one', title: 'Step', details: 'Stored body' }], mutationManifest: [] }, { runId, callId });
+    await append('run.waiting', { reason: 'plan' }, { runId }, 'waiting');
+    const decision = operation === 'confirmed' ? { decisionId: 'decision:plan', authorities: [] }
+      : operation === 'revision.requested' ? { text: 'Stored body' }
+        : operation === 'invalidated' ? { reason: 'Changed', sourceFactRef: 'fact:changed' } : {};
+    await append(`plan.${operation}`, { planId, revision: 1, ...(operation === 'invalidated' ? {} : { commandId: `command:${operation}` }), ...decision },
+      { runId, ...(operation === 'invalidated' ? {} : { callId }) }, 'running');
+  }
+  const approval = async id => {
+    await append('approval.requested', { approvalId: `approval:${id}`, preview: { summary: 'Stored prompt', effects: ['external'], logicalTargets: ['.'] } },
+      { runId, callId: `call:approval:${id}` });
+    await append('run.waiting', { reason: 'approval' }, { runId }, 'waiting');
+  };
+  await approval('permission');
+  await append('session.permissions.updated', { commandId: 'command:permission', patches: { 'agent.permissions.external': 'allow' } }, {}, 'running');
+  await append('approval.resolved', { approvalId: 'approval:permission', commandId: 'command:deny', decision: 'deny', authorityId: 'authority:denied' },
+    { runId, callId: 'call:approval:permission' }, 'running');
+  await approval('grant');
+  await append('approval.resolved', { approvalId: 'approval:grant', commandId: 'command:grant', decision: 'allow', authorityId: 'authority:grant', authorizationScope: 'sessionFiles' },
+    { runId, callId: 'call:approval:grant' }, 'running');
+  const callId = 'call:approval:tool', attemptId = 'attempt:compact';
+  await append('tool.requested', { providerCallId: 'provider:tool', attemptId, toolName: 'fs.read', input: { workspaceId: workspaceBinding.workspaceId, path: 'fixture.txt' } }, { runId, callId });
+  await approval('tool');
+  const record = completedExecutionReply({ sessionId, runId, callId, attemptId, requestId: 'request:tool', toolName: 'fs.read',
+    toolBindingRef: 'binding:read', extensionGenerationRef: runtime.extensionGenerationRef, kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+    input: { workspaceId: workspaceBinding.workspaceId, path: 'fixture.txt' } }, { content: 'Stored result' }).record;
+  await append('tool.completed', { record }, { runId, callId }, 'running');
+  await append('run.finishing', { outcome: 'cancelled' }, { runId }, 'releasing');
+  const release = { runRuntimeSnapshotRef: runtime.runRuntimeSnapshotRef, extensionGenerationRef: runtime.extensionGenerationRef,
+    kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef, providerRuntimeRef: runtime.provider.providerRuntimeRef };
+  await append('run.runtime.release_failed', { ...release, error: { code: 'fixture_release_failure', message: 'Release failed' } }, { runId }, 'releaseFailed');
+  await append('run.runtime.released', { ...release, pluginInstanceRefs: [], alreadyReleased: false }, { runId }, 'releasing');
+  await append('run.settled', { outcome: 'cancelled' }, { runId }, 'cancelled');
+  await append('message.committed', { messageId: 'message:unselected', role: 'user', content: 'Stored body' });
+  const beforeEdit = events.at(-1).sequence;
+  await append('conversation.revised', { commandId: 'command:edit', messageId: 'message:compact', fromSequence: 2, throughSequence: beforeEdit }, {}, null);
+  assert.ok(reads.slice(1, -1).every(after => after > 0), 'ordinary updates use the journal revision cursor');
+  assert.equal(reads.at(-1), 0, 'an edit replays only the compact stream');
+  assert.equal(canonical.pendingApproval, null, 'retained session grants do not revive an edited-away run');
+  const fresh = new SessionService(narrow, { async create() { throw new Error('cold_read_opened_actor'); } });
+  t.after(() => fresh.dispose());
+  assert.deepEqual(await fresh.statuses([sessionId]), await service.statuses([sessionId]), 'cold and incremental edit reads agree');
+});
+
+test('compact status cache cannot be replaced by an older concurrent read', async (t) => {
+  const sessionId = 'session:compact-concurrent', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  let releaseOld;
+  const gate = new Promise(resolve => { releaseOld = resolve; });
+  t.after(() => releaseOld());
+  let count = 0;
+  const cursors = [];
+  const port = forwardingJournal(journal, async function* () { throw new Error('unexpected_full_read'); });
+  port.readRunLifecycle = async (id, after = 0) => {
+    cursors.push(after);
+    const result = await journal.readRunLifecycle(id, after);
+    if (++count === 1) await gate;
+    return result;
+  };
+  const service = new SessionService(port, { async create() { throw new Error('unexpected_actor'); } });
+  t.after(() => service.dispose());
+  const old = service.statuses([sessionId]);
+  await waitUntil(() => count === 1, 'first compact read');
+  await journal.append({ type: 'message.committed', sessionId, payload: { messageId: 'message:later', role: 'user', content: 'Later' } });
+  assert.equal((await service.statuses([sessionId]))[0].revision, 2);
+  releaseOld();
+  assert.equal((await old)[0].revision, 1);
+  await service.statuses([sessionId]);
+  assert.deepEqual(cursors, [0, 0, 2]);
+});
+
 test('editing a settled message replaces active history while retaining journal facts and attachments', async (t) => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:message-edit';
@@ -1920,6 +2037,87 @@ for (const [field, label, identity, error] of [
     assert.throws(() => loopSnapshot(sessionId, events), error);
   });
 }
+
+test('archived completed runs stay readable without synthesizing execution capabilities', async (t) => {
+  const sessionId = 'session:archived-capabilities', base = new InMemoryCommandJournal();
+  await createSession(base, sessionId);
+  const provider = { async *stream(request) {
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Recorded answer.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  const seed = actorWith(base, sessionId, provider, emptyKernel(), fakeRunPreparation().port, 'archived-capabilities');
+  t.after(() => seed.dispose());
+  await seed.submit(messageCommand(sessionId, 'command:archived-run', 'Recorded question.'));
+  const completed = await waitForProjection(seed, value => value.run?.status === 'completed');
+  await seed.dispose();
+  const journal = forwardingJournal(base, async function* (id, afterSequence) {
+    for await (const event of base.read(id, afterSequence)) {
+      if (event.type === 'run.started' && event.runId === completed.run.runId) delete event.payload.runtimeSnapshot.agentCapabilities;
+      yield event;
+    }
+  });
+  const archived = await readEvents(journal, sessionId);
+  const preparation = fakeRunPreparation();
+  const service = new SessionService(journal, { async create() { return { composition: {
+    provider, kernel: emptyKernel(), runPreparation: preparation.port, async dispose() {},
+  } }; } });
+  t.after(() => service.dispose());
+  assert.deepEqual((await service.statuses([sessionId]))[0].run, { runId: completed.run.runId, status: 'completed' });
+  assert.deepEqual((await service.snapshot(sessionId)).messages, completed.messages);
+  const archivedRuntime = loopSnapshot(sessionId, archived).state.runRuntimeSnapshots[completed.run.runId];
+  assert.equal(Object.hasOwn(archivedRuntime, 'agentCapabilities'), false);
+  assert.equal(preparation.prepared.length, 0, 'reading history must not prepare an execution runtime');
+  const reply = await service.submit(messageCommand(sessionId, 'command:fresh-after-archive', 'A fresh task.'));
+  assert.equal(reply.status, 'accepted');
+  const fresh = await waitForProjection({ snapshot: () => service.snapshot(sessionId) },
+    value => value.run?.status === 'completed' && value.run.runId !== completed.run.runId);
+  assert.equal(preparation.prepared.length, 1);
+  const after = await readEvents(journal, sessionId);
+  assert.deepEqual(after.slice(0, archived.length), archived, 'reading and starting a fresh run must not rewrite archived facts');
+  assert.deepEqual(after.find(event => event.type === 'run.started' && event.runId === fresh.run.runId).payload.runtimeSnapshot.agentCapabilities, ALL_AGENT_CAPS);
+});
+
+test('fresh runtime admission rejects missing execution capabilities and releases preparation', async (t) => {
+  const sessionId = 'session:fresh-capabilities-missing', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  const preparation = fakeRunPreparation(), originalPrepare = preparation.port.prepare;
+  preparation.port.prepare = async request => {
+    const result = await originalPrepare(request);
+    delete result.runtimeSnapshot.agentCapabilities;
+    return result;
+  };
+  const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('invalid_runtime_reached_provider'); } },
+    emptyKernel(), preparation.port, 'fresh-capabilities');
+  t.after(() => actor.dispose());
+  await assert.rejects(actor.submit(messageCommand(sessionId, 'command:fresh-invalid-capabilities', 'Start explicitly.')), /agent_capabilities_invalid/);
+  assert.equal(preparation.released.length, 1);
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'run.started'), false);
+});
+
+test('archived active runs without execution capabilities cannot restore or delegate', async (t) => {
+  const sessionId = 'session:active-capabilities-missing', runId = 'run:active-capabilities-missing';
+  const base = new InMemoryCommandJournal();
+  await createSession(base, sessionId);
+  await base.append({ type: 'message.committed', sessionId, payload: { messageId: 'message:active-capabilities', role: 'user', content: 'Recorded task.' } });
+  await base.append({ type: 'run.started', sessionId, runId, payload: {
+    inputMessageId: 'message:active-capabilities', workspaceBindings: [], runtimeSnapshot: runtimeSnapshot(runId),
+  } });
+  const journal = forwardingJournal(base, async function* (id, afterSequence) {
+    for await (const event of base.read(id, afterSequence)) {
+      if (event.type === 'run.started') delete event.payload.runtimeSnapshot.agentCapabilities;
+      yield event;
+    }
+  });
+  const before = await readEvents(journal, sessionId), preparation = fakeRunPreparation();
+  const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('archived_runtime_reached_provider'); } },
+    emptyKernel(), preparation.port, 'active-capabilities');
+  t.after(() => actor.dispose());
+  assert.equal((await actor.snapshot()).run.status, 'running');
+  await assert.rejects(actor.agentCapabilities(runId), /agent_capabilities_invalid/);
+  await assert.rejects(actor.recover(), /agent_capabilities_invalid/);
+  assert.equal(preparation.prepared.length, 0);
+  assert.deepEqual(await readEvents(journal, sessionId), before);
+});
 
 test('tool prompt preparation binds exact callable tools and rejects invalid ownership', () => {
   const readTool = {

@@ -82,6 +82,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             get(local_agent_events_read),
         )
         .route(
+            "/api/local-agent/journal/sessions/:session_id/run-lifecycle",
+            get(local_agent_run_lifecycle_read),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id/commands/:command_id",
             get(local_agent_command_read),
         )

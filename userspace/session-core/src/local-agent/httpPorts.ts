@@ -9,6 +9,7 @@ import type {
   AgentContext,
   SessionProjection,
   CommandJournalPort,
+  RunLifecycleRead,
   CommandReply,
   ConversationCommand,
   KernelPort,
@@ -167,6 +168,12 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`,
     );
     for (const event of events) yield event;
+  }
+
+  async readRunLifecycle(sessionId: string, afterSequence = 0): Promise<RunLifecycleRead> {
+    return await this.json(
+      `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/run-lifecycle?after=${afterSequence}`,
+    );
   }
 
   async readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null> {
