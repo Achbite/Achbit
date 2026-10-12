@@ -18,6 +18,8 @@ import { ConversationTranscript } from './ConversationTranscript';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
 import { ArtifactLinks } from './ArtifactLinks';
 import './localAgentPanel.css';
+import { AgentTasksPanel } from './AgentTasksPanel';
+import { AgentNavigationScope } from './agentNavigation';
 import type { ReaderNavigation } from './readerState';
 
 export interface ConversationReaderLayout {
@@ -45,6 +47,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const loading = useLocalAgentStore((state) => state.loading);
   const refresh = useLocalAgentStore((state) => state.refresh);
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
+  const [agentSurface, setAgentSurface] = useState<HTMLElement | null>(null);
   const [uiActionError, setUiActionError] = useState<string | null>(null);
   useEffect(() => setUiActionError(null), [sessionId]);
   const presentation = usePresentedCommittedContent(projection, language);
@@ -134,7 +137,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   );
 
   return (
-    <section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
+    <AgentNavigationScope key={sessionId} surface={agentSurface} tasks={projection?.agentTasks}><section ref={setAgentSurface} className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
       <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
@@ -197,7 +200,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           }}
         />
       )}
-    </section>
+      {projection && <AgentTasksPanel projection={projection} language={language} />}
+    </section></AgentNavigationScope>
   );
 };
 

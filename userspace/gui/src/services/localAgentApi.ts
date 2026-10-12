@@ -505,9 +505,9 @@ function isTimelineItem(value: unknown): boolean {
         && isPositiveNaturalNumber(value.revision);
     case 'toolGroup':
       return isExactRecord(value, [
-        'kind', 'timelineId', 'sequence', 'providerRequestId', 'activityIds',
-      ])
-        && isIdentifier(value.providerRequestId)
+        'kind', 'timelineId', 'sequence', 'activityIds',
+      ], ['providerRequestId'])
+        && (value.providerRequestId === undefined || isIdentifier(value.providerRequestId))
         && Array.isArray(value.activityIds)
         && value.activityIds.length > 0
         && value.activityIds.every(isIdentifier);
@@ -580,7 +580,8 @@ function timelineReferencesAreValid(
           addUnique(activityIds, activityId)
           && activities.some((activity) => (
             activity.activityId === activityId
-            && ['tool', 'providerHosted', 'approval', 'interaction'].includes(String(activity.kind))
+            && ['tool', 'providerHosted', 'approval', 'interaction', 'agent'].includes(String(activity.kind))
+            && (item.providerRequestId !== undefined || activity.kind === 'agent')
           ))
         ));
       default:
@@ -594,7 +595,7 @@ function timelineReferencesAreValid(
     && narrativeIds.size === narratives.length
     && planRefs.size === plans.length
     && activityIds.size === activities.filter((activity) => (
-      ['tool', 'providerHosted', 'approval', 'interaction'].includes(String(activity.kind))
+      ['tool', 'providerHosted', 'approval', 'interaction', 'agent'].includes(String(activity.kind))
     )).length;
 }
 
@@ -1345,10 +1346,10 @@ function isActivity(value: unknown): boolean {
   return isExactRecord(
     value,
     ['activityId', 'kind', 'status', 'label', 'runId', 'sequence'],
-    ['callId', 'tool', 'providerHosted', 'inputRejection', 'interruption', 'startedAt', 'liveOutput'],
+    ['callId', 'tool', 'providerHosted', 'inputRejection', 'interruption', 'startedAt', 'liveOutput', 'agent'],
   )
     && isIdentifier(value.activityId)
-    && ['run', 'tool', 'providerHosted', 'approval', 'plan', 'interaction']
+    && ['run', 'tool', 'providerHosted', 'approval', 'plan', 'interaction', 'agent']
       .includes(String(value.kind))
     && ['active', 'requested', 'waiting', 'completed', 'denied', 'rejected', 'failed', 'cancelled', 'indeterminate']
       .includes(String(value.status))
@@ -1369,7 +1370,10 @@ function isActivity(value: unknown): boolean {
       : value.tool === undefined)
     && (value.status === 'rejected' && value.kind === 'tool') === (value.inputRejection !== undefined)
     && (value.interruption === undefined || value.kind === 'tool' && value.status === 'indeterminate' && value.tool === undefined && isLocalAgentError(value.interruption))
-    && (value.kind === 'providerHosted') === (value.providerHosted !== undefined);
+    && (value.kind === 'providerHosted') === (value.providerHosted !== undefined)
+    && (value.kind === 'agent' ? isExactRecord(value.agent, ['agentSessionId', 'taskId', 'phase'])
+      && isIdentifier(value.agent.agentSessionId) && isIdentifier(value.agent.taskId)
+      && ['started', 'completed'].includes(String(value.agent.phase)) : value.agent === undefined);
 }
 
 function isLiveToolOutput(value: unknown): boolean {

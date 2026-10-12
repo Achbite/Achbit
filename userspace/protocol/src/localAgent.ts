@@ -1185,7 +1185,7 @@ export type SessionTimelineItem =
       kind: 'toolGroup';
       timelineId: string;
       sequence: number;
-      providerRequestId: string;
+      providerRequestId?: string;
       activityIds: string[];
     };
 
@@ -1309,7 +1309,7 @@ export interface RunProjection {
 
 export interface ActivityProjection {
   activityId: string;
-  kind: 'run' | 'tool' | 'providerHosted' | 'approval' | 'plan' | 'interaction';
+  kind: 'run' | 'tool' | 'providerHosted' | 'approval' | 'plan' | 'interaction' | 'agent';
   status:
     | 'active'
     | 'requested'
@@ -1331,6 +1331,7 @@ export interface ActivityProjection {
   inputRejection?: ToolInputRejection['error'];
   interruption?: LocalAgentError;
   providerHosted?: ProviderHostedActivityProjection;
+  agent?: { agentSessionId: string; taskId: string; phase: 'started' | 'completed' };
 }
 
 export interface ToolOutputProjection {

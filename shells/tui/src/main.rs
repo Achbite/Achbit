@@ -265,7 +265,12 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         false
                     }
                     KeyCode::Esc => {
-                        if app.session_picker_open() {
+                        if app.agent_picker_open() {
+                            app.close_agent_picker();
+                        } else if app.viewing_agent() {
+                            app.back_from_agent();
+                            app.poll().await;
+                        } else if app.session_picker_open() {
                             app.close_session_picker();
                         } else if app.model_picker_open() {
                             app.model_picker_back();
@@ -281,7 +286,10 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         true
                     }
                     KeyCode::Enter => {
-                        if app.session_picker_open() {
+                        if app.agent_picker_open() {
+                            app.select_agent().await;
+                            true
+                        } else if app.session_picker_open() {
                             app.session_picker_select().await;
                             true
                         } else if app.model_picker_open() {
@@ -304,6 +312,14 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         } else {
                             app.push_input('\t');
                         }
+                        true
+                    }
+                    KeyCode::Up if app.agent_picker_open() => {
+                        app.agent_picker_move(-1);
+                        true
+                    }
+                    KeyCode::Down if app.agent_picker_open() => {
+                        app.agent_picker_move(1);
                         true
                     }
                     KeyCode::Up if app.session_picker_open() => {

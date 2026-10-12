@@ -251,6 +251,23 @@ test('editing conversation history preserves member lineage without replaying su
   await actor.submit(messageCommand(sessionId, 'command:original', 'Original member request.'));
   const original = await waitForProjection(actor, value => value.run?.status === 'completed');
   assert.equal(requests.length, 2, 'new child evidence fences the first premature answer');
+  const agentActivities = original.activities.filter(activity => activity.kind === 'agent');
+  assert.deepEqual(agentActivities.map(activity => activity.agent.phase), ['started', 'completed']);
+  assert.ok(agentActivities.every(activity => activity.agent.agentSessionId === 'session:member-child'));
+  const timelineAgents = original.timeline.filter(item => item.kind === 'toolGroup').flatMap(item => item.activityIds);
+  assert.deepEqual(timelineAgents, agentActivities.map(activity => activity.activityId));
+  assert.ok(agentActivities[0].sequence < agentActivities[1].sequence);
+
+  let replay = emptySessionState(sessionId);
+  for (const event of await readEvents(journal, sessionId)) {
+    const previous = replay;
+    const activities = structuredClone(previous.activities);
+    replay = reduceSession(previous, event);
+    if (event.type === 'agent.task.created' || event.type === 'agent.task.completed') {
+      assert.deepEqual(previous.activities, activities, 'agent history must not mutate a previous projection');
+    }
+  }
+
   assert.ok(JSON.stringify(requests[1].messages).includes('Superseded member evidence.'));
   const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
     commandId: 'command:member-edit', messageId: original.messages[0].messageId,

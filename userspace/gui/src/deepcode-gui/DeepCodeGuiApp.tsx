@@ -1,3 +1,4 @@
+import { preventBlankTextSelection } from '../components/shared/textSelection';
 import '../components/shared/focus.css';
 import { ConversationDisplayProvider } from '../components/local-agent/ConversationDisplayProvider';
 import { HostStartupDiagnostic } from '../components/shared/HostStartupDiagnostic';
@@ -93,6 +94,11 @@ const BootFallback: React.FC<{ language: ReturnType<typeof normalizeUiLanguage> 
 );
 
 const DeepCodeGuiApp: React.FC = () => {
+  useEffect(() => {
+    document.addEventListener('mousedown', preventBlankTextSelection, true);
+    return () => document.removeEventListener('mousedown', preventBlankTextSelection, true);
+  }, []);
+
   const {
     apiStatus,
     serverVersion,

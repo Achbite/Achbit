@@ -131,7 +131,7 @@ test('GUI message editing submits a revision-bound Session command and reconcile
   await waitForProjection(actor, (value) => value.run?.status === 'completed');
 });
 
-test('permission requests remain distinct transcript records after the tool completes', async (t) => {
+test('permissions stay in their continuous activity group before and after the tool completes', async (t) => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:permission-history';
   await createSession(journal, sessionId, [workspaceBinding]);
   const preparation = fakeRunPreparation({ tools: [{
@@ -157,20 +157,22 @@ test('permission requests remain distinct transcript records after the tool comp
   const waiting = await waitForProjection(actor, (state) => state.pendingApproval !== null);
   const { projectionItems } = await loadGuiModule(t, '/src/components/local-agent/conversationItems.ts');
   const pendingRows = projectionItems(await decodeGuiProjection(waiting));
-  const record = pendingRows.find((row) => row.type === 'approval');
-  assert.equal(record.value.label, 'Allow access to https://example.test?');
-  assert.equal(record.value.status, 'waiting');
+  const record = pendingRows.find(row => row.type === 'toolGroup').values.find(activity => activity.kind === 'approval');
+  assert.equal(record.label, 'Allow access to https://example.test?');
+  assert.equal(record.status, 'waiting');
   assert.equal(pendingRows.at(-1).type, 'toolGroup');
   const { approvalId, callId, runId } = waiting.pendingApproval;
   await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', commandId: 'command:allow',
     sessionId, approvalId, callId, runId, decision: 'allow' });
   const completed = await waitForProjection(actor, (state) => state.run?.status === 'completed');
   const rows = projectionItems(await decodeGuiProjection(completed));
-  const accepted = rows.find((row) => row.type === 'approval');
-  assert.equal(accepted.value.activityId, record.value.activityId);
-  assert.equal(accepted.value.status, 'completed');
+  const accepted = rows.find(row => row.type === 'toolGroup').values.find(activity => activity.kind === 'approval');
+  assert.equal(accepted.activityId, record.activityId);
+  assert.equal(accepted.status, 'completed');
   assert.equal(completed.pendingApproval, null);
-  assert.equal(rows.filter((row) => row.type === 'approval').length, 1);
+  assert.equal(rows.filter(row => row.type === 'toolGroup').length, 1);
+  assert.deepEqual(rows.find(row => row.type === 'toolGroup').values.map(activity => activity.kind), ['approval', 'tool']);
+  assert.equal(rows.at(-1).type, 'message');
 });
 
 test('UI plugin replacement releases styles and effects and retires failed renderers', async (t) => {
@@ -3750,11 +3752,11 @@ test('reader identities separate current files, roots and each recorded diff', a
   assert.notEqual(readerTargetKey(child), readerTargetKey({ ...child, sourceSessionId: 'session:other-child' }));
 });
 
-test('GUI accepts all child capability presets and displays their common instance list', async t => {
+test('GUI accepts child capability presets and places navigation only beside their history activities', async t => {
   const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const { AgentTasksPanel } = await loadGuiModule(t, '/src/components/local-agent/AgentTasksPanel.tsx');
+  const [{ AgentTasksPanel }, { AgentGroupSummary }] = await loadGuiModules(t, ['/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/agentNavigation.tsx']);
   const projection = projectSession(emptySessionState('session:parent'));
   projection.agentChildren = [
     { agentSessionId: 'session:one-shot', displayName: 'One-shot review', closed: true,
@@ -3765,8 +3767,14 @@ test('GUI accepts all child capability presets and displays their common instanc
       capabilities: { messaging: false, continuation: true, delegation: false } },
   ];
   assert.deepEqual(await decodeGuiProjection(projection), projection);
-  const html = renderToStaticMarkup(createElement(AgentTasksPanel, { projection, language: 'en-US' }));
-  for (const child of projection.agentChildren) assert.ok(html.includes(child.displayName));
+  assert.equal(renderToStaticMarkup(createElement(AgentTasksPanel, { projection, language: 'en-US' })), '');
+  const activities = projection.agentChildren.map((child, index) => ({
+    activityId: `agent:task:${index}:completed`, kind: 'agent', runId: 'run:one', sequence: index,
+    label: child.displayName, status: 'completed', agent: { taskId: `task:${index}`, agentSessionId: child.agentSessionId, phase: 'completed' },
+  }));
+  const html = renderToStaticMarkup(createElement(AgentGroupSummary, { activities: activities.slice(0, 2), language: 'en-US' }));
+  for (const child of projection.agentChildren.slice(0, 2)) assert.ok(html.includes(child.displayName));
+  assert.ok(!html.includes('Custom scope'), 'Other turns must not follow the current activity group');
   for (const mutate of [
     p => { delete p.agentChildren[0].capabilities; },
     p => { p.agentChildren[1].capabilities.messaging = 'yes'; },
@@ -3813,7 +3821,7 @@ test('child conversation details mount their canonical messages only when expand
   const closed = renderToStaticMarkup(createElement(AgentConversationHistory, { ...base, expanded: false,
     projection: { get timeline() { throw new Error('closed history must not be traversed'); },
       get assistantDraft() { throw new Error('closed draft must not be traversed'); } } }));
-  assert.match(closed, /<summary>/);
+  assert.equal(closed, '');
   assert.equal(closed.includes('<article'), false);
   const projection = { messages: [
     { messageId: 'second', role: 'assistant', content: 'Second answer' },
@@ -3822,6 +3830,7 @@ test('child conversation details mount their canonical messages only when expand
     { kind: 'message', timelineId: 'timeline:1', messageId: 'first' },
     { kind: 'message', timelineId: 'timeline:2', messageId: 'second' },
   ], assistantDraft: { blocks: [{ kind: 'text', streamId: 'draft:1', content: 'Live continuation' }] } };
+  Object.assign(projection, { narratives: [], plans: [], activities: [], interactions: [], sessionId: 'session:child' });
   const before = structuredClone(projection);
   const expanded = renderToStaticMarkup(createElement(AgentConversationHistory, { ...base, projection, expanded: true }));
   assert.ok(expanded.indexOf('First request') < expanded.indexOf('Second answer'));
@@ -4257,4 +4266,28 @@ test('approval operation details include file access while automated review is p
   } }));
   for (const fact of ['docker ps', '/workspace', 'host', '/Applications/DeepCode.app']) assert.ok(html.includes(fact));
   assert.equal(html.includes('<button'), false, 'facts alone cannot approve an operation');
+});
+
+
+test('continuous actions include permissions and Agent events, separated only by visible text or decisions', async t => {
+  const { projectionItems } = await loadGuiModule(t, '/src/components/local-agent/conversationItems.ts');
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const projection = projectSession(emptySessionState('session:actions'));
+  projection.narratives = [1, 6].map(sequence => ({ narrativeId: `text:${sequence}`, runId: 'run:one', content: `Output ${sequence}`, sequence }));
+  projection.activities = ['tool', 'approval', 'tool', 'agent', 'tool'].map((kind, index) => ({
+    activityId: `action:${index}`, kind, status: 'completed', label: kind, runId: 'run:one', sequence: index + 2,
+  }));
+  projection.timeline = [
+    { kind: 'narrative', narrativeId: 'text:1', streamId: 'stream:1', sequence: 1 },
+    { kind: 'toolGroup', timelineId: 'group:1', activityIds: ['action:0'], sequence: 2 },
+    { kind: 'toolGroup', timelineId: 'group:2', activityIds: ['action:1', 'action:2'], sequence: 3 },
+    { kind: 'toolGroup', timelineId: 'group:3', activityIds: ['action:3'], sequence: 5 },
+    { kind: 'narrative', narrativeId: 'text:6', streamId: 'stream:6', sequence: 6 },
+    { kind: 'toolGroup', timelineId: 'group:4', activityIds: ['action:4'], sequence: 7 },
+  ];
+  const original = structuredClone(projection);
+  const items = projectionItems(projection);
+  assert.deepEqual(items.map(item => item.type), ['narrative', 'toolGroup', 'narrative', 'toolGroup']);
+  assert.deepEqual(items[1].values.map(activity => activity.kind), ['tool', 'approval', 'tool', 'agent']);
+  assert.deepEqual(projection, original);
 });

@@ -12,6 +12,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn agent_status_key(status: deepcode_kernel_client::AgentTaskStatus) -> &'static str {
+    use deepcode_kernel_client::AgentTaskStatus::*;
+    match status {
+        Running => "agent.team.status.running",
+        Completed => "agent.team.status.completed",
+        Failed => "agent.team.status.failed",
+        Cancelled => "agent.team.status.cancelled",
+        Indeterminate => "agent.team.status.indeterminate",
+    }
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -51,6 +62,12 @@ struct ModelPicker {
     selected: usize,
 }
 
+struct AgentReturnView {
+    projection: SessionProjection,
+    input: String,
+    transcript_scroll: Option<usize>,
+}
+
 pub struct TuiApp {
     client: HttpKernelClient,
     renderer: Renderer,
@@ -65,6 +82,8 @@ pub struct TuiApp {
     model_picker: Option<ModelPicker>,
     session_list: Option<Vec<ConversationSessionSummary>>,
     session_picker: Option<usize>,
+    agent_picker: Option<usize>,
+    agent_return_views: Vec<AgentReturnView>,
     plugin_catalog: Option<PluginCatalogProjection>,
     selected_plugins: Vec<PluginSelectionInput>,
     selected_mentions: Vec<SelectedMention>,
@@ -96,6 +115,8 @@ impl TuiApp {
             model_picker: None,
             session_list: None,
             session_picker: None,
+            agent_picker: None,
+            agent_return_views: Vec::new(),
             plugin_catalog: None,
             selected_plugins: Vec::new(),
             selected_mentions: Vec::new(),
@@ -200,6 +221,29 @@ impl TuiApp {
         match input {
             "/quit" | "/exit" => return false,
             "/sessions" | "/resume" => self.open_sessions().await,
+            "/agents" => {
+                self.agent_picker = Some(0);
+            }
+            "/back" => {
+                self.back_from_agent();
+                self.poll().await;
+            }
+            value if value.starts_with("/agent ") => {
+                let selector = value.trim_start_matches("/agent ").trim();
+                let entries = self.agent_entries();
+                let selected = selector
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|number| number.checked_sub(1))
+                    .filter(|index| *index < entries.len())
+                    .or_else(|| entries.iter().position(|(id, _, _)| id == selector));
+                if let Some(index) = selected {
+                    self.agent_picker = Some(index);
+                    self.select_agent().await;
+                } else {
+                    self.status = self.host.language.text("tui.agentNotFound").into();
+                }
+            }
             "/new" => self.new_session(),
             value if value.starts_with("/resume ") => {
                 self.resume_session(value.trim_start_matches("/resume ").trim())
@@ -251,6 +295,8 @@ impl TuiApp {
                 self.read_detail(value, true).await
             }
             "/close" => {
+                self.agent_picker = None;
+                self.back_from_agent();
                 self.session_picker = None;
                 self.context_open = false;
                 self.tasks_open = false;
@@ -337,6 +383,8 @@ impl TuiApp {
 
     // A view change never submits a cancellation or copies authority to another Session.
     fn reset_session_view(&mut self) {
+        self.agent_return_views.clear();
+        self.agent_picker = None;
         self.clear_input();
         self.next_message_profile_id = None;
         self.model_picker = None;
@@ -410,6 +458,146 @@ impl TuiApp {
         }
     }
 
+    pub fn agent_picker_open(&self) -> bool {
+        self.agent_picker.is_some()
+    }
+    pub fn close_agent_picker(&mut self) {
+        self.agent_picker = None;
+    }
+    pub fn viewing_agent(&self) -> bool {
+        !self.agent_return_views.is_empty()
+    }
+    pub fn agent_entries(&self) -> Vec<(String, String, bool)> {
+        let Some(projection) = &self.projection else {
+            return Vec::new();
+        };
+        let mut members = Vec::new();
+        for child in projection.agent_children.iter().flatten() {
+            members.push((
+                child.agent_session_id.clone(),
+                child.display_name.clone(),
+                child.closed,
+            ));
+        }
+        for task in projection.agent_tasks.iter().flatten() {
+            if !members
+                .iter()
+                .any(|(id, _, _)| *id == task.agent_session_id)
+            {
+                members.push((
+                    task.agent_session_id.clone(),
+                    task.display_name.clone(),
+                    false,
+                ));
+            }
+        }
+        members
+            .into_iter()
+            .enumerate()
+            .map(|(index, (id, name, closed))| {
+                let task = projection
+                    .agent_tasks
+                    .iter()
+                    .flatten()
+                    .rev()
+                    .find(|task| task.agent_session_id == id);
+                let status = task
+                    .map(|task| agent_status_key(task.status))
+                    .unwrap_or("agent.team.status.idle");
+                let label = format!(
+                    "{}. {} · {}{}",
+                    index + 1,
+                    name,
+                    self.host.language.text(status),
+                    if closed {
+                        format!(" · {}", self.host.language.text("agent.team.closed"))
+                    } else {
+                        String::new()
+                    }
+                );
+                (id, label, self.agent_picker == Some(index))
+            })
+            .collect()
+    }
+    pub fn agent_picker_move(&mut self, delta: isize) {
+        let count = self.agent_entries().len();
+        if let Some(selected) = self.agent_picker.as_mut().filter(|_| count > 0) {
+            *selected = (*selected as isize + delta).rem_euclid(count as isize) as usize;
+        }
+    }
+    pub async fn select_agent(&mut self) {
+        let Some((id, label, _)) = self
+            .agent_picker
+            .and_then(|index| self.agent_entries().get(index).cloned())
+        else {
+            return;
+        };
+        match self.client.conversation_projection(&id).await {
+            Ok(child) => {
+                if let Some(projection) = self.projection.take() {
+                    self.agent_return_views.push(AgentReturnView {
+                        projection,
+                        input: std::mem::take(&mut self.input),
+                        transcript_scroll: self.transcript_scroll.get(),
+                    });
+                }
+                self.projection = Some(child);
+                self.agent_picker = None;
+                self.transcript_scroll.set(None);
+                self.detail_preview = None;
+                self.resource_preview = None;
+                self.context_open = false;
+                self.tasks_open = false;
+                self.status = format!(
+                    "{} · {}",
+                    label,
+                    self.host.language.text("tui.agentBackHint")
+                );
+            }
+            Err(error) => {
+                self.status = error.to_string();
+            }
+        }
+    }
+    pub fn back_from_agent(&mut self) {
+        if let Some(parent) = self.agent_return_views.pop() {
+            self.projection = Some(parent.projection);
+            self.input = parent.input;
+            self.transcript_scroll.set(parent.transcript_scroll);
+            self.detail_preview = None;
+            self.resource_preview = None;
+            self.context_open = false;
+            self.tasks_open = false;
+            self.status = self.projection_label();
+        }
+    }
+    pub fn agent_status(&self) -> String {
+        let Some(projection) = &self.projection else {
+            return String::new();
+        };
+        let mut counts = std::collections::BTreeMap::new();
+        let mut seen = HashSet::new();
+        for task in projection.agent_tasks.iter().flatten().rev() {
+            if seen.insert(&task.agent_session_id) {
+                *counts
+                    .entry(agent_status_key(task.status))
+                    .or_insert(0usize) += 1;
+            }
+        }
+        if counts.is_empty() {
+            return String::new();
+        }
+        format!(
+            "{} · {} · /agents",
+            self.host.language.text("agent.team.title"),
+            counts
+                .into_iter()
+                .map(|(status, count)| format!("{} {}", count, self.host.language.text(status)))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    }
+
     pub fn session_picker_open(&self) -> bool {
         self.session_picker.is_some()
     }
@@ -466,6 +654,10 @@ impl TuiApp {
                 return;
             }
         };
+        if self.viewing_agent() && command["type"] == "message.submit" {
+            self.status = self.host.language.text("tui.agentReadOnly").into();
+            return;
+        }
         if self
             .submit_command(
                 &session_id,
@@ -1560,6 +1752,45 @@ mod input_tests {
             assert!(app.detail_preview.is_none());
             assert!(app.status.contains("仍在后台运行"));
         }
+    }
+
+    #[test]
+    fn agent_list_uses_latest_task_and_back_restores_the_main_view() {
+        let mut app = test_app();
+        let (field, decision, _, _, _) = pending_decisions().into_iter().next().unwrap();
+        let mut main = waiting_projection(field, decision);
+        main.agent_children = Some(
+            serde_json::from_value(json!([
+                {"agentSessionId":"session:child","displayName":"Researcher","closed":false,
+                    "capabilities":{"messaging":true,"continuation":true,"delegation":false}}
+            ]))
+            .unwrap(),
+        );
+        main.agent_tasks = Some(serde_json::from_value(json!([
+            {"taskId":"task:one","agentSessionId":"session:child","displayName":"Researcher","text":"Inspect",
+                "delivery":"async","parentRunId":"run:test","status":"completed",
+                "capabilities":{"messaging":true,"continuation":true,"delegation":false}},
+            {"taskId":"task:two","agentSessionId":"session:child","displayName":"Researcher","text":"Continue",
+                "delivery":"async","parentRunId":"run:test","status":"running",
+                "capabilities":{"messaging":true,"continuation":true,"delegation":false}}
+        ])).unwrap());
+        app.projection = Some(main.clone());
+        app.agent_picker = Some(0);
+        assert_eq!(app.agent_entries().len(), 1);
+        assert!(app.agent_status().contains("1 运行中"));
+        assert!(app.renderer().render_plain(&app).contains("Researcher"));
+        app.agent_return_views.push(AgentReturnView {
+            projection: main.clone(),
+            input: "unfinished draft".into(),
+            transcript_scroll: Some(7),
+        });
+        app.projection.as_mut().unwrap().session_id = "session:child".into();
+        app.input = "child view".into();
+        app.back_from_agent();
+        assert_eq!(app.projection().unwrap().session_id, main.session_id);
+        assert_eq!(app.input, "unfinished draft");
+        assert_eq!(app.transcript_scroll.get(), Some(7));
+        assert!(!app.viewing_agent());
     }
 
     #[test]

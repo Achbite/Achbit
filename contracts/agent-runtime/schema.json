@@ -3096,7 +3096,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "kind", "timelineId", "sequence", "providerRequestId", "activityIds"
+            "kind", "timelineId", "sequence", "activityIds"
           ],
           "properties": {
             "kind": { "const": "toolGroup" },
@@ -4127,7 +4127,7 @@
       "required": ["activityId", "kind", "status", "label", "runId", "sequence"],
       "properties": {
         "activityId": {"$ref": "#/$defs/Id"},
-        "kind": {"enum": ["run", "tool", "providerHosted", "approval", "plan", "interaction"]},
+        "kind": {"enum": ["run", "tool", "providerHosted", "approval", "plan", "interaction", "agent"]},
         "status": {
           "enum": [
             "active",
@@ -4150,6 +4150,7 @@
         "tool": {"$ref": "#/$defs/ToolActivityProjection"},
         "inputRejection": {"$ref": "#/$defs/ToolInputError"},
         "interruption": {"$ref": "#/$defs/LocalAgentError"},
+        "agent": {"type": "object", "additionalProperties": false, "required": ["agentSessionId", "taskId", "phase"], "properties": {"agentSessionId": {"$ref": "#/$defs/Id"}, "taskId": {"$ref": "#/$defs/Id"}, "phase": {"enum": ["started", "completed"]}}},
         "providerHosted": {
           "type": "object",
           "additionalProperties": false,

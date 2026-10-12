@@ -382,6 +382,18 @@ pub(crate) fn failure_details(
 }
 
 fn activity_summary(language: Language, activity: &ActivityProjection) -> String {
+    if let Some(agent) = &activity.agent {
+        return format!(
+            "{} · {} · /agent {}",
+            activity.label,
+            if agent.phase == "started" {
+                language.text("agent.team.started")
+            } else {
+                status_label(language, &activity.status)
+            },
+            agent.agent_session_id
+        );
+    }
     if activity.kind == "tool" {
         let operation = activity
             .tool
@@ -725,6 +737,9 @@ impl Renderer {
         if app.model_picker_open() {
             self.draw_model_picker(frame, rows[1], app);
         }
+        if app.agent_picker_open() {
+            self.draw_agent_picker(frame, rows[1], app);
+        }
         if app.session_picker_open() {
             self.draw_session_picker(frame, rows[1], app);
         }
@@ -877,6 +892,18 @@ impl Renderer {
                 "tui.nextPlugins",
                 &[format!("{}", selected_plugins.join(", "))],
             ));
+        }
+        let agent_status = app.agent_status();
+        if !agent_status.is_empty() {
+            output.push_str(&format!("{agent_status}\n"));
+        }
+        if app.agent_picker_open() {
+            output.push_str(&format!("{}\n", language.text("agent.team.title")));
+            for (_, label, _) in app.agent_entries() {
+                output.push_str(&format!("{label}\n"));
+            }
+            output.push_str(language.text("tui.agentsHint"));
+            output.push('\n');
         }
         if app.session_picker_open() {
             output.push_str(&format!("{}\n", app.language().text("tui.sessionsTitle")));
@@ -1037,6 +1064,10 @@ impl Renderer {
                     &[format!("{}", cache_hit_label(projection))],
                 ));
             }
+        }
+        let agents = app.agent_status();
+        if !agents.is_empty() {
+            metrics.insert(0, agents);
         }
         let metrics = metrics.join(" · ");
         let hint = if area.width >= 84 {
@@ -1431,6 +1462,42 @@ impl Renderer {
             inner,
         );
         frame.set_cursor_position((inner.x + column.min(inner.width - 1), inner.y + row));
+    }
+
+    fn draw_agent_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
+        let entries = app
+            .agent_entries()
+            .into_iter()
+            .map(|(_, label, selected)| (label, selected))
+            .collect::<Vec<_>>();
+        let visible = usize::from(area.height.saturating_sub(2)).max(1);
+        let selected = entries
+            .iter()
+            .position(|(_, selected)| *selected)
+            .unwrap_or(0);
+        let start = selected.saturating_sub(visible - 1);
+        let mut lines: Vec<Line<'_>> = entries
+            .iter()
+            .skip(start)
+            .take(visible)
+            .map(|(label, selected)| {
+                Line::from(Span::styled(
+                    format!("{} {label}", if *selected { ">" } else { " " }),
+                    Style::default().fg(if *selected { Color::Cyan } else { Color::Reset }),
+                ))
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(app.language().text("tui.agentsEmpty")));
+        }
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
+                " {} · ↑/↓ · Enter · Esc ",
+                app.language().text("agent.team.title")
+            ))),
+            area,
+        );
     }
 
     fn draw_session_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {

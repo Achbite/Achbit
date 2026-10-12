@@ -132,11 +132,6 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-changes-heading .conversation-change-binary-count { margin: 0; font-weight: 400; }
 .conversation-diff-binary { padding: 24px; color: var(--dc-muted); font-size: var(--dc-font-body); }
 .conversation-diff-binary small { display: block; margin-top: 10px; }
-.local-agent .conversation-process-toggle { display: flex; align-items: center; gap: 7px; padding: 6px 0; margin: 8px 0; border: 0; border-radius: 5px; color: var(--dc-muted); background: transparent; cursor: pointer; font: inherit; font-size: calc(12px * var(--dc-ui-font-scale, 1)); }
-.conversation-process-toggle > svg { width: 15px; height: 15px; }
-.conversation-process-toggle > .conversation-disclosure-chevron { width: 12px; height: 12px; }
-.conversation-process-toggle[aria-expanded='false'] > .conversation-disclosure-chevron { transform: rotate(-90deg); }
-.conversation-process-toggle:hover { color: var(--dc-foreground); }
 .conversation-round > [hidden] { display: none; }
 .conversation-code pre, .conversation-code pre code, .conversation-code pre span { font-family: var(--dc-font-mono); line-height: 1.6; }
 

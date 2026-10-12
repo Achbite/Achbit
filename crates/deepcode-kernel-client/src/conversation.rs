@@ -776,8 +776,23 @@ impl SessionProjection {
                 || !activity_ids.insert(activity.activity_id.as_str())
                 || !matches!(
                     activity.kind.as_str(),
-                    "run" | "tool" | "providerHosted" | "approval" | "interaction" | "plan"
+                    "run"
+                        | "tool"
+                        | "providerHosted"
+                        | "approval"
+                        | "interaction"
+                        | "agent"
+                        | "plan"
                 )
+                || (activity.kind == "agent") != activity.agent.is_some()
+                || activity.agent.as_ref().is_some_and(|agent| {
+                    !matches!(agent.phase.as_str(), "started" | "completed")
+                        || self.agent_tasks.iter().flatten().all(|task| {
+                            task.task_id != agent.task_id
+                                || task.agent_session_id != agent.agent_session_id
+                                || task.parent_run_id != activity.run_id
+                        })
+                })
                 || !matches!(
                     activity.status.as_str(),
                     "active"
@@ -962,7 +977,13 @@ impl SessionProjection {
                     activity_ids,
                     ..
                 } => {
-                    provider_request_id.is_empty()
+                    provider_request_id.as_deref().is_some_and(str::is_empty)
+                        || (provider_request_id.is_none()
+                            && activity_ids.iter().any(|id| {
+                                !self.activities.iter().any(|activity| {
+                                    activity.activity_id == *id && activity.kind == "agent"
+                                })
+                            }))
                         || activity_ids.is_empty()
                         || activity_ids.iter().any(|activity_id| {
                             !timeline_activity_ids.insert(activity_id.as_str())
@@ -970,7 +991,11 @@ impl SessionProjection {
                                     activity.activity_id != *activity_id
                                         || !matches!(
                                             activity.kind.as_str(),
-                                            "tool" | "providerHosted" | "approval" | "interaction"
+                                            "tool"
+                                                | "providerHosted"
+                                                | "approval"
+                                                | "interaction"
+                                                | "agent"
                                         )
                                 })
                         })
@@ -994,7 +1019,7 @@ impl SessionProjection {
                     .filter(|activity| {
                         matches!(
                             activity.kind.as_str(),
-                            "tool" | "providerHosted" | "approval" | "interaction"
+                            "tool" | "providerHosted" | "approval" | "interaction" | "agent"
                         )
                     })
                     .count()
@@ -1059,7 +1084,7 @@ pub enum SessionTimelineItem {
         timeline_id: String,
         sequence: u64,
         #[serde(rename = "providerRequestId")]
-        provider_request_id: String,
+        provider_request_id: Option<String>,
         #[serde(rename = "activityIds")]
         activity_ids: Vec<String>,
     },
@@ -1939,6 +1964,14 @@ pub struct HostWindowBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentActivityProjection {
+    pub agent_session_id: String,
+    pub task_id: String,
+    pub phase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityProjection {
     pub activity_id: String,
@@ -1954,6 +1987,7 @@ pub struct ActivityProjection {
     pub input_rejection: Option<ToolInputRejectionProjection>,
     pub interruption: Option<ConversationError>,
     pub provider_hosted: Option<ProviderHostedActivityProjection>,
+    pub agent: Option<AgentActivityProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

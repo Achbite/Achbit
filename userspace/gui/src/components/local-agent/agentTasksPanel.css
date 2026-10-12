@@ -1,27 +1,31 @@
-.agent-tasks {
-  margin: 16px auto;
-  max-width: var(--conversation-content-width, 820px);
-  border-top: 1px solid var(--dc-border);
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-body);
-}
-.agent-tasks summary { cursor: pointer; padding: 10px 12px; overflow-wrap: anywhere; }
-.agent-tasks summary > * + * { margin-left: 10px; }
-.agent-tasks summary span { color: var(--dc-muted); font-size: .9em; }
-.agent-tasks summary .agent-tasks__attention { color: var(--dc-foreground-strong); font-weight: 600; }
-.agent-tasks__list { border-top: 1px solid var(--dc-border); }
-.agent-tasks__child + .agent-tasks__child { border-top: 1px solid var(--dc-border); }
-.agent-tasks__child-body { padding: 0 14px 14px; min-width: 0; }
-.agent-tasks__task { margin: 10px 0; }
-.agent-tasks__task > header { display: flex; gap: 12px; justify-content: space-between; color: var(--dc-muted); }
+/* Compact activity members and a separate history surface. */
 .agent-tasks__error { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dc-foreground); }
-.agent-tasks__conversation { margin-top: 12px; }
-.agent-tasks__conversation > article { margin: 14px 0; }
 .agent-tasks__conversation > article > header { font-weight: 600; color: var(--dc-muted); }
 .agent-tasks__decisions:empty { display: none; }
 .agent-tasks__revision { display: grid; gap: 8px; margin: 12px 0; }
 .agent-tasks__revision textarea { width: 100%; box-sizing: border-box; resize: vertical; color: inherit; background: transparent; border: 1px solid var(--dc-border); border-radius: 6px; padding: 8px; font: inherit; }
 .agent-tasks__revision > div { display: flex; flex-wrap: wrap; gap: 10px; }
-.agent-tasks button { cursor: pointer; }
-.agent-tasks button:disabled { cursor: default; }
-@media (max-width: 700px) { .agent-tasks { margin: 12px; } }
+.local-agent__tool-group-heading { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; }
+.agent-tasks__members { display:inline-flex; align-items:center; flex-wrap:wrap; gap:4px; min-width:0; }
+.local-agent .agent-tasks__member, .local-agent .agent-activity { display:inline-flex; align-items:center; gap:7px; border:0; box-shadow:none; border-radius:6px; padding:5px 7px; color:var(--dc-muted); background:transparent; font:inherit; cursor:pointer; text-align:left; }
+.agent-tasks__member > span:first-of-type { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-tasks__member svg, .agent-activity svg { width:17px; height:17px; flex:none; }
+.agent-tasks__member--running svg { color:var(--dc-accent); animation:agent-pulse 1.8s ease-in-out infinite; }
+.agent-tasks__member--completed svg { color:var(--dc-success); }
+.agent-tasks__member:hover, .agent-tasks__member[aria-pressed=true], .agent-activity:hover { background:var(--dc-surface-hover); color:var(--dc-foreground); }
+.agent-activity { display:flex; width:100%; padding:8px 0; }
+.agent-activity > span:nth-of-type(2) { color:var(--dc-muted); }
+.agent-tasks__drawer { position:absolute; right:0; top:0; bottom:0; width:min(520px, 48%); z-index:25; background:var(--dc-background); border-left:1px solid var(--dc-border); box-shadow:var(--dc-shadow-panel); display:flex; flex-direction:column; min-height:0; }
+.agent-tasks__drawer > header { display:flex; align-items:center; gap:12px; padding:16px 20px; flex:none; }
+.agent-tasks__drawer > header > span { color:var(--dc-muted); font-size:var(--dc-font-caption); margin-left:auto; }
+.agent-tasks__drawer > header > button { display:grid; place-items:center; border:0; border-radius:6px; padding:6px; color:var(--dc-muted); background:transparent; }
+.agent-tasks__drawer > header > button:hover { background:var(--dc-surface-hover); }
+.agent-tasks__drawer > header svg { width:18px; height:18px; }
+.agent-tasks__drawer[hidden] { display:none; }
+.agent-tasks__child-body { overflow:auto; flex:1; min-width:0; padding:0 22px 20px; }
+.agent-tasks__conversation { margin:0; }
+.agent-tasks__conversation > article { margin:16px 0 24px; }
+.agent-tasks__conversation > article > header { font-size:var(--dc-font-caption); margin-bottom:8px; }
+@keyframes agent-pulse { 50% { opacity:.5; } }
+@media (prefers-reduced-motion:reduce) { .agent-tasks__member--running svg { animation:none; } }
+@media (max-width:900px) { .agent-tasks__drawer { width:min(520px, 100%); }  }

@@ -724,11 +724,13 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
     case 'agent.task.created':
       assertRunningRun(next, event.runId, 'agent_task_run_not_active');
       Object.assign(next, reduceAgentLifetime(next, event));
+      recordAgentActivity(next, event, 'started');
       break;
     case 'agent.task.started':
     case 'agent.task.completed':
     case 'agent.closed':
       Object.assign(next, reduceAgentLifetime(next, event));
+      if (event.type === 'agent.task.completed') recordAgentActivity(next, event, 'completed');
       break;
     case 'agent.control.completed':
       assertRunningRun(next, event.runId, 'agent_control_run_not_active');
@@ -1140,6 +1142,21 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
   return next;
 }
 
+function recordAgentActivity(state: SessionState,
+  event: Extract<SessionEvent, { type: 'agent.task.created' | 'agent.task.completed' }>,
+  phase: 'started' | 'completed'): void {
+  const task = state.agentTasks.find(task => task.taskId === event.payload.taskId)!;
+  const activityId = `agent:${task.taskId}:${phase}`;
+  state.activities = {
+    ...state.activities,
+    [activityId]: {
+      activityId, kind: 'agent', label: task.displayName, runId: event.runId,
+      sequence: event.sequence, status: phase === 'started' ? 'completed' : task.result!.outcome,
+      agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase },
+    },
+  };
+}
+
 type AgentLifetime = Pick<SessionState, 'agentTasks' | 'agentChildren'>;
 type AgentLifetimeEvent = Extract<SessionEvent, { type: 'agent.task.created' | 'agent.task.started' | 'agent.task.completed' | 'agent.closed' }>;
 
@@ -1522,6 +1539,11 @@ function projectTimeline(state: SessionState): SessionProjection['timeline'] {
         messageId: message.messageId,
       }],
     });
+  }
+  for (const activity of Object.values(state.activities)) {
+    if (activity.kind !== 'agent') continue;
+    groups.push({ sequence: activity.sequence, items: [{ kind: 'toolGroup',
+      timelineId: activity.activityId, sequence: activity.sequence, activityIds: [activity.activityId] }] });
   }
   for (const turn of Object.values(state.providerTurns)) {
     if (turn.purpose !== 'agent' || turn.outcome !== 'completed') continue;

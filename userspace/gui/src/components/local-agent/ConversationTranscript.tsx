@@ -26,10 +26,8 @@ import { ConversationLayoutCache, ConversationVirtualizer } from './conversation
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
 import { RunFailureDetails, ProviderRetryStatus } from './RunFailureDetails';
-import { ApprovalActivity } from './ApprovalActivity';
 import { InteractionCard } from './InteractionCard';
 import { messageDisplayText } from './interactionPresentation';
-import { AgentTasksPanel } from './AgentTasksPanel';
 
 interface ConversationTranscriptProps {
   language: UiLanguage;
@@ -286,14 +284,11 @@ export function ConversationTranscript({
         />
       ) : item.type === 'interaction' ? (
         <InteractionCard interaction={item.value} language={language} answerInComposer={item.value.interactionId === composerInteractionId} />
-      ) : item.type === 'approval' ? (
-        <ApprovalActivity activity={item.value} language={language}
-          pending={projection?.pendingApproval?.callId === item.value.callId}
-          reviewing={projection?.pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running'}
-          onExpand={() => setLatestFollowMode(false)} />
       ) : (
         <ToolActivityGroup
           activities={item.values}
+          pendingApproval={projection?.pendingApproval}
+          reviewingApproval={projection?.pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running'}
           key={item.groupId}
           language={language}
           onExpand={() => setLatestFollowMode(false)}
@@ -399,20 +394,18 @@ export function ConversationTranscript({
         const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
         const rows = round.rows.map((row) => ({
           key: row.key,
-          process: row.item ? !['message', 'approval'].includes(row.item.type) : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
           required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value),
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
           content: () => row.item ? renderItem(row.item) : renderDraft(row.draft!),
         }));
-        if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
-        if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
+        if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, required: false, live: true, content: () => providerStatus });
+        if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
         const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
-        return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows} displaySettled={displaySettled} followingLatest={viewport.followingLatest} rows={rows}>
+        return <ConversationRoundView key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows} rows={rows}>
           {changeActivities.some(activity => activity.tool?.fileChanges?.length) && <FileChanges activities={changeActivities} />}
         </ConversationRoundView>;
       })}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
-      {projection && <AgentTasksPanel key={projection.sessionId} projection={projection} language={language} />}
       <div ref={messageEndRef} />
     </div>
     </>
@@ -426,26 +419,14 @@ function samePlanReference(
   return reference?.planId === plan.planId && reference.revision === plan.revision;
 }
 
-function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, followingLatest, rows, children }: {
-  language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
-  displaySettled: boolean; followingLatest: boolean;
-  rows: Array<{ key: string; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
+function ConversationRoundView({ roundKey, virtualizer, eagerRows, rows, children }: {
+  roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
+  rows: Array<{ key: string; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
-  const state = virtualizer.layout(`${roundKey}:disclosure`).state;
-  const [disclosure, updateDisclosure] = useState(() => (state.get('process') as { displaySettled: boolean; open: boolean } | undefined) ?? { displaySettled, open: false });
-  const setDisclosure = (value: typeof disclosure) => { state.set('process', value); updateDisclosure(value); };
-  if (disclosure.displaySettled !== displaySettled) setDisclosure({ displaySettled, open: displaySettled && !followingLatest });
-  const expanded = !displaySettled || disclosure.open;
-  const firstProcess = rows.find((row) => row.process)?.key;
   return <section className="conversation-round">
-    {rows.map((row) => <React.Fragment key={row.key}>
-      {displaySettled && row.key === firstProcess && <button className="conversation-process-toggle" type="button" aria-expanded={expanded} onClick={() => setDisclosure({ displaySettled, open: !expanded })}>
-        <DeepCodeShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span><DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
-      </button>}
-      <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} eager={eagerRows.has(row.key)} live={row.live || row.required}
-        hidden={row.process && !expanded && !row.required}>{row.content}</ConversationVirtualRow>
-    </React.Fragment>)}
+    {rows.map(row => <ConversationVirtualRow key={row.key} rowKey={row.key} virtualizer={virtualizer}
+      eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>)}
     {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} virtualizer={virtualizer}>
       {() => children}
     </ConversationVirtualRow>}

@@ -19,7 +19,7 @@ export function ApprovalActivity({ activity, pending, reviewing, language, onExp
     <button type="button" className="local-agent__approval-record-heading" aria-expanded={expanded}
       onClick={() => { if (!expanded) onExpand(); setExpanded((value) => !value); }}>
       <DeepCodeShellIcon name="hand" />
-      <span>{t(language, `agent.approval.record.${pending ? status : 'requested'}`)}</span>
+      <span>{t(language, `agent.approval.record.${status}`)}</span>
       <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
     {expanded && <div className="local-agent__approval-record-body">
