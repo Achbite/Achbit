@@ -47,11 +47,6 @@ impl Profile {
         Ok(Self { sid })
     }
 
-    /// Package SID of every Shell of this profile.
-    pub(super) fn sid(&self) -> PSID {
-        self.sid
-    }
-
     pub(super) fn delete(name: &str) -> Result<(), String> {
         let result = unsafe { DeleteAppContainerProfile(wide(name).as_ptr()) };
         if result < 0 && !NOT_FOUND.contains(&result) {
