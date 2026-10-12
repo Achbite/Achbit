@@ -330,7 +330,7 @@ def check_previous_run_guidance():
                 str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
                 '--session', session, '--plain', 'ask', text,
             ], cwd=fixture.ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                stderr=subprocess.PIPE, text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             cleanup.callback(close_cli, process)
             return process
 

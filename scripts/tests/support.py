@@ -433,7 +433,7 @@ def cli(daemon: Any, session_id: str, text: str, expected: int = 0, *, run_timeo
     result = subprocess.run([
         str(CLI_BINARY), "--api", daemon.base_url, "--no-auto-start-kernel",
         "--session", session_id, "--plain", "ask", text,
-    ], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=run_timeout_seconds + 30)
+    ], cwd=ROOT, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=run_timeout_seconds + 30)
     require(result.returncode == expected, f"CLI 退出 {result.returncode}，预期 {expected}\n{result.stdout}\n{result.stderr}")
     return result
 

@@ -132,7 +132,12 @@ class Provider(fixture.MockProviderHandler):
             elif ordinal == 7 and state.mode == 'complete':
                 self._send_text('premature-answer')
             elif ordinal == 8 and state.mode == 'complete':
-                job = results['start-short']['process']
+                job_id = results['start-short']['output']['job']['jobId']
+                updates = [value['process'] for value in fixture.json_payloads(body)
+                           if value.get('type') == 'process.updated'
+                           and value.get('process', {}).get('jobId') == job_id]
+                require(updates, 'The completed process must have its own process.updated fact')
+                job = updates[-1]
                 require(job['status'] == 'completed' and 'managed-complete' in job['output']['stdout'], job)
                 require(job['result']['exitCode'] == 0, job)
                 self._send_text('managed-process-cli-complete')
@@ -169,7 +174,7 @@ def check(mode):
                 command.extend(['--plugin', 'plugin://containers@builtin'])
             command.extend(['ask', 'Start and control the requested test processes.'])
             initial = subprocess.run(command, cwd=fixture.ROOT, env=fixture.shell_environment(daemon),
-                                     capture_output=True, text=True, timeout=30)
+                                     capture_output=True, text=True, encoding='utf-8', timeout=30)
             state.assert_healthy()
             require(initial.returncode == 5, initial.stdout + initial.stderr)
             waiting = fixture.projection(daemon, session)
@@ -178,7 +183,7 @@ def check(mode):
             scope = 'allow-container-run' if CONTAINER else 'allow-host-run'
             reply = command[:7] + ['ask', '/reply ' + scope]
             client = subprocess.Popen(reply, cwd=fixture.ROOT, env=fixture.shell_environment(daemon),
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
             if mode == 'user-stop':
                 def running():
                     state.assert_healthy()

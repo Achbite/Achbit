@@ -73,29 +73,25 @@ class State(fixture.ProviderState):
         else:
             definition = next(tool['function']['parameters'] for tool in body['tools']
                               if tool['function']['name'] == names['agent'])
-            discovered = any(event['sessionId'] == sid and event['type'] == 'agent.control.completed'
-                             and event['payload']['operation']['action'] == 'models' for event in journal)
-            actions = definition['properties']['action']['enum']
-            require(set(actions) == ({'models', 'spawn', 'send', 'wait', 'cancel', 'close'}
-                                    if discovered else {'models'}), 'Agent discovery schema is incorrect')
+            # Operation contracts arrive in the models result; the wire schema stays a stable prefix.
+            action = definition['properties']['action']
+            require(action.get('type') == 'string' and 'enum' not in action and 'const' not in action,
+                    'Agent control schema must not change with discovery')
         with self.lock:
             previous = self.lanes.setdefault(lane, [])
             if previous:
                 prefix = previous[-1]['messages']
                 require(body['messages'][:len(prefix)] == prefix, f'{lane}: already-sent prefix changed')
-                if body['tools'] != previous[-1]['tools']:
-                    wire = names.get('agent')
-                    old = next((tool['function']['parameters'] for tool in previous[-1]['tools']
-                                if tool['function']['name'] == wire), {})
-                    require(len(previous) == 1 and old.get('properties', {}).get('action', {}).get('enum') == ['models']
-                            and [tool for tool in body['tools'] if tool['function']['name'] != wire]
-                            == [tool for tool in previous[-1]['tools'] if tool['function']['name'] != wire],
-                            f'{lane}: tool directory changed outside its discovery boundary')
+                require(body['tools'] == previous[-1]['tools'], f'{lane}: tool directory changed between requests')
             previous.append(body)
             ordinal = len(previous)
             self.requests.append(dict(lane=lane, ordinal=ordinal, sessionId=sid, receipt=receipt, body=body))
         results = {message['tool_call_id']: json.loads(message['content']) for message in body['messages']
                    if message.get('role') == 'tool'}
+        if 'models' in results:
+            operations = {operation['action'] for operation in results['models']['operations']}
+            require(operations == {'models', 'spawn', 'send', 'wait', 'cancel', 'close'},
+                    f'{lane}: discovered agent operations are incorrect: {sorted(operations)}')
         return lane, ordinal, names, results, sid
 
 
@@ -384,11 +380,16 @@ def delete_family(daemon, session, snapshots, workspace, output):
         workdirs = [dict(sessionId=owner, workspaceId=identity, path=path) for owner, identity, path in database.execute(
             'SELECT w.owner_session_id,w.workspace_id,w.canonical_root FROM workspaces w '
             'JOIN session_workdirs d USING(workspace_id)') if owner in family]
+        shared_ids = [identity for identity, path in database.execute(
+            'SELECT workspace_id,canonical_root FROM workspaces WHERE owner_session_id IS NULL')
+            if Path(path).samefile(workspace)]
     require(family <= catalog_ids, 'Family was missing from the Host catalog before deletion')
     require(len(workdirs) == len(family) and {row['sessionId'] for row in workdirs} == family,
             'Each family Session must own its private working directory')
-    require(all(Path(row['path']).is_dir() and daemon.config_root in Path(row['path']).parents for row in workdirs),
+    require(all(Path(row['path']).is_dir() and any(parent.samefile(daemon.config_root)
+                for parent in Path(row['path']).parents) for row in workdirs),
             'Private working directory is absent or outside the owned runtime')
+    require(len(shared_ids) == 1, 'Shared workspace identity is absent or ambiguous')
     before = {'sessionIds': sorted(family), 'privateWorkdirs': workdirs}
     if output:
         (output / 'family-delete-before.json').write_text(json.dumps(before, indent=2) + '\n', encoding='utf-8')
@@ -407,8 +408,8 @@ def delete_family(daemon, session, snapshots, workspace, output):
                     f'Deleted Session remains in the Host catalog: {sid}')
             require(database.execute('SELECT COUNT(*) FROM workspaces WHERE owner_session_id=?', (sid,)).fetchone()[0] == 0,
                     f'Deleted Session retains private catalog entries: {sid}')
-        require(database.execute('SELECT COUNT(*) FROM workspaces WHERE canonical_root=? AND owner_session_id IS NULL',
-                                 (str(workspace),)).fetchone()[0] == 1, 'Shared workspace catalog entry was removed')
+        require(database.execute('SELECT COUNT(*) FROM workspaces WHERE workspace_id=? AND owner_session_id IS NULL',
+                                 (shared_ids[0],)).fetchone()[0] == 1, 'Shared workspace catalog entry was removed')
     require(all(not Path(row['path']).exists() for row in workdirs), 'Deleted family retains private working directories')
     require(workspace.is_dir() and (workspace / 'probe.txt').read_bytes() == (MARKER + '\n').encode(),
             'Family deletion changed the shared workspace probe')
@@ -458,7 +459,7 @@ def check_mode(mode):
                 command = [str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
                            '--session', state.session, '--plain', 'ask', 'MAIN_CANCEL']
                 client = subprocess.Popen(command, cwd=fixture.ROOT, env=fixture.shell_environment(daemon),
-                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 
                 def ready_to_cancel():
                     state.assert_healthy()

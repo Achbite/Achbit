@@ -164,7 +164,7 @@ def check_active_shutdown():
         client = subprocess.Popen([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
             '--session', session, '--plain', 'ask', 'Run the long workspace Shell to verify owned Host shutdown.'],
             cwd=fixture.ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+            text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
 
         def close_client():
             try:
@@ -184,7 +184,7 @@ def check_active_shutdown():
             return None
         fixture.wait_until(running_output, 60 if WINDOWS else 15, 'Workspace Shell did not actually start')
         stop = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel', 'stop-host'],
-            cwd=fixture.ROOT, env=environment, capture_output=True, text=True, timeout=100,
+            cwd=fixture.ROOT, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=100,
             creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
         require(stop.returncode == 0, stop.stdout + stop.stderr + daemon.log_tail())
         require(daemon.process.wait(timeout=10) == 0, daemon.log_tail())
