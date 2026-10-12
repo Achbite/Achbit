@@ -371,7 +371,10 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot'])
+    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'agentContext', 'agentTasks', 'agentChildren'])
+    || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
+    || (value.agentTasks !== undefined && !isArrayOf(value.agentTasks, isAgentTask))
+    || (value.agentChildren !== undefined && !isArrayOf(value.agentChildren, isAgentChild))
     || (value.providerAttempts !== undefined && !isArrayOf(value.providerAttempts, isProviderAttempt))
     || (value.failureSnapshot !== undefined && !isFailureSnapshot(value.failureSnapshot))
     || (value.fileChangeRounds !== undefined && !isArrayOf(value.fileChangeRounds, (round) => isRecord(round) && isIdentifier(round.runId) && isArrayOf(round.recordIds, isIdentifier)))
@@ -432,6 +435,41 @@ function decodeProjection(value: unknown): SessionProjection {
     throw new Error('conversation_projection_invalid');
   }
   return value as unknown as SessionProjection;
+}
+
+function isAgentCapabilities(value: unknown): boolean {
+  return isExactRecord(value, ['messaging', 'continuation', 'delegation'])
+    && typeof value.messaging === 'boolean' && typeof value.continuation === 'boolean' && typeof value.delegation === 'boolean';
+}
+
+function isAgentContext(value: unknown): boolean {
+  return isExactRecord(value, ['capabilities', 'ownerSessionId', 'parentSessionId', 'parentRunId', 'parentCallId'])
+    && isAgentCapabilities(value.capabilities) && isIdentifier(value.ownerSessionId) && isIdentifier(value.parentSessionId)
+    && isIdentifier(value.parentRunId) && isIdentifier(value.parentCallId);
+}
+
+function isAgentTaskResult(value: unknown): boolean {
+  return isExactRecord(value, ['outcome'], ['content', 'error', 'finalMessageId'])
+    && (value.outcome === 'completed' || value.outcome === 'failed' || value.outcome === 'cancelled' || value.outcome === 'indeterminate')
+    && (value.content === undefined || typeof value.content === 'string')
+    && (value.error === undefined || isLocalAgentError(value.error))
+    && (value.finalMessageId === undefined || isIdentifier(value.finalMessageId));
+}
+
+function isAgentTask(value: unknown): boolean {
+  return isExactRecord(value, ['taskId', 'agentSessionId', 'capabilities', 'displayName', 'text', 'delivery', 'parentRunId', 'status'], ['childRunId', 'result'])
+    && isIdentifier(value.taskId) && isIdentifier(value.agentSessionId) && isAgentCapabilities(value.capabilities)
+    && isNonEmptyText(value.displayName) && isNonEmptyText(value.text)
+    && (value.delivery === 'wait' || value.delivery === 'async') && isIdentifier(value.parentRunId)
+    && (value.childRunId === undefined || isIdentifier(value.childRunId))
+    && (value.status === 'running' || value.status === 'completed' || value.status === 'failed' || value.status === 'cancelled' || value.status === 'indeterminate')
+    && (value.result === undefined || isAgentTaskResult(value.result));
+}
+
+function isAgentChild(value: unknown): boolean {
+  return isExactRecord(value, ['agentSessionId', 'displayName', 'capabilities', 'closed'])
+    && isIdentifier(value.agentSessionId) && isNonEmptyText(value.displayName) && isAgentCapabilities(value.capabilities)
+    && typeof value.closed === 'boolean';
 }
 
 function isTimelineItem(value: unknown): boolean {

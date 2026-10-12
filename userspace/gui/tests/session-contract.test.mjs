@@ -3735,6 +3735,53 @@ test('reader identities separate current files, roots and each recorded diff', a
   assert.notEqual(readerTargetKey(current), readerTargetKey(round('record:one')));
   assert.notEqual(readerTargetKey(round('record:one')), readerTargetKey(round('record:two')));
   assert.equal(readerTargetKey(round('record:one')), readerTargetKey(round('record:one')));
+  const child = { ...current, sourceSessionId: 'session:child' };
+  assert.notEqual(readerTargetKey(current), readerTargetKey(child), 'session work directories may use the same logical path');
+  assert.equal(readerTargetKey(child), readerTargetKey({kind: 'resource', sourceSessionId: 'session:child',
+    resource: {workspaceId: current.workspaceId, logicalPath: current.logicalPath}, name: 'same.cpp'}));
+  assert.notEqual(readerTargetKey(child), readerTargetKey({ ...child, sourceSessionId: 'session:other-child' }));
+});
+
+test('GUI accepts all child capability presets and displays their common instance list', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentTasksPanel } = await loadGuiModule(t, '/src/components/local-agent/AgentTasksPanel.tsx');
+  const projection = projectSession(emptySessionState('session:parent'));
+  projection.agentChildren = [
+    { agentSessionId: 'session:one-shot', displayName: 'One-shot review', closed: true,
+      capabilities: { messaging: false, continuation: false, delegation: false } },
+    { agentSessionId: 'session:continuing', displayName: 'Continuing work', closed: false,
+      capabilities: { messaging: true, continuation: true, delegation: true } },
+    { agentSessionId: 'session:custom', displayName: 'Custom scope', closed: false,
+      capabilities: { messaging: false, continuation: true, delegation: false } },
+  ];
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  const html = renderToStaticMarkup(createElement(AgentTasksPanel, { projection, language: 'en-US' }));
+  for (const child of projection.agentChildren) assert.ok(html.includes(child.displayName));
+  for (const mutate of [
+    p => { delete p.agentChildren[0].capabilities; },
+    p => { p.agentChildren[1].capabilities.messaging = 'yes'; },
+    p => { p.agentChildren[2].capabilities.unknown = true; },
+  ]) {
+    const malformed = structuredClone(projection); mutate(malformed);
+    await assert.rejects(decodeGuiProjection(malformed), /conversation_projection_invalid/);
+  }
+});
+
+test('child file changes render with the scoped Session even when no main Session is selected', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const [{ FileChanges }, { ConversationSessionScope }] = await loadGuiModules(t, [
+    '/src/components/local-agent/FileChanges.tsx', '/src/components/local-agent/ConversationSessionScope.tsx',
+  ]);
+  const activities = [{ tool: { recordId: 'record:child-write', fileChanges: [{ workspaceId: 'workspace:session',
+    path: 'child-work.txt', kind: 'create', before: { exists: false }, after: { exists: true, sizeBytes: 3 } }] } }];
+  assert.equal(renderToStaticMarkup(createElement(FileChanges, { activities })), '');
+  const html = renderToStaticMarkup(createElement(ConversationSessionScope.Provider, { value: 'session:child' },
+    createElement(FileChanges, { activities })));
+  assert.match(html, /child-work\.txt/);
+  assert.match(html, /conversation-change-file/);
 });
 
 test('resource notifications use explicit references and preserve stream failures', async (t) => {
@@ -3759,6 +3806,9 @@ test('GUI hosted search projections preserve omitted action and reject invalid a
   ] };
   projection.activities = [{ activityId: 'activity:search', kind: 'providerHosted', status: 'completed',
     label: 'web.search', runId: 'run:search', sequence: 1, providerHosted: hosted }];
+  projection.revision = 1;
+  projection.timeline = [{ kind: 'toolGroup', timelineId: 'timeline:search', sequence: 1,
+    providerRequestId: 'request:search', activityIds: ['activity:search'] }];
   assert.deepEqual(await decodeGuiProjection(projection), projection);
   const explicit = structuredClone(projection);
   explicit.assistantDraft.blocks[0].action = { type: 'search', queries: ['compiler release'] };

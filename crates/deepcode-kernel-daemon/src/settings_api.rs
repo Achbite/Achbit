@@ -37,6 +37,10 @@ pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Js
 }
 
 fn setting_activates_at_next_run(key: &str) -> bool {
+    // Delegation admission reads the current settings; existing children keep their binding.
+    if key.starts_with("agent.subagents.") {
+        return false;
+    }
     key.starts_with("skills.")
         || key.starts_with("mcp.")
         || key.starts_with("plugins.")
@@ -91,6 +95,35 @@ pub(crate) async fn user_settings_patch(
     };
     if let Err(message) = validate_agent_runtime_settings(&next_settings) {
         return ApiResponse::error("invalid_agent_runtime_settings", message);
+    }
+    if next_settings["agent.subagents.enabled"].as_bool() == Some(true)
+        && [
+            "agent.subagents.enabled",
+            "agent.subagents.profileId",
+            "agent.subagents.reasoningEffort",
+        ]
+        .iter()
+        .any(|key| patch_object.contains_key(*key))
+    {
+        let profile_id = next_settings["agent.subagents.profileId"]
+            .as_str()
+            .unwrap_or("");
+        let effort = next_settings["agent.subagents.reasoningEffort"]
+            .as_str()
+            .filter(|value| !value.is_empty());
+        // An empty profile follows the owning Session's bound Run at delegation time.
+        if !profile_id.is_empty() {
+            let gui = state.gui.lock().expect("gui state lock");
+            if let Err(message) =
+                crate::local_agent_provider_runtime::ProviderRuntimeRegistry::prepare(
+                    &gui,
+                    Some(profile_id),
+                    effort,
+                )
+            {
+                return ApiResponse::error("subagent_profile_unavailable", message);
+            }
+        }
     }
     let changed_keys = patch_object.keys().cloned().collect::<Vec<_>>();
     let has_next_run_activation = changed_keys
@@ -249,6 +282,13 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.systemPrompt": "",
         "agent.approvalReview.profileId": "",
         "agent.approvalReview.reasoningEffort": "",
+        "agent.subagents.enabled": false,
+        "agent.subagents.profileId": "",
+        "agent.subagents.reasoningEffort": "",
+        "agent.subagents.maxConcurrent": 4,
+        "agent.subagents.maxCallsPerRun": 16,
+        "agent.subagents.maxMembersPerSession": 4,
+        "agent.subagents.allowMemberAnalysis": true,
         "agent.responseLanguage": "auto",
         "agent.windows.shell": "auto",
         "agent.windows.gitBashPath": "",
@@ -285,6 +325,48 @@ pub(crate) fn default_user_settings() -> Value {
 }
 
 pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), String> {
+    for key in [
+        "agent.subagents.enabled",
+        "agent.subagents.allowMemberAnalysis",
+    ] {
+        if settings.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(format!("{key} 必须是布尔值。"));
+        }
+    }
+    for key in [
+        "agent.subagents.maxConcurrent",
+        "agent.subagents.maxCallsPerRun",
+        "agent.subagents.maxMembersPerSession",
+    ] {
+        if settings.get(key).is_some_and(|value| {
+            value
+                .as_u64()
+                .is_none_or(|number| number == 0 || number > 9_007_199_254_740_991)
+        }) {
+            return Err(format!("{key} 必须是可精确表示的正整数。"));
+        }
+    }
+    if settings
+        .get("agent.subagents.profileId")
+        .is_some_and(|value| {
+            value.as_str().is_none_or(|id| {
+                id.trim() != id || id.len() > 128 || id.chars().any(char::is_control)
+            })
+        })
+    {
+        return Err("agent.subagents.profileId 必须是有效模型 ID 或空字符串。".into());
+    }
+    if settings
+        .get("agent.subagents.reasoningEffort")
+        .is_some_and(|value| {
+            !matches!(
+                value.as_str(),
+                Some("" | "low" | "medium" | "high" | "xhigh" | "max")
+            )
+        })
+    {
+        return Err("子代理推理强度必须是 low、medium、high、xhigh、max 或空字符串。".into());
+    }
     if settings
         .get("gui.usageWidget.currency")
         .is_some_and(|value| !matches!(value.as_str(), Some("USD" | "CNY")))

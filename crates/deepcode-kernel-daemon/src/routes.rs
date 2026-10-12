@@ -50,6 +50,18 @@ pub(crate) fn build_app(state: AppState) -> Router {
             post(local_agent_session_create),
         )
         .route(
+            "/api/local-agent/agents/settings",
+            get(local_agent_settings_get),
+        )
+        .route(
+            "/api/local-agent/agents/models",
+            get(local_agent_models_get),
+        )
+        .route(
+            "/api/local-agent/agents/sessions",
+            post(local_agent_child_session_create),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id",
             delete(local_agent_session_delete),
         )

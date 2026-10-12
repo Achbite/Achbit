@@ -29,6 +29,7 @@ import { RunFailureDetails, ProviderRetryStatus } from './RunFailureDetails';
 import { ApprovalActivity } from './ApprovalActivity';
 import { InteractionCard } from './InteractionCard';
 import { messageDisplayText } from './interactionPresentation';
+import { AgentTasksPanel } from './AgentTasksPanel';
 
 interface ConversationTranscriptProps {
   language: UiLanguage;
@@ -410,6 +411,7 @@ export function ConversationTranscript({
         </ConversationRoundView>;
       })}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
+      {projection && <AgentTasksPanel key={projection.sessionId} projection={projection} language={language} />}
       <div ref={messageEndRef} />
     </div>
     </>

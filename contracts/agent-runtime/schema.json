@@ -15,6 +15,106 @@
     "Id": { "type": "string", "minLength": 1 },
     "Timestamp": { "type": "string", "minLength": 1 },
     "JsonObject": { "type": "object" },
+    "AgentCapabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["messaging", "continuation", "delegation"],
+      "properties": {
+        "messaging": {"type": "boolean"},
+        "continuation": {"type": "boolean"},
+        "delegation": {"type": "boolean"}
+      }
+    },
+    "AgentOperation": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["action"],
+          "properties": {"action": {"const": "models"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "task", "name", "delivery"],
+          "properties": {
+            "action": {"const": "spawn"},
+            "preset": {"enum": ["analysis", "collaboration"]},
+            "capabilities": {
+              "type": "object", "additionalProperties": false,
+              "properties": {
+                "messaging": {"type": "boolean"},
+                "continuation": {"type": "boolean"},
+                "delegation": {"type": "boolean"}
+              }
+            },
+            "task": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1},
+            "delivery": {"enum": ["wait", "async"]},
+            "profileId": {"type": "string", "minLength": 1},
+            "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action", "agentId", "text"],
+          "properties": {"action": {"const": "send"}, "agentId": {"$ref": "#/$defs/Id"}, "text": {"type": "string", "minLength": 1}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action"],
+          "properties": {"action": {"const": "wait"}, "taskIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action", "taskId"],
+          "properties": {"action": {"const": "cancel"}, "taskId": {"$ref": "#/$defs/Id"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action", "agentId"],
+          "properties": {"action": {"const": "close"}, "agentId": {"$ref": "#/$defs/Id"}}
+        }
+      ]
+    },
+    "AgentContext": {
+      "type": "object", "additionalProperties": false,
+      "required": ["capabilities", "ownerSessionId", "parentSessionId", "parentRunId", "parentCallId"],
+      "properties": {
+        "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "ownerSessionId": {"$ref": "#/$defs/Id"},
+        "parentSessionId": {"$ref": "#/$defs/Id"},
+        "parentRunId": {"$ref": "#/$defs/Id"},
+        "parentCallId": {"$ref": "#/$defs/Id"}
+      }
+    },
+    "AgentTaskResult": {
+      "type": "object", "additionalProperties": false, "required": ["outcome"],
+      "properties": {
+        "outcome": {"enum": ["completed", "failed", "cancelled", "indeterminate"]},
+        "content": {"type": "string"},
+        "error": {"$ref": "#/$defs/LocalAgentError"},
+        "finalMessageId": {"$ref": "#/$defs/Id"}
+      }
+    },
+    "AgentTaskProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["taskId", "agentSessionId", "capabilities", "displayName", "text", "delivery", "parentRunId", "status"],
+      "properties": {
+        "taskId": {"$ref": "#/$defs/Id"},
+        "agentSessionId": {"$ref": "#/$defs/Id"},
+        "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "displayName": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1},
+        "delivery": {"enum": ["wait", "async"]},
+        "parentRunId": {"$ref": "#/$defs/Id"},
+        "childRunId": {"$ref": "#/$defs/Id"},
+        "status": {"enum": ["running", "completed", "failed", "cancelled", "indeterminate"]},
+        "result": {"$ref": "#/$defs/AgentTaskResult"}
+      }
+    },
+    "AgentChildProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["agentSessionId", "displayName", "capabilities", "closed"],
+      "properties": {
+        "agentSessionId": {"$ref": "#/$defs/Id"},
+        "displayName": {"type": "string", "minLength": 1},
+        "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "closed": {"type": "boolean"}
+      }
+    },
     "WorkspaceBinding": {
       "type": "object",
       "additionalProperties": false,
@@ -530,7 +630,8 @@
         "selectedPlugins",
         "permissions",
         "environment",
-        "webSearch"
+        "webSearch",
+        "agentCapabilities"
       ],
       "properties": {
         "runRuntimeSnapshotRef": {"$ref": "#/$defs/Id"},
@@ -539,6 +640,8 @@
         "provider": {"$ref": "#/$defs/ProviderRuntimeSnapshot"},
         "approvalReviewer": {"$ref": "#/$defs/ProviderRuntimeSnapshot"},
         "approvalReviewerError": {"$ref": "#/$defs/LocalAgentError"},
+        "agentCapabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "agentToolsEnabled": {"type": "boolean"},
         "instructions": {
           "type": "array",
           "items": {
@@ -1966,6 +2069,12 @@
             "process.updated",
             "tool.completed",
             "session.plugins.activated",
+            "agent.task.created",
+            "agent.task.started",
+            "agent.task.completed",
+            "agent.closed",
+            "agent.control.completed",
+            "agent.message.received",
             "artifacts.presented",
             "session.control.rejected",
             "context.compaction.requested",
@@ -1986,6 +2095,235 @@
       },
       "allOf": [
         {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.task.created"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "agentSessionId",
+                  "capabilities",
+                  "createsAgent",
+                  "displayName",
+                  "text",
+                  "delivery"
+                ],
+                "properties": {
+                  "taskId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "agentSessionId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "capabilities": {
+                    "$ref": "#/$defs/AgentCapabilities"
+                  },
+                  "createsAgent": {"type": "boolean"},
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "delivery": {
+                    "enum": [
+                      "wait",
+                      "async"
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId",
+              "callId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.task.started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "childRunId"
+                ],
+                "properties": {
+                  "taskId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "childRunId": {
+                    "$ref": "#/$defs/Id"
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.task.completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "result"
+                ],
+                "properties": {
+                  "taskId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "result": {
+                    "$ref": "#/$defs/AgentTaskResult"
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.closed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "agentSessionId"
+                ],
+                "properties": {
+                  "agentSessionId": {
+                    "$ref": "#/$defs/Id"
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "runId"
+                  ]
+                },
+                {
+                  "required": [
+                    "callId"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.control.completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "providerCallId",
+                  "operation",
+                  "result"
+                ],
+                "properties": {
+                  "providerCallId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "operation": {
+                    "$ref": "#/$defs/AgentOperation"
+                  },
+                  "result": {
+                    "$ref": "#/$defs/JsonObject"
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId",
+              "callId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.message.received"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "sourceSessionId",
+                  "text"
+                ],
+                "properties": {
+                  "sourceSessionId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          }
+        },
+        {
           "if": {"properties": {"type": {"const": "session.created"}}},
           "then": {
             "properties": {
@@ -1996,7 +2334,8 @@
                 "properties": {
                   "displayTitle": {"type": "string"},
                   "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
-                  "profileId": {"$ref": "#/$defs/Id"}
+                  "profileId": {"$ref": "#/$defs/Id"},
+                  "agentContext": {"$ref": "#/$defs/AgentContext"}
                 }
               }
             },
@@ -2811,6 +3150,9 @@
         "modelSettings"
       ],
       "properties": {
+        "agentContext": {"$ref": "#/$defs/AgentContext"},
+        "agentTasks": {"type": "array", "items": {"$ref": "#/$defs/AgentTaskProjection"}},
+        "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},
         "schemaVersion": {"const": "deepcode.session-projection.v6"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 0},

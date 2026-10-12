@@ -17,6 +17,7 @@ impl SessionReadPort for SessionServiceProcess {
 pub(crate) struct ProductTools {
     reader: Arc<dyn SessionReadPort>,
     plugin_settings: Value,
+    is_child_agent: bool,
     pub(crate) document_python: Option<std::path::PathBuf>,
     pub(crate) browser_binding: Option<Value>,
     pub(crate) computer_use_instance: Option<String>,
@@ -29,6 +30,7 @@ impl ProductTools {
         Self {
             reader,
             plugin_settings: json!({}),
+            is_child_agent: false,
             document_python: None,
             browser_binding: None,
             computer_use_instance: None,
@@ -37,8 +39,9 @@ impl ProductTools {
         }
     }
 
-    pub(crate) fn with_plugin_settings(mut self, settings: Value) -> Self {
+    pub(crate) fn with_plugin_settings(mut self, settings: Value, is_child_agent: bool) -> Self {
         self.plugin_settings = settings;
+        self.is_child_agent = is_child_agent;
         self
     }
 
@@ -87,6 +90,7 @@ impl ProductTools {
                     query,
                     limit,
                     offset,
+                    self.is_child_agent,
                 )
                 .map_err(|message| SessionServiceError::new("plugin_catalog_unavailable", message))
             }
@@ -96,7 +100,7 @@ impl ProductTools {
 
     pub(crate) fn definitions() -> Vec<(&'static str, String, Value)> {
         vec![
-            ("plugin.search", "Discover installed capabilities needed for the task. Search uses case-insensitive literal keywords separated by whitespace; EVERY keyword must match a plugin's name, URI or capability description. Use a short product name or capability, not a sentence. Zero matches means this query did not match: shorten it or omit query to browse when useful. Results retain enabled/available status and errors. total counts all matches; nextOffset continues the same query. Discovery does not load tools or start external programs. Activate relevant enabled, available results with the Session plugin activation tool, then use their declared tools. User mentions are optional.".into(), json!({
+            ("plugin.search", "Discover callable capabilities needed for the task. Search uses case-insensitive literal keywords separated by whitespace; EVERY keyword must match a plugin's name, URI or capability description. Use a short product name or capability, not a sentence. Zero matches means this query did not match: shorten it or omit query to browse when useful. total counts all matches; nextOffset continues the same query. Discovery does not load tools or start external programs. Activate relevant results with the Session plugin activation tool, then use their declared tools. User mentions are optional.".into(), json!({
                 "type":"object", "additionalProperties":false, "properties":{
                     "query":{"type":"string","maxLength":240,"description":"Short literal keywords; all must match. Omit to browse the catalog."},
                     "limit":{"type":"integer","minimum":1,"description":"Page size; defaults to 20. More results remain accessible through nextOffset."},
@@ -367,7 +371,8 @@ mod tests {
             .call("plugin.search", json!({"query":"browser"}))
             .unwrap();
         assert!(found["plugins"].as_array().unwrap().iter().any(|plugin| {
-            plugin["uri"] == "plugin://computer-use@builtin" && plugin["enabled"] == true
+            plugin["uri"] == "plugin://computer-use@builtin"
+                && plugin.as_object().unwrap().len() == 3
         }));
         let first = tools.call("plugin.search", json!({"limit":1})).unwrap();
         assert_eq!(first["plugins"].as_array().unwrap().len(), 1);
@@ -381,6 +386,69 @@ mod tests {
         assert_eq!(second["total"], first["total"]);
         assert_ne!(second["plugins"][0]["uri"], first["plugins"][0]["uri"]);
         assert!(tools.computer_use_instance.is_none());
+    }
+
+    #[test]
+    fn child_plugin_search_excludes_only_the_forbidden_computer_plugin() {
+        let settings = json!({"mcp.servers":serde_json::to_string(&json!([{
+            "id":"lab", "name":"Lab bridge", "description":"Read lab instruments.",
+            "command":"python3", "args":""
+        }])).unwrap()});
+        let main = Arc::try_unwrap(test_product_tools())
+            .ok()
+            .unwrap()
+            .with_plugin_settings(settings.clone(), false);
+        let child = Arc::try_unwrap(test_product_tools())
+            .ok()
+            .unwrap()
+            .with_plugin_settings(settings.clone(), true);
+        let query = json!({"limit":1000});
+        let main_results = main.call("plugin.search", query.clone()).unwrap();
+        let child_results = child.call("plugin.search", query).unwrap();
+        let main_plugins = main_results["plugins"].as_array().unwrap();
+        let child_plugins = child_results["plugins"].as_array().unwrap();
+        let computer = "plugin://computer-use@builtin";
+        assert!(main_plugins.iter().any(|plugin| plugin["uri"] == computer));
+        assert_eq!(
+            child_plugins,
+            &main_plugins
+                .iter()
+                .filter(|plugin| plugin["uri"] != computer)
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        for uri in [
+            "plugin://processes@builtin",
+            "plugin://containers@builtin",
+            "plugin://lab@mcp",
+        ] {
+            assert!(
+                child_plugins.iter().any(|plugin| plugin["uri"] == uri),
+                "{uri}"
+            );
+            assert!(crate::local_agent_plugins::plugin_allowed_for_session(
+                uri, true
+            ));
+        }
+        assert!(!crate::local_agent_plugins::plugin_allowed_for_session(
+            computer, true
+        ));
+        assert!(crate::local_agent_plugins::plugin_allowed_for_session(
+            computer, false
+        ));
+        assert_eq!(
+            child_results["total"].as_u64().unwrap() as usize,
+            child_plugins.len()
+        );
+        let first = child.call("plugin.search", json!({"limit":1})).unwrap();
+        assert_eq!(first["total"], child_results["total"]);
+        assert_eq!(first["nextOffset"], 1);
+        let catalog = crate::local_agent_plugins::plugin_catalog_projection(&settings).unwrap();
+        assert!(catalog["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|plugin| plugin["uri"] == computer && plugin["available"] == true));
     }
 
     #[test]

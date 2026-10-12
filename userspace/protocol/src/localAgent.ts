@@ -15,8 +15,108 @@ export const SESSION_CONTROL_PLAN_PUBLISH = 'plan.publish' as const;
 export const SESSION_CONTROL_TODO_UPDATE = 'todo.update' as const;
 export const SESSION_CONTROL_PLUGIN_ACTIVATE = 'plugin.activate' as const;
 export const SESSION_CONTROL_ARTIFACT_PRESENT = 'artifact.present' as const;
+export const SESSION_CONTROL_AGENT = 'agent' as const;
 
 export type JsonObject = Record<string, unknown>;
+
+export interface AgentCapabilities {
+  messaging: boolean;
+  continuation: boolean;
+  delegation: boolean;
+}
+
+export function decodeAgentCapabilities(value: unknown): AgentCapabilities {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_capabilities_invalid');
+  const item = value as Record<string, unknown>;
+  const fields = ['messaging', 'continuation', 'delegation'] as const;
+  if (Object.keys(item).length !== fields.length || fields.some(key => typeof item[key] !== 'boolean')) {
+    throw new Error('agent_capabilities_invalid');
+  }
+  return { messaging: item.messaging as boolean, continuation: item.continuation as boolean, delegation: item.delegation as boolean };
+}
+
+export interface AgentContext {
+  capabilities: AgentCapabilities;
+  ownerSessionId: string;
+  parentSessionId: string;
+  parentRunId: string;
+  parentCallId: string;
+}
+
+export function decodeAgentContext(value: unknown): AgentContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_context_invalid');
+  const item = value as Record<string, unknown>;
+  const fields = ['ownerSessionId', 'parentSessionId', 'parentRunId', 'parentCallId'];
+  if (Object.keys(item).length !== fields.length + 1 || fields.some(key => typeof item[key] !== 'string' || !item[key])) {
+    throw new Error('agent_context_invalid');
+  }
+  return { capabilities: decodeAgentCapabilities(item.capabilities), ownerSessionId: item.ownerSessionId as string,
+    parentSessionId: item.parentSessionId as string, parentRunId: item.parentRunId as string, parentCallId: item.parentCallId as string };
+}
+
+export interface AgentSettings {
+  enabled: boolean;
+  /** Empty follows the owner Session's actual current Run model. */
+  profileId: string;
+  /** Empty follows the owner Run effort when following its model, otherwise the profile preset. */
+  reasoningEffort: LlmReasoningEffort | '';
+  maxConcurrent: number;
+  maxCallsPerRun: number;
+  maxMembersPerSession: number;
+  allowMemberAnalysis: boolean;
+}
+
+export type AgentOperation =
+  | { action: 'models' }
+  | { action: 'spawn'; preset?: 'analysis' | 'collaboration'; capabilities?: Partial<AgentCapabilities>;
+      task: string; name: string; delivery: 'wait' | 'async';
+      profileId?: string; reasoningEffort?: LlmReasoningEffort }
+  | { action: 'send'; agentId: string; text: string }
+  | { action: 'wait'; taskIds?: string[] }
+  | { action: 'cancel'; taskId: string }
+  | { action: 'close'; agentId: string };
+
+export interface AgentTaskResult {
+  outcome: 'completed' | 'failed' | 'cancelled' | 'indeterminate';
+  content?: string;
+  error?: LocalAgentError;
+  finalMessageId?: string;
+}
+
+export interface AgentTaskProjection {
+  taskId: string;
+  agentSessionId: string;
+  capabilities: AgentCapabilities;
+  displayName: string;
+  text: string;
+  delivery: 'wait' | 'async';
+  parentRunId: string;
+  childRunId?: string;
+  status: 'running' | AgentTaskResult['outcome'];
+  result?: AgentTaskResult;
+}
+
+export interface AgentChildProjection {
+  agentSessionId: string;
+  displayName: string;
+  capabilities: AgentCapabilities;
+  closed: boolean;
+}
+
+export interface AgentModel {
+  profileId: string;
+  name: string;
+  model: string;
+  reasoningEfforts: readonly LlmReasoningEffort[];
+  reasoningEffort?: LlmReasoningEffort;
+}
+
+/** Host assembly only. All delegation policy and task facts belong to Session. */
+export interface AgentHostPort {
+  settings(): Promise<AgentSettings>;
+  models(): Promise<readonly AgentModel[]>;
+  createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection>;
+}
 
 export interface ErrorDiagnostics {
   source: string;
@@ -679,6 +779,14 @@ export type SessionEvent =
       providerCallId: string;
       items: Array<{ artifactId: string; label: string; deliveryId: string }>;
     } })
+  | (SessionEventBase & { type: 'agent.task.created'; runId: string; callId: string; payload: {
+      taskId: string; agentSessionId: string; capabilities: AgentCapabilities; createsAgent: boolean; displayName: string; text: string; delivery: 'wait' | 'async';
+    } })
+  | (SessionEventBase & { type: 'agent.task.started'; runId: string; payload: { taskId: string; childRunId: string } })
+  | (SessionEventBase & { type: 'agent.task.completed'; runId: string; payload: { taskId: string; result: AgentTaskResult } })
+  | (SessionEventBase & { type: 'agent.closed'; payload: { agentSessionId: string } })
+  | (SessionEventBase & { type: 'agent.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
+  | (SessionEventBase & { type: 'agent.message.received'; runId: string; payload: { sourceSessionId: string; text: string } })
   | (SessionEventBase & { type: 'session.permissions.updated'; payload: { commandId: string; patches: UserSettings } })
   | (SessionEventBase & { type: 'approval.revoked'; runId: string; payload: { commandId: string; authorityId: string } })
   | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string } })
@@ -695,6 +803,7 @@ export type SessionEvent =
   | (SessionEventBase & {
       type: 'session.created';
       payload: {
+        agentContext?: AgentContext;
         displayTitle: string;
         workspaceBindings: WorkspaceBindingDisplay[];
         profileId?: string;
@@ -1359,6 +1468,9 @@ export interface QueuedInputProjection {
 }
 
 export interface SessionProjection {
+  agentContext?: AgentContext;
+  agentTasks?: AgentTaskProjection[];
+  agentChildren?: AgentChildProjection[];
   permissionOverrides: UserSettings;
   effectivePermissions: UserSettings | null;
   shellAuthorizations: ShellAuthorizationProjection[];
@@ -1626,6 +1738,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  agentCapabilities: AgentCapabilities;
+  agentToolsEnabled?: boolean;
   permissions: UserSettings;
   environment: JsonObject;
   runRuntimeSnapshotRef: string;
@@ -1930,6 +2044,7 @@ export interface StoredCommand {
 }
 
 export interface SessionCreationInput {
+  agentContext?: AgentContext;
   sessionId: string;
   displayTitle: string;
   workspaceBindings: WorkspaceBindingDisplay[];

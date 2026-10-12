@@ -14,12 +14,13 @@ import {
   SessionService,
   emptySessionState,
   reduceSession,
+  recoverSession,
   projectSession,
   loopSnapshot,
   runtimeInstructions,
   sessionControlToolDefinitions,
 } from '../dist/index.js';
-import { messagesFromJournal } from '../dist/local-agent/contextComposer.js';
+import { buildAgentProviderRequest, messagesFromJournal } from '../dist/local-agent/contextComposer.js';
 import { decodeSessionControlCall } from '../dist/local-agent/sessionControls.js';
 import { publishPlan } from '../dist/local-agent/planStage.js';
 import { HttpProviderPort } from '../dist/local-agent/httpPorts.js';
@@ -27,6 +28,10 @@ import { responseFrames } from '../dist/responseFrames.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
 import { LoopFailure } from '../dist/local-agent/loopFailure.js';
+import { AgentManager } from '../dist/local-agent/agentManager.js';
+
+const ALL_AGENT_CAPS = { messaging: true, continuation: true, delegation: true };
+const NO_AGENT_CAPS = { messaging: false, continuation: false, delegation: false };
 
 test('editing a settled message replaces active history while retaining journal facts and attachments', async (t) => {
   const journal = new InMemoryCommandJournal();
@@ -101,6 +106,390 @@ test('editing a settled message replaces active history while retaining journal 
   const second = await waitForProjection(restored, (value) => value.run?.status === 'completed' && requests.length === 5);
   assert.deepEqual(second.messages.map((message) => message.content), ['Keep this first question.', 'Answer 1.', 'Second revision.', 'Answer 5.']);
   assert.equal(second.tokenUsage.inputTokens, 500);
+});
+
+test('editing conversation history preserves member lineage without replaying superseded results', async (t) => {
+  const sessionId = 'session:member-edit', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  const requests = [];
+  let actor;
+  const provider = { async *stream(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) {
+      await actor.recordAgentEvents([
+        { type: 'agent.task.created', sessionId, runId: request.runId, callId: 'call:member',
+          payload: { taskId: 'task:member', agentSessionId: 'session:member-child', capabilities: ALL_AGENT_CAPS, createsAgent: true,
+            displayName: 'Researcher', text: 'Inspect the original request.', delivery: 'async' } },
+        { type: 'agent.task.started', sessionId, runId: request.runId,
+          payload: { taskId: 'task:member', childRunId: 'run:member-child' } },
+        { type: 'agent.task.completed', sessionId, runId: request.runId,
+          payload: { taskId: 'task:member', result: { outcome: 'completed', content: 'Superseded member evidence.', finalMessageId: 'message:member-result' } } },
+      ]);
+    }
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Task completed.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  actor = actorWith(journal, sessionId, provider, emptyKernel(), fakeRunPreparation().port, 'member-edit');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:original', 'Original member request.'));
+  const original = await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.equal(requests.length, 2, 'new child evidence fences the first premature answer');
+  assert.ok(JSON.stringify(requests[1].messages).includes('Superseded member evidence.'));
+  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+    commandId: 'command:member-edit', messageId: original.messages[0].messageId,
+    expectedRevision: original.revision, text: 'Revised request.' });
+  assert.equal(reply.status, 'accepted');
+  const edited = await waitForProjection(actor, value => value.run?.status === 'completed' && requests.length === 3);
+  assert.deepEqual(edited.agentTasks, original.agentTasks);
+  assert.deepEqual(edited.agentChildren, original.agentChildren);
+  assert.equal(/Original member request|Superseded member evidence/u.test(JSON.stringify(requests[2].messages)), false);
+  await actor.recordAgentEvents([{ type: 'agent.closed', sessionId, payload: { agentSessionId: 'session:member-child' } }]);
+  const closed = await actor.snapshot();
+  assert.equal(closed.agentChildren[0].closed, true);
+  const rebuilt = projectSession(loopSnapshot(sessionId, await readEvents(journal, sessionId)).state);
+  assert.deepEqual(rebuilt.agentTasks, original.agentTasks);
+  assert.deepEqual(rebuilt.agentChildren, closed.agentChildren);
+  assert.deepEqual(rebuilt.messages.map(message => message.content), ['Revised request.', 'Task completed.']);
+});
+
+test('cancellation during delegation admission is observed without starting a child', async () => {
+  const controller = new AbortController();
+  const reason = new Error('parent_cancelled_during_admission');
+  let hostCalls = 0;
+  const manager = new AgentManager({
+    async settings() { hostCalls += 1; throw new Error('cancelled_admission_reached_host'); },
+    async createSession() { hostCalls += 1; throw new Error('cancelled_admission_created_child'); },
+  }, async sessionId => ({
+    async agentCapabilities() { return ALL_AGENT_CAPS; },
+    async snapshot() {
+      controller.abort(reason);
+      return { sessionId, run: { runId: 'run:cancel-admission', status: 'running' } };
+    },
+  }));
+  try {
+    await assert.rejects(manager.execute('session:cancel-admission', 'run:cancel-admission', 'call:cancel-admission',
+      { action: 'spawn', task: 'Must not start.', name: 'Cancelled analysis', delivery: 'async' }, controller.signal),
+    error => error === reason);
+  } finally { await manager.dispose(); }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hostCalls, 0);
+});
+
+test('subagent model command overrides agree with the public schema', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { default: Ajv } = await import('ajv/dist/2020.js');
+  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
+  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/AgentOperation' });
+  const definition = sessionControlToolDefinitions(undefined, true).find(tool => tool.name === 'agent');
+  assert.equal(validate({ action: 'models' }), true);
+  assert.deepEqual(decodeSessionControlCall('call:models', 'agent', { action: 'models' }).operation, { action: 'models' });
+  assert.equal(definition.inputSchema.properties.profileId.type, 'string');
+  assert.deepEqual(definition.inputSchema.properties.reasoningEffort.enum, ['low', 'medium', 'high', 'xhigh', 'max']);
+  for (const preset of ['analysis', 'collaboration']) {
+    const operation = { action: 'spawn', preset, capabilities: { messaging: false, continuation: true },
+      task: 'Inspect the task evidence.', name: 'Researcher', delivery: 'async',
+      profileId: 'profile:selected', reasoningEffort: 'high' };
+    assert.equal(validate(operation), true, JSON.stringify(validate.errors));
+    assert.deepEqual(decodeSessionControlCall('call:model-selection', 'agent', operation).operation, operation);
+    for (const invalid of [{ ...operation, profileId: '' }, { ...operation, reasoningEffort: '' },
+      { ...operation, action: 'analyze' }, { ...operation, capabilities: { messaging: 'yes' } },
+      { ...operation, capabilities: { computerUse: true } }]) {
+      assert.equal(validate(invalid), false);
+      assert.throws(() => decodeSessionControlCall('call:model-selection', 'agent', invalid));
+    }
+  }
+  assert.equal(validate({ action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }), false);
+  assert.throws(() => decodeSessionControlCall('call:send-model', 'agent',
+    { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
+});
+
+test('subagent model defaults and per-call overrides use the owner Run binding', async (t) => {
+  const cases = [
+    { name: 'main follows its bound Run, not the next GUI selection', expected: ['profile:owner-bound', 'medium'] },
+    { name: 'member follows the owner Run, not its own model', member: true, expected: ['profile:owner-bound', 'medium'] },
+    { name: 'following model permits an independent configured effort', settings: { reasoningEffort: 'high' }, expected: ['profile:owner-bound', 'high'] },
+    { name: 'independent model uses its preset without owner effort', settings: { profileId: 'profile:default' }, expected: ['profile:default', null] },
+    { name: 'independent model uses its configured effort', settings: { profileId: 'profile:default', reasoningEffort: 'high' }, expected: ['profile:default', 'high'] },
+    { name: 'explicit model does not inherit another model effort', action: 'spawn', settings: { profileId: 'profile:default', reasoningEffort: 'high' },
+      operation: { profileId: 'profile:override' }, expected: ['profile:override', null] },
+    { name: 'explicit model and effort reach the child together', action: 'spawn', operation: { profileId: 'profile:override', reasoningEffort: 'max' }, expected: ['profile:override', 'max'] },
+    { name: 'effort alone overrides the default', settings: { reasoningEffort: 'high' }, operation: { reasoningEffort: 'low' }, expected: ['profile:owner-bound', 'low'] },
+    { name: 'missing owner Run rejects instead of using GUI selection', member: true, missingOwnerRun: true },
+  ];
+  for (const item of cases) await t.test(item.name, async () => {
+    const ownerId = 'session:model-owner', memberId = 'session:model-member';
+    const callerId = item.member ? memberId : ownerId;
+    const ownerRuntime = runtimeSnapshot('run:owner-bound', { profileId: 'profile:owner-bound', reasoningEffort: 'medium' });
+    const memberRuntime = { ...runtimeSnapshot('run:member-bound', { profileId: 'profile:member-bound', reasoningEffort: 'low' }),
+      agentCapabilities: ALL_AGENT_CAPS, agentToolsEnabled: true };
+    const states = new Map();
+    states.set(ownerId, { ...emptySessionState(ownerId),
+      run: item.missingOwnerRun ? undefined : { runId: 'run:owner-bound', status: 'running', workspaceBindings: [],
+        profileId: 'profile:owner-bound', reasoningEffort: 'medium' },
+      runRuntimeSnapshots: item.missingOwnerRun ? {} : { 'run:owner-bound': ownerRuntime },
+      modelSettings: { profileId: 'profile:gui-next', reasoningEffortOverride: 'xhigh' },
+      agentChildren: item.member ? [{ agentSessionId: memberId, displayName: 'Member', capabilities: ALL_AGENT_CAPS, closed: false }] : [] });
+    if (item.member) states.set(memberId, { ...emptySessionState(memberId),
+      agentContext: { capabilities: ALL_AGENT_CAPS, ownerSessionId: ownerId, parentSessionId: ownerId,
+        parentRunId: 'run:owner-bound', parentCallId: 'call:member' },
+      runRuntimeSnapshots: { 'run:member-bound': memberRuntime },
+      run: { runId: 'run:member-bound', status: 'running', workspaceBindings: [], profileId: 'profile:member-bound', reasoningEffort: 'low' } });
+    const actors = new Map([...states.keys()].map(sessionId => [sessionId, { sessionId,
+      async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
+      async snapshot() { return projectSession(states.get(sessionId)); },
+      async recordAgentEvents(events) {
+        for (const event of events) {
+          const state = states.get(sessionId);
+          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+            sequence: state.revision + 1, eventId: `event:${sessionId}:${state.revision + 1}`, occurredAt: '2026-10-12T00:00:00.000Z' }));
+        }
+      } }]));
+    const created = [], submitted = [];
+    const manager = new AgentManager({
+      async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
+        maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, ...item.settings }; },
+      async createSession(input) {
+        created.push(structuredClone(input));
+        let run;
+        actors.set(input.sessionId, { sessionId: input.sessionId,
+          async agentCapabilities() { return input.agentContext.capabilities; },
+          async snapshot() { return { sessionId: input.sessionId, agentContext: input.agentContext, run }; },
+          async submit(command) {
+            if (command.type === 'message.submit') {
+              submitted.push(structuredClone(command));
+              run = { runId: 'run:new-child', status: 'completed' };
+            }
+            return { status: 'accepted' };
+          },
+          async waitForRunResult() { return { outcome: 'completed', content: 'Task evidence.', finalMessageId: 'message:child-final' }; } });
+      },
+    }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
+    try {
+      const runId = states.get(callerId).run.runId;
+      const operation = { action: item.action ?? 'spawn', task: 'Inspect the evidence.', name: 'Researcher', delivery: 'async', ...item.operation };
+      const execution = manager.execute(callerId, runId, 'call:delegate', operation, new AbortController().signal);
+      if (item.missingOwnerRun) {
+        await assert.rejects(execution, /agent_owner_run_model_missing/);
+        assert.deepEqual(created, []);
+        assert.deepEqual(submitted, []);
+        assert.equal(states.get(callerId).agentTasks.length, 0);
+      } else {
+        await execution;
+        await manager.forSession(callerId).wait(runId, new AbortController().signal);
+        assert.equal(created.length, 1);
+        assert.equal(submitted.length, 1);
+        assert.equal(created[0].profileId, item.expected[0]);
+        assert.deepEqual([submitted[0].profileId, submitted[0].reasoningEffortOverride], item.expected);
+        assert.equal(states.get(callerId).agentTasks[0].result.outcome, 'completed');
+      }
+    } finally { await manager.dispose(); }
+  });
+});
+
+test('subagent models discovery uses the Host port without starting children', async () => {
+  const { HttpAgentHostPort } = await import('../dist/local-agent/httpPorts.js');
+  const models = [{ profileId: 'profile:configured', name: 'Configured model', model: 'model-id',
+    reasoningEfforts: ['low', 'high', 'max'], reasoningEffort: 'high' }];
+  let requests = 0, capabilities = ALL_AGENT_CAPS;
+  const host = new HttpAgentHostPort({ apiBase: 'http://fixture', serviceToken: 'fixture', fetchImpl: async (url, init) => {
+    requests += 1;
+    assert.equal(url, 'http://fixture/api/local-agent/agents/models');
+    assert.equal(new Headers(init.headers).get('x-deepcode-session-service-token'), 'fixture');
+    return new Response(JSON.stringify({ ok: true, data: models }), { status: 200 });
+  } });
+  host.settings = async () => { throw new Error('discovery_must_not_start_admission'); };
+  host.createSession = async () => { throw new Error('discovery_must_not_create_child'); };
+  const manager = new AgentManager(host, async sessionId => ({
+    async agentCapabilities() { return capabilities; },
+    async snapshot() { return { sessionId, agentContext: { capabilities }, run: { runId: 'run:models', status: 'running' } }; },
+  }));
+  try {
+    assert.deepEqual(await manager.execute('session:member', 'run:models', 'call:models',
+      { action: 'models' }, new AbortController().signal), { models });
+    assert.equal(requests, 1);
+    capabilities = NO_AGENT_CAPS;
+    await assert.rejects(manager.execute('session:analysis', 'run:models', 'call:models-analysis',
+      { action: 'models' }, new AbortController().signal), /agent_capability_unavailable/);
+    assert.equal(requests, 1);
+  } finally { await manager.dispose(); }
+});
+
+test('an idle member preparation failure cannot reuse its previous successful run', async (t) => {
+  const sessionId = 'session:member-reuse', runId = 'run:parent-current', childId = 'session:existing-member';
+  const runtime = runtimeSnapshot(runId);
+  let state = { ...emptySessionState(sessionId),
+    run: { runId, status: 'running', workspaceBindings: [], profileId: runtime.provider.profileId },
+    runRuntimeSnapshots: { [runId]: runtime },
+    agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }] };
+  const facts = [], resultReads = [];
+  const parent = { sessionId,
+    async agentCapabilities() { return runtime.agentCapabilities; },
+    async snapshot() { return projectSession(state); },
+    async recordAgentEvents(events) {
+      for (const event of events) {
+        facts.push(structuredClone(event));
+        state = reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+          sequence: state.revision + 1, eventId: `event:${state.revision + 1}`, occurredAt: '2026-10-11T00:00:00.000Z' });
+      }
+    } };
+  const prepareError = { code: 'model_prepare_failed', message: 'The selected member model cannot be prepared.' };
+  let submissions = 0, childRunId = 'run:previous-success';
+  const child = { sessionId: childId,
+    async agentCapabilities() { return ALL_AGENT_CAPS; },
+    async snapshot() { return { sessionId: childId, agentContext: { capabilities: ALL_AGENT_CAPS, ownerSessionId: sessionId, parentSessionId: sessionId, parentRunId: runId, parentCallId: 'call:create' }, run: { runId: childRunId, status: 'completed' } }; },
+    async submit(command) {
+      if (command.type === 'session.permissions.set') return { status: 'accepted' };
+      assert.equal(command.type, 'message.submit');
+      if (++submissions === 1) return { status: 'rejected', error: prepareError };
+      childRunId = 'run:new-success';
+      return { status: 'accepted' };
+    },
+    async waitForRunResult(requestedRunId) {
+      resultReads.push(requestedRunId);
+      return { outcome: 'completed', content: requestedRunId === 'run:previous-success' ? 'Stale prior evidence.' : 'New task evidence.',
+        finalMessageId: `message:${requestedRunId}` };
+    } };
+  const manager = new AgentManager({
+    async settings() { return { enabled: true, profileId: 'profile:member', reasoningEffort: '',
+      maxConcurrent: 4, maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true }; },
+    async createSession() { throw new Error('existing_member_must_be_reused'); },
+  }, async id => { assert.ok(id === sessionId || id === childId); return id === sessionId ? parent : child; });
+  t.after(() => manager.dispose());
+  const signal = new AbortController().signal;
+  const first = await manager.execute(sessionId, runId, 'call:prepare-failure', { action: 'send', agentId: childId, text: 'First follow-up.' }, signal);
+  const failed = state.agentTasks.find(task => task.taskId === first.taskId);
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.result, { outcome: 'failed', error: prepareError });
+  assert.equal(failed.childRunId, undefined);
+  assert.deepEqual(resultReads, [], 'a rejected prepare must not read the previous run result');
+  assert.equal(state.agentChildren[0].closed, false);
+  assert.equal(facts.some(event => event.type === 'agent.closed'), false);
+
+  const second = await manager.execute(sessionId, runId, 'call:prepare-success', { action: 'send', agentId: childId, text: 'Next follow-up.' }, signal);
+  await manager.forSession(sessionId).wait(runId, signal);
+  const completed = state.agentTasks.find(task => task.taskId === second.taskId);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.childRunId, 'run:new-success');
+  assert.equal(completed.result.content, 'New task evidence.');
+  assert.deepEqual(resultReads, ['run:new-success']);
+  assert.equal(state.agentChildren[0].closed, false);
+  assert.equal(JSON.stringify(state.agentTasks).includes('Stale prior evidence.'), false);
+});
+
+test('unified agents preserve nested ownership, custom capabilities, continuation and cancellation', async (t) => {
+  const ownerId = 'session:unified-owner';
+  const states = new Map(), actors = new Map(), facts = [], submissions = [], results = new Map();
+  let sequence = 0, allowChildDelegation = true, configuredProfile = '';
+  const initialize = (sessionId, agentContext) => {
+    states.set(sessionId, { ...emptySessionState(sessionId), ...(agentContext ? { agentContext } : {}) });
+    const actor = { sessionId,
+      async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
+      async snapshot() { return projectSession(states.get(sessionId)); },
+      async recordAgentEvents(events) {
+        for (const event of events) {
+          facts.push(structuredClone(event));
+          const state = states.get(sessionId);
+          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+            sequence: state.revision + 1, eventId: `event:${++sequence}`, occurredAt: '2026-10-12T00:00:00.000Z' }));
+        }
+      },
+      async submit(command) {
+        if (command.type === 'message.submit') {
+          submissions.push(structuredClone(command));
+          const settings = states.get(sessionId).modelSettings;
+          startRun(sessionId, command.profileId ?? settings?.profileId,
+            command.reasoningEffortOverride !== undefined ? command.reasoningEffortOverride : settings?.reasoningEffortOverride);
+        }
+        if (command.type === 'run.cancel') finish(sessionId, { outcome: 'cancelled' });
+        return { status: 'accepted' };
+      },
+      async waitForRunResult(runId) { return results.get(runId).promise; },
+    };
+    actors.set(sessionId, actor);
+    return actor;
+  };
+  const startRun = (sessionId, profileId = 'profile:owner', reasoningEffortOverride = null) => {
+    const state = states.get(sessionId), runId = `run:unified:${++sequence}`;
+    const runtime = runtimeSnapshot(runId, { profileId, reasoningEffort: reasoningEffortOverride,
+      agentCapabilities: state.agentContext?.capabilities ?? ALL_AGENT_CAPS });
+    states.set(sessionId, { ...state, run: { runId, status: 'running', workspaceBindings: [], profileId },
+      modelSettings: { profileId, reasoningEffortOverride },
+      runRuntimeSnapshots: { ...state.runRuntimeSnapshots, [runId]: runtime } });
+    let resolve;
+    results.set(runId, { promise: new Promise(done => { resolve = done; }), resolve });
+    return runId;
+  };
+  const finish = (sessionId, result = { outcome: 'completed', content: 'Task evidence.', finalMessageId: `message:${++sequence}` }) => {
+    const state = states.get(sessionId);
+    states.set(sessionId, { ...state, run: { ...state.run, status: result.outcome } });
+    results.get(state.run.runId).resolve(result);
+  };
+  initialize(ownerId);
+  const ownerRunId = startRun(ownerId);
+  const manager = new AgentManager({
+    async settings() { return { enabled: true, profileId: configuredProfile, reasoningEffort: '', maxConcurrent: 4,
+      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: allowChildDelegation }; },
+    async createSession(input) { return await initialize(input.sessionId, input.agentContext).snapshot(); },
+  }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
+  t.after(() => manager.dispose());
+  const signal = new AbortController().signal;
+  const execute = (sessionId, operation) => manager.execute(sessionId, states.get(sessionId).run.runId,
+    `call:${++sequence}`, operation, signal);
+  const spawn = (sessionId, extra = {}) => execute(sessionId,
+    { action: 'spawn', name: 'Researcher', task: 'Inspect the evidence.', delivery: 'async', ...extra });
+  const first = await spawn(ownerId, { preset: 'collaboration' });
+  const firstId = first.agentId;
+  const firstRunId = states.get(firstId).run.runId;
+  assert.deepEqual(states.get(firstId).agentContext.capabilities, ALL_AGENT_CAPS);
+  const mixedCaps = { messaging: false, continuation: true, delegation: false };
+  const nested = await spawn(firstId, { capabilities: mixedCaps, profileId: 'profile:selected-child', reasoningEffort: 'max' });
+  const nestedId = nested.agentId;
+  const lineage = structuredClone(states.get(nestedId).agentContext);
+  assert.equal(lineage.ownerSessionId, ownerId);
+  assert.equal(lineage.parentSessionId, firstId);
+  assert.deepEqual(lineage.capabilities, mixedCaps);
+  await assert.rejects(spawn(nestedId), /agent_capability_unavailable/);
+  await assert.rejects(execute(firstId, { action: 'send', agentId: nestedId, text: 'Live message.' }), /agent_message_target_unavailable/);
+  const oneShot = await spawn(firstId);
+  assert.deepEqual(states.get(oneShot.agentId).agentContext.capabilities, NO_AGENT_CAPS);
+  finish(nestedId);
+  finish(oneShot.agentId);
+  await manager.forSession(firstId).wait(firstRunId, signal);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, true);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, false);
+  finish(firstId);
+  await manager.forSession(ownerId).wait(ownerRunId, signal);
+
+  configuredProfile = 'profile:new-global-default';
+  const continued = await execute(ownerId, { action: 'send', agentId: nestedId, text: 'Continue the shared task.' });
+  assert.equal(submissions.at(-1).profileId, undefined);
+  assert.equal(submissions.at(-1).reasoningEffortOverride, undefined);
+  assert.deepEqual(states.get(nestedId).modelSettings, { profileId: 'profile:selected-child', reasoningEffortOverride: 'max' });
+  assert.deepEqual(states.get(nestedId).agentContext, lineage);
+  assert.deepEqual(states.get(ownerId).agentChildren.map(child => child.agentSessionId), [firstId]);
+  assert.equal(states.get(firstId).agentChildren.filter(child => child.agentSessionId === nestedId).length, 1);
+  assert.equal(facts.find(event => event.type === 'agent.task.created' && event.payload.taskId === continued.taskId).payload.createsAgent, false);
+  await execute(ownerId, { action: 'cancel', taskId: continued.taskId });
+  assert.equal(states.get(ownerId).agentTasks.find(task => task.taskId === continued.taskId).result.outcome, 'cancelled');
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, false);
+  await execute(ownerId, { action: 'close', agentId: firstId });
+  assert.equal(states.get(ownerId).agentChildren[0].closed, true);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, true);
+  assert.equal(facts.some(event => event.type === 'agent.closed' && event.sessionId === ownerId && event.payload.agentSessionId === nestedId), false);
+  allowChildDelegation = false;
+  await assert.rejects(spawn(ownerId, { capabilities: { delegation: true } }), /agent_capability_not_grantable/);
+  const limited = await spawn(ownerId, { preset: 'collaboration' });
+  assert.deepEqual(states.get(limited.agentId).agentContext.capabilities, { ...ALL_AGENT_CAPS, delegation: false });
+  finish(limited.agentId);
+  await manager.forSession(ownerId).wait(ownerRunId, signal);
+  allowChildDelegation = true;
+  const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
+  await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_capability_not_grantable/);
+  const permitted = await spawn(restricted.agentId);
+  finish(permitted.agentId);
+  await manager.forSession(restricted.agentId).wait(states.get(restricted.agentId).run.runId, signal);
+  finish(restricted.agentId);
+  await manager.forSession(ownerId).wait(ownerRunId, signal);
 });
 
 test('browser authorization scope survives reducer snapshots and projection copies', () => {
@@ -375,6 +764,105 @@ import {
   waitUntil,
   waitForAbort,
 } from './local-agent-fixtures.mjs';
+
+test('delegation capability expands after successful discovery and preserves the ordinary model prefix', async () => {
+  const runtime = runtimeSnapshot('run:agent-directory');
+  const input = { sessionId: 'session:agent-directory', runId: 'run:agent-directory', runtime,
+    events: [], workspaceBindings: [], providerRequestId: 'request:directory', responseConstraint: 'normal' };
+  const disabled = await buildAgentProviderRequest(input);
+  const analysis = await buildAgentProviderRequest({ ...input, runtime: { ...runtime, agentToolsEnabled: true, agentCapabilities: NO_AGENT_CAPS } });
+  assert.equal(disabled.request.tools.some(tool => tool.name === 'agent'), false);
+  assert.deepEqual(analysis.request.messages, disabled.request.messages);
+  assert.deepEqual(analysis.request.tools, disabled.request.tools);
+  const memberRuntime = { ...runtime, agentToolsEnabled: true, agentCapabilities: ALL_AGENT_CAPS };
+  const member = await buildAgentProviderRequest({ ...input, runtime: memberRuntime });
+  const control = member.request.tools.find(tool => tool.name === 'agent');
+  assert.deepEqual(control.inputSchema.properties.action.enum, ['models']);
+  assert.deepEqual(member.request.messages, disabled.request.messages);
+  const header = { schemaVersion: 'deepcode.session-event.v5', sessionId: input.sessionId,
+    runId: input.runId, occurredAt: '2026-10-12T00:00:00.000Z' };
+  const preparedEvents = [
+    { ...header, eventId: 'event:models-run', sequence: 1, type: 'run.started',
+      payload: { inputMessageId: 'message:models-input', workspaceBindings: [], runtimeSnapshot: memberRuntime } },
+    { ...header, eventId: 'event:models-context', sequence: 2, type: 'context.composed', payload: member.receipt },
+  ];
+  const event = { schemaVersion: 'deepcode.session-event.v5', eventId: 'event:models', sessionId: input.sessionId,
+    runId: input.runId, callId: 'call:models', sequence: 3, occurredAt: '2026-10-12T00:00:00.000Z' };
+  const completed = { ...event, type: 'agent.control.completed', payload: { providerCallId: 'provider:models',
+    operation: { action: 'models' }, result: { models: [] } } };
+  const settled = { schemaVersion: event.schemaVersion, eventId: 'event:models-settled', sessionId: input.sessionId,
+    runId: input.runId, sequence: 4, occurredAt: event.occurredAt, type: 'provider.turn.settled',
+    payload: { providerRequestId: member.request.requestId, providerRuntimeRef: runtime.provider.providerRuntimeRef,
+      purpose: 'agent', outcome: 'completed', orderedCallIds: [event.callId] } };
+  const discovered = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled], runtime: memberRuntime });
+  assert.deepEqual(discovered.request.tools.find(tool => tool.name === 'agent').inputSchema.properties.action.enum,
+    ['models', 'spawn', 'send', 'wait', 'cancel', 'close']);
+  assert.deepEqual(discovered.request.messages.filter(message => message.role === 'system'), disabled.request.messages);
+  const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
+    runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
+  assert.deepEqual(limitedMember.request.tools.find(tool => tool.name === 'agent').inputSchema.properties.action.enum,
+    ['models', 'send']);
+  assert.deepEqual(limitedMember.request.messages, discovered.request.messages);
+  const rejected = { ...event, type: 'session.control.rejected', payload: { providerCallId: 'provider:models',
+    toolName: 'agent', input: { action: 'models' }, error: { code: 'model_catalog_failed', message: 'Original catalog failure.' } } };
+  const failed = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, rejected, settled], runtime: memberRuntime });
+  assert.deepEqual(failed.request.tools.find(tool => tool.name === 'agent').inputSchema.properties.action.enum, ['models']);
+  assert.match(JSON.stringify(failed.request.messages), /Original catalog failure\./u);
+});
+
+test('requests without workspaces omit workspace tools and unavailable-capability reminders', async () => {
+  const tools = ['fs.read', 'bash'].map((name, index) => ({ name, toolBindingRef: `binding:${name}`,
+    description: name, inputSchema: { type: 'object', properties: {} },
+    possibleEffects: [index === 0 ? 'workspaceRead' : 'process'], availability: 'callable', origin: 'coreBuiltin' }));
+  const prepared = await buildAgentProviderRequest({ sessionId: 'session:no-workspace', runId: 'run:no-workspace',
+    runtime: runtimeSnapshot('run:no-workspace', { tools }), events: [], workspaceBindings: [],
+    providerRequestId: 'request:no-workspace', responseConstraint: 'normal' });
+  assert.deepEqual(prepared.request.tools.map(tool => tool.name).sort(), ['artifact_present', 'interaction_request']);
+  assert.equal(prepared.receipt.messages.some(message => message.contributionId === 'session:workspace-bindings'), false);
+  assert.doesNotMatch(JSON.stringify(prepared.request.messages), /unavailable|No workspace is bound/u);
+});
+
+test('delegation evidence is delivered once, keeps call pairs intact and reuses frozen history', () => {
+  const sessionId = 'session:agent-evidence', runId = 'run:agent-evidence';
+  const events = [];
+  const add = (type, payload, callId) => {
+    const sequence = events.length + 1;
+    events.push({ schemaVersion: 'deepcode.session-event.v5', eventId: `event:${sequence}`, sessionId, runId,
+      sequence, occurredAt: '2026-10-11T00:00:00.000Z', type, payload, ...(callId ? { callId } : {}) });
+  };
+  for (const delivery of ['async', 'wait']) {
+    const taskId = `task:${delivery}`, callId = `call:${delivery}`, agentSessionId = `session:${delivery}`;
+    const capabilities = delivery === 'async' ? ALL_AGENT_CAPS : NO_AGENT_CAPS;
+    const operation = { action: 'spawn', preset: delivery === 'async' ? 'collaboration' : 'analysis', task: 'Check the evidence.', name: delivery, delivery };
+    add('agent.task.created', { taskId, agentSessionId, capabilities, createsAgent: true, displayName: delivery, text: operation.task, delivery }, callId);
+    add('agent.task.started', { taskId, childRunId: `run:${delivery}` });
+    const result = { outcome: 'completed', content: `Evidence from ${delivery}.`, finalMessageId: `message:${delivery}` };
+    add('agent.task.completed', { taskId, result });
+    add('agent.control.completed', { providerCallId: `provider:${delivery}`, operation,
+      result: { taskId, agentId: agentSessionId, ...(delivery === 'wait' ? result : {}) } }, callId);
+    add('provider.turn.settled', { providerRequestId: `request:${delivery}`, purpose: 'agent',
+      providerRuntimeRef: 'provider-runtime:test', outcome: 'completed', orderedCallIds: [callId] });
+  }
+  add('agent.closed', { agentSessionId: 'session:async' });
+  add('agent.message.received', { sourceSessionId: 'session:member', text: 'A related business finding.' });
+  const contributions = messagesFromJournal(events, runId, []);
+  const messages = contributions.map(value => value.message);
+  const text = JSON.stringify(messages);
+  for (const delivery of ['async', 'wait']) {
+    assert.equal(text.split(`Evidence from ${delivery}.`).length - 1, 1);
+    const callIndex = messages.findIndex(value => value.toolCalls?.some(call => call.callId === `call:${delivery}`));
+    assert.equal(messages[callIndex + 1].toolCallId, `call:${delivery}`);
+  }
+  assert.equal(/agent\.task\.(created|started)|agent\.member\.closed|childRunId|displayName|"status"/u.test(text), false);
+  assert.deepEqual(JSON.parse(messages.at(-1).content), { type: 'agent.message', agentId: 'session:member', text: 'A related business finding.' });
+  const priorBoundary = events.length;
+  add('context.composed', { purpose: 'agent', modelView: { throughSequence: priorBoundary, additions: structuredClone(contributions) } });
+  events.find(event => event.type === 'agent.task.completed').payload.result.content = 'A newer renderer must not replace frozen evidence.';
+  add('agent.message.received', { sourceSessionId: 'session:member', text: 'New evidence.' });
+  const replayed = messagesFromJournal(events, runId, []);
+  assert.deepEqual(replayed.slice(0, contributions.length), contributions);
+  assert.equal(replayed.length, contributions.length + 1);
+});
 
 test('local Provider streams resume after silence, cancel immediately and close their connection', async (t) => {
   let response;
@@ -696,9 +1184,19 @@ test('new runs refresh execution facts while restart and compaction retain each 
   await createSession(journal, sessionId);
   let observed = { ...runtimeSnapshot('environment:fixture').environment,
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
+    workspaceShellSupported: false,
+    workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
     runtimeExecutables: { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' } };
   const saved = environmentInstruction(observed);
-  assert.equal(JSON.parse(saved.text.split('\n')[1]).runtimeExecutables, undefined);
+  const modelEnvironment = JSON.parse(saved.text.split('\n')[1]);
+  for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox']) {
+    assert.equal(modelEnvironment[field], undefined);
+  }
+  for (const field of ['os', 'arch', 'executionTarget', 'shell', 'executionPath', 'developerCommands']) {
+    assert.deepEqual(modelEnvironment[field], observed[field]);
+  }
+  assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
+  assert.deepEqual(observed.workspaceSandbox, { available: false, reason: 'fixture sandbox probe diagnostic' });
   assert.deepEqual(observed.runtimeExecutables,
     { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' });
   const preparation = fakeRunPreparation();
@@ -766,6 +1264,8 @@ test('new runs refresh execution facts while restart and compaction retain each 
     assert.deepEqual(run.payload.runtimeSnapshot.instructions.find((item) => item.id === saved.id),
       index === 0 ? saved : environmentInstruction(observed));
     assert.deepEqual(run.payload.runtimeSnapshot.environment.runtimeExecutables, observed.runtimeExecutables);
+    assert.deepEqual(run.payload.runtimeSnapshot.environment.workspaceSandbox, observed.workspaceSandbox);
+    assert.equal(run.payload.runtimeSnapshot.environment.workspaceShellSupported, false);
   }
   const compacting = requests.find(request => request.purpose === 'contextCompaction');
   assert.equal(compacting.providerRuntimeRef, agentRequests[3].providerRuntimeRef);
@@ -2436,7 +2936,7 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
   const releaseRecovery = new Promise((resolve) => { releaseRecoveryResolve = resolve; });
   const journal = forwardingJournal(baseJournal, async function* (targetSessionId, afterSequence) {
     readCount += 1;
-    if (readCount === 1) {
+    if (readCount !== 2) {
       for await (const event of baseJournal.read(targetSessionId, afterSequence)) yield event;
       return;
     }
@@ -2472,6 +2972,74 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
     }
   }, /session_not_found/u);
   await service.dispose();
+});
+
+test('family deletion rejects an unreadable journal and preserves its data', async () => {
+  const baseJournal = new InMemoryCommandJournal();
+  const sessionId = 'session:delete-unreadable';
+  await createSession(baseJournal, sessionId);
+  const before = [];
+  for await (const event of baseJournal.read(sessionId)) before.push(event);
+  const journal = forwardingJournal(baseJournal, async function* () {
+    throw new Error('fixture_journal_unreadable');
+  });
+  const service = new SessionService(journal, {
+    async create() { throw new Error('unexpected_composition_create'); },
+  });
+  try {
+    await assert.rejects(service.deleteSession(sessionId), /fixture_journal_unreadable/u);
+    const after = [];
+    for await (const event of baseJournal.read(sessionId)) after.push(event);
+    assert.deepEqual(after, before);
+  } finally {
+    await service.dispose();
+  }
+});
+
+test('partial family deletion preserves the original error and exact deleted IDs', async (t) => {
+  const { SessionDeletionError } = await import('../dist/local-agent/service.js');
+  const base = new InMemoryCommandJournal(), ownerId = 'session:partial-owner', childId = 'session:partial-child';
+  await createSession(base, ownerId);
+  let initialized = false, actor;
+  const provider = { async *stream(request) {
+    if (!initialized) {
+      initialized = true;
+      await base.createSession({ sessionId: childId, displayTitle: 'Child', workspaceBindings: [], agentContext: {
+        capabilities: NO_AGENT_CAPS, ownerSessionId: ownerId, parentSessionId: ownerId,
+        parentRunId: request.runId, parentCallId: 'call:create-child',
+      } });
+      await actor.recordAgentEvents([
+        { type: 'agent.task.created', sessionId: ownerId, runId: request.runId, callId: 'call:create-child', payload: {
+          taskId: 'task:partial-child', agentSessionId: childId, capabilities: NO_AGENT_CAPS, createsAgent: true,
+          displayName: 'Child', text: 'A recorded task.', delivery: 'async',
+        } },
+        { type: 'agent.task.completed', sessionId: ownerId, runId: request.runId, payload: {
+          taskId: 'task:partial-child', result: { outcome: 'failed', error: { code: 'fixture_start_failed', message: 'Start failed.' } },
+        } },
+      ]);
+    }
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Task failure recorded.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  actor = actorWith(base, ownerId, provider, emptyKernel(), fakeRunPreparation().port, 'partial-delete');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(ownerId, 'command:partial-owner', 'Run the task.'));
+  await waitForProjection(actor, value => value.run?.status === 'completed');
+  await actor.dispose();
+  const original = new Error('fixture_owner_delete_failed');
+  const journal = forwardingJournal(base, (...args) => base.read(...args));
+  journal.deleteSession = async id => { if (id === ownerId) throw original; await base.deleteSession(id); };
+  const service = new SessionService(journal, { async create() { throw new Error('unexpected_composition_create'); } });
+  try {
+    await assert.rejects(service.deleteSession(ownerId), error => {
+      assert.ok(error instanceof SessionDeletionError);
+      assert.equal(error.errors[0], original);
+      assert.deepEqual(error.details, { deletedSessionIds: [childId], remainingSessionIds: [ownerId] });
+      return true;
+    });
+    await assert.rejects(readEvents(base, childId), /session_not_found/);
+    assert.ok((await readEvents(base, ownerId)).length > 0);
+  } finally { await service.dispose(); }
 });
 
 test('an escaped Loop fault remains Session-local and releases its runtime', async () => {
@@ -2674,9 +3242,10 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
       const todoStates = request.messages
         .map(jsonMessagePayload)
         .filter((payload) => payload?.type?.startsWith('todo.'));
-      assert.equal(todoStates.length, 2);
+      assert.equal(todoStates.length, 1, 'the model update must not append a duplicate full Todo snapshot');
       assert.equal(todoStates[0].items[0].status, 'pending');
-      assert.equal(todoStates.at(-1).items[0].status, 'completed');
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
       for (let index = 1; index < providerRequests.length; index += 1) {
         assert.deepEqual(providerRequests[index].messages.slice(0, providerRequests[index - 1].messages.length), providerRequests[index - 1].messages);
       }
@@ -2748,6 +3317,8 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
   const seeded = events.find(event => event.type === 'todo.updated' && !event.callId);
   const requested = singleEvent(events, 'tool.requested');
   const progressed = events.find(event => event.type === 'todo.updated' && event.callId);
+  assert.equal(seeded.payload.items[0].status, 'pending');
+  assert.equal(progressed.payload.items[0].status, 'completed');
   const toolCompleted = singleEvent(events, 'tool.completed');
   const finalMessage = events.find((event) => (
     event.type === 'message.committed' && event.payload.role === 'assistant'
@@ -2955,7 +3526,9 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
       const todo = request.messages
         .map(jsonMessagePayload)
         .findLast((payload) => payload?.type === 'todo.current');
-      assert.equal(todo?.items[0].status, 'completed');
+      assert.equal(todo?.items[0].status, 'pending', 'the original seeded model view remains unchanged');
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:bash-plan-complete',
         content: 'Confirmed Bash plan executed.',
@@ -3007,7 +3580,8 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
     .filter((event) => event.type === 'tool.completed')
     .map((event) => event.payload.record);
   assert.deepEqual(toolRecords.map((record) => record.outcome), ['failed', 'completed']);
-  assert.equal(events.filter((event) => event.type === 'todo.updated' && event.callId).length, 2);
+  assert.deepEqual(events.filter(event => event.type === 'todo.updated' && event.callId)
+    .map(event => event.payload.items[0].status), ['inProgress', 'completed']);
 
   await actor.dispose();
 });
@@ -3103,7 +3677,9 @@ test('confirmed fs.delete reads targetKind from canonical arguments and complete
       const todo = request.messages
         .map(jsonMessagePayload)
         .findLast((payload) => payload?.type === 'todo.current');
-      assert.equal(todo?.items[0].status, 'completed');
+      assert.equal(todo?.items[0].status, 'pending', 'the original seeded model view remains unchanged');
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:delete-plan-complete',
         content: 'Confirmed delete plan executed.',
@@ -3323,7 +3899,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     }
     assert.equal(request.responseConstraint, 'normal');
     const payloads = request.messages.map(jsonMessagePayload);
-    const todo = payloads.findLast((payload) => payload?.type === 'todo.current');
+    const todo = (await actor.snapshot()).todoList;
     const record = payloads.find((payload) => payload?.recordId);
     const planTool = request.tools.find((tool) => tool.inputSchema.properties?.mutationManifest);
     const progressTool = request.tools.find((tool) => tool.name === 'todo_update');
@@ -3868,7 +4444,7 @@ async function verifyExplicitFocusCompaction() {
         assert.deepEqual(request.messages.slice(0, requests[0].messages.length), requests[0].messages,
           'summary must preserve the preceding conversation prefix');
         assert.equal(request.messages.at(-1).role, 'user');
-        assert.match(request.messages.at(-1).content, /^Summarize the supplied Session history into a factual handoff/);
+        assert.match(request.messages.at(-1).content, /^Summarize the supplied conversation into a factual handoff/);
         assert.match(request.messages.at(-1).content, /future-work focus, but do not answer it:\nPreserve the selected facts\.$/);
         yield providerEvent(request.requestId, 'assistant.message', {
           messageId: 'provider-message:focus-summary',
@@ -5004,8 +5580,9 @@ test('Todo can start before tools without a Plan, preserve a failed record and e
         input: { items: [{ text: 'Process input', status: 'blocked' }, { text: 'Investigate input', status: 'completed' }] } });
     } else {
       assert.equal(turn, 3);
-      const todo = request.messages.map(jsonMessagePayload).findLast(payload => payload?.type === 'todo.current');
-      assert.deepEqual(todo.items.map(item => item.status), ['blocked', 'completed']);
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
+      assert.equal(request.messages.map(jsonMessagePayload).some(payload => payload?.type === 'todo.current'), false);
       yield providerEvent(request.requestId, 'text.delta', { text: 'Input is missing; processing remains blocked.' });
     }
     yield providerEvent(request.requestId, 'completed', {});

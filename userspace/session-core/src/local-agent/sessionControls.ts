@@ -1,4 +1,6 @@
 import type {
+  AgentCapabilities,
+  AgentOperation,
   ExecutionPlanStep,
   InteractionOption,
   JsonObject,
@@ -8,11 +10,14 @@ import type {
   TodoItem,
 } from '@deepcode/protocol';
 import {
+  isLlmReasoningEffort,
+  LLM_REASONING_EFFORTS,
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
   SESSION_CONTROL_TODO_UPDATE,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
+  SESSION_CONTROL_AGENT,
 } from '@deepcode/protocol';
 
 export interface SessionControlWireNames {
@@ -32,12 +37,12 @@ export function sessionControlInstructions(
   hasWorkspaceBindings = true,
   hasPluginDiscovery = false,
 ): string {
-  const decisions = ` Ask for missing information or decisions with ${names.interactionRequest}. Use mode=continue for clarification questions when other independent analysis or work can proceed: the question stays visible, the tool returns a pending receipt, and the user's eventual answer arrives as user input at a later request boundary. Continue only work that does not depend on that answer; never assume silence selects an option. Finish independent work with a clear response; Session then waits for unanswered questions and resumes this same run after answers. Use mode=wait (default) when no independent work remains; confirmations always wait. Ask early and do not repeatedly ask the same unresolved question. When offering choices, put them in options with stable IDs and concise labels; keep context in prompt instead of repeating choices as a numbered Markdown list. Users can click options or provide freeform input when allowed. Correct rejected inputs; Kernel handles execution permission approval separately.`;
-  const plugins = hasPluginDiscovery ? ` The current tool list contains loaded capabilities, not every installed capability. For an external-program task, choose the interface that supports the requested operation: use an available CLI or suitable MCP tools for program operations, and GUI tools for interface-specific actions or visual confirmation. Combine interfaces as needed; programmatic calls do not require screenshots. When a needed capability is absent, use plugin search before concluding it is unavailable or asking the user to select a plugin. Search by a short capability or product name using the search tool's declared matching rules; a query with no matches does not mean the catalog is empty. Choose relevant enabled, available results, then call ${names.pluginActivate} alone to load their tools and instructions for the next request. Continue with those tools instead of repeatedly rediscovering an already loaded capability. User mentions are optional guidance. Activation in a previous run does not make those tools available now; the current tool list is authoritative. Loading does not grant tool permissions.` : '';
+  const decisions = ` Ask for missing information or decisions with ${names.interactionRequest}. Use mode=continue for clarification when independent work can proceed; use mode=wait (default) otherwise. Confirmations always wait. Continue only work that does not depend on an unanswered question; silence is not agreement. Ask early and avoid repeating unresolved questions. Put choices in options with stable IDs and concise labels, keeping context in prompt instead of duplicating a numbered list. Correct rejected inputs. Tool execution approval is separate.`;
+  const plugins = hasPluginDiscovery ? ` For external-program tasks, use CLI or MCP tools for program operations and GUI tools for interface-specific actions or visual confirmation; combine interfaces as needed. Programmatic calls do not require screenshots. Discover needed capabilities with plugin search using a short capability or product name and the tool's declared matching rules. Call ${names.pluginActivate} alone for relevant results, then use their declared tools. Activation does not grant execution permissions.` : '';
   const delivery = ` Tool artifacts are archived runtime resources, not automatically user deliverables. Use ${names.artifactPresent} to explicitly select completed results or review materials the user should see. Temporary scripts, logs and observation screenshots stay intermediate unless requested as results. For a file or URL without an artifact reference, first use artifact.prepare for a file or artifact.preview for a live URL. Present updated versions under the same deliveryId; cite the returned resource URI in final prose, using Markdown images for visual review. Presentation does not resend pixels to the model.`;
   const progress = ` For multi-step work, use ${names.todoUpdate} when useful. Keep phases few and meaningful, merging similar work; choose the count to fit the task. Skip trivial work and unchanged updates; no update is required per tool call or before answering. Send the complete current list in one update, optionally alongside ordinary calls. Todo grants no permissions and does not gate completion; keep unfinished work honest.`;
   if (!hasWorkspaceBindings) {
-    return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} must be the only call in its turn. No workspace is bound to this run; do not invent a workspace handle or request workspace operations.${decisions}${plugins}${delivery}`;
+    return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} must be the only call in its turn.${decisions}${plugins}${delivery}`;
   }
   return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} and ${names.planPublish} must each be the only call in their turn. Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.${progress}${decisions}${plugins}${delivery}`;
 }
@@ -165,6 +170,7 @@ const PLAN_SCHEMA: JsonObject = {
 };
 
 export type SessionControlCall =
+  | { kind: 'agent'; callId: string; operation: AgentOperation }
   | { kind: 'artifactPresent'; callId: string; items: ArtifactPresentationInput[] }
   | { kind: 'pluginActivate'; callId: string; pluginUris: string[] }
   | {
@@ -198,8 +204,43 @@ export interface PlanScopeExtension {
   mutationManifest: PlanOperation[];
 }
 
-export function sessionControlToolDefinitions(): readonly ProviderToolDefinition[] {
+export function sessionControlToolDefinitions(agentCapabilities: AgentCapabilities = { messaging: true, continuation: true, delegation: true }, agentDiscovered = false): readonly ProviderToolDefinition[] {
+  const { messaging, delegation } = agentCapabilities;
   return [
+    !agentDiscovered ? {
+      name: SESSION_CONTROL_AGENT,
+      description: 'Use models to discover agent operations and model profiles. Submit this control alone.',
+      inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
+        action: { type: 'string', enum: ['models'] },
+      } },
+    } : {
+      name: SESSION_CONTROL_AGENT,
+      description: (delegation ? 'Create an agent with spawn; supply task, name and delivery (wait or async). The optional preset is analysis (default) or collaboration; capabilities override its defaults. cancel targets taskId; close targets agentId. ' : '')
+        + (messaging ? 'Use send (agentId, text) for a message or a continuing child task. ' : '')
+        + 'Use models to list model profiles and reasoning efforts. '
+        + (delegation ? 'Async results arrive automatically; wait (optional taskIds) returns completed task IDs without repeating results. ' : '')
+        + 'Submit this control alone.',
+      inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
+        action: { type: 'string', enum: ['models', ...(delegation ? ['spawn'] : []), ...(messaging ? ['send'] : []), ...(delegation ? ['wait', 'cancel', 'close'] : [])] },
+        ...(delegation ? {
+          task: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1 },
+          preset: { type: 'string', enum: ['analysis', 'collaboration'],
+            description: 'analysis defaults to one task; collaboration defaults to communication and continued tasks.' },
+          capabilities: { type: 'object', additionalProperties: false, properties: {
+            messaging: { type: 'boolean', description: 'Exchange messages.' },
+            continuation: { type: 'boolean', description: 'Accept follow-up tasks in the same Session.' },
+            delegation: { type: 'boolean', description: 'Create child agents.' },
+          } },
+          delivery: { type: 'string', enum: ['wait', 'async'] },
+          profileId: { type: 'string', minLength: 1, description: 'Optional model profile for spawn; without reasoningEffort, uses that profile preset.' },
+          reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Optional reasoning effort for spawn; overrides its default.' },
+          taskId: { type: 'string', minLength: 1 },
+          taskIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } },
+        } : {}),
+        ...(messaging || delegation ? { agentId: { type: 'string', minLength: 1 } } : {}),
+        ...(messaging ? { text: { type: 'string', minLength: 1 } } : {}),
+      } },
+    },
     {
       name: SESSION_CONTROL_ARTIFACT_PRESENT,
       description: 'Select archived resources to deliver for user review or as requested results. Observations, temporary scripts and runtime logs are not outputs by default. Supply exact artifactIds returned by tools; use artifact.prepare for a file or artifact.preview for a URL first. Updating a delivered resource reuses its deliveryId. Returns references to cite or embed in final prose. Does not resend images to the model. Submit this control alone; items may contain all needed deliveries.',
@@ -256,8 +297,12 @@ export function decodeSessionControlCall(
     && name !== SESSION_CONTROL_TODO_UPDATE
     && name !== SESSION_CONTROL_PLUGIN_ACTIVATE
     && name !== SESSION_CONTROL_ARTIFACT_PRESENT
+    && name !== SESSION_CONTROL_AGENT
   ) return null;
   const canonicalCallId = requiredIdentifier(callId, 'callId');
+  if (name === SESSION_CONTROL_AGENT) {
+    return { kind: 'agent', callId: canonicalCallId, operation: decodeAgentOperation(input) };
+  }
   if (name === SESSION_CONTROL_ARTIFACT_PRESENT) {
     assertExactKeys(input, ['items']);
     if (!Array.isArray(input.items) || !input.items.length) throw new SessionControlError('artifact_presentation_invalid', 'items must select at least one resource.');
@@ -305,6 +350,56 @@ export function decodeSessionControlCall(
     callId: canonicalCallId,
     draft: decodePlan(input),
   };
+}
+
+function decodeAgentOperation(input: JsonObject): AgentOperation {
+  switch (input.action) {
+    case 'models':
+      assertExactKeys(input, ['action']);
+      return { action: 'models' };
+    case 'spawn': {
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities'],
+        ['profileId', 'reasoningEffort', 'preset', 'capabilities']);
+      if (input.preset !== undefined && input.preset !== 'analysis' && input.preset !== 'collaboration') {
+        throw new SessionControlError('agent_preset_invalid', 'preset 必须是 analysis 或 collaboration。');
+      }
+      if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
+        || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key) || typeof value !== 'boolean'))) {
+        throw new SessionControlError('agent_capabilities_invalid', 'capabilities 只接受 messaging、continuation、delegation 布尔值。');
+      }
+      if (input.delivery !== 'wait' && input.delivery !== 'async') {
+        throw new SessionControlError('agent_delivery_invalid', 'delivery 必须是 wait 或 async。');
+      }
+      if (input.reasoningEffort !== undefined && !isLlmReasoningEffort(input.reasoningEffort)) {
+        throw new SessionControlError('agent_reasoning_effort_invalid', 'reasoningEffort 必须是有效推理强度。');
+      }
+      return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
+        ...(input.preset !== undefined ? { preset: input.preset } : {}),
+        ...(input.capabilities !== undefined ? { capabilities: { ...input.capabilities } as Partial<AgentCapabilities> } : {}),
+        ...(input.profileId !== undefined ? { profileId: requiredText(input.profileId, 'profileId') } : {}),
+        ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}) };
+    }
+    case 'send':
+      assertExactKeys(input, ['action', 'agentId', 'text']);
+      return { action: 'send', agentId: requiredIdentifier(input.agentId, 'agentId'), text: requiredText(input.text, 'text') };
+    case 'wait': {
+      assertExactKeys(input, ['action', 'taskIds'], ['taskIds']);
+      if (input.taskIds === undefined) return { action: 'wait' };
+      if (!Array.isArray(input.taskIds) || !input.taskIds.length) {
+        throw new SessionControlError('agent_tasks_invalid', 'taskIds 必须是非空任务标识数组，或省略以等待当前任务。');
+      }
+      const taskIds = input.taskIds.map(value => requiredIdentifier(value, 'taskIds'));
+      if (new Set(taskIds).size !== taskIds.length) throw new SessionControlError('agent_tasks_invalid', 'taskIds 不得重复。');
+      return { action: 'wait', taskIds };
+    }
+    case 'cancel':
+      assertExactKeys(input, ['action', 'taskId']);
+      return { action: 'cancel', taskId: requiredIdentifier(input.taskId, 'taskId') };
+    case 'close':
+      assertExactKeys(input, ['action', 'agentId']);
+      return { action: 'close', agentId: requiredIdentifier(input.agentId, 'agentId') };
+    default: throw new SessionControlError('agent_action_invalid', '不支持的 agent action。');
+  }
 }
 
 function decodeInteraction(value: Record<string, unknown>): ModelInteractionRequest {

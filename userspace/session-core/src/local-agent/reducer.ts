@@ -30,10 +30,14 @@ import {
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
+  SESSION_CONTROL_AGENT,
   SESSION_PROJECTION_VERSION, permissionSettings, validatePermissionPatches, isLocalAgentErrorValue,
 } from '@deepcode/protocol';
 
 export interface SessionState {
+  agentContext?: SessionProjection['agentContext'];
+  agentTasks: NonNullable<SessionProjection['agentTasks']>;
+  agentChildren: NonNullable<SessionProjection['agentChildren']>;
   providerAttempts: Record<string, NonNullable<SessionProjection['providerAttempts']>[number]>;
   failureSnapshots: Record<string, NonNullable<SessionProjection['failureSnapshot']>>;
   permissionOverrides: SessionProjection['permissionOverrides'];
@@ -102,6 +106,7 @@ export interface ProviderCallFactState {
 
 export function emptySessionState(sessionId: string): SessionState {
   return {
+    agentTasks: [], agentChildren: [],
     providerAttempts: {}, failureSnapshots: {},
     permissionOverrides: {}, shellAuthorizations: [],
     modelSettings: null,
@@ -233,6 +238,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.modelSettings = { ...event.payload.settings };
       break;
     case 'session.created':
+      if (event.payload.agentContext) next.agentContext = structuredClone(event.payload.agentContext);
       next.modelSettings = event.payload.profileId
         ? { profileId: event.payload.profileId, reasoningEffortOverride: null } : null;
       next.display = { creationTitle: event.payload.displayTitle };
@@ -721,6 +727,22 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         interruption: { ...event.payload.error },
       };
       break;
+    case 'agent.task.created':
+      assertRunningRun(next, event.runId, 'agent_task_run_not_active');
+      Object.assign(next, reduceAgentLifetime(next, event));
+      break;
+    case 'agent.task.started':
+    case 'agent.task.completed':
+    case 'agent.closed':
+      Object.assign(next, reduceAgentLifetime(next, event));
+      break;
+    case 'agent.control.completed':
+      assertRunningRun(next, event.runId, 'agent_control_run_not_active');
+      recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId, SESSION_CONTROL_AGENT, event.sequence);
+      break;
+    case 'agent.message.received':
+      if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('agent_message_run_not_active');
+      break;
     case 'session.plugins.activated':
       assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
       recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
@@ -1149,14 +1171,74 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
   return next;
 }
 
+type AgentLifetime = Pick<SessionState, 'agentTasks' | 'agentChildren'>;
+type AgentLifetimeEvent = Extract<SessionEvent, { type: 'agent.task.created' | 'agent.task.started' | 'agent.task.completed' | 'agent.closed' }>;
+
+function isAgentLifetimeEvent(event: SessionEvent): event is AgentLifetimeEvent {
+  return event.type === 'agent.task.created' || event.type === 'agent.task.started'
+    || event.type === 'agent.task.completed' || event.type === 'agent.closed';
+}
+
+/** These relationships outlive edited conversation ranges; the journal remains their only source. */
+function reduceAgentLifetime(previous: AgentLifetime, event: AgentLifetimeEvent): AgentLifetime {
+  const next = { agentTasks: previous.agentTasks, agentChildren: previous.agentChildren };
+  switch (event.type) {
+    case 'agent.task.created':
+      if (next.agentTasks.some(task => task.taskId === event.payload.taskId)) throw new Error('agent_task_duplicate');
+      const { createsAgent, ...task } = event.payload;
+      next.agentTasks = [...next.agentTasks, { ...task, parentRunId: event.runId, status: 'running' }];
+      const child = next.agentChildren.find(item => item.agentSessionId === event.payload.agentSessionId);
+      if (createsAgent) {
+        if (child) throw new Error('agent_child_duplicate');
+        next.agentChildren = [...next.agentChildren, { agentSessionId: event.payload.agentSessionId,
+          displayName: event.payload.displayName, capabilities: structuredClone(event.payload.capabilities), closed: false }];
+      } else if (!event.payload.capabilities.continuation || child && (child.closed
+        || Object.keys(child.capabilities).some(key => child.capabilities[key as keyof typeof child.capabilities]
+          !== event.payload.capabilities[key as keyof typeof child.capabilities]))) throw new Error('agent_child_not_continuable');
+      break;
+    case 'agent.task.started':
+    case 'agent.task.completed': {
+      const task = next.agentTasks.find(item => item.taskId === event.payload.taskId);
+      if (!task || task.parentRunId !== event.runId || task.status !== 'running') throw new Error('agent_task_transition_invalid');
+      if (event.type === 'agent.task.started') {
+        if (task.childRunId) throw new Error('agent_task_already_started');
+        next.agentTasks = next.agentTasks.map(item => item === task ? { ...item, childRunId: event.payload.childRunId } : item);
+      } else {
+        const result = event.payload.result;
+        if (result.outcome === 'completed' && (!result.content || !result.finalMessageId)
+          || ['failed', 'indeterminate'].includes(result.outcome) && !result.error) throw new Error('agent_task_result_invalid');
+        next.agentTasks = next.agentTasks.map(item => item === task ? { ...item, status: result.outcome, result: structuredClone(result) } : item);
+        if (!next.agentTasks.some(item => item.agentSessionId === task.agentSessionId && item.status === 'running')) {
+          next.agentChildren = next.agentChildren.map(child => child.agentSessionId === task.agentSessionId && !child.capabilities.continuation
+            ? { ...child, closed: true } : child);
+        }
+      }
+      break;
+    }
+    case 'agent.closed': {
+      const member = next.agentChildren.find(item => item.agentSessionId === event.payload.agentSessionId);
+      if (!member || member.closed || next.agentTasks.some(task => task.agentSessionId === member.agentSessionId && task.status === 'running')) {
+        throw new Error('agent_child_close_invalid');
+      }
+      next.agentChildren = next.agentChildren.map(item => item === member ? { ...item, closed: true } : item);
+      break;
+    }
+  }
+  return next;
+}
+
 export function recoverSession(sessionId: string, events: readonly SessionEvent[]): SessionState {
+  let agents: AgentLifetime = { agentTasks: [], agentChildren: [] };
   for (const [index, event] of events.entries()) {
     if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
     if (event.sequence !== index + 1) throw new Error('session_event_sequence_gap');
+    if (isAgentLifetimeEvent(event)) agents = reduceAgentLifetime(agents, event);
   }
   let state = emptySessionState(sessionId);
   const active = activeConversationEvents(events);
   for (const event of active) {
+    // The lifetime stream above has already reduced these facts exactly once.
+    if (isAgentLifetimeEvent(event)) continue;
     // Only explicitly superseded journal ranges may create a gap in active history.
     state = reduceSession({ ...state, revision: event.sequence - 1 }, event);
   }
@@ -1167,7 +1249,7 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
     if (event.type === 'provider.turn.settled') state.tokenUsage = withProviderCompletion(state.tokenUsage);
     if (event.type === 'context.updated') state.tokenUsage = withProviderUsage(state.tokenUsage, event.payload);
   }
-  return { ...state, revision: events.at(-1)?.sequence ?? 0 };
+  return { ...state, ...agents, revision: events.at(-1)?.sequence ?? 0 };
 }
 
 function sourceReferenceProjection(state: SessionState, content: string, requestId: string, referenceId: string) {
@@ -1193,6 +1275,9 @@ export function projectSession(
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
   return {
+    ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
+    ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
+    ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
     ...(Object.keys(state.providerAttempts).length ? { providerAttempts: Object.values(state.providerAttempts)
       .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
     ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),

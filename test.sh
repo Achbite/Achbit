@@ -108,6 +108,7 @@ case "$profile" in
     python3 -I -S ./scripts/tests/file-access-cli.py
     run_workspace_shell
     python3 -I -S ./scripts/tests/managed-process-cli.py
+    python3 -I -S ./scripts/tests/subagent-cli.py
     python3 -I -S ./scripts/tests/conversation-storage.py
     ;;
   full)
@@ -121,6 +122,7 @@ case "$profile" in
     python3 -I -S ./scripts/tests/file-access-cli.py
     run_workspace_shell
     python3 -I -S ./scripts/tests/managed-process-cli.py
+    python3 -I -S ./scripts/tests/subagent-cli.py
     python3 -I -S ./scripts/tests/conversation-storage.py
     python3 -I -S ./scripts/tests/local-agent-e2e.py
     python3 -I -S ./scripts/tests/document-render-e2e.py

@@ -1,4 +1,4 @@
-import { isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentContext, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
 import type { ConversationCommand } from '@deepcode/protocol';
@@ -10,13 +10,14 @@ import {
 } from '@deepcode/protocol';
 import {
   HttpCommandJournal,
+  HttpAgentHostPort,
   HttpKernelPort,
   HttpProviderPort,
   HttpRunPreparationPort,
 } from './local-agent/httpPorts.js';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createSessionService, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
+import { createSessionService, SessionDeletionError, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
 
 declare const process: {
   env: Record<string, string | undefined>;
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   const factory = await loadSessionServiceFactory();
   const candidate: unknown = await factory({
     journal,
+    agentHost: new HttpAgentHostPort({ apiBase, serviceToken }),
     compositions: {
       create: async () => ({
         composition: { provider, kernel, runPreparation, async dispose() {} },
@@ -124,13 +126,17 @@ async function dispatch(
         sessionId: requiredString(request.data, 'sessionId'),
         displayTitle: requiredString(request.data, 'displayTitle'),
         workspaceBindings: decodeWorkspaceBindings(request.data.workspaceBindings),
+        ...(request.data.agentContext ? { agentContext: decodeAgentContext(request.data.agentContext) } : {}),
         ...(optionalString(request.data, 'profileId')
           ? { profileId: optionalString(request.data, 'profileId') }
           : {}),
       });
-    case 'deleteSession':
-      await service.deleteSession(requiredString(request.data, 'sessionId'));
-      return { deleted: true };
+    case 'deleteSession': {
+      const { unstartedOnly } = request.data;
+      if (unstartedOnly !== undefined && typeof unstartedOnly !== 'boolean') throw new Error('session_delete_options_invalid');
+      return { deleted: true, ...await service.deleteSession(requiredString(request.data, 'sessionId'),
+        unstartedOnly === undefined ? undefined : { unstartedOnly }) };
+    }
     case 'submit': {
       return await service.submit(decodeCommand(request.data.command));
     }
@@ -520,13 +526,13 @@ function writeLine(encoded: string): Promise<void> {
   });
 }
 
-function bridgeError(error: unknown): { code: string; message: string } {
+function bridgeError(error: unknown): { code: string; message: string; details?: SessionDeletionError['details'] } {
   const message = error instanceof Error ? error.message : String(error);
   const [candidate] = message.split(':', 1);
   const code = candidate && /^[a-z][a-z0-9_.-]{0,127}$/u.test(candidate)
     ? candidate
     : 'session_service_failed';
-  return { code, message };
+  return { code, message, ...(error instanceof SessionDeletionError ? { details: error.details } : {}) };
 }
 
 function requiredEnvironment(name: string): string {

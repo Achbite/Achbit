@@ -19,6 +19,7 @@ export class InMemoryCommandJournal {
           displayTitle: input.displayTitle,
           workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
           ...(input.profileId ? { profileId: input.profileId } : {}),
+          ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
         },
       });
     });

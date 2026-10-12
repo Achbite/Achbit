@@ -21,6 +21,7 @@ import {
   SESSION_CONTROL_TODO_UPDATE,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
+  SESSION_CONTROL_AGENT,
 } from '@deepcode/protocol';
 import { LoopFailure } from './loopFailure.js';
 import { journalModelViews } from './modelView.js';
@@ -89,6 +90,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
   const hasPluginDiscovery = input.runtime.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable');
+  const hasAgentTools = input.runtime.agentToolsEnabled === true
+    && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
+  const modelViewEvents = input.modelViewEvents ?? input.events;
+  const agentDiscovered = modelViewEvents.some(event => event.sessionId === input.sessionId
+    && event.type === 'agent.control.completed' && event.payload.operation.action === 'models');
   const firstRun = input.events.find((event) => event.type === 'run.started');
   const prefixBindings = firstRun?.type === 'run.started' ? firstRun.payload.workspaceBindings : input.workspaceBindings;
   const controlNames = {
@@ -108,15 +114,15 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions().filter(tool => tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
-    ? hasPluginDiscovery : hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT);
+  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities, agentDiscovered).filter(tool => tool.name === SESSION_CONTROL_AGENT
+    ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
+      ? hasPluginDiscovery : hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT);
   const toolCodec = createProviderToolCodec(
     runtimeTools,
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
   );
-  const modelViewEvents = input.modelViewEvents ?? input.events;
   const fixedViews = journalModelViews(modelViewEvents).contributions;
   const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
   const instructions = [...input.runtime.instructions]
@@ -159,17 +165,15 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery),
     },
   });
-  instructions.push({
+  if (hasWorkspaceBindings) instructions.push({
     contributionId: 'session:workspace-bindings',
     contributionKind: 'workspaceBindings',
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: hasWorkspaceBindings
-        ? `Current Session workspace bindings (logical handles only): ${JSON.stringify(
-          providerWorkspaceBindings(prefixBindings),
-        )}`
-        : 'Current Session workspace bindings: []. Workspace-scoped filesystem and Bash tools are unavailable for this run.',
+      content: `Current Session workspace bindings (logical handles only): ${JSON.stringify(
+        providerWorkspaceBindings(prefixBindings),
+      )}`,
     },
   });
   const imageReader = toolCodec.wireByCanonical.get('session.read');
@@ -250,6 +254,7 @@ export function messagesFromJournal(
   const throughSequence = events.at(-1)?.sequence ?? 0;
   const retained: ContextMessageContribution[] = [];
   const pendingHostRebinds: ContextMessageContribution[] = [];
+  const pendingAgentEvidence: ContextMessageContribution[] = [];
   const pendingProcessUpdates = new Map<string, ContextMessageContribution>();
   const flushProcessUpdates = () => {
     messages.push(...pendingProcessUpdates.values());
@@ -285,6 +290,8 @@ export function messagesFromJournal(
   )));
   const interactions = new Map(events.flatMap(event => event.type === 'interaction.requested'
     ? [[event.payload.interactionId, event] as const] : []));
+  const agentTasks = new Map(modelViewEvents.flatMap(event => event.type === 'agent.task.created'
+    ? [[event.payload.taskId, event.payload] as const] : []));
   const responses = new Map(events.flatMap(event => event.type === 'interaction.resolved'
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
@@ -561,6 +568,30 @@ export function messagesFromJournal(
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ activated: event.payload.pluginUris }) },
       });
+    } else if (event.type === 'agent.control.completed') {
+      if (!orderedProviderCallIds.has(event.callId)) {
+        attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
+          name: SESSION_CONTROL_AGENT, input: event.payload.operation });
+      }
+      completionResults.set(event.callId, {
+        contributionId: `agent-control:${event.callId}`, contributionKind: 'journalMessages', label: 'Delegation result',
+        sourceSequence: event.sequence,
+        message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          content: JSON.stringify(event.payload.result) },
+      });
+    } else if (event.type === 'agent.task.completed') {
+      const task = agentTasks.get(event.payload.taskId);
+      if (!task) throw new LoopFailure('agent_task_source_missing', '子任务结果缺少已登记任务来源。');
+      if (task.delivery === 'async') pendingAgentEvidence.push({
+        contributionId: `agent-result:${event.payload.taskId}`, contributionKind: 'journalMessages', label: 'Subtask result',
+        sourceSequence: event.sequence,
+        message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
+          agentId: task.agentSessionId, result: event.payload.result }) },
+      });
+    } else if (event.type === 'agent.message.received') {
+      pendingAgentEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
+        sourceSequence: event.sequence,
+        message: { role: 'user', content: JSON.stringify({ type: 'agent.message', agentId: event.payload.sourceSessionId, text: event.payload.text }) } });
     } else if (event.type === 'session.control.rejected') {
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, {
@@ -649,6 +680,7 @@ export function messagesFromJournal(
     } else if (event.type === 'context.composed' && event.payload.purpose === 'agent') {
       flushProcessUpdates();
       messages.push(...pendingHostRebinds.splice(0));
+      messages.push(...pendingAgentEvidence.splice(0));
     } else if (event.type === 'provider.turn.settled' && event.payload.outcome === 'completed') {
       if (event.payload.toolCallInputs) {
         messages.push({
@@ -725,6 +757,7 @@ export function messagesFromJournal(
   }
   flushProcessUpdates();
   messages.push(...pendingHostRebinds);
+  messages.push(...pendingAgentEvidence);
   if (completionResults.size > 0) {
     throw new LoopFailure(
       'provider_call_result_completion_missing',
@@ -896,6 +929,7 @@ function providerCallIdsFromEvents(events: readonly SessionEvent[]): Map<string,
       && event.type !== 'session.control.rejected'
       && event.type !== 'session.plugins.activated'
       && event.type !== 'artifacts.presented'
+      && event.type !== 'agent.control.completed'
     ) continue;
     const providerCallId = event.payload.providerCallId;
     const existing = byLogicalCallId.get(event.callId);

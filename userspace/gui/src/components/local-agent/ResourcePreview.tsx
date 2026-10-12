@@ -158,6 +158,8 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId: string; target: ReaderTarget }>).detail;
       if (detail.sessionId === sessionId) openTarget(detail.target);
+      // A child result opens in the main view, retaining its own file/archive identity.
+      else if (detail.target.kind !== 'browser') openTarget({ ...detail.target, sourceSessionId: detail.sessionId });
     };
     window.addEventListener(READER_OPEN_EVENT, listener);
     return () => window.removeEventListener(READER_OPEN_EVENT, listener);
@@ -318,6 +320,13 @@ export function ResourcePreview({
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
 }) {
   const chinese = language === 'zh-CN';
+  const activeTarget = preview.tabs.find(tab => tab.id === preview.activeId)?.target;
+  const sourceSessionId = (target?: ReaderTarget) =>
+    target && target.kind !== 'browser' ? target.sourceSessionId ?? preview.sessionId : preview.sessionId;
+  const activeSessionId = sourceSessionId(activeTarget);
+  const openFileTarget = (sessionId: string | null, target: ReaderTarget) => preview.openTarget(
+    sessionId && sessionId !== preview.sessionId && target.kind !== 'browser' ? { ...target, sourceSessionId: sessionId } : target,
+  );
   const readerData = { kind: 'reader' as const, tabs: preview.tabs.map(tab => ({ id: tab.id, title: tabName(tab, language) })),
     activeId: preview.activeId, visible: preview.visible, expanded: preview.expanded, treeVisible: preview.treeVisible };
   const readerActions = { toggleTree: preview.toggleTree, toggleReaderExpanded: preview.expand,
@@ -381,7 +390,7 @@ export function ResourcePreview({
           </button>
           <div className="reader-tabs__actions">
             <UiRegion slot="reader.toolbar" data={readerData} actions={readerActions}>
-              <ReaderFileActions sessionId={preview.sessionId} target={preview.tabs.find(tab => tab.id === preview.activeId)?.target} language={language} />
+              <ReaderFileActions sessionId={activeSessionId} target={activeTarget} language={language} />
             </UiRegion>
           </div>
         </header>
@@ -424,15 +433,15 @@ export function ResourcePreview({
                   reviewEdit={preview.reviewEdit?.previewId === (tab.page?.previewId ?? tab.target.previewId) ? preview.reviewEdit : null}
                 />
               ) : tab.target.kind === 'diff' && preview.sessionId ? (
-                <FileChangePreview sessionId={preview.sessionId} file={tab.target.file} />
+                <FileChangePreview sessionId={sourceSessionId(tab.target)!} file={tab.target.file} />
               ) : (
                 preview.sessionId && (
                   <ReaderDocument
                     key={tab.target.kind === 'workspace' ? `${tab.id}:${tab.target.line ?? ''}:${tab.target.column ?? ''}` : tab.id}
-                    sessionId={preview.sessionId}
+                    sessionId={sourceSessionId(tab.target)!}
                     target={tab.target as Exclude<ReaderTarget, { kind: 'browser' | 'diff' }>}
                     language={language}
-                    openTarget={preview.openTarget}
+                    openTarget={target => openFileTarget(sourceSessionId(tab.target), target)}
                   />
                 )
               )}
@@ -446,11 +455,11 @@ export function ResourcePreview({
             />
           )}
         </div>
-        {preview.sessionId && <div className="reader-tree-panel" hidden={!preview.visible || !preview.treeVisible} style={{ width: treeWidth.width }}>
+        {activeSessionId && <div className="reader-tree-panel" hidden={!preview.visible || !preview.treeVisible} style={{ width: treeWidth.width }}>
           {preview.visible && preview.treeVisible && <ResizeHandle className="reader-tree-resize" label={chinese ? '调整文件树宽度' : 'Resize file tree'}
             value={treeWidth.width} min={treeWidth.min} max={treeWidth.max} step={PANE_GEOMETRY.fileTree.step}
             direction={-1} onResize={treeWidth.setWidth} />}
-          <ResourceTree key={preview.sessionId} sessionId={preview.sessionId} visible={preview.visible && preview.treeVisible} activeTarget={preview.tabs.find(tab => tab.id === preview.activeId)?.target} language={language} openTarget={preview.openTarget} /></div>}
+          <ResourceTree key={activeSessionId} sessionId={activeSessionId} visible={preview.visible && preview.treeVisible} activeTarget={activeTarget} language={language} openTarget={target => openFileTarget(activeSessionId, target)} /></div>}
         </UiRegion></div>
       </aside>
     </>

@@ -111,6 +111,7 @@ export function runtimeSnapshot(runId, options = {}) {
       wireName: canonicalName.replace(/[.-]/gu, '_'),
     }));
   return {
+    agentCapabilities: structuredClone(options.agentCapabilities ?? { messaging: true, continuation: true, delegation: true }),
     runRuntimeSnapshotRef: `runtime-snapshot:${runId}`,
     permissions: { ...PERMISSION_DEFAULTS, ...options.permissions },
     extensionGenerationRef: 'extension-generation:g1',

@@ -78,11 +78,15 @@ impl LocalAgentJournal {
         display_title: &str,
         workspace_bindings: &Value,
         profile_id: Option<&str>,
+        agent_context: Option<&Value>,
     ) -> Result<Value, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         validate_display_title(display_title)?;
         if let Some(profile_id) = profile_id {
             validate_id("profileId", profile_id)?;
+        }
+        if let Some(context) = agent_context {
+            validate_agent_context(context, session_id)?;
         }
         let bindings = validate_workspace_bindings(workspace_bindings)?;
         let mut connection = self.lock()?;
@@ -118,6 +122,7 @@ impl LocalAgentJournal {
                 "displayTitle": display_title,
                 "workspaceBindings": bindings,
                 "profileId": profile_id,
+                "agentContext": agent_context,
             }
         });
         let event = strip_null_object_fields(event);
@@ -126,6 +131,25 @@ impl LocalAgentJournal {
             .commit()
             .map_err(sql_error("session_create_commit_failed"))?;
         Ok(committed)
+    }
+
+    pub(crate) fn agent_context(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Value>, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let connection = self.lock()?;
+        let encoded = connection.query_row(
+            "SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.created'",
+            [session_id], |row| row.get::<_, String>(0),
+        ).optional().map_err(sql_error("session_creation_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session creation fact 不存在。"))?;
+        let payload = decode_json(&encoded, "session_creation_corrupt")?;
+        let context = payload.get("agentContext").cloned();
+        if let Some(context) = context.as_ref() {
+            validate_agent_context(context, session_id)?;
+        }
+        Ok(context)
     }
 
     pub(crate) fn append(&self, event: &Value) -> Result<Value, LocalAgentStoreError> {
@@ -1041,6 +1065,12 @@ fn validate_new_event(
         "tool.interrupted",
         "session.control.rejected",
         "session.plugins.activated",
+        "agent.task.created",
+        "agent.task.started",
+        "agent.task.completed",
+        "agent.closed",
+        "agent.control.completed",
+        "agent.message.received",
         "context.compaction.requested",
         "context.compacted",
         "context.composed",
@@ -1071,6 +1101,7 @@ fn validate_new_event(
             | "input.accepted"
             | "message.committed"
             | "message.feedback.updated"
+            | "agent.closed"
     );
     let needs_call = matches!(
         event_type,
@@ -1091,6 +1122,8 @@ fn validate_new_event(
             | "session.control.rejected"
             | "session.plugins.activated"
             | "artifacts.presented"
+            | "agent.task.created"
+            | "agent.control.completed"
     );
     if needs_run {
         validate_id("runId", required_string(event, "runId")?)?;
@@ -1124,6 +1157,7 @@ fn validate_new_event(
             | "session.control.rejected"
             | "session.plugins.activated"
             | "artifacts.presented"
+            | "agent.control.completed"
     ) || progress_call
     {
         let payload = event.get("payload").expect("validated payload");
@@ -1158,6 +1192,120 @@ fn validate_new_event(
         }
     }
     match event_type {
+        "agent.task.created" => {
+            let payload = &event["payload"];
+            exact_object(
+                payload,
+                &[
+                    "taskId",
+                    "agentSessionId",
+                    "capabilities",
+                    "createsAgent",
+                    "displayName",
+                    "text",
+                    "delivery",
+                ],
+                &[],
+            )?;
+            for field in ["taskId", "agentSessionId"] {
+                validate_id(field, required_string(payload, field)?)?;
+            }
+            required_string(payload, "displayName")?;
+            required_string(payload, "text")?;
+            validate_agent_capabilities(&payload["capabilities"])?;
+            if !payload["createsAgent"].is_boolean()
+                || !matches!(payload["delivery"].as_str(), Some("wait" | "async"))
+            {
+                return Err(LocalAgentStoreError::new(
+                    "agent_task_invalid",
+                    "Agent 任务创建标记或交付方式无效。",
+                ));
+            }
+        }
+        "agent.task.started" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["taskId", "childRunId"], &[])?;
+            for field in ["taskId", "childRunId"] {
+                validate_id(field, required_string(payload, field)?)?;
+            }
+        }
+        "agent.task.completed" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["taskId", "result"], &[])?;
+            validate_id("taskId", required_string(payload, "taskId")?)?;
+            let result = &payload["result"];
+            exact_object(
+                result,
+                &["outcome"],
+                &["content", "error", "finalMessageId"],
+            )?;
+            if !matches!(
+                result["outcome"].as_str(),
+                Some("completed" | "failed" | "cancelled" | "indeterminate")
+            ) || result
+                .get("content")
+                .is_some_and(|content| !content.is_string())
+            {
+                return Err(LocalAgentStoreError::new(
+                    "agent_task_result_invalid",
+                    "Agent 任务结果无效。",
+                ));
+            }
+            if let Some(error) = result.get("error") {
+                validate_local_agent_error(error)?;
+            }
+            if result.get("finalMessageId").is_some() {
+                validate_id("finalMessageId", required_string(result, "finalMessageId")?)?;
+            }
+        }
+        "agent.closed" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["agentSessionId"], &[])?;
+            validate_id(
+                "agentSessionId",
+                required_string(payload, "agentSessionId")?,
+            )?;
+        }
+        "agent.control.completed" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["providerCallId", "operation", "result"], &[])?;
+            if !payload["operation"].is_object() || !payload["result"].is_object() {
+                return Err(LocalAgentStoreError::new(
+                    "agent_control_result_invalid",
+                    "Agent control 的操作与结果必须是对象。",
+                ));
+            }
+        }
+        "agent.message.received" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["sourceSessionId", "text"], &[])?;
+            validate_id(
+                "sourceSessionId",
+                required_string(payload, "sourceSessionId")?,
+            )?;
+            required_string(payload, "text")?;
+        }
+        "session.created" => {
+            let payload = &event["payload"];
+            exact_object(
+                payload,
+                &["displayTitle", "workspaceBindings"],
+                &["profileId", "agentContext"],
+            )?;
+            validate_display_title(required_string(payload, "displayTitle")?)?;
+            validate_workspace_bindings(&payload["workspaceBindings"])?;
+            if let Some(profile_id) = payload.get("profileId") {
+                validate_id(
+                    "profileId",
+                    profile_id.as_str().ok_or_else(|| {
+                        LocalAgentStoreError::new("session_event_invalid", "profileId 无效。")
+                    })?,
+                )?;
+            }
+            if let Some(context) = payload.get("agentContext") {
+                validate_agent_context(context, session_id)?;
+            }
+        }
         "provider.attempt.updated" => {
             let payload = &event["payload"];
             exact_object(
@@ -1749,6 +1897,7 @@ fn validate_new_event(
                     | "todo.update"
                     | "plugin.activate"
                     | "artifact.present"
+                    | "agent"
             ) {
                 return Err(LocalAgentStoreError::new(
                     "session_event_invalid",
@@ -3548,6 +3697,51 @@ fn validate_reply(reply: &Value) -> Result<(), LocalAgentStoreError> {
     Ok(())
 }
 
+fn validate_agent_capabilities(value: &Value) -> Result<(), LocalAgentStoreError> {
+    let fields = ["messaging", "continuation", "delegation"];
+    exact_object(value, &fields, &[])?;
+    if fields.iter().any(|field| !value[*field].is_boolean()) {
+        return Err(LocalAgentStoreError::new(
+            "agent_capabilities_invalid",
+            "Agent capabilities 必须是布尔值。",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_agent_context(
+    value: &Value,
+    session_id: &str,
+) -> Result<(), LocalAgentStoreError> {
+    exact_object(
+        value,
+        &[
+            "capabilities",
+            "ownerSessionId",
+            "parentSessionId",
+            "parentRunId",
+            "parentCallId",
+        ],
+        &[],
+    )?;
+    validate_agent_capabilities(&value["capabilities"])?;
+    for field in [
+        "ownerSessionId",
+        "parentSessionId",
+        "parentRunId",
+        "parentCallId",
+    ] {
+        validate_id(field, required_string(value, field)?)?;
+    }
+    if value["ownerSessionId"] == session_id || value["parentSessionId"] == session_id {
+        return Err(LocalAgentStoreError::new(
+            "agent_context_invalid",
+            "子会话不能以自身作为 owner 或 parent。",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_workspace_bindings(value: &Value) -> Result<Vec<Value>, LocalAgentStoreError> {
     let values = value.as_array().ok_or_else(|| {
         LocalAgentStoreError::new("session_binding_invalid", "workspaceBindings 必须是数组。")
@@ -3834,9 +4028,24 @@ fn validate_run_runtime_snapshot(
             "selectedPlugins",
             "environment",
             "permissions",
+            "agentCapabilities",
         ],
-        &["approvalReviewer", "approvalReviewerError"],
+        &[
+            "approvalReviewer",
+            "approvalReviewerError",
+            "agentToolsEnabled",
+        ],
     )?;
+    validate_agent_capabilities(&value["agentCapabilities"])?;
+    if value
+        .get("agentToolsEnabled")
+        .is_some_and(|enabled| !enabled.is_boolean())
+    {
+        return Err(LocalAgentStoreError::new(
+            "run_agent_tools_invalid",
+            "Agent runtime 工具开关必须是布尔值。",
+        ));
+    }
     validate_permission_patches(&value["permissions"])?;
     let run_runtime_snapshot_ref = required_string(value, "runRuntimeSnapshotRef")?;
     let extension_generation_ref = required_string(value, "extensionGenerationRef")?;
@@ -4706,6 +4915,7 @@ mod tests {
 
     fn runtime_snapshot() -> Value {
         json!({
+            "agentCapabilities": {"messaging":true,"continuation":true,"delegation":true},
             "permissions": crate::settings_api::permission_settings(&json!({})),
             "runRuntimeSnapshotRef": "run-runtime:test",
             "extensionGenerationRef": "extension-generation:test",
@@ -4741,10 +4951,75 @@ mod tests {
     }
 
     #[test]
+    fn unified_agent_capabilities_preserve_lineage_and_require_explicit_facts() {
+        let capabilities = json!({"messaging":true,"continuation":false,"delegation":false});
+        let context = json!({
+            "capabilities":capabilities,
+            "ownerSessionId":"session:owner", "parentSessionId":"session:parent",
+            "parentRunId":"run:parent", "parentCallId":"call:spawn"
+        });
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        journal
+            .create_session("session:child", "Child", &json!([]), None, Some(&context))
+            .unwrap();
+        assert_eq!(
+            journal.agent_context("session:child").unwrap(),
+            Some(context.clone())
+        );
+        let mut missing = context.clone();
+        missing["capabilities"]
+            .as_object_mut()
+            .unwrap()
+            .remove("messaging");
+        assert!(validate_agent_context(&missing, "session:child").is_err());
+        let mut invalid = context.clone();
+        invalid["capabilities"]["delegation"] = json!("false");
+        assert_eq!(
+            validate_agent_context(&invalid, "session:child")
+                .unwrap_err()
+                .code,
+            "agent_capabilities_invalid"
+        );
+        let mut role = context;
+        role["role"] = json!("analysis");
+        assert!(validate_agent_context(&role, "session:child").is_err());
+
+        let created = json!({
+            "type":"agent.task.created", "sessionId":"session:owner", "runId":"run:parent", "callId":"call:spawn",
+            "payload":{"taskId":"task:child","agentSessionId":"session:child","capabilities":capabilities,
+                "createsAgent":false,"displayName":"Child","text":"Continue analysis","delivery":"async"}
+        });
+        validate_new_event(&created, false).unwrap();
+        let mut missing_creation = created.clone();
+        missing_creation["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("createsAgent");
+        assert!(validate_new_event(&missing_creation, false).is_err());
+        let mut invalid_creation = created;
+        invalid_creation["payload"]["capabilities"]["continuation"] = json!(1);
+        assert!(validate_new_event(&invalid_creation, false).is_err());
+        validate_new_event(&json!({"type":"agent.closed","sessionId":"session:owner","payload":{"agentSessionId":"session:child"}}), false).unwrap();
+
+        let mut runtime = runtime_snapshot();
+        validate_run_runtime_snapshot(&runtime).unwrap();
+        runtime["agentCapabilities"] = capabilities;
+        validate_run_runtime_snapshot(&runtime).unwrap();
+        let mut missing_runtime = runtime.clone();
+        missing_runtime
+            .as_object_mut()
+            .unwrap()
+            .remove("agentCapabilities");
+        assert!(validate_run_runtime_snapshot(&missing_runtime).is_err());
+        runtime["agentCapabilities"]["messaging"] = Value::Null;
+        assert!(validate_run_runtime_snapshot(&runtime).is_err());
+    }
+
+    #[test]
     fn approval_review_uses_its_frozen_model_without_changing_the_conversation_model() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:review", "Review", &json!([]), None)
+            .create_session("session:review", "Review", &json!([]), None, None)
             .unwrap();
         let mut runtime = runtime_snapshot();
         runtime["approvalReviewer"] = json!({
@@ -4776,7 +5051,13 @@ mod tests {
     fn unavailable_reviewer_preserves_the_error_without_blocking_the_conversation() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:review-error", "Review error", &json!([]), None)
+            .create_session(
+                "session:review-error",
+                "Review error",
+                &json!([]),
+                None,
+                None,
+            )
             .unwrap();
         let mut runtime = runtime_snapshot();
         let error = json!({"code":"approval_reviewer_prepare_failed", "message":"Missing selected review profile"});
@@ -4806,7 +5087,7 @@ mod tests {
     fn plan_authority_lasts_through_todo_updates_and_expires_on_run_finishing() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:scope", "Scope", &json!([]), None)
+            .create_session("session:scope", "Scope", &json!([]), None, None)
             .unwrap();
         journal.append(&json!({"type":"run.started", "sessionId":"session:scope", "runId":"run:scope",
             "payload":{"inputMessageId":"message:scope","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
@@ -4863,7 +5144,7 @@ mod tests {
     fn journal_records_explicit_gui_rebind_with_its_tool_view() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:rebind", "Rebind", &json!([]), None)
+            .create_session("session:rebind", "Rebind", &json!([]), None, None)
             .unwrap();
         let runtime = runtime_snapshot();
         journal.append(&json!({"type":"run.started","sessionId":"session:rebind","runId":"run:rebind",
@@ -4905,7 +5186,7 @@ mod tests {
     fn journal_persists_explicit_delivery_and_accepts_task_sized_plugin_selection() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:delivery", "Delivery", &json!([]), None)
+            .create_session("session:delivery", "Delivery", &json!([]), None, None)
             .unwrap();
         journal.append(&json!({"type":"run.started", "sessionId":"session:delivery", "runId":"run:delivery",
             "payload":{"inputMessageId":"message:delivery","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
@@ -5048,7 +5329,7 @@ mod tests {
     fn request_resource_views_include_only_consumed_files_and_keep_old_views() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:loop", "Resources", &json!([]), None)
+            .create_session("session:loop", "Resources", &json!([]), None, None)
             .unwrap();
         append_model_settings_and_rejected_call(&journal);
         let mut receipt = journal
@@ -5124,7 +5405,13 @@ mod tests {
         let store = Store::new();
         let journal = LocalAgentJournal::open(&store.path()).unwrap();
         journal
-            .create_session("session:loop", "Loop", &json!([]), Some("profile:test"))
+            .create_session(
+                "session:loop",
+                "Loop",
+                &json!([]),
+                Some("profile:test"),
+                None,
+            )
             .unwrap();
         append_model_settings_and_rejected_call(&journal);
         let events = journal.read_events("session:loop", 0).unwrap();
@@ -5171,7 +5458,7 @@ mod tests {
     fn failed_event_and_command_batches_do_not_partially_write_or_consume_sequence() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:loop", "Loop", &json!([]), None)
+            .create_session("session:loop", "Loop", &json!([]), None, None)
             .unwrap();
         let before = journal.read_events("session:loop", 0).unwrap();
         let missing_run = json!({"type":"run.finishing","sessionId":"session:loop","runId":"run:missing","payload":{"outcome":"cancelled"}});
@@ -5206,7 +5493,7 @@ mod tests {
         let store = Store::new();
         let journal = LocalAgentJournal::open(&store.path()).unwrap();
         journal
-            .create_session("session:loop", "Loop", &json!([]), None)
+            .create_session("session:loop", "Loop", &json!([]), None, None)
             .unwrap();
         journal.append(&json!({"type":"run.started","sessionId":"session:loop","runId":"run:loop",
             "payload":{"inputMessageId":"message:loop","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
@@ -5237,7 +5524,7 @@ mod tests {
         let store = Store::new();
         let journal = LocalAgentJournal::open(&store.path()).unwrap();
         journal
-            .create_session("session:loop", "Loop", &json!([]), None)
+            .create_session("session:loop", "Loop", &json!([]), None, None)
             .unwrap();
         journal.append(&json!({"type":"run.started","sessionId":"session:loop","runId":"run:loop",
             "payload":{"inputMessageId":"message:loop","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
@@ -5269,7 +5556,7 @@ mod tests {
     fn store_rejects_unknown_calls_and_duplicate_terminal_records() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:loop", "Loop", &json!([]), None)
+            .create_session("session:loop", "Loop", &json!([]), None, None)
             .unwrap();
         journal.append(&json!({"type":"run.started","sessionId":"session:loop","runId":"run:loop",
             "payload":{"inputMessageId":"message:loop","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
@@ -5290,7 +5577,13 @@ mod tests {
     fn revised_conversation_excludes_browser_grants_but_keeps_journal_facts() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
-            .create_session("session:loop", "Loop", &json!([]), Some("profile:test"))
+            .create_session(
+                "session:loop",
+                "Loop",
+                &json!([]),
+                Some("profile:test"),
+                None,
+            )
             .unwrap();
         journal.append(&json!({"type":"input.accepted","sessionId":"session:loop",
             "payload":{"commandId":"command:first","messageId":"message:loop","text":"First message"}})).unwrap();
@@ -5359,7 +5652,7 @@ mod tests {
         let path = store.path();
         let journal = LocalAgentJournal::open(&path).unwrap();
         journal
-            .create_session("session:shape", "History", &json!([]), None)
+            .create_session("session:shape", "History", &json!([]), None, None)
             .unwrap();
         let before = journal.read_events("session:shape", 0).unwrap();
         assert_eq!(

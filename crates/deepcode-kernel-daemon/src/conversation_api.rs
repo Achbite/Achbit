@@ -4,7 +4,7 @@ use crate::conversation_catalog::{
     ConversationWorkspaceRecord, WorkspaceBindingDisplayRecord,
 };
 use crate::prelude::*;
-use crate::{ApiResponse, AppState, SessionServiceError, SessionServiceProcess};
+use crate::{ApiResponse, AppState, GuiState, SessionServiceError, SessionServiceProcess};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -23,6 +23,16 @@ pub(crate) struct CreateConversationSessionRequest {
     workspace_paths: Option<Vec<String>>,
     project_id: Option<String>,
     profile_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateAgentSessionRequest {
+    session_id: String,
+    display_title: String,
+    workspace_bindings: Vec<WorkspaceBindingDisplayRecord>,
+    profile_id: String,
+    agent_context: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,12 +126,46 @@ pub(crate) async fn conversation_read(
     }
 }
 
+fn visible_session_ids(
+    catalog: &ConversationCatalog,
+    journal: &crate::local_agent_store::LocalAgentJournal,
+) -> Result<Vec<String>, crate::local_agent_store::LocalAgentStoreError> {
+    let mut session_ids = Vec::new();
+    for session in &catalog.sessions {
+        if journal.agent_context(&session.id)?.is_none() {
+            session_ids.push(session.id.clone());
+        }
+    }
+    Ok(session_ids)
+}
+
+fn visible_catalog_response(
+    gui: &GuiState,
+    journal: &crate::local_agent_store::LocalAgentJournal,
+    management: bool,
+) -> Json<ApiResponse> {
+    let visible = match visible_session_ids(&gui.conversation_catalog, journal) {
+        Ok(ids) => ids.into_iter().collect::<HashSet<_>>(),
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = if management {
+        gui.conversation_catalog.management_value()
+    } else {
+        gui.conversation_catalog.public_value()
+    };
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
+}
+
 pub(crate) async fn conversation_catalog_get(State(state): State<AppState>) -> Json<ApiResponse> {
     let gui = state.gui.lock().expect("gui state lock");
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    ApiResponse::ok(gui.conversation_catalog.public_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, false)
 }
 
 pub(crate) async fn conversation_statuses_get(State(state): State<AppState>) -> Json<ApiResponse> {
@@ -130,11 +174,10 @@ pub(crate) async fn conversation_statuses_get(State(state): State<AppState>) -> 
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
         }
-        gui.conversation_catalog
-            .sessions
-            .iter()
-            .map(|session| session.id.clone())
-            .collect()
+        match visible_session_ids(&gui.conversation_catalog, &state.local_agent.journal) {
+            Ok(ids) => ids,
+            Err(error) => return ApiResponse::error(error.code, error.message),
+        }
     };
     match request_service(
         state.session_service.clone(),
@@ -844,7 +887,7 @@ pub(crate) async fn conversation_catalog_management_get(
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    ApiResponse::ok(gui.conversation_catalog.management_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, true)
 }
 
 pub(crate) async fn conversation_project_create(
@@ -886,7 +929,7 @@ pub(crate) async fn conversation_project_create(
     if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    ApiResponse::ok(gui.conversation_catalog.public_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, false)
 }
 
 pub(crate) async fn conversation_project_update(
@@ -941,7 +984,7 @@ pub(crate) async fn conversation_project_update(
     if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    ApiResponse::ok(gui.conversation_catalog.public_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, false)
 }
 
 pub(crate) async fn conversation_project_delete(
@@ -963,7 +1006,7 @@ pub(crate) async fn conversation_project_delete(
     {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    ApiResponse::ok(gui.conversation_catalog.public_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, false)
 }
 
 pub(crate) async fn conversation_session_create(
@@ -1033,22 +1076,43 @@ pub(crate) async fn conversation_session_create(
         (profile_id, bindings)
     };
 
-    let projection = match request_service(
-        state.session_service.clone(),
-        "createSession",
-        json!({
-            "sessionId": session_id,
-            "displayTitle": "新对话",
-            "workspaceBindings": bindings,
-            "profileId": profile_id,
-        }),
+    create_registered_session(
+        &state,
+        ConversationSessionRecord {
+            id: session_id,
+            title: "新对话".into(),
+            workspace_bindings: bindings,
+            project_id: body.project_id,
+            profile_id: Some(profile_id),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+        None,
     )
     .await
-    {
-        Ok(value) => value,
-        Err(error) => return session_service_error(error),
-    };
+}
 
+/// Shared Host creation path. Session retains the journal; catalog records only presentation/bindings.
+async fn create_registered_session(
+    state: &AppState,
+    session: ConversationSessionRecord,
+    agent_context: Option<Value>,
+) -> Json<ApiResponse> {
+    let session_id = session.id.clone();
+    let mut creation = json!({
+        "sessionId": session.id,
+        "displayTitle": session.title,
+        "workspaceBindings": session.workspace_bindings,
+        "profileId": session.profile_id,
+    });
+    if let Some(context) = agent_context {
+        creation["agentContext"] = context;
+    }
+    let projection =
+        match request_service(state.session_service.clone(), "createSession", creation).await {
+            Ok(value) => value,
+            Err(error) => return session_service_error(error),
+        };
     let persist_result: Result<(), (&'static str, String)> = {
         let mut gui = state.gui.lock().expect("gui state lock");
         if gui.conversation_catalog.session(&session_id).is_some() {
@@ -1056,7 +1120,7 @@ pub(crate) async fn conversation_session_create(
                 "conversation_session_exists",
                 "同一 sessionId 在创建期间被占用。".to_string(),
             ))
-        } else if body
+        } else if session
             .project_id
             .as_deref()
             .is_some_and(|project_id| gui.conversation_catalog.project(project_id).is_none())
@@ -1066,15 +1130,6 @@ pub(crate) async fn conversation_session_create(
                 "项目在 Session 创建期间已被删除。".to_string(),
             ))
         } else {
-            let session = ConversationSessionRecord {
-                id: session_id.clone(),
-                title: "新对话".to_string(),
-                workspace_bindings: bindings.clone(),
-                project_id: body.project_id.clone(),
-                profile_id: Some(profile_id.clone()),
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            };
             persist_catalog_rows(&mut gui, Vec::new(), None, Some(session))
                 .map_err(|error| ("conversation_catalog_write_failed", error))
         }
@@ -1083,7 +1138,7 @@ pub(crate) async fn conversation_session_create(
         let rollback = request_service(
             state.session_service.clone(),
             "deleteSession",
-            json!({ "sessionId": session_id }),
+            json!({ "sessionId": session_id, "unstartedOnly": true }),
         )
         .await;
         return session_creation_failure(code, error, rollback);
@@ -1103,6 +1158,132 @@ fn session_creation_failure(
         ));
     }
     ApiResponse::error(code, message)
+}
+
+pub(crate) async fn create_agent_session(
+    state: AppState,
+    body: CreateAgentSessionRequest,
+) -> Json<ApiResponse> {
+    if !valid_id(&body.session_id) {
+        return ApiResponse::error(
+            "session_identity_invalid",
+            "sessionId 不是有效本地会话标识。",
+        );
+    }
+    if let Err(error) =
+        crate::local_agent_store::validate_agent_context(&body.agent_context, &body.session_id)
+    {
+        return ApiResponse::error(error.code, error.message);
+    }
+    let title = match clean_title(&body.display_title) {
+        Ok(title) => title,
+        Err(error) => return ApiResponse::error("conversation_session_title_invalid", error),
+    };
+    let parent_id = body.agent_context["parentSessionId"]
+        .as_str()
+        .expect("validated parent");
+    let parent_run = body.agent_context["parentRunId"]
+        .as_str()
+        .expect("validated run");
+    let parent_context = match state.local_agent.journal.agent_context(parent_id) {
+        Ok(context) => context,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let owner_id = parent_context
+        .as_ref()
+        .map(|context| context["ownerSessionId"].as_str().expect("validated owner"))
+        .unwrap_or(parent_id);
+    if body.agent_context["ownerSessionId"] != owner_id {
+        return ApiResponse::error(
+            "agent_owner_mismatch",
+            "子 Agent owner 必须沿父会话的已记录谱系继承。",
+        );
+    }
+    let parent_bindings = match state
+        .local_agent
+        .journal
+        .run_workspace_binding_ids(parent_id, parent_run)
+    {
+        Ok(bindings) => bindings,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let now = crate::now_text();
+    let session = {
+        let gui = state.gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error);
+        }
+        if gui.conversation_catalog.session(&body.session_id).is_some() {
+            return ApiResponse::error("conversation_session_exists", "对话已经存在。");
+        }
+        if gui.conversation_catalog.session(parent_id).is_none() {
+            return ApiResponse::error("conversation_session_not_found", "父会话不存在。");
+        }
+        let profile_id = match selected_profile_id(&gui, Some(&body.profile_id)) {
+            Ok(profile) => profile,
+            Err((code, message)) => return ApiResponse::error(code, message),
+        };
+        let mut seen = HashSet::new();
+        let mut bindings = Vec::new();
+        for binding in &body.workspace_bindings {
+            let Some(workspace) = gui.conversation_catalog.workspace(&binding.workspace_id) else {
+                return ApiResponse::error(
+                    "agent_workspace_unavailable",
+                    "父工作目录不在 Host catalog 中。",
+                );
+            };
+            if !parent_bindings.contains(&binding.workspace_id)
+                || workspace.display_name != binding.display_name
+                || !seen.insert(&binding.workspace_id)
+            {
+                return ApiResponse::error(
+                    "agent_workspace_mismatch",
+                    "子 Agent 只能继承父 run 已绑定的目录，且身份与名称必须一致。",
+                );
+            }
+            // Private file snapshots and scratch directories stay with their owning Session.
+            if workspace.owner_session_id.is_none() {
+                bindings.push(binding.clone());
+            }
+        }
+        ConversationSessionRecord {
+            id: body.session_id.clone(),
+            title,
+            workspace_bindings: bindings,
+            project_id: None,
+            profile_id: Some(profile_id),
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    };
+    let created = create_registered_session(&state, session, Some(body.agent_context)).await;
+    if !created.0.ok {
+        return created;
+    }
+    let initialized = async {
+        ensure_session_workdir(&state, &body.session_id).await?;
+        request_service(
+            state.session_service.clone(),
+            "snapshot",
+            json!({"sessionId":body.session_id}),
+        )
+        .await
+    }
+    .await;
+    match initialized {
+        Ok(projection) => ApiResponse::ok(projection),
+        Err(mut error) => {
+            let cleanup = delete_conversation_session(state, body.session_id, true).await;
+            if !cleanup.0.ok {
+                error.message.push_str(&format!(
+                    " [deleteSession] {}: {}",
+                    cleanup.0.error.expect("error response code"),
+                    cleanup.0.message.expect("error response message")
+                ));
+            }
+            session_service_error(error)
+        }
+    }
 }
 
 pub(crate) async fn conversation_session_update(
@@ -1147,12 +1328,20 @@ pub(crate) async fn conversation_session_update(
     if let Err(error) = persist_catalog_rows(&mut gui, Vec::new(), None, Some(session)) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    ApiResponse::ok(gui.conversation_catalog.public_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, false)
 }
 
 pub(crate) async fn conversation_session_delete(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+) -> Json<ApiResponse> {
+    delete_conversation_session(state, session_id, false).await
+}
+
+async fn delete_conversation_session(
+    state: AppState,
+    session_id: String,
+    unstarted_only: bool,
 ) -> Json<ApiResponse> {
     {
         let gui = state.gui.lock().expect("gui state lock");
@@ -1163,92 +1352,146 @@ pub(crate) async fn conversation_session_delete(
             return ApiResponse::error("conversation_session_not_found", "对话不存在。");
         };
     }
-    let (deleted, deleted_workspaces) = {
-        let mut gui = state.gui.lock().expect("gui state lock");
-        if let Some(error) = gui.conversation_catalog_error.as_deref() {
-            return ApiResponse::error("conversation_catalog_unavailable", error);
-        }
-        let Some(deleted) = gui.conversation_catalog.session(&session_id).cloned() else {
-            return ApiResponse::error("conversation_session_not_found", "对话不存在。");
+    let mut deletion = json!({ "sessionId": session_id });
+    if unstarted_only {
+        deletion["unstartedOnly"] = json!(true);
+    }
+    let (receipt, mut partial_error) =
+        match request_service(state.session_service.clone(), "deleteSession", deletion).await {
+            Ok(receipt) => (receipt, None),
+            Err(error) if error.code == "session_delete_partial" => {
+                (error.details.clone().unwrap_or(Value::Null), Some(error))
+            }
+            Err(error) => {
+                if error.code == "session_delete_active_run" {
+                    return ApiResponse::error("conversation_session_active", error.message);
+                }
+                if error.code == "session_not_found" {
+                    return ApiResponse::error("conversation_session_not_found", error.message);
+                }
+                return session_service_error(error);
+            }
         };
-        let deleted_workspaces = gui
-            .conversation_catalog
-            .workspaces
-            .iter()
-            .filter(|workspace| workspace.owner_session_id.as_deref() == Some(session_id.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let path = gui.paths.catalog_store_path.clone();
-        if let Err(error) = gui.conversation_catalog.remove_session(&path, &session_id) {
-            return ApiResponse::error("conversation_catalog_write_failed", error);
+    let deleted_ids = match deletion_cleanup_ids(&receipt, &session_id, partial_error.is_some()) {
+        Ok(ids) => ids,
+        Err(message) => {
+            if let Some(mut error) = partial_error {
+                error
+                    .message
+                    .push_str(&format!(" [Host cleanup skipped] {message}"));
+                return session_service_error(error);
+            }
+            return ApiResponse::error("conversation_delete_receipt_invalid", message);
         }
-        (deleted, deleted_workspaces)
     };
-
-    if let Err(error) = request_service(
-        state.session_service.clone(),
-        "deleteSession",
-        json!({ "sessionId": session_id }),
-    )
-    .await
-    {
-        let mut gui = state.gui.lock().expect("gui state lock");
-        if gui.conversation_catalog.session(&session_id).is_some() {
-            return ApiResponse::error(
-                "conversation_delete_rollback_conflict",
-                format!(
-                    "Session Store 删除失败（{}）；但相同 sessionId 已重新出现，未覆盖当前 Catalog。",
-                    error.message
-                ),
-            );
+    let mut cleanup_errors = Vec::new();
+    let mut cleaned_ids = Vec::new();
+    for deleted_id in &deleted_ids {
+        let errors_before = cleanup_errors.len();
+        let owned_roots = {
+            let mut gui = state.gui.lock().expect("gui state lock");
+            let path = gui.paths.catalog_store_path.clone();
+            if let Err(error) = gui.conversation_catalog.remove_session(&path, deleted_id) {
+                cleanup_errors.push(format!("{deleted_id} [catalog] {error}"));
+            }
+            [
+                session_attachment_root(&gui.paths.attachment_store_root, deleted_id),
+                session_attachment_root(&gui.paths.session_workdir_root, deleted_id),
+            ]
+        };
+        if let Err(error) = state.local_agent.kernel.delete_session_outputs(deleted_id) {
+            cleanup_errors.push(format!(
+                "{deleted_id} [outputs] {}: {}",
+                error.code, error.message
+            ));
         }
-        if let Err(rollback_error) =
-            persist_catalog_rows(&mut gui, deleted_workspaces, None, Some(deleted))
-        {
-            return ApiResponse::error(
-                "conversation_delete_rollback_failed",
-                format!(
-                    "Session Store 删除失败（{}）；Catalog 回滚也失败：{}",
-                    error.message, rollback_error
-                ),
-            );
-        }
-        if error.code == "session_delete_active_run" {
-            return ApiResponse::error(
-                "conversation_session_active",
-                "请先停止当前运行，再删除对话。",
-            );
-        }
-        if error.code == "session_not_found" {
-            return ApiResponse::error("conversation_session_not_found", "对话不存在。");
-        }
-        return session_service_error(error);
-    }
-    if let Err(error) = state.local_agent.kernel.delete_session_outputs(&session_id) {
-        return ApiResponse::error(error.code, error.message);
-    }
-    let owned_roots = {
-        let gui = state.gui.lock().expect("gui state lock");
-        [
-            session_attachment_root(&gui.paths.attachment_store_root, &session_id),
-            session_attachment_root(&gui.paths.session_workdir_root, &session_id),
-        ]
-    };
-    for root in owned_roots {
-        if let Err(error) = fs::remove_dir_all(&root) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return ApiResponse::error(
-                    "conversation_attachment_cleanup_failed",
-                    format!(
-                        "对话已删除，但 Host 文件引用目录清理失败（{}）：{error}",
+        for root in owned_roots {
+            if let Err(error) = fs::remove_dir_all(&root) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    cleanup_errors.push(format!(
+                        "{deleted_id} [private directory {}] {error}",
                         root.display()
-                    ),
-                );
+                    ));
+                }
             }
         }
+        if errors_before == cleanup_errors.len() {
+            cleaned_ids.push(deleted_id.clone());
+        }
+    }
+    if let Some(error) = partial_error.take() {
+        return partial_deletion_response(error, &cleaned_ids, &cleanup_errors);
+    }
+    if !cleanup_errors.is_empty() {
+        return ApiResponse::error(
+            "conversation_delete_cleanup_failed",
+            format!(
+                "deletedSessionIds={}; hostCleanedSessionIds={}; {}",
+                json!(deleted_ids),
+                json!(cleaned_ids),
+                cleanup_errors.join("; "),
+            ),
+        );
     }
     let gui = state.gui.lock().expect("gui state lock");
-    ApiResponse::ok(gui.conversation_catalog.public_value())
+    visible_catalog_response(&gui, &state.local_agent.journal, false)
+}
+
+fn deletion_cleanup_ids(
+    receipt: &Value,
+    session_id: &str,
+    partial: bool,
+) -> Result<Vec<String>, String> {
+    let read_ids = |field: &str| -> Result<Vec<String>, String> {
+        let values = receipt
+            .get(field)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("Session 删除回执缺少 {field}。"))?;
+        let mut unique = HashSet::new();
+        values
+            .iter()
+            .map(|value| {
+                let id = value
+                    .as_str()
+                    .filter(|id| valid_id(id))
+                    .ok_or_else(|| format!("Session 删除回执 {field} 包含无效标识。"))?;
+                if !unique.insert(id) {
+                    return Err(format!("Session 删除回执 {field} 包含重复标识。"));
+                }
+                Ok(id.to_string())
+            })
+            .collect()
+    };
+    let deleted = read_ids("deletedSessionIds")?;
+    if partial {
+        let remaining = read_ids("remainingSessionIds")?;
+        if deleted.is_empty()
+            || !remaining.iter().any(|id| id == session_id)
+            || deleted.iter().any(|id| remaining.contains(id))
+        {
+            return Err("Session 部分删除回执未明确区分已删除和剩余会话。".into());
+        }
+    } else if receipt["deleted"] != true || !deleted.iter().any(|id| id == session_id) {
+        return Err("Session 删除回执未确认请求会话已删除。".into());
+    }
+    Ok(deleted)
+}
+
+fn partial_deletion_response(
+    mut error: SessionServiceError,
+    cleaned_ids: &[String],
+    cleanup_errors: &[String],
+) -> Json<ApiResponse> {
+    // Only called after validating the structured Session deletion receipt.
+    let details = error.details.as_mut().expect("validated deletion details");
+    details["hostCleanedSessionIds"] = json!(cleaned_ids);
+    if !cleanup_errors.is_empty() {
+        details["hostCleanupErrors"] = json!(cleanup_errors);
+        error
+            .message
+            .push_str(&format!(" [Host cleanup] {}", cleanup_errors.join("; ")));
+    }
+    session_service_error(error)
 }
 
 const INPUT_FILE_THRESHOLD: usize = 32 * 1024;
@@ -1702,7 +1945,10 @@ pub(crate) async fn request_service(
 }
 
 pub(crate) fn session_service_error(error: SessionServiceError) -> Json<ApiResponse> {
-    ApiResponse::error(error.code, error.message)
+    match error.details {
+        Some(details) => ApiResponse::error_with_data(error.code, error.message, details),
+        None => ApiResponse::error(error.code, error.message),
+    }
 }
 
 fn persist_catalog_rows(
@@ -2375,6 +2621,54 @@ fn random_id(prefix: &str) -> Result<String, SessionServiceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_deletion_cleans_only_confirmed_sessions_and_keeps_failure() {
+        let details =
+            json!({"deletedSessionIds":["session:child"],"remainingSessionIds":["session:owner"]});
+        let ids = deletion_cleanup_ids(&details, "session:owner", true).unwrap();
+        assert_eq!(ids, vec!["session:child"]);
+        let success = json!({"deleted":true,"deletedSessionIds":["session:child","session:owner"]});
+        assert_eq!(
+            deletion_cleanup_ids(&success, "session:owner", false)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(deletion_cleanup_ids(&details, "session:owner", false).is_err());
+        for malformed in [
+            json!({"deletedSessionIds":["session:child","session:child"],"remainingSessionIds":["session:owner"]}),
+            json!({"deletedSessionIds":["session:child"],"remainingSessionIds":["session:child","session:owner"]}),
+            json!({"deletedSessionIds":[""],"remainingSessionIds":["session:owner"]}),
+        ] {
+            assert!(deletion_cleanup_ids(&malformed, "session:owner", true).is_err());
+        }
+        let mut error =
+            SessionServiceError::new("session_delete_partial", "original journal failure");
+        error.details = Some(details.clone());
+        let Json(cleaned) = partial_deletion_response(error.clone(), &ids, &[]);
+        assert!(!cleaned.ok);
+        assert_eq!(cleaned.error.as_deref(), Some("session_delete_partial"));
+        assert_eq!(cleaned.message.as_deref(), Some("original journal failure"));
+        let data = cleaned.data.unwrap();
+        assert_eq!(data["deletedSessionIds"], details["deletedSessionIds"]);
+        assert_eq!(data["remainingSessionIds"], details["remainingSessionIds"]);
+        assert_eq!(data["hostCleanedSessionIds"], json!(["session:child"]));
+        let Json(failed_cleanup) =
+            partial_deletion_response(error, &[], &["original directory failure".into()]);
+        assert!(!failed_cleanup.ok);
+        assert_eq!(
+            failed_cleanup.error.as_deref(),
+            Some("session_delete_partial")
+        );
+        let message = failed_cleanup.message.unwrap();
+        assert!(message.starts_with("original journal failure"));
+        assert!(message.contains("original directory failure"));
+        assert_eq!(
+            failed_cleanup.data.unwrap()["hostCleanupErrors"],
+            json!(["original directory failure"])
+        );
+    }
 
     #[test]
     fn session_creation_failure_keeps_primary_and_failed_rollback_causes() {

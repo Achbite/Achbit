@@ -49,8 +49,8 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
       locale: data.locale,
       userShell: data.userShell,
       ...(data.executionPath !== undefined ? { executionPath: data.executionPath } : {}),
-      ...(data.executionTarget ? { executionTarget: data.executionTarget, shell: data.shell, shellAvailable: data.shellAvailable, ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }), workspaceShellSupported: data.workspaceShellSupported, ...(data.workspaceSandbox ? { workspaceSandbox: data.workspaceSandbox } : {}) } : {}),
-    })}\nProject build requirements come from project files. commandPaths lists commands found on executionPath, not all installed software. Workspace scope is sandboxed; authorized host calls use the same target, shell and prepared PATH outside that sandbox. Command-not-found describes this PATH; denied access or an unreachable socket does not prove a service is stopped. Check the needed scope and report the actual result. Service readiness is unprobed.\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
+      ...(data.executionTarget ? { executionTarget: data.executionTarget, shell: data.shell, ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }) } : {}),
+    })}\nProject build requirements come from project files. commandPaths lists commands found on executionPath, not all installed software. Workspace scope is sandboxed; authorized host calls use the same target, shell and prepared PATH outside that sandbox. Command-not-found describes this PATH; denied access or an unreachable socket does not prove a service is stopped. Check the needed scope and report the actual result.\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
   };
 }
 

@@ -3,7 +3,7 @@ import { useUiLanguage } from '../../useUiLanguage';
 import { useConversationHost } from './ConversationHost';
 import { highlightCode, type CodeSpan } from './codeLanguage';
 import { memo, useEffect, useId, useState, useRef } from 'react';
-import { useLocalAgentStore } from '../../state/localAgentStore';
+import { useConversationSessionId } from './ConversationSessionScope';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 
 export const CodeContent = memo(function CodeContent({ code, language, streaming = false }: { code: string; language: string; streaming?: boolean }) {
@@ -42,7 +42,7 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
 export function ImageContent({ source, alt }: { source: string; alt: string }) {
   const uiLanguage = useUiLanguage();
   const { loadImage } = useConversationHost();
-  const sessionId = useLocalAgentStore((state) => state.sessionId);
+  const sessionId = useConversationSessionId();
   const dialog = useRef<HTMLDialogElement>(null);
   const [result, setResult] = useState<{ source: string; url?: string; error?: string; decodeFailed?: boolean } | null>(null);
   useEffect(() => {

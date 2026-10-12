@@ -3231,7 +3231,7 @@ mod attempt_control_tests {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         let bindings = json!([{"workspaceId":"workspace:test", "displayName":"Fixture"}]);
         journal
-            .create_session("session:reject", "Input rejection", &bindings, None)
+            .create_session("session:reject", "Input rejection", &bindings, None, None)
             .unwrap();
         let kernel =
             LocalAgentKernel::open(Path::new(":memory:"), journal.clone(), resolver).unwrap();
@@ -3263,6 +3263,7 @@ mod attempt_control_tests {
             "type":"run.started", "sessionId":"session:reject", "runId":"run:reject",
             "payload":{"inputMessageId":"message:reject", "workspaceBindings":bindings,
                 "runtimeSnapshot":{
+                    "agentCapabilities":{"messaging":true,"continuation":true,"delegation":true},
                     "permissions":crate::settings_api::permission_settings(&json!({})),
                     "runRuntimeSnapshotRef":"runtime:test", "extensionGenerationRef":"extension:test",
                     "kernelCatalogSnapshotRef":catalog["kernelCatalogSnapshotRef"],

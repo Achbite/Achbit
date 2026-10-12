@@ -9,6 +9,10 @@ import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { planOperationDetail } from './planReview';
 import { ApprovalOperationDetails } from './ApprovalOperationDetails';
 import { InteractionOptions } from './InteractionOptions';
+import type { LocalAgentState } from '../../state/localAgentStore';
+
+type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAddition' | 'pendingInteraction'
+  | 'pendingApproval' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'respondApproval' | 'projection'>;
 
 export function ComposerQuestionPrompt({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
   const { pendingPlan, pendingScopeAddition, pendingInteraction, submitting, submitPlanDecision, respondInteraction, projection } = composer;
@@ -60,7 +64,9 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
   </>;
 }
 
-export function ComposerDecisionPanels({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
+export function ComposerDecisionPanels({ language, composer, onSetPermissions }: {
+  language: UiLanguage; composer: DecisionComposer; onSetPermissions?: LocalAgentState['setPermissions'];
+}) {
   const {
     pendingPlan,
     pendingScopeAddition,
@@ -70,6 +76,7 @@ export function ComposerDecisionPanels({ language, composer }: { language: UiLan
     submitPlanDecision,
     respondInteraction,
     respondApproval,
+    projection,
   } = composer;
   const proposedScope = pendingApproval?.preview.authorizationScope;
   const offeredScopes = pendingApproval?.preview.authorizationScopes ?? [];
@@ -78,8 +85,8 @@ export function ComposerDecisionPanels({ language, composer }: { language: UiLan
   const approvalRef = useRef<HTMLElement>(null);
   const sessionBrowser = pendingApproval?.preview.authorizationScope === 'sessionBrowser';
   const runCommand = pendingApproval?.preview.authorizationScopes?.includes('runCommand');
-  const projection = useLocalAgentStore(state => state.projection);
-  const setPermissions = useLocalAgentStore(state => state.setPermissions);
+  const setMainPermissions = useLocalAgentStore(state => state.setPermissions);
+  const setPermissions = onSetPermissions ?? setMainPermissions;
   const savedRules = useSettingsStore(state => state.effectiveSettings['agent.permissions.commandRules']);
   const patchSetting = useSettingsStore(state => state.patchUserSetting);
   const [ruleDecision, setRuleDecision] = useState<'allow' | 'ask' | 'deny'>('allow');

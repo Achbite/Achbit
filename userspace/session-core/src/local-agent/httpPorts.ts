@@ -1,8 +1,13 @@
-import { isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
 import type {
   JsonObject,
+  AgentHostPort,
+  AgentModel,
+  AgentSettings,
+  AgentContext,
+  SessionProjection,
   CommandJournalPort,
   CommandReply,
   ConversationCommand,
@@ -179,6 +184,41 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
       method: 'POST',
       body: JSON.stringify({ command, events, reply }),
     });
+  }
+}
+
+export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPort {
+  async models(): Promise<readonly AgentModel[]> {
+    const value: unknown = await this.json('/api/local-agent/agents/models');
+    if (!Array.isArray(value)) throw new Error('agent_models_invalid');
+    return value.map(model => {
+      if (!isExactRecord(model, ['profileId', 'name', 'model', 'reasoningEfforts'], ['reasoningEffort'])
+        || ![model.profileId, model.name, model.model].every(isNonEmptyText)
+        || !Array.isArray(model.reasoningEfforts) || !model.reasoningEfforts.every(isLlmReasoningEffort)
+        || model.reasoningEffort !== undefined && !isLlmReasoningEffort(model.reasoningEffort)) {
+        throw new Error('agent_models_invalid');
+      }
+      return { profileId: model.profileId as string, name: model.name as string, model: model.model as string,
+        reasoningEfforts: [...model.reasoningEfforts],
+        ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}) };
+    });
+  }
+
+  async settings(): Promise<AgentSettings> {
+    const value = await this.json('/api/local-agent/agents/settings');
+    if (!isRecord(value) || typeof value.enabled !== 'boolean' || typeof value.profileId !== 'string'
+      || typeof value.allowMemberAnalysis !== 'boolean'
+      || value.reasoningEffort !== '' && !isLlmReasoningEffort(value.reasoningEffort)
+      || ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) {
+      throw new Error('agent_settings_invalid');
+    }
+    return value as unknown as AgentSettings;
+  }
+
+  async createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection> {
+    const value = await this.json<SessionProjection>('/api/local-agent/agents/sessions', { method: 'POST', body: JSON.stringify(input) });
+    if (value.sessionId !== input.sessionId || value.agentContext?.parentCallId !== input.agentContext.parentCallId) throw new Error('agent_session_identity_mismatch');
+    return value;
   }
 }
 
@@ -378,7 +418,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'pluginConfig',
       'selectedPlugins',
       'environment',
-    ], ['approvalReviewer', 'approvalReviewerError'])) throw new Error('run_runtime_prepared_invalid');
+      'agentCapabilities',
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -393,6 +434,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,
     };
     try {
+      const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
+      if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
       const provider = decodeProviderRuntime(value.provider);
       const approvalReviewer = value.approvalReviewer === undefined
         ? undefined : decodeProviderRuntime(value.approvalReviewer);
@@ -439,6 +482,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       };
       return {
         runtimeSnapshot: Object.freeze({
+          agentCapabilities,
+          ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true } : {}),
           runRuntimeSnapshotRef: `run-runtime:${request.sessionId}:${request.runId}`,
           extensionGenerationRef: value.extensionGenerationRef,
           kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,

@@ -8,9 +8,11 @@ import { errorFact } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import { todoUpdateFact } from './todoState.js';
+import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
 import type {
   AssistantDraftProjection,
+  AgentTaskResult,
   CommandJournalPort,
   CommandReply,
   ConversationCommand,
@@ -40,6 +42,7 @@ import {
 import { projectSession, reduceSession } from './reducer.js';
 
 export interface SessionActorOptions {
+  agents?: AgentSessionRuntime;
   profileId?: string;
   initialEvents?: readonly SessionEvent[];
   nextId?(kind: string): string;
@@ -58,6 +61,8 @@ export class SessionActor {
   readonly #composition: AgentComposition;
   readonly #capabilities: SessionCapabilityManager;
   readonly #profileId?: string;
+  readonly #agents?: AgentSessionRuntime;
+  readonly #changes = new Set<() => void>();
   readonly #nextId: (kind: string) => string;
   #mailbox = Promise.resolve();
   #writes = Promise.resolve();
@@ -83,6 +88,7 @@ export class SessionActor {
     this.#composition = composition;
     this.#capabilities = new SessionCapabilityManager(composition.capabilities);
     this.#profileId = options.profileId;
+    this.#agents = options.agents;
     this.#nextId = options.nextId ?? defaultIdFactory(sessionId);
     this.#initialEvents = options.initialEvents;
   }
@@ -116,6 +122,12 @@ export class SessionActor {
     });
   }
 
+  async agentCapabilities(runId: string): Promise<import('@deepcode/protocol').AgentCapabilities> {
+    const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
+    if (!runtime) throw new Error('run_runtime_snapshot_missing');
+    return structuredClone(runtime.agentCapabilities);
+  }
+
   async snapshot(): Promise<SessionProjection> {
     const projection = projectSession((await this.loadSnapshot()).state, this.#assistantDraft);
     for (const activity of projection.activities) {
@@ -131,6 +143,40 @@ export class SessionActor {
     return this.#loopFailure !== undefined;
   }
 
+  /** Trusted Session coordination writes; the same journal admission/reducer owns these facts. */
+  async recordAgentEvents(events: readonly NewSessionEvent[]): Promise<void> {
+    await this.withWrite(async () => this.appendEvents(events, await this.loadSnapshot()));
+  }
+
+  async waitForRunResult(runId: string): Promise<AgentTaskResult> {
+    for (;;) {
+      const snapshot = await this.loadSnapshot();
+      const settled = snapshot.events.find(event => event.type === 'run.settled' && event.runId === runId);
+      if (settled?.type === 'run.settled') {
+        if (settled.payload.outcome !== 'completed') return structuredClone(settled.payload);
+        const finalMessageId = settled.payload.finalMessageId;
+        const message = snapshot.state.messages.find(item => item.messageId === finalMessageId);
+        if (!message) throw new Error('agent_final_message_missing');
+        return { ...settled.payload, content: message.content };
+      }
+      this.assertOperational();
+      if (snapshot.state.run?.status === 'releaseFailed') throw new Error(`agent_child_release_failed:${snapshot.state.terminalError?.message ?? runId}`);
+      if (this.#disposed) throw new Error('agent_child_disposed_before_settlement');
+      await this.waitForChange(snapshot.state.revision);
+    }
+  }
+
+  private async waitForChange(revision: number): Promise<void> {
+    let wake!: () => void;
+    const changed = new Promise<void>(resolve => { wake = resolve; });
+    this.#changes.add(wake);
+    try {
+      // Subscribe before the read so a settlement between the two cannot be missed.
+      if ((await this.loadSnapshot()).state.revision !== revision || this.#loopFailure || this.#disposed) return;
+      await changed;
+    } finally { this.#changes.delete(wake); }
+  }
+
   async hasActiveWork(): Promise<boolean> {
     if (this.#loopFailure) return false;
     const run = (await this.loadSnapshot()).state.run;
@@ -142,6 +188,7 @@ export class SessionActor {
   dispose(): Promise<void> {
     if (this.#disposeTask) return this.#disposeTask;
     this.#disposed = true;
+    for (const wake of this.#changes) wake();
     this.#active?.controller.abort('session_service_stopped');
     this.#disposeTask = this.disposeResources();
     return this.#disposeTask;
@@ -924,6 +971,7 @@ export class SessionActor {
       })
       .finally(() => {
         if (this.#active === active) this.#active = undefined;
+        for (const wake of this.#changes) wake();
       });
     this.#active = active;
   }
@@ -940,6 +988,7 @@ export class SessionActor {
       {
         composition: this.#composition,
         capabilities: this.#capabilities,
+        ...(this.#agents ? { agents: this.#agents } : {}),
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
         waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
@@ -1034,20 +1083,15 @@ export class SessionActor {
       });
     } catch (snapshotError) { failure = new AggregateError([failure, asError(snapshotError)], failure.message); }
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
-    if (!runtime || snapshot.state.runRuntimeReleases[runId]) return failure;
-    try {
-      await this.closeProcesses();
-      await this.#composition.runPreparation.release({
-        sessionId: this.sessionId,
-        runId,
-        kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
-      });
-    } catch (releaseError) {
-      return new AggregateError(
-        [failure, asError(releaseError)],
-        failure.message,
-      );
-    }
+    const cleanup = await Promise.allSettled([
+      this.closeProcesses(),
+      this.#agents?.cancel(runId) ?? Promise.resolve(),
+      runtime && !snapshot.state.runRuntimeReleases[runId] ? this.#composition.runPreparation.release({
+        sessionId: this.sessionId, runId, kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+      }) : Promise.resolve(),
+    ]);
+    const errors = cleanup.flatMap(result => result.status === 'rejected' ? [asError(result.reason)] : []);
+    if (errors.length) failure = new AggregateError([failure, ...errors], failure.message);
     return failure;
   }
 
@@ -1166,11 +1210,16 @@ export class SessionActor {
     }
     let released;
     try {
-      released = await this.#composition.runPreparation.release({
-        sessionId: this.sessionId,
-        runId,
-        kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
-      });
+      const cleanup = await Promise.allSettled([
+        this.#agents?.cancel(runId) ?? Promise.resolve(),
+        this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
+          kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef }),
+      ]);
+      const errors = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, 'run_runtime_cleanup_failed');
+      const ownRelease = cleanup[1]!;
+      if (ownRelease.status !== 'fulfilled') throw new Error('run_runtime_release_missing');
+      released = ownRelease.value;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.appendLifecycleEvents([{
@@ -1182,7 +1231,7 @@ export class SessionActor {
           extensionGenerationRef: runtime.extensionGenerationRef,
           kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
           providerRuntimeRef: runtime.provider.providerRuntimeRef,
-          error: { code: errorCode(message), message },
+          error: errorFact(error),
         },
       }]);
       return false;
@@ -1282,6 +1331,7 @@ export class SessionActor {
   }
 
   private async observe(event: SessionEvent): Promise<void> {
+    for (const wake of this.#changes) wake();
     if (event.type === 'tool.completed' || event.type === 'tool.interrupted' || event.type === 'tool.input-rejected') {
       this.#liveToolOutput.delete(event.callId);
     }

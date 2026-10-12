@@ -3,6 +3,7 @@ import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
 import type {
+  AgentOperation,
   AssistantDraftBlockProjection,
   AssistantDraftProjection,
   JsonObject,
@@ -37,6 +38,7 @@ import {
   SESSION_CONTROL_TODO_UPDATE,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
+  SESSION_CONTROL_AGENT,
 } from '@deepcode/protocol';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
@@ -103,6 +105,10 @@ export interface AgentLoopDeps {
   readSnapshot(): Promise<LoopSnapshot>;
   syncProcesses?(): Promise<void>;
   waitProcesses?(signal: AbortSignal): Promise<void>;
+  agents?: {
+    execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
+    wait(runId: string, signal: AbortSignal): Promise<void>;
+  };
   commit(event: NewSessionEvent | readonly NewSessionEvent[] | ((current: LoopSnapshot) => readonly NewSessionEvent[])): Promise<LoopSnapshot>;
   takeQueuedInputs(runId: string): Promise<LoopSnapshot>;
   updateAssistantDraft(draft: AssistantDraftProjection | null): void;
@@ -179,6 +185,7 @@ interface ProviderControlRejection {
 }
 
 type ProviderTurn =
+  | ({ kind: 'agent'; callId: string; providerCallId: string; operation: AgentOperation } & ProviderTurnCommon)
   | ({ kind: 'artifactPresent'; callId: string; providerCallId: string; items: ArtifactPresentationInput[] } & ProviderTurnCommon)
   | ({ kind: 'pluginActivate'; callId: string; providerCallId: string; pluginUris: string[] } & ProviderTurnCommon)
   | ({ kind: 'answer'; content: string; messageId?: string } & ProviderTurnCommon)
@@ -434,6 +441,7 @@ export async function runAgentLoop(
       }
       const processRevisions = new Map(Object.values(snapshot.state.processes)
         .filter(job => job.runId === runId).map(job => [job.jobId, job.revision]));
+      const agentEvidenceRevision = latestAgentEvidenceSequence(snapshot.events, runId);
       const lease = acquireCapabilities(deps);
       let requestFailure: { error: unknown } | undefined;
       try {
@@ -515,6 +523,24 @@ export async function runAgentLoop(
           });
         }
         switch (turn.kind) {
+          case 'agent': {
+            let fact: NewSessionEvent;
+            try {
+              if (!deps.agents || !runtime.agentToolsEnabled
+                || !(runtime.agentCapabilities.messaging || runtime.agentCapabilities.delegation)) {
+                throw new LoopFailure('agent_unavailable', '当前任务未启用子代理能力。');
+              }
+              const result = await deps.agents.execute(runId, turn.callId, turn.operation, signal);
+              fact = { type: 'agent.control.completed', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                payload: { providerCallId: turn.providerCallId, operation: { ...turn.operation }, result } };
+            } catch (error) {
+              fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
+                providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_AGENT,
+                input: { ...turn.operation }, error: localAgentError(error) });
+            }
+            await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
+            break;
+          }
           case 'artifactPresent': {
             let fact: NewSessionEvent;
             try {
@@ -631,32 +657,36 @@ export async function runAgentLoop(
             }
             const messageId = turn.messageId ?? deps.nextId('message');
             const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
-            await commit((current) => [
-              ...orderedProviderCallFacts(turn.completion, providerCallFacts),
-              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-              ...completionDerivedFacts,
-              {
-                type: 'message.committed',
-                sessionId: snapshot.state.sessionId,
-                runId,
-                payload: {
-                  messageId,
-                  role: 'assistant',
-                  content: turn.content,
-                  providerRequestId: turn.completion.providerRequestId,
-                },
-              },
-              ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
+            let deferForAgents = false;
+            await commit((current) => {
+              deferForAgents = current.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
+                || latestAgentEvidenceSequence(current.events, runId) !== agentEvidenceRevision;
+              const facts: NewSessionEvent[] = [
+                ...orderedProviderCallFacts(turn.completion, providerCallFacts),
+                providerTurnSettledEvent(current.state.sessionId, runId, turn.completion),
+                ...completionDerivedFacts,
+              ];
+              if (deferForAgents) return facts;
+              return [...facts, {
+                type: 'message.committed', sessionId: current.state.sessionId, runId,
+                payload: { messageId, role: 'assistant', content: turn.content,
+                  providerRequestId: turn.completion.providerRequestId },
+              }, ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
                 : current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
-                  type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
+                  type: 'run.waiting', sessionId: current.state.sessionId, runId,
                   payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
                 } as const] : [{
-                type: 'run.finishing',
-                sessionId: snapshot.state.sessionId,
-                runId,
-                payload: settlement,
-              } as const]),
-            ]);
+                  type: 'run.finishing', sessionId: current.state.sessionId, runId, payload: settlement,
+                } as const])];
+            });
+            if (deferForAgents) {
+              await lease.release();
+              if (snapshot.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')) {
+                if (!deps.agents) throw new LoopFailure('agent_manager_missing', '正在运行的子任务缺少管理入口。');
+                await deps.agents.wait(runId, signal);
+              }
+              continue nextTurn;
+            }
             if (snapshot.state.run?.status === 'waiting') return { status: 'waiting', runId, reason: 'userInput' };
             if (!snapshot.state.pendingRunSettlements[runId]) break;
             return finishingResult(runId, settlement);
@@ -1292,8 +1322,9 @@ async function consumeProviderOutput(
   const conflict = inputBlocks.some((block) => (
     block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
       || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
+      || block.name === SESSION_CONTROL_AGENT
   )) && inputBlocks.length > 1
-    ? 'interaction.request、plan.publish、plugin.activate 与 artifact.present 必须独占 Provider turn；本批次未执行，请单独提交。'
+    ? 'interaction.request、plan.publish、plugin.activate、artifact.present 与 agent 必须独占 Provider turn；本批次未执行，请单独提交。'
     : inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE).length > 1
       ? '每个 Provider turn 最多包含一个 todo.update；本批次未执行，请合并步骤更新。'
       : undefined;
@@ -1594,7 +1625,7 @@ async function consumeProviderOutput(
     ...(orderedNarratives.length > 0 ? { narratives: orderedNarratives } : {}),
   };
   const control = controlCalls[0];
-  if (control?.kind === 'pluginActivate' || control?.kind === 'artifactPresent') {
+  if (control?.kind === 'pluginActivate' || control?.kind === 'artifactPresent' || control?.kind === 'agent') {
     return { ...control, providerCallId: control.providerCallId, ...common };
   }
   if (control?.kind === 'interaction') {
@@ -1650,6 +1681,16 @@ async function consumeProviderOutput(
     ...(answer.messageId ? { messageId: answer.messageId } : {}),
     ...common,
   };
+}
+
+function latestAgentEvidenceSequence(events: readonly SessionEvent[], runId: string): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if ((event.type === 'agent.task.completed' || event.type === 'agent.message.received') && event.runId === runId) {
+      return event.sequence;
+    }
+  }
+  return 0;
 }
 
 function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {

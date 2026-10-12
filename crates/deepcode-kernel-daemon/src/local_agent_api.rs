@@ -111,6 +111,41 @@ impl LocalAgentRuntime {
                 ));
             }
         }
+        let agent_context = self
+            .journal
+            .agent_context(&request.session_id)
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let agent_capabilities = agent_context
+            .as_ref()
+            .map(|context| context["capabilities"].clone())
+            .unwrap_or_else(
+                || json!({"messaging": true, "continuation": true, "delegation": true}),
+            );
+        if agent_context.is_some() {
+            if request.host_binding.is_some()
+                || request.rebind_host.is_some()
+                || request
+                    .environment
+                    .as_ref()
+                    .is_some_and(|environment| environment.get("hostBinding").is_some())
+            {
+                return Err(RunPreparationError::new(
+                    "agent_host_binding_forbidden",
+                    "子 Agent 不绑定 GUI Host 或父会话桌面。",
+                ));
+            }
+            if request.plugin_selections.iter().any(|selection| {
+                !crate::local_agent_plugins::plugin_allowed_for_session(
+                    &selection.uri,
+                    agent_context.is_some(),
+                )
+            }) {
+                return Err(RunPreparationError::new(
+                    "agent_computer_use_forbidden",
+                    "子 Agent 不支持 Computer Use。",
+                ));
+            }
+        }
         let _transition = self.runtime_transition().map_err(|message| {
             RunPreparationError::new("runtime_transition_lock_failed", message)
         })?;
@@ -455,7 +490,7 @@ impl LocalAgentRuntime {
             enable_kernel_web_search,
             Arc::new(
                 crate::local_agent_product_tools::ProductTools::new(Arc::new(session_service))
-                    .with_plugin_settings(settings.clone())
+                    .with_plugin_settings(settings.clone(), agent_context.is_some())
                     .with_computer_use(plugin_selection.computer_use_instance())
                     .with_containers(plugin_selection.container_instance())
                     .with_processes(plugin_selection.process_instance())
@@ -552,7 +587,11 @@ impl LocalAgentRuntime {
             "pluginConfig": plugin_config,
             "selectedPlugins": selected_plugins,
             "environment": environment,
+            "agentCapabilities": agent_capabilities,
         });
+        if settings["agent.subagents.enabled"] == true {
+            response["agentToolsEnabled"] = json!(true);
+        }
         match &approval_reviewer_binding {
             Ok(binding) => response["approvalReviewer"] = json!(binding.snapshot()),
             Err(message) => {
@@ -806,6 +845,7 @@ pub(crate) struct CreateLocalSessionRequest {
     display_title: String,
     workspace_bindings: Value,
     profile_id: Option<String>,
+    agent_context: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -977,10 +1017,99 @@ pub(crate) async fn local_agent_session_create(
         &body.display_title,
         &body.workspace_bindings,
         body.profile_id.as_deref(),
+        body.agent_context.as_ref(),
     ) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
     }
+}
+
+pub(crate) async fn local_agent_settings_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let gui = state.gui.lock().expect("gui state lock");
+    let mut result = serde_json::Map::new();
+    for field in [
+        "enabled",
+        "profileId",
+        "reasoningEffort",
+        "maxConcurrent",
+        "maxCallsPerRun",
+        "maxMembersPerSession",
+        "allowMemberAnalysis",
+    ] {
+        let key = format!("agent.subagents.{field}");
+        let Some(value) = gui.user_settings.get(&key) else {
+            return ApiResponse::error(
+                "agent_settings_missing",
+                format!("缺少子 Agent 设置：{key}"),
+            );
+        };
+        result.insert(field.into(), value.clone());
+    }
+    ApiResponse::ok(Value::Object(result))
+}
+
+pub(crate) async fn local_agent_models_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let gui = state.gui.lock().expect("gui state lock");
+    let profiles = match gui.llm_profiles.usable() {
+        Ok(config) => config["profiles"]
+            .as_array()
+            .expect("validated profile list"),
+        Err(error) => return ApiResponse::error("agent_models_unavailable", error),
+    };
+    let mut models = Vec::new();
+    for profile in profiles {
+        if !crate::llm_profiles::llm_profile_value_is_enabled(profile) {
+            continue;
+        }
+        let profile_id = profile["id"].as_str().expect("validated profile id");
+        let Ok(binding) = ProviderRuntimeRegistry::prepare(&gui, Some(profile_id), None) else {
+            continue;
+        };
+        let snapshot = binding.snapshot();
+        let efforts: &[&str] = if snapshot.thinking.as_deref() == Some("disabled") {
+            &[]
+        } else if profile["providerFlavor"].as_str() == Some("deepseek") {
+            &["low", "high", "max"]
+        } else {
+            &["low", "medium", "high", "xhigh", "max"]
+        };
+        let mut model = json!({
+            "profileId": profile_id,
+            "name": profile["name"],
+            "model": profile["model"],
+            "reasoningEfforts": efforts,
+        });
+        if !efforts.is_empty() {
+            if let Some(effort) = &snapshot.reasoning_effort {
+                model["reasoningEffort"] = json!(effort);
+            }
+        }
+        models.push(model);
+    }
+    ApiResponse::ok(json!(models))
+}
+
+pub(crate) async fn local_agent_child_session_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::conversation_api::CreateAgentSessionRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    crate::conversation_api::create_agent_session(state, body).await
 }
 
 pub(crate) async fn local_agent_session_delete(

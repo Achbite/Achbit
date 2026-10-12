@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ActivityProjection } from '@deepcode/protocol';
 import { useConversationHost, useConversationTheme } from './ConversationHost';
 import { loadCodeLanguage } from './codeLanguage';
-import { useLocalAgentStore } from '../../state/localAgentStore';
+import { useConversationSessionId } from './ConversationSessionScope';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
@@ -15,7 +15,7 @@ export { roundChangeActivities } from './fileChangeSummary';
 export function FileChanges({ activities, compact = false }: { activities: ActivityProjection[]; compact?: boolean }) {
   const language = useUiLanguage();
   const { readChange } = useConversationHost();
-  const sessionId = useLocalAgentStore((state) => state.sessionId);
+  const sessionId = useConversationSessionId();
   const [expanded, setExpanded] = useState(!compact);
   const [showAll, setShowAll] = useState(false);
   useEffect(() => { setShowAll(false); }, [sessionId]);

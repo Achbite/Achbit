@@ -242,6 +242,86 @@ pub struct SessionProjection {
     #[serde(default)]
     pub provider_attempts: Vec<ProviderAttemptProjection>,
     pub failure_snapshot: Option<RunFailureSnapshot>,
+    pub agent_context: Option<AgentContext>,
+    pub agent_tasks: Option<Vec<AgentTaskProjection>>,
+    pub agent_children: Option<Vec<AgentChildProjection>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCapabilities {
+    pub messaging: bool,
+    pub continuation: bool,
+    pub delegation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentContext {
+    pub capabilities: AgentCapabilities,
+    pub owner_session_id: String,
+    pub parent_session_id: String,
+    pub parent_run_id: String,
+    pub parent_call_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskDelivery {
+    Wait,
+    Async,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTaskResult {
+    pub outcome: AgentTaskOutcome,
+    pub content: Option<String>,
+    pub error: Option<ConversationError>,
+    pub final_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTaskProjection {
+    pub task_id: String,
+    pub agent_session_id: String,
+    pub capabilities: AgentCapabilities,
+    pub display_name: String,
+    pub text: String,
+    pub delivery: AgentTaskDelivery,
+    pub parent_run_id: String,
+    pub child_run_id: Option<String>,
+    pub status: AgentTaskStatus,
+    pub result: Option<AgentTaskResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentChildProjection {
+    pub agent_session_id: String,
+    pub display_name: String,
+    pub capabilities: AgentCapabilities,
+    pub closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -285,6 +365,36 @@ impl SessionProjection {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SESSION_PROJECTION_VERSION || self.session_id.is_empty() {
             return Err("shared Session projection identity is invalid".to_string());
+        }
+        if self.agent_context.as_ref().is_some_and(|context| {
+            [
+                &context.owner_session_id,
+                &context.parent_session_id,
+                &context.parent_run_id,
+                &context.parent_call_id,
+            ]
+            .iter()
+            .any(|id| id.is_empty())
+        }) || self.agent_tasks.as_ref().is_some_and(|tasks| {
+            tasks.iter().any(|task| {
+                [&task.task_id, &task.agent_session_id, &task.parent_run_id]
+                    .iter()
+                    .any(|id| id.is_empty())
+                    || task.display_name.trim().is_empty()
+                    || task.text.trim().is_empty()
+                    || task.child_run_id.as_ref().is_some_and(|id| id.is_empty())
+                    || task
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.final_message_id.as_ref())
+                        .is_some_and(|id| id.is_empty())
+            })
+        }) || self.agent_children.as_ref().is_some_and(|children| {
+            children.iter().any(|child| {
+                child.agent_session_id.is_empty() || child.display_name.trim().is_empty()
+            })
+        }) {
+            return Err("shared Agent projection is invalid".into());
         }
         if self.provider_attempts.iter().any(|attempt| {
             !(1..=5).contains(&attempt.attempt)
@@ -2494,6 +2604,44 @@ fn is_normalized_logical_path(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unified_agent_projection_preserves_explicit_capabilities() {
+        let capabilities = json!({"messaging":true,"continuation":false,"delegation":false});
+        let mut value = projection_value();
+        value["agentContext"] = json!({
+            "capabilities":capabilities,"ownerSessionId":"session:owner","parentSessionId":"session:parent",
+            "parentRunId":"run:parent","parentCallId":"call:spawn"
+        });
+        value["agentTasks"] = json!([{
+            "taskId":"task:child","agentSessionId":"session:child","capabilities":capabilities,
+            "displayName":"Child","text":"Analyze","delivery":"async","parentRunId":"run:parent","status":"running"
+        }]);
+        value["agentChildren"] = json!([{
+            "agentSessionId":"session:child","displayName":"Child","capabilities":capabilities,"closed":false
+        }]);
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        let expected = AgentCapabilities {
+            messaging: true,
+            continuation: false,
+            delegation: false,
+        };
+        assert_eq!(projection.agent_context.unwrap().capabilities, expected);
+        assert_eq!(projection.agent_tasks.unwrap()[0].capabilities, expected);
+        assert_eq!(projection.agent_children.unwrap()[0].capabilities, expected);
+        let mut missing = value.clone();
+        missing["agentChildren"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("capabilities");
+        assert!(serde_json::from_value::<SessionProjection>(missing).is_err());
+        let mut invalid = value.clone();
+        invalid["agentContext"]["capabilities"]["messaging"] = json!("true");
+        assert!(serde_json::from_value::<SessionProjection>(invalid).is_err());
+        value["agentTasks"][0]["role"] = json!("analysis");
+        assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+    }
 
     fn projection_value() -> Value {
         let mut value = json!({

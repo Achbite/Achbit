@@ -110,6 +110,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'tool.requested':
     case 'plan.published':
     case 'session.control.rejected':
+    case 'agent.control.completed':
     case 'session.plugins.activated':
     case 'artifacts.presented':
       if (!pendingProvider) throw new Error('provider_turn_composition_missing');
