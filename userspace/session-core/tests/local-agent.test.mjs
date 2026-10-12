@@ -21,7 +21,7 @@ import {
   sessionControlToolDefinitions,
 } from '../dist/index.js';
 import { buildAgentProviderRequest, messagesFromJournal } from '../dist/local-agent/contextComposer.js';
-import { decodeSessionControlCall } from '../dist/local-agent/sessionControls.js';
+import { agentOperationDefinitions, decodeSessionControlCall } from '../dist/local-agent/sessionControls.js';
 import { publishPlan } from '../dist/local-agent/planStage.js';
 import { HttpProviderPort } from '../dist/local-agent/httpPorts.js';
 import { responseFrames } from '../dist/responseFrames.js';
@@ -297,7 +297,7 @@ test('subagent model command overrides agree with the public schema', async () =
   const { default: Ajv } = await import('ajv/dist/2020.js');
   const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
   const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/AgentOperation' });
-  const definition = sessionControlToolDefinitions(undefined, true).find(tool => tool.name === 'agent');
+  const definition = agentOperationDefinitions(ALL_AGENT_CAPS).find(operation => operation.action === 'spawn');
   assert.equal(validate({ action: 'models' }), true);
   assert.deepEqual(decodeSessionControlCall('call:models', 'agent', { action: 'models' }).operation, { action: 'models' });
   assert.equal(definition.inputSchema.properties.profileId.type, 'string');
@@ -422,7 +422,7 @@ test('subagent models discovery uses the Host port without starting children', a
   }));
   try {
     assert.deepEqual(await manager.execute('session:member', 'run:models', 'call:models',
-      { action: 'models' }, new AbortController().signal), { models });
+      { action: 'models' }, new AbortController().signal), { models, operations: agentOperationDefinitions(capabilities) });
     assert.equal(requests, 1);
     capabilities = NO_AGENT_CAPS;
     await assert.rejects(manager.execute('session:analysis', 'run:models', 'call:models-analysis',
@@ -882,7 +882,7 @@ import {
   waitForAbort,
 } from './local-agent-fixtures.mjs';
 
-test('delegation capability expands after successful discovery and preserves the ordinary model prefix', async () => {
+test('agent discovery appends contracts while preserving tool definitions and the ordinary model prefix', async () => {
   const runtime = runtimeSnapshot('run:agent-directory');
   const input = { sessionId: 'session:agent-directory', runId: 'run:agent-directory', runtime,
     events: [], workspaceBindings: [], providerRequestId: 'request:directory', responseConstraint: 'normal' };
@@ -894,7 +894,8 @@ test('delegation capability expands after successful discovery and preserves the
   const memberRuntime = { ...runtime, agentToolsEnabled: true, agentCapabilities: ALL_AGENT_CAPS };
   const member = await buildAgentProviderRequest({ ...input, runtime: memberRuntime });
   const control = member.request.tools.find(tool => tool.name === 'agent');
-  assert.deepEqual(control.inputSchema.properties.action.enum, ['models']);
+  assert.equal(control.inputSchema.properties.action.type, 'string');
+  assert.equal(control.inputSchema.additionalProperties, true);
   assert.deepEqual(member.request.messages, disabled.request.messages);
   const header = { schemaVersion: 'deepcode.session-event.v5', sessionId: input.sessionId,
     runId: input.runId, occurredAt: '2026-10-12T00:00:00.000Z' };
@@ -912,18 +913,18 @@ test('delegation capability expands after successful discovery and preserves the
     payload: { providerRequestId: member.request.requestId, providerRuntimeRef: runtime.provider.providerRuntimeRef,
       purpose: 'agent', outcome: 'completed', orderedCallIds: [event.callId] } };
   const discovered = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled], runtime: memberRuntime });
-  assert.deepEqual(discovered.request.tools.find(tool => tool.name === 'agent').inputSchema.properties.action.enum,
-    ['models', 'spawn', 'send', 'wait', 'cancel', 'close']);
+  assert.deepEqual(discovered.request.tools, member.request.tools);
+  assert.deepEqual(discovered.request.messages.slice(0, member.request.messages.length), member.request.messages);
   assert.deepEqual(discovered.request.messages.filter(message => message.role === 'system'), disabled.request.messages);
   const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
     runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
-  assert.deepEqual(limitedMember.request.tools.find(tool => tool.name === 'agent').inputSchema.properties.action.enum,
-    ['models', 'send']);
+  assert.deepEqual(limitedMember.request.tools, member.request.tools);
+  assert.deepEqual(agentOperationDefinitions({ ...ALL_AGENT_CAPS, delegation: false }).map(operation => operation.action), ['models', 'send']);
   assert.deepEqual(limitedMember.request.messages, discovered.request.messages);
   const rejected = { ...event, type: 'session.control.rejected', payload: { providerCallId: 'provider:models',
     toolName: 'agent', input: { action: 'models' }, error: { code: 'model_catalog_failed', message: 'Original catalog failure.' } } };
   const failed = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, rejected, settled], runtime: memberRuntime });
-  assert.deepEqual(failed.request.tools.find(tool => tool.name === 'agent').inputSchema.properties.action.enum, ['models']);
+  assert.deepEqual(failed.request.tools, member.request.tools);
   assert.match(JSON.stringify(failed.request.messages), /Original catalog failure\./u);
 });
 

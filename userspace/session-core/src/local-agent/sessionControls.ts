@@ -204,41 +204,44 @@ export interface PlanScopeExtension {
   mutationManifest: PlanOperation[];
 }
 
-export function sessionControlToolDefinitions(agentCapabilities: AgentCapabilities = { messaging: true, continuation: true, delegation: true }, agentDiscovered = false): readonly ProviderToolDefinition[] {
-  const { messaging, delegation } = agentCapabilities;
+/** Detailed contracts are returned by discovery, leaving the provider tool prefix stable. */
+export function agentOperationDefinitions({ messaging, delegation }: AgentCapabilities): JsonObject[] {
+  const operation = (action: string, description: string, properties: JsonObject = {}, required: string[] = []): JsonObject => ({
+    action, description, inputSchema: { type: 'object', additionalProperties: false,
+      required: ['action', ...required], properties: { action: { type: 'string', const: action }, ...properties } },
+  });
+  const id = { type: 'string', minLength: 1 };
   return [
-    !agentDiscovered ? {
-      name: SESSION_CONTROL_AGENT,
-      description: 'Use models to discover agent operations and model profiles. Submit this control alone.',
-      inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
-        action: { type: 'string', enum: ['models'] },
+    operation('models', 'Discover available operations and model profiles.'),
+    ...(delegation ? [operation('spawn', 'Create a child agent for a task. Async results arrive automatically; wait returns the result in this call.', {
+      task: id, name: id, delivery: { type: 'string', enum: ['wait', 'async'] },
+      preset: { type: 'string', enum: ['analysis', 'collaboration'], description: 'Optional capability preset: analysis for one task (default); collaboration for messaging and continued tasks.' },
+      capabilities: { type: 'object', additionalProperties: false, properties: {
+        messaging: { type: 'boolean', description: 'Exchange messages.' },
+        continuation: { type: 'boolean', description: 'Accept follow-up tasks in the same Session.' },
+        delegation: { type: 'boolean', description: 'Create child agents.' },
       } },
-    } : {
+      profileId: { ...id, description: 'Optional model profile; omitted uses the configured default.' },
+      reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Optional override of the selected model default.' },
+    }, ['task', 'name', 'delivery'])] : []),
+    ...(messaging ? [operation('send', 'Send a message or continue a child task in its existing Session.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
+    ...(delegation ? [
+      operation('wait', 'Wait for child tasks. Returns completed task IDs; async results are delivered separately without repetition.', {
+        taskIds: { type: 'array', minItems: 1, uniqueItems: true, items: id, description: 'Omit to wait for current tasks.' },
+      }),
+      operation('cancel', 'Cancel a child task.', { taskId: id }, ['taskId']),
+      operation('close', 'Close a child agent.', { agentId: id }, ['agentId']),
+    ] : []),
+  ];
+}
+
+export function sessionControlToolDefinitions(): readonly ProviderToolDefinition[] {
+  return [
+    {
       name: SESSION_CONTROL_AGENT,
-      description: (delegation ? 'Create an agent with spawn; supply task, name and delivery (wait or async). The optional preset is analysis (default) or collaboration; capabilities override its defaults. cancel targets taskId; close targets agentId. ' : '')
-        + (messaging ? 'Use send (agentId, text) for a message or a continuing child task. ' : '')
-        + 'Use models to list model profiles and reasoning efforts. '
-        + (delegation ? 'Async results arrive automatically; wait (optional taskIds) returns completed task IDs without repeating results. ' : '')
-        + 'Submit this control alone.',
-      inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
-        action: { type: 'string', enum: ['models', ...(delegation ? ['spawn'] : []), ...(messaging ? ['send'] : []), ...(delegation ? ['wait', 'cancel', 'close'] : [])] },
-        ...(delegation ? {
-          task: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1 },
-          preset: { type: 'string', enum: ['analysis', 'collaboration'],
-            description: 'analysis defaults to one task; collaboration defaults to communication and continued tasks.' },
-          capabilities: { type: 'object', additionalProperties: false, properties: {
-            messaging: { type: 'boolean', description: 'Exchange messages.' },
-            continuation: { type: 'boolean', description: 'Accept follow-up tasks in the same Session.' },
-            delegation: { type: 'boolean', description: 'Create child agents.' },
-          } },
-          delivery: { type: 'string', enum: ['wait', 'async'] },
-          profileId: { type: 'string', minLength: 1, description: 'Optional model profile for spawn; without reasoningEffort, uses that profile preset.' },
-          reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Optional reasoning effort for spawn; overrides its default.' },
-          taskId: { type: 'string', minLength: 1 },
-          taskIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } },
-        } : {}),
-        ...(messaging || delegation ? { agentId: { type: 'string', minLength: 1 } } : {}),
-        ...(messaging ? { text: { type: 'string', minLength: 1 } } : {}),
+      description: 'Work with child agents. Call action=models to discover available operations, exact arguments and model profiles, then call this tool with the discovered arguments. Submit this control alone.',
+      inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
+        action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
     },
     {

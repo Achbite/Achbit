@@ -93,8 +93,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hasAgentTools = input.runtime.agentToolsEnabled === true
     && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
   const modelViewEvents = input.modelViewEvents ?? input.events;
-  const agentDiscovered = modelViewEvents.some(event => event.sessionId === input.sessionId
-    && event.type === 'agent.control.completed' && event.payload.operation.action === 'models');
   const firstRun = input.events.find((event) => event.type === 'run.started');
   const prefixBindings = firstRun?.type === 'run.started' ? firstRun.payload.workspaceBindings : input.workspaceBindings;
   const controlNames = {
@@ -114,7 +112,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities, agentDiscovered).filter(tool => tool.name === SESSION_CONTROL_AGENT
+  const controlTools = sessionControlToolDefinitions().filter(tool => tool.name === SESSION_CONTROL_AGENT
     ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
       ? hasPluginDiscovery : hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT);
   const toolCodec = createProviderToolCodec(

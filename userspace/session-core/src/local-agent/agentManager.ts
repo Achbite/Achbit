@@ -4,6 +4,7 @@ import type {
   CommandReply, JsonObject, SessionProjection,
 } from '@deepcode/protocol';
 import type { SessionActor } from './actor.js';
+import { agentOperationDefinitions } from './sessionControls.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
 
 export interface AgentSessionRuntime {
@@ -52,7 +53,7 @@ export class AgentManager {
     if (!allowed) throw new Error('agent_capability_unavailable');
     switch (operation.action) {
       case 'models':
-        return { models: await abortable(this.host.models(), signal) };
+        return { operations: agentOperationDefinitions(capabilities), models: await abortable(this.host.models(), signal) };
       case 'spawn': {
         const task = await abortable(this.admit(sessionId, runId, () => this.start(caller, runId, callId, operation, signal)), signal);
         if (operation.delivery === 'wait') {
