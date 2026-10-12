@@ -18,6 +18,18 @@
 .deepcode-gui-workbench:has([data-navigation-density='compact']) { --dc-navigation-row: 31px; }
 .deepcode-gui-workbench:has(.deepcode-gui-shell--no-context) { --dc-header-context-width: auto; }
 
+/* Navigation and window chrome are controls; conversation and reader text stay selectable. */
+.deepcode-gui-navigation-box,
+.deepcode-gui-titlebar {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.deepcode-gui-navigation-box :is(input, textarea, [contenteditable='true']) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .deepcode-gui-navigation-box {
   position: relative;
   grid-column: 1;

@@ -15,7 +15,7 @@ export default function DeepCodeNavigationBox({
 }: DeepCodeNavigationBoxProps) {
   return (
     <aside className="deepcode-gui-navigation-box">
-      <div className="deepcode-gui-navigation-box__titlebar" data-tauri-drag-region>
+      <div className="deepcode-gui-navigation-box__titlebar" data-tauri-drag-region="deep">
         <div className="deepcode-gui-navigation-controls">{toolbar}</div>
       </div>
       <div id="deepcode-navigation-content" className="deepcode-gui-navigation-body" hidden={collapsed} inert={collapsed}>
