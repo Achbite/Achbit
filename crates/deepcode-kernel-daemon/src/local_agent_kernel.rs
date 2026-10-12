@@ -3233,8 +3233,12 @@ mod attempt_control_tests {
         journal
             .create_session("session:reject", "Input rejection", &bindings, None, None)
             .unwrap();
-        let kernel =
+        let mut kernel =
             LocalAgentKernel::open(Path::new(":memory:"), journal.clone(), resolver).unwrap();
+        // An in-memory record store has no sibling directory; ":memory:.outputs" is
+        // a relative path on Unix and an invalid file name on Windows.
+        kernel.output_root =
+            std::env::temp_dir().join(random_id("kernel-test-outputs").unwrap().replace(':', "-"));
         let generation = LocalAgentKernel::prepare_generation(
             "extension:test",
             config,

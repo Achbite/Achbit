@@ -1,4 +1,9 @@
-use super::{finish, os::*, profile::Profile, token};
+use super::{
+    finish,
+    os::*,
+    profile::{Capabilities, Profile},
+    token,
+};
 use crate::executors::windows_job::ProcessJob;
 use std::fs::File;
 use std::os::windows::io::FromRawHandle;
@@ -138,6 +143,7 @@ pub(super) fn spawn(
     command: &Command,
     terminal: bool,
     profile: &Profile,
+    capabilities: &Capabilities,
     prepare: impl FnOnce(HANDLE) -> Result<(), String>,
 ) -> Result<Child, String> {
     let (input_read, input_write) = pipe()?;
@@ -148,7 +154,7 @@ pub(super) fn spawn(
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     let attributes = Attributes::new(3)?;
-    let security = profile.security();
+    let security = capabilities.security(profile);
     attributes.add(
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
         (&security as *const SECURITY_CAPABILITIES).cast(),
@@ -216,8 +222,13 @@ pub(super) fn spawn(
             return Err(error("Configure sandbox pipe inheritance"));
         }
     }
+    // cmd.exe parses its own command line and reads "/System32/cmd.exe" in a
+    // forward-slash program path as switches; pass the native spelling.
+    let program: std::path::PathBuf = std::path::Path::new(command.get_program())
+        .components()
+        .collect();
     let mut argv = wide(
-        std::iter::once(command.get_program())
+        std::iter::once(program.as_os_str())
             .chain(command.get_args())
             .map(|arg| quote(&arg.to_string_lossy()))
             .collect::<Vec<_>>()
@@ -243,7 +254,7 @@ pub(super) fn spawn(
     let mut info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     if unsafe {
         CreateProcessW(
-            wide(command.get_program()).as_ptr(),
+            wide(&program).as_ptr(),
             argv.as_mut_ptr(),
             null(),
             null(),
@@ -302,7 +313,7 @@ fn terminate_suspended(process: HANDLE) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn probe(profile: &Profile) -> Result<(), String> {
+pub(super) fn probe(profile: &Profile, capabilities: &Capabilities) -> Result<(), String> {
     let system = std::env::var_os("SystemRoot").ok_or("SystemRoot is missing")?;
     let directory = std::path::PathBuf::from(&system).join("System32");
     let mut command = Command::new(directory.join("cmd.exe"));
@@ -317,7 +328,7 @@ pub(super) fn probe(profile: &Profile) -> Result<(), String> {
             "LOCALAPPDATA",
             std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is missing")?,
         );
-    let mut child = spawn(&command, false, profile, |_| Ok(()))?;
+    let mut child = spawn(&command, false, profile, capabilities, |_| Ok(()))?;
     child.stdin.take();
     let deadline = Instant::now() + Duration::from_secs(5);
     let result = (|| loop {

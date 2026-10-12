@@ -27,6 +27,8 @@ pub struct KernelExecutorConfig {
     pub shell_program: Option<crate::shell_environment::ShellProgram>,
     pub execution_path: Option<String>,
     pub temporary_root: Option<PathBuf>,
+    /// Shared package cache of workspace Shells across Sessions.
+    pub shell_cache_root: Option<PathBuf>,
     pub file_read_roots: Vec<PathBuf>,
     pub wsl: Option<crate::wsl_execution::WslExecution>,
 }
@@ -709,3 +711,5 @@ mod tests;
 
 #[cfg(windows)]
 pub(crate) mod windows_job;
+#[cfg(windows)]
+pub use windows_job::suppress_error_dialogs;

@@ -8,6 +8,7 @@ pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Js
             deepcode_kernel_runtime::workspace_sandbox::windows::request_setup,
         )
         .await;
+        deepcode_kernel_runtime::workspace_sandbox::invalidate_probe();
         match result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => return ApiResponse::error("workspace_sandbox_setup_failed", error),

@@ -78,6 +78,7 @@ pub(crate) fn command(
     temp: &Path,
     files: &crate::file_access::FileAccessScope,
 ) -> KernelResult<(PathBuf, Vec<OsString>)> {
+    validate_write_scope(root, mode, targets, temp, files)?;
     let helper = executable().ok_or_else(|| unavailable(&shell.tool, "Install bubblewrap in the selected Linux/WSL2 environment and refresh its environment snapshot."))?;
     let filter = temp.join("network-filter.bpf");
     // No external sockets, including WSL's native-process bridge. Local anonymous

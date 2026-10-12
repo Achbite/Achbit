@@ -50,6 +50,11 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
+  ; Remove workspace Shell sandbox grants and profiles of this user; user files stay.
+  ExecWait '"$INSTDIR\deepcode-kernel.exe" --workspace-sandbox-reset' $1
+  ${If} $1 != 0
+    DetailPrint "Workspace sandbox reset reported exit $1; continuing uninstall."
+  ${EndIf}
   ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\libexec\windows-environment.ps1" -Remove' $0
   ${If} $0 != 0
     MessageBox MB_ICONSTOP "Cannot remove the DeepCode PATH entry (exit $0). Uninstall stopped."

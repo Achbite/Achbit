@@ -13,6 +13,15 @@ pub struct FileAccessScope {
     pub write: Vec<WorkspaceWriteTarget>,
     pub read_only: Vec<PathBuf>,
     pub home: Option<PathBuf>,
+    /// Entries of `read` that only help programs start (PATH, toolchain homes,
+    /// runtime roots). A platform that cannot grant one skips it instead of
+    /// refusing the whole Shell; the skipped path is reported.
+    #[serde(default)]
+    pub best_effort_read: Vec<PathBuf>,
+    /// Shared, writable tool cache for workspace Shells (npm, pip, cargo, ...).
+    /// It is also one of `write`; this field only names it for the environment.
+    #[serde(default)]
+    pub cache: Option<PathBuf>,
 }
 
 impl FileAccessScope {
@@ -31,6 +40,57 @@ impl FileAccessScope {
     pub fn protects(&self, path: &Path) -> bool {
         self.read_only.iter().any(|root| path.starts_with(root))
     }
+
+    /// Check that the admitted Kernel scope can be implemented with positive
+    /// sandbox grants. This does not approve resources or inspect Shell scripts.
+    pub(crate) fn validate_sandbox_write_roots<'a>(
+        &self,
+        writes: impl IntoIterator<Item = &'a Path>,
+    ) -> KernelResult<()> {
+        if self.read_only.is_empty() {
+            return Ok(());
+        }
+        for path in writes {
+            let path = resolve_path(path)?;
+            for protected in &self.read_only {
+                let protected = resolve_path(protected)?;
+                let covers_protected = protected != path && protected.starts_with(&path);
+                let unapproved_inside = path.starts_with(&protected)
+                    && !self.write.iter().any(|grant| {
+                        path == grant.path || (grant.directory && path.starts_with(&grant.path))
+                    });
+                if covers_protected || unapproved_inside {
+                    return Err(KernelError::Structured {
+                        code: "workspace_shell_write_scope_protected",
+                        stage: "execution",
+                        message: "The admitted write scope overlaps a protected path and cannot be enforced by the sandbox. Narrow the write scope to directories that do not contain protected subtrees.".into(),
+                        details: serde_json::json!({"writePath": path, "protectedPath": protected}),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The spelling of a canonical path handed to programs (environment, argv, cwd).
+/// Windows canonical paths are verbatim (`\\?\C:\...`); shells and many tools
+/// treat that as a UNC location, so pass the equivalent Win32 path instead.
+/// Permission checks keep using the canonical path.
+pub fn process_visible_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(prefix)) = path.components().next() {
+            let text = path.to_string_lossy();
+            match prefix.kind() {
+                Prefix::VerbatimDisk(_) => return PathBuf::from(&text[4..]),
+                Prefix::VerbatimUNC(_, _) => return PathBuf::from(format!(r"\\{}", &text[8..])),
+                _ => {}
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 pub fn resolve_path(path: &Path) -> KernelResult<PathBuf> {

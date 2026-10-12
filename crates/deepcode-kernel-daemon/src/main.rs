@@ -82,8 +82,28 @@ async fn main() {
     let user_directories =
         deepcode_host_connection::UserDirectories::resolve().expect("解析 DeepCode 用户目录");
     #[cfg(windows)]
+    {
+        deepcode_kernel_runtime::executors::suppress_error_dialogs();
+        // Sandbox identities and recorded grants belong to this data root.
+        deepcode_kernel_runtime::workspace_sandbox::windows::configure(
+            &user_directories
+                .data_dir
+                .join("agent-runtime")
+                .join("windows-sandbox"),
+        )
+        .expect("初始化 Windows 工作区沙箱状态");
+    }
+    #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--workspace-sandbox-init") {
         if let Err(error) = deepcode_kernel_runtime::workspace_sandbox::windows::request_setup() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--workspace-sandbox-reset") {
+        if let Err(error) = deepcode_kernel_runtime::workspace_sandbox::windows::reset() {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -243,6 +263,7 @@ pub(crate) fn runtime_tool_configuration(
     Ok((
         deepcode_kernel_runtime::executors::KernelExecutorConfig {
             temporary_root: Some(gui.paths.temporary_root.clone()),
+            shell_cache_root: Some(gui.paths.directories.cache_dir.join("agent-shell")),
             web_search_endpoint_template: setting("agent.web.search.endpointTemplate")?.to_string(),
             web_search_auth_header_name: setting("agent.web.search.authHeaderName")?.to_string(),
             web_search_auth_secret_ref: setting("agent.web.search.authSecretRef")?.to_string(),

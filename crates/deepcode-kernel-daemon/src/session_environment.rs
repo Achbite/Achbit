@@ -63,7 +63,9 @@ pub(crate) fn prepare(
     })
     .collect();
     let commands: Vec<_> = command_paths.keys().cloned().collect();
-    let sandbox = deepcode_kernel_runtime::workspace_sandbox::probe();
+    let sandbox = deepcode_kernel_runtime::workspace_sandbox::probe_for_revision(
+        configuration["revision"].as_u64().unwrap_or(0),
+    );
     let kernel_path = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut runtime_executables = json!({ "kernel": kernel_path });
     if let Some(directory) = kernel_path.parent() {

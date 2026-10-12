@@ -112,11 +112,12 @@ impl LocalAgentKernel {
             LocalAgentKernelError::new("tool_output_directory_failed", error.to_string())
         })?;
         files.read.push(archive);
-        files
-            .read
-            .extend(prepared.generation.executor_config.file_read_roots.clone());
-        if let Some(path) = prepared.generation.executor_config.execution_path.as_ref() {
-            files.read.extend(
+        // These roots only let programs start; a sandbox that cannot grant one
+        // skips it rather than refusing every Shell command.
+        let config = &prepared.generation.executor_config;
+        let mut best_effort = config.file_read_roots.clone();
+        if let Some(path) = config.execution_path.as_ref() {
+            best_effort.extend(
                 std::env::split_paths(path).filter(|path| path.is_absolute() && path.is_dir()),
             );
         }
@@ -129,9 +130,34 @@ impl LocalAgentKernel {
                 LocalAgentKernelError::new("runtime_read_roots_invalid", error.to_string())
             })?;
             for path in roots {
-                files.read.push(resolve_path(&path).map_err(file_error)?);
+                best_effort.push(resolve_path(&path).map_err(file_error)?);
             }
         }
+        if is_shell_tool(&prepared.operation) {
+            // HOME is redirected for workspace Shells: toolchains under the real home
+            // (rustup, pyenv, Volta, Scoop) stay readable through their variables.
+            best_effort.extend(
+                deepcode_kernel_runtime::shell_environment::toolchain_homes()
+                    .into_iter()
+                    .map(|(_, path)| path),
+            );
+            // One package cache shared by workspace Shells of every Session.
+            if let Some(cache) = config.shell_cache_root.as_ref() {
+                std::fs::create_dir_all(cache).map_err(|error| {
+                    LocalAgentKernelError::new("shell_cache_unavailable", error.to_string())
+                })?;
+                let cache = resolve_path(cache).map_err(file_error)?;
+                files.write.push(WorkspaceWriteTarget {
+                    path: cache.clone(),
+                    directory: true,
+                });
+                files.cache = Some(cache);
+            }
+        }
+        best_effort.sort();
+        best_effort.dedup();
+        files.read.extend(best_effort.iter().cloned());
+        files.best_effort_read = best_effort;
         files.read.sort();
         files.read.dedup();
         files.read_only.sort();

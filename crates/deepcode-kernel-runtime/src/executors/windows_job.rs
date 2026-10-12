@@ -2,17 +2,67 @@
 //! A Job Object controls process lifetimes, not filesystem permissions.
 use deepcode_kernel_abi::{KernelError, KernelResult};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE},
+    Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
     System::{
+        Diagnostics::Debug::{
+            SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+        },
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        },
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
             JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
             TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         },
-        Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+        Threading::{
+            OpenProcess, OpenThread, ResumeThread, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+            THREAD_SUSPEND_RESUME,
+        },
     },
 };
+
+/// Tool processes have no person to dismiss a dialog. Windows hard-error and
+/// crash dialogs (missing DLL, unhandled exception) would block a call until its
+/// timeout; with this mode they fail immediately. Children inherit the mode.
+pub fn suppress_error_dialogs() {
+    unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    }
+}
+
+/// Resume a process created with CREATE_SUSPENDED once its Job owns it.
+pub fn resume_suspended(pid: u32) -> KernelResult<()> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(last_error("enumerate suspended process threads"));
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = 0;
+        let mut more = Thread32First(snapshot, &mut entry) != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed += 1;
+                    }
+                    CloseHandle(thread);
+                }
+            }
+            more = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        if resumed == 0 {
+            return Err(last_error("resume suspended invocation process"));
+        }
+        Ok(())
+    }
+}
 
 pub(crate) struct ProcessJob(HANDLE);
 
@@ -73,7 +123,10 @@ impl ProcessJob {
             }
             let guard = Self(job);
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // An unhandled exception ends the process instead of waiting on a
+            // Windows Error Reporting dialog nobody will answer.
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
             if SetInformationJobObject(
                 job,
                 JobObjectExtendedLimitInformation,
