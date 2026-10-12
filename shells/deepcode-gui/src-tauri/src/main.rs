@@ -377,47 +377,21 @@ fn main() {
             app.manage(host_tokens.clone());
             app.manage(HostProcessGroup::new(None));
             app.manage(HostStartupStatusStore::new());
-            create_main_window(app, &target, &host_tokens)?;
-            let menu = tauri::menu::Menu::default(app.handle())?;
-            let reload = tauri::menu::MenuItem::with_id(
-                app,
-                "reload-interface",
-                "重新加载界面",
-                true,
-                Some("CmdOrCtrl+Shift+R"),
-            )?;
-            let mut added = false;
-            for item in menu.items()? {
-                if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
-                    if submenu.text()? == "View" {
-                        submenu.insert(&reload, 0)?;
-                        added = true;
-                        break;
-                    }
-                }
-            }
-            if !added {
-                menu.append(&tauri::menu::Submenu::with_items(
-                    app,
-                    "视图",
-                    true,
-                    &[&reload],
-                )?)?;
-            }
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id().as_ref() == "reload-interface" {
-                    let _ = tauri::Emitter::emit_to(app, "main", "deepcode:reload-interface", ());
-                }
-            });
-            // Actual Host I/O reports access failures. Do not enumerate parent
-            // directories before startup or block the native window event loop.
+            // Host startup and WebView initialization are independent. A cold
+            // WebView2 profile must not delay the daemon's startup work.
             let app_handle = app.handle().clone();
+            let startup_target = target.clone();
+            let startup_tokens = host_tokens.clone();
             std::thread::spawn(move || {
                 let processes = app_handle.state::<HostProcessGroup>();
                 let status = app_handle.state::<HostStartupStatusStore>();
-                start_host_processes(&target, &host_tokens, &processes, &status);
+                start_host_processes(&startup_target, &startup_tokens, &processes, &status);
             });
+            if let Err(error) = initialize_main_window(app, &target, &host_tokens) {
+                app.state::<native_browser::NativeBrowser>().stop();
+                app.state::<HostProcessGroup>().detach();
+                return Err(error);
+            }
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -737,6 +711,47 @@ fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Res
         port: port.to_string(),
         daemon_port: daemon_port.to_string(),
     })
+}
+
+fn initialize_main_window(
+    app: &tauri::App,
+    target: &LaunchTarget,
+    host_tokens: &HostConnectionTokens,
+) -> Result<(), Box<dyn std::error::Error>> {
+    create_main_window(app, target, host_tokens)?;
+    let menu = tauri::menu::Menu::default(app.handle())?;
+    let reload = tauri::menu::MenuItem::with_id(
+        app,
+        "reload-interface",
+        "重新加载界面",
+        true,
+        Some("CmdOrCtrl+Shift+R"),
+    )?;
+    let mut added = false;
+    for item in menu.items()? {
+        if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
+            if submenu.text()? == "View" {
+                submenu.insert(&reload, 0)?;
+                added = true;
+                break;
+            }
+        }
+    }
+    if !added {
+        menu.append(&tauri::menu::Submenu::with_items(
+            app,
+            "视图",
+            true,
+            &[&reload],
+        )?)?;
+    }
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id().as_ref() == "reload-interface" {
+            let _ = tauri::Emitter::emit_to(app, "main", "deepcode:reload-interface", ());
+        }
+    });
+    Ok(())
 }
 
 fn create_main_window(
