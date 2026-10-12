@@ -454,7 +454,15 @@ fn plugin_catalog(
         serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
             .map_err(|error| format!("plugin_config_invalid: {error}"))?;
     let disabled = disabled_plugins.iter().any(|value| value == uri);
-    let guide = include_str!("../../../plugins/computer-use/AGENT_GUIDE.md");
+    // Shared guidance plus this Kernel platform's desktop identifiers and actions.
+    #[cfg(windows)]
+    let desktop = include_str!("../../../plugins/computer-use/AGENT_GUIDE.windows.md");
+    #[cfg(not(windows))]
+    let desktop = include_str!("../../../plugins/computer-use/AGENT_GUIDE.macos.md");
+    let guide = format!(
+        "{}\n{desktop}",
+        include_str!("../../../plugins/computer-use/AGENT_GUIDE.md")
+    );
     insert_plugin_source(
         &mut sources,
         PluginCatalogEntry::Loaded(PluginSource {
@@ -473,7 +481,7 @@ fn plugin_catalog(
             plugin_artifact_ref: crate::utils::new_runtime_ref("plugin-artifact")?,
             plugin_instance_ref: String::new(),
             capability_refs: vec!["host:computer-use".into()],
-            capability_summary: guide.into(),
+            capability_summary: guide.clone(),
             tool_prompt_provider: None,
             contribution: PluginContribution::Host,
             implementation: json!({"host":"native","plugin":"computer-use"}),

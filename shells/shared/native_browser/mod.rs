@@ -81,7 +81,7 @@ pub struct NativeBrowser {
     services: Mutex<HashMap<String, services::DevelopmentService>>,
     self_bootstrap: String,
     on_stop: Box<dyn Fn() + Send + Sync>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     computer: deepcode_host_connection::computer_use::ComputerUseHost,
 }
 
@@ -91,7 +91,7 @@ impl NativeBrowser {
             return;
         }
         (self.on_stop)();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Err(error) = self.computer.stop() {
             eprintln!("{error}");
         }
@@ -119,7 +119,7 @@ pub fn start(
         .map_err(|error| error.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     app.manage(NativeBrowser {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         computer: deepcode_host_connection::computer_use::ComputerUseHost::new(host_instance_id.clone(), token.clone())?,
         directories,
         binding: HostBinding {
@@ -169,10 +169,10 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
         }
         if request["input"]["action"].as_str().is_some_and(|action| action.starts_with("computer:")) {
             checked_binding(&app, &request["binding"])?;
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             return app.state::<NativeBrowser>().computer.call(&request["binding"], &request["input"]);
-            #[cfg(not(target_os = "macos"))]
-            return Err("External computer control currently requires macOS.".into());
+            #[cfg(not(any(target_os = "macos", windows)))]
+            return Err("External computer control currently requires macOS or Windows.".into());
         }
         tauri::async_runtime::block_on(execute(
             app,
@@ -388,14 +388,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         return services::execute(&mut services, directory, session_id.as_deref(), &input);
     }
     if action == "hostStatus" {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let computer_available = app.state::<NativeBrowser>().computer.available();
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         let computer_available = false;
         return Ok(json!({
             "binding": binding,
             "ready": true,
-            "captureAvailable": cfg!(target_os = "macos"),
+            "captureAvailable": cfg!(any(target_os = "macos", windows)),
             "computerControlAvailable": computer_available,
         }));
     }
@@ -759,7 +759,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             page.url = view.url().map_err(|error| error.to_string())?.to_string();
             // A capture belongs to one acknowledged surface geometry.
             let geometry = (page.surface.generation, page.surface.sequence);
-            let capture = capture(view).await?;
+            #[cfg(windows)]
+            let offscreen = show_offscreen_for_capture(&app, id, &view)?;
+            let captured = capture(view.clone()).await;
+            #[cfg(windows)]
+            if let Some(previous) = offscreen {
+                hide_after_offscreen_capture(&app, id, &view, previous, geometry);
+            }
+            let capture = captured?;
             let current = page_state(&app, id)?;
             if geometry != (current.surface.generation, current.surface.sequence) {
                 return Err(format!("native_browser_layout_changed: {id}"));
@@ -901,7 +908,156 @@ async fn capture(view: tauri::Webview) -> Result<Capture, String> {
     .map_err(|error| error.to_string())?
 }
 
-#[cfg(not(target_os = "macos"))]
+/// A hidden WebView2 produces no frames, so CapturePreview would never complete.
+/// Render the page outside the host window's client area for this capture: it
+/// is drawn by WebView2 but never shown, and the GUI's layout state is unchanged.
+/// Returns the bounds to restore, or None for a page the GUI already shows.
+#[cfg(windows)]
+fn show_offscreen_for_capture(
+    app: &tauri::AppHandle,
+    id: &str,
+    view: &tauri::Webview,
+) -> Result<Option<tauri::Rect>, String> {
+    let state = app.state::<NativeBrowser>();
+    // Layout changes take this lock while they show, hide or move the page.
+    let pages = state
+        .pages
+        .lock()
+        .map_err(|_| "native_browser_state_unavailable")?;
+    let current = pages.get(id).ok_or("native_browser_page_closed")?;
+    if current.visible {
+        return Ok(None);
+    }
+    let previous = view.bounds().map_err(|error| error.to_string())?;
+    let size = current
+        .surface
+        .bounds
+        .map(|[_, _, width, height]| tauri::LogicalSize::new(width, height).into())
+        .unwrap_or(previous.size);
+    view.set_bounds(tauri::Rect {
+        position: tauri::PhysicalPosition::new(-16000, -16000).into(),
+        size,
+    })
+    .map_err(|error| error.to_string())?;
+    view.show().map_err(|error| error.to_string())?;
+    Ok(Some(previous))
+}
+
+/// Hide again only if the GUI did not change this page's layout meanwhile; a
+/// newer layout already owns its visibility and the capture reports the change.
+#[cfg(windows)]
+fn hide_after_offscreen_capture(
+    app: &tauri::AppHandle,
+    id: &str,
+    view: &tauri::Webview,
+    previous: tauri::Rect,
+    geometry: (u64, u64),
+) {
+    let state = app.state::<NativeBrowser>();
+    let Ok(pages) = state.pages.lock() else {
+        return;
+    };
+    if pages.get(id).is_some_and(|current| {
+        !current.visible && (current.surface.generation, current.surface.sequence) == geometry
+    }) {
+        let _ = view.hide();
+        let _ = view.set_bounds(previous);
+    }
+}
+
+/// WebView2 renders its own viewport into a PNG stream, independent of window
+/// stacking. The completion handler runs on the GUI thread that owns the WebView.
+#[cfg(windows)]
+async fn capture(view: tauri::Webview) -> Result<Capture, String> {
+    use webview2_com::{
+        CapturePreviewCompletedHandler,
+        Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+    };
+    use windows::Win32::System::Com::{
+        IStream, StructuredStorage::CreateStreamOnHGlobal, STATFLAG_NONAME, STATSTG,
+        STREAM_SEEK_SET,
+    };
+    fn read_stream(stream: &IStream) -> windows::core::Result<Vec<u8>> {
+        unsafe {
+            let mut stat = STATSTG::default();
+            stream.Stat(&mut stat, STATFLAG_NONAME)?;
+            stream.Seek(0, STREAM_SEEK_SET, None)?;
+            let mut bytes = vec![0u8; stat.cbSize as usize];
+            let mut read = 0u32;
+            stream
+                .Read(
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len() as u32,
+                    Some(&mut read),
+                )
+                .ok()?;
+            bytes.truncate(read as usize);
+            Ok(bytes)
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+    view.with_webview(move |platform| {
+        let failed = tx.clone();
+        let started = (|| -> windows::core::Result<()> {
+            unsafe {
+                let webview = platform.controller().CoreWebView2()?;
+                let stream = CreateStreamOnHGlobal(Default::default(), true)?;
+                let target = stream.clone();
+                let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+                    let outcome = result
+                        .and_then(|()| read_stream(&target))
+                        .map_err(|error| format!("WebView2 capture failed: {error}"));
+                    let _ = tx.send(outcome);
+                    Ok(())
+                }));
+                webview.CapturePreview(
+                    COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                    &stream,
+                    &handler,
+                )
+            }
+        })();
+        if let Err(error) = started {
+            let _ = failed.send(Err(format!("WebView2 capture failed: {error}")));
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(Duration::from_secs(15))
+            .map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let (width, height) = png_dimensions(&bytes)?;
+    Ok(Capture {
+        bytes,
+        width,
+        height,
+    })
+}
+
+/// Width and height from the PNG IHDR chunk.
+#[cfg(any(windows, test))]
+fn png_dimensions(bytes: &[u8]) -> Result<(i64, i64), String> {
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return Err("WebView2 capture is not a PNG image".into());
+    }
+    let read = |offset: usize| {
+        u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as i64
+    };
+    let (width, height) = (read(16), read(20));
+    if width == 0 || height == 0 {
+        return Err("WebView2 capture is empty; the preview may not be rendered".into());
+    }
+    Ok((width, height))
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn capture(_view: tauri::Webview) -> Result<Capture, String> {
     Err("Native viewport capture is not implemented for this platform.".into())
 }
@@ -909,6 +1065,18 @@ async fn capture(_view: tauri::Webview) -> Result<Capture, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_dimensions_come_from_the_header_and_reject_empty_frames() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&1280u32.to_be_bytes());
+        png.extend_from_slice(&720u32.to_be_bytes());
+        assert_eq!(png_dimensions(&png).unwrap(), (1280, 720));
+        let mut empty = png.clone();
+        empty[16..20].copy_from_slice(&0u32.to_be_bytes());
+        assert!(png_dimensions(&empty).is_err());
+        assert!(png_dimensions(b"GIF89a").is_err());
+    }
 
     #[test]
     fn page_reuse_preserves_resource_and_session_identity() {

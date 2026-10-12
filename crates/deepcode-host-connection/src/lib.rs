@@ -4,7 +4,7 @@ pub use user_directories::UserDirectories;
 mod paths;
 pub use paths::{configure_runtime_child, configured_path, runtime_root};
 mod client_lease;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub mod computer_use;
 pub mod loopback_http;
 pub mod process;

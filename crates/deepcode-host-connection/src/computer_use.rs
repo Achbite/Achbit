@@ -1,19 +1,28 @@
-//! GUI Host ownership of the independently signed native executor.
+//! GUI Host ownership of the native desktop executor.
 //! The connection lifetime owns the process; no Session state or tool policy lives here.
+//! macOS launches an independently signed App through LaunchServices; Windows starts
+//! the sibling executable inside a Host-owned Job Object.
 use serde_json::{json, Value};
+#[cfg(target_os = "macos")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
     time::{Duration, Instant, SystemTime},
 };
 
+/// Proof that the exact authenticated helper process has exited.
+#[cfg(target_os = "macos")]
+type ProcessExit = OwnedFd;
+#[cfg(windows)]
+type ProcessExit = crate::process::OwnedHostProcess;
+
 struct Connection {
     stream: BufReader<TcpStream>,
-    process_exit: OwnedFd,
+    process_exit: ProcessExit,
     executable_modified: SystemTime,
     failure: Option<String>,
 }
@@ -52,9 +61,14 @@ impl Connection {
                 Err(error) => return Err(format!("computer_component_shutdown_failed: {error}")),
             }
         }
-        // EOF confirms channel closure, not App exit: termination is dispatched
-        // asynchronously on the component's main thread. This watch was attached
-        // to the handshake process before any call, so PID reuse cannot replace it.
+        self.wait_for_exit(deadline)
+    }
+
+    /// EOF confirms channel closure, not App exit: termination is dispatched
+    /// asynchronously on the component's main thread. This watch was attached
+    /// to the handshake process before any call, so PID reuse cannot replace it.
+    #[cfg(target_os = "macos")]
+    fn wait_for_exit(&mut self, deadline: Instant) -> Result<(), String> {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or("computer_component_exit_timeout")?;
@@ -81,8 +95,31 @@ impl Connection {
             )),
         }
     }
+
+    /// The Host holds the helper's process handle. After channel closure no
+    /// request is in flight, so an executor that does not exit is released.
+    #[cfg(windows)]
+    fn wait_for_exit(&mut self, deadline: Instant) -> Result<(), String> {
+        while Instant::now() < deadline {
+            if self.exited() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        crate::process::terminate_owned_process_tree_until(
+            &mut self.process_exit,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .map_err(|error| format!("computer_component_exit_timeout: {error}"))
+    }
+
+    #[cfg(windows)]
+    fn exited(&mut self) -> bool {
+        matches!(self.process_exit.child.try_wait(), Ok(Some(_)))
+    }
 }
 
+#[cfg(target_os = "macos")]
 fn watch_process_exit(pid: libc::pid_t) -> Result<OwnedFd, String> {
     let descriptor = unsafe { libc::kqueue() };
     if descriptor < 0 {
@@ -120,7 +157,24 @@ fn watch_process_exit(pid: libc::pid_t) -> Result<OwnedFd, String> {
     Ok(queue)
 }
 
+/// Packaged location next to the GUI: a sibling App bundle on macOS, a sibling
+/// executable in the installation directory on Windows.
+fn packaged_location(gui: &Path) -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    return gui
+        .parent()
+        .and_then(|p| p.ancestors().nth(3))
+        .map(|root| root.join("DeepCode Computer Use.app"))
+        .ok_or_else(|| "computer_component_package_path_invalid".into());
+    #[cfg(windows)]
+    return gui
+        .parent()
+        .map(|directory| directory.join("DeepCode-Computer-Use.exe"))
+        .ok_or_else(|| "computer_component_package_path_invalid".into());
+}
+
 pub struct ComputerUseHost {
+    /// macOS: the App bundle. Windows: the executable itself.
     app: PathBuf,
     host: String,
     token: String,
@@ -133,11 +187,7 @@ impl ComputerUseHost {
         let app =
             match crate::configured_path("DEEPCODE_COMPUTER_APP").map_err(|e| e.to_string())? {
                 Some(path) => path,
-                None => executable
-                    .parent()
-                    .and_then(|p| p.ancestors().nth(3))
-                    .ok_or("computer_component_package_path_invalid")?
-                    .join("DeepCode Computer Use.app"),
+                None => packaged_location(&executable)?,
             };
         Ok(Self {
             app,
@@ -148,7 +198,10 @@ impl ComputerUseHost {
     }
 
     fn executable(&self) -> PathBuf {
-        self.app.join("Contents/MacOS/DeepCode-Computer-Use")
+        #[cfg(target_os = "macos")]
+        return self.app.join("Contents/MacOS/DeepCode-Computer-Use");
+        #[cfg(windows)]
+        return self.app.clone();
     }
 
     pub fn available(&self) -> bool {
@@ -167,26 +220,15 @@ impl ComputerUseHost {
         Ok(())
     }
 
-    fn start(&self, modified: SystemTime) -> Result<Connection, String> {
-        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    fn launch(&self, arguments: &[&str]) -> Result<(), String> {
         // LaunchServices gives this App its own macOS identity, instead of
         // inheriting the GUI's permission responsibility as a directly spawned binary.
         let launched = Command::new("/usr/bin/open")
             .args(["-n", "-g", "-a"])
             .arg(&self.app)
-            .args([
-                "--args",
-                "--connect",
-                &listener
-                    .local_addr()
-                    .map_err(|e| e.to_string())?
-                    .to_string(),
-                "--token",
-                &self.token,
-                "--host",
-                &self.host,
-            ])
+            .arg("--args")
+            .args(arguments)
             .output()
             .map_err(|e| e.to_string())?;
         if !launched.status.success() {
@@ -195,6 +237,64 @@ impl ComputerUseHost {
                 String::from_utf8_lossy(&launched.stderr)
             ));
         }
+        Ok(())
+    }
+
+    /// An update renames the mapped executable aside; once no helper of this Host
+    /// runs, those retired images can be deleted. Another Host may still map one,
+    /// in which case deletion fails and is retried at a later start.
+    #[cfg(windows)]
+    fn remove_retired_executables(&self) {
+        let (Some(directory), Some(name)) = (self.app.parent(), self.app.file_name()) else {
+            return;
+        };
+        let prefix = format!("{}.retired-", name.to_string_lossy());
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn launch(&self, arguments: &[&str]) -> Result<crate::process::OwnedHostProcess, String> {
+        self.remove_retired_executables();
+        let mut command = Command::new(self.executable());
+        command.args(arguments).stdin(std::process::Stdio::null());
+        let process = crate::process::spawn_owned_host_process(&mut command)
+            .map_err(|error| format!("computer_component_launch_failed: {error}"))?;
+        // The GUI may be the foreground app; let the helper focus an explicitly
+        // observed window for foreground input. Failure only limits focus changes.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                process.child.id(),
+            )
+        };
+        Ok(process)
+    }
+
+    fn start(&self, modified: SystemTime) -> Result<Connection, String> {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let address = listener
+            .local_addr()
+            .map_err(|e| e.to_string())?
+            .to_string();
+        let arguments = [
+            "--connect",
+            address.as_str(),
+            "--token",
+            self.token.as_str(),
+            "--host",
+            self.host.as_str(),
+        ];
+        #[cfg(target_os = "macos")]
+        self.launch(&arguments)?;
+        #[cfg(windows)]
+        let mut launched = self.launch(&arguments)?;
         let deadline = Instant::now() + Duration::from_secs(10);
         let stream = loop {
             match listener.accept() {
@@ -203,6 +303,12 @@ impl ComputerUseHost {
                     if error.kind() == std::io::ErrorKind::WouldBlock
                         && Instant::now() < deadline =>
                 {
+                    #[cfg(windows)]
+                    if let Ok(Some(status)) = launched.child.try_wait() {
+                        return Err(format!(
+                            "computer_component_exited_before_connecting: {status}"
+                        ));
+                    }
                     std::thread::sleep(Duration::from_millis(25))
                 }
                 Err(error) => return Err(format!("computer_component_connection_failed: {error}")),
@@ -225,14 +331,26 @@ impl ComputerUseHost {
             .read_line(&mut handshake)
             .map_err(|e| format!("computer_component_handshake_failed: {e}"))?;
         let handshake: Value = serde_json::from_str(&handshake).map_err(|e| e.to_string())?;
-        let pid = handshake["pid"]
-            .as_u64()
-            .and_then(|value| libc::pid_t::try_from(value).ok())
-            .filter(|pid| *pid > 0);
-        if handshake["token"] != self.token || pid.is_none() {
+        if handshake["token"] != self.token.as_str() {
             return Err("computer_component_handshake_invalid".into());
         }
-        let process_exit = watch_process_exit(pid.expect("validated component PID"))?;
+        #[cfg(target_os = "macos")]
+        let process_exit = {
+            let pid = handshake["pid"]
+                .as_u64()
+                .and_then(|value| libc::pid_t::try_from(value).ok())
+                .filter(|pid| *pid > 0)
+                .ok_or("computer_component_handshake_invalid")?;
+            watch_process_exit(pid)?
+        };
+        // The connecting process must be the exact child this Host started.
+        #[cfg(windows)]
+        let process_exit = {
+            if handshake["pid"].as_u64() != Some(u64::from(launched.child.id())) {
+                return Err("computer_component_handshake_invalid".into());
+            }
+            launched
+        };
         Ok(Connection {
             stream: reader,
             process_exit,
@@ -256,6 +374,16 @@ impl ComputerUseHost {
             .is_some_and(|connection| connection.executable_modified != modified)
         {
             slot.as_mut().expect("checked component").stop()?;
+            *slot = None;
+        }
+        // A failed helper whose exact process has exited has no input in flight,
+        // so a new process is not a competing executor. The failed call itself is
+        // never replayed; its error was already returned.
+        #[cfg(windows)]
+        if slot
+            .as_mut()
+            .is_some_and(|connection| connection.failure.is_some() && connection.exited())
+        {
             *slot = None;
         }
         if slot.is_none() {
@@ -291,5 +419,125 @@ impl ComputerUseHost {
             let _ = connection.stream.get_mut().shutdown(Shutdown::Write);
         }
         result
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// A stand-in helper: `cmd` connects nowhere, so the Host reports its exit.
+    #[test]
+    fn a_helper_that_exits_before_connecting_is_reported_not_awaited() {
+        let host = ComputerUseHost {
+            app: PathBuf::from(std::env::var_os("ComSpec").expect("ComSpec")),
+            host: "host".into(),
+            token: "token".into(),
+            connection: Mutex::new(None),
+        };
+        let started = Instant::now();
+        let error = host
+            .call(&json!({}), &json!({"action":"computer:status"}))
+            .unwrap_err();
+        assert!(
+            error.starts_with("computer_component_exited_before_connecting")
+                || error.starts_with("computer_component_connection_failed"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(9), "{error}");
+        assert!(host.connection.lock().unwrap().is_none());
+    }
+
+    /// Runs against a built helper when DEEPCODE_TEST_COMPUTER_USE_HELPER names it.
+    #[test]
+    fn host_owns_the_exact_helper_process_and_retires_it_on_stop() {
+        let Some(helper) = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER") else {
+            eprintln!("skipped: DEEPCODE_TEST_COMPUTER_USE_HELPER is not set");
+            return;
+        };
+        let host = ComputerUseHost {
+            app: PathBuf::from(helper),
+            host: "host:test".into(),
+            token: "token-test".into(),
+            connection: Mutex::new(None),
+        };
+        assert!(host.available());
+        let binding =
+            json!({"hostInstanceId":"host:test","windowLabel":"main","sessionId":"s","runId":"r"});
+        let status = host
+            .call(&binding, &json!({"action":"computer:status"}))
+            .unwrap();
+        assert_eq!(status["ok"], true, "{status}");
+        let pid = status["data"]["executor"]["pid"].as_u64().unwrap();
+        assert_eq!(
+            Some(pid),
+            host.connection
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|c| u64::from(c.process_exit.child.id()))
+        );
+        let rejected = host
+            .call(
+                &json!({"hostInstanceId":"other"}),
+                &json!({"action":"computer:status"}),
+            )
+            .unwrap();
+        assert_eq!(rejected["message"], "computer_host_binding_mismatch");
+        host.stop().unwrap();
+        assert!(host.connection.lock().unwrap().is_none());
+        let again = host
+            .call(&binding, &json!({"action":"computer:status"}))
+            .unwrap();
+        assert_ne!(again["data"]["executor"]["pid"].as_u64(), Some(pid));
+        host.stop().unwrap();
+    }
+
+    /// The Windows update replaces a mapped executable by renaming it aside.
+    #[test]
+    fn replaced_helper_is_retired_between_calls_and_its_image_removed() {
+        let Some(helper) = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER") else {
+            eprintln!("skipped: DEEPCODE_TEST_COMPUTER_USE_HELPER is not set");
+            return;
+        };
+        let directory =
+            std::env::temp_dir().join(format!("deepcode-cu-update-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let installed = directory.join("DeepCode-Computer-Use.exe");
+        std::fs::copy(&helper, &installed).unwrap();
+        let host = ComputerUseHost {
+            app: installed.clone(),
+            host: "host:update".into(),
+            token: "token-update".into(),
+            connection: Mutex::new(None),
+        };
+        let binding = json!({"hostInstanceId":"host:update","windowLabel":"main","sessionId":"s","runId":"r"});
+        let status = |host: &ComputerUseHost| {
+            host.call(&binding, &json!({"action":"computer:status"}))
+                .unwrap()["data"]["executor"]["pid"]
+                .as_u64()
+                .unwrap()
+        };
+        let first = status(&host);
+        let retired = directory.join("DeepCode-Computer-Use.exe.retired-1");
+        std::fs::rename(&installed, &retired).expect("a running image can be renamed aside");
+        std::fs::copy(&helper, &installed).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&installed)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+        let second = status(&host);
+        assert_ne!(
+            first, second,
+            "the replaced executable must be a new process"
+        );
+        assert!(
+            !retired.exists(),
+            "the retired image is removed after its process exits"
+        );
+        host.stop().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

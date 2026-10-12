@@ -1,10 +1,14 @@
-//! AppKit executor only: no model, Agent Loop, permissions policy or Session state.
+//! Native desktop executor only: no model, Agent Loop, permissions policy or Session state.
 #[cfg(target_os = "macos")]
 mod driver;
 #[cfg(target_os = "macos")]
 mod indicator;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod protocol;
 #[cfg(target_os = "macos")]
 mod runtime;
+#[cfg(windows)]
+mod win;
 #[cfg(target_os = "macos")]
 mod window_identity;
 
@@ -16,8 +20,16 @@ fn main() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
 fn main() {
-    eprintln!("Native Computer Use currently requires macOS.");
+    if let Err(error) = win::run() {
+        eprintln!("computer_use_start_failed: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn main() {
+    eprintln!("Native Computer Use currently requires macOS or Windows.");
     std::process::exit(1);
 }

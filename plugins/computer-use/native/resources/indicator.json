@@ -3,5 +3,9 @@
   "size": 20,
   "insetX": 76,
   "insetY": 5,
-  "color": [0.14, 0.42, 0.9]
+  "color": [0.14, 0.42, 0.9],
+  "windows": {
+    "insetX": 10,
+    "insetY": 8
+  }
 }

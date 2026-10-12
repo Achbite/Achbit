@@ -519,6 +519,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "webview2-com",
  "windows",
  "windows-core",
  "windows-sys 0.61.2",
