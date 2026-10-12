@@ -699,6 +699,7 @@
         "profileId": {"$ref": "#/$defs/Id"},
         "purpose": {"enum": ["agent", "contextCompaction", "approvalReview"]},
         "responseConstraint": {"enum": ["normal", "answerOnly"]},
+        "responseFormat": {"type": "object", "additionalProperties": false, "required": ["name", "schema"], "properties": {"name": {"$ref": "#/$defs/Id"}, "schema": {"$ref": "#/$defs/JsonObject"}}},
         "maxOutputTokens": {"type": "integer", "minimum": 1},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
         "messages": {"type": "array", "items": {"$ref": "#/$defs/ModelMessage"}},

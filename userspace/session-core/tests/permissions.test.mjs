@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_USER_SETTINGS, permissionSettings, validatePermissionPatches } from '../../protocol/dist/index.js';
 import { emptySessionState, loopSnapshot, projectSession, reduceSession } from '../dist/index.js';
-import { prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
+import { APPROVAL_REVIEW_SCHEMA, decodeApprovalReview, prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
 import {
   actorWith, createSession, fakeRunPreparation, emptyKernel,
   workspaceBinding, providerEvent, messageCommand, waitForProjection, completedExecutionReply, readEvents, runtimeSnapshot,
@@ -208,6 +208,7 @@ for (const mode of ['ask', 'review', 'allow']) test(`Shell ${mode} has a distinc
       reviews++;
       assert.deepEqual(request.tools, []); assert.deepEqual(request.hostedTools, []);
       assert.equal(request.responseConstraint, 'answerOnly');
+      assert.deepEqual(request.responseFormat, { name: 'execution_permission_decision', schema: APPROVAL_REVIEW_SCHEMA });
       assert.equal(request.providerRuntimeRef, 'provider-runtime:reviewer');
       assert.equal(request.profileId, 'profile:reviewer');
       assert.match(request.messages[1].content, /make check/);
@@ -494,4 +495,12 @@ test('desktop review uses the exact observation as evidence without treating Age
   assert.equal(JSON.parse(prepare().messages[1].content).observedTarget.selectedElement, undefined);
   args.observationId = 'frame:missing';
   assert.equal(JSON.parse(prepare().messages[1].content).observedTarget, undefined, 'No latest-frame substitute for missing observation');
+});
+
+
+test('permission decision wire fields remain English while the reason preserves the user language', () => {
+  assert.deepEqual(decodeApprovalReview('{"decision":"allow","reason":"按用户要求读取文件"}'),
+    { decision: 'allow', reason: '按用户要求读取文件' });
+  assert.throws(() => decodeApprovalReview('{"决策":"允许","原因":"读取文件"}'), /approval_review_invalid/);
+  assert.deepEqual(APPROVAL_REVIEW_SCHEMA.properties.decision.enum, ['allow', 'deny', 'ask']);
 });

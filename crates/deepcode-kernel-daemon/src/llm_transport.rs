@@ -49,8 +49,16 @@ pub(crate) struct LlmToolDefinition {
     pub(crate) input_schema: Value,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StructuredResponseFormat {
+    pub(crate) name: String,
+    pub(crate) schema: Value,
+}
+
 pub(crate) struct ProviderRequestInput {
     pub(crate) answer_only: bool,
+    pub(crate) response_format: Option<StructuredResponseFormat>,
     pub(crate) messages: Vec<LocalProviderMessage>,
     pub(crate) tools: Vec<LlmToolDefinition>,
     pub(crate) hosted_tools: Vec<LocalProviderHostedTool>,
@@ -719,6 +727,24 @@ fn prepare_provider_request(
         ProviderStreamKind::Anthropic => anthropic_stream_request_body(profile, messages, &tools)?,
         ProviderStreamKind::Ollama => ollama_stream_request_body(profile, messages, &tools),
     };
+    if let Some(format) = &envelope.response_format {
+        let schema = &format.schema;
+        match kind {
+            ProviderStreamKind::Responses => {
+                provider_body["text"]["format"] = json!({"type": "json_schema", "name": format.name, "schema": schema, "strict": true});
+            }
+            ProviderStreamKind::OpenAiCompatible => {
+                provider_body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": format.name, "schema": schema, "strict": true}});
+            }
+            ProviderStreamKind::Anthropic => {
+                provider_body["output_config"]["format"] =
+                    json!({"type": "json_schema", "schema": schema});
+            }
+            ProviderStreamKind::Ollama => {
+                provider_body["format"] = schema.clone();
+            }
+        }
+    }
     if envelope.answer_only && (!tools.is_empty() || !hosted_tools.is_empty()) {
         // Admission permits definitions in answer-only requests only for compaction.
         // DeepSeek Responses changes input rendering with tool_choice:none.
@@ -975,6 +1001,7 @@ async fn probe_profile(
         profile,
         &ProviderRequestInput {
             answer_only: true,
+            response_format: None,
             messages: vec![LocalProviderMessage {
                 role: "user".into(),
                 content: "Reply with OK.".into(),
@@ -1993,9 +2020,33 @@ mod tests {
     fn provider_input(value: Value) -> ProviderRequestInput {
         ProviderRequestInput {
             answer_only: value["responseConstraint"] == "answerOnly",
+            response_format: value
+                .get("responseFormat")
+                .map(|format| serde_json::from_value(format.clone()).unwrap()),
             messages: serde_json::from_value(value["messages"].clone()).unwrap(),
             tools: serde_json::from_value(value["tools"].clone()).unwrap(),
             hosted_tools: serde_json::from_value(value["hostedTools"].clone()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn structured_decision_schema_reaches_each_native_provider_request() {
+        let schema = json!({"type":"object","additionalProperties":false,"required":["decision","reason"],
+            "properties":{"decision":{"type":"string","enum":["allow","deny","ask"]},"reason":{"type":"string"}}});
+        let envelope = provider_input(
+            json!({"responseConstraint":"answerOnly", "messages":[{"role":"user","content":"Review this operation."}],
+            "tools":[],"hostedTools":[],"responseFormat":{"name":"permission_decision","schema":schema}}),
+        );
+        for kind in ["responses", "openaiCompatible", "anthropic", "ollama"] {
+            let prepared = prepare_test_request(&test_profile(kind), &envelope).unwrap();
+            let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+            let sent = match kind {
+                "responses" => &body["text"]["format"]["schema"],
+                "openaiCompatible" => &body["response_format"]["json_schema"]["schema"],
+                "anthropic" => &body["output_config"]["format"]["schema"],
+                _ => &body["format"],
+            };
+            assert_eq!(sent, &schema, "{kind}");
         }
     }
 

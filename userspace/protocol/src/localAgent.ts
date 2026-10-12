@@ -1605,6 +1605,7 @@ export interface ProviderRequest {
   profileId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
   responseConstraint: ProviderResponseConstraint;
+  responseFormat?: { name: string; schema: JsonObject };
   maxOutputTokens: number;
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   messages: readonly ModelMessage[];

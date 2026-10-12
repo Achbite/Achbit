@@ -927,6 +927,7 @@ struct LocalProviderRequest {
     profile_id: String,
     purpose: String,
     response_constraint: String,
+    response_format: Option<crate::llm_transport::StructuredResponseFormat>,
     max_output_tokens: u32,
     workspace_bindings: Vec<LocalProviderWorkspaceBinding>,
     messages: Vec<LocalProviderMessage>,
@@ -1530,6 +1531,7 @@ pub(crate) async fn local_agent_provider_stream(
     }
     let mut request_envelope = ProviderRequestInput {
         answer_only: body.response_constraint == "answerOnly",
+        response_format: body.response_format,
         messages: body.messages,
         tools: body.tools,
         hosted_tools: body.hosted_tools,
@@ -1623,6 +1625,15 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
     }
     if !matches!(body.response_constraint.as_str(), "normal" | "answerOnly") {
         return Err("Provider 请求的 responseConstraint 无效。".to_string());
+    }
+    if body.response_format.as_ref().is_some_and(|format| {
+        !valid_provider_text(&format.name)
+            || !format.schema.is_object()
+            || body.response_constraint != "answerOnly"
+            || !body.tools.is_empty()
+            || !body.hosted_tools.is_empty()
+    }) {
+        return Err("结构化输出必须指定名称与对象 schema，并使用无工具的 answerOnly 请求。".into());
     }
     match body.purpose.as_str() {
         "agent" => {
