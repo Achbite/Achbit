@@ -10,6 +10,7 @@ import { ComposerPermissionControl } from './ComposerPermissionControl';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
 import { pastedTextTitle } from '../../services/pastedText';
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
 
@@ -127,6 +128,10 @@ export function ConversationComposer({
     observer.observe(textarea);
     return () => observer.disconnect();
   }, [inputMode, textareaRef]);
+
+  useAutoDismiss(error, composer.clearError);
+  useAutoDismiss(attachmentError, composer.clearAttachmentError);
+  useAutoDismiss(uiActionError, onDismissUiActionError);
 
   return (
     <UiRegion slot="composer.layout" data={regionData} actions={regionActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval

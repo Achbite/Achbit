@@ -901,13 +901,13 @@
 
 .local-agent__terminal-error {
   display: grid;
-  gap: 4px;
+  gap: 10px;
   margin: 8px 0 24px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--dc-danger) 25%, var(--dc-border));
-  border-radius: 12px;
-  background: var(--dc-danger-soft);
-  color: var(--dc-danger);
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--dc-surface-subtle);
+  color: var(--dc-foreground);
   font-size: var(--dc-font-caption);
 }
 
@@ -2169,9 +2169,9 @@
   margin-bottom: 7px;
   overflow: auto;
   padding: 8px 11px;
-  border: 1px solid color-mix(in srgb, var(--dc-danger) 24%, transparent);
-  border-radius: 10px;
-  background: var(--dc-danger-soft);
+  border: 0;
+  border-radius: 8px;
+  background: var(--dc-surface-subtle);
   color: var(--dc-danger);
   font-size: var(--dc-font-caption);
 }
@@ -2285,7 +2285,7 @@
 .local-agent__error-details dd { margin:0; }
 .local-agent__retry-status { padding:12px 0; color:var(--dc-muted); }
 .local-agent__recovery-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-.local-agent__recovery-actions button { font:inherit; color:inherit; background:var(--dc-surface); border:1px solid var(--dc-border); border-radius:8px; padding:6px 12px; cursor:pointer; }
+.local-agent__recovery-actions button { font:inherit; color:inherit; background:var(--dc-surface-raised); border:1px solid transparent; border-radius:8px; padding:6px 12px; cursor:pointer; }
 .local-agent__recovery-actions button:disabled { opacity:0.5; cursor:default; }
 
 .local-agent__draft-attachments { flex-wrap: nowrap; align-items: flex-start; min-width: 0; overflow-x: auto; overflow-y: hidden; overflow-anchor: none; overscroll-behavior-x: contain; }
@@ -2439,3 +2439,10 @@
 .local-agent__question-answer { color: var(--dc-muted); }
 .local-agent__question > [role='alert'] { color: var(--dc-danger); }
 @media (max-width: 480px) { .local-agent__question { padding: 16px; } }
+
+.local-agent__terminal-error > p { margin:0; color:var(--dc-danger); font-weight:var(--dc-weight-medium); line-height:1.6; overflow-wrap:anywhere; }
+.local-agent__terminal-error > details { color:var(--dc-muted); line-height:1.6; }
+.local-agent__terminal-error summary { cursor:pointer; }
+.local-agent__terminal-error details[open] { min-width:0; overflow-wrap:anywhere; }
+.local-agent__terminal-error .local-agent__recovery-actions { margin-top:4px; }
+.local-agent__recovery-actions button:hover:not(:disabled) { background:var(--dc-surface-hover); }

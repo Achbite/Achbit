@@ -1,3 +1,4 @@
+import ToggleSwitch from '../../shared/ToggleSwitch';
 import { localizePlugin } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
 import { useSettingsSearchEntries } from '../settingsSearch';
@@ -390,17 +391,12 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
                 title={item.error ?? item.status}
                 aria-label={item.error ? t(language, 'settings.plugins.failed') : item.status}
               />
-              <label className="plugin-switch">
-                <input
-                  type="checkbox"
-                  role="switch"
+              <ToggleSwitch
                   aria-label={`${chinese ? '启用' : 'Enable'} ${item.name}`}
                   checked={item.enabled}
                   disabled={busy}
                   onChange={(event) => void save(item, event.target.checked)}
-                />
-                <span />
-              </label>
+              />
               <button
                 className="reader-icon-button"
                 aria-label={t(language, 'settings.plugins.details', { name: item.name })}

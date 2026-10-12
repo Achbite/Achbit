@@ -1,3 +1,4 @@
+import ToggleSwitch from '../shared/ToggleSwitch';
 import NativeSelect from '../shared/NativeSelect';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { useSettingsSearchTarget } from './settingsSearch';
@@ -80,10 +81,8 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
   const renderControl = () => {
     if (definition.control === 'boolean') {
       return (
-        <input
-          className="settings-field__checkbox"
+        <ToggleSwitch
           aria-label={definition.label} aria-describedby={helpId}
-          type="checkbox"
           checked={Boolean(value)}
           disabled={disabled || saving}
           onChange={(event) => { const next = event.target.checked; void perform(() => onChange(definition.key, next)); }}

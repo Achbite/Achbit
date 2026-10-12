@@ -1,3 +1,4 @@
+import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { useConversationHost } from './ConversationHost';
@@ -70,19 +71,20 @@ export function ImageContent({ source, alt }: { source: string; alt: string }) {
 
 export function MermaidContent({ source }: { source: string }) {
   const uiLanguage = useUiLanguage();
+  const theme = useDisplayTheme();
   const id = `diagram-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
-  const [result, setResult] = useState<{ source: string; svg?: string; error?: string } | null>(null);
+  const [result, setResult] = useState<{ source: string; theme: string; svg?: string; error?: string } | null>(null);
   useEffect(() => {
     let current = true;
     void import('mermaid').then(async ({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true });
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: theme === 'dark' ? 'dark' : 'neutral' });
       const { svg } = await mermaid.render(id, source);
-      if (current) setResult({ source, svg });
-    }).catch((error: unknown) => { if (current) setResult({ source, error: String(error) }); });
+      if (current) setResult({ source, theme, svg });
+    }).catch((error: unknown) => { if (current) setResult({ source, theme, error: String(error) }); });
     return () => { current = false; };
-  }, [id, source]);
+  }, [id, source, theme]);
   return <figure className="conversation-diagram">
-    {result?.source !== source ? <span role="status">{t(uiLanguage, 'content.diagram.loading')}</span>
+    {result?.source !== source || result.theme !== theme ? <span role="status">{t(uiLanguage, 'content.diagram.loading')}</span>
       : result.svg ? <div dangerouslySetInnerHTML={{ __html: result.svg }} />
         : <span role="status">{t(uiLanguage, 'content.diagram.error', { error: result.error })}</span>}
     <details><summary>{t(uiLanguage, 'content.diagram.source')}</summary><pre>{source}</pre></details>

@@ -37,7 +37,7 @@ dialog.appearance-import-overlay { display: grid; place-items: center; padding: 
 
 .theme-picker__trigger > .theme-picker__badge { display:none; }
 .theme-picker__trigger:hover:not(:disabled) { background:var(--dc-surface-hover); }
-.appearance-config-box__body input { border-color:var(--dc-border); }
+
 .appearance-config-box__actions .settings-button:not(.settings-button--primary) { border-color:transparent; background:transparent; }
 .appearance-theme-library > summary { cursor:pointer; padding:12px 18px; }
 .appearance-theme-library > summary > svg { margin-left:auto; color:var(--dc-muted); transition:transform 140ms ease; }

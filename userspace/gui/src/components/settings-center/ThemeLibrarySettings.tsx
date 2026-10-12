@@ -5,6 +5,7 @@ import { normalizeGuiAccentColor, type GuiResolvedTheme } from '../../theme/deep
 import { PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, paletteColor } from '../../theme/palette';
 import { THEME_LIBRARY_SETTING, applyThemePalette, builtinThemes, decodeThemeLibrary, importTheme, selectedThemeId, themeOverrides, type ThemeDocument, type SavedTheme } from '../../theme/themeLibrary';
 import ModalDialog from '../shared/ModalDialog';
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import ThemePicker, { ThemeBadge } from './ThemePicker';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
@@ -16,6 +17,7 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  useAutoDismiss(notice, () => setNotice(null));
   const [importing, setImporting] = useState(false);
   const [text, setText] = useState('');
   useInterfaceReloadGuard(importing && text.trim().length > 0, t(language, 'settings.themes.importTitle'), busy);
