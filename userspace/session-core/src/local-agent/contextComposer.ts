@@ -586,6 +586,12 @@ export function messagesFromJournal(
           content: JSON.stringify({ accepted: true, items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
     } else if (event.type === 'session.plugins.activated') {
+      const prepared = events.find(candidate => candidate.type === 'run.tools.prepared'
+        && candidate.runId === event.runId
+        && candidate.payload.toolView.kernelCatalogSnapshotRef === event.payload.kernelCatalogSnapshotRef);
+      if (prepared?.type !== 'run.tools.prepared') throw new LoopFailure('plugin_activation_tool_view_missing', 'Plugin activation has no matching execution tool view.');
+      const activatedTools = prepared.payload.toolView.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
+
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
           name: SESSION_CONTROL_PLUGIN_ACTIVATE, input: { pluginUris: event.payload.pluginUris } });
@@ -594,7 +600,7 @@ export function messagesFromJournal(
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ activated: event.payload.pluginUris }) },
+          content: JSON.stringify({ activated: event.payload.pluginUris, tools: toolAvailability(activatedTools) }) },
       });
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;

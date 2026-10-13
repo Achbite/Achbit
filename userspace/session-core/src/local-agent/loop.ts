@@ -619,7 +619,7 @@ export async function runAgentLoop(
               toolPromptContributions, providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
             await commit([
               { type: 'session.plugins.activated', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
-                payload: { providerCallId: turn.providerCallId, pluginUris: turn.pluginUris } },
+                payload: { providerCallId: turn.providerCallId, pluginUris: turn.pluginUris, kernelCatalogSnapshotRef } },
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
               { type: 'run.tools.prepared', sessionId: snapshot.state.sessionId, runId,

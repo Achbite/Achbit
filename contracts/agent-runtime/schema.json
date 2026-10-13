@@ -2990,10 +2990,11 @@
               "payload": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["providerCallId", "pluginUris"],
+                "required": ["providerCallId", "pluginUris", "kernelCatalogSnapshotRef"],
                 "properties": {
                   "providerCallId": {"$ref": "#/$defs/Id"},
-                  "pluginUris": {"type": "array", "items": {"$ref": "#/$defs/Id"}}
+                  "pluginUris": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
+                  "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"}
                 }
               }
             },

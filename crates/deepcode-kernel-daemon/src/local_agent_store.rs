@@ -2103,7 +2103,12 @@ fn validate_new_event(
         }
         "session.plugins.activated" => {
             let payload = event.get("payload").expect("validated payload");
-            exact_object(payload, &["providerCallId", "pluginUris"], &[])?;
+            exact_object(
+                payload,
+                &["providerCallId", "pluginUris", "kernelCatalogSnapshotRef"],
+                &[],
+            )?;
+            required_string(payload, "kernelCatalogSnapshotRef")?;
             let uris = payload["pluginUris"].as_array().ok_or_else(|| {
                 LocalAgentStoreError::new("session_event_invalid", "pluginUris 必须是数组。")
             })?;
@@ -5746,7 +5751,7 @@ mod tests {
         let selections: Vec<Value> = (0..17).map(|index| json!({"selectionId":format!("selection:{index}"),"uri":format!("plugin://tool-{index}@local"),"label":format!("Tool {index}")})).collect();
         validate_plugin_selection_list(&json!(selections)).unwrap();
         journal.append(&json!({"type":"session.plugins.activated", "sessionId":"session:delivery", "runId":"run:delivery", "callId":"call:plugins",
-            "payload":{"providerCallId":"provider:plugins","pluginUris":selections.iter().map(|item|item["uri"].clone()).collect::<Vec<_>>()}})).unwrap();
+            "payload":{"providerCallId":"provider:plugins","kernelCatalogSnapshotRef":"catalog:plugins","pluginUris":selections.iter().map(|item|item["uri"].clone()).collect::<Vec<_>>()}})).unwrap();
     }
 
     #[test]

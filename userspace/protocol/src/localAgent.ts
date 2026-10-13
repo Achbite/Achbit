@@ -1139,7 +1139,7 @@ export type SessionEvent =
       type: 'session.plugins.activated';
       runId: string;
       callId: string;
-      payload: { providerCallId: string; pluginUris: string[] };
+      payload: { providerCallId: string; pluginUris: string[]; kernelCatalogSnapshotRef: string };
     })
   | (SessionEventBase & {
       type: 'session.control.rejected';
