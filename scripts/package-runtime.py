@@ -37,6 +37,10 @@ def shared(root, destination, dependency_list):
     shutil.copytree(root / 'userspace/gui/dist-deepcode-gui', destination / 'web-deepcode-gui')
     shutil.copytree(root / 'docs', destination / 'docs')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
+    # The upstream package bundles its runtime dependencies. Keep its public
+    # entrypoint and licenses intact; no host npm installation or downloads.
+    chrome = (root / 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp').resolve()
+    shutil.copytree(chrome, destination / 'chrome-devtools')
     dependencies = {}
 
     def collect(items):

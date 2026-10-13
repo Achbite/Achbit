@@ -101,9 +101,14 @@ pub(crate) struct McpToolCallFailure {
 impl McpTool {
     pub(crate) fn call(
         &self,
-        input: Value,
+        mut input: Value,
         context: &KernelToolExecutionContext,
     ) -> Result<McpToolCallResult, McpRuntimeError> {
+        if self.plugin_uri == "plugin://chrome-devtools@builtin" && self.remote_name == "new_page" {
+            if let Some(arguments) = input.as_object_mut() {
+                arguments.entry("background").or_insert(json!(true));
+            }
+        }
         let metadata = match &self.binding_requirement {
             McpToolBindingRequirement::None => None,
             McpToolBindingRequirement::WorkspacePath { .. } => {
@@ -121,12 +126,22 @@ impl McpTool {
                 }))
             }
         };
-        match &self.instance.client {
+        let mut result = match &self.instance.client {
             ToolClient::Mcp(client) => {
                 client.call_tool(&self.remote_name, input, metadata, &context.cancellation)
             }
             ToolClient::Cli(client) => client.call(&self.remote_name, input, metadata, context),
+        }?;
+        if self.plugin_uri == "plugin://chrome-devtools@builtin" {
+            if let Some(content) = result.output["content"].as_array_mut() {
+                for block in content {
+                    if block["type"] == "image" {
+                        block["_meta"]["deepcode"]["purpose"] = json!("observation");
+                    }
+                }
+            }
         }
+        Ok(result)
     }
 
     pub(crate) fn logical_targets(&self, input: &Value) -> Result<Vec<String>, McpRuntimeError> {
@@ -347,7 +362,13 @@ impl McpRuntime {
                 views: AtomicUsize::new(0),
             });
             for definition in definitions {
-                let contract = tool_contract(&server, &definition)?;
+                let mut contract = tool_contract(&server, &definition)?;
+                if server.descriptor.uri == "plugin://chrome-devtools@builtin"
+                    && definition.name == "new_page"
+                {
+                    contract.input_schema["properties"]["background"]["description"] =
+                        json!("Open in the background by default. Set false explicitly to bring the page forward.");
+                }
                 let public_name = contract.public_name;
                 let tool = McpTool {
                     public_name: public_name.clone(),
@@ -428,6 +449,8 @@ pub(crate) fn available_server_sources(
         .into_iter()
         .map(external_server_source)
         .collect::<Result<Vec<_>, _>>()?;
+    #[cfg(target_os = "macos")]
+    sources.push(chrome_devtools_source(settings)?);
     let provider_binary = local_agent_first_party_plugins::provider_binary()
         .map_err(|message| McpRuntimeError::new("first_party_provider_unavailable", message))?;
     let provider_binary = provider_binary.to_str().ok_or_else(|| {
@@ -526,6 +549,56 @@ fn external_server_source(setting: McpServerSetting) -> Result<McpServerSource, 
         contract: McpServerContract::External,
         cli_entry: None,
     })
+}
+
+/// The official MCP runs as an ordinary Kernel-owned tool plugin. Desktop
+/// capture and page debugging retain separate platform and target identities.
+#[cfg(target_os = "macos")]
+fn chrome_devtools_source(settings: &Value) -> Result<McpServerSource, McpRuntimeError> {
+    let executable = std::env::current_exe()
+        .map_err(|e| McpRuntimeError::new("chrome_runtime_unavailable", e.to_string()))?;
+    let root = deepcode_host_connection::runtime_root(executable.parent().ok_or_else(|| {
+        McpRuntimeError::new(
+            "chrome_runtime_unavailable",
+            "Runtime executable has no directory",
+        )
+    })?)
+    .map_err(|e| McpRuntimeError::new("chrome_runtime_unavailable", e.to_string()))?;
+    let entry = root.join("chrome-devtools/build/src/bin/chrome-devtools-mcp.js");
+    let node = root.join("node/bin/node");
+    let disabled: Vec<String> = serde_json::from_str(
+        settings
+            .get("plugins.disabled")
+            .and_then(Value::as_str)
+            .unwrap_or("[]"),
+    )
+    .map_err(|e| McpRuntimeError::new("plugin_config_invalid", e.to_string()))?;
+    let uri = "plugin://chrome-devtools@builtin";
+    // split_args parses quotes without invoking a shell.
+    let quoted_entry = format!(
+        "\"{}\"",
+        entry
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    );
+    let mut source = external_server_source(McpServerSetting {
+        id: "deepcode-chrome".into(), name: "Chrome".into(),
+        description: "Control existing Chrome browser pages and tabs by pageId: inspect, click, fill, navigate and capture screenshots. 浏览器 Chrome 页面和标签页控制。".into(),
+        transport: "stdio".into(), command: node.to_string_lossy().into(),
+        args: format!("{quoted_entry} --autoConnect --no-usage-statistics --no-performance-crux"),
+        enabled: !disabled.iter().any(|disabled| disabled == uri),
+    })?;
+    source.descriptor.uri = uri.into();
+    source.descriptor.management = json!({"key":"plugins.disabled","id":uri});
+    source.descriptor.capability_summary.push_str("\nEvery page operation names its returned pageId. New pages stay in the background by default; bringing a page forward is explicit. Chrome itself requests connection approval. A stopped connection is an execution result, not an instruction to use desktop input instead.");
+    if !entry.is_file() {
+        source.descriptor.error = Some(McpRuntimeError::new(
+            "chrome_runtime_unavailable",
+            "This runtime does not contain Chrome DevTools MCP.",
+        ));
+    }
+    Ok(source)
 }
 
 fn first_party_server_source(

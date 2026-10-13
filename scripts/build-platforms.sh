@@ -55,7 +55,7 @@ case "${1:-}" in
     pnpm --filter @deepcode/client build:web
     mkdir -p "$destination"
     dependencies="$(dirname "$destination")/dependencies.json"
-    pnpm --filter @deepcode/client --filter @deepcode/session-core list --prod --depth Infinity --json > "$dependencies"
+    pnpm --filter @deepcode/client --filter @deepcode/session-core --filter @deepcode/chrome-devtools-runtime list --prod --depth Infinity --json > "$dependencies"
     python3 scripts/package-runtime.py shared "$ROOT_DIR" "$destination" "$dependencies"
     printf '==[build][shared][DONE]== seconds=%s\n' "$((SECONDS - started))"
     ;;
