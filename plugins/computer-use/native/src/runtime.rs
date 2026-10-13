@@ -57,7 +57,7 @@ pub fn run() -> Result<(), String> {
         || arguments[3] != "--token"
         || arguments[5] != "--host"
     {
-        return Err("Launch this component through the DeepCode GUI Host.".into());
+        return Err("Launch this component through the DeepCode Host.".into());
     }
     let endpoint: std::net::SocketAddr =
         arguments[2].parse().map_err(|_| "Invalid Host endpoint")?;
@@ -121,11 +121,7 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
         }
         let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         let binding = &request["binding"];
-        let result = if binding["hostInstanceId"] != host
-            || binding["windowLabel"] != "main"
-            || !binding["runId"].is_string()
-            || !binding["sessionId"].is_string()
-        {
+        let result = if !crate::protocol::binding_matches(binding, host) {
             Err("computer_host_binding_mismatch".into())
         } else {
             crate::driver::execute(gui, binding, &request["input"])

@@ -4480,7 +4480,7 @@ fn validate_run_runtime_snapshot(
                 "toolBindingRef",
                 "origin",
             ],
-            if has_plugin_uri { &["pluginUri"] } else { &[] },
+            &["pluginUri", "availabilityReason", "runtimeStatus"],
         )?;
         let name = required_string(tool, "name")?;
         let binding_ref = required_string(tool, "toolBindingRef")?;
@@ -4539,6 +4539,27 @@ fn validate_run_runtime_snapshot(
             }
         }
         let availability = required_string(tool, "availability")?;
+        if let Some(reason) = tool.get("availabilityReason") {
+            exact_object(reason, &["code", "message"], &[])?;
+            required_string(reason, "code")?;
+            required_string(reason, "message")?;
+            if availability != "blocked" {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    "Only blocked tools carry an unavailability reason.",
+                ));
+            }
+        }
+        if tool
+            .get("runtimeStatus")
+            .is_some_and(|status| !status.is_object())
+        {
+            return Err(LocalAgentStoreError::new(
+                "session_event_invalid",
+                "Tool runtimeStatus must be an object.",
+            ));
+        }
+
         if !matches!(availability, "callable" | "blocked") {
             return Err(LocalAgentStoreError::new(
                 "session_event_invalid",

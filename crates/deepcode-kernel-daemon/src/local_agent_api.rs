@@ -501,6 +501,11 @@ impl LocalAgentRuntime {
                     ))
                     .with_plugin_settings(settings.clone(), agent_context.is_some())
                     .with_computer_use(plugin_selection.computer_use_instance())
+                    .with_desktop(
+                        self.kernel
+                            .desktop
+                            .run(&request.session_id, &request.run_id),
+                    )
                     .with_containers(plugin_selection.container_instance())
                     .with_processes(plugin_selection.process_instance())
                     .with_browser_binding(environment.get("hostBinding").cloned().map(

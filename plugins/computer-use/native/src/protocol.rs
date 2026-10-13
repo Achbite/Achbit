@@ -17,14 +17,14 @@ pub struct Launch {
     pub host: String,
 }
 
-/// The GUI Host is the only launcher: `--connect <loopback> --token <t> --host <id>`.
+/// The shared Host is the only launcher: `--connect <loopback> --token <t> --host <id>`.
 pub fn launch_arguments(arguments: &[String]) -> Result<Launch, String> {
     if arguments.len() != 7
         || arguments[1] != "--connect"
         || arguments[3] != "--token"
         || arguments[5] != "--host"
     {
-        return Err("Launch this component through the DeepCode GUI Host.".into());
+        return Err("Launch this component through the DeepCode Host.".into());
     }
     let endpoint: SocketAddr = arguments[2].parse().map_err(|_| "Invalid Host endpoint")?;
     if !endpoint.ip().is_loopback() {
@@ -37,12 +37,14 @@ pub fn launch_arguments(arguments: &[String]) -> Result<Launch, String> {
     })
 }
 
-/// Every request names this Host's primary window plus an exact Session run.
+/// Every desktop request names the exact Host and Session run, independently of shell windows.
 pub fn binding_matches(binding: &Value, host: &str) -> bool {
-    binding["hostInstanceId"] == host
-        && binding["windowLabel"] == "main"
-        && binding["runId"].is_string()
-        && binding["sessionId"].is_string()
+    !host.is_empty()
+        && binding["hostInstanceId"] == host
+        && binding["runId"].as_str().is_some_and(|id| !id.is_empty())
+        && binding["sessionId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
 }
 
 /// Unique within one helper process; the instance names the process lifetime.
@@ -155,19 +157,17 @@ mod tests {
     }
 
     #[test]
-    fn binding_requires_host_main_window_and_exact_run() {
-        let binding =
-            json!({"hostInstanceId":"h","windowLabel":"main","runId":"r","sessionId":"s"});
+    fn binding_requires_host_and_exact_run_without_a_gui_window() {
+        let binding = json!({"hostInstanceId":"h","runId":"r","sessionId":"s"});
         assert!(binding_matches(&binding, "h"));
         assert!(!binding_matches(&binding, "other"));
         for field in ["runId", "sessionId"] {
             let mut partial = binding.clone();
             partial.as_object_mut().unwrap().remove(field);
             assert!(!binding_matches(&partial, "h"));
+            partial[field] = json!("");
+            assert!(!binding_matches(&partial, "h"));
         }
-        let mut reader = binding.clone();
-        reader["windowLabel"] = json!("reader");
-        assert!(!binding_matches(&reader, "h"));
     }
 
     #[test]

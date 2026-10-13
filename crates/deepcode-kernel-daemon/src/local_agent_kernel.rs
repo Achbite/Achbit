@@ -404,6 +404,7 @@ pub(crate) struct LocalAgentKernel {
     generations: Arc<Mutex<KernelGenerationState>>,
     active: Arc<Mutex<HashMap<String, ActiveCall>>>,
     pub(crate) jobs: crate::managed_processes::Jobs,
+    pub(crate) desktop: Arc<crate::desktop_tools::DesktopHost>,
 }
 
 #[derive(Clone)]
@@ -540,6 +541,7 @@ impl LocalAgentKernel {
             })),
             active: Arc::new(Mutex::new(HashMap::new())),
             jobs: Default::default(),
+            desktop: Arc::new(crate::desktop_tools::DesktopHost::unbound()),
         })
     }
 
@@ -720,7 +722,8 @@ impl LocalAgentKernel {
         self.jobs
             .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
-        crate::browser_tools::release_run(&request.session_id, &request.run_id)
+        self.desktop
+            .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("computer_sharing_cleanup_failed", e))?;
         let mut state = self.lock_generations()?;
         let already_released = state.released_run_bindings.contains_key(&key);
@@ -1034,9 +1037,12 @@ impl LocalAgentKernel {
         };
         let mut errors = Vec::new();
         for (session_id, run_id) in runs {
-            if let Err(error) = crate::browser_tools::release_run(&session_id, &run_id) {
+            if let Err(error) = self.desktop.release_run(&session_id, &run_id) {
                 errors.push(format!("computer_sharing_cleanup_failed: {error}"));
             }
+        }
+        if let Err(error) = self.desktop.stop() {
+            errors.push(format!("computer_host_cleanup_failed: {error}"));
         }
         if let Err(error) = dispose_generations(generations) {
             errors.push(format!("{}: {}", error.code, error.message));
@@ -4609,7 +4615,7 @@ mod attempt_control_tests {
                         stream,
                         "{}",
                         json!({"ok":true,"data":{
-                            "ready":true,"captureAvailable":true,"computerControlAvailable":true,
+                            "ready":true,"captureAvailable":true,
                         }})
                     )
                     .unwrap();
@@ -4650,6 +4656,20 @@ mod attempt_control_tests {
         );
         Arc::get_mut(&mut product).unwrap().computer_use_instance =
             Some("plugin-instance:computer-use".into());
+        struct NativeStatus;
+        impl crate::desktop_tools::DesktopExecutor for NativeStatus {
+            fn call(&self, _: &Value, input: &Value) -> Result<Value, String> {
+                assert_eq!(input["action"], "computer:status");
+                Ok(json!({"ok":true,"data":{"platform":"native-test"}}))
+            }
+            fn stop(&self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        Arc::get_mut(&mut product).unwrap().desktop = Some(
+            crate::desktop_tools::DesktopHost::for_test("host:test", Arc::new(NativeStatus))
+                .run("session:test", "run:test"),
+        );
         let (kernel, mut request, catalog) = kernel_with_product_tools(
             Arc::new(NoWorkspace),
             "browser.page",

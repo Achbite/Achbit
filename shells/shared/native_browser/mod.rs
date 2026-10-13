@@ -87,8 +87,6 @@ pub struct NativeBrowser {
     services: Mutex<HashMap<String, services::DevelopmentService>>,
     self_bootstrap: String,
     on_stop: Box<dyn Fn() + Send + Sync>,
-    #[cfg(any(target_os = "macos", windows))]
-    computer: deepcode_host_connection::computer_use::ComputerUseHost,
     #[cfg(windows)]
     controls: control_indicator::ControlRuns,
 }
@@ -101,10 +99,6 @@ impl NativeBrowser {
         #[cfg(windows)]
         control_indicator::wake_on_stop(self);
         (self.on_stop)();
-        #[cfg(any(target_os = "macos", windows))]
-        if let Err(error) = self.computer.stop() {
-            eprintln!("{error}");
-        }
         if let Ok(mut services) = self.services.lock() {
             services.clear();
         }
@@ -134,11 +128,6 @@ pub fn start(
     app.manage(NativeBrowser {
         #[cfg(windows)]
         controls: control_indicator::ControlRuns::default(),
-        #[cfg(any(target_os = "macos", windows))]
-        computer: deepcode_host_connection::computer_use::ComputerUseHost::new(
-            host_instance_id.clone(),
-            token.clone(),
-        )?,
         directories,
         binding: HostBinding {
             host_instance_id,
@@ -186,19 +175,6 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
         let request: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
         if request.get("token").and_then(Value::as_str) != Some(token) {
             return Err("native_browser_connection_rejected".into());
-        }
-        if request["input"]["action"]
-            .as_str()
-            .is_some_and(|action| action.starts_with("computer:"))
-        {
-            checked_binding(&app, &request["binding"])?;
-            #[cfg(any(target_os = "macos", windows))]
-            return app
-                .state::<NativeBrowser>()
-                .computer
-                .call(&request["binding"], &request["input"]);
-            #[cfg(not(any(target_os = "macos", windows)))]
-            return Err("External computer control currently requires macOS or Windows.".into());
         }
         tauri::async_runtime::block_on(execute(
             app,
@@ -417,15 +393,10 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         return services::execute(&mut services, directory, session_id.as_deref(), &input);
     }
     if action == "hostStatus" {
-        #[cfg(any(target_os = "macos", windows))]
-        let computer_available = app.state::<NativeBrowser>().computer.available();
-        #[cfg(not(any(target_os = "macos", windows)))]
-        let computer_available = false;
         return Ok(json!({
             "binding": binding,
             "ready": true,
             "captureAvailable": cfg!(any(target_os = "macos", windows)),
-            "computerControlAvailable": computer_available,
         }));
     }
     if action == "refreshInterface" {

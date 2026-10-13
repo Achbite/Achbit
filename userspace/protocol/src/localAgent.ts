@@ -1802,6 +1802,9 @@ export interface ToolDescriptor {
   inputSchema: JsonObject;
   possibleEffects: EffectKind[];
   availability: 'callable' | 'blocked';
+  availabilityReason?: { code: string; message: string };
+  /** Native executor facts observed while preparing this tool view. */
+  runtimeStatus?: JsonObject;
 }
 
 export interface PreparedToolDescriptor extends ToolDescriptor {

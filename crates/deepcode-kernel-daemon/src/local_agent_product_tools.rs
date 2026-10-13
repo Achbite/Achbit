@@ -21,6 +21,7 @@ pub(crate) struct ProductTools {
     is_child_agent: bool,
     pub(crate) document_python: Option<std::path::PathBuf>,
     pub(crate) browser_binding: Option<Value>,
+    pub(crate) desktop: Option<crate::desktop_tools::DesktopRun>,
     pub(crate) computer_use_instance: Option<String>,
     pub(crate) container_instance: Option<String>,
     pub(crate) process_instance: Option<String>,
@@ -35,6 +36,7 @@ impl ProductTools {
             is_child_agent: false,
             document_python: None,
             browser_binding: None,
+            desktop: None,
             computer_use_instance: None,
             container_instance: None,
             process_instance: None,
@@ -66,6 +68,11 @@ impl ProductTools {
 
     pub(crate) fn with_containers(mut self, instance: Option<String>) -> Self {
         self.container_instance = instance;
+        self
+    }
+
+    pub(crate) fn with_desktop(mut self, desktop: crate::desktop_tools::DesktopRun) -> Self {
+        self.desktop = Some(desktop);
         self
     }
 

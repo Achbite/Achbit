@@ -55,6 +55,7 @@ pub(crate) use config_root_lease::*;
 pub(crate) use conversation_api::*;
 use conversation_resources::*;
 mod browser_tools;
+mod desktop_tools;
 pub(crate) use host_connection::*;
 pub(crate) use host_lifecycle::*;
 pub(crate) use host_services::*;
@@ -166,13 +167,19 @@ async fn main() {
     let workspace_resolver = Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
         gui.clone(),
     ));
-    let local_agent = LocalAgentRuntime::open(
+    configure_host_process_identity(addr).expect("初始化 Host 进程身份");
+    let desktop = Arc::new(desktop_tools::DesktopHost::new(
+        host_process_identity().instance_id.clone(),
+        std::env::var(HOST_SHELL_TOKEN_ENV).expect("Host shell token"),
+    ));
+    let mut local_agent = LocalAgentRuntime::open(
         &session_store_path,
         &tool_record_store_path,
         workspace_resolver,
         &user_settings,
     )
     .expect("打开本地 Agent Runtime");
+    local_agent.kernel.desktop = desktop;
     let session_service = match SessionServiceProcess::spawn(
         &format!("http://{addr}"),
         local_agent.service_token(),
@@ -185,7 +192,6 @@ async fn main() {
     };
     let host_connection =
         HostConnection::from_environment().expect("初始化 Host Shell 本地连接凭证");
-    configure_host_process_identity(addr).expect("初始化 Host 进程身份");
     let state = AppState {
         local_agent,
         session_service,

@@ -8,6 +8,7 @@ import type {
   JsonObject,
   ModelMessage,
   ProviderRequest,
+  PreparedToolDescriptor,
   ProviderToolDefinition,
   RunRuntimeSnapshot,
   SessionEvent,
@@ -46,6 +47,13 @@ import {
 import { renderActiveToolGuidance } from './toolPromptContributions.js';
 import { visualContextInstruction, visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
+
+function toolAvailability(tools: readonly PreparedToolDescriptor[]): JsonObject[] {
+  return tools.map(tool => ({ name: tool.name, availability: tool.availability,
+    ...(tool.availabilityReason ? { reason: tool.availabilityReason } : {}),
+    ...(tool.runtimeStatus ? { runtimeStatus: tool.runtimeStatus } : {}),
+  }));
+}
 
 export interface PreparedProviderRequest {
   request: ProviderRequest;
@@ -183,6 +191,12 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const imageReader = toolCodec.wireByCanonical.get('session.read');
   if (imageReader) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
     label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
+  const pluginAvailability = runtimeTools.filter(tool => tool.origin === 'extension');
+  if (pluginAvailability.length) instructions.push({
+    contributionId: `tool-availability:${input.runtime.kernelCatalogSnapshotRef}`,
+    contributionKind: 'sessionControls', label: 'Execution capabilities',
+    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nUse only the callable tools in this request. Blocked tools are unavailable for the reported reason; do not probe for them or recreate their effects through shell commands. These facts describe execution capability, not permission approval. Native runtimeStatus reports the executor's last preparation observation; action results provide later facts.` },
+  });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
   if (input.purpose === 'contextCompaction') selected.push({

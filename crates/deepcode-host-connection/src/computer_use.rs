@@ -1,4 +1,4 @@
-//! GUI Host ownership of the native desktop executor.
+//! Shared Host ownership of the native desktop executor.
 //! The connection lifetime owns the process; no Session state or tool policy lives here.
 //! macOS launches an independently signed App through LaunchServices; Windows starts
 //! the sibling executable inside a Host-owned Job Object.
@@ -157,17 +157,17 @@ fn watch_process_exit(pid: libc::pid_t) -> Result<OwnedFd, String> {
     Ok(queue)
 }
 
-/// Packaged location next to the GUI: a sibling App bundle on macOS, a sibling
+/// Packaged location relative to the shared Host: a sibling App bundle on macOS, a sibling
 /// executable in the installation directory on Windows.
-fn packaged_location(gui: &Path) -> Result<PathBuf, String> {
+fn packaged_location(host_executable: &Path) -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
-    return gui
+    return host_executable
         .parent()
         .and_then(|p| p.ancestors().nth(3))
         .map(|root| root.join("DeepCode Computer Use.app"))
         .ok_or_else(|| "computer_component_package_path_invalid".into());
     #[cfg(windows)]
-    return gui
+    return host_executable
         .parent()
         .map(|directory| directory.join("DeepCode-Computer-Use.exe"))
         .ok_or_else(|| "computer_component_package_path_invalid".into());
@@ -204,10 +204,6 @@ impl ComputerUseHost {
         return self.app.clone();
     }
 
-    pub fn available(&self) -> bool {
-        self.executable().is_file()
-    }
-
     pub fn stop(&self) -> Result<(), String> {
         let mut slot = self
             .connection
@@ -223,7 +219,7 @@ impl ComputerUseHost {
     #[cfg(target_os = "macos")]
     fn launch(&self, arguments: &[&str]) -> Result<(), String> {
         // LaunchServices gives this App its own macOS identity, instead of
-        // inheriting the GUI's permission responsibility as a directly spawned binary.
+        // inheriting the Host's permission responsibility as a directly spawned binary.
         let launched = Command::new("/usr/bin/open")
             .args(["-n", "-g", "-a"])
             .arg(&self.app)
@@ -489,9 +485,8 @@ mod tests {
             token: "token-test".into(),
             connection: Mutex::new(None),
         };
-        assert!(host.available());
-        let binding =
-            json!({"hostInstanceId":"host:test","windowLabel":"main","sessionId":"s","runId":"r"});
+        assert!(host.executable().is_file());
+        let binding = json!({"hostInstanceId":"host:test","sessionId":"s","runId":"r"});
         let status = host
             .call(&binding, &json!({"action":"computer:status"}))
             .unwrap();
@@ -562,7 +557,7 @@ mod tests {
             token: "token-update".into(),
             connection: Mutex::new(None),
         };
-        let binding = json!({"hostInstanceId":"host:update","windowLabel":"main","sessionId":"s","runId":"r"});
+        let binding = json!({"hostInstanceId":"host:update","sessionId":"s","runId":"r"});
         let status = |host: &ComputerUseHost| {
             host.call(&binding, &json!({"action":"computer:status"}))
                 .unwrap()["data"]["executor"]["pid"]

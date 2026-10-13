@@ -335,6 +335,8 @@ function decodePreparedToolDescriptors(value: unknown): readonly PreparedToolDes
       'origin',
     ];
     if (isRecord(candidate) && Object.hasOwn(candidate, 'pluginUri')) fields.push('pluginUri');
+    if (isRecord(candidate) && Object.hasOwn(candidate, 'availabilityReason')) fields.push('availabilityReason');
+    if (isRecord(candidate) && Object.hasOwn(candidate, 'runtimeStatus')) fields.push('runtimeStatus');
     if (
       !isExactRecord(candidate, fields)
       || !isNonEmptyText(candidate.toolBindingRef)
@@ -353,6 +355,10 @@ function decodePreparedToolDescriptors(value: unknown): readonly PreparedToolDes
       ].includes(String(effect)))
       || new Set(candidate.possibleEffects.map(String)).size !== candidate.possibleEffects.length
       || candidate.availability !== 'callable' && candidate.availability !== 'blocked'
+      || candidate.availabilityReason !== undefined && (candidate.availability !== 'blocked'
+        || !isExactRecord(candidate.availabilityReason, ['code', 'message'])
+        || !isNonEmptyText(candidate.availabilityReason.code) || !isNonEmptyText(candidate.availabilityReason.message))
+      || candidate.runtimeStatus !== undefined && !isRecord(candidate.runtimeStatus)
       || candidate.origin !== 'coreBuiltin' && candidate.origin !== 'extension'
       || (candidate.origin === 'coreBuiltin' && candidate.pluginUri !== undefined)
       || (candidate.origin === 'extension'
@@ -370,6 +376,8 @@ function decodePreparedToolDescriptors(value: unknown): readonly PreparedToolDes
       inputSchema: structuredClone(candidate.inputSchema),
       possibleEffects: [...candidate.possibleEffects] as PreparedToolDescriptor['possibleEffects'],
       availability: candidate.availability,
+      ...(candidate.availabilityReason ? { availabilityReason: structuredClone(candidate.availabilityReason) as PreparedToolDescriptor['availabilityReason'] } : {}),
+      ...(candidate.runtimeStatus ? { runtimeStatus: structuredClone(candidate.runtimeStatus) } : {}),
       origin: candidate.origin,
       ...(candidate.origin === 'extension'
         ? { pluginUri: candidate.pluginUri as PreparedToolDescriptor['pluginUri'] }
