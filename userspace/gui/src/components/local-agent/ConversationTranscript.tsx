@@ -30,6 +30,7 @@ import { InteractionCard } from './InteractionCard';
 import { messageDisplayText } from './interactionPresentation';
 
 interface ConversationTranscriptProps {
+  layoutCache: ConversationLayoutCache;
   language: UiLanguage;
   loading: boolean;
   showReasoning?: boolean;
@@ -50,6 +51,7 @@ interface ConversationTranscriptProps {
 }
 
 export function ConversationTranscript({
+  layoutCache,
   language,
   showReasoning = false,
   displaySettledRunIds,
@@ -86,7 +88,6 @@ export function ConversationTranscript({
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const linkRequest = useRef(0);
   const [linkChoices, setLinkChoices] = useState<{ sessionId: string; request: number; targets: ResolvedLocalTarget[] } | null>(null);
-  const layouts = useRef(new ConversationLayoutCache());
   const currentSessionRef = useRef({ sessionId: projection?.sessionId });
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   if (currentSessionRef.current.sessionId !== projection?.sessionId) currentSessionRef.current = { sessionId: projection?.sessionId };
@@ -333,10 +334,12 @@ export function ConversationTranscript({
 </>;
   const rounds = useMemo(() => conversationRounds(conversationItems, draftItems, projection?.run?.runId), [conversationItems, draftItems, projection?.run?.runId]);
   const sessionKey = projection?.sessionId ?? '';
-  const virtualizer = useMemo(() => new ConversationVirtualizer(layouts.current.session(sessionKey), viewport.preserveReadingPosition), [sessionKey, viewport.preserveReadingPosition]);
+  const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), viewport.preserveReadingPosition), [layoutCache, sessionKey, viewport.preserveReadingPosition]);
   const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
   const eagerRows = useMemo(() => new Set(rounds.flatMap((round) => round.rows).slice(-12).map((row) => row.key)), [rounds]);
-  useLayoutEffect(() => {
+  // The scroll body belongs to a parent host node; its ref is attached after
+  // child layout effects on a fresh mount (including cached session switches).
+  useEffect(() => {
     if (viewport.bodyRef.current) virtualizer.connect(viewport.bodyRef.current);
     return () => virtualizer.disconnect();
   }, [virtualizer, viewport.bodyRef]);

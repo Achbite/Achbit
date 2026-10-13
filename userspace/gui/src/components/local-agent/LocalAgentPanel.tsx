@@ -1,5 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -15,6 +15,7 @@ import { FileChanges, roundChangeActivities } from './FileChanges';
 import { useDisplayedConversation } from './ConversationDisplayProvider';
 import { ConversationComposer } from './ConversationComposer';
 import { ConversationTranscript } from './ConversationTranscript';
+import { ConversationLayoutCache } from './conversationVirtualizer';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
 import { ArtifactLinks } from './ArtifactLinks';
 import './localAgentPanel.css';
@@ -49,6 +50,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
   const [agentSurface, setAgentSurface] = useState<HTMLElement | null>(null);
   const [uiActionError, setUiActionError] = useState<string | null>(null);
+  const conversationLayouts = useRef(new ConversationLayoutCache());
   useEffect(() => setUiActionError(null), [sessionId]);
   const presentation = usePresentedCommittedContent(projection, language);
   const activeSummary = catalog.sessions.find((session) => session.id === sessionId);
@@ -142,6 +144,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
       <div className="local-agent__viewport">
       <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
         <ConversationTranscript
+          layoutCache={conversationLayouts.current}
           displaySettledRunIds={display.displaySettledRunIds}
           onDisplayed={display.onDisplayed}
           showReasoning={showReasoning}

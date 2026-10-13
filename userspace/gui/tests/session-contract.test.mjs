@@ -1630,8 +1630,11 @@ test('continuous conversation keeps every message anchor while mounting nearby c
   const previousSelf = globalThis.self;
   globalThis.self = {};
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
-  const { ConversationTranscript } = await loadGuiModule(t, '/src/components/local-agent/ConversationTranscript.tsx');
+  const [{ ConversationTranscript }, { ConversationLayoutCache }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts',
+  ]);
   const props = {
+    layoutCache: new ConversationLayoutCache(),
     language: 'zh-CN', loading: false, displaySettledRunIds: new Set(), artifacts: [], onDisplayed() {},
     projection: { sessionId: 'session:long', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts:[] },
     hasConversationContent: true, draftItems: [],
@@ -1666,6 +1669,7 @@ test('continuous conversation keeps every message anchor while mounting nearby c
 });
 
 test('virtual rows preserve measured height, reading layout and per-session presentation state', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const { ConversationLayoutCache, ConversationVirtualizer } = await loadGuiModule(t, '/src/components/local-agent/conversationVirtualizer.ts');
   const previousIntersection = globalThis.IntersectionObserver;
   const previousResize = globalThis.ResizeObserver;
@@ -1694,6 +1698,8 @@ test('virtual rows preserve measured height, reading layout and per-session pres
   assert.ok(intersections.observed.has(node));
   assert.equal(virtual.layout('row:old').height, 285);
   intersections.callback([{ target: node, isIntersecting: false }]);
+  assert.deepEqual(visibility, [], 'leaving the viewport retains recently read content');
+  t.mock.timers.tick(30_000);
   assert.deepEqual(visibility, [false]);
   node.dataset.virtualRendered = 'false'; height = 120;
   resizes.callback([{ target: node }]);
@@ -1727,6 +1733,60 @@ test('virtual rows preserve measured height, reading layout and per-session pres
   }));
   assert.match(markup(revisit), /still open/, 'the remounted component consumes its saved disclosure state');
   assert.match(markup(other), /closed/, 'another session never inherits it');
+});
+
+test('recent virtual rows cancel release on return and keep focus until interaction ends', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { ConversationLayoutCache, ConversationVirtualizer } = await loadGuiModule(t, '/src/components/local-agent/conversationVirtualizer.ts');
+  const previousIntersection = globalThis.IntersectionObserver, previousResize = globalThis.ResizeObserver;
+  let intersection;
+  globalThis.IntersectionObserver = class {
+    constructor(callback) { intersection = callback; }
+    observe() {} unobserve() {} disconnect() {}
+  };
+  globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  t.after(() => { globalThis.IntersectionObserver = previousIntersection; globalThis.ResizeObserver = previousResize; });
+  const listeners = new Map();
+  const document = { activeElement: null, getSelection: () => null,
+    addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) };
+  const root = { ...document, ownerDocument: document };
+  const node = { dataset: { conversationAnchor: 'recent', virtualRendered: 'true' }, hidden: false,
+    ownerDocument: document, contains: target => target === node, getBoundingClientRect: () => ({ height: 240 }) };
+  const virtual = new ConversationVirtualizer(new ConversationLayoutCache().session('recent'), () => {});
+  const visibility = [];
+  const unregister = virtual.register('recent', node, visible => visibility.push(visible));
+  virtual.connect(root);
+  const leave = () => intersection([{ target: node, isIntersecting: false }]);
+  const enter = () => intersection([{ target: node, isIntersecting: true }]);
+  leave(); t.mock.timers.tick(29_000);
+  assert.deepEqual(visibility, [], 'content is still mounted during the retention window');
+  enter(); t.mock.timers.tick(2_000);
+  assert.deepEqual(visibility, [true], 'returning cancels the old release deadline');
+  leave(); t.mock.timers.tick(29_999);
+  assert.deepEqual(visibility, [true]);
+  t.mock.timers.tick(1);
+  assert.deepEqual(visibility, [true, false], 'a subsequent departure gets a fresh retention window');
+  enter(); leave();
+  document.activeElement = node;
+  t.mock.timers.tick(30_000);
+  assert.deepEqual(visibility, [true, false, true], 'focused offscreen content stays mounted after expiry');
+  document.activeElement = null;
+  listeners.get('focusout')(); await Promise.resolve();
+  t.mock.timers.tick(30_000);
+  assert.deepEqual(visibility, [true, false, true, false]);
+  enter(); leave();
+  document.getSelection = () => ({ isCollapsed: false, anchorNode: node, focusNode: node });
+  t.mock.timers.tick(30_000);
+  assert.equal(visibility.at(-1), true, 'selected offscreen content also stays mounted');
+  document.getSelection = () => null;
+  listeners.get('selectionchange')(); await Promise.resolve();
+  unregister(); t.mock.timers.tick(30_000);
+  assert.equal(visibility.at(-1), true, 'unregister cancels pending row release');
+  const unmount = virtual.register('recent', node, visible => visibility.push(visible));
+  leave(); virtual.disconnect(); t.mock.timers.tick(30_000);
+  assert.equal(visibility.at(-1), true, 'disconnect cancels pending releases without changing unmounted rows');
+  assert.equal(listeners.size, 0);
+  unmount();
 });
 
 test('Markdown keeps archived artifact links and image sources in streaming and final answers', async (t) => {
