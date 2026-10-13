@@ -3447,15 +3447,15 @@ test('usage revision advances with every provider response inside a run', async 
   assert.notEqual(usageRevision([{ ...round, providerCallCount: 2 }]), first, 'a completion without usage still changes the revision');
 });
 
-async function createUsageWidgetHarness(t) {
+async function createUsageWidgetHarness(t, savedPositions = new Map()) {
   const { default: plugin } = await import('../src/ui-plugins/builtinUsage.mjs');
   const { usageWidgetLabels } = await loadGuiModule(t, '/src/ui-plugins/usageWidgetLabels.ts');
   class Element {
     children = []; dataset = {}; hidden = false; attrs = {}; clientWidth = 800; clientHeight = 600;
     listeners = new Map(); captures = new Set();
     style = { setProperty() {} };
-    append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
-    replaceChildren() { this.children = []; }
+    append(...children) { for (const child of children) { child.remove(); child.parentElement = this; this.children.push(child); } }
+    replaceChildren() { for (const child of this.children) child.parentElement = null; this.children = []; }
     setAttribute(key, value) { this.attrs[key] = value; }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
     closest(selector) { return selector === '[data-usage-drag]' && 'usageDrag' in this.dataset ? this : this.parentElement?.closest(selector); }
@@ -3471,7 +3471,7 @@ async function createUsageWidgetHarness(t) {
       const collapsed = this.children.some(child => child.className === 'dc-usage__handle');
       return { left: parseFloat(this.style.left) || 0, top: parseFloat(this.style.top) || 0, width: collapsed ? 18 : 200, height: collapsed ? 28 : 80 };
     }
-    remove() { this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
+    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
   }
   const listeners = new Map();
   let view, disposed = false;
@@ -3483,7 +3483,8 @@ async function createUsageWidgetHarness(t) {
       assert.deepEqual(listeners.get(type), { listener, capture }); listeners.delete(type);
     },
   };
-  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.window = { addEventListener() {}, removeEventListener() {},
+    localStorage: { getItem: key => savedPositions.get(key) ?? null, setItem: (key, value) => savedPositions.set(key, value) } };
   globalThis.ResizeObserver = class { observe() {} disconnect() {} };
   t.after(() => {
     try { if (view && !disposed) view.dispose(); }
@@ -3530,6 +3531,7 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   assert.equal(reads, 1, 'language changes redraw without another quota request');
   input = { ...input, revision: 1 }; view.update(input);
   assert.equal(reads, 2, 'every provider response refreshes usage without a manual action');
+  await Promise.resolve();
   pointer(new Element());
   assert.deepEqual(changes, [false]);
   assert.equal(root.querySelectorAll('.dc-usage__details').length, 0);
@@ -3600,6 +3602,67 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   dispose();
   assert.equal(listeners.size, 0, 'capture listeners and existing drag listeners are all removed');
   assert.equal(container.children.length, 0);
+});
+
+test('usage updates preserve controls, coalesce in-flight reads, and keep the last confirmed snapshot', async t => {
+  const { container, usageWidgetLabels, mount } = await createUsageWidgetHarness(t);
+  const requests = [];
+  let input = { visibility: 'summary', expanded: false, locale: 'en-US', revision: 0, modelId: 'test',
+    labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
+    connection: { id: 'connection:usage', name: 'Usage', billingMode: 'metered' } };
+  const view = mount(input, { signal: new AbortController().signal,
+    usage: { query: (_query, signal) => new Promise(resolve => requests.push({ resolve, signal })) },
+    actions: { setExpanded(expanded) { input = { ...input, expanded }; view.update(input); } },
+  });
+  const result = value => ({ totals: { estimatedCost: value, calls: 1, pricedCalls: 1, inputTokens: 10, outputTokens: 2, cacheReadTokens: 0 },
+    coverageFrom: 0, query: { from: 0 }, buckets: [] });
+  requests[0].resolve(result(1)); await Promise.resolve();
+  const root = container.children[0], body = root.querySelectorAll('.dc-usage__body')[0];
+  const contents = element => [element.textContent ?? '', ...element.children.map(contents)].join(' ');
+  root.listeners.get('pointerdown')({ target: body, button: 0, isPrimary: true, pointerId: 1, clientX: 610, clientY: 520 });
+  view.update({ ...input });
+  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body, 'unrelated stream renders cannot detach the click target');
+  input = { ...input, revision: 1 }; view.update(input);
+  input = { ...input, revision: 2 }; view.update(input);
+  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body, 'starting a usage read also preserves the button');
+  body.onclick();
+  assert.equal(input.expanded, true);
+  assert.equal(requests.length, 2, 'opening and repeated responses share the in-flight read');
+  assert.equal(requests[1].signal.aborted, false);
+  assert.ok(contents(root).includes('$1.00'), 'the last confirmed amount remains visible during the read');
+  const detail = root.querySelectorAll('.dc-usage__details')[0];
+  detail.scrollTop = 17;
+  requests[1].resolve(result(2)); await Promise.resolve();
+  assert.equal(requests.length, 3, 'one follow-up read covers the newest response revision');
+  assert.equal(root.querySelectorAll('.dc-usage__details')[0], detail);
+  assert.equal(detail.scrollTop, 17);
+  requests[2].resolve(result(3)); await Promise.resolve();
+  assert.ok(contents(root).includes('$3.00'));
+  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body);
+  body.onclick(); assert.equal(input.expanded, false, 'the same button remains interactive after completion');
+});
+
+test('usage widget remembers a moved position across remounts without saving temporary layout constraints', async t => {
+  const saved = new Map();
+  const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t, saved);
+  const input = { visibility: 'summary', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
+    labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+  const scope = { signal: new AbortController().signal, quota: { async read() { return { windows: [] }; } }, actions: {} };
+  const view = mount(input, scope); await Promise.resolve();
+  const root = container.children[0];
+  root.listeners.get('keydown')({ target: root.querySelectorAll('.dc-usage__body')[0], key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
+  const moved = root.getBoundingClientRect();
+  assert.equal(saved.size, 1);
+  const stored = [...saved.values()][0];
+  container.clientWidth = 360;
+  view.update({ ...input, visibility: 'collapsed' });
+  assert.equal([...saved.values()][0], stored);
+  dispose(); container.clientWidth = 800;
+  const restored = mount(input, scope); await Promise.resolve();
+  assert.equal(container.children[0].getBoundingClientRect().left, moved.left);
+  assert.equal(container.children[0].getBoundingClientRect().top, moved.top);
+  restored.dispose();
 });
 
 test('output overview remains compact while the sidebar page shows all deliveries', async t => {
@@ -3717,7 +3780,7 @@ for (const billingMode of ['subscription', 'metered']) {
 
     update({ expanded: false });
     update({ expanded: true });
-    assert.equal(text(root).includes(newValue), false, 'every refresh withdraws the previous value until confirmed');
+    assert.equal(text(root).includes(newValue), true, 'same-query background refresh keeps the last confirmed value until a result arrives');
     requests[3].reject(new Error('previous_connection_failure'));
     await Promise.resolve();
     update({ connection: { ...input.connection, id: 'connection:other' } });

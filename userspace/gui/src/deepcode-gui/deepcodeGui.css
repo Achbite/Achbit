@@ -21,6 +21,39 @@ body,
   box-sizing: border-box;
 }
 
+/* Desktop chrome has no text selection. Reading/editing surfaces opt in. */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:is(input, textarea, [contenteditable]:not([contenteditable='false']),
+  .conversation-markdown, .conversation-markdown-inline, .local-agent__message-text,
+  .local-agent__user-text, .local-agent__queued-input > span,
+  .cm-content, .textLayer, .ui-plugin-view, pre, code,
+  [data-selectable-text], [role='alert']) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+button, select, summary, [role='button'] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+::selection {
+  background: rgb(70 145 245 / 28%);
+  color: inherit;
+}
+
+/* Native selection still owns copy and keyboard navigation; reading highlights
+   paint text fragments without WebKit's block-wide selection bands. */
+html[data-reading-selection] ::selection { background: transparent; }
+::highlight(deepcode-reading-selection) {
+  background: rgb(70 145 245 / 28%);
+  color: inherit;
+}
+
 button,
 input,
 select,

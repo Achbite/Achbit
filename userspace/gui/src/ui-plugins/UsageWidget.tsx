@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationReaderLayout } from '../components/local-agent/LocalAgentPanel';
 import { useLocalAgentStore } from '../state/localAgentStore';
 import { useSettingsStore } from '../state/settingsStore';
@@ -7,6 +7,7 @@ import { UsageWidgetSettings } from './UsageWidgetSettings';
 import { normalizeUiLanguage } from '../i18n';
 import { usageWidgetLabels } from './usageWidgetLabels';
 import { useUsageCostDisplay } from './usageCost';
+import type { UiPluginInput } from './types';
 
 /** Every provider response advances these counters, so the widget reconciles usage after each one. */
 export function usageRevision(history: ReadonlyArray<{ providerCallCount: number; inputTokens: number; outputTokens: number }> | undefined) {
@@ -54,13 +55,17 @@ export function UsageWidget({ readerLayout, hidden }: {
     if (target !== page) observer.observe(target);
     return () => observer.disconnect();
   }, [enabled, readerLayout.visible, readerLayout.conversationBounds]);
-  if (!enabled) return null;
   const concealed = hidden || (readerLayout.visible && readerLayout.expanded);
   const displayVisibility = concealed || visibility === 'hidden' ? 'hidden'
     : readerLayout.visible ? readerVisibility : visibility === 'collapsed' ? 'collapsed' : 'summary';
+  // Conversation text streams independently of usage. Do not redraw the plugin for every token.
+  const input = useMemo<UiPluginInput>(() => ({ kind: 'usage.widget', connection, modelId: profile?.model ?? null,
+    visibility: displayVisibility, expanded, revision, locale, theme,
+    costDisplay: { currency: costDisplay.currency, usdRate: costDisplay.usdRate }, labels: usageWidgetLabels(locale) }),
+  [connection, profile?.model, displayVisibility, expanded, revision, locale, theme, costDisplay.currency, costDisplay.usdRate]);
+  if (!enabled) return null;
   return <div ref={boundary} className="deepcode-gui-usage-boundary" hidden={concealed}>
-    <UiPluginSlotView slot="usage.widget" input={{ kind: 'usage.widget', connection, modelId: profile?.model ?? null,
-      visibility: displayVisibility, expanded, revision, locale, theme, costDisplay, labels: usageWidgetLabels(locale) }}
+    <UiPluginSlotView slot="usage.widget" input={input}
       actions={{ setExpanded, setUsageVisibility: value => {
         if (value !== 'summary') setExpanded(false);
         // Opening Reader is a temporary disclosure change, not a saved preference.
