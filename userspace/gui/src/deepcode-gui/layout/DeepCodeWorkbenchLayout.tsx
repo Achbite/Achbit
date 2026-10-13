@@ -1,4 +1,5 @@
 import { UsageWidget } from '../../ui-plugins/UsageWidget';
+import { ComputerTargetPreview } from './ComputerTargetPreview';
 import type { ConversationReaderLayout } from '../../components/local-agent/LocalAgentPanel';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import ProjectEnvironmentSettings from '../../components/settings-center/sections/ProjectEnvironmentSettings';
@@ -406,6 +407,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
           {showContextRail && <DeepCodeTaskPanel language={language} projection={projection} />}
         </div>
         <UsageWidget readerLayout={readerLayout} hidden={settingsOpen} />
+        <ComputerTargetPreview readerLayout={readerLayout} language={language} hidden={settingsOpen} />
       </div></>,
       }} />
 

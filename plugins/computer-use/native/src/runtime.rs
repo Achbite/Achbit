@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::{
     ffi::c_void,
     io::{BufRead, BufReader, Write},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -66,16 +66,23 @@ pub fn run() -> Result<(), String> {
     }
     let mut stream = TcpStream::connect_timeout(&endpoint, std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
+    let preview_listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    let preview_endpoint = preview_listener
+        .local_addr()
+        .map_err(|error| error.to_string())?;
     stream
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
     writeln!(
         stream,
         "{}",
-        json!({"token":arguments[4],"pid":std::process::id()})
+        json!({"token":arguments[4],"pid":std::process::id(),"previewEndpoint":preview_endpoint.to_string()})
     )
     .map_err(|e| e.to_string())?;
     let host = arguments[6].clone();
+    let preview_host = host.clone();
+    let preview_token = arguments[4].clone();
+    std::thread::spawn(move || serve_previews(preview_listener, &preview_host, &preview_token));
     let gui = MainThread {
         instance: format!(
             "{}-{}",
@@ -110,6 +117,42 @@ pub fn run() -> Result<(), String> {
         let _: () = msg_send![app, run];
     }
     Ok(())
+}
+
+fn serve_previews(listener: TcpListener, host: &str, token: &str) {
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { break };
+        let response = (|| -> Result<Value, String> {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .map_err(|error| error.to_string())?;
+            stream
+                .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+                .map_err(|error| error.to_string())?;
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().map_err(|error| error.to_string())?)
+                .read_line(&mut request)
+                .map_err(|error| error.to_string())?;
+            let request: Value =
+                serde_json::from_str(&request).map_err(|error| error.to_string())?;
+            if request["token"] != token
+                || !crate::protocol::binding_matches(&request["binding"], host)
+            {
+                return Err("computer_preview_binding_mismatch".into());
+            }
+            if request["input"]["action"] != "computer:preview" {
+                return Err("computer_preview_action_invalid".into());
+            }
+            crate::sharing::preview(&request["binding"], &request["input"])
+        })();
+        let response = match response {
+            Ok(data) => json!({"ok":true,"data":data}),
+            Err(message) => json!({"ok":false,"message":message}),
+        };
+        if let Err(error) = writeln!(stream, "{response}") {
+            eprintln!("computer_preview_write_failed: {error}");
+        }
+    }
 }
 
 fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), String> {

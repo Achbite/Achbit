@@ -17,6 +17,10 @@ struct Feedback {
 }
 thread_local! { static ACTIVE: RefCell<Option<Feedback>> = const { RefCell::new(None) }; }
 
+extern "C" {
+    fn dc_computer_install_pointer_content(window: *const AnyObject);
+}
+
 unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObject>, String> {
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size, size));
     let panel: *mut AnyObject = msg_send![class!(NSPanel), alloc];
@@ -29,7 +33,20 @@ unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObjec
     let _: () = msg_send![&*panel, setHidesOnDeactivate:false];
     let _: () = msg_send![&*panel, setReleasedWhenClosed:false];
     let _: () = msg_send![&*panel, setLevel:0_isize];
-    let _: () = msg_send![&*panel, setSharingType:0_usize];
+    // The actual arrow panel is an independently shared SCWindow. The click
+    // halo stays local; neither window receives input or acquires focus.
+    let sharing_type = if symbol == "cursorarrow" {
+        1_usize
+    } else {
+        0_usize
+    };
+    let _: () = msg_send![&*panel, setSharingType:sharing_type];
+    if symbol == "cursorarrow" {
+        let title = NSString::from_str("DeepCode Agent Pointer");
+        let _: () = msg_send![&*panel, setTitle:&*title];
+        dc_computer_install_pointer_content(&*panel);
+        return Ok(panel);
+    }
     let view: *mut AnyObject = msg_send![class!(NSImageView), alloc];
     let view: *mut AnyObject = msg_send![view, initWithFrame:frame];
     let view = Retained::from_raw(view).ok_or("Could not create pointer image view")?;
@@ -132,6 +149,17 @@ pub fn refresh() {
                     msg_send![&**panel, orderWindow:1_isize, relativeTo:active.window as isize];
                 let _: () = msg_send![&**panel, displayIfNeeded];
             }
+            let pointer_window: isize = msg_send![&*active.cursor, windowNumber];
+            let pointer_window = u32::try_from(pointer_window)
+                .map_err(|_| "The Agent pointer has an invalid WindowServer ID")?;
+            crate::sharing::pointer_feedback(
+                active.window,
+                active.generation,
+                pointer_window,
+                active.offset.x / bounds.size.width,
+                active.offset.y / bounds.size.height,
+                Instant::now() < active.expires,
+            );
             Ok(())
         }
     });

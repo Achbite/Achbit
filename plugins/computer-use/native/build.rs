@@ -38,7 +38,13 @@ fn main() {
         .success());
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=deepcode_sharing");
-    for framework in ["ScreenCaptureKit", "AppKit", "CoreMedia"] {
+    for framework in [
+        "ScreenCaptureKit",
+        "AppKit",
+        "CoreMedia",
+        "CoreImage",
+        "CoreVideo",
+    ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 }

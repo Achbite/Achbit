@@ -812,6 +812,17 @@ pub fn execute(
     binding: &Value,
     input: &Value,
 ) -> Result<Value, String> {
+    // GUI presentation requests are private Host commands, not model tools.
+    // They neither consume an observation nor create an image artifact.
+    if input["action"] == "computer:preview" {
+        return crate::sharing::request(
+            json!({"operation":"preview", "afterSequence":input["afterSequence"]}),
+            binding,
+        );
+    }
+    if input["action"] == "computer:activateTarget" {
+        return activate_shared_target(gui, binding, input);
+    }
     // One physical desktop observation at a time, across all bound sessions.
     let mut observation = OBSERVATION
         .lock()
@@ -1017,6 +1028,59 @@ pub fn execute(
     result
 }
 
+fn activate_shared_target(
+    gui: &crate::runtime::MainThread,
+    binding: &Value,
+    input: &Value,
+) -> Result<Value, String> {
+    let window = input["windowId"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or("Invalid preview windowId")?;
+    let generation = input["generation"]
+        .as_u64()
+        .filter(|value| *value > 0)
+        .ok_or("Invalid preview generation")?;
+    let shared = crate::sharing::request(
+        json!({"operation":"validate", "windowId":window, "generation":generation}),
+        binding,
+    )?;
+    let pid = shared["pid"]
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or("Shared window has no process identity")?;
+    let binding = binding.clone();
+    with_accessibility(gui, pid, move |root| unsafe {
+        crate::sharing::validate(&binding, window, generation)?;
+        let (element, _, _) = select_window(root, Some(window), pid)?;
+        if scalar_attribute(element.0, "AXMinimized")? == Some(json!(true)) {
+            return Err("The shared window is minimized".into());
+        }
+        set_true(element.0, "AXMain")?;
+        set_true(root, "AXFrontmost")?;
+        raise(element.0)?;
+        Ok(())
+    })?;
+    let started = Instant::now();
+    loop {
+        let focused = with_accessibility(gui, pid, move |root| unsafe {
+            let (element, _, _) = select_window(root, Some(window), pid)?;
+            Ok(frontmost(root)?
+                && attribute(root, "AXFocusedWindow")?
+                    .is_some_and(|focused| CFEqual(focused.0, element.0)))
+        })?;
+        if focused {
+            return Ok(json!({"activated":true,"windowId":window,"generation":generation}));
+        }
+        if started.elapsed() >= Duration::from_secs(2) {
+            return Err("The exact shared window did not gain focus".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 unsafe fn dispatch_input(input: &Value, saved: &Observation) -> Result<(), String> {
     let action = input["action"]
         .as_str()
@@ -1088,6 +1152,12 @@ unsafe fn dispatch_input(input: &Value, saved: &Observation) -> Result<(), Strin
             )?;
         }
         CGEventPost(0, event.0);
+        if action == "drag" && matches!(CGEventGetType(event.0), 1 | 6) {
+            // Pace the real input events, not a later replay animation. Target
+            // frames and published pointer positions remain readable through
+            // the separate presentation channel while this dispatch is active.
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
     Ok(())
 }

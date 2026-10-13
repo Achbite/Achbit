@@ -8,6 +8,13 @@ use std::sync::{Arc, Mutex};
 pub(crate) trait DesktopExecutor: Send + Sync {
     fn call(&self, binding: &Value, input: &Value) -> Result<Value, String>;
     fn stop(&self) -> Result<(), String>;
+    fn try_call_existing(&self, binding: &Value, input: &Value) -> Result<Option<Value>, String> {
+        self.call(binding, input).map(Some)
+    }
+    fn call_existing(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+        self.try_call_existing(binding, input)?
+            .ok_or_else(|| "computer_component_busy".into())
+    }
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -17,6 +24,12 @@ impl DesktopExecutor for deepcode_host_connection::computer_use::ComputerUseHost
     }
     fn stop(&self) -> Result<(), String> {
         self.stop()
+    }
+    fn try_call_existing(&self, binding: &Value, input: &Value) -> Result<Option<Value>, String> {
+        self.try_call_existing(binding, input)
+    }
+    fn call_existing(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+        self.call_existing(binding, input)
     }
 }
 
@@ -87,11 +100,12 @@ impl DesktopHost {
 
     pub(crate) fn release_run(&self, session: &str, run: &str) -> Result<(), String> {
         let key = (session.into(), run.into());
-        let mut runs = self
+        if !self
             .runs
             .lock()
-            .map_err(|_| "computer_run_registry_unavailable")?;
-        if !runs.contains(&key) {
+            .map_err(|_| "computer_run_registry_unavailable")?
+            .contains(&key)
+        {
             return Ok(());
         }
         let executor = self.executor.as_ref().map_err(Clone::clone)?;
@@ -103,7 +117,12 @@ impl DesktopHost {
         if released["released"] != true {
             return Err("computer_run_release_not_acknowledged".into());
         }
-        runs.remove(&key);
+        // Do not hold the ownership registry while waiting for physical release:
+        // the independent preview reader must still report stopping/failure.
+        self.runs
+            .lock()
+            .map_err(|_| "computer_run_registry_unavailable")?
+            .remove(&key);
         Ok(())
     }
 
@@ -116,6 +135,62 @@ impl DesktopHost {
             .map_err(|_| "computer_run_registry_unavailable")?
             .clear();
         Ok(())
+    }
+
+    /// A private GUI view of already-owned resources; no tool event or artifact
+    /// is produced, and merely opening the floating preview acquires nothing.
+    pub(crate) fn preview(
+        &self,
+        session: &str,
+        run: &str,
+        after_sequence: Option<u64>,
+    ) -> Result<Value, NativeError> {
+        if !self.owns_run(session, run)? {
+            return Ok(json!({"state":"inactive"}));
+        }
+        let executor = self.executor.as_ref().map_err(Clone::clone)?;
+        match executor.try_call_existing(
+            &self.binding(session, run),
+            &json!({
+                "action":"computer:preview", "afterSequence":after_sequence,
+            }),
+        )? {
+            Some(response) => decode(response),
+            None => Ok(json!({"pending":true})),
+        }
+    }
+
+    /// This navigation gesture raises only the currently shared window. The
+    /// helper validates source generation before changing focus; no input fires.
+    pub(crate) fn activate_target(
+        &self,
+        session: &str,
+        run: &str,
+        window: u32,
+        generation: u64,
+    ) -> Result<Value, NativeError> {
+        if !self.owns_run(session, run)? {
+            return Err("computer_run_not_active".into());
+        }
+        if window == 0 || generation == 0 {
+            return Err("computer_preview_target_invalid".into());
+        }
+        let executor = self.executor.as_ref().map_err(Clone::clone)?;
+        let response = executor.call_existing(
+            &self.binding(session, run),
+            &json!({
+                "action":"computer:activateTarget", "windowId":window, "generation":generation,
+            }),
+        )?;
+        decode(response)
+    }
+
+    fn owns_run(&self, session: &str, run: &str) -> Result<bool, NativeError> {
+        Ok(self
+            .runs
+            .lock()
+            .map_err(|_| "computer_run_registry_unavailable")?
+            .contains(&(session.into(), run.into())))
     }
 }
 
@@ -221,6 +296,98 @@ mod tests {
                 .message,
             "No desktop executor is attached to this Host."
         );
+    }
+
+    #[test]
+    fn preview_and_focus_only_address_an_owned_run_through_presentation() {
+        struct Presentation(Mutex<Vec<(Value, Value)>>);
+        impl DesktopExecutor for Presentation {
+            fn call(&self, _: &Value, _: &Value) -> Result<Value, String> {
+                panic!("presentation must not acquire resources through tool execution")
+            }
+            fn stop(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn try_call_existing(
+                &self,
+                binding: &Value,
+                input: &Value,
+            ) -> Result<Option<Value>, String> {
+                assert_eq!(input["action"], "computer:preview");
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((binding.clone(), input.clone()));
+                Ok(Some(json!({"ok":true,"data":{"state":"active"}})))
+            }
+            fn call_existing(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+                assert_eq!(input["action"], "computer:activateTarget");
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((binding.clone(), input.clone()));
+                Ok(json!({"ok":true,"data":{"activated":true}}))
+            }
+        }
+        let executor = Arc::new(Presentation(Mutex::new(vec![])));
+        let host = DesktopHost::for_test("host:preview", executor.clone());
+        assert_eq!(
+            host.preview("s", "r", None).unwrap(),
+            json!({"state":"inactive"})
+        );
+        assert_eq!(
+            host.activate_target("s", "r", 7, 2).unwrap_err().message,
+            "computer_run_not_active"
+        );
+        assert!(executor.0.lock().unwrap().is_empty());
+        host.runs.lock().unwrap().insert(("s".into(), "r".into()));
+        host.preview("s", "r", Some(19)).unwrap();
+        host.activate_target("s", "r", 7, 2).unwrap();
+        assert_eq!(
+            host.activate_target("s", "r", 0, 2).unwrap_err().message,
+            "computer_preview_target_invalid"
+        );
+        assert_eq!(
+            host.preview("other", "r", None).unwrap(),
+            json!({"state":"inactive"})
+        );
+        assert_eq!(
+            *executor.0.lock().unwrap(),
+            vec![
+                (
+                    json!({"hostInstanceId":"host:preview","sessionId":"s","runId":"r"}),
+                    json!({"action":"computer:preview","afterSequence":19})
+                ),
+                (
+                    json!({"hostInstanceId":"host:preview","sessionId":"s","runId":"r"}),
+                    json!({"action":"computer:activateTarget","windowId":7,"generation":2})
+                ),
+            ]
+        );
+        assert_eq!(host.runs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unavailable_presentation_preserves_the_native_failure() {
+        struct Presentation;
+        impl DesktopExecutor for Presentation {
+            fn call(&self, _: &Value, _: &Value) -> Result<Value, String> {
+                unreachable!()
+            }
+            fn stop(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn try_call_existing(&self, _: &Value, _: &Value) -> Result<Option<Value>, String> {
+                Err("computer_preview_disconnected".into())
+            }
+        }
+        let host = DesktopHost::for_test("host:preview", Arc::new(Presentation));
+        host.runs.lock().unwrap().insert(("s".into(), "r".into()));
+        assert_eq!(
+            host.preview("s", "r", None).unwrap_err().message,
+            "computer_preview_disconnected"
+        );
+        assert_eq!(host.runs.lock().unwrap().len(), 1);
     }
 }
 

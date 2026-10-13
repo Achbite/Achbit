@@ -6,12 +6,46 @@ use std::ffi::{c_char, CStr, CString};
 extern "C" {
     fn dc_sharing_request(request: *const c_char) -> *mut c_char;
     fn dc_sharing_free(response: *mut c_char);
+    fn dc_sharing_preview(request: *const c_char) -> *mut c_char;
+    fn dc_sharing_pointer_feedback(
+        window: u32,
+        generation: u64,
+        pointer_window: u32,
+        x: f64,
+        y: f64,
+        pulse: bool,
+    );
+}
+
+/// The pointer is a real companion capture source. Position is presentation
+/// metadata in target coordinates, never a replacement desktop input target.
+pub fn pointer_feedback(
+    window: u32,
+    generation: u64,
+    pointer_window: u32,
+    x: f64,
+    y: f64,
+    pulse: bool,
+) {
+    unsafe { dc_sharing_pointer_feedback(window, generation, pointer_window, x, y, pulse) }
 }
 
 pub fn request(mut input: Value, binding: &Value) -> Result<Value, String> {
     input["binding"] = binding.clone();
     let encoded = CString::new(input.to_string()).map_err(|e| e.to_string())?;
     let response = unsafe { dc_sharing_request(encoded.as_ptr()) };
+    decode(response)
+}
+
+/// Immutable presentation cache only; never dispatches to the AppKit queue.
+pub fn preview(binding: &Value, input: &Value) -> Result<Value, String> {
+    let encoded =
+        CString::new(json!({"binding":binding,"afterSequence":input["afterSequence"]}).to_string())
+            .map_err(|error| error.to_string())?;
+    decode(unsafe { dc_sharing_preview(encoded.as_ptr()) })
+}
+
+fn decode(response: *mut c_char) -> Result<Value, String> {
     if response.is_null() {
         return Err("ScreenCaptureKit response unavailable".into());
     }

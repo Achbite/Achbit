@@ -179,6 +179,8 @@ pub struct ComputerUseHost {
     host: String,
     token: String,
     connection: Mutex<Option<Connection>>,
+    #[cfg(target_os = "macos")]
+    preview_endpoint: Mutex<Option<std::net::SocketAddr>>,
 }
 
 impl ComputerUseHost {
@@ -194,6 +196,8 @@ impl ComputerUseHost {
             host,
             token,
             connection: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            preview_endpoint: Mutex::new(None),
         })
     }
 
@@ -212,6 +216,13 @@ impl ComputerUseHost {
         if let Some(connection) = slot.as_mut() {
             connection.stop()?;
             *slot = None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            *self
+                .preview_endpoint
+                .lock()
+                .map_err(|_| "computer_preview_state_unavailable")? = None;
         }
         Ok(())
     }
@@ -347,6 +358,21 @@ impl ComputerUseHost {
             }
             launched
         };
+        #[cfg(target_os = "macos")]
+        {
+            let endpoint: std::net::SocketAddr = handshake["previewEndpoint"]
+                .as_str()
+                .ok_or("computer_preview_endpoint_missing")?
+                .parse()
+                .map_err(|_| "computer_preview_endpoint_invalid")?;
+            if !endpoint.ip().is_loopback() {
+                return Err("computer_preview_endpoint_invalid".into());
+            }
+            *self
+                .preview_endpoint
+                .lock()
+                .map_err(|_| "computer_preview_state_unavailable")? = Some(endpoint);
+        }
         Ok(Connection {
             stream: reader,
             process_exit,
@@ -373,6 +399,13 @@ impl ComputerUseHost {
                 // executor and await its exact process before acknowledging it.
                 slot.as_mut().expect("connected component").stop()?;
                 *slot = None;
+                #[cfg(target_os = "macos")]
+                {
+                    *self
+                        .preview_endpoint
+                        .lock()
+                        .map_err(|_| "computer_preview_state_unavailable")? = None;
+                }
                 return Ok(json!({"ok":true,"data":{"released":true}}));
             }
         }
@@ -390,6 +423,13 @@ impl ComputerUseHost {
             {
                 slot.as_mut().expect("checked component").stop()?;
                 *slot = None;
+                #[cfg(target_os = "macos")]
+                {
+                    *self
+                        .preview_endpoint
+                        .lock()
+                        .map_err(|_| "computer_preview_state_unavailable")? = None;
+                }
             }
             // A failed helper whose exact process has exited has no input in flight,
             // so a new process is not a competing executor. The failed call itself is
@@ -407,6 +447,83 @@ impl ComputerUseHost {
         }
         let connection = slot.as_mut().expect("started component");
         Self::exchange(connection, binding, input)
+    }
+
+    /// GUI presentation uses an existing executor only. It must not launch or
+    /// replace a helper, nor queue behind a desktop action just to paint a frame.
+    pub fn try_call_existing(
+        &self,
+        binding: &Value,
+        input: &Value,
+    ) -> Result<Option<Value>, String> {
+        if !matches!(
+            input["action"].as_str(),
+            Some("computer:preview" | "computer:activateTarget")
+        ) {
+            return Err("computer_presentation_action_invalid".into());
+        }
+        #[cfg(target_os = "macos")]
+        if input["action"] == "computer:preview" {
+            return self.read_preview(binding, input).map(Some);
+        }
+        let mut slot = match self.connection.try_lock() {
+            Ok(slot) => slot,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("computer_component_state_unavailable".into())
+            }
+        };
+        let connection = slot.as_mut().ok_or("computer_component_not_connected")?;
+        Self::exchange(connection, binding, input).map(Some)
+    }
+
+    /// A user navigation gesture waits for the current physical action, then
+    /// validates its original target generation in the already-running helper.
+    pub fn call_existing(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+        if input["action"] != "computer:activateTarget" {
+            return Err("computer_presentation_action_invalid".into());
+        }
+        let mut slot = self
+            .connection
+            .lock()
+            .map_err(|_| "computer_component_state_unavailable")?;
+        let connection = slot.as_mut().ok_or("computer_component_not_connected")?;
+        Self::exchange(connection, binding, input)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read_preview(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+        let endpoint = self
+            .preview_endpoint
+            .lock()
+            .map_err(|_| "computer_preview_state_unavailable")?
+            .ok_or("computer_component_not_connected")?;
+        // This is the helper's read-only cache endpoint. It is independent of
+        // the execute socket, so a long AX operation does not freeze the preview.
+        let mut stream = TcpStream::connect_timeout(&endpoint, Duration::from_millis(300))
+            .map_err(|error| format!("computer_preview_connect_failed: {error}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| error.to_string())?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| error.to_string())?;
+        writeln!(
+            stream,
+            "{}",
+            json!({"token":self.token,"binding":binding,"input":input})
+        )
+        .map_err(|error| format!("computer_preview_write_failed: {error}"))?;
+        let mut response = String::new();
+        if BufReader::new(stream)
+            .read_line(&mut response)
+            .map_err(|error| format!("computer_preview_read_failed: {error}"))?
+            == 0
+        {
+            return Err("computer_preview_disconnected".into());
+        }
+        serde_json::from_str(&response)
+            .map_err(|error| format!("computer_preview_response_invalid: {error}"))
     }
 
     fn exchange(

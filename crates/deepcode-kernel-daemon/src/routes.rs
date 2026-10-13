@@ -1,6 +1,8 @@
 use crate::prelude::*;
 use crate::*;
 use axum::routing::delete;
+#[path = "computer_preview.rs"]
+mod computer_preview;
 
 pub(crate) fn build_app(state: AppState) -> Router {
     let host_connection = state.host_connection.clone();
@@ -9,6 +11,14 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api/host/client", get(host_client))
         .route("/api/health", get(health))
         .route("/api/host/shutdown", post(host_shutdown))
+        .route(
+            "/api/host/computer-preview",
+            post(computer_preview::preview),
+        )
+        .route(
+            "/api/host/computer-preview/activate",
+            post(computer_preview::activate),
+        )
         .route(
             "/api/host/native-browser",
             post(crate::browser_tools::register),

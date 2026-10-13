@@ -473,6 +473,8 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("GET", ["api", "fs", "initial-locations"])
         | ("GET", ["api", "fs", "browse"])
         | ("POST", ["api", "host", "inspect"])
+        | ("POST", ["api", "host", "computer-preview"])
+        | ("POST", ["api", "host", "computer-preview", "activate"])
         | ("GET", ["api", "user-settings"])
         | ("PATCH", ["api", "user-settings"])
         | ("POST", ["api", "user-settings", "workspace-sandbox"])
@@ -562,6 +564,25 @@ mod tests {
         assert!(message.contains(&url));
         assert!(message.contains(&original_cause), "{message}");
         assert_ne!(message, error.to_string());
+    }
+
+    #[test]
+    fn host_proxy_exposes_computer_preview_and_exact_target_activation() {
+        for path in [
+            "/api/host/computer-preview",
+            "/api/host/computer-preview/activate",
+        ] {
+            assert!(host_proxy_path_allowed("POST", path), "{path}");
+            assert!(!host_proxy_path_allowed("GET", path), "{path}");
+        }
+        assert!(!host_proxy_path_allowed(
+            "POST",
+            "/api/host/computer-preview/stop"
+        ));
+        assert!(!host_proxy_path_allowed(
+            "POST",
+            "/api/local-agent/kernel/execute"
+        ));
     }
 
     #[test]

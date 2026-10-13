@@ -47,6 +47,10 @@ struct Page {
     service_id: Option<String>,
     kind: String,
     surface: SurfaceState,
+    #[serde(skip)]
+    preview_run_id: Option<String>,
+    #[serde(skip)]
+    preview_sequence: u64,
     #[cfg(windows)]
     control: ControlState,
 }
@@ -83,6 +87,7 @@ pub struct NativeBrowser {
     pages: Mutex<HashMap<String, Page>>,
     page_changed: Condvar,
     opening: tauri::async_runtime::Mutex<()>,
+    previewing: tauri::async_runtime::Mutex<()>,
     stop: Arc<AtomicBool>,
     services: Mutex<HashMap<String, services::DevelopmentService>>,
     self_bootstrap: String,
@@ -136,6 +141,7 @@ pub fn start(
         pages: Mutex::new(HashMap::new()),
         page_changed: Condvar::new(),
         opening: tauri::async_runtime::Mutex::new(()),
+        previewing: tauri::async_runtime::Mutex::new(()),
         stop: Arc::clone(&stop),
         services: Mutex::new(HashMap::new()),
         self_bootstrap,
@@ -370,11 +376,18 @@ fn page_url(input: &Value) -> Result<tauri::Url, String> {
 /// require an exact preview id. No lookup by the most recently focused window.
 pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Result<Value, String> {
     let session_id = binding["sessionId"].as_str().map(str::to_string);
+    let preview_run_id = binding["runId"].as_str().map(str::to_string);
     let tool_request = binding["runId"].is_string();
     #[cfg(windows)]
     let control_binding = binding.clone();
     let binding = checked_binding(&app, &binding)?;
     let action = string(&input, "action")?;
+    if action == "controlPreview" {
+        if tool_request {
+            return Err("Preview frames belong to the GUI Host.".into());
+        }
+        return control_preview(app, session_id, input).await;
+    }
     if action.starts_with("computer:") {
         return Err("Computer control requires the Kernel native transport.".into());
     }
@@ -456,6 +469,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             .cloned();
         if let Some(page) = existing {
             drop(opening);
+            bind_preview_target(&app, &page.preview_id, preview_run_id.as_deref())?;
             #[cfg(windows)]
             let _control = if tool_request {
                 Some(ControlIndicator::begin(
@@ -494,6 +508,8 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             service_id,
             kind: kind.into(),
             surface: SurfaceState::default(),
+            preview_run_id: None,
+            preview_sequence: 0,
             #[cfg(windows)]
             control: ControlState::default(),
         };
@@ -572,6 +588,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             return Err(error);
         }
         let page = page_state(&app, &id)?;
+        bind_preview_target(&app, &id, preview_run_id.as_deref())?;
         #[cfg(windows)]
         control_indicator::publish_current(&app, &id)?;
         #[cfg(not(windows))]
@@ -591,6 +608,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         return Err("native_browser_page_session_mismatch".into());
     }
     let view = app.get_webview(id).ok_or("native_browser_page_closed")?;
+    if tool_request
+        && matches!(
+            action,
+            "act" | "capture" | "activate" | "navigate" | "reload"
+        )
+    {
+        bind_preview_target(&app, id, preview_run_id.as_deref())?;
+    }
     #[cfg(windows)]
     let _control = if tool_request
         && matches!(
@@ -605,6 +630,17 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         page = ready_page(app.clone(), id.to_string()).await?;
     }
     match action {
+        "activateControlPreview" => {
+            if tool_request || page.preview_run_id.as_deref() != input["runId"].as_str() {
+                return Err("native_browser_preview_target_changed".into());
+            }
+            let result = activate(app.clone(), page).await?;
+            view.window()
+                .set_focus()
+                .map_err(|error| error.to_string())?;
+            view.set_focus().map_err(|error| error.to_string())?;
+            return Ok(result);
+        }
         "activate" => return activate(app.clone(), page).await,
         "reviewStart" => {
             if !page.visible {
@@ -891,12 +927,132 @@ struct Capture {
     height: i64,
 }
 
+fn bind_preview_target(app: &tauri::AppHandle, id: &str, run: Option<&str>) -> Result<(), String> {
+    let Some(run) = run else { return Ok(()) };
+    let state = app.state::<NativeBrowser>();
+    let mut pages = state
+        .pages
+        .lock()
+        .map_err(|_| "native_browser_state_unavailable")?;
+    let session = pages
+        .get(id)
+        .ok_or("native_browser_page_closed")?
+        .session_id
+        .clone();
+    // One actual tool target per Session/run. Closing it must not resurrect an older page.
+    for page in pages.values_mut() {
+        if page.preview_id != id
+            && page.session_id == session
+            && page.preview_run_id.as_deref() == Some(run)
+        {
+            page.preview_run_id = None;
+        }
+    }
+    let page = pages.get_mut(id).ok_or("native_browser_page_closed")?;
+    page.preview_run_id = Some(run.to_string());
+    page.preview_sequence = PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+async fn control_preview(
+    app: tauri::AppHandle,
+    session: Option<String>,
+    input: Value,
+) -> Result<Value, String> {
+    let run = string(&input, "runId")?;
+    if session.is_none() {
+        return Err("native_browser_preview_session_required".into());
+    }
+    let state = app.state::<NativeBrowser>();
+    let Ok(_capture_owner) = state.previewing.try_lock() else {
+        return Ok(json!({"pending":true}));
+    };
+    let page = state
+        .pages
+        .lock()
+        .map_err(|_| "native_browser_state_unavailable")?
+        .values()
+        .filter(|page| page.session_id == session && page.preview_run_id.as_deref() == Some(run))
+        .max_by_key(|page| page.preview_sequence)
+        .cloned();
+    let Some(page) = page else {
+        return Ok(if input["expectedPreviewId"].is_string() {
+            json!({"state":"closed","reason":"native_browser_page_closed"})
+        } else {
+            json!({"state":"inactive"})
+        });
+    };
+    let target = json!({"previewId":page.preview_id,"url":page.url,"hostInstanceId":page.binding.host_instance_id,
+        "windowLabel":page.binding.window_label,"sessionId":page.session_id});
+    if page.status != "ready" {
+        return Ok(json!({"state":"updating","target":target,"reason":page.status}));
+    }
+    let view = app
+        .get_webview(&page.preview_id)
+        .ok_or("native_browser_page_closed")?;
+    let frame = capture_preview(view).await;
+    let current = page_state(&app, &page.preview_id)?;
+    if current.preview_run_id != page.preview_run_id
+        || current.preview_sequence != page.preview_sequence
+        || current.url != page.url
+    {
+        return Ok(
+            json!({"state":"updating","target":target,"reason":"native_browser_target_changed"}),
+        );
+    }
+    match frame {
+        Ok(frame) => Ok(json!({"state":"active","target":target,"frame":frame})),
+        Err(error) => Ok(json!({"state":"failed","target":target,"frameError":error})),
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
+    use objc2_foundation::{NSData, NSDataBase64EncodingOptions};
+    let scale = view
+        .window()
+        .scale_factor()
+        .map_err(|error| error.to_string())?;
+    let size = view.size().map_err(|error| error.to_string())?;
+    if size.width == 0 || size.height == 0 {
+        return Err("native_browser_preview_empty_bounds".into());
+    }
+    let width = 720.0 * f64::from(size.width) / f64::from(size.width.max(size.height)) / scale;
+    let capture = capture_macos(view, Some(width)).await?;
+    if capture.width > 722 || capture.height > 722 || capture.bytes.len() > 1_048_576 {
+        return Err("native_browser_preview_frame_too_large".into());
+    }
+    let encoded = NSData::with_bytes(&capture.bytes)
+        .base64EncodedStringWithOptions(NSDataBase64EncodingOptions::empty());
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    Ok(
+        json!({"sequence":PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed),"capturedAt":stamp.to_string(),
+        "width":capture.width,"height":capture.height,"dataUrl":format!("data:image/jpeg;base64,{encoded}")}),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn capture_preview(_view: tauri::Webview) -> Result<Value, String> {
+    Err("native_browser_preview_requires_macos".into())
+}
+
 #[cfg(target_os = "macos")]
 async fn capture(view: tauri::Webview) -> Result<Capture, String> {
-    use objc2::AnyThread;
+    capture_macos(view, None).await
+}
+
+#[cfg(target_os = "macos")]
+async fn capture_macos(
+    view: tauri::Webview,
+    snapshot_width: Option<f64>,
+) -> Result<Capture, String> {
+    use objc2::{AnyThread, MainThreadOnly};
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-    use objc2_foundation::{NSDictionary, NSError};
-    use objc2_web_kit::WKWebView;
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
         let webview = &*(platform.inner() as *const WKWebView);
@@ -915,10 +1071,14 @@ async fn capture(view: tauri::Webview) -> Result<Capture, String> {
                     .ok_or("Snapshot bitmap encoding failed")?;
                 let data = bitmap
                     .representationUsingType_properties(
-                        NSBitmapImageFileType::PNG,
+                        if snapshot_width.is_some() {
+                            NSBitmapImageFileType::JPEG
+                        } else {
+                            NSBitmapImageFileType::PNG
+                        },
                         &NSDictionary::new(),
                     )
-                    .ok_or("Snapshot PNG encoding failed")?;
+                    .ok_or("Snapshot image encoding failed")?;
                 Ok(Capture {
                     bytes: data.to_vec(),
                     width: bitmap.pixelsWide() as i64,
@@ -927,7 +1087,12 @@ async fn capture(view: tauri::Webview) -> Result<Capture, String> {
             })();
             let _ = tx.send(outcome);
         });
-        webview.takeSnapshotWithConfiguration_completionHandler(None, &completion);
+        let configuration = WKSnapshotConfiguration::new(webview.mtm());
+        if let Some(width) = snapshot_width {
+            configuration.setSnapshotWidth(Some(&NSNumber::new_f64(width)));
+            configuration.setAfterScreenUpdates(false);
+        }
+        webview.takeSnapshotWithConfiguration_completionHandler(Some(&configuration), &completion);
     })
     .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1124,6 +1289,8 @@ mod tests {
             status: "ready".into(),
             visible: false,
             surface: SurfaceState::default(),
+            preview_run_id: None,
+            preview_sequence: 0,
             #[cfg(windows)]
             control: ControlState::default(),
         };
