@@ -30,6 +30,30 @@ import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec
 import { LoopFailure } from '../dist/local-agent/loopFailure.js';
 import { AgentManager } from '../dist/local-agent/agentManager.js';
 
+class TestAgentManager extends AgentManager {
+  constructor(host, lookup) {
+    super(host, {
+      async withActor(id, operation) {
+        const actor = await lookup(id);
+        return operation({ ...actor, agentSnapshot: () => actor.snapshot(),
+          async submit(command, beforeRunStart) {
+            const reply = await actor.submit(command);
+            if (reply.status !== 'rejected' && command.type === 'message.submit' && beforeRunStart) {
+              await beforeRunStart((await actor.snapshot()).run.runId);
+            }
+            return reply;
+          },
+          async waitForInput(_runId, signal) { await waitForAbort(signal); signal.throwIfAborted(); },
+        });
+      },
+      async read(id) {
+        const value = await (await lookup(id)).snapshot();
+        return { ...value, agentTasks: value.agentTasks ?? [], agentChildren: value.agentChildren ?? [] };
+      },
+    });
+  }
+}
+
 const ALL_AGENT_CAPS = { messaging: true, continuation: true, delegation: true };
 const NO_AGENT_CAPS = { messaging: false, continuation: false, delegation: false };
 
@@ -290,7 +314,7 @@ test('cancellation during delegation admission is observed without starting a ch
   const controller = new AbortController();
   const reason = new Error('parent_cancelled_during_admission');
   let hostCalls = 0;
-  const manager = new AgentManager({
+  const manager = new TestAgentManager({
     async settings() { hostCalls += 1; throw new Error('cancelled_admission_reached_host'); },
     async createSession() { hostCalls += 1; throw new Error('cancelled_admission_created_child'); },
   }, async sessionId => ({
@@ -314,7 +338,8 @@ test('subagent model command overrides agree with the public schema', async () =
   const { default: Ajv } = await import('ajv/dist/2020.js');
   const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
   const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/AgentOperation' });
-  const definition = agentOperationDefinitions(ALL_AGENT_CAPS).find(operation => operation.action === 'spawn');
+  const definition = agentOperationDefinitions(ALL_AGENT_CAPS, { fullConfiguration: true }).find(operation => operation.action === 'spawn');
+  assert.equal(agentOperationDefinitions(ALL_AGENT_CAPS).find(operation => operation.action === 'spawn').inputSchema.properties.reasoningEffort, undefined);
   assert.equal(validate({ action: 'models' }), true);
   assert.deepEqual(decodeSessionControlCall('call:models', 'agent', { action: 'models' }).operation, { action: 'models' });
   assert.equal(definition.inputSchema.properties.profileId.type, 'string');
@@ -379,9 +404,13 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
         }
       } }]));
     const created = [], submitted = [];
-    const manager = new AgentManager({
+    const manager = new TestAgentManager({
       async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
-        maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, ...item.settings }; },
+        maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true,
+        allowFullConfiguration: Boolean(item.operation), ...item.settings }; },
+      async models() { return ['profile:owner-bound', 'profile:default', 'profile:override'].map(profileId => ({
+        profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      })); },
       async createSession(input) {
         created.push(structuredClone(input));
         let run;
@@ -423,7 +452,7 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
 test('subagent models discovery uses the Host port without starting children', async () => {
   const { HttpAgentHostPort } = await import('../dist/local-agent/httpPorts.js');
   const models = [{ profileId: 'profile:configured', name: 'Configured model', model: 'model-id',
-    reasoningEfforts: ['low', 'high', 'max'], reasoningEffort: 'high' }];
+    parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'high', 'max'], reasoningEffort: 'high' }];
   let requests = 0, capabilities = ALL_AGENT_CAPS;
   const host = new HttpAgentHostPort({ apiBase: 'http://fixture', serviceToken: 'fixture', fetchImpl: async (url, init) => {
     requests += 1;
@@ -431,15 +460,26 @@ test('subagent models discovery uses the Host port without starting children', a
     assert.equal(new Headers(init.headers).get('x-deepcode-session-service-token'), 'fixture');
     return new Response(JSON.stringify({ ok: true, data: models }), { status: 200 });
   } });
-  host.settings = async () => { throw new Error('discovery_must_not_start_admission'); };
+  host.settings = async () => ({ enabled: true, profileId: 'profile:configured', reasoningEffort: '',
+    maxConcurrent: 4, maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true });
   host.createSession = async () => { throw new Error('discovery_must_not_create_child'); };
-  const manager = new AgentManager(host, async sessionId => ({
+  const manager = new TestAgentManager(host, async sessionId => ({
     async agentCapabilities() { return capabilities; },
-    async snapshot() { return { sessionId, agentContext: { capabilities }, run: { runId: 'run:models', status: 'running' } }; },
+    async snapshot() { return { sessionId, agentContext: { capabilities, ownerSessionId: 'session:owner',
+      parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
+      run: { runId: 'run:models', status: 'running' } }; },
   }));
   try {
-    assert.deepEqual(await manager.execute('session:member', 'run:models', 'call:models',
-      { action: 'models' }, new AbortController().signal), { models, operations: agentOperationDefinitions(capabilities) });
+    const discovered = await manager.execute('session:member', 'run:models', 'call:models',
+      { action: 'models' }, new AbortController().signal);
+    assert.deepEqual(discovered.models, models);
+    assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
+      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false,
+    }));
+    assert.equal(discovered.parentAgentId, 'session:owner');
+    assert.deepEqual(discovered.agents, []);
+    assert.equal(discovered.fullConfiguration, false);
+    assert.equal(discovered.configuration.context, undefined);
     assert.equal(requests, 1);
     capabilities = NO_AGENT_CAPS;
     await assert.rejects(manager.execute('session:analysis', 'run:models', 'call:models-analysis',
@@ -483,7 +523,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
       return { outcome: 'completed', content: requestedRunId === 'run:previous-success' ? 'Stale prior evidence.' : 'New task evidence.',
         finalMessageId: `message:${requestedRunId}` };
     } };
-  const manager = new AgentManager({
+  const manager = new TestAgentManager({
     async settings() { return { enabled: true, profileId: 'profile:member', reasoningEffort: '',
       maxConcurrent: 4, maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true }; },
     async createSession() { throw new Error('existing_member_must_be_reused'); },
@@ -560,9 +600,12 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   };
   initialize(ownerId);
   const ownerRunId = startRun(ownerId);
-  const manager = new AgentManager({
+  const manager = new TestAgentManager({
     async settings() { return { enabled: true, profileId: configuredProfile, reasoningEffort: '', maxConcurrent: 4,
-      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: allowChildDelegation }; },
+      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: allowChildDelegation, allowFullConfiguration: true }; },
+    async models() { return ['profile:owner', 'profile:selected-child', 'profile:new-global-default'].map(profileId => ({
+      profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    })); },
     async createSession(input) { return await initialize(input.sessionId, input.agentContext).snapshot(); },
   }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
   t.after(() => manager.dispose());
@@ -583,13 +626,14 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   assert.equal(lineage.parentSessionId, firstId);
   assert.deepEqual(lineage.capabilities, mixedCaps);
   await assert.rejects(spawn(nestedId), /agent_capability_unavailable/);
-  await assert.rejects(execute(firstId, { action: 'send', agentId: nestedId, text: 'Live message.' }), /agent_message_target_unavailable/);
+  assert.deepEqual(await execute(firstId, { action: 'send', agentId: nestedId, text: 'Live message.' }),
+    { agentId: nestedId, delivered: true });
   const oneShot = await spawn(firstId);
-  assert.deepEqual(states.get(oneShot.agentId).agentContext.capabilities, NO_AGENT_CAPS);
+  assert.deepEqual(states.get(oneShot.agentId).agentContext.capabilities, { messaging: 'parent', continuation: true, delegation: false });
   finish(nestedId);
   finish(oneShot.agentId);
   await manager.forSession(firstId).wait(firstRunId, signal);
-  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, true);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, false);
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, false);
   finish(firstId);
   await manager.forSession(ownerId).wait(ownerRunId, signal);
@@ -608,6 +652,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, false);
   await execute(ownerId, { action: 'close', agentId: firstId });
   assert.equal(states.get(ownerId).agentChildren[0].closed, true);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, true);
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, true);
   assert.equal(facts.some(event => event.type === 'agent.closed' && event.sessionId === ownerId && event.payload.agentSessionId === nestedId), false);
   allowChildDelegation = false;
@@ -618,8 +663,9 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   await manager.forSession(ownerId).wait(ownerRunId, signal);
   allowChildDelegation = true;
   const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
+  await assert.rejects(execute(restricted.agentId, { action: 'send', agentId: limited.agentId, text: 'Peer message is unavailable.' }), /agent_messaging_disabled/);
   await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_capability_not_grantable/);
-  const permitted = await spawn(restricted.agentId);
+  const permitted = await spawn(restricted.agentId, { capabilities: { messaging: false } });
   finish(permitted.agentId);
   await manager.forSession(restricted.agentId).wait(states.get(restricted.agentId).run.runId, signal);
   finish(restricted.agentId);
@@ -935,7 +981,9 @@ test('agent discovery appends contracts while preserving tool definitions and th
   assert.deepEqual(discovered.request.messages.filter(message => message.role === 'system'), disabled.request.messages);
   const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
     runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
-  assert.deepEqual(limitedMember.request.tools, member.request.tools);
+  assert.deepEqual(limitedMember.request.tools.filter(tool => tool.name !== 'agent'), member.request.tools.filter(tool => tool.name !== 'agent'));
+  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /permitted contacts/u);
+  assert.doesNotMatch(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /spawns|presets|configuration/u);
   assert.deepEqual(agentOperationDefinitions({ ...ALL_AGENT_CAPS, delegation: false }).map(operation => operation.action), ['models', 'send']);
   assert.deepEqual(limitedMember.request.messages, discovered.request.messages);
   const rejected = { ...event, type: 'session.control.rejected', payload: { providerCallId: 'provider:models',
@@ -952,7 +1000,7 @@ test('requests without workspaces omit workspace tools and unavailable-capabilit
   const prepared = await buildAgentProviderRequest({ sessionId: 'session:no-workspace', runId: 'run:no-workspace',
     runtime: runtimeSnapshot('run:no-workspace', { tools }), events: [], workspaceBindings: [],
     providerRequestId: 'request:no-workspace', responseConstraint: 'normal' });
-  assert.deepEqual(prepared.request.tools.map(tool => tool.name).sort(), ['artifact_present', 'interaction_request']);
+  assert.deepEqual(prepared.request.tools.map(tool => tool.name).sort(), ['artifact_present', 'interaction_request', 'session']);
   assert.equal(prepared.receipt.messages.some(message => message.contributionId === 'session:workspace-bindings'), false);
   assert.doesNotMatch(JSON.stringify(prepared.request.messages), /unavailable|No workspace is bound/u);
 });
@@ -2637,13 +2685,15 @@ test('read-only bash result projects its real write scope and continues the Loop
       const toolResult = request.messages
         .map(jsonMessagePayload)
         .find((payload) => payload?.outcome === 'completed');
-      assert.equal(toolResult?.output?.workspaceMode, 'read');
+      assert.equal(toolResult?.output?.workspaceMode, undefined);
       assert.equal(toolResult?.output?.executionScope, 'workspace');
       assert.equal(toolResult?.output?.terminal, false);
       assert.equal(toolResult?.output?.workspaceId, undefined);
-      assert.equal(toolResult?.output?.environment?.writeScope, 'authorizedResources');
-      assert.equal(toolResult?.output?.environment?.homeWritable, true);
-      assert.equal(toolResult?.output?.environment?.networkAccess, false);
+      assert.equal(toolResult?.output?.environment, undefined);
+      assert.equal(toolResult?.output?.paths, undefined);
+      assert.equal(toolResult?.output?.capturedBytes, undefined);
+      assert.equal(toolResult?.output?.stdout, 'probe-ok');
+      assert.equal(toolResult?.output?.exitCode, 0);
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:bash-read-answer',
         content: 'Read-only shell continuation completed.',
@@ -2907,6 +2957,7 @@ test('a run without workspace bindings never exposes workspace-scoped tools', as
     'web_search',
     'artifact_present',
     'interaction_request',
+    'session',
     'mcp_echo',
   ]);
   const searchDescription = tools.find(tool => tool.name === 'web.search').description;
@@ -2920,7 +2971,7 @@ test('a run without workspace bindings never exposes workspace-scoped tools', as
   )), false);
   assert.deepEqual(
     projection.contextCompositions.at(-1).tools.map((tool) => tool.itemId),
-    ['web.search', 'artifact.present', 'interaction.request', 'mcp.echo'],
+    ['web.search', 'artifact.present', 'interaction.request', 'session', 'mcp.echo'],
   );
   await actor.dispose();
 });
@@ -3335,7 +3386,7 @@ test('an escaped Loop fault remains Session-local and releases its runtime', asy
   await healthyActor.dispose();
 });
 
-test('one Plan confirmation resumes the same run into Todo-backed execution', async () => {
+test('one Plan confirmation resumes the same run while progress remains an explicit model choice', async () => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:confirmed-plan-execution';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -3425,10 +3476,9 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
           .map(jsonMessagePayload)
           .find((payload) => payload?.type === 'todo.current');
         assert.ok(confirmation, 'confirmed Plan must be projected as the plan call result');
-        assert.equal(confirmation.todoSeeded, true);
+        assert.equal('todoSeeded' in confirmation, false);
         assert.ok(typeof confirmation.nextAction === 'string' && confirmation.nextAction.trim());
-        assert.ok(todo, 'confirmation must atomically seed Provider-visible Todo');
-        assert.equal('executionDirective' in todo, false);
+        assert.equal(todo, undefined, 'Plan confirmation does not generate Todo');
         assert.ok(writeDefinition, 'confirmed execution tool must remain available');
         assert.equal(
           request.tools.some((candidate) => candidate.name.includes('todo')),
@@ -3450,7 +3500,7 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
       }
 
       if (providerRequests.length === 3) {
-        yield* todoUpdateEvents(request, 'completed', true);
+        yield* todoUpdateEvents(request, ['Write README'], 'completed', true);
         return;
       }
       assert.equal(providerRequests.length, 4);
@@ -3458,8 +3508,7 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
       const todoStates = request.messages
         .map(jsonMessagePayload)
         .filter((payload) => payload?.type?.startsWith('todo.'));
-      assert.equal(todoStates.length, 1, 'the model update must not append a duplicate full Todo snapshot');
-      assert.equal(todoStates[0].items[0].status, 'pending');
+      assert.equal(todoStates.length, 0, 'explicit progress retains the tool-call fact without a duplicate Todo snapshot');
       assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
         { accepted: true });
       for (let index = 1; index < providerRequests.length; index += 1) {
@@ -3533,7 +3582,7 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
   const seeded = events.find(event => event.type === 'todo.updated' && !event.callId);
   const requested = singleEvent(events, 'tool.requested');
   const progressed = events.find(event => event.type === 'todo.updated' && event.callId);
-  assert.equal(seeded.payload.items[0].status, 'pending');
+  assert.equal(seeded, undefined, 'only model-authored progress is committed');
   assert.equal(progressed.payload.items[0].status, 'completed');
   const toolCompleted = singleEvent(events, 'tool.completed');
   const finalMessage = events.find((event) => (
@@ -3546,7 +3595,6 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
   assertEventOrder(
     published,
     confirmed,
-    seeded,
     requested,
     toolCompleted,
     progressed,
@@ -3715,8 +3763,8 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
         const todo = request.messages
           .map(jsonMessagePayload)
           .find((payload) => payload?.type === 'todo.current');
-        assert.equal(todo?.items[0].status, 'pending');
-        yield* todoUpdateEvents(request, 'inProgress');
+        assert.equal(todo, undefined);
+        yield* todoUpdateEvents(request, ['Run the confirmed command'], 'inProgress');
         return;
       }
       if (providerRequests.length === 4) {
@@ -3734,7 +3782,7 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
       }
 
       if (providerRequests.length === 5) {
-        yield* todoUpdateEvents(request);
+        yield* todoUpdateEvents(request, ['Run the confirmed command']);
         return;
       }
       assert.equal(providerRequests.length, 6);
@@ -3742,7 +3790,7 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
       const todo = request.messages
         .map(jsonMessagePayload)
         .findLast((payload) => payload?.type === 'todo.current');
-      assert.equal(todo?.items[0].status, 'pending', 'the original seeded model view remains unchanged');
+      assert.equal(todo, undefined, 'explicit progress stays in the original tool calls without an injected snapshot');
       assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
         { accepted: true });
       yield providerEvent(request.requestId, 'assistant.message', {
@@ -3886,14 +3934,14 @@ test('confirmed fs.delete reads targetKind from canonical arguments and complete
         return;
       }
       if (providerRequests.length === 3) {
-        yield* todoUpdateEvents(request);
+        yield* todoUpdateEvents(request, ['Delete generated directory']);
         return;
       }
       assert.equal(providerRequests.length, 4);
       const todo = request.messages
         .map(jsonMessagePayload)
         .findLast((payload) => payload?.type === 'todo.current');
-      assert.equal(todo?.items[0].status, 'pending', 'the original seeded model view remains unchanged');
+      assert.equal(todo, undefined, 'explicit progress stays in the original tool calls without an injected snapshot');
       assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
         { accepted: true });
       yield providerEvent(request.requestId, 'assistant.message', {
@@ -3974,14 +4022,14 @@ test('unfinished Todo preserves final explanation and progress while the run end
         return;
       }
 
-      assert.equal(providerRequests.length, 2);
+      if (providerRequests.length === 2) {
+        assert.equal(request.messages.some(message => jsonMessagePayload(message)?.type === 'todo.current'), false);
+        yield* todoUpdateEvents(request, ['Execute the step'], 'pending');
+        return;
+      }
+      assert.equal(providerRequests.length, 3);
       assert.equal(request.responseConstraint, 'normal');
-      assert.ok(request.messages
-        .map(jsonMessagePayload)
-        .some((payload) => payload?.response?.kind === 'confirm'));
-      assert.ok(request.messages
-        .map(jsonMessagePayload)
-        .some((payload) => payload?.type === 'todo.current'));
+      assert.ok(request.messages.map(jsonMessagePayload).some(payload => payload?.response?.kind === 'confirm'));
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:invalid-execution-answer',
         content: 'Execution is blocked. The confirmed work has not been completed.',
@@ -4021,7 +4069,7 @@ test('unfinished Todo preserves final explanation and progress while the run end
 
   const failed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   await waitUntil(() => preparation.released.length === 1, 'completed run runtime release');
-  assert.equal(providerRequests.length, 2);
+  assert.equal(providerRequests.length, 3);
   assert.equal(failed.plans[0].status, 'confirmed');
   assert.equal(failed.todoList.items[0].status, 'pending');
   assert.equal(failed.terminalError, null);
@@ -4029,16 +4077,17 @@ test('unfinished Todo preserves final explanation and progress while the run end
 
   const events = await readEvents(journal, sessionId);
   const confirmed = singleEvent(events, 'plan.confirmed');
-  const seeded = events.find(event => event.type === 'todo.updated' && !event.callId);
+  const progressed = singleEvent(events, 'todo.updated');
+  assert.ok(progressed.callId, 'unfinished progress came from the model');
   const completions = events.filter((event) => event.type === 'provider.turn.settled');
   const settlement = singleEvent(events, 'run.settled');
-  assert.equal(completions.length, 2);
+  assert.equal(completions.length, 3);
   assert.equal(settlement.payload.outcome, 'completed');
   const finalMessage = events.find((event) => event.type === 'message.committed' && event.payload.role === 'assistant');
   assert.equal(finalMessage?.payload.content, 'Execution is blocked. The confirmed work has not been completed.');
   assert.equal(events.some((event) => event.type === 'plan.completed'), false);
   assert.equal(events.some((event) => event.type === 'tool.requested'), false);
-  assertEventOrder(confirmed, seeded, completions[1], finalMessage, singleEvent(events, 'run.finishing'), singleEvent(events, 'run.runtime.released'), settlement);
+  assertEventOrder(confirmed, progressed, completions[2], finalMessage, singleEvent(events, 'run.finishing'), singleEvent(events, 'run.runtime.released'), settlement);
 
   await actor.dispose();
 });
@@ -4091,7 +4140,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   const cleanup = { stepId: 'cleanup', title: 'Clean up', details: 'Ignore generated files.' };
   const revised = {
     ...initial, title: 'Implement, verify and clean up',
-    steps: [initial.steps[0], { ...initial.steps[1], details: 'Check the result and generated files.' }, cleanup],
+    steps: [{ ...cleanup, title: 'Finish and verify cleanup' }],
     mutationManifest: [...initial.mutationManifest, { workspace: 'primary', operation: 'fs.write', target: '.gitignore' }],
   };
   const requests = [];
@@ -4107,7 +4156,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   const provider = { async *stream(request) {
     requests.push(structuredClone(request));
     const turn = requests.length;
-    assert.ok(turn <= 10);
+    assert.ok(turn <= 9);
     if (turn > 1) {
       const previous = requests.at(-2);
       assert.deepEqual(request.tools, previous.tools, 'Plan phases preserve tool definitions and ordering');
@@ -4123,33 +4172,31 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     let name, input;
     if (turn === 1) { name = planTool.name; input = initial; }
     else if (turn === 2) {
-      originalTodo = structuredClone(todo);
+      assert.equal(todo, null);
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:initial-progress', name: progressTool.name,
+        input: { items: initial.steps.map(step => ({ text: step.title, status: 'pending' })) } });
       name = writeTool.name; input = { workspace: 'primary', path: 'README.md', content: 'Implemented.' };
     } else if (turn === 3) {
+      originalTodo = structuredClone(todo);
       name = progressTool.name; input = { items: todo.items.map((item, index) => ({ text: item.text, status: index === 0 ? 'completed' : 'inProgress' })) };
     } else if (turn === 4) {
-      name = planTool.name; input = { ...revised, steps: [cleanup] };
-    } else if (turn === 5) {
-      const error = payloads.findLast((payload) => payload?.accepted === false).error;
-      assert.equal(error.code, 'plan_revision_steps_missing');
-      assert.match(error.message, /implement.*verify/);
       name = planTool.name; input = revised;
-    } else if (turn === 6) {
+    } else if (turn === 5) {
       assert.equal(todo.runId, originalTodo.runId);
       assert.equal(todo.revision, 2);
       assert.deepEqual(todo.items.map(item => item.text), originalTodo.items.map(item => item.text));
       assert.deepEqual(todo.items.map(item => item.status), ['completed', 'inProgress']);
       name = writeTool.name; input = { workspace: 'primary', path: '.gitignore', content: 'core\n' };
-    } else if (turn === 7) {
+    } else if (turn === 6) {
       name = progressTool.name; input = { items: [
         { text: todo.items[0].text, status: 'completed' }, { text: 'Clean up', status: 'invented' },
       ] };
-    } else if (turn === 8) {
+    } else if (turn === 7) {
       const error = payloads.findLast(payload => payload?.accepted === false).error;
       assert.equal(error.code, 'todo_update_invalid');
       assert.equal(todo.items[1].status, 'inProgress', 'invalid progress applies no partial update');
       name = progressTool.name; input = { items: [...todo.items.map(item => ({ text: item.text, status: 'completed' })), { text: 'Clean up', status: 'completed' }] };
-    } else if (turn === 9) {
+    } else if (turn === 8) {
       assert.ok(todo.items.every(item => item.status === 'completed'));
       name = writeTool.name; input = { workspace: 'primary', path: '.gitignore', content: 'core\nbuild\n' };
     } else {
@@ -4169,10 +4216,11 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     if (revision === 2) {
       waiting = await waitForProjection(actor, (value) => value.pendingPlan?.revision === 2);
       assert.equal(waiting.pendingPlan.planId, firstId);
+      assert.deepEqual(waiting.pendingPlan.steps.map(step => step.stepId), ['cleanup'], 'execution phases can be merged without preserving obsolete step IDs');
       assert.equal(waiting.todoList.items.length, 2, 'the proposed revision cannot replace Todo before confirmation');
       assert.deepEqual(waiting.todoList.items.map((item) => ({ text: item.text, status: item.status })),
         originalTodo.items.map((item, index) => ({ text: item.text, status: index === 0 ? 'completed' : 'inProgress' })),
-        'proposal and rejected calls preserve phase identities, labels and observed progress until the user decides');
+        'Plan proposals preserve the independent Todo labels and observed progress until the user decides');
       assert.equal(executions.length, 1, 'new scope must wait for user confirmation');
     }
     await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: `command:revision-confirm-${revision}`, sessionId,
@@ -4181,13 +4229,13 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   const completed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.deepEqual(completed.plans.map((plan) => plan.status), ['superseded', 'confirmed']);
   assert.ok(completed.todoList.items.every((item) => item.status === 'completed'));
-  assert.equal(requests.length, 10);
+  assert.equal(requests.length, 9);
   assert.equal(executions.length, 3);
   const events = await readEvents(journal, sessionId);
   assert.equal(events.filter(event => event.type === 'todo.updated').length, 3);
   assert.equal(completed.activePlanRef, null);
   assert.deepEqual(events.filter((event) => event.type === 'session.control.rejected').map((event) => event.payload.error.code),
-    ['plan_revision_steps_missing', 'todo_update_invalid']);
+    ['todo_update_invalid']);
   const final = events.find((event) => event.type === 'message.committed' && event.payload.role === 'assistant');
   assertEventOrder(events.findLast(event => event.type === 'todo.updated'), final, singleEvent(events, 'run.finishing'), singleEvent(events, 'run.runtime.released'), singleEvent(events, 'run.settled'));
   assert.equal(preparation.released.length, 1);

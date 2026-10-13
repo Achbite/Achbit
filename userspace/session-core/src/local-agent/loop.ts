@@ -4,6 +4,7 @@ import { prepareApprovalReview, decodeApprovalReview } from './approvalReview.js
 import { withProviderAttempts } from './providerAttempts.js';
 import type {
   AgentOperation,
+  SessionOperation,
   AssistantDraftBlockProjection,
   AssistantDraftProjection,
   JsonObject,
@@ -39,6 +40,7 @@ import {
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_SESSION,
 } from '@deepcode/protocol';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
@@ -57,6 +59,8 @@ import { activeConversationEvents } from './conversationHistory.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { PlanPreviewBuffer } from './planPreview.js';
 import { confirmationFacts } from './planStage.js';
+import { controlWait, pendingControlWait, type ControlWait } from './sessionWake.js';
+import type { AgentWait } from './agentManager.js';
 import type { ArtifactPresentationInput } from './sessionControls.js';
 import {
   SessionControlError,
@@ -107,8 +111,10 @@ export interface AgentLoopDeps {
   waitProcesses?(signal: AbortSignal): Promise<void>;
   agents?: {
     execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
-    wait(runId: string, signal: AbortSignal): Promise<void>;
+    wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
   };
+  sessionOperation?(runId: string, operation: SessionOperation, signal: AbortSignal): Promise<JsonObject>;
+  waitForInput?(runId: string, wait: ControlWait, signal: AbortSignal): Promise<JsonObject>;
   commit(event: NewSessionEvent | readonly NewSessionEvent[] | ((current: LoopSnapshot) => readonly NewSessionEvent[])): Promise<LoopSnapshot>;
   takeQueuedInputs(runId: string): Promise<LoopSnapshot>;
   updateAssistantDraft(draft: AssistantDraftProjection | null): void;
@@ -186,6 +192,7 @@ interface ProviderControlRejection {
 
 type ProviderTurn =
   | ({ kind: 'agent'; callId: string; providerCallId: string; operation: AgentOperation } & ProviderTurnCommon)
+  | ({ kind: 'session'; callId: string; providerCallId: string; operation: SessionOperation } & ProviderTurnCommon)
   | ({ kind: 'artifactPresent'; callId: string; providerCallId: string; items: ArtifactPresentationInput[] } & ProviderTurnCommon)
   | ({ kind: 'pluginActivate'; callId: string; providerCallId: string; pluginUris: string[] } & ProviderTurnCommon)
   | ({ kind: 'answer'; content: string; messageId?: string } & ProviderTurnCommon)
@@ -316,6 +323,20 @@ export async function runAgentLoop(
     nextTurn: while (true) {
       throwIfAborted(signal);
       snapshot = await deps.readSnapshot();
+      const waiting = pendingControlWait(snapshot.events, runId);
+      if (waiting) {
+        const wait = controlWait(waiting.payload.result)!;
+        if (waiting.type === 'session.control.completed') {
+          if (!deps.waitForInput) throw new Error('session_operations_unavailable');
+          await deps.waitForInput(runId, wait, signal);
+        } else {
+          if (!deps.agents) throw new Error('agent_manager_missing');
+          const taskIds = waiting.payload.operation.action === 'spawn'
+            ? [waiting.payload.result.taskId as string] : waiting.payload.operation.taskIds as string[] | undefined;
+          await deps.agents.wait(runId, signal, { ...wait, ...(taskIds ? { taskIds } : {}) });
+        }
+        snapshot = await deps.readSnapshot();
+      }
       const pendingCompaction = pendingContextCompaction(snapshot.events, runId);
       if (pendingCompaction) {
         await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
@@ -523,6 +544,25 @@ export async function runAgentLoop(
           });
         }
         switch (turn.kind) {
+          case 'session': {
+            let fact: NewSessionEvent;
+            try {
+              if (!deps.sessionOperation) throw new Error('session_operations_unavailable');
+              const result = await deps.sessionOperation(runId, turn.operation, signal);
+              fact = { type: 'session.control.completed', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                payload: { providerCallId: turn.providerCallId, operation: { ...turn.operation }, result: turn.operation.action === 'wait'
+                  ? { ...result, wait: { afterSequence: preparedProviderRequest.receipt.modelView!.throughSequence,
+                    ...(turn.operation.timeoutSeconds === undefined ? {} : { deadline: Date.now() + Math.ceil(turn.operation.timeoutSeconds * 1000) }) } }
+                  : result } };
+            } catch (error) {
+              signal.throwIfAborted();
+              fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
+                providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_SESSION,
+                input: { ...turn.operation }, error: localAgentError(error) });
+            }
+            await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
+            break;
+          }
           case 'agent': {
             let fact: NewSessionEvent;
             try {
@@ -532,7 +572,9 @@ export async function runAgentLoop(
               }
               const result = await deps.agents.execute(runId, turn.callId, turn.operation, signal);
               fact = { type: 'agent.control.completed', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
-                payload: { providerCallId: turn.providerCallId, operation: { ...turn.operation }, result } };
+                payload: { providerCallId: turn.providerCallId, operation: { ...turn.operation }, result:
+                  turn.operation.action === 'wait' || turn.operation.action === 'spawn' && turn.operation.delivery === 'wait'
+                    ? { ...result, wait: { afterSequence: preparedProviderRequest.receipt.modelView!.throughSequence } } : result } };
             } catch (error) {
               fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
                 providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_AGENT,
@@ -638,40 +680,42 @@ export async function runAgentLoop(
               ...completionDerivedFacts,
             ]);
             if (fact.type !== 'plan.published') break;
+            const inherited = snapshot.state.agentContext && fact.payload.mutationManifest.length
+              ? await deps.composition.kernel.delegatedPlanScope({ sessionId: snapshot.state.sessionId,
+                runId, mutationManifest: fact.payload.mutationManifest }) : [];
             await commit(current => runRuntimeSnapshot(current, runId).permissions['agent.permissions.workspaceMutation'] === 'allow'
               ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('agent-decision'), 'agent', deps.nextId)
+              : inherited.length ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('parent-plan'), 'parent', deps.nextId, inherited)
               : [{ type: 'run.waiting', sessionId: current.state.sessionId, runId, payload: { reason: 'plan', detail: fact.payload.title } }]);
             if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
             break;
           }
           case 'answer': {
+            const messageId = turn.messageId ?? deps.nextId('message');
+            const answerFacts: NewSessionEvent[] = [
+              ...orderedProviderCallFacts(turn.completion, providerCallFacts),
+              providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
+              ...completionDerivedFacts,
+              { type: 'message.committed', sessionId: snapshot.state.sessionId, runId,
+                payload: { messageId, role: 'assistant', content: turn.content,
+                  providerRequestId: turn.completion.providerRequestId } },
+            ];
             await deps.syncProcesses?.();
             snapshot = await deps.readSnapshot();
             const jobs = Object.values(snapshot.state.processes).filter(job => job.runId === runId);
             if (jobs.some(job => job.status === 'active' || job.revision !== processRevisions.get(job.jobId))) {
-              await commit([ ...orderedProviderCallFacts(turn.completion, providerCallFacts),
-                providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts ]);
+              await commit(answerFacts);
               await lease.release();
               await deps.waitProcesses?.(signal);
               continue nextTurn;
             }
-            const messageId = turn.messageId ?? deps.nextId('message');
             const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
             let deferForAgents = false;
             await commit((current) => {
               deferForAgents = current.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
                 || latestAgentEvidenceSequence(current.events, runId) !== agentEvidenceRevision;
-              const facts: NewSessionEvent[] = [
-                ...orderedProviderCallFacts(turn.completion, providerCallFacts),
-                providerTurnSettledEvent(current.state.sessionId, runId, turn.completion),
-                ...completionDerivedFacts,
-              ];
-              if (deferForAgents) return facts;
-              return [...facts, {
-                type: 'message.committed', sessionId: current.state.sessionId, runId,
-                payload: { messageId, role: 'assistant', content: turn.content,
-                  providerRequestId: turn.completion.providerRequestId },
-              }, ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
+              if (deferForAgents) return answerFacts;
+              return [...answerFacts, ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
                 : current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
                   type: 'run.waiting', sessionId: current.state.sessionId, runId,
                   payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
@@ -705,6 +749,19 @@ export async function runAgentLoop(
                 throw new LoopFailure('provider_tool_call_duplicate', 'Provider 重复了工具调用标识。');
               }
               seenCalls.add(call.callId);
+              if (call.name === SESSION_CONTROL_AGENT) {
+                try {
+                  const control = capabilities.controls.decode(call.callId, call.name, call.input);
+                  if (control?.kind !== 'agent' || !deps.agents || !runtime.agentToolsEnabled) throw new Error('agent_unavailable');
+                  const result = await deps.agents.execute(runId, call.callId, control.operation, signal);
+                  callFacts.push({ type: 'agent.control.completed', sessionId: snapshot.state.sessionId, runId, callId: call.callId,
+                    payload: { providerCallId: call.providerCallId, operation: { ...control.operation }, result } });
+                } catch (error) {
+                  signal.throwIfAborted();
+                  callFacts.push(controlRejectionFact(snapshot.state.sessionId, runId, { ...call, toolName: call.name, error: localAgentError(error) }));
+                }
+                continue;
+              }
               callFacts.push({
                 type: 'tool.requested',
                 sessionId: snapshot.state.sessionId,
@@ -1322,9 +1379,11 @@ async function consumeProviderOutput(
   const conflict = inputBlocks.some((block) => (
     block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
       || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
-      || block.name === SESSION_CONTROL_AGENT
+      || block.name === SESSION_CONTROL_SESSION
+      || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall' || block.input.action !== 'spawn' || block.input.delivery !== 'async'
+        || inputBlocks.some(other => other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE))
   )) && inputBlocks.length > 1
-    ? 'interaction.request、plan.publish、plugin.activate、artifact.present 与 agent 必须独占 Provider turn；本批次未执行，请单独提交。'
+    ? '该控制调用需要独占一轮；仅多个异步 agent spawn 可以与一个 todo.update 一起提交。本批次未执行。'
     : inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE).length > 1
       ? '每个 Provider turn 最多包含一个 todo.update；本批次未执行，请合并步骤更新。'
       : undefined;
@@ -1589,11 +1648,13 @@ async function consumeProviderOutput(
 
   const controlCalls: Array<SessionControlCall & { providerCallId: string }> = [];
   const kernelCalls: typeof calls = [];
+  const agentBatch = calls.length > 1 && calls.every(call => call.name === SESSION_CONTROL_AGENT || call.name === SESSION_CONTROL_TODO_UPDATE);
   let progress: Extract<ProviderTurn, { kind: 'tools' }>['progress'];
   for (const call of calls) {
     try {
       const control = controls.decode(call.callId, call.name, call.input);
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
+      else if (control?.kind === 'agent' && agentBatch) kernelCalls.push(call);
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
       else kernelCalls.push(call);
     } catch (error) {
@@ -1609,6 +1670,7 @@ async function consumeProviderOutput(
         progress = { kind: 'controlRejected', rejection };
         continue;
       }
+      if (call.name === SESSION_CONTROL_AGENT && agentBatch) { kernelCalls.push(call); continue; }
       return {
         kind: 'controlRejected',
         rejection,
@@ -1625,7 +1687,7 @@ async function consumeProviderOutput(
     ...(orderedNarratives.length > 0 ? { narratives: orderedNarratives } : {}),
   };
   const control = controlCalls[0];
-  if (control?.kind === 'pluginActivate' || control?.kind === 'artifactPresent' || control?.kind === 'agent') {
+  if (control?.kind === 'pluginActivate' || control?.kind === 'artifactPresent' || control?.kind === 'agent' || control?.kind === 'session') {
     return { ...control, providerCallId: control.providerCallId, ...common };
   }
   if (control?.kind === 'interaction') {
@@ -1686,7 +1748,7 @@ async function consumeProviderOutput(
 function latestAgentEvidenceSequence(events: readonly SessionEvent[], runId: string): number {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!;
-    if ((event.type === 'agent.task.completed' || event.type === 'agent.message.received') && event.runId === runId) {
+    if ((event.type === 'agent.task.completed' || event.type === 'agent.message.received' || event.type === 'wake.triggered') && event.runId === runId) {
       return event.sequence;
     }
   }

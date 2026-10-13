@@ -32,6 +32,14 @@ const TOOL_RECORD_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/
 const TOOL_RECORD_STORE_VERSION: u32 = 1;
 const ATTEMPT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DelegatedPlanScopeRequest {
+    pub(crate) session_id: String,
+    pub(crate) run_id: String,
+    pub(crate) mutation_manifest: Value,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalAgentKernelError {
     pub(crate) code: &'static str,
@@ -1981,19 +1989,28 @@ impl LocalAgentKernel {
         prepared: &PreparedEffect,
     ) -> Result<(Option<Value>, bool), LocalAgentKernelError> {
         let committed = self.journal.active_plan_authorities(&request.session_id)?;
+        let delegated = self
+            .journal
+            .delegated_plan_authorities(&request.session_id, &request.run_id)?;
         let has_confirmed_plan = committed.as_ref().is_some_and(|authorities| {
             authorities.iter().any(|authority| {
                 authority["workspaceId"].as_str() == prepared.workspace_id.as_deref()
             })
-        });
-        for authority in &request.plan_authorities {
-            if !authority_matches_identity(authority, request, prepared) {
-                continue;
-            }
-            if !committed
+        }) || delegated
+            .iter()
+            .any(|authority| authority["workspaceId"].as_str() == prepared.workspace_id.as_deref());
+        for authority in request.plan_authorities.iter().chain(&delegated) {
+            let local = authority_matches_identity(
+                authority,
+                &request.session_id,
+                &request.run_id,
+                prepared.workspace_id.as_deref(),
+            ) && committed
                 .as_ref()
-                .is_some_and(|values| values.contains(authority))
-            {
+                .is_some_and(|values| values.contains(authority));
+            let inherited = delegated.contains(authority)
+                && authority["workspaceId"].as_str() == prepared.workspace_id.as_deref();
+            if !local && !inherited {
                 continue;
             }
             if authority_covers(authority, prepared) {
@@ -2029,6 +2046,41 @@ impl LocalAgentKernel {
             }
         }
         Ok((None, has_confirmed_plan))
+    }
+
+    /// Read-only scope proof for Session Plan acceptance. The returned values retain
+    /// their original parent confirmation identities and are revalidated at execution.
+    pub(crate) fn delegated_plan_scope(
+        &self,
+        request: DelegatedPlanScopeRequest,
+    ) -> Result<Value, LocalAgentKernelError> {
+        crate::local_agent_store::validate_plan_operations(&request.mutation_manifest)?;
+        let authorities = self
+            .journal
+            .delegated_plan_authorities(&request.session_id, &request.run_id)?;
+        let mut covered = Vec::new();
+        for operation in request
+            .mutation_manifest
+            .as_array()
+            .expect("validated manifest")
+        {
+            let Some(authority) = authorities.iter().find(|authority| {
+                authority["workspaceId"] == operation["workspaceId"]
+                    && authority["coveredOperations"]
+                        .as_array()
+                        .is_some_and(|operations| {
+                            operations
+                                .iter()
+                                .any(|scope| plan_operation_covers(scope, operation))
+                        })
+            }) else {
+                return Ok(json!({"authorities":[]}));
+            };
+            if !covered.contains(authority) {
+                covered.push(authority.clone());
+            }
+        }
+        Ok(json!({"authorities":covered}))
     }
 
     fn execute_prepared(
@@ -2765,8 +2817,9 @@ fn take_workspace_id(input: &mut Value) -> Result<String, LocalAgentKernelError>
 
 fn authority_matches_identity(
     authority: &Value,
-    request: &LocalToolExecutionRequest,
-    prepared: &PreparedEffect,
+    session_id: &str,
+    run_id: &str,
+    workspace_id: Option<&str>,
 ) -> bool {
     let Some(object) = authority.as_object() else {
         return false;
@@ -2784,9 +2837,9 @@ fn authority_matches_identity(
     if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
         return false;
     }
-    object.get("sessionId").and_then(Value::as_str) == Some(&request.session_id)
-        && object.get("runId").and_then(Value::as_str) == Some(&request.run_id)
-        && object.get("workspaceId").and_then(Value::as_str) == prepared.workspace_id.as_deref()
+    object.get("sessionId").and_then(Value::as_str) == Some(session_id)
+        && object.get("runId").and_then(Value::as_str) == Some(run_id)
+        && object.get("workspaceId").and_then(Value::as_str) == workspace_id
         && object.get("authorityId").and_then(Value::as_str).is_some()
         && object.get("planId").and_then(Value::as_str).is_some()
         && object
@@ -2801,74 +2854,104 @@ fn authority_matches_identity(
 }
 
 fn authority_covers(authority: &Value, prepared: &PreparedEffect) -> bool {
+    let mut operation = json!({"workspaceId":prepared.workspace_id,"operation":prepared.operation});
     if is_shell_tool(&prepared.operation) {
-        return authority
-            .get("coveredOperations")
-            .and_then(Value::as_array)
-            .is_some_and(|operations| {
-                operations.iter().any(|operation| {
-                    let Some(object) = operation.as_object() else {
-                        return false;
-                    };
-                    object.get("workspaceId").and_then(Value::as_str)
-                        == prepared.workspace_id.as_deref()
-                        && object.get("operation").and_then(Value::as_str)
-                            == Some(prepared.operation.as_str())
-                        && object
-                            .get("writablePaths")
-                            .and_then(Value::as_array)
-                            .is_some_and(|paths| !paths.is_empty())
+        // The process receives the authority's writable paths during preparation.
+        // Execution details may vary; a delegated Plan must prove every requested path below.
+        operation["writablePaths"] = json!([]);
+    } else {
+        if prepared.logical_targets.len() != 1 {
+            return false;
+        }
+        operation["target"] = json!(prepared.logical_targets[0]);
+        if let Some(kind) = &prepared.delete_target_kind {
+            operation["targetKind"] = json!(kind);
+        }
+    }
+    authority["coveredOperations"]
+        .as_array()
+        .is_some_and(|scopes| {
+            scopes
+                .iter()
+                .any(|scope| plan_operation_covers(scope, &operation))
+        })
+}
+
+/// Shared effect/Plan coverage: delegation can narrow a confirmed scope, never widen it.
+fn plan_operation_covers(scope: &Value, operation: &Value) -> bool {
+    if scope["workspaceId"] != operation["workspaceId"] {
+        return false;
+    }
+    let Some(name) = operation["operation"].as_str() else {
+        return false;
+    };
+    if is_shell_tool(name) {
+        if scope["operation"] != operation["operation"] {
+            return false;
+        }
+        let Some(paths) = scope["writablePaths"]
+            .as_array()
+            .filter(|paths| !paths.is_empty())
+        else {
+            return false;
+        };
+        return operation["writablePaths"]
+            .as_array()
+            .is_some_and(|requested| {
+                requested.iter().all(|target| {
+                    paths.iter().any(|allowed| {
+                        let (Some(path), Some(boundary)) =
+                            (target["path"].as_str(), allowed["path"].as_str())
+                        else {
+                            return false;
+                        };
+                        match allowed["kind"].as_str() {
+                            Some("file") => target["kind"] == "file" && path == boundary,
+                            Some("directory") => Path::new(path).starts_with(Path::new(boundary)),
+                            _ => false,
+                        }
+                    })
                 })
             });
     }
-    if prepared.logical_targets.len() != 1 {
+    let same_operation = scope["operation"] == operation["operation"]
+        || matches!(
+            name,
+            "fs.write" | "fs.edit" | "document.render" | "browser.capture"
+        ) && matches!(
+            scope["operation"].as_str(),
+            Some("fs.write" | "fs.edit" | "document.render" | "browser.capture")
+        );
+    if !same_operation {
         return false;
     }
-    let target = &prepared.logical_targets[0];
-    authority
-        .get("coveredOperations")
-        .and_then(Value::as_array)
-        .is_some_and(|operations| {
-            operations.iter().any(|operation| {
-                let Some(object) = operation.as_object() else {
-                    return false;
-                };
-                let base = object.get("workspaceId").and_then(Value::as_str)
-                    == prepared.workspace_id.as_deref()
-                    && (object.get("operation").and_then(Value::as_str)
-                        == Some(prepared.operation.as_str())
-                        || matches!(
-                            prepared.operation.as_str(),
-                            "fs.write" | "fs.edit" | "document.render" | "browser.capture"
-                        ) && matches!(
-                            object.get("operation").and_then(Value::as_str),
-                            Some("fs.write" | "fs.edit" | "document.render" | "browser.capture")
-                        ));
-                if !base {
-                    return false;
-                }
-                if prepared.operation == "fs.delete" {
-                    object.get("target").and_then(Value::as_str) == Some(target.as_str())
-                        && object.len() == 4
-                        && object.get("targetKind").and_then(Value::as_str)
-                            == prepared.delete_target_kind.as_deref()
-                } else {
-                    let Some(scope) = object.get("target").and_then(Value::as_str) else {
-                        return false;
-                    };
-                    match object.get("targetKind").and_then(Value::as_str) {
-                        Some("directoryTree") => {
-                            object.len() == 4
-                                && target != scope
-                                && Path::new(target).starts_with(Path::new(scope))
-                        }
-                        Some("file") => object.len() == 4 && target == scope,
-                        None => object.len() == 3 && target == scope,
-                        _ => false,
-                    }
-                }
-            })
-        })
+    let (Some(target), Some(boundary)) = (operation["target"].as_str(), scope["target"].as_str())
+    else {
+        return false;
+    };
+    if name == "fs.delete" {
+        return target == boundary
+            && scope["targetKind"] == operation["targetKind"]
+            && scope.as_object().is_some_and(|object| object.len() == 4);
+    }
+    match scope["targetKind"].as_str() {
+        Some("directoryTree") => {
+            scope.as_object().is_some_and(|object| object.len() == 4)
+                && Path::new(target).starts_with(Path::new(boundary))
+                && (target != boundary || operation["targetKind"] == "directoryTree")
+        }
+        Some("file") => {
+            scope.as_object().is_some_and(|object| object.len() == 4)
+                && operation["targetKind"] != "directoryTree"
+                && target == boundary
+        }
+        None => {
+            scope.as_object().is_some_and(|object| object.len() == 3)
+                && operation["targetKind"] != "directoryTree"
+                && target == boundary
+        }
+        _ => false,
+    }
 }
 
 fn permission_mode(
@@ -3923,6 +4006,211 @@ mod attempt_control_tests {
             kernel.admit(&request, &effect).unwrap(),
             Admission::Allowed(_)
         ));
+    }
+
+    #[test]
+    fn delegated_plan_scope_uses_current_task_and_original_confirmation() {
+        struct Workspace;
+        impl WorkspaceResolverPort for Workspace {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                Ok(ResolvedWorkspace {
+                    root: std::env::current_dir().unwrap().to_string_lossy().into(),
+                    access: WorkspaceAccess::Project,
+                })
+            }
+        }
+        let (kernel, request, _) = kernel_with_request(
+            Arc::new(Workspace),
+            "fs.write",
+            json!({"workspaceId":"workspace:test","path":"src/result.txt","content":"result"}),
+        );
+        let journal = &kernel.journal;
+        let runtime = journal
+            .read_events(&request.session_id, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| event["type"] == "run.started")
+            .unwrap()["payload"]["runtimeSnapshot"]
+            .clone();
+        let start = |session: &str, run: &str| {
+            journal.append(&json!({"type":"run.started","sessionId":session,"runId":run,
+                "payload":{"inputMessageId":format!("input:{run}"),"workspaceBindings":[{"workspaceId":"workspace:test","displayName":"Project"}],
+                    "runtimeSnapshot":runtime}})).unwrap();
+        };
+        let plan = |session: &str, run: &str, target: &str| {
+            let authority = json!({"authorityId":format!("authority:{run}"),"planId":format!("plan:{run}"),"revision":1,
+                "decisionId":format!("decision:{run}"),"sessionId":session,"runId":run,"workspaceId":"workspace:test",
+                "coveredOperations":[{"workspaceId":"workspace:test","operation":"fs.write","target":target,"targetKind":"directoryTree"}]});
+            journal.append(&json!({"type":"plan.published","sessionId":session,"runId":run,"callId":format!("call:{run}"),
+                "payload":{"providerCallId":format!("provider:{run}"),"planId":authority["planId"],"revision":1,"title":"Write results","summary":"Approved directory",
+                    "steps":[{"stepId":"write","title":"Write","details":"Write results"}],"mutationManifest":authority["coveredOperations"]}})).unwrap();
+            journal.append(&json!({"type":"plan.confirmed","sessionId":session,"runId":run,"callId":format!("call:{run}"),
+                "payload":{"planId":authority["planId"],"revision":1,"commandId":format!("confirm:{run}"),"decisionId":authority["decisionId"],"source":"user","authorities":[authority]}})).unwrap();
+            authority
+        };
+        let delegate = |parent: &str,
+                        parent_run: &str,
+                        child: &str,
+                        child_run: &str,
+                        task: &str| {
+            journal.append(&json!({"type":"agent.task.created","sessionId":parent,"runId":parent_run,"callId":format!("delegate:{task}"),
+                "payload":{"taskId":task,"agentSessionId":child,"capabilities":{"messaging":true,"continuation":true,"delegation":true},
+                    "createsAgent":false,"displayName":"Worker","text":"Work within the approved scope","delivery":"async"}})).unwrap();
+            journal
+                .append(
+                    &json!({"type":"agent.task.started","sessionId":parent,"runId":parent_run,
+                "payload":{"taskId":task,"childRunId":child_run}}),
+                )
+                .unwrap();
+        };
+        let scope = |session: &str, run: &str, manifest: Value| {
+            kernel
+                .delegated_plan_scope(DelegatedPlanScopeRequest {
+                    session_id: session.into(),
+                    run_id: run.into(),
+                    mutation_manifest: manifest,
+                })
+                .unwrap()["authorities"]
+                .clone()
+        };
+        journal
+            .create_session("session:parent", "Parent", &json!([]), None, None)
+            .unwrap();
+        start("session:parent", "run:first");
+        let first = plan("session:parent", "run:first", "src");
+        let manifest = json!([{"workspaceId":"workspace:test","operation":"fs.edit","target":"src/result.txt"}]);
+        assert_eq!(
+            scope(&request.session_id, &request.run_id, manifest.clone()),
+            json!([])
+        );
+        delegate(
+            "session:parent",
+            "run:first",
+            &request.session_id,
+            &request.run_id,
+            "task:first",
+        );
+        assert_eq!(
+            scope(&request.session_id, &request.run_id, manifest.clone()),
+            json!([first])
+        );
+        let effect = kernel.prepare_tool(&request).unwrap();
+        assert!(
+            matches!(kernel.admit(&request,&effect).unwrap(),Admission::Allowed(authority)
+            if authority["authorityId"] == first["authorityId"])
+        );
+        let mut outside = effect.clone();
+        outside.logical_targets = vec!["outside/result.txt".into()];
+        assert!(
+            matches!(kernel.admit(&request,&outside).unwrap(),Admission::Denied {error,..}
+            if error["code"] == "plan_scope_required")
+        );
+        assert_eq!(
+            scope(
+                &request.session_id,
+                &request.run_id,
+                json!([
+            {"workspaceId":"workspace:test","operation":"fs.edit","target":"src/result.txt"},
+            {"workspaceId":"workspace:test","operation":"fs.write","target":"outside/result.txt"}])
+            ),
+            json!([])
+        );
+
+        // Child acceptance preserves the original parent identity, not a second grant.
+        let child_plan = plan(&request.session_id, &request.run_id, "src");
+        journal.append(&json!({"type":"plan.confirmed","sessionId":request.session_id,"runId":request.run_id,"callId":format!("call:{}",request.run_id),
+            "payload":{"planId":child_plan["planId"],"revision":1,"commandId":"accept:parent","decisionId":"decision:child-reference",
+                "source":"parent","authorities":[first]}})).unwrap();
+        journal.append(&json!({"type":"plan.revision.requested","sessionId":"session:parent","runId":"run:first","callId":"call:run:first",
+            "payload":{"planId":first["planId"],"revision":1,"commandId":"revise:first","text":"Change the scope"}})).unwrap();
+        let mut reference = request.clone();
+        reference.plan_authorities = vec![first.clone()];
+        assert!(
+            matches!(kernel.admit(&reference,&effect).unwrap(),Admission::Denied {error,..}
+            if error["code"] == "plan_scope_required")
+        );
+
+        // Continuing the same child resolves the new delegating run, never its creation run.
+        journal.append(&json!({"type":"agent.task.completed","sessionId":"session:parent","runId":"run:first",
+            "payload":{"taskId":"task:first","result":{"outcome":"completed"}}})).unwrap();
+        journal.append(&json!({"type":"run.finishing","sessionId":"session:parent","runId":"run:first","payload":{"outcome":"completed","finalMessageId":"message:first"}})).unwrap();
+        journal.append(&json!({"type":"run.finishing","sessionId":request.session_id,"runId":request.run_id,"payload":{"outcome":"completed","finalMessageId":"message:child"}})).unwrap();
+        start("session:parent", "run:second");
+        start(&request.session_id, "run:continued");
+        let second = plan("session:parent", "run:second", "next");
+        let next_manifest = json!([{"workspaceId":"workspace:test","operation":"fs.write","target":"next/result.txt"}]);
+        assert_eq!(
+            scope(&request.session_id, "run:continued", next_manifest.clone()),
+            json!([])
+        );
+        delegate(
+            "session:parent",
+            "run:second",
+            &request.session_id,
+            "run:continued",
+            "task:second",
+        );
+        assert_eq!(
+            scope(&request.session_id, "run:continued", next_manifest.clone()),
+            json!([second])
+        );
+        reference.run_id = "run:continued".into();
+        assert!(
+            matches!(kernel.admit(&reference,&effect).unwrap(),Admission::Denied {error,..}
+            if error["code"] == "plan_scope_required")
+        );
+        outside.logical_targets = vec!["next/result.txt".into()];
+        assert!(matches!(
+            kernel.admit(&reference, &outside).unwrap(),
+            Admission::Allowed(_)
+        ));
+
+        journal
+            .create_session("session:nested", "Nested", &json!([]), None, None)
+            .unwrap();
+        start("session:nested", "run:nested");
+        delegate(
+            &request.session_id,
+            "run:continued",
+            "session:nested",
+            "run:nested",
+            "task:nested",
+        );
+        assert_eq!(
+            scope("session:nested", "run:nested", next_manifest.clone()),
+            json!([second])
+        );
+        journal.append(&json!({"type":"agent.task.completed","sessionId":"session:parent","runId":"run:second",
+            "payload":{"taskId":"task:second","result":{"outcome":"completed"}}})).unwrap();
+        assert_eq!(
+            scope("session:nested", "run:nested", next_manifest),
+            json!([])
+        );
+        kernel.shutdown_plugins().unwrap();
+    }
+
+    #[test]
+    fn delegated_plan_manifest_can_narrow_but_not_extend_confirmed_paths() {
+        let files = json!({"workspaceId":"workspace:test","operation":"fs.edit","target":"src","targetKind":"directoryTree"});
+        assert!(plan_operation_covers(&files, &files));
+        assert!(plan_operation_covers(
+            &files,
+            &json!({"workspaceId":"workspace:test","operation":"fs.write","target":"src/components","targetKind":"directoryTree"})
+        ));
+        assert!(!plan_operation_covers(
+            &files,
+            &json!({"workspaceId":"workspace:test","operation":"fs.write","target":"src-other","targetKind":"directoryTree"})
+        ));
+        let shell = json!({"workspaceId":"workspace:test","operation":"bash","writablePaths":[{"path":"build","kind":"directory"}]});
+        assert!(plan_operation_covers(
+            &shell,
+            &json!({"workspaceId":"workspace:test","operation":"bash","writablePaths":[{"path":"build/report.txt","kind":"file"}]})
+        ));
+        assert!(!plan_operation_covers(
+            &shell,
+            &json!({"workspaceId":"workspace:test","operation":"bash","writablePaths":[{"path":"src/main.rs","kind":"file"}]})
+        ));
+        assert!(!plan_operation_covers(&files, &shell));
     }
 
     #[test]

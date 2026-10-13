@@ -35,6 +35,7 @@ export interface SessionCapabilities {
     readonly estimateInput: typeof estimateContextInput;
   };
   readonly controls: {
+    readonly optionalTools?: readonly string[];
     readonly decode: typeof decodeSessionControlCall;
     readonly publishPlan: typeof publishPlan;
     readonly presentArtifacts: typeof presentArtifacts;

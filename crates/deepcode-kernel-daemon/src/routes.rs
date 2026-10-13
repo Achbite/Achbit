@@ -86,6 +86,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             get(local_agent_run_lifecycle_read),
         )
         .route(
+            "/api/local-agent/journal/sessions/:session_id/agent-lifecycle",
+            get(local_agent_agent_lifecycle_read),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id/commands/:command_id",
             get(local_agent_command_read),
         )
@@ -104,6 +108,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route(
             "/api/local-agent/kernel/processes",
             post(local_agent_processes),
+        )
+        .route(
+            "/api/local-agent/plans/delegated-scope",
+            post(local_agent_delegated_plan_scope),
         )
         .route(
             "/api/local-agent/kernel/execute",

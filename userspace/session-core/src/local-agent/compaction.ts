@@ -32,6 +32,7 @@ export function prepareContextCompaction(input: {
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   events: readonly SessionEvent[];
   requestEvent: ContextCompactionRequestEvent;
+  optionalControlTools?: readonly string[];
 }, signal?: AbortSignal): PreparedContextCompaction {
   signal?.throwIfAborted();
   const cutoff = input.requestEvent.payload.coveredThroughSequence;
@@ -49,6 +50,7 @@ export function prepareContextCompaction(input: {
     providerRequestId: input.requestEvent.payload.providerRequestId,
     purpose: 'contextCompaction',
     responseConstraint: 'answerOnly',
+    optionalControlTools: input.optionalControlTools,
     summaryInstruction: COMPACTION_INSTRUCTIONS + (focus
       ? `\n\nPrioritize existing facts relevant to the following future-work focus, but do not answer it:\n${focus}` : ''),
   });
@@ -113,6 +115,8 @@ function closesModelContextPrefix(event: SessionEvent): boolean {
     || event.type === 'todo.updated'
     || event.type === 'artifacts.presented'
     || event.type === 'agent.control.completed'
+    || event.type === 'session.control.completed'
+    || event.type === 'wake.triggered'
     || event.type === 'agent.task.completed'
     || event.type === 'agent.message.received'
     || event.type === 'session.control.rejected'

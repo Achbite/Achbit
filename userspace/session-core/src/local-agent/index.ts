@@ -5,6 +5,7 @@ export * from './plugins.js';
 export * from './reducer.js';
 export * from './sessionControls.js';
 export * from './sessionCapabilities.js';
+export * from './sessionConfiguration.js';
 export * from './service.js';
 export * from './skillPlugins.js';
 export * from './toolPromptContributions.js';

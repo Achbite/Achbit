@@ -28,6 +28,7 @@ mod local_agent_mcp;
 mod local_agent_plugins;
 mod local_agent_product_tools;
 mod local_agent_provider_runtime;
+mod local_agent_resources;
 mod local_agent_search;
 mod local_agent_store;
 mod local_agent_tool_catalog;

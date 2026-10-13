@@ -32,14 +32,15 @@ pub use conversation::{
     ConversationResourceReadRequest, ConversationResourceReadResult, ConversationSessionSummary,
     CreateConversationSessionRequest, DeliverableProjection, EffectOperation, EffectPreview,
     ExecutionPlanStep, FileChangeContent, FilesystemReference, FilesystemReferencePathInput,
-    InteractionOption, InteractionProjection, NarrativeProjection, PendingPlanProjection,
-    PlanOperation, PlanPreviewProjection, PlanProjection, PlanRef, PlanWritePath,
-    PluginCatalogItem, PluginCatalogProjection, PluginSelectionInput, ProjectionMessage,
-    QueuedInputProjection, ResolveConversationFilesystemReferencesRequest, RunProjection,
-    SessionDisplayProjection, SessionProjection, SessionTimelineItem, SourceCitation,
-    SourceReferences, TodoItem, TodoListProjection, TokenUsageProjection,
-    TokenUsageRoundProjection, ToolOutputProjection, WorkspaceBindingDisplay,
-    AUTHORIZATION_OPTIONS, CONVERSATION_COMMAND_VERSION, SESSION_PROJECTION_VERSION,
+    InteractionOption, InteractionProjection, NarrativeProjection, PendingAgentApproval,
+    PendingAgentDecision, PendingPlanProjection, PlanOperation, PlanPreviewProjection,
+    PlanProjection, PlanRef, PlanWritePath, PluginCatalogItem, PluginCatalogProjection,
+    PluginSelectionInput, ProjectionMessage, QueuedInputProjection,
+    ResolveConversationFilesystemReferencesRequest, RunProjection, SessionDisplayProjection,
+    SessionProjection, SessionTimelineItem, SourceCitation, SourceReferences, TodoItem,
+    TodoListProjection, TokenUsageProjection, TokenUsageRoundProjection, ToolOutputProjection,
+    WorkspaceBindingDisplay, AUTHORIZATION_OPTIONS, CONVERSATION_COMMAND_VERSION,
+    SESSION_PROJECTION_VERSION,
 };
 
 #[derive(Debug, Error)]

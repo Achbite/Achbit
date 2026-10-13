@@ -245,24 +245,83 @@ pub struct SessionProjection {
     pub agent_context: Option<AgentContext>,
     pub agent_tasks: Option<Vec<AgentTaskProjection>>,
     pub agent_children: Option<Vec<AgentChildProjection>>,
+    pub pending_agent_decisions: Option<Vec<PendingAgentDecision>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingAgentDecision {
+    pub agent_session_id: String,
+    pub display_name: String,
+    pub run_id: String,
+    pub plan: Option<PlanRef>,
+    pub interaction_ids: Vec<String>,
+    pub approval: Option<PendingAgentApproval>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingAgentApproval {
+    pub approval_id: String,
+    pub call_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCapabilities {
-    pub messaging: bool,
+    pub messaging: AgentMessaging,
     pub continuation: bool,
     pub delegation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum AgentMessaging {
+    Enabled(bool),
+    Scope(AgentMessagingScope),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentMessagingScope {
+    Parent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentContext {
     pub capabilities: AgentCapabilities,
+    pub configuration: Option<AgentConfiguration>,
+    pub model: Option<AgentModelConfiguration>,
     pub owner_session_id: String,
     pub parent_session_id: String,
     pub parent_run_id: String,
     pub parent_call_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentContributionSelection {
+    pub id: String,
+    pub parameters: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentConfiguration {
+    pub context: AgentContributionSelection,
+    pub compaction: AgentContributionSelection,
+    pub controls: AgentContributionSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentModelConfiguration {
+    pub profile_id: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub thinking: Option<String>,
+    pub parameters: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -393,7 +452,27 @@ impl SessionProjection {
             children.iter().any(|child| {
                 child.agent_session_id.is_empty() || child.display_name.trim().is_empty()
             })
-        }) {
+        }) || self
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .any(|decision| {
+                decision.agent_session_id.is_empty()
+                    || decision.display_name.trim().is_empty()
+                    || decision.run_id.is_empty()
+                    || decision.interaction_ids.iter().any(String::is_empty)
+                    || decision
+                        .plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.plan_id.is_empty() || plan.revision == 0)
+                    || decision.approval.as_ref().is_some_and(|approval| {
+                        approval.approval_id.is_empty() || approval.call_id.is_empty()
+                    })
+                    || (decision.plan.is_none()
+                        && decision.approval.is_none()
+                        && decision.interaction_ids.is_empty())
+            })
+        {
             return Err("shared Agent projection is invalid".into());
         }
         if self.provider_attempts.iter().any(|attempt| {
@@ -786,12 +865,21 @@ impl SessionProjection {
                 )
                 || (activity.kind == "agent") != activity.agent.is_some()
                 || activity.agent.as_ref().is_some_and(|agent| {
-                    !matches!(agent.phase.as_str(), "started" | "completed")
-                        || self.agent_tasks.iter().flatten().all(|task| {
-                            task.task_id != agent.task_id
-                                || task.agent_session_id != agent.agent_session_id
-                                || task.parent_run_id != activity.run_id
-                        })
+                    if agent.phase == "updated" {
+                        agent.task_id.is_some()
+                            || self
+                                .agent_children
+                                .iter()
+                                .flatten()
+                                .all(|child| child.agent_session_id != agent.agent_session_id)
+                    } else {
+                        !matches!(agent.phase.as_str(), "started" | "completed")
+                            || self.agent_tasks.iter().flatten().all(|task| {
+                                Some(&task.task_id) != agent.task_id.as_ref()
+                                    || task.agent_session_id != agent.agent_session_id
+                                    || task.parent_run_id != activity.run_id
+                            })
+                    }
                 })
                 || !matches!(
                     activity.status.as_str(),
@@ -1030,11 +1118,14 @@ impl SessionProjection {
     }
 
     pub fn last_assistant_message(&self, after_message_count: usize) -> Option<&ProjectionMessage> {
-        self.messages
-            .iter()
-            .skip(after_message_count)
-            .rev()
-            .find(|message| message.role == "assistant")
+        self.timeline.iter().rev().find_map(|item| match item {
+            SessionTimelineItem::Message { message_id, .. } => self
+                .messages
+                .iter()
+                .skip(after_message_count)
+                .find(|message| message.role == "assistant" && message.message_id == *message_id),
+            _ => None,
+        })
     }
 }
 
@@ -1967,7 +2058,7 @@ pub struct HostWindowBinding {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentActivityProjection {
     pub agent_session_id: String,
-    pub task_id: String,
+    pub task_id: Option<String>,
     pub phase: String,
 }
 
@@ -2640,12 +2731,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pending_child_decisions_preserve_the_original_session_and_references() {
+        let mut value = projection_value();
+        value["pendingAgentDecisions"] = json!([{
+            "agentSessionId":"session:descendant", "displayName":"Writer", "runId":"run:child",
+            "plan":{"planId":"plan:child","revision":2}, "interactionIds":["interaction:child"],
+            "approval":{"approvalId":"approval:child","callId":"call:child"}
+        }]);
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        let child = &projection.pending_agent_decisions.as_ref().unwrap()[0];
+        assert_eq!(child.agent_session_id, "session:descendant");
+        assert_eq!(child.plan.as_ref().unwrap().revision, 2);
+        assert_eq!(child.approval.as_ref().unwrap().call_id, "call:child");
+        value["pendingAgentDecisions"][0]["plan"]["revision"] = json!(0);
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+
+    #[test]
     fn unified_agent_projection_preserves_explicit_capabilities() {
         let capabilities = json!({"messaging":true,"continuation":false,"delegation":false});
         let mut value = projection_value();
         value["agentContext"] = json!({
             "capabilities":capabilities,"ownerSessionId":"session:owner","parentSessionId":"session:parent",
-            "parentRunId":"run:parent","parentCallId":"call:spawn"
+            "parentRunId":"run:parent","parentCallId":"call:spawn",
+            "configuration":{"context":{"id":"journal"},"compaction":{"id":"summary"},"controls":{"id":"standard","parameters":{"optionalTools":[]}}},
+            "model":{"profileId":"profile:chosen","model":"chosen-model","reasoningEffort":"high","thinking":"enabled","parameters":{"adapterId":"openai","kind":"responses","providerFlavor":null,"contextWindowTokens":100000,"maxOutputTokens":4096,"imageInput":false,"temperature":null,"hostedWebSearch":null}}
         });
         value["agentTasks"] = json!([{
             "taskId":"task:child","agentSessionId":"session:child","capabilities":capabilities,
@@ -2657,11 +2771,17 @@ mod tests {
         let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
         projection.validate().unwrap();
         let expected = AgentCapabilities {
-            messaging: true,
+            messaging: AgentMessaging::Enabled(true),
             continuation: false,
             delegation: false,
         };
-        assert_eq!(projection.agent_context.unwrap().capabilities, expected);
+        let context = projection.agent_context.unwrap();
+        assert_eq!(context.capabilities, expected);
+        assert_eq!(
+            context.configuration.unwrap().controls.parameters.unwrap()["optionalTools"],
+            json!([])
+        );
+        assert_eq!(context.model.unwrap().model, "chosen-model");
         assert_eq!(projection.agent_tasks.unwrap()[0].capabilities, expected);
         assert_eq!(projection.agent_children.unwrap()[0].capabilities, expected);
         let mut missing = value.clone();
@@ -2675,6 +2795,38 @@ mod tests {
         assert!(serde_json::from_value::<SessionProjection>(invalid).is_err());
         value["agentTasks"][0]["role"] = json!("analysis");
         assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+    }
+
+    #[test]
+    fn member_message_activity_has_no_task_settlement() {
+        let mut value = projection_value();
+        value["agentChildren"] = json!([{
+            "agentSessionId":"session:child","displayName":"Child","closed":false,
+            "capabilities":{"messaging":true,"continuation":true,"delegation":false}
+        }]);
+        value["activities"].as_array_mut().unwrap().push(json!({
+            "activityId":"agent:message:7","kind":"agent","status":"completed","label":"Child",
+            "runId":"run:test","sequence":7,
+            "agent":{"agentSessionId":"session:child","phase":"updated"}
+        }));
+        value["timeline"].as_array_mut().unwrap().insert(
+            3,
+            json!({
+                "kind":"toolGroup","timelineId":"agent:message:7","sequence":7,
+                "activityIds":["agent:message:7"]
+            }),
+        );
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        assert_eq!(
+            projection.activities[1].agent.as_ref().unwrap().task_id,
+            None
+        );
+        value["activities"][1]["agent"]["phase"] = json!("completed");
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
     }
 
     fn projection_value() -> Value {

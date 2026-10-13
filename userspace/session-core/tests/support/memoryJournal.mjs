@@ -1,5 +1,6 @@
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import { assertRuntimeContract } from './runtimeContract.mjs';
+import { projectAgentLifecycleEvent } from '../../dist/local-agent/agentLifecycle.js';
 import { projectRunLifecycleEvent } from '../../dist/local-agent/runLifecycle.js';
 
 /** Test storage adapter. SQLite atomicity is verified by the store tests. */
@@ -65,6 +66,13 @@ export class InMemoryCommandJournal {
         return projected ? [projected] : [];
       }),
     };
+  }
+
+  async readAgentLifecycle(sessionId) {
+    const events = this.#events.get(sessionId);
+    if (!events) throw new Error('session_not_found');
+    return { sessionId, revision: events.at(-1)?.sequence ?? 0,
+      events: events.flatMap(event => { const value = projectAgentLifecycleEvent(event); return value ? [value] : []; }) };
   }
 
   async commitCommand(

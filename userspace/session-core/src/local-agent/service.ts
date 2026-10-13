@@ -1,4 +1,5 @@
-import { AgentManager } from './agentManager.js';
+import { reduceAgentLifecycle } from './agentLifecycle.js';
+import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
 import { loopSnapshot } from './loop.js';
 import type {
@@ -12,6 +13,7 @@ import type {
   ConversationReadResult,
   ConversationSessionStatus,
   SessionProjection,
+  PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@deepcode/protocol';
 import { SessionActor } from './actor.js';
@@ -20,6 +22,7 @@ import { decodeConversationReadQuery, readConversation, readSessionEvents } from
 import { projectSession, recoverSession } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
+import { SessionConfigurationRegistry } from './sessionConfiguration.js';
 
 export interface SessionCompositionFactory {
   create(input: {
@@ -47,10 +50,11 @@ export type SessionServiceFactory = (input: {
   journal: CommandJournalPort;
   compositions: SessionCompositionFactory;
   agentHost?: AgentHostPort;
+  configurations?: SessionConfigurationRegistry;
 }) => Promise<SessionServicePort>;
 
-export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost }) => (
-  new SessionService(journal, compositions, agentHost)
+export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations }) => (
+  new SessionService(journal, compositions, agentHost, configurations)
 );
 
 export class SessionDeletionError extends AggregateError {
@@ -63,6 +67,8 @@ export class SessionDeletionError extends AggregateError {
 
 export class SessionService implements ConversationPort {
   readonly #actors = new Map<string, Promise<SessionActor>>();
+  readonly #actorUsers = new Map<string, number>();
+  readonly #retirements = new Map<string, Promise<void>>();
   readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
   readonly #deletingSessionIds = new Set<string>();
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
@@ -74,9 +80,12 @@ export class SessionService implements ConversationPort {
     readonly journal: CommandJournalPort,
     readonly compositions: SessionCompositionFactory,
     agentHost?: AgentHostPort,
+    readonly configurations = new SessionConfigurationRegistry(),
   ) {
-    if (agentHost) this.#agents = new AgentManager(agentHost, async sessionId =>
-      await (this.#actors.get(sessionId) ?? this.actor(sessionId)));
+    if (agentHost) this.#agents = new AgentManager(agentHost, {
+      withActor: (id, operation) => this.withActor(id, operation),
+      read: id => this.agentManagement(id),
+    }, configurations);
   }
 
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {
@@ -95,8 +104,7 @@ export class SessionService implements ConversationPort {
       ...(input.profileId ? { profileId: input.profileId } : {}),
     });
     try {
-      const actor = await this.actor(input.sessionId);
-      return await actor.snapshot();
+      return await this.withActor(input.sessionId, actor => actor.snapshot(), false);
     } catch (error) {
       try {
         await this.deleteSession(input.sessionId, { unstartedOnly: true });
@@ -201,45 +209,78 @@ export class SessionService implements ConversationPort {
 
   async submit(command: ConversationCommand): Promise<CommandReply> {
     if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
-    const actor = await this.actor(command.sessionId);
-    this.assertOpen();
-    const projection = await actor.snapshot();
-    if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'run.host.rebind'].includes(command.type)) {
-      throw new Error('agent_session_requires_managed_task');
-    }
-    if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
-    const pending = actor.submit(command);
-    let submissions = this.#submissions.get(command.sessionId);
-    if (!submissions) {
-      submissions = new Set();
-      this.#submissions.set(command.sessionId, submissions);
-    }
-    submissions.add(pending);
-    try { return await pending; }
-    finally {
-      submissions.delete(pending);
-      if (!submissions.size) this.#submissions.delete(command.sessionId);
-    }
+    return this.withActor(command.sessionId, async actor => {
+      this.assertOpen();
+      const projection = await actor.agentSnapshot();
+      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'run.host.rebind'].includes(command.type)) {
+        throw new Error('agent_session_requires_managed_task');
+      }
+      if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
+      const pending = actor.submit(command);
+      let submissions = this.#submissions.get(command.sessionId);
+      if (!submissions) {
+        submissions = new Set();
+        this.#submissions.set(command.sessionId, submissions);
+      }
+      submissions.add(pending);
+      try { return await pending; }
+      finally {
+        submissions.delete(pending);
+        if (!submissions.size) this.#submissions.delete(command.sessionId);
+      }
+    });
   }
 
   /** Same-process operator API; control calls and conversation commands cannot install code. */
   async replaceCapabilities(sessionId: string, implementation: SessionCapabilities): Promise<void> {
-    const actor = await this.actor(sessionId);
-    this.assertOpen();
-    await actor.replaceCapabilities(implementation);
+    await this.withActor(sessionId, actor => actor.replaceCapabilities(implementation));
   }
 
   async snapshot(sessionId: string): Promise<SessionProjection> {
+    if (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
     const live = this.#actors.get(sessionId);
-    if (live) return (await live).snapshot();
-    const events = await readSessionEvents(this.journal, sessionId);
-    if (!events.length) throw new Error('session_not_found');
-    return projectSession(recoverSession(sessionId, events));
+    const projection = live ? await this.withActor(sessionId, actor => actor.snapshot())
+      : await (async () => {
+        const events = await readSessionEvents(this.journal, sessionId);
+        if (!events.length) throw new Error('session_not_found');
+        return projectSession(recoverSession(sessionId, events));
+      })();
+    const pendingAgentDecisions = await this.agentDecisionRoutes(projection);
+    return pendingAgentDecisions.length ? { ...projection, pendingAgentDecisions } : projection;
+  }
+
+  private async agentDecisionRoutes(parent: Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks'>): Promise<PendingAgentDecision[]> {
+    const decisions: PendingAgentDecision[] = [];
+    const ownerSessionId = parent.agentContext?.ownerSessionId ?? parent.sessionId;
+    const seen = new Set<string>([parent.sessionId]);
+    const visit = async (owner: { sessionId: string; agentTasks?: AgentManagementSnapshot['agentTasks'] }) => {
+      for (const task of owner.agentTasks ?? []) {
+        if (task.status !== 'running' || !task.childRunId || seen.has(task.agentSessionId)) continue;
+        seen.add(task.agentSessionId);
+        const child = await this.agentManagement(task.agentSessionId);
+        if (child.agentContext?.ownerSessionId !== ownerSessionId) throw new Error('agent_lineage_mismatch');
+        // A continuation can be assigned by an ancestor other than the creating parent.
+        // The current task/run owns its decision route; the creation tree still owns archival.
+        if (child.run?.runId !== task.childRunId) continue;
+        const lifecycle = this.#statusStates.get(child.sessionId)!.lifecycle;
+        const plan = lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
+        const approval = lifecycle.pendingApproval?.runId === task.childRunId ? lifecycle.pendingApproval : null;
+        const interactionIds = lifecycle.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
+        if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,
+          displayName: task.displayName, runId: task.childRunId, interactionIds,
+          ...(plan ? { plan: { planId: plan.planId, revision: plan.revision } } : {}),
+          ...(approval ? { approval: { approvalId: approval.approvalId, callId: approval.callId } } : {}) });
+        await visit(child);
+      }
+    };
+    await visit(parent);
+    return decisions;
   }
 
   async activity(): Promise<{ active: boolean }> {
-    const actors = await Promise.all(this.#actors.values());
-    const activity = await Promise.all(actors.map((actor) => actor.hasActiveWork()));
+    // Observe existing objects only; an idle read must never reopen a retiring child.
+    const activity = await Promise.all([...this.#actors.values()].map(async pending =>
+      (await pending).hasActiveWork()));
     return { active: activity.some(Boolean) };
   }
 
@@ -320,6 +361,52 @@ export class SessionService implements ConversationPort {
     if (errors.length > 0) throw new AggregateError(errors, 'session_service_dispose_failed');
   }
 
+  /** Journal-only management reads do not activate Providers, tools or Actors. */
+  private async agentManagement(sessionId: string): Promise<AgentManagementSnapshot> {
+    const read = await this.journal.readAgentLifecycle(sessionId);
+    if (read.sessionId !== sessionId || read.events.some(event => event.sessionId !== sessionId)) {
+      throw new Error('session_event_identity_mismatch');
+    }
+    if (read.events[0]?.type !== 'session.created') throw new Error('session_creation_event_missing');
+    let relations = { agentTasks: [], agentChildren: [] } as import('./agentLifecycle.js').AgentLifecycleState;
+    for (const event of read.events) if (event.type !== 'session.created') relations = reduceAgentLifecycle(relations, event);
+    const [status] = await this.statuses([sessionId]);
+    return { sessionId, agentContext: read.events[0].payload.agentContext, ...relations, run: status!.run };
+  }
+
+  /** Physical references only; durable ownership remains in the Session journal. */
+  private async withActor<T>(sessionId: string, operation: (actor: SessionActor) => Promise<T>, retire = true): Promise<T> {
+    while (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
+    this.#actorUsers.set(sessionId, (this.#actorUsers.get(sessionId) ?? 0) + 1);
+    let failure: unknown;
+    try {
+      const actor = await (this.#actors.get(sessionId) ?? this.actor(sessionId));
+      return await operation(actor);
+    } catch (error) { failure = error; throw error; }
+    finally {
+      const users = this.#actorUsers.get(sessionId)! - 1;
+      if (users) this.#actorUsers.set(sessionId, users);
+      else {
+        this.#actorUsers.delete(sessionId);
+        const pending = this.#actors.get(sessionId);
+        if (pending && retire) {
+          const retirement = (async () => {
+            const actor = await pending;
+            if (await actor.retireIfSettledChild() && this.#actors.get(sessionId) === pending) this.#actors.delete(sessionId);
+          })();
+          this.#retirements.set(sessionId, retirement);
+          try { await retirement; }
+          catch (error) {
+            if (failure) throw new AggregateError([failure, error], 'session_actor_operation_cleanup_failed');
+            throw error;
+          } finally {
+            if (this.#retirements.get(sessionId) === retirement) this.#retirements.delete(sessionId);
+          }
+        }
+      }
+    }
+  }
+
   private async actor(sessionId: string): Promise<SessionActor> {
     this.assertOpen();
     let actor = this.#actors.get(sessionId);
@@ -345,6 +432,17 @@ export class SessionService implements ConversationPort {
       sessionId,
       workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
     });
+    if (first.payload.agentContext?.configuration) {
+      try {
+        if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');
+        installed.composition.capabilities = await this.configurations.create(first.payload.agentContext.configuration);
+      } catch (error) {
+        const cleanup = await Promise.allSettled([installed.composition.capabilities?.dispose(), installed.composition.dispose()]);
+        const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+        if (failures.length) throw new AggregateError([error, ...failures], 'session_configuration_initialization_failed');
+        throw error;
+      }
+    }
     const actor = new SessionActor(sessionId, this.journal, installed.composition, {
       initialEvents: events,
       ...(this.#agents ? { agents: this.#agents.forSession(sessionId) } : {}),

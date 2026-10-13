@@ -19,7 +19,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["messaging", "continuation", "delegation"],
       "properties": {
-        "messaging": {"type": "boolean"},
+        "messaging": {"enum": [false, "parent", true]},
         "continuation": {"type": "boolean"},
         "delegation": {"type": "boolean"}
       }
@@ -35,11 +35,11 @@
           "required": ["action", "task", "name", "delivery"],
           "properties": {
             "action": {"const": "spawn"},
-            "preset": {"enum": ["analysis", "collaboration"]},
+            "preset": {"type": "string", "minLength": 1},
             "capabilities": {
               "type": "object", "additionalProperties": false,
               "properties": {
-                "messaging": {"type": "boolean"},
+                "messaging": {"enum": [false, "parent", true]},
                 "continuation": {"type": "boolean"},
                 "delegation": {"type": "boolean"}
               }
@@ -48,7 +48,13 @@
             "name": {"type": "string", "minLength": 1},
             "delivery": {"enum": ["wait", "async"]},
             "profileId": {"type": "string", "minLength": 1},
-            "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]}
+            "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
+            "context": {"$ref": "#/$defs/AgentContributionSelection"},
+            "loop": {"type": "object", "additionalProperties": false, "properties": {
+              "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
+              "controls": {"$ref": "#/$defs/AgentContributionSelection"}
+            }},
+            "permissions": {"$ref": "#/$defs/PermissionSettings"}
           }
         },
         {
@@ -69,10 +75,54 @@
         }
       ]
     },
+    "SessionOperation": {
+      "oneOf": [
+        {"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"const":"describe"}}},
+        {"type":"object","additionalProperties":false,"required":["action","afterSeconds","text"],"properties":{
+          "action":{"const":"schedule"},"afterSeconds":{"type":"number","exclusiveMinimum":0,"maximum":2147483},"text":{"type":"string","minLength":1}}},
+        {"type":"object","additionalProperties":false,"required":["action","scheduleId"],"properties":{
+          "action":{"const":"cancelSchedule"},"scheduleId":{"$ref":"#/$defs/Id"}}},
+        {"type":"object","additionalProperties":false,"required":["action"],"properties":{
+          "action":{"const":"wait"},"timeoutSeconds":{"type":"number","exclusiveMinimum":0,"maximum":2147483}}}
+      ]
+    },
+    "PendingAgentDecision": {
+      "type":"object","additionalProperties":false,"required":["agentSessionId","displayName","runId","interactionIds"],
+      "properties":{
+        "agentSessionId":{"$ref":"#/$defs/Id"},"displayName":{"type":"string"},"runId":{"$ref":"#/$defs/Id"},
+        "interactionIds":{"type":"array","items":{"$ref":"#/$defs/Id"}},"plan":{"$ref":"#/$defs/PlanRef"},
+        "approval":{"type":"object","additionalProperties":false,"required":["approvalId","callId"],"properties":{
+          "approvalId":{"$ref":"#/$defs/Id"},"callId":{"$ref":"#/$defs/Id"}}}
+      }
+    },
+    "AgentContributionSelection": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": {"id": {"$ref": "#/$defs/Id"}, "parameters": {"type": "object"}}
+    },
+    "AgentConfiguration": {
+      "type": "object", "additionalProperties": false, "required": ["context", "compaction", "controls"],
+      "properties": {
+        "context": {"$ref": "#/$defs/AgentContributionSelection"},
+        "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
+        "controls": {"$ref": "#/$defs/AgentContributionSelection"}
+      }
+    },
     "AgentContext": {
       "type": "object", "additionalProperties": false,
       "required": ["capabilities", "ownerSessionId", "parentSessionId", "parentRunId", "parentCallId"],
       "properties": {
+        "configuration": {"$ref": "#/$defs/AgentConfiguration"},
+        "model": {"type": "object", "additionalProperties": false,
+          "required": ["profileId", "model", "reasoningEffort", "thinking", "parameters"], "properties": {
+            "profileId": {"$ref": "#/$defs/Id"}, "model": {"type": "string", "minLength": 1},
+            "reasoningEffort": {"enum": [null, "low", "medium", "high", "xhigh", "max"]},
+            "thinking": {"enum": [null, "enabled", "disabled"]},
+            "parameters": {"type":"object","additionalProperties":false,
+              "required":["adapterId","kind","providerFlavor","contextWindowTokens","maxOutputTokens","imageInput","temperature","hostedWebSearch"],
+              "properties":{"adapterId":{"type":"string","minLength":1},"kind":{"enum":["responses","openaiCompatible","anthropic","ollama"]},"providerFlavor":{"type":["string","null"]},
+                "contextWindowTokens":{"type":"integer","minimum":1},"maxOutputTokens":{"type":"integer","minimum":1},"imageInput":{"type":"boolean"},
+                "temperature":{"type":["number","null"]},"hostedWebSearch":{"enum":[null,"web_search"]}}}
+          }},
         "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "ownerSessionId": {"$ref": "#/$defs/Id"},
         "parentSessionId": {"$ref": "#/$defs/Id"},
@@ -1398,7 +1448,7 @@
         "createdAt": { "$ref": "#/$defs/Timestamp" },
         "updatedAt": { "$ref": "#/$defs/Timestamp" },
         "confirmationSource": {
-          "enum": ["user", "agent"]
+          "enum": ["user", "agent", "parent"]
         }
       }
     },
@@ -1426,7 +1476,7 @@
           "items": { "$ref": "#/$defs/PlanOperation" }
         },
         "status": { "const": "published" },
-        "confirmationSource": { "enum": ["user", "agent"] },
+        "confirmationSource": { "enum": ["user", "agent", "parent"] },
         "decisionId": { "$ref": "#/$defs/Id" },
         "responseMode": { "const": "confirmReviseOrCancel" },
         "sequence": { "type": "integer", "minimum": 1 },
@@ -2078,6 +2128,10 @@
             "agent.message.received",
             "artifacts.presented",
             "session.control.rejected",
+            "session.control.completed",
+            "wake.scheduled",
+            "wake.cancelled",
+            "wake.triggered",
             "context.compaction.requested",
             "context.compacted",
             "context.composed",
@@ -2095,6 +2149,33 @@
         "payload": {"$ref": "#/$defs/JsonObject"}
       },
       "allOf": [
+        {
+          "if":{"properties":{"type":{"const":"session.control.completed"}}},
+          "then":{"required":["runId","callId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["providerCallId","operation","result"],
+            "properties":{"providerCallId":{"$ref":"#/$defs/Id"},"operation":{"$ref":"#/$defs/SessionOperation"},"result":{"$ref":"#/$defs/JsonObject"}}
+          }}}
+        },
+        {
+          "if":{"properties":{"type":{"const":"wake.scheduled"}}},
+          "then":{"required":["runId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["scheduleId","dueAt","text"],
+            "properties":{"scheduleId":{"$ref":"#/$defs/Id"},"dueAt":{"type":"integer","minimum":0},"text":{"type":"string","minLength":1}}
+          }}}
+        },
+        {
+          "if":{"properties":{"type":{"const":"wake.cancelled"}}},
+          "then":{"required":["runId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["scheduleId"],"properties":{"scheduleId":{"$ref":"#/$defs/Id"}}
+          }}}
+        },
+        {
+          "if":{"properties":{"type":{"const":"wake.triggered"}}},
+          "then":{"required":["runId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["scheduleId","text"],
+            "properties":{"scheduleId":{"$ref":"#/$defs/Id"},"text":{"type":"string","minLength":1}}
+          }}}
+        },
         {
           "if": {
             "properties": {
@@ -2574,7 +2655,7 @@
                   "revision": {"type": "integer", "minimum": 1},
                   "commandId": {"$ref": "#/$defs/Id"},
                   "decisionId": {"$ref": "#/$defs/Id"},
-                  "source": {"enum": ["user", "agent"]},
+                  "source": {"enum": ["user", "agent", "parent"]},
                   "authorities": {"type": "array", "items": {"$ref": "#/$defs/PlanAuthority"}}
                 }
               }
@@ -3154,6 +3235,7 @@
         "agentContext": {"$ref": "#/$defs/AgentContext"},
         "agentTasks": {"type": "array", "items": {"$ref": "#/$defs/AgentTaskProjection"}},
         "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},
+        "pendingAgentDecisions": {"type": "array", "items": {"$ref": "#/$defs/PendingAgentDecision"}},
         "schemaVersion": {"const": "deepcode.session-projection.v6"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 0},

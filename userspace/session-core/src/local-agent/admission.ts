@@ -6,6 +6,7 @@ import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent }
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
 import { admitModelView } from './modelView.js';
+import { controlWait, pendingWakeups } from './sessionWake.js';
 
 /** New writes are admitted here; replay preserves already-recorded failure facts. */
 export function admitSessionEvents(
@@ -54,7 +55,7 @@ function admitCommandBatch(current: LoopSnapshot, command: ConversationCommand, 
   const todos = events.filter(event => event.type === 'todo.updated');
   const expected = { confirm: 'plan.confirmed', requestRevision: 'plan.revision.requested', cancel: 'plan.cancelled' } as const;
   if (decisions.length !== 1 || decisions[0].type !== expected[command.response.kind]
-    || todos.length !== (command.response.kind === 'confirm' && current.state.todoList?.runId !== command.runId ? 1 : 0)) throw new Error('plan_command_event_batch_invalid');
+    || todos.length !== 0) throw new Error('plan_command_event_batch_invalid');
 }
 
 function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
@@ -112,6 +113,21 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'plan.published':
     case 'session.control.rejected':
     case 'agent.control.completed':
+    case 'session.control.completed':
+      if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
+        const wait = controlWait(event.payload.result);
+        if (wait) {
+          const operation = event.payload.operation;
+          const composition = events.findLast(item => item.type === 'context.composed' && item.runId === event.runId
+            && item.payload.purpose === 'agent');
+          if (composition?.type !== 'context.composed' || wait.afterSequence !== composition.payload.modelView?.throughSequence
+            || operation.action !== 'wait' && !(event.type === 'agent.control.completed' && operation.action === 'spawn'
+              && operation.delivery === 'wait' && typeof event.payload.result.taskId === 'string')
+            || wait.deadline !== undefined && (event.type !== 'session.control.completed' || typeof operation.timeoutSeconds !== 'number')) {
+            throw new Error('control_wait_identity_invalid');
+          }
+        }
+      }
     case 'session.plugins.activated':
     case 'artifacts.presented':
       if (!pendingProvider) throw new Error('provider_turn_composition_missing');
@@ -134,7 +150,19 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'plan.confirmed':
       if (event.payload.source === 'agent' && permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions,
         ...state.permissionOverrides })['agent.permissions.workspaceMutation'] !== 'allow') throw new Error('plan_delegation_missing');
+      if (event.payload.source === 'parent' && (!state.agentContext || !event.payload.authorities.length
+        || event.payload.authorities.some(authority => authority.sessionId === state.sessionId))) throw new Error('parent_plan_reference_missing');
       break;
+    case 'wake.scheduled':
+      if (events.some(item => item.type === 'wake.scheduled' && item.payload.scheduleId === event.payload.scheduleId)
+        || !Number.isSafeInteger(event.payload.dueAt) || event.payload.dueAt < 0 || !event.payload.text.trim()) throw new Error('schedule_invalid');
+      break;
+    case 'wake.cancelled':
+    case 'wake.triggered': {
+      const pending = pendingWakeups(events, event.runId).get(event.payload.scheduleId);
+      if (!pending || event.type === 'wake.triggered' && event.payload.text !== pending.payload.text) throw new Error('schedule_not_pending');
+      break;
+    }
     case 'approval.resolved':
       if (event.payload.source === 'agent') {
         const permissions = permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions, ...state.permissionOverrides });

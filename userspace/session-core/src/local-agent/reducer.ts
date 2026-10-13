@@ -1,3 +1,4 @@
+import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
 import { isManagedProcessSnapshot, isSessionAuthorizationScope, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { advanceDeliverables, compareDeliverables } from './deliverables.js';
 import { advanceTodoList } from './todoState.js';
@@ -32,6 +33,7 @@ import {
   SESSION_CONTROL_PLAN_PUBLISH,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_SESSION,
   SESSION_PROJECTION_VERSION, permissionSettings, validatePermissionPatches, isLocalAgentErrorValue,
 } from '@deepcode/protocol';
 
@@ -733,11 +735,19 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       if (event.type === 'agent.task.completed') recordAgentActivity(next, event, 'completed');
       break;
     case 'agent.control.completed':
+    case 'session.control.completed':
       assertRunningRun(next, event.runId, 'agent_control_run_not_active');
-      recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId, SESSION_CONTROL_AGENT, event.sequence);
+      recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
+        event.type === 'agent.control.completed' ? SESSION_CONTROL_AGENT : SESSION_CONTROL_SESSION, event.sequence);
+      break;
+    case 'wake.scheduled':
+    case 'wake.cancelled':
+    case 'wake.triggered':
+      if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('wake_run_not_active');
       break;
     case 'agent.message.received':
       if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('agent_message_run_not_active');
+      recordAgentMessageActivity(next, event);
       break;
     case 'session.plugins.activated':
       assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
@@ -1157,61 +1167,18 @@ function recordAgentActivity(state: SessionState,
   };
 }
 
-type AgentLifetime = Pick<SessionState, 'agentTasks' | 'agentChildren'>;
-type AgentLifetimeEvent = Extract<SessionEvent, { type: 'agent.task.created' | 'agent.task.started' | 'agent.task.completed' | 'agent.closed' }>;
-
-function isAgentLifetimeEvent(event: SessionEvent): event is AgentLifetimeEvent {
-  return event.type === 'agent.task.created' || event.type === 'agent.task.started'
-    || event.type === 'agent.task.completed' || event.type === 'agent.closed';
+function recordAgentMessageActivity(state: SessionState,
+  event: Extract<SessionEvent, { type: 'agent.message.received' }>): void {
+  const child = state.agentChildren.find(child => child.agentSessionId === event.payload.sourceSessionId);
+  if (!child) return; // Parent and peer messages are not child status notifications in this Session.
+  const activityId = `agent:message:${event.sequence}`;
+  state.activities = { ...state.activities, [activityId]: {
+    activityId, kind: 'agent', label: child.displayName, runId: event.runId,
+    sequence: event.sequence, status: 'completed',
+    agent: { agentSessionId: child.agentSessionId, phase: 'updated' },
+  } };
 }
 
-/** These relationships outlive edited conversation ranges; the journal remains their only source. */
-function reduceAgentLifetime(previous: AgentLifetime, event: AgentLifetimeEvent): AgentLifetime {
-  const next = { agentTasks: previous.agentTasks, agentChildren: previous.agentChildren };
-  switch (event.type) {
-    case 'agent.task.created':
-      if (next.agentTasks.some(task => task.taskId === event.payload.taskId)) throw new Error('agent_task_duplicate');
-      const { createsAgent, ...task } = event.payload;
-      next.agentTasks = [...next.agentTasks, { ...task, parentRunId: event.runId, status: 'running' }];
-      const child = next.agentChildren.find(item => item.agentSessionId === event.payload.agentSessionId);
-      if (createsAgent) {
-        if (child) throw new Error('agent_child_duplicate');
-        next.agentChildren = [...next.agentChildren, { agentSessionId: event.payload.agentSessionId,
-          displayName: event.payload.displayName, capabilities: structuredClone(event.payload.capabilities), closed: false }];
-      } else if (!event.payload.capabilities.continuation || child && (child.closed
-        || Object.keys(child.capabilities).some(key => child.capabilities[key as keyof typeof child.capabilities]
-          !== event.payload.capabilities[key as keyof typeof child.capabilities]))) throw new Error('agent_child_not_continuable');
-      break;
-    case 'agent.task.started':
-    case 'agent.task.completed': {
-      const task = next.agentTasks.find(item => item.taskId === event.payload.taskId);
-      if (!task || task.parentRunId !== event.runId || task.status !== 'running') throw new Error('agent_task_transition_invalid');
-      if (event.type === 'agent.task.started') {
-        if (task.childRunId) throw new Error('agent_task_already_started');
-        next.agentTasks = next.agentTasks.map(item => item === task ? { ...item, childRunId: event.payload.childRunId } : item);
-      } else {
-        const result = event.payload.result;
-        if (result.outcome === 'completed' && (!result.content || !result.finalMessageId)
-          || ['failed', 'indeterminate'].includes(result.outcome) && !result.error) throw new Error('agent_task_result_invalid');
-        next.agentTasks = next.agentTasks.map(item => item === task ? { ...item, status: result.outcome, result: structuredClone(result) } : item);
-        if (!next.agentTasks.some(item => item.agentSessionId === task.agentSessionId && item.status === 'running')) {
-          next.agentChildren = next.agentChildren.map(child => child.agentSessionId === task.agentSessionId && !child.capabilities.continuation
-            ? { ...child, closed: true } : child);
-        }
-      }
-      break;
-    }
-    case 'agent.closed': {
-      const member = next.agentChildren.find(item => item.agentSessionId === event.payload.agentSessionId);
-      if (!member || member.closed || next.agentTasks.some(task => task.agentSessionId === member.agentSessionId && task.status === 'running')) {
-        throw new Error('agent_child_close_invalid');
-      }
-      next.agentChildren = next.agentChildren.map(item => item === member ? { ...item, closed: true } : item);
-      break;
-    }
-  }
-  return next;
-}
 
 export function recoverSession(sessionId: string, events: readonly SessionEvent[]): SessionState {
   let agents: AgentLifetime = { agentTasks: [], agentChildren: [] };
@@ -1221,10 +1188,21 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
     if (isAgentLifetimeEvent(event)) agents = reduceAgentLifetime(agents, event);
   }
   let state = emptySessionState(sessionId);
+  // Archived child identities also label received messages during history-only replay.
+  state.agentChildren = agents.agentChildren;
   const active = activeConversationEvents(events);
   for (const event of active) {
     // The lifetime stream above has already reduced these facts exactly once.
-    if (isAgentLifetimeEvent(event)) continue;
+    if (isAgentLifetimeEvent(event)) {
+      // Lifetime and visible history are different projections of the same fact.
+      // Editing may hide an activity without deleting the archived child.
+      if (event.type === 'agent.task.created' || event.type === 'agent.task.completed') {
+        const activityState = { ...state, agentTasks: agents.agentTasks };
+        recordAgentActivity(activityState, event, event.type === 'agent.task.created' ? 'started' : 'completed');
+        state = { ...state, activities: activityState.activities };
+      }
+      continue;
+    }
     // Only explicitly superseded journal ranges may create a gap in active history.
     state = reduceSession({ ...state, revision: event.sequence - 1 }, event);
   }

@@ -16,11 +16,13 @@ export const SESSION_CONTROL_TODO_UPDATE = 'todo.update' as const;
 export const SESSION_CONTROL_PLUGIN_ACTIVATE = 'plugin.activate' as const;
 export const SESSION_CONTROL_ARTIFACT_PRESENT = 'artifact.present' as const;
 export const SESSION_CONTROL_AGENT = 'agent' as const;
+export const SESSION_CONTROL_SESSION = 'session' as const;
 
 export type JsonObject = Record<string, unknown>;
 
 export interface AgentCapabilities {
-  messaging: boolean;
+  /** true permits team messages; parent limits communication to the parent. */
+  messaging: boolean | 'parent';
   continuation: boolean;
   delegation: boolean;
 }
@@ -29,29 +31,112 @@ export function decodeAgentCapabilities(value: unknown): AgentCapabilities {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_capabilities_invalid');
   const item = value as Record<string, unknown>;
   const fields = ['messaging', 'continuation', 'delegation'] as const;
-  if (Object.keys(item).length !== fields.length || fields.some(key => typeof item[key] !== 'boolean')) {
+  if (Object.keys(item).length !== fields.length || fields.some(key =>
+    typeof item[key] !== 'boolean' && !(key === 'messaging' && item[key] === 'parent'))) {
     throw new Error('agent_capabilities_invalid');
   }
-  return { messaging: item.messaging as boolean, continuation: item.continuation as boolean, delegation: item.delegation as boolean };
+  return { messaging: item.messaging as AgentCapabilities['messaging'], continuation: item.continuation as boolean, delegation: item.delegation as boolean };
 }
+
+export type SessionOperation =
+  | { action: 'describe' }
+  | { action: 'schedule'; afterSeconds: number; text: string }
+  | { action: 'cancelSchedule'; scheduleId: string }
+  | { action: 'wait'; timeoutSeconds?: number };
 
 export interface AgentContext {
   capabilities: AgentCapabilities;
+  configuration?: AgentConfiguration;
+  model?: AgentModelConfiguration;
   ownerSessionId: string;
   parentSessionId: string;
   parentRunId: string;
   parentCallId: string;
 }
 
+export interface AgentContributionSelection {
+  id: string;
+  parameters?: JsonObject;
+}
+
+export interface AgentModelConfiguration {
+  profileId: string;
+  model: string;
+  reasoningEffort: LlmReasoningEffort | null;
+  thinking: LlmThinkingMode | null;
+  parameters: AgentModelParameters;
+}
+
+export interface AgentModelParameters {
+  adapterId: string;
+  kind: string;
+  providerFlavor: string | null;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  imageInput: boolean;
+  temperature: number | null;
+  hostedWebSearch: string | null;
+}
+
+export function decodeAgentModelParameters(value: unknown): AgentModelParameters {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_model_parameters_invalid');
+  const item = value as AgentModelParameters;
+  if (Object.keys(item).length !== 8 || typeof item.adapterId !== 'string' || !item.adapterId
+    || !['responses', 'openaiCompatible', 'anthropic', 'ollama'].includes(item.kind)
+    || item.providerFlavor !== null && typeof item.providerFlavor !== 'string'
+    || !Number.isSafeInteger(item.contextWindowTokens) || !Number.isSafeInteger(item.maxOutputTokens)
+    || item.maxOutputTokens <= 0 || item.contextWindowTokens <= item.maxOutputTokens
+    || typeof item.imageInput !== 'boolean' || item.temperature !== null && (typeof item.temperature !== 'number' || !Number.isFinite(item.temperature))
+    || item.hostedWebSearch !== null && item.hostedWebSearch !== 'web_search') throw new Error('agent_model_parameters_invalid');
+  return structuredClone(item);
+}
+
+/** Instance choices, resolved by the trusted Session contribution registry. */
+export interface AgentConfiguration {
+  context: AgentContributionSelection;
+  compaction: AgentContributionSelection;
+  controls: AgentContributionSelection;
+}
+
+export function decodeAgentContribution(value: unknown): AgentContributionSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_contribution_invalid');
+  const item = value as Record<string, unknown>;
+  if (typeof item.id !== 'string' || !item.id.trim() || item.id !== item.id.trim()
+    || Object.keys(item).some(key => key !== 'id' && key !== 'parameters')
+    || item.parameters !== undefined && (!item.parameters || typeof item.parameters !== 'object' || Array.isArray(item.parameters))) {
+    throw new Error('agent_contribution_invalid');
+  }
+  return { id: item.id, ...(item.parameters ? { parameters: structuredClone(item.parameters) as JsonObject } : {}) };
+}
+
+export function decodeAgentConfiguration(value: unknown): AgentConfiguration {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 3) throw new Error('agent_configuration_invalid');
+  const item = value as Record<string, unknown>;
+  return { context: decodeAgentContribution(item.context), compaction: decodeAgentContribution(item.compaction),
+    controls: decodeAgentContribution(item.controls) };
+}
+
 export function decodeAgentContext(value: unknown): AgentContext {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_context_invalid');
   const item = value as Record<string, unknown>;
   const fields = ['ownerSessionId', 'parentSessionId', 'parentRunId', 'parentCallId'];
-  if (Object.keys(item).length !== fields.length + 1 || fields.some(key => typeof item[key] !== 'string' || !item[key])) {
+  if (Object.keys(item).some(key => ![...fields, 'capabilities', 'configuration', 'model'].includes(key))
+    || fields.some(key => typeof item[key] !== 'string' || !item[key])) {
     throw new Error('agent_context_invalid');
   }
+  if (item.model !== undefined) {
+    const model = item.model as AgentModelConfiguration;
+    if (!model || typeof model !== 'object' || Object.keys(model).length !== 5
+      || typeof model.profileId !== 'string' || !model.profileId || typeof model.model !== 'string' || !model.model
+      || model.reasoningEffort !== null && !['low', 'medium', 'high', 'xhigh', 'max'].includes(model.reasoningEffort)
+      || model.thinking !== null && model.thinking !== 'enabled' && model.thinking !== 'disabled') throw new Error('agent_model_configuration_invalid');
+    decodeAgentModelParameters(model.parameters);
+  }
   return { capabilities: decodeAgentCapabilities(item.capabilities), ownerSessionId: item.ownerSessionId as string,
-    parentSessionId: item.parentSessionId as string, parentRunId: item.parentRunId as string, parentCallId: item.parentCallId as string };
+    parentSessionId: item.parentSessionId as string, parentRunId: item.parentRunId as string, parentCallId: item.parentCallId as string,
+    ...(item.configuration !== undefined ? { configuration: decodeAgentConfiguration(item.configuration) } : {}),
+    ...(item.model !== undefined ? { model: structuredClone(item.model) as AgentModelConfiguration } : {}) };
 }
 
 export interface AgentSettings {
@@ -64,13 +149,18 @@ export interface AgentSettings {
   maxCallsPerRun: number;
   maxMembersPerSession: number;
   allowMemberAnalysis: boolean;
+  allowFullConfiguration?: boolean;
+  /** User presets are stored with the shared settings, not in an Agent-owned catalog. */
+  presets?: string;
 }
 
 export type AgentOperation =
   | { action: 'models' }
-  | { action: 'spawn'; preset?: 'analysis' | 'collaboration'; capabilities?: Partial<AgentCapabilities>;
+  | { action: 'spawn'; preset?: string; capabilities?: Partial<AgentCapabilities>;
       task: string; name: string; delivery: 'wait' | 'async';
-      profileId?: string; reasoningEffort?: LlmReasoningEffort }
+      profileId?: string; reasoningEffort?: LlmReasoningEffort;
+      loop?: Partial<Pick<AgentConfiguration, 'controls' | 'compaction'>>;
+      context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
   | { action: 'wait'; taskIds?: string[] }
   | { action: 'cancel'; taskId: string }
@@ -103,12 +193,24 @@ export interface AgentChildProjection {
   closed: boolean;
 }
 
+/** Read-only routing identities. Full decision content is loaded from the child Session. */
+export interface PendingAgentDecision {
+  agentSessionId: string;
+  displayName: string;
+  runId: string;
+  plan?: { planId: string; revision: number };
+  interactionIds: string[];
+  approval?: { approvalId: string; callId: string };
+}
+
 export interface AgentModel {
   profileId: string;
   name: string;
   model: string;
   reasoningEfforts: readonly LlmReasoningEffort[];
   reasoningEffort?: LlmReasoningEffort;
+  thinking?: LlmThinkingMode;
+  parameters: AgentModelParameters;
 }
 
 /** Host assembly only. All delegation policy and task facts belong to Session. */
@@ -787,6 +889,10 @@ export type SessionEvent =
   | (SessionEventBase & { type: 'agent.closed'; payload: { agentSessionId: string } })
   | (SessionEventBase & { type: 'agent.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
   | (SessionEventBase & { type: 'agent.message.received'; runId: string; payload: { sourceSessionId: string; text: string } })
+  | (SessionEventBase & { type: 'session.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
+  | (SessionEventBase & { type: 'wake.scheduled'; runId: string; payload: { scheduleId: string; dueAt: number; text: string } })
+  | (SessionEventBase & { type: 'wake.cancelled'; runId: string; payload: { scheduleId: string } })
+  | (SessionEventBase & { type: 'wake.triggered'; runId: string; payload: { scheduleId: string; text: string } })
   | (SessionEventBase & { type: 'session.permissions.updated'; payload: { commandId: string; patches: UserSettings } })
   | (SessionEventBase & { type: 'approval.revoked'; runId: string; payload: { commandId: string; authorityId: string } })
   | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string } })
@@ -926,7 +1032,7 @@ export type SessionEvent =
         revision: number;
         commandId: string;
         decisionId: string;
-        source?: 'user' | 'agent';
+        source?: 'user' | 'agent' | 'parent';
         authorities: PlanAuthority[];
       };
     })
@@ -1269,7 +1375,7 @@ export interface PlanProjection extends ExecutionPlan {
   runId: string;
   callId: string;
   status: PlanProjectionStatus;
-  confirmationSource?: 'user' | 'agent';
+  confirmationSource?: 'user' | 'agent' | 'parent';
   decisionId?: string;
   sequence: number;
   createdAt: string;
@@ -1331,7 +1437,10 @@ export interface ActivityProjection {
   inputRejection?: ToolInputRejection['error'];
   interruption?: LocalAgentError;
   providerHosted?: ProviderHostedActivityProjection;
-  agent?: { agentSessionId: string; taskId: string; phase: 'started' | 'completed' };
+  agent?: { agentSessionId: string } & (
+    { taskId: string; phase: 'started' | 'completed' }
+    | { taskId?: never; phase: 'updated' }
+  );
 }
 
 export interface ToolOutputProjection {
@@ -1472,6 +1581,7 @@ export interface SessionProjection {
   agentContext?: AgentContext;
   agentTasks?: AgentTaskProjection[];
   agentChildren?: AgentChildProjection[];
+  pendingAgentDecisions?: PendingAgentDecision[];
   permissionOverrides: UserSettings;
   effectivePermissions: UserSettings | null;
   shellAuthorizations: ShellAuthorizationProjection[];
@@ -2028,6 +2138,7 @@ export interface ProcessReadRequest {
 }
 
 export interface KernelPort {
+  delegatedPlanScope(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<PlanAuthority[]>;
   readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]>;
   execute(request: ToolExecutionRequest, onProgress?: (progress: ToolExecutionProgress) => Promise<void>): Promise<ToolExecutionReply>;
   cancel(callId: string, attemptId: string): Promise<ToolCancelReply>;
@@ -2067,11 +2178,28 @@ export interface RunLifecycleRead {
   events: RunLifecycleEvent[];
 }
 
+/** Field projection only: child ownership survives conversation edits. */
+export type AgentLifecycleEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.created' }>, 'agentContext'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.created' }>,
+      'taskId' | 'agentSessionId' | 'capabilities' | 'createsAgent' | 'displayName' | 'delivery'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.started' }>, 'taskId' | 'childRunId'>
+  | (RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.completed' }>, 'taskId'>
+      & { payload: { result: Pick<AgentTaskResult, 'outcome'> } })
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.closed' }>, 'agentSessionId'>;
+
+export interface AgentLifecycleRead {
+  sessionId: string;
+  revision: number;
+  events: AgentLifecycleEvent[];
+}
+
 export interface JournalPort {
   append(event: NewSessionEvent): Promise<SessionEvent>;
   appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]>;
   read(sessionId: string, afterSequence?: number): AsyncIterable<SessionEvent>;
   readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
+  readAgentLifecycle(sessionId: string): Promise<AgentLifecycleRead>;
 }
 
 export interface StoredCommand {

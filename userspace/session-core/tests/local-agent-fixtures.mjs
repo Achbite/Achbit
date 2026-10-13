@@ -137,6 +137,7 @@ export function runtimeSnapshot(runId, options = {}) {
 
 export function emptyKernel(overrides = {}) {
   return {
+    async delegatedPlanScope() { return []; },
     async prepareCatalog() { throw new Error('unexpected_prepare_catalog'); },
     async releaseCatalog() { throw new Error('unexpected_release_catalog'); },
     async execute() { throw new Error('unexpected_tool_execution'); },
@@ -239,13 +240,11 @@ export function cancelNotFound(callId, attemptId) {
   };
 }
 
-export function* todoUpdateEvents(request, status = 'completed', native = false) {
+export function* todoUpdateEvents(request, items, status = 'completed', native = false) {
   const tool = request.tools.find((candidate) => candidate.name === 'todo_update');
-  const payloads = request.messages.map(jsonMessagePayload);
-  const todo = payloads.findLast((payload) => payload?.type === 'todo.current');
-  assert.ok(tool && todo, 'progress uses the control and current Todo without execution evidence');
+  assert.ok(tool && items.length, 'the model explicitly chooses its progress items');
   const callId = `provider-call:progress:${request.requestId}`;
-  const input = { items: todo.items.map((item) => ({ text: item.text, status })) };
+  const input = { items: items.map((text) => ({ text, status })) };
   yield native
     ? providerEvent(request.requestId, 'output.item.completed', { outputIndex: 0,
       item: { type: 'function_call', call_id: callId, name: tool.name, arguments: JSON.stringify(input), status: 'completed' } })
@@ -289,6 +288,7 @@ export function forwardingJournal(delegate, read) {
     append: (event) => delegate.append(event),
     appendBatch: (events) => delegate.appendBatch(events),
     read,
+    readAgentLifecycle: sessionId => delegate.readAgentLifecycle(sessionId),
     readRunLifecycle: (sessionId, afterSequence) => delegate.readRunLifecycle(sessionId, afterSequence),
     readCommand: (sessionId, commandId) => delegate.readCommand(sessionId, commandId),
     commitCommand: (command, events, reply) => delegate.commitCommand(command, events, reply),

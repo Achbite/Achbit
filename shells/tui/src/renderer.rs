@@ -213,7 +213,22 @@ fn decision_lines(
             plan.title.clone(),
         )
     } else {
-        return vec![];
+        return projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .map(|decision| {
+                Line::from(Span::styled(
+                    format!(
+                        "{} · {} · /agent {}",
+                        decision.display_name,
+                        language.text("agent.team.needsInput"),
+                        decision.agent_session_id
+                    ),
+                    Style::default().fg(Color::Yellow),
+                ))
+            })
+            .collect();
     };
     let mut lines = vec![Line::from(Span::styled(
         title,
@@ -311,6 +326,28 @@ pub(crate) fn decision_details(
         }
         return text;
     }
+    if projection
+        .pending_agent_decisions
+        .iter()
+        .flatten()
+        .next()
+        .is_some()
+    {
+        return projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .map(|decision| {
+                format!(
+                    "{} · {}\n/agent {}",
+                    decision.display_name,
+                    language.text("agent.team.needsInput"),
+                    decision.agent_session_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
     language.text("tui.noPendingDecision").into()
 }
 
@@ -388,6 +425,8 @@ fn activity_summary(language: Language, activity: &ActivityProjection) -> String
             activity.label,
             if agent.phase == "started" {
                 language.text("agent.team.started")
+            } else if agent.phase == "updated" {
+                language.text("agent.team.status.updated")
             } else {
                 status_label(language, &activity.status)
             },
@@ -870,6 +909,22 @@ impl Renderer {
                 output.push_str(&decision_details(language, Some(projection)));
                 output.push('\n');
             }
+            if projection
+                .pending_agent_decisions
+                .iter()
+                .flatten()
+                .next()
+                .is_some()
+            {
+                output.push_str(language.text("tui.agentDecisionHint"));
+                output.push('\n');
+                for decision in projection.pending_agent_decisions.iter().flatten() {
+                    output.push_str(&format!(
+                        "{} · /agent {}\n",
+                        decision.display_name, decision.agent_session_id
+                    ));
+                }
+            }
             render_todo_plain(language, &mut output, projection);
             if !app.context_open() {
                 output.push_str(&language.format(
@@ -1099,9 +1154,11 @@ impl Renderer {
                     Style::default().fg(Color::DarkGray),
                 )));
             } else {
+                let ended = app.projection().is_some_and(todo_run_ended);
                 for item in &todo.items {
                     let (marker, color) = match item.status.as_str() {
                         "completed" => ("✓", Color::Green),
+                        "inProgress" if ended => ("○", Color::DarkGray),
                         "inProgress" => ("●", Color::Cyan),
                         "blocked" => ("!", Color::Yellow),
                         _ => ("○", Color::DarkGray),
@@ -1113,6 +1170,7 @@ impl Renderer {
                             item.text,
                             language.text(match item.status.as_str() {
                                 "completed" => "deepcodeGui.tasks.status.completed",
+                                "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
                                 "inProgress" => "deepcodeGui.tasks.status.inProgress",
                                 "blocked" => "deepcodeGui.tasks.status.blocked",
                                 _ => "deepcodeGui.tasks.status.pending",
@@ -2294,6 +2352,16 @@ fn tool_progress_details(language: Language, activity: &ActivityProjection) -> V
     lines
 }
 
+fn todo_run_ended(projection: &SessionProjection) -> bool {
+    let Some(todo) = projection.todo_list.as_ref() else {
+        return false;
+    };
+    projection
+        .token_usage_history
+        .iter()
+        .any(|run| run.run_id == todo.run_id && run.outcome.is_some())
+}
+
 fn todo_note(language: Language, projection: &SessionProjection) -> Option<String> {
     let todo = projection.todo_list.as_ref()?;
     if todo.items.is_empty() {
@@ -2304,10 +2372,7 @@ fn todo_note(language: Language, projection: &SessionProjection) -> Option<Strin
         .iter()
         .filter(|item| item.status != "completed")
         .count();
-    let ended = projection
-        .token_usage_history
-        .iter()
-        .any(|run| run.run_id == todo.run_id && run.outcome.is_some());
+    let ended = todo_run_ended(projection);
     (ended && remaining > 0)
         .then(|| language.format("tui.todoEndedRemaining", &[remaining.to_string()]))
 }
@@ -2324,9 +2389,11 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
         output.push_str(language.text("tui.empty"));
         return;
     }
+    let ended = todo_run_ended(projection);
     for item in &todo.items {
         let marker = match item.status.as_str() {
             "completed" => "[x]",
+            "inProgress" if ended => "[ ]",
             "inProgress" => "[>]",
             "blocked" => "[!]",
             _ => "[ ]",
@@ -2336,6 +2403,7 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
             item.text,
             language.text(match item.status.as_str() {
                 "completed" => "deepcodeGui.tasks.status.completed",
+                "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
                 "inProgress" => "deepcodeGui.tasks.status.inProgress",
                 "blocked" => "deepcodeGui.tasks.status.blocked",
                 _ => "deepcodeGui.tasks.status.pending",

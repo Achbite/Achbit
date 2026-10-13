@@ -120,7 +120,7 @@ function isIdentifier(value: unknown): value is string {
 export function permissionInstructionText(settings: UserSettings, interactionRequest = 'interaction_request', planPublish = 'plan_publish'): string {
   const workspaceAutonomyInstruction = settings['agent.permissions.workspaceMutation'] === 'allow'
     ? 'Plan decisions are delegated to you. Publish a Plan when useful; it is confirmed automatically. Execution permissions still apply.'
-    : `Before mutating project files, call ${planPublish} and wait for confirmation of the declared scope. Project reads need no Plan.`;
+    : `For project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Reuse confirmed scope, including delegated parent scope, for related fixes; no new Plan is needed. Project reads need no Plan.`;
   const engineeringDecisionInstruction = settings['agent.permissions.engineeringDecisions'] === 'delegate'
     ? `Engineering decisions are delegated. Choose the smallest sound approach; use ${interactionRequest} for missing facts or decisions outside the task.`
     : `Use ${interactionRequest} before materially changing requirements, public contracts, fact ownership, or the engineering approach.`;

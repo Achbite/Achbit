@@ -71,7 +71,7 @@ const plan = event('plan.published', {
   steps: [{ stepId: 'step:one', title: 'Inspect', details: 'Read the source.' }], mutationManifest: [],
 }, { callId: 'call:plan' });
 
-test('Plan response admission requires its matching decision and Todo in one batch; rejected commands are eventless', async () => {
+test('Plan response admission requires its matching decision without manufacturing Todo; rejected commands are eventless', async () => {
   const { current } = await snapshot(started, composition, plan, settled(['call:plan']));
   const input = { schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId, runId,
     commandId: 'command:confirm', planId: 'plan:one', revision: 1, response: { kind: 'confirm' } };
@@ -80,8 +80,8 @@ test('Plan response admission requires its matching decision and Todo in one bat
     decisionId: 'decision:one', authorities: [] }, { callId: 'call:plan' });
   const todos = event('todo.updated', { revision: 1, items: [{ text: 'Inspect', status: 'pending' }] });
   assert.throws(() => admitSessionEvents(current, [], { input, reply }), /plan_command_event_batch_invalid/);
-  assert.throws(() => admitSessionEvents(current, [confirmed], { input, reply }), /plan_command_event_batch_invalid/);
-  assert.doesNotThrow(() => admitSessionEvents(current, [confirmed, todos], { input, reply }));
+  assert.doesNotThrow(() => admitSessionEvents(current, [confirmed], { input, reply }));
+  assert.throws(() => admitSessionEvents(current, [confirmed, todos], { input, reply }), /plan_command_event_batch_invalid/);
   const rejected = { ...reply, status: 'rejected', error: { code: 'plan_not_pending', message: 'No pending Plan.' } };
   assert.doesNotThrow(() => admitSessionEvents(current, [], { input, reply: rejected }));
   assert.throws(() => admitSessionEvents(current, [confirmed], { input, reply: rejected }), /rejected_command_event_batch_invalid/);

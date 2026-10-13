@@ -337,6 +337,68 @@ impl LocalAgentJournal {
         Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
     }
 
+    /// Project journal fields only. Agent relationship semantics belong to Session.
+    pub(crate) fn read_agent_lifecycle(
+        &self,
+        session_id: &str,
+    ) -> Result<Value, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let connection = self.lock()?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT (SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id=?1)
+                 FROM sessions WHERE session_id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
+        // Extract before materialization: runtime snapshots, messages, tool results
+        // and task request/result bodies are never decoded or returned by this read path.
+        let mut statement = connection.prepare(
+            "SELECT sequence, event_type, run_id, call_id,
+             CASE
+               WHEN event_type='session.created' THEN
+                 CASE WHEN json_type(payload_json, '$.agentContext') IS NULL THEN '{}'
+                 ELSE json_object('agentContext', json_extract(payload_json, '$.agentContext')) END
+               WHEN event_type='agent.task.created' THEN json_remove(payload_json, '$.text')
+               WHEN event_type='agent.task.completed' THEN json_object('taskId', json_extract(payload_json, '$.taskId'),
+                 'result', json_object('outcome', json_extract(payload_json, '$.result.outcome')))
+               ELSE payload_json
+             END
+             FROM session_events WHERE session_id=?1 AND sequence<=?2
+             AND event_type IN ('session.created','agent.task.created','agent.task.started','agent.task.completed','agent.closed')
+             ORDER BY sequence ASC",
+        ).map_err(sql_error("session_agent_lifecycle_read_prepare_failed"))?;
+        let rows = statement
+            .query_map(params![session_id, revision], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql_error("session_agent_lifecycle_read_failed"))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (sequence, event_type, run_id, call_id, payload) =
+                row.map_err(sql_error("session_agent_lifecycle_read_failed"))?;
+            let mut event = json!({"sessionId":session_id, "sequence":sequence,
+                "type":event_type, "payload":decode_json(&payload, "session_event_corrupt")?});
+            if let Some(run_id) = run_id {
+                event["runId"] = json!(run_id);
+            }
+            if let Some(call_id) = call_id {
+                event["callId"] = json!(call_id);
+            }
+            events.push(event);
+        }
+        Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
+    }
+
     pub(crate) fn read_command(
         &self,
         session_id: &str,
@@ -438,6 +500,31 @@ impl LocalAgentJournal {
             .commit()
             .map_err(sql_error("session_command_commit_failed"))?;
         Ok(admitted)
+    }
+
+    pub(crate) fn is_descendant_session(
+        &self,
+        parent: &str,
+        target: &str,
+    ) -> Result<bool, LocalAgentStoreError> {
+        let mut current = target.to_owned();
+        let mut visited = std::collections::HashSet::new();
+        while let Some(context) = self.agent_context(&current)? {
+            if !visited.insert(current) {
+                return Err(LocalAgentStoreError::new(
+                    "agent_lineage_cycle",
+                    "Agent 父子关系存在循环。",
+                ));
+            }
+            current = context["parentSessionId"]
+                .as_str()
+                .expect("validated agent context")
+                .to_owned();
+            if current == parent {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn run_workspace_binding_ids(
@@ -616,65 +703,79 @@ impl LocalAgentJournal {
     ) -> Result<Option<Vec<Value>>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         let connection = self.lock()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT event_type, payload_json, run_id FROM session_events
-                 WHERE session_id=?1 AND event_type IN (
-                   'plan.confirmed', 'plan.revision.requested', 'plan.superseded',
-                   'plan.cancelled', 'plan.invalidated', 'run.finishing'
-                 ) ORDER BY sequence ASC",
-            )
-            .map_err(sql_error("plan_authority_fact_read_failed"))?;
-        let rows = statement
-            .query_map(params![session_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(sql_error("plan_authority_fact_read_failed"))?;
-        let mut active_authorities: Option<Vec<Value>> = None;
-        let mut active_plan: Option<(String, u64, String)> = None;
-        for row in rows {
-            let (event_type, encoded, run_id) =
-                row.map_err(sql_error("plan_authority_fact_read_failed"))?;
-            if event_type == "run.finishing" {
-                if active_plan
-                    .as_ref()
-                    .is_some_and(|active| active.2 == run_id)
-                {
-                    active_plan = None;
-                    active_authorities = None;
-                }
-                continue;
+        active_plan_authorities_from_connection(&connection, session_id)
+    }
+
+    /// Resolve authorization through the current delegation, not the child's creation run.
+    /// The existing task and Plan events remain the only persisted facts.
+    pub(crate) fn delegated_plan_authorities(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Vec<Value>, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        validate_id("runId", run_id)?;
+        let connection = self.lock()?;
+        let mut child = (session_id.to_string(), run_id.to_string());
+        let mut visited = std::collections::HashSet::new();
+        let mut authorities = Vec::new();
+        loop {
+            if !visited.insert(child.clone()) {
+                return Err(LocalAgentStoreError::new(
+                    "agent_task_lineage_invalid",
+                    "Agent 任务引用形成了循环。",
+                ));
             }
-            let payload = decode_json(&encoded, "plan_authority_fact_corrupt")?;
-            let plan_id = required_string(&payload, "planId")?.to_string();
-            let revision = required_u64(&payload, "revision")?;
-            if event_type == "plan.confirmed" {
-                active_plan = Some((plan_id, revision, run_id));
-                active_authorities = Some(
-                    payload
-                        .get("authorities")
-                        .and_then(Value::as_array)
-                        .ok_or_else(|| {
-                            LocalAgentStoreError::new(
-                                "plan_authority_fact_corrupt",
-                                "plan.confirmed 缺少 authorities。",
-                            )
-                        })?
-                        .clone(),
-                );
-            } else if active_plan
-                .as_ref()
-                .is_some_and(|active| active.0 == plan_id && active.1 == revision)
+            let mut statement = connection.prepare(
+                "SELECT started.session_id, started.run_id
+                 FROM session_events started JOIN session_events created
+                   ON created.session_id=started.session_id AND created.run_id=started.run_id
+                   AND created.event_type='agent.task.created'
+                   AND json_extract(created.payload_json, '$.taskId')=json_extract(started.payload_json, '$.taskId')
+                 WHERE started.event_type='agent.task.started'
+                   AND json_extract(started.payload_json, '$.childRunId')=?2
+                   AND json_extract(created.payload_json, '$.agentSessionId')=?1
+                   AND EXISTS(SELECT 1 FROM session_events child_run
+                     WHERE child_run.session_id=?1 AND child_run.run_id=?2 AND child_run.event_type='run.started')
+                   AND NOT EXISTS(SELECT 1 FROM session_events child_end
+                     WHERE child_end.session_id=?1 AND child_end.run_id=?2 AND child_end.event_type IN ('run.finishing','run.settled'))
+                   AND NOT EXISTS(SELECT 1 FROM session_events parent_end
+                     WHERE parent_end.session_id=started.session_id AND parent_end.run_id=started.run_id
+                     AND parent_end.event_type IN ('run.finishing','run.settled'))
+                   AND NOT EXISTS(SELECT 1 FROM session_events completed
+                     WHERE completed.session_id=started.session_id AND completed.run_id=started.run_id
+                     AND completed.event_type='agent.task.completed'
+                     AND json_extract(completed.payload_json, '$.taskId')=json_extract(started.payload_json, '$.taskId'))",
+            ).map_err(sql_error("agent_task_lineage_read_failed"))?;
+            let parents = statement
+                .query_map(params![child.0, child.1], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sql_error("agent_task_lineage_read_failed"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql_error("agent_task_lineage_read_failed"))?;
+            if parents.len() > 1 {
+                return Err(LocalAgentStoreError::new(
+                    "agent_task_lineage_invalid",
+                    "同一子运行存在多个当前委派任务。",
+                ));
+            }
+            let Some(parent) = parents.into_iter().next() else {
+                break;
+            };
+            // Forwarded references are resolved at their original confirmation below.
+            // They never create a fresh authorization lifetime in the child session.
+            if let Some(committed) =
+                active_plan_authorities_from_connection(&connection, &parent.0)?
             {
-                active_plan = None;
-                active_authorities = None;
+                authorities.extend(committed.into_iter().filter(|authority| {
+                    authority["sessionId"].as_str() == Some(parent.0.as_str())
+                        && authority["runId"].as_str() == Some(parent.1.as_str())
+                }));
             }
+            child = parent;
         }
-        Ok(active_authorities)
+        Ok(authorities)
     }
 
     pub(crate) fn non_workspace_authority_is_committed(
@@ -1043,6 +1144,71 @@ pub(crate) fn delete_session_archive(
     Ok(tool_record_count)
 }
 
+fn active_plan_authorities_from_connection(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<Vec<Value>>, LocalAgentStoreError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT event_type, payload_json, run_id FROM session_events
+             WHERE session_id=?1 AND event_type IN (
+               'plan.confirmed', 'plan.revision.requested', 'plan.superseded',
+               'plan.cancelled', 'plan.invalidated', 'run.finishing'
+             ) ORDER BY sequence ASC",
+        )
+        .map_err(sql_error("plan_authority_fact_read_failed"))?;
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(sql_error("plan_authority_fact_read_failed"))?;
+    let mut active_authorities: Option<Vec<Value>> = None;
+    let mut active_plan: Option<(String, u64, String)> = None;
+    for row in rows {
+        let (event_type, encoded, run_id) =
+            row.map_err(sql_error("plan_authority_fact_read_failed"))?;
+        if event_type == "run.finishing" {
+            if active_plan
+                .as_ref()
+                .is_some_and(|active| active.2 == run_id)
+            {
+                active_plan = None;
+                active_authorities = None;
+            }
+            continue;
+        }
+        let payload = decode_json(&encoded, "plan_authority_fact_corrupt")?;
+        let plan_id = required_string(&payload, "planId")?.to_string();
+        let revision = required_u64(&payload, "revision")?;
+        if event_type == "plan.confirmed" {
+            active_plan = Some((plan_id, revision, run_id));
+            active_authorities = Some(
+                payload
+                    .get("authorities")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        LocalAgentStoreError::new(
+                            "plan_authority_fact_corrupt",
+                            "plan.confirmed 缺少 authorities。",
+                        )
+                    })?
+                    .clone(),
+            );
+        } else if active_plan
+            .as_ref()
+            .is_some_and(|active| active.0 == plan_id && active.1 == revision)
+        {
+            active_plan = None;
+            active_authorities = None;
+        }
+    }
+    Ok(active_authorities)
+}
+
 fn insert_event(
     transaction: &Transaction<'_>,
     event: ValidatedNewEvent<'_>,
@@ -1147,6 +1313,10 @@ fn validate_new_event(
         "agent.task.completed",
         "agent.closed",
         "agent.control.completed",
+        "session.control.completed",
+        "wake.scheduled",
+        "wake.cancelled",
+        "wake.triggered",
         "agent.message.received",
         "context.compaction.requested",
         "context.compacted",
@@ -1201,6 +1371,7 @@ fn validate_new_event(
             | "artifacts.presented"
             | "agent.task.created"
             | "agent.control.completed"
+            | "session.control.completed"
     );
     if needs_run {
         validate_id("runId", required_string(event, "runId")?)?;
@@ -1235,6 +1406,7 @@ fn validate_new_event(
             | "session.plugins.activated"
             | "artifacts.presented"
             | "agent.control.completed"
+            | "session.control.completed"
     ) || progress_call
     {
         let payload = event.get("payload").expect("validated payload");
@@ -1343,7 +1515,7 @@ fn validate_new_event(
                 required_string(payload, "agentSessionId")?,
             )?;
         }
-        "agent.control.completed" => {
+        "agent.control.completed" | "session.control.completed" => {
             let payload = &event["payload"];
             exact_object(payload, &["providerCallId", "operation", "result"], &[])?;
             if !payload["operation"].is_object() || !payload["result"].is_object() {
@@ -1361,6 +1533,22 @@ fn validate_new_event(
                 required_string(payload, "sourceSessionId")?,
             )?;
             required_string(payload, "text")?;
+        }
+        "wake.scheduled" | "wake.cancelled" | "wake.triggered" => {
+            let payload = &event["payload"];
+            let fields = match event_type {
+                "wake.scheduled" => vec!["scheduleId", "dueAt", "text"],
+                "wake.triggered" => vec!["scheduleId", "text"],
+                _ => vec!["scheduleId"],
+            };
+            exact_object(payload, &fields, &[])?;
+            validate_id("scheduleId", required_string(payload, "scheduleId")?)?;
+            if event_type != "wake.cancelled" {
+                required_string(payload, "text")?;
+            }
+            if event_type == "wake.scheduled" {
+                required_u64(payload, "dueAt")?;
+            }
         }
         "session.created" => {
             let payload = &event["payload"];
@@ -1847,7 +2035,7 @@ fn validate_new_event(
             )?;
             if payload
                 .get("source")
-                .is_some_and(|source| !matches!(source.as_str(), Some("user" | "agent")))
+                .is_some_and(|source| !matches!(source.as_str(), Some("user" | "agent" | "parent")))
             {
                 return Err(LocalAgentStoreError::new(
                     "plan_source_invalid",
@@ -1858,7 +2046,7 @@ fn validate_new_event(
             required_positive_revision(payload, "revision")?;
             validate_id("commandId", required_string(payload, "commandId")?)?;
             validate_id("decisionId", required_string(payload, "decisionId")?)?;
-            validate_plan_authorities(payload, required_string(event, "runId")?)?;
+            validate_plan_authorities(payload, session_id, required_string(event, "runId")?)?;
         }
         "plan.revision.requested" => {
             let payload = event.get("payload").expect("validated payload");
@@ -1975,6 +2163,7 @@ fn validate_new_event(
                     | "plugin.activate"
                     | "artifact.present"
                     | "agent"
+                    | "session"
             ) {
                 return Err(LocalAgentStoreError::new(
                     "session_event_invalid",
@@ -2986,7 +3175,7 @@ fn validate_plan_steps(value: &Value) -> Result<(), LocalAgentStoreError> {
     Ok(())
 }
 
-fn validate_plan_operations(value: &Value) -> Result<(), LocalAgentStoreError> {
+pub(crate) fn validate_plan_operations(value: &Value) -> Result<(), LocalAgentStoreError> {
     let operations = value.as_array().ok_or_else(|| {
         LocalAgentStoreError::new(
             "session_event_invalid",
@@ -3116,7 +3305,11 @@ fn validate_plan_operations(value: &Value) -> Result<(), LocalAgentStoreError> {
     Ok(())
 }
 
-fn validate_plan_authorities(payload: &Value, run_id: &str) -> Result<(), LocalAgentStoreError> {
+fn validate_plan_authorities(
+    payload: &Value,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(), LocalAgentStoreError> {
     let plan_id = required_string(payload, "planId")?;
     let revision = required_positive_revision(payload, "revision")?;
     let decision_id = required_string(payload, "decisionId")?;
@@ -3145,13 +3338,28 @@ fn validate_plan_authorities(payload: &Value, run_id: &str) -> Result<(), LocalA
             ],
             &[],
         )?;
-        for field in ["authorityId", "sessionId", "runId", "workspaceId"] {
+        for field in [
+            "authorityId",
+            "planId",
+            "decisionId",
+            "sessionId",
+            "runId",
+            "workspaceId",
+        ] {
             validate_id(field, required_string(authority, field)?)?;
         }
-        if required_string(authority, "planId")? != plan_id
-            || required_positive_revision(authority, "revision")? != revision
-            || required_string(authority, "decisionId")? != decision_id
-            || required_string(authority, "runId")? != run_id
+        required_positive_revision(authority, "revision")?;
+        if payload["source"] == "parent" && authority["sessionId"] == session_id {
+            return Err(LocalAgentStoreError::new(
+                "session_event_invalid",
+                "父 Plan 引用不能生成当前子会话的新授权。",
+            ));
+        }
+        if payload["source"] != "parent"
+            && (required_string(authority, "planId")? != plan_id
+                || required_positive_revision(authority, "revision")? != revision
+                || required_string(authority, "decisionId")? != decision_id
+                || required_string(authority, "runId")? != run_id)
         {
             return Err(LocalAgentStoreError::new(
                 "session_event_invalid",
@@ -3159,7 +3367,7 @@ fn validate_plan_authorities(payload: &Value, run_id: &str) -> Result<(), LocalA
             ));
         }
         let workspace_id = required_string(authority, "workspaceId")?;
-        if !workspace_ids.insert(workspace_id) {
+        if !workspace_ids.insert(workspace_id) && payload["source"] != "parent" {
             return Err(LocalAgentStoreError::new(
                 "session_event_invalid",
                 "每个 workspace 只能有一个 Plan authority。",
@@ -3777,10 +3985,12 @@ fn validate_reply(reply: &Value) -> Result<(), LocalAgentStoreError> {
 fn validate_agent_capabilities(value: &Value) -> Result<(), LocalAgentStoreError> {
     let fields = ["messaging", "continuation", "delegation"];
     exact_object(value, &fields, &[])?;
-    if fields.iter().any(|field| !value[*field].is_boolean()) {
+    if fields.iter().any(|field| {
+        !value[*field].is_boolean() && !(*field == "messaging" && value[*field] == "parent")
+    }) {
         return Err(LocalAgentStoreError::new(
             "agent_capabilities_invalid",
-            "Agent capabilities 必须是布尔值。",
+            "continuation/delegation 必须是布尔值，messaging 可以是布尔值或 parent。",
         ));
     }
     Ok(())
@@ -3799,8 +4009,57 @@ pub(crate) fn validate_agent_context(
             "parentRunId",
             "parentCallId",
         ],
-        &[],
+        &["configuration", "model"],
     )?;
+    if let Some(model) = value.get("model") {
+        exact_object(
+            model,
+            &[
+                "profileId",
+                "model",
+                "reasoningEffort",
+                "thinking",
+                "parameters",
+            ],
+            &[],
+        )?;
+        validate_id("profileId", required_string(model, "profileId")?)?;
+        required_string(model, "model")?;
+        crate::local_agent_provider_runtime::validate_instance_parameters(&model["parameters"])
+            .map_err(|cause| {
+                LocalAgentStoreError::new("agent_model_configuration_invalid", cause)
+            })?;
+        if !model["reasoningEffort"].is_null()
+            && !matches!(
+                model["reasoningEffort"].as_str(),
+                Some("low" | "medium" | "high" | "xhigh" | "max")
+            )
+            || !model["thinking"].is_null()
+                && !matches!(model["thinking"].as_str(), Some("enabled" | "disabled"))
+        {
+            return Err(LocalAgentStoreError::new(
+                "agent_model_configuration_invalid",
+                "子代理模型配置无效。",
+            ));
+        }
+    }
+    if let Some(configuration) = value.get("configuration") {
+        exact_object(configuration, &["context", "compaction", "controls"], &[])?;
+        for kind in ["context", "compaction", "controls"] {
+            let selection = &configuration[kind];
+            exact_object(selection, &["id"], &["parameters"])?;
+            validate_id("contributionId", required_string(selection, "id")?)?;
+            if selection
+                .get("parameters")
+                .is_some_and(|parameters| !parameters.is_object())
+            {
+                return Err(LocalAgentStoreError::new(
+                    "agent_configuration_invalid",
+                    "贡献参数必须是对象。",
+                ));
+            }
+        }
+    }
     validate_agent_capabilities(&value["capabilities"])?;
     for field in [
         "ownerSessionId",
@@ -5218,6 +5477,72 @@ mod tests {
     }
 
     #[test]
+    fn agent_lifecycle_reads_relationships_without_task_or_conversation_bodies() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let session_id = "session:agent-lifecycle";
+        journal
+            .create_session(session_id, "Owner", &json!([]), None, None)
+            .unwrap();
+        journal
+            .append(&json!({"type":"message.committed","sessionId":session_id,
+            "payload":{"messageId":"message:input","role":"user","content":"Large request body"}}))
+            .unwrap();
+        journal.append(&json!({"type":"run.started","sessionId":session_id,"runId":"run:owner",
+            "payload":{"inputMessageId":"message:input","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
+        let created = json!({"type":"agent.task.created","sessionId":session_id,"runId":"run:owner","callId":"call:spawn",
+            "payload":{"taskId":"task:child","agentSessionId":"session:child","displayName":"Child",
+            "capabilities":{"messaging":false,"continuation":false,"delegation":false},"createsAgent":true,
+            "delivery":"async","text":"Large task body"}});
+        journal.append(&created).unwrap();
+        journal
+            .append(
+                &json!({"type":"agent.task.started","sessionId":session_id,"runId":"run:owner",
+            "payload":{"taskId":"task:child","childRunId":"run:child"}}),
+            )
+            .unwrap();
+        journal.append(&json!({"type":"agent.task.completed","sessionId":session_id,"runId":"run:owner",
+            "payload":{"taskId":"task:child","result":{"outcome":"completed","content":"Large result body","finalMessageId":"message:child"}}})).unwrap();
+        journal.append(&json!({"type":"message.committed","sessionId":session_id,
+            "payload":{"messageId":"message:owner","role":"user","content":"Large conversation body"}})).unwrap();
+        let read = journal.read_agent_lifecycle(session_id).unwrap();
+        assert_eq!(read["revision"], 7);
+        assert_eq!(read["events"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            read["events"][1]["payload"]["agentSessionId"],
+            "session:child"
+        );
+        assert_eq!(read["events"][2]["payload"]["childRunId"], "run:child");
+        assert_eq!(
+            read["events"][3]["payload"]["result"],
+            json!({"outcome":"completed"})
+        );
+        for excluded in [
+            "Large",
+            "\"text\"",
+            "\"content\"",
+            "finalMessageId",
+            "occurredAt",
+            "eventId",
+        ] {
+            assert!(
+                !read.to_string().contains(excluded),
+                "unexpected body field: {excluded}"
+            );
+        }
+        assert_eq!(
+            journal.read_events(session_id, 0).unwrap()[3]["payload"],
+            created["payload"]
+        );
+        assert_eq!(
+            journal
+                .read_agent_lifecycle("session:missing")
+                .unwrap_err()
+                .code,
+            "session_not_found"
+        );
+    }
+
+    #[test]
     fn compact_run_lifecycle_projects_fields_and_preserves_journal_revision() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         let session_id = "session:compact-status";
@@ -5393,6 +5718,10 @@ mod tests {
         let rejected = json!({"type":"session.control.rejected", "sessionId":"session:delivery", "runId":"run:delivery", "callId":"call:invalid",
             "payload":{"providerCallId":"provider:invalid","toolName":"artifact.present","input":{},"error":{"code":"artifact_not_found","message":"Unknown resource"}}});
         journal.append(&rejected).unwrap();
+        let rejected_session = json!({"type":"session.control.rejected", "sessionId":"session:delivery", "runId":"run:delivery", "callId":"call:invalid-schedule",
+            "payload":{"providerCallId":"provider:invalid-schedule","toolName":"session","input":{"action":"cancelSchedule","scheduleId":"schedule:missing"},"error":{"code":"schedule_not_pending","message":"The schedule is not pending"}}});
+        let recorded = journal.append(&rejected_session).unwrap();
+        assert_eq!(recorded["payload"], rejected_session["payload"]);
         let selections: Vec<Value> = (0..17).map(|index| json!({"selectionId":format!("selection:{index}"),"uri":format!("plugin://tool-{index}@local"),"label":format!("Tool {index}")})).collect();
         validate_plugin_selection_list(&json!(selections)).unwrap();
         journal.append(&json!({"type":"session.plugins.activated", "sessionId":"session:delivery", "runId":"run:delivery", "callId":"call:plugins",

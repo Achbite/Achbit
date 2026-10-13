@@ -405,9 +405,10 @@ test('document Plan scope and completed artifacts pass through Session to the GU
         input: { workspace: 'primary', path: '报告.pdf', format: 'pdf', content: '<h1>Report</h1>' } });
     } else if (calls === 3) {
       const current = await actor.snapshot();
-      const progress = request.tools.find((entry) => entry.inputSchema.properties?.items);
+      assert.equal(current.todoList, null, 'confirmation and file execution do not manufacture progress');
+      const progress = request.tools.find((entry) => entry.name === 'todo_update');
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:document-progress', name: progress.name,
-        input: { items: [{ text: current.todoList.items[0].text, status: 'completed' }] } });
+        input: { items: [{ text: 'Report', status: 'completed' }] } });
     } else {
       yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider-message:document-done', content: 'Report is ready.' });
     }
@@ -1030,6 +1031,11 @@ test('GUI consumes complete phase plans and Todo beyond the former item count', 
         steps: Array.from({ length: 13 }, (_, index) => ({ stepId: `phase-${index}`, title: `Phase ${index}`, details: 'Deliver the outcome.' })),
         mutationManifest: Array.from({ length: 129 }, (_, index) => ({ workspace: 'primary', operation: 'fs.write', target: `src/file-${index}.ts` })),
       } });
+    } else if (calls === 2) {
+      assert.equal((await actor.snapshot()).todoList, null, 'confirmed Plan keeps Todo optional');
+      const progress = request.tools.find(entry => entry.name === 'todo_update');
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:phase-progress', name: progress.name,
+        input: { items: Array.from({ length: 13 }, (_, index) => ({ text: `Phase ${index}`, status: 'pending' })) } });
     } else {
       await held;
       yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider-message:stop', content: 'Work remains pending.' });
@@ -3760,7 +3766,7 @@ test('GUI accepts child capability presets and places navigation only beside the
   const projection = projectSession(emptySessionState('session:parent'));
   projection.agentChildren = [
     { agentSessionId: 'session:one-shot', displayName: 'One-shot review', closed: true,
-      capabilities: { messaging: false, continuation: false, delegation: false } },
+      capabilities: { messaging: 'parent', continuation: false, delegation: false } },
     { agentSessionId: 'session:continuing', displayName: 'Continuing work', closed: false,
       capabilities: { messaging: true, continuation: true, delegation: true } },
     { agentSessionId: 'session:custom', displayName: 'Custom scope', closed: false,
@@ -3783,6 +3789,28 @@ test('GUI accepts child capability presets and places navigation only beside the
     const malformed = structuredClone(projection); mutate(malformed);
     await assert.rejects(decodeGuiProjection(malformed), /conversation_projection_invalid/);
   }
+});
+
+test('GUI reads the shared child instance configuration without dropping model or Loop facts', async () => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const state = emptySessionState('session:configured-child');
+  state.agentContext = {
+    capabilities: { messaging: 'parent', continuation: true, delegation: false },
+    ownerSessionId: 'session:owner', parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:spawn',
+    configuration: { context: { id: 'journal' }, compaction: { id: 'summary', parameters: { pressureRatio: 0.8 } },
+      controls: { id: 'standard', parameters: { optionalTools: [] } } },
+    model: { profileId: 'profile:configured', model: 'configured-model', reasoningEffort: 'low', thinking: 'enabled',
+      parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 128000,
+        maxOutputTokens: 4096, imageInput: true, temperature: null, hostedWebSearch: null } },
+  };
+  const projection = projectSession(state);
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  const missingParameter = structuredClone(projection);
+  delete missingParameter.agentContext.model.parameters.adapterId;
+  await assert.rejects(decodeGuiProjection(missingParameter), /conversation_projection_invalid/);
+  const unknownField = structuredClone(projection);
+  unknownField.agentContext.unknown = true;
+  await assert.rejects(decodeGuiProjection(unknownField), /conversation_projection_invalid/);
 });
 
 test('child file changes render with the scoped Session even when no main Session is selected', async t => {

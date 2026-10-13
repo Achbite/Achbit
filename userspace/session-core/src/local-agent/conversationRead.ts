@@ -2,7 +2,7 @@ import type {
   CommandJournalPort, ConversationReadQuery, ConversationReadResult, JsonObject, SessionEvent,
 } from '@deepcode/protocol';
 import { reasoningReadItem } from './reasoningRead.js';
-import { recoverSession } from './reducer.js';
+import { projectSession, recoverSession } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { imageCatalog, readImageReferences } from './visualContext.js';
 
@@ -61,7 +61,8 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   if (view === 'summary') {
     const state = recoverSession(query.sessionId, journalEvents);
     const lastUser = state.messages.findLast((message) => message.role === 'user');
-    const lastAssistant = state.messages.findLast((message) => message.role === 'assistant');
+    const lastMessageId = projectSession(state).timeline.findLast(item => item.kind === 'message' && state.messages.some(message => message.messageId === item.messageId && message.role === 'assistant'));
+    const lastAssistant = lastMessageId?.kind === 'message' ? state.messages.find(message => message.messageId === lastMessageId.messageId) : undefined;
     result.summary = {
       title: state.display.creationTitle,
       // These are persisted facts, including running/indeterminate. Do not infer

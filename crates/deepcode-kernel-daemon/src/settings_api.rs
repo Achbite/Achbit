@@ -290,6 +290,8 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.subagents.maxCallsPerRun": 16,
         "agent.subagents.maxMembersPerSession": 4,
         "agent.subagents.allowMemberAnalysis": true,
+        "agent.subagents.allowFullConfiguration": false,
+        "agent.subagents.presets": "[]",
         "agent.responseLanguage": "auto",
         "agent.windows.shell": "auto",
         "agent.windows.gitBashPath": "",
@@ -326,9 +328,18 @@ pub(crate) fn default_user_settings() -> Value {
 }
 
 pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), String> {
+    if let Some(presets) = settings.get("agent.subagents.presets") {
+        let valid = presets
+            .as_str()
+            .and_then(|encoded| serde_json::from_str::<Value>(encoded).ok());
+        if valid.as_ref().is_none_or(|value| !value.is_array()) {
+            return Err("子代理预设必须是 JSON 数组。".into());
+        }
+    }
     for key in [
         "agent.subagents.enabled",
         "agent.subagents.allowMemberAnalysis",
+        "agent.subagents.allowFullConfiguration",
     ] {
         if settings.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(format!("{key} 必须是布尔值。"));

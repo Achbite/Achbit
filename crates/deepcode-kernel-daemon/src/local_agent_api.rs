@@ -153,6 +153,7 @@ impl LocalAgentRuntime {
             session_id: request.session_id.clone(),
             run_id: request.run_id.clone(),
         };
+        let resource_catalog = gui.clone();
         let gui = gui.lock().map_err(|_| {
             RunPreparationError::new("gui_state_lock_failed", "GUI state 锁已损坏。")
         })?;
@@ -328,10 +329,13 @@ impl LocalAgentRuntime {
         let provider_binding = if let Some(previous) = &previous {
             previous.provider_binding.clone()
         } else {
-            ProviderRuntimeRegistry::prepare(
+            ProviderRuntimeRegistry::prepare_agent(
                 &gui,
                 request.profile_id.as_deref(),
                 request.reasoning_effort_override.as_deref(),
+                agent_context
+                    .as_ref()
+                    .and_then(|context| context.get("model")),
             )
             .map_err(|message| {
                 RunPreparationError::new("provider_runtime_prepare_failed", message)
@@ -490,6 +494,11 @@ impl LocalAgentRuntime {
             enable_kernel_web_search,
             Arc::new(
                 crate::local_agent_product_tools::ProductTools::new(Arc::new(session_service))
+                    .with_resources(crate::local_agent_resources::SessionResources::new(
+                        request.session_id.clone(),
+                        self.journal.clone(),
+                        resource_catalog,
+                    ))
                     .with_plugin_settings(settings.clone(), agent_context.is_some())
                     .with_computer_use(plugin_selection.computer_use_instance())
                     .with_containers(plugin_selection.container_instance())
@@ -1042,6 +1051,8 @@ pub(crate) async fn local_agent_settings_get(
         "maxCallsPerRun",
         "maxMembersPerSession",
         "allowMemberAnalysis",
+        "allowFullConfiguration",
+        "presets",
     ] {
         let key = format!("agent.subagents.{field}");
         let Some(value) = gui.user_settings.get(&key) else {
@@ -1079,6 +1090,7 @@ pub(crate) async fn local_agent_models_get(
             continue;
         };
         let snapshot = binding.snapshot();
+        let resolved = binding.profile();
         let efforts: &[&str] = if snapshot.thinking.as_deref() == Some("disabled") {
             &[]
         } else if profile["providerFlavor"].as_str() == Some("deepseek") {
@@ -1091,7 +1103,16 @@ pub(crate) async fn local_agent_models_get(
             "name": profile["name"],
             "model": profile["model"],
             "reasoningEfforts": efforts,
+            "parameters": {
+                "adapterId":resolved.connection.adapter_id,
+                "kind":resolved.kind, "providerFlavor":resolved.provider_flavor,
+                "contextWindowTokens":snapshot.context_window_tokens, "maxOutputTokens":snapshot.max_output_tokens,
+                "imageInput":resolved.image_input, "temperature":resolved.temperature, "hostedWebSearch":resolved.hosted_web_search
+            },
         });
+        if let Some(thinking) = &snapshot.thinking {
+            model["thinking"] = json!(thinking);
+        }
         if !efforts.is_empty() {
             if let Some(effort) = &snapshot.reasoning_effort {
                 model["reasoningEffort"] = json!(effort);
@@ -1191,6 +1212,20 @@ pub(crate) async fn local_agent_run_lifecycle_read(
         .journal
         .read_run_lifecycle(&session_id, query.after.unwrap_or(0))
     {
+        Ok(read) => ApiResponse::ok(read),
+        Err(error) => store_error(error),
+    }
+}
+
+pub(crate) async fn local_agent_agent_lifecycle_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.journal.read_agent_lifecycle(&session_id) {
         Ok(read) => ApiResponse::ok(read),
         Err(error) => store_error(error),
     }
@@ -1322,6 +1357,20 @@ pub(crate) async fn local_agent_tool_execute(
         axum::body::Body::from_stream(stream),
     )
         .into_response()
+}
+
+pub(crate) async fn local_agent_delegated_plan_scope(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::local_agent_kernel::DelegatedPlanScopeRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.kernel.delegated_plan_scope(body) {
+        Ok(scope) => ApiResponse::ok(scope),
+        Err(error) => kernel_error(error),
+    }
 }
 
 pub(crate) async fn local_agent_tool_cancel(

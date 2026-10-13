@@ -3,9 +3,73 @@ use crate::i18n::Language;
 use deepcode_kernel_client::{
     approval_response_command, focus_command, interaction_response_command,
     message_command_with_profile_and_plugins, plan_confirm_command, plan_revision_command,
-    FilesystemReference, InteractionProjection, PluginSelectionInput, SessionProjection,
+    FilesystemReference, HttpKernelClient, InteractionProjection, PluginSelectionInput,
+    SessionProjection,
 };
 use serde_json::json;
+
+/// Replying from the parent keeps the original child decision identity and command owner.
+pub async fn child_reply_projection(
+    language: Language,
+    client: &HttpKernelClient,
+    projection: &SessionProjection,
+    text: &str,
+) -> Result<Option<SessionProjection>, String> {
+    let text = text.trim();
+    if !(text == "/reply" || text.starts_with("/reply "))
+        || projection.pending_plan.is_some()
+        || projection.pending_interaction.is_some()
+        || projection.pending_approval.is_some()
+    {
+        return Ok(None);
+    }
+    let decisions = projection.pending_agent_decisions.as_deref().unwrap_or(&[]);
+    let decision = match decisions {
+        [] => return Ok(None),
+        [decision] => decision,
+        _ => return Err(language.text("tui.chooseChildReply").into()),
+    };
+    let child = client
+        .conversation_projection(&decision.agent_session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let plan = child
+        .pending_plan
+        .as_ref()
+        .map(|plan| (plan.plan_id.as_str(), plan.revision));
+    let approval = child
+        .pending_approval
+        .as_ref()
+        .map(|approval| (approval.approval_id.as_str(), approval.call_id.as_str()));
+    let interactions: Vec<_> = child
+        .interactions
+        .iter()
+        .filter(|interaction| interaction.status == "pending")
+        .map(|interaction| interaction.interaction_id.as_str())
+        .collect();
+    if child.session_id != decision.agent_session_id
+        || child.run.as_ref().map(|run| run.run_id.as_str()) != Some(decision.run_id.as_str())
+        || plan
+            != decision
+                .plan
+                .as_ref()
+                .map(|plan| (plan.plan_id.as_str(), plan.revision))
+        || approval
+            != decision
+                .approval
+                .as_ref()
+                .map(|approval| (approval.approval_id.as_str(), approval.call_id.as_str()))
+        || interactions
+            != decision
+                .interaction_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+    {
+        return Err(language.text("tui.childDecisionChanged").into());
+    }
+    Ok(Some(child))
+}
 
 pub fn contextual_input_command(
     language: Language,

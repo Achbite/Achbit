@@ -361,6 +361,21 @@ impl CliRenderState {
         if !self.summarized_runs.insert(run_id.to_owned()) {
             return Ok(());
         }
+        let mut members = HashSet::new();
+        for task in projection
+            .agent_tasks
+            .iter()
+            .flatten()
+            .filter(|task| task.parent_run_id == run_id)
+        {
+            if members.insert(&task.agent_session_id) {
+                writeln!(
+                    out,
+                    "子代理 {} · deepcode-cli show --session {}",
+                    task.display_name, task.agent_session_id
+                )?;
+            }
+        }
         let changes = projection.file_changes_for_run(run_id);
         if !changes.is_empty() {
             writeln!(out, "本轮修改 · {run_id}")?;
@@ -1009,6 +1024,9 @@ mod tests {
         assert!(text.contains("部分引用来源未返回"));
         let mut projection = projection();
         projection.messages.push(serde_json::from_value(json!({"messageId":"message:sources", "role":"assistant", "content":"Original text with source marker", "sequence":1, "createdAt":"now", "filesystemReferences":[], "pluginSelections":[], "sourceReferences":{"citations":[{"url":"https://example.test/docs","title":"Reference"}],"unresolved":true}})).unwrap());
+        projection.timeline.push(serde_json::from_value(json!({"kind":"message", "timelineId":"timeline:sources", "sequence":1, "messageId":"message:sources"})).unwrap());
+        projection.messages.push(serde_json::from_value(json!({"messageId":"message:repaired", "role":"assistant", "content":"Earlier repaired answer", "sequence":3, "createdAt":"now", "filesystemReferences":[], "pluginSelections":[]})).unwrap());
+        projection.timeline.insert(0, serde_json::from_value(json!({"kind":"message", "timelineId":"timeline:repaired", "sequence":0, "messageId":"message:repaired"})).unwrap());
         let mut plain = Vec::new();
         render_final_message(&mut plain, &projection, 0).unwrap();
         assert_eq!(String::from_utf8(plain).unwrap(), text);

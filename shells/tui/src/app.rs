@@ -262,6 +262,34 @@ impl TuiApp {
                 self.tasks_open = false;
                 self.resource_preview = None;
                 self.detail_scroll = 0;
+                if input == "/decision"
+                    && self.projection.as_ref().is_some_and(|projection| {
+                        projection.pending_plan.is_none()
+                            && projection.pending_interaction.is_none()
+                            && projection.pending_approval.is_none()
+                            && projection
+                                .pending_agent_decisions
+                                .iter()
+                                .flatten()
+                                .next()
+                                .is_some()
+                    })
+                {
+                    let pending = &self
+                        .projection
+                        .as_ref()
+                        .unwrap()
+                        .pending_agent_decisions
+                        .as_ref()
+                        .unwrap()[0]
+                        .agent_session_id;
+                    self.agent_picker = self
+                        .agent_entries()
+                        .iter()
+                        .position(|(id, _, _)| id == pending);
+                    self.detail_preview = None;
+                    return true;
+                }
                 self.detail_preview = Some(if input == "/error" {
                     crate::renderer::failure_details(self.host.language, self.projection.as_ref())
                 } else {
@@ -491,6 +519,18 @@ impl TuiApp {
                 ));
             }
         }
+        for decision in projection.pending_agent_decisions.iter().flatten() {
+            if !members
+                .iter()
+                .any(|(id, _, _)| *id == decision.agent_session_id)
+            {
+                members.push((
+                    decision.agent_session_id.clone(),
+                    decision.display_name.clone(),
+                    false,
+                ));
+            }
+        }
         members
             .into_iter()
             .enumerate()
@@ -501,9 +541,17 @@ impl TuiApp {
                     .flatten()
                     .rev()
                     .find(|task| task.agent_session_id == id);
-                let status = task
-                    .map(|task| agent_status_key(task.status))
-                    .unwrap_or("agent.team.status.idle");
+                let status = if projection
+                    .pending_agent_decisions
+                    .iter()
+                    .flatten()
+                    .any(|decision| decision.agent_session_id == id)
+                {
+                    "agent.team.needsInput"
+                } else {
+                    task.map(|task| agent_status_key(task.status))
+                        .unwrap_or("agent.team.status.idle")
+                };
                 let label = format!(
                     "{}. {} · {}{}",
                     index + 1,
@@ -578,7 +626,9 @@ impl TuiApp {
         let mut counts = std::collections::BTreeMap::new();
         let mut seen = HashSet::new();
         for task in projection.agent_tasks.iter().flatten().rev() {
-            if seen.insert(&task.agent_session_id) {
+            if seen.insert(&task.agent_session_id)
+                && task.status == deepcode_kernel_client::AgentTaskStatus::Running
+            {
                 *counts
                     .entry(agent_status_key(task.status))
                     .or_insert(0usize) += 1;
@@ -646,8 +696,23 @@ impl TuiApp {
                 .to_string();
             return;
         };
-        let session_id = projection.session_id.clone();
-        let command = match self.contextual_input_command(projection, text) {
+        let child = match crate::conversation_input::child_reply_projection(
+            self.host.language,
+            &self.client,
+            projection,
+            text,
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let target = child.as_ref().unwrap_or(projection);
+        let session_id = target.session_id.clone();
+        let command = match self.contextual_input_command(target, text) {
             Ok(command) => command,
             Err(error) => {
                 self.status = error;
@@ -1189,6 +1254,14 @@ impl TuiApp {
                 Some(self.host.language.text("tui.actionReply").to_string())
             } else if projection.pending_approval.is_some() {
                 Some(self.host.language.text("tui.actionApproval").to_string())
+            } else if projection
+                .pending_agent_decisions
+                .iter()
+                .flatten()
+                .next()
+                .is_some()
+            {
+                Some(self.host.language.text("tui.agentDecisionHint").to_string())
             } else {
                 None
             }
@@ -1791,6 +1864,49 @@ mod input_tests {
         assert_eq!(app.input, "unfinished draft");
         assert_eq!(app.transcript_scroll.get(), Some(7));
         assert!(!app.viewing_agent());
+        app.projection
+            .as_mut()
+            .unwrap()
+            .agent_tasks
+            .as_mut()
+            .unwrap()[1]
+            .status = deepcode_kernel_client::AgentTaskStatus::Completed;
+        assert!(app.agent_status().is_empty());
+        assert_eq!(app.agent_entries().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn parent_decision_entry_opens_the_child_picker_without_rewriting_a_reply() {
+        let mut app = test_app();
+        let (field, decision, _, _, _) = pending_decisions().into_iter().next().unwrap();
+        let mut parent = waiting_projection(field, decision);
+        parent.pending_plan = None;
+        parent.pending_interaction = None;
+        parent.pending_approval = None;
+        parent.pending_agent_decisions = Some(
+            serde_json::from_value(json!([{
+                "agentSessionId":"session:grandchild", "displayName":"Writer", "runId":"run:child",
+                "plan":{"planId":"plan:child", "revision":2}, "interactionIds":[]
+            }]))
+            .unwrap(),
+        );
+        app.projection = Some(parent.clone());
+        assert!(app.action_required().unwrap().contains("子代理等待确认"));
+        assert_eq!(app.agent_entries()[0].0, "session:grandchild");
+        assert!(app.agent_entries()[0]
+            .1
+            .contains(app.language().text("agent.team.needsInput")));
+        assert!(app
+            .renderer()
+            .render_plain(&app)
+            .contains("/agent session:grandchild"));
+        app.submit_line("/decision").await;
+        assert_eq!(app.agent_picker, Some(0));
+        assert_eq!(
+            app.projection,
+            Some(parent),
+            "navigation never fabricates a parent Plan"
+        );
     }
 
     #[test]

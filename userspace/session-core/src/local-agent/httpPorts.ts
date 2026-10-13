@@ -1,4 +1,4 @@
-import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
 import type {
@@ -13,6 +13,7 @@ import type {
   CommandReply,
   ConversationCommand,
   KernelPort,
+  PlanAuthority,
   PrepareRunRuntimeRequest,
   PreparedRunRuntime,
   PreparedToolDescriptor,
@@ -176,6 +177,10 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     );
   }
 
+  async readAgentLifecycle(sessionId: string): Promise<import('@deepcode/protocol').AgentLifecycleRead> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/agent-lifecycle`);
+  }
+
   async readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null> {
     return await this.json(
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,
@@ -199,15 +204,18 @@ export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPo
     const value: unknown = await this.json('/api/local-agent/agents/models');
     if (!Array.isArray(value)) throw new Error('agent_models_invalid');
     return value.map(model => {
-      if (!isExactRecord(model, ['profileId', 'name', 'model', 'reasoningEfforts'], ['reasoningEffort'])
+      if (!isExactRecord(model, ['profileId', 'name', 'model', 'reasoningEfforts', 'parameters'], ['reasoningEffort', 'thinking'])
         || ![model.profileId, model.name, model.model].every(isNonEmptyText)
         || !Array.isArray(model.reasoningEfforts) || !model.reasoningEfforts.every(isLlmReasoningEffort)
-        || model.reasoningEffort !== undefined && !isLlmReasoningEffort(model.reasoningEffort)) {
+        || model.reasoningEffort !== undefined && !isLlmReasoningEffort(model.reasoningEffort)
+        || model.thinking !== undefined && model.thinking !== 'enabled' && model.thinking !== 'disabled') {
         throw new Error('agent_models_invalid');
       }
       return { profileId: model.profileId as string, name: model.name as string, model: model.model as string,
+        parameters: decodeAgentModelParameters(model.parameters),
         reasoningEfforts: [...model.reasoningEfforts],
-        ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}) };
+        ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
+        ...(model.thinking !== undefined ? { thinking: model.thinking } : {}) };
     });
   }
 
@@ -215,6 +223,7 @@ export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPo
     const value = await this.json('/api/local-agent/agents/settings');
     if (!isRecord(value) || typeof value.enabled !== 'boolean' || typeof value.profileId !== 'string'
       || typeof value.allowMemberAnalysis !== 'boolean'
+      || typeof value.allowFullConfiguration !== 'boolean' || typeof value.presets !== 'string'
       || value.reasoningEffort !== '' && !isLlmReasoningEffort(value.reasoningEffort)
       || ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) {
       throw new Error('agent_settings_invalid');
@@ -230,6 +239,13 @@ export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPo
 }
 
 export class HttpKernelPort extends LocalAgentHttpPort implements KernelPort {
+  async delegatedPlanScope(request: Parameters<KernelPort['delegatedPlanScope']>[0]): Promise<PlanAuthority[]> {
+    const result = await this.json<{ authorities: PlanAuthority[] }>('/api/local-agent/plans/delegated-scope', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    if (!Array.isArray(result.authorities)) throw new Error('delegated_plan_scope_invalid');
+    return result.authorities;
+  }
   async readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]> {
     const value: unknown = await this.json('/api/local-agent/kernel/processes', {
       method: 'POST', body: JSON.stringify(request), signal,

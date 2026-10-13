@@ -5,6 +5,7 @@ import type {
   ContextCompositionMetadata,
   ContextCompositionReceipt,
   ContextCompositionTool,
+  JsonObject,
   ModelMessage,
   ProviderRequest,
   ProviderToolDefinition,
@@ -22,6 +23,7 @@ import {
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_SESSION,
 } from '@deepcode/protocol';
 import { LoopFailure } from './loopFailure.js';
 import { journalModelViews } from './modelView.js';
@@ -43,6 +45,7 @@ import {
 } from './sessionControls.js';
 import { renderActiveToolGuidance } from './toolPromptContributions.js';
 import { visualContextInstruction, visualContextMessages } from './visualContext.js';
+import { controlWait, type WaitingControl } from './sessionWake.js';
 
 export interface PreparedProviderRequest {
   request: ProviderRequest;
@@ -64,6 +67,7 @@ type ConversationRequestInput = {
   modelViewEvents?: readonly SessionEvent[];
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   providerRequestId: string;
+  optionalControlTools?: readonly string[];
 };
 
 export async function buildAgentProviderRequest(input: ConversationRequestInput & {
@@ -112,9 +116,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions().filter(tool => tool.name === SESSION_CONTROL_AGENT
+  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities).filter(tool => tool.name === SESSION_CONTROL_AGENT
     ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
-      ? hasPluginDiscovery : hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT);
+      ? hasPluginDiscovery : (hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
+    .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
+      || input.optionalControlTools.includes(tool.name));
   const toolCodec = createProviderToolCodec(
     runtimeTools,
     controlTools,
@@ -160,7 +166,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery),
+      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools),
     },
   });
   if (hasWorkspaceBindings) instructions.push({
@@ -290,6 +296,17 @@ export function messagesFromJournal(
     ? [[event.payload.interactionId, event] as const] : []));
   const agentTasks = new Map(modelViewEvents.flatMap(event => event.type === 'agent.task.created'
     ? [[event.payload.taskId, event.payload] as const] : []));
+  const controlResults = new Map(modelViewEvents.flatMap(event => {
+    if (event.type !== 'agent.control.completed' && event.type !== 'session.control.completed') return [];
+    const firstView = fixed.contributions.get(`agent-control:${event.callId}`);
+    return [[event.callId, firstView
+      ? { result: JSON.parse(firstView.message.content) as JsonObject, sourceSequence: firstView.sourceSequence }
+      : controlResultForModel(event, events)] as const];
+  }));
+  const returnedAgentResults = new Set(modelViewEvents.flatMap(event => event.type === 'agent.control.completed'
+    && event.payload.operation.action === 'spawn' && event.payload.operation.delivery === 'wait'
+    && typeof event.payload.result.taskId === 'string' && typeof controlResults.get(event.callId)?.result.outcome === 'string'
+    ? [event.payload.result.taskId] : []));
   const responses = new Map(events.flatMap(event => event.type === 'interaction.resolved'
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
@@ -456,7 +473,6 @@ export function messagesFromJournal(
             response: { kind: 'confirm' },
             planId: event.payload.planId,
             revision: event.payload.revision,
-            todoSeeded: true,
             nextAction: confirmedPlanExecutionInstruction(),
           }),
         },
@@ -566,26 +582,30 @@ export function messagesFromJournal(
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ activated: event.payload.pluginUris }) },
       });
-    } else if (event.type === 'agent.control.completed') {
+    } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
+      const view = controlResults.get(event.callId)!;
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
-          name: SESSION_CONTROL_AGENT, input: event.payload.operation });
+          name: event.type === 'agent.control.completed' ? SESSION_CONTROL_AGENT : SESSION_CONTROL_SESSION, input: event.payload.operation });
       }
       completionResults.set(event.callId, {
-        contributionId: `agent-control:${event.callId}`, contributionKind: 'journalMessages', label: 'Delegation result',
-        sourceSequence: event.sequence,
+        contributionId: `agent-control:${event.callId}`, contributionKind: 'journalMessages', label: 'Control result',
+        sourceSequence: view.sourceSequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify(event.payload.result) },
+          content: JSON.stringify(view.result) },
       });
     } else if (event.type === 'agent.task.completed') {
       const task = agentTasks.get(event.payload.taskId);
       if (!task) throw new LoopFailure('agent_task_source_missing', '子任务结果缺少已登记任务来源。');
-      if (task.delivery === 'async') pendingAgentEvidence.push({
+      if (!returnedAgentResults.has(event.payload.taskId)) pendingAgentEvidence.push({
         contributionId: `agent-result:${event.payload.taskId}`, contributionKind: 'journalMessages', label: 'Subtask result',
         sourceSequence: event.sequence,
         message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
           agentId: task.agentSessionId, result: event.payload.result }) },
       });
+    } else if (event.type === 'wake.triggered') {
+      pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
+        sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
     } else if (event.type === 'agent.message.received') {
       pendingAgentEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
         sourceSequence: event.sequence,
@@ -766,6 +786,28 @@ export function messagesFromJournal(
   return [...retained, ...messages];
 }
 
+/** Form one normal result at its first request boundary, then journal modelView freezes it. */
+function controlResultForModel(event: WaitingControl, events: readonly SessionEvent[]): { result: JsonObject; sourceSequence: number } {
+  if (!controlWait(event.payload.result)) return { result: event.payload.result, sourceSequence: event.sequence };
+  const { wait: _wait, ...result } = event.payload.result;
+  if (event.type === 'agent.control.completed') {
+    if (event.payload.operation.action === 'spawn') {
+      const completed = events.findLast(item => item.type === 'agent.task.completed' && item.runId === event.runId
+        && item.payload.taskId === result.taskId);
+      if (completed?.type === 'agent.task.completed') return {
+        result: { ...result, ...completed.payload.result }, sourceSequence: Math.max(event.sequence, completed.sequence),
+      };
+    } else if (event.payload.operation.action === 'wait') {
+      const taskIds = event.payload.operation.taskIds as string[] | undefined;
+      const completed = events.filter((item): item is Extract<SessionEvent, { type: 'agent.task.completed' }> =>
+        item.type === 'agent.task.completed' && item.runId === event.runId && (!taskIds || taskIds.includes(item.payload.taskId)));
+      return { result: { completedTaskIds: completed.map(item => item.payload.taskId) },
+        sourceSequence: Math.max(event.sequence, ...completed.map(item => item.sequence)) };
+    }
+  }
+  return { result, sourceSequence: event.sequence };
+}
+
 export function buildContextCompositionReceipt<Purpose extends ContextCompositionReceipt['purpose']>(
   providerRequestId: string,
   purpose: Purpose,
@@ -928,6 +970,7 @@ function providerCallIdsFromEvents(events: readonly SessionEvent[]): Map<string,
       && event.type !== 'session.plugins.activated'
       && event.type !== 'artifacts.presented'
       && event.type !== 'agent.control.completed'
+      && event.type !== 'session.control.completed'
     ) continue;
     const providerCallId = event.payload.providerCallId;
     const existing = byLogicalCallId.get(event.callId);
@@ -1298,6 +1341,9 @@ function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknow
     delete output.archive.timelinePath;
     if (Object.keys(output.archive).length === 0) delete output.archive;
   }
+  if (record.toolName === 'bash' || record.toolName === 'powershell') {
+    stripShellDiagnostics(output);
+  }
   if (record.toolName === 'computer.control' && record.input.action !== 'status'
     && isRecord(output.diagnostics) && isRecord(output.diagnostics.native)) {
     delete output.diagnostics.native.executor;
@@ -1309,11 +1355,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function stripShellDiagnostics(output: Record<string, unknown>): void {
+  delete output.environment;
+  delete output.paths;
+  delete output.workspaceMode;
+  delete output.capturedBytes;
+}
+
 function processContext(job: import('@deepcode/protocol').ManagedProcessSnapshot): unknown {
   // Bound each appended snapshot; the complete output remains in Kernel storage.
   const { result, output } = job;
   const details = isRecord(result) ? { ...result } : result;
-  if (isRecord(details)) { delete details.stdout; delete details.stderr; }
+  if (isRecord(details)) {
+    delete details.stdout; delete details.stderr;
+    if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details);
+  }
   return { jobId: job.jobId, command: job.command, status: job.status,
     ...(job.error ? { error: job.error } : {}),
     output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),

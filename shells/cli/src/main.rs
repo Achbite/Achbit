@@ -615,6 +615,9 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .map_err(|error| error.to_string())?;
             render_projection(&mut io::stdout().lock(), &projection)
                 .map_err(|error| error.to_string())?;
+            if render_pending_agent_decisions(client, &projection).await? {
+                return Ok(Outcome::ActionRequired);
+            }
             Ok(outcome_for_projection(&projection).unwrap_or(Outcome::Done))
         }
         Command::CancelPlan => {
@@ -749,14 +752,18 @@ async fn submit_input_and_wait(
     plugin_binding: Option<&PluginBinding>,
     plain: bool,
 ) -> Result<Outcome, String> {
+    let child =
+        conversation_input::child_reply_projection(i18n::Language::ZhCn, client, before, text)
+            .await?;
+    let target = child.as_ref().unwrap_or(before);
     let command = contextual_input_command(
-        before,
+        target,
         text,
         profile_id,
         filesystem_references,
         plugin_binding,
     )?;
-    submit_checked(client, &before.session_id, &command).await?;
+    submit_checked(client, &target.session_id, &command).await?;
     if matches!(
         command["type"].as_str(),
         Some("session.permissions.set" | "approval.revoke")
@@ -842,6 +849,20 @@ async fn wait_for_projection(
             output
                 .render(&mut io::stdout().lock(), &projection)
                 .map_err(|error| error.to_string())?;
+        }
+        if projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            output
+                .finish_text(&mut io::stdout().lock())
+                .map_err(|error| error.to_string())?;
+            if render_pending_agent_decisions(client, &projection).await? {
+                return Ok(Outcome::ActionRequired);
+            }
         }
         if let Some(run) = projection.run.as_ref() {
             if run.status == "waiting" {
@@ -932,11 +953,13 @@ async fn run_chat(
     println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/cancel；/quit。");
     render_action_required_if_any(&mut io::stdout().lock(), &projection)
         .map_err(|error| error.to_string())?;
+    render_pending_agent_decisions(client, &projection).await?;
     let mut input_lines = chat_input_lines()?;
     let mut refresh = tokio::time::interval(POLL_INTERVAL);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut output = CliRenderState::after(&projection);
     let mut rendered_revision = projection.revision;
+    let mut rendered_agent_decisions = projection.pending_agent_decisions.clone();
     let mut session_list: Option<Vec<deepcode_kernel_client::ConversationSessionSummary>> = None;
     let mut next_message_profile_id: Option<String> = initial_profile_id.map(str::to_owned);
     let mut prompt_needed = true;
@@ -960,6 +983,11 @@ async fn run_chat(
                         output.render_action_required(&mut io::stdout().lock(), &updated).map_err(|error| error.to_string())?;
                     }
                 }
+                if updated.pending_agent_decisions != rendered_agent_decisions {
+                    output.finish_text(&mut io::stdout().lock()).map_err(|error| error.to_string())?;
+                    render_pending_agent_decisions(client, &updated).await?;
+                    rendered_agent_decisions = updated.pending_agent_decisions.clone();
+                }
                 rendered_revision = updated.revision;
                 projection = updated;
                 continue;
@@ -977,6 +1005,12 @@ async fn run_chat(
             return Ok(
                 if projection.pending_plan.is_some()
                     || projection.pending_interaction.is_some()
+                    || projection
+                        .pending_agent_decisions
+                        .iter()
+                        .flatten()
+                        .next()
+                        .is_some()
                     || projection
                         .pending_approval
                         .as_ref()
@@ -1051,9 +1085,11 @@ async fn run_chat(
                         next_message_profile_id = None;
                         output = CliRenderState::after(&projection);
                         rendered_revision = projection.revision;
+                        rendered_agent_decisions = projection.pending_agent_decisions.clone();
                         println!("session: {}", projection.session_id);
                         render_projection(&mut io::stdout().lock(), &projection)
                             .map_err(|error| error.to_string())?;
+                        render_pending_agent_decisions(client, &projection).await?;
                     }
                     Err(error) => eprintln!("{}: {error}", target.as_deref().unwrap_or("/new")),
                 }
@@ -1173,8 +1209,23 @@ async fn run_chat(
                         selections: selected_plugins.clone(),
                     })
                 };
-                let command = match contextual_input_command(
+                let child = match conversation_input::child_reply_projection(
+                    i18n::Language::ZhCn,
+                    client,
                     &projection,
+                    text,
+                )
+                .await
+                {
+                    Ok(child) => child,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        continue;
+                    }
+                };
+                let target = child.as_ref().unwrap_or(&projection);
+                let command = match contextual_input_command(
+                    target,
                     line.trim_end_matches(['\r', '\n']),
                     next_message_profile_id.as_deref(),
                     &[],
@@ -1186,7 +1237,7 @@ async fn run_chat(
                         continue;
                     }
                 };
-                if let Err(error) = submit_checked(client, &projection.session_id, &command).await {
+                if let Err(error) = submit_checked(client, &target.session_id, &command).await {
                     eprintln!("{error}");
                     continue;
                 }
@@ -1284,7 +1335,53 @@ async fn refresh_projection(
         .map_err(|error| error.to_string())
 }
 
+/// Management contains identities only. Read the selected child decision from its own Session.
+async fn render_pending_agent_decisions(
+    client: &HttpKernelClient,
+    parent: &SessionProjection,
+) -> Result<bool, String> {
+    let mut waiting = false;
+    for decision in parent.pending_agent_decisions.iter().flatten() {
+        let child = refresh_projection(client, &decision.agent_session_id).await?;
+        if child.run.as_ref().map(|run| &run.run_id) != Some(&decision.run_id)
+            || !(child.pending_plan.is_some()
+                || child.pending_interaction.is_some()
+                || child
+                    .pending_approval
+                    .as_ref()
+                    .is_some_and(|approval| !approval.is_model_reviewing(child.run.as_ref())))
+        {
+            continue;
+        }
+        waiting = true;
+        let mut stdout = io::stdout().lock();
+        writeln!(
+            stdout,
+            "\n子代理 {} 等待确认 · {}",
+            decision.display_name, child.session_id
+        )
+        .map_err(|error| error.to_string())?;
+        render_action_required_if_any(&mut stdout, &child).map_err(|error| error.to_string())?;
+        writeln!(
+            stdout,
+            "回复此子代理：deepcode-cli ask --session {} \"/reply <答复>\"",
+            child.session_id
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(waiting)
+}
+
 fn outcome_for_projection(projection: &SessionProjection) -> Option<Outcome> {
+    if projection
+        .pending_agent_decisions
+        .iter()
+        .flatten()
+        .next()
+        .is_some()
+    {
+        return Some(Outcome::ActionRequired);
+    }
     outcome_for_status(&projection.run.as_ref()?.status)
 }
 

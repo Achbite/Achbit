@@ -1,6 +1,8 @@
 import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
+import type { SessionOperation, JsonObject } from '@deepcode/protocol';
+import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
-import { validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { permissionSettings, validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
@@ -68,6 +70,7 @@ export class SessionActor {
   #writes = Promise.resolve();
   #active?: ActiveRun;
   #disposed = false;
+  readonly #wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #disposeTask?: Promise<void>;
   #processes?: ManagedProcesses;
   #loopFailure?: Error;
@@ -109,16 +112,17 @@ export class SessionActor {
       }
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
       signal?.throwIfAborted();
+      this.restoreWakeTimers(snapshot);
       if (restored && run.status === 'running') {
         this.startLoop({ type: 'recover', runId: run.runId });
       }
     });
   }
 
-  async submit(command: ConversationCommand): Promise<CommandReply> {
+  async submit(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
     return await this.enqueue(async () => {
       this.assertOperational();
-      return await this.handleCommand(command);
+      return await this.handleCommand(command, beforeRunStart);
     });
   }
 
@@ -139,6 +143,25 @@ export class SessionActor {
     return projection;
   }
 
+  /** Coordination reads never construct transcript, activity or file-change projections. */
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run' | 'effectivePermissions'>> {
+    const state = (await this.loadSnapshot()).state;
+    return structuredClone({ sessionId: state.sessionId, agentContext: state.agentContext,
+      agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
+      effectivePermissions: state.run ? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions,
+        ...state.permissionOverrides }) : null });
+  }
+
+  /** Called only after the service's last external Actor lease has been released. */
+  async retireIfSettledChild(): Promise<boolean> {
+    const state = (await this.loadSnapshot()).state;
+    if (!state.agentContext || state.run && !isTerminal(state.run.status)) return false;
+    // run.settled can wake a result consumer just before the Loop's finally completes.
+    await this.#active?.task;
+    await this.dispose();
+    return true;
+  }
+
   hasLoopFailure(): boolean {
     return this.#loopFailure !== undefined;
   }
@@ -146,6 +169,89 @@ export class SessionActor {
   /** Trusted Session coordination writes; the same journal admission/reducer owns these facts. */
   async recordAgentEvents(events: readonly NewSessionEvent[]): Promise<void> {
     await this.withWrite(async () => this.appendEvents(events, await this.loadSnapshot()));
+  }
+
+  async waitForInput(runId: string, signal?: AbortSignal, timeoutSeconds?: number,
+    done?: (snapshot: LoopSnapshot) => boolean, acceptedWait?: ControlWait): Promise<JsonObject> {
+    const initial = await this.loadSnapshot();
+    const composition = initial.events.findLast(event => event.type === 'context.composed'
+      && event.runId === runId && event.payload.purpose === 'agent');
+    const boundary = acceptedWait?.afterSequence ?? (composition?.type === 'context.composed'
+      ? composition.payload.modelView?.throughSequence ?? composition.sequence : initial.state.revision);
+    const deadline = acceptedWait?.deadline ?? (timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000);
+    for (;;) {
+      signal?.throwIfAborted();
+      // Subscribe before checking the journal to avoid losing an arriving input.
+      let wake!: () => void;
+      const changed = new Promise<void>(resolve => { wake = resolve; });
+      this.#changes.add(wake);
+      signal?.addEventListener('abort', wake, { once: true });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const snapshot = await this.loadSnapshot();
+        if (this.#disposed) throw new Error('session_actor_disposed');
+        if (this.#loopFailure) throw this.#loopFailure;
+        if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
+        if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
+        if (Date.now() >= deadline) return { timedOut: true };
+        if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
+        await changed;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        this.#changes.delete(wake);
+        signal?.removeEventListener('abort', wake);
+      }
+    }
+  }
+
+  private async sessionOperation(runId: string, operation: SessionOperation, signal: AbortSignal): Promise<JsonObject> {
+    if (operation.action === 'describe') return { operations: [
+      { action: 'schedule', arguments: { afterSeconds: 'positive number', text: 'review or follow-up task' }, description: 'Schedule one follow-up in this task. Earlier messages do not cancel it. Task completion cancels remaining schedules.' },
+      { action: 'cancelSchedule', arguments: { scheduleId: 'schedule reference' } },
+      { action: 'wait', arguments: { timeoutSeconds: 'optional positive number' }, description: 'Pause until a message, child result, scheduled follow-up or user input arrives. Optional timeout only bounds this wait.' },
+    ] };
+    // The Loop commits this known response before subscribing to future input.
+    if (operation.action === 'wait') return {};
+    return this.withWrite(async () => {
+      signal.throwIfAborted();
+      const snapshot = await this.loadSnapshot();
+      if (snapshot.state.run?.runId !== runId || snapshot.state.run.status !== 'running') throw new Error('session_run_not_active');
+      if (operation.action === 'schedule') {
+        const scheduleId = this.#nextId('schedule');
+        await this.appendEvents([{ type: 'wake.scheduled', sessionId: this.sessionId, runId,
+          payload: { scheduleId, dueAt: Date.now() + Math.ceil(operation.afterSeconds * 1000), text: operation.text } }], snapshot);
+        return { scheduleId };
+      }
+      if (!pendingWakeups(snapshot.events, runId).has(operation.scheduleId)) throw new Error('schedule_not_pending');
+      await this.appendEvents([{ type: 'wake.cancelled', sessionId: this.sessionId, runId, payload: { scheduleId: operation.scheduleId } }], snapshot);
+      return { scheduleId: operation.scheduleId, cancelled: true };
+    });
+  }
+
+  private restoreWakeTimers(snapshot: LoopSnapshot): void {
+    const runId = snapshot.state.run?.runId;
+    const pending = runId ? pendingWakeups(snapshot.events, runId) : new Map();
+    for (const [id, timer] of this.#wakeTimers) if (!pending.has(id) || this.#disposed) {
+      clearTimeout(timer); this.#wakeTimers.delete(id);
+    }
+    if (this.#disposed || !runId) return;
+    for (const [id, event] of pending) {
+      if (this.#wakeTimers.has(id)) continue;
+      this.#wakeTimers.set(id, setTimeout(() => {
+        this.#wakeTimers.delete(id);
+        void this.withWrite(async () => {
+          if (this.#disposed) return;
+          const current = await this.loadSnapshot();
+          if (!pendingWakeups(current.events, runId).has(id)) return;
+          if (Date.now() < event.payload.dueAt) {
+            this.restoreWakeTimers(current);
+            return;
+          }
+          await this.appendEvents([{ type: 'wake.triggered', sessionId: this.sessionId, runId,
+            payload: { scheduleId: id, text: event.payload.text } }], current);
+        }).catch(error => { this.#loopFailure = error; for (const wake of this.#changes) wake(); });
+      }, Math.max(0, event.payload.dueAt - Date.now())));
+    }
   }
 
   async waitForRunResult(runId: string): Promise<AgentTaskResult> {
@@ -188,6 +294,8 @@ export class SessionActor {
   dispose(): Promise<void> {
     if (this.#disposeTask) return this.#disposeTask;
     this.#disposed = true;
+    for (const timer of this.#wakeTimers.values()) clearTimeout(timer);
+    this.#wakeTimers.clear();
     for (const wake of this.#changes) wake();
     this.#active?.controller.abort('session_service_stopped');
     this.#disposeTask = this.disposeResources();
@@ -230,7 +338,7 @@ export class SessionActor {
     await this.#capabilities.replace(implementation);
   }
 
-  private async handleCommand(command: ConversationCommand): Promise<CommandReply> {
+  private async handleCommand(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
     if (this.#disposed) throw new Error('session_actor_disposed');
     if (command.sessionId !== this.sessionId) {
       return this.reject(command, 'session_identity_mismatch', '命令不属于当前会话。');
@@ -264,7 +372,7 @@ export class SessionActor {
       case 'session.directory-index.detach':
         return await this.handleDirectoryIndexDetach(command);
       case 'message.submit':
-        return await this.handleMessage(command);
+        return await this.handleMessage(command, beforeRunStart);
       case 'message.edit':
         return await this.handleMessageEdit(command);
       case 'context.focus':
@@ -457,8 +565,9 @@ export class SessionActor {
 
   private async handleMessage(
     command: Extract<ConversationCommand, { type: 'message.submit' }>,
+    beforeRunStart?: (runId: string) => Promise<void>,
   ): Promise<CommandReply> {
-    return await this.handleRunInput(command, command.text, null);
+    return await this.handleRunInput(command, command.text, null, undefined, beforeRunStart);
   }
 
   private async handleFocus(
@@ -503,6 +612,7 @@ export class SessionActor {
     submittedText: string,
     focusTask: string | null,
     edit?: { command: Extract<ConversationCommand, { type: 'message.edit' }>; revised: Extract<NewSessionEvent, { type: 'conversation.revised' }> },
+    beforeRunStart?: (runId: string) => Promise<void>,
   ): Promise<CommandReply> {
     const journalCommand = edit?.command ?? command;
     if (!submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
@@ -625,7 +735,8 @@ export class SessionActor {
       {
         type: 'session.model-settings.updated',
         sessionId: this.sessionId,
-        payload: { commandId: command.commandId, settings: { profileId: runtimeSnapshot.provider.profileId, reasoningEffortOverride } },
+        payload: { commandId: command.commandId, settings: { profileId: runtimeSnapshot.provider.profileId,
+          reasoningEffortOverride: before.state.agentContext ? runtimeSnapshot.provider.reasoningEffort ?? null : reasoningEffortOverride } },
       },
       {
         type: 'input.accepted',
@@ -705,6 +816,7 @@ export class SessionActor {
       }
       throw error;
     }
+    await beforeRunStart?.(runId);
     this.startLoop({ type: 'start', runId });
     return reply;
   }
@@ -835,6 +947,7 @@ export class SessionActor {
       }],
       acceptedReply(command),
     );
+    if (this.#active) await this.#active.task;
     this.startLoop({ type: 'resume', runId: command.runId });
     return reply;
   }
@@ -917,6 +1030,7 @@ export class SessionActor {
         await this.runLoop({ type: 'cancel', runId: command.runId });
       }
     } else {
+      if (this.#active) await this.#active.task;
       this.startLoop({ type: 'resume', runId: command.runId });
     }
     return reply;
@@ -989,6 +1103,8 @@ export class SessionActor {
         composition: this.#composition,
         capabilities: this.#capabilities,
         ...(this.#agents ? { agents: this.#agents } : {}),
+        sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
+        waitForInput: (runId, wait, signal) => this.waitForInput(runId, signal, undefined, undefined, wait),
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
         waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
@@ -1332,6 +1448,9 @@ export class SessionActor {
   }
 
   private async observe(event: SessionEvent): Promise<void> {
+    if (event.type.startsWith('wake.') || event.type === 'run.finishing' || event.type === 'run.settled') {
+      this.restoreWakeTimers(await this.loadSnapshot());
+    }
     for (const wake of this.#changes) wake();
     if (event.type === 'tool.completed' || event.type === 'tool.interrupted' || event.type === 'tool.input-rejected') {
       this.#liveToolOutput.delete(event.callId);

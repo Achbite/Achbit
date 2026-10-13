@@ -16,6 +16,7 @@ impl SessionReadPort for SessionServiceProcess {
 
 pub(crate) struct ProductTools {
     reader: Arc<dyn SessionReadPort>,
+    resources: Option<crate::local_agent_resources::SessionResources>,
     plugin_settings: Value,
     is_child_agent: bool,
     pub(crate) document_python: Option<std::path::PathBuf>,
@@ -29,6 +30,7 @@ impl ProductTools {
     pub(crate) fn new(reader: Arc<dyn SessionReadPort>) -> Self {
         Self {
             reader,
+            resources: None,
             plugin_settings: json!({}),
             is_child_agent: false,
             document_python: None,
@@ -42,6 +44,14 @@ impl ProductTools {
     pub(crate) fn with_plugin_settings(mut self, settings: Value, is_child_agent: bool) -> Self {
         self.plugin_settings = settings;
         self.is_child_agent = is_child_agent;
+        self
+    }
+
+    pub(crate) fn with_resources(
+        mut self,
+        resources: crate::local_agent_resources::SessionResources,
+    ) -> Self {
+        self.resources = Some(resources);
         self
     }
 
@@ -78,6 +88,16 @@ impl ProductTools {
 
     pub(crate) fn call(&self, name: &str, input: Value) -> Result<Value, SessionServiceError> {
         match name {
+            "session.read" if input["view"] == "resources" => self
+                .resources
+                .as_ref()
+                .ok_or_else(|| {
+                    SessionServiceError::new(
+                        "agent_resources_unavailable",
+                        "Agent resource reader is not installed.",
+                    )
+                })?
+                .read(input),
             "session.read" => self.reader.read(input),
             "skill.read" => read_skill(input),
             "doc.read" => read_doc(input),
@@ -107,11 +127,16 @@ impl ProductTools {
                     "offset":{"type":"integer","minimum":0,"description":"Use nextOffset from the previous result with the same query; defaults to 0."}
                 }
             })),
-            ("session.read", "Read persisted DeepCode conversation facts without resuming the session. Query directly; no prior Skill read is required. Start with summary; use messages, tools, plans or context for details. view=images lists archived image references. To inspect images from the current session, pass imageIds with exact referenceId/artifactId values; their pixels enter the next visual input. Include all images needed for comparison. imageIds=[] releases current images. before is an exclusive event-sequence cursor; nextBefore continues older items. Excerpts report truncation. A session ID is required.".into(), json!({
+            ("session.read", "Read persisted DeepCode conversation facts without resuming the session. Query directly; no prior Skill read is required. Start with summary; use messages, tools, plans or context for details. view=resources lists and reads managed workdirs belonging to this session or its descendants; use exact references returned by the listing. view=images lists archived image references. To inspect images from the current session, pass imageIds with exact referenceId/artifactId values; their pixels enter the next visual input. Include all images needed for comparison. imageIds=[] releases current images. before is an exclusive event-sequence cursor; nextBefore continues older items. Excerpts report truncation. A session ID is required.".into(), json!({
                 "type":"object", "additionalProperties":false, "required":["sessionId"],
                 "properties": {
                     "sessionId":{"type":"string","description":"Exact complete ID from the user or DeepCode. Preserve it verbatim, including prefixes such as session:."},
-                    "view":{"type":"string","enum":["summary","messages","tools","plans","context","reasoning","images"]},
+                    "view":{"type":"string","enum":["summary","messages","tools","plans","context","reasoning","images","resources"]},
+                    "resource":{"type":"object","additionalProperties":false,"required":["workspaceId","logicalPath"],"properties":{
+                        "workspaceId":{"type":"string"},"logicalPath":{"type":"string"}},
+                        "description":"Requires view=resources. Use an exact reference returned by the resource listing; never a caller workspace selector. Omit to list managed workdirs; a directory lists entries and a file reads text."},
+                    "startLine":{"type":"integer","minimum":1},
+                    "startByte":{"type":"integer","minimum":0},
                     "imageIds":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1},"description":"Requires view=images. Exact current-session image references to inspect together. Select only images needed for the current comparison. Omit to list references; [] releases pixels. Do not combine with before or limit."},
                     "before":{"type":"integer","minimum":1},
                     "limit":{"type":"integer","minimum":1,"maximum":50},

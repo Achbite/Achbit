@@ -73,7 +73,8 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   while (calls < 2) await delay(5);
   await delay(50);
   assert.equal(calls, 2, 'waiting for a process does not keep requesting the model');
-  assert.equal((await actor.snapshot()).messages.some(m => m.content === 'Premature answer.'), false);
+  assert.equal((await actor.snapshot()).messages.some(m => m.content === 'Premature answer.'), true, 'valid generated text persists while the process still prevents settlement');
+  assert.equal((await actor.snapshot()).run.status, 'running');
   if (watchFailure) failWatch();
   else if (stop) await actor.submit({schemaVersion:'deepcode.command.v3', type:'run.cancel', commandId:'command:stop', sessionId, runId:active.run.runId});
   else finish('completed');
