@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -168,6 +169,34 @@ impl McpTool {
 pub(crate) struct McpRuntime {
     tools: Arc<BTreeMap<String, McpTool>>,
     view: Arc<McpView>,
+    // Frozen with the run, including before Chrome is activated in a later view.
+    session_workdir: Option<PathBuf>,
+}
+
+pub(crate) fn session_workdir_for_run(
+    catalog: &crate::conversation_catalog::ConversationCatalog,
+    session_id: &str,
+) -> Result<Option<PathBuf>, McpRuntimeError> {
+    let Some(workspace) = catalog.workspaces.iter().find(|workspace| {
+        workspace.session_workdir && workspace.owner_session_id.as_deref() == Some(session_id)
+    }) else {
+        return Ok(None);
+    };
+    let root = Path::new(&workspace.canonical_root)
+        .canonicalize()
+        .map_err(|error| {
+            McpRuntimeError::new(
+                "mcp_session_workdir_invalid",
+                format!("无法解析当前会话私有目录：{error}"),
+            )
+        })?;
+    if !root.is_dir() {
+        return Err(McpRuntimeError::new(
+            "mcp_session_workdir_invalid",
+            "当前会话私有工作区不是目录。",
+        ));
+    }
+    Ok(Some(root))
 }
 
 #[derive(Debug)]
@@ -210,6 +239,7 @@ impl Default for McpRuntime {
         Self {
             tools: Arc::new(BTreeMap::new()),
             view: Arc::new(McpView::default()),
+            session_workdir: None,
         }
     }
 }
@@ -218,6 +248,7 @@ impl McpRuntime {
     fn from_parts(
         tools: BTreeMap<String, McpTool>,
         instances: BTreeMap<String, Arc<ToolInstance>>,
+        session_workdir: Option<PathBuf>,
     ) -> Self {
         for instance in instances.values() {
             instance.views.fetch_add(1, Ordering::Relaxed);
@@ -228,6 +259,7 @@ impl McpRuntime {
                 instances,
                 released: AtomicBool::new(false),
             }),
+            session_workdir,
         }
     }
     /// Reuse unchanged instances and prepare selected replacements; old views stay pinned.
@@ -241,7 +273,7 @@ impl McpRuntime {
             .filter(|(_, instance)| !self.view.instances.contains_key(*instance))
             .map(|(uri, instance)| (uri.clone(), instance.clone()))
             .collect();
-        let added = Self::from_selected_sources(sources, &additions)?;
+        let added = Self::from_selected_sources(sources, &additions, self.session_workdir.clone())?;
         let mut tools = self
             .tools
             .iter()
@@ -264,15 +296,24 @@ impl McpRuntime {
             .filter(|(id, _)| selected.values().any(|selected| selected == *id))
             .map(|(id, instance)| (id.clone(), Arc::clone(instance)))
             .collect();
-        Ok(Self::from_parts(tools, instances))
+        Ok(Self::from_parts(
+            tools,
+            instances,
+            self.session_workdir.clone(),
+        ))
     }
 
     pub(crate) fn from_selected_sources(
         sources: &[McpServerSource],
         selected_plugin_instances: &BTreeMap<String, String>,
+        session_workdir: Option<PathBuf>,
     ) -> Result<Self, McpRuntimeError> {
         if selected_plugin_instances.is_empty() {
-            return Ok(Self::default());
+            return Ok(Self::from_parts(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                session_workdir,
+            ));
         }
         let available = sources
             .iter()
@@ -298,12 +339,14 @@ impl McpRuntime {
                 .cloned()
                 .collect(),
             selected_plugin_instances,
+            session_workdir,
         )
     }
 
     fn from_servers(
         servers: Vec<McpServerSource>,
         selected_plugin_instances: &BTreeMap<String, String>,
+        session_workdir: Option<PathBuf>,
     ) -> Result<Self, McpRuntimeError> {
         let mut servers_by_id = BTreeMap::new();
         for server in servers {
@@ -349,7 +392,17 @@ impl McpRuntime {
                     definitions,
                 )
             } else {
-                let client = McpClient::start(&server.setting)?;
+                let workspace = if server.descriptor.uri == "plugin://chrome-devtools@builtin" {
+                    Some(session_workdir.as_deref().ok_or_else(|| {
+                        McpRuntimeError::new(
+                            "mcp_session_workdir_missing",
+                            "Chrome 文件工具需要当前会话的私有工作目录。",
+                        )
+                    })?)
+                } else {
+                    None
+                };
+                let client = McpClient::start(&server.setting, workspace)?;
                 let definitions = client.list_tools()?;
                 (ToolClient::Mcp(client), definitions)
             };
@@ -401,7 +454,7 @@ impl McpRuntime {
             }
             instances.insert(plugin_instance_ref, instance);
         }
-        Ok(Self::from_parts(tools, instances))
+        Ok(Self::from_parts(tools, instances, session_workdir))
     }
 
     pub(crate) fn tools(&self) -> impl Iterator<Item = &McpTool> {
@@ -586,7 +639,7 @@ fn chrome_devtools_source(settings: &Value) -> Result<McpServerSource, McpRuntim
         id: "deepcode-chrome".into(), name: "Chrome".into(),
         description: "Control existing Chrome browser pages and tabs by pageId: inspect, click, fill, navigate and capture screenshots. 浏览器 Chrome 页面和标签页控制。".into(),
         transport: "stdio".into(), command: node.to_string_lossy().into(),
-        args: format!("{quoted_entry} --autoConnect --no-usage-statistics --no-performance-crux"),
+        args: format!("{quoted_entry} --autoConnect --experimental-structured-content --no-usage-statistics --no-performance-crux"),
         enabled: !disabled.iter().any(|disabled| disabled == uri),
     })?;
     source.descriptor.uri = uri.into();
@@ -931,7 +984,7 @@ struct McpClient {
 }
 
 impl McpClient {
-    fn start(server: &McpServerSetting) -> Result<Self, McpRuntimeError> {
+    fn start(server: &McpServerSetting, workspace: Option<&Path>) -> Result<Self, McpRuntimeError> {
         let args = split_args(&server.args)?;
         let mut command = Command::new(&server.command);
         command
@@ -939,6 +992,12 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(workspace) = workspace {
+            command
+                .arg("--workspace")
+                .arg(workspace)
+                .current_dir(workspace);
+        }
         let child = spawn_owned_host_process(&mut command).map_err(|error| {
             McpRuntimeError::new(
                 "mcp_server_spawn_failed",
@@ -1669,7 +1728,7 @@ mod tests {
                 "id":"io-test", "name":"I/O test", "transport":"stdio",
                 "command":"python3", "args":format!("{} {}", script.display(), self.0.display()),
                 "enabled":true
-            })).unwrap()).unwrap()
+            })).unwrap(), None).unwrap()
         }
     }
 
@@ -1677,6 +1736,163 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn chrome_workspace_selects_only_the_current_session_private_directory() {
+        use crate::conversation_catalog::{ConversationCatalog, ConversationWorkspaceRecord};
+        let directory = TestDirectory::new();
+        let private = directory.0.join("private output");
+        std::fs::create_dir(&private).unwrap();
+        let record = |id: &str, owner: Option<&str>, session_workdir: bool, root: &Path| {
+            ConversationWorkspaceRecord {
+                workspace_id: id.into(),
+                display_name: id.into(),
+                canonical_root: root.to_string_lossy().into_owned(),
+                owner_session_id: owner.map(str::to_owned),
+                session_workdir,
+                created_at: "2026-10-14T00:00:00Z".into(),
+            }
+        };
+        let mut catalog = ConversationCatalog {
+            workspaces: vec![
+                record("project", None, false, &directory.0),
+                record("input", Some("session:one"), false, &directory.0),
+                record("other-private", Some("session:two"), true, &directory.0),
+                record("private", Some("session:one"), true, &private.join(".")),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            session_workdir_for_run(&catalog, "session:one").unwrap(),
+            Some(private.canonicalize().unwrap())
+        );
+        assert!(session_workdir_for_run(&catalog, "session:missing")
+            .unwrap()
+            .is_none());
+        catalog.workspaces.pop();
+        assert!(session_workdir_for_run(&catalog, "session:one")
+            .unwrap()
+            .is_none());
+        let file = directory.0.join("file.txt");
+        std::fs::write(&file, "not a directory").unwrap();
+        catalog
+            .workspaces
+            .push(record("invalid-private", Some("session:one"), true, &file));
+        assert_eq!(
+            session_workdir_for_run(&catalog, "session:one")
+                .unwrap_err()
+                .code,
+            "mcp_session_workdir_invalid"
+        );
+    }
+
+    #[test]
+    fn chrome_workspace_binds_process_root_cwd_and_late_activation_to_the_run() {
+        let directory = TestDirectory::new();
+        let first_root = directory.0.join("first private directory");
+        let second_root = directory.0.join("second private directory");
+        std::fs::create_dir(&first_root).unwrap();
+        std::fs::create_dir(&second_root).unwrap();
+        let script = directory.0.join("workspace-server.py");
+        std::fs::write(&script, r#"import json,os,sys
+from pathlib import Path
+for line in sys.stdin:
+    request=json.loads(line)
+    if 'id' not in request: continue
+    method=request['method']
+    if method=='initialize':
+        result={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'workspace','version':'1'}}
+    elif method=='tools/list':
+        result={'tools':[{'name':'capture','description':'write relative output','inputSchema':{'type':'object'}}]}
+    else:
+        Path(request['params']['arguments']['filePath']).write_text('captured')
+        receipt={'pid':os.getpid(),'cwd':os.getcwd(),'args':sys.argv[1:]}
+        result={'content':[{'type':'text','text':json.dumps(receipt)}],'isError':False}
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+"#).unwrap();
+        let settings = json!({"mcp.servers":serde_json::to_string(&json!([{
+            "id":"chrome-workspace", "name":"Chrome workspace", "transport":"stdio",
+            "command":"python3", "args":script, "enabled":true
+        }])).unwrap()});
+        let mut sources = available_server_sources(&settings).unwrap();
+        let source = sources
+            .iter_mut()
+            .find(|source| source.setting.id == "chrome-workspace")
+            .unwrap();
+        source.descriptor.uri = "plugin://chrome-devtools@builtin".into();
+        let sources = vec![source.clone()];
+        let selected = BTreeMap::from([(
+            "plugin://chrome-devtools@builtin".into(),
+            "instance:chrome:first".into(),
+        )]);
+        let error = McpRuntime::from_selected_sources(&sources, &selected, None)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "mcp_session_workdir_missing");
+
+        // Initial run preparation may select no tools; later activation must keep its cwd.
+        let empty = McpRuntime::from_selected_sources(
+            &sources,
+            &BTreeMap::new(),
+            Some(first_root.canonicalize().unwrap()),
+        )
+        .unwrap();
+        let first = empty.extend_selected_sources(&sources, &selected).unwrap();
+        let later = first.extend_selected_sources(&sources, &selected).unwrap();
+        let other = McpRuntime::from_selected_sources(
+            &sources,
+            &selected,
+            Some(second_root.canonicalize().unwrap()),
+        )
+        .unwrap();
+        let call = |runtime: &McpRuntime, file: &str| {
+            let context = KernelToolExecutionContext {
+                output_directory: None,
+                workspace_root: None,
+                workspace_id: None,
+                private_resolved_targets: vec![],
+                workspace_write_targets: None,
+                file_access: Default::default(),
+                cancellation: Default::default(),
+                progress: Default::default(),
+            };
+            let result = runtime
+                .tools()
+                .next()
+                .unwrap()
+                .call(json!({"filePath":file}), &context)
+                .unwrap();
+            assert!(result.failure.is_none());
+            serde_json::from_str::<Value>(result.output["content"][0]["text"].as_str().unwrap())
+                .unwrap()
+        };
+        let one = call(&first, "first.png");
+        let two = call(&other, "second.png");
+        first.shutdown().unwrap();
+        let again = call(&later, "later.png");
+        assert_eq!(one["pid"], again["pid"]);
+        assert_ne!(one["pid"], two["pid"]);
+        for (receipt, root) in [
+            (&one, &first_root),
+            (&again, &first_root),
+            (&two, &second_root),
+        ] {
+            let root = root.canonicalize().unwrap();
+            assert_eq!(receipt["cwd"], json!(root));
+            assert_eq!(receipt["args"], json!(["--workspace", root]));
+        }
+        assert_eq!(
+            std::fs::read_to_string(first_root.join("first.png")).unwrap(),
+            "captured"
+        );
+        assert!(first_root.join("later.png").is_file());
+        assert!(second_root.join("second.png").is_file());
+        assert!(!first_root.join("second.png").exists());
+        assert!(!second_root.join("first.png").exists());
+        empty.shutdown().unwrap();
+        later.shutdown().unwrap();
+        other.shutdown().unwrap();
     }
 
     #[cfg(unix)]
@@ -1707,6 +1923,7 @@ mod tests {
                 "enabled":true
             }))
             .unwrap(),
+            None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1910,7 +2127,7 @@ for line in sys.stdin:
         }])).unwrap()});
         let sources = available_server_sources(&settings).unwrap();
         let selected = BTreeMap::from([(mcp_plugin_uri("views"), "instance:views".into())]);
-        let first = McpRuntime::from_selected_sources(&sources, &selected).unwrap();
+        let first = McpRuntime::from_selected_sources(&sources, &selected, None).unwrap();
         let second = first.extend_selected_sources(&sources, &selected).unwrap();
         let context = || KernelToolExecutionContext {
             output_directory: None,
@@ -1992,6 +2209,7 @@ for line in sys.stdin:
         let first = McpRuntime::from_selected_sources(
             &available_server_sources(&settings).unwrap(),
             &selected("instance:first"),
+            None,
         )
         .unwrap();
         write("second");
@@ -2089,6 +2307,7 @@ for line in sys.stdin:
                 mcp_plugin_uri("fixture.mcp.cancelled"),
                 "plugin-instance:test:cancelled".to_string(),
             )]),
+            None,
         )
         .expect("start selected MCP runtime");
         let tool = runtime.tools().next().expect("mapped tool");

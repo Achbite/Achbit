@@ -383,6 +383,11 @@ impl LocalAgentRuntime {
             crate::local_agent_mcp::McpRuntime::from_selected_sources(
                 &plugin_selection.mcp_sources,
                 plugin_selection.mcp_plugin_instances(),
+                crate::local_agent_mcp::session_workdir_for_run(
+                    &gui.conversation_catalog,
+                    &request.session_id,
+                )
+                .map_err(|error| RunPreparationError::new(error.code, error.message))?,
             )
         }
         .map_err(|error| RunPreparationError::new(error.code, error.message))?;

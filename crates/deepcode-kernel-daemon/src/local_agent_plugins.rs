@@ -1148,6 +1148,7 @@ mod tests {
         match crate::local_agent_mcp::McpRuntime::from_selected_sources(
             &crate::local_agent_mcp::available_server_sources(&settings).unwrap(),
             &selected_mcp,
+            None,
         ) {
             Err(error) => assert_eq!(error.code, "mcp_server_command_missing"),
             Ok(_) => panic!("selected invalid MCP server must fail before process startup"),

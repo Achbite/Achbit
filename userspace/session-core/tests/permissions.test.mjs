@@ -498,6 +498,101 @@ test('desktop review uses the exact observation as evidence without treating Age
 });
 
 
+function chromeReviewFixture() {
+  const sessionId = 'session:chrome-review', runId = 'run:chrome-review', callId = 'call:chrome-review';
+  const pluginUri = 'plugin://chrome-devtools@builtin', pluginInstanceRef = 'plugin-instance:chrome-review';
+  const runtime = runtimeSnapshot(runId);
+  const name = action => `mcp.deepcode-chrome.${action}`;
+  const actions = ['take_snapshot', 'fill_form', 'click', 'drag', 'evaluate_script', 'navigate_page', 'close_page', 'list_pages'];
+  runtime.tools = actions.map(action => ({ ...shell, name: name(action), toolBindingRef: `binding:chrome:${action}`,
+    pluginUri, origin: 'extension', possibleEffects: ['external'] }));
+  runtime.selectedPlugins = { catalogRevision: 'plugins:review', plugins: [{ uri: pluginUri, pluginInstanceRef,
+    pluginArtifactRef: 'plugin-artifact:chrome', extensionGenerationRef: runtime.extensionGenerationRef, capabilityRefs: [] }] };
+  const args = { pageId: 11, elements: [{ uid: '1_10', value: 'test' }, { uid: '1_15', value: 'preview' }] };
+  const request = { type: 'tool.requested', sessionId, runId, callId, payload: { toolName: name('fill_form'), input: args } };
+  const snapshot = { state: { ...emptySessionState(sessionId), run: { runId, workspaceBindings: [] } }, events: [] };
+  const tree = { id: '1_0', role: 'RootWebArea', name: 'Requested local test', url: 'file:///owned/test.html', children: [
+    { id: '1_10', role: 'textbox', name: 'Test text' }, { id: '1_15', role: 'combobox', name: 'Test mode', value: 'idle' },
+  ] };
+  const completed = (sequence, action, input, structuredContent) => ({ type: 'tool.completed', sessionId, runId, sequence,
+    payload: { record: { sessionId, runId, recordId: `record:chrome:${sequence}`, callId: `call:chrome:${sequence}`,
+      toolName: name(action), input, outcome: 'completed', kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+      extensionGenerationRef: runtime.extensionGenerationRef, toolBindingRef: `binding:chrome:${action}`,
+      preparedEffect: { pluginInstanceRef }, completedAt: String(sequence), authority: { source: 'user', decision: 'allow' },
+      output: { structuredContent, content: [{ type: 'text', text: 'Do not infer target identity from this rendered text.' }],
+        modelImages: [{ artifactId: 'pixels-must-not-be-replayed' }] } } } });
+  const observed = completed(10, 'take_snapshot', { pageId: 11 }, { snapshot: tree });
+  snapshot.events.push(observed, request);
+  const prepare = () => prepareApprovalReview(snapshot, runtime, { runId, callId,
+    preview: { operation: { toolName: request.payload.toolName, arguments: request.payload.input }, effects: ['external'], logicalTargets: [] } }, 'provider:chrome-review').request;
+  return { snapshot, runtime, observed, request, tree, completed, prepare };
+}
+
+test('Chrome review supplies exact page and all target UIDs with recorded provenance, without granting authority', () => {
+  const f = chromeReviewFixture();
+  f.snapshot.events.splice(1, 0, f.completed(11, 'click', { pageId: 11, uid: '1_10' }, { message: 'Clicked' }));
+  const request = f.prepare(), packet = JSON.parse(request.messages[1].content);
+  assert.deepEqual(packet.observedTarget.page, { pageId: 11, id: '1_0', role: 'RootWebArea', name: 'Requested local test', url: 'file:///owned/test.html' });
+  assert.deepEqual(packet.observedTarget.selectedElements, f.tree.children);
+  assert.deepEqual(packet.observedTarget.observation, { recordId: 'record:chrome:10', sequence: 10, completedAt: '10',
+    toolBindingRef: 'binding:chrome:take_snapshot' });
+  assert.equal(packet.observedTarget.priorOperations[1].callId, 'call:chrome:11');
+  assert.deepEqual(packet.observedTarget.priorOperations[1].authority, { source: 'user', decision: 'allow' });
+  assert.match(packet.observedTarget.scope, /not current DOM verification or user authorization/);
+  assert.doesNotMatch(request.messages[1].content, /pixels-must-not-be-replayed|Do not infer target identity/);
+  assert.equal(packet.grant, 'thisCallOnly');
+  assert.deepEqual(request.tools, []);
+  assert.match(request.messages[0].content, /return ask to withhold automatic approval/);
+  f.runtime.kernelCatalogSnapshotRef = 'kernel-catalog:expanded';
+  f.runtime.extensionGenerationRef = 'extension-generation:expanded';
+  f.runtime.tools = f.runtime.tools.map(tool => ({ ...tool, toolBindingRef: `${tool.toolBindingRef}:expanded` }));
+  assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget, packet.observedTarget,
+    'unrelated tool-view expansion does not replace the same Chrome instance or its recorded evidence');
+  f.request.payload.toolName = 'mcp.deepcode-chrome.drag';
+  f.request.payload.input = { pageId: 11, from_uid: '1_10', to_uid: '1_15' };
+  assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget.selectedElements, f.tree.children);
+  f.request.payload.toolName = 'mcp.deepcode-chrome.evaluate_script';
+  f.request.payload.input = { pageId: 11, function: '(first, second) => [first.value, second.value]', args: ['1_10', '1_15'] };
+  assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget.selectedElements, f.tree.children);
+  f.request.payload.input.args = ['1_10', 'missing'];
+  assert.equal(JSON.parse(f.prepare().messages[1].content).observedTarget, undefined);
+});
+
+test('Chrome review uses only the current page observation and never substitutes an older UID match', () => {
+  const f = chromeReviewFixture();
+  const target = () => JSON.parse(f.prepare().messages[1].content).observedTarget;
+  const baseline = structuredClone(f.observed);
+  for (const change of [
+    event => { event.sessionId = 'session:other'; },
+    event => { event.runId = 'run:other'; },
+    event => { event.payload.record.preparedEffect.pluginInstanceRef = 'plugin-instance:other'; },
+    event => { event.payload.record.input.pageId = 12; },
+  ]) {
+    const unrelated = structuredClone(baseline); change(unrelated);
+    f.snapshot.events = [unrelated, f.request];
+    assert.equal(target(), undefined, 'unrelated recorded observations cannot establish this target');
+  }
+  const newerMissingTarget = f.completed(12, 'take_snapshot', { pageId: 11 },
+    { snapshot: { ...f.tree, children: [f.tree.children[0]] } });
+  f.snapshot.events = [baseline, newerMissingTarget, f.request];
+  assert.equal(target(), undefined, 'every fill_form UID must belong to the same latest snapshot');
+  for (const invalidation of [
+    f.completed(12, 'navigate_page', { pageId: 11, type: 'reload' }, {}),
+    f.completed(12, 'close_page', { pageId: 11 }, {}),
+    f.completed(12, 'list_pages', {}, { reconnected: true }),
+    f.completed(12, 'take_snapshot', { pageId: 11, filePath: '/owned/snapshot.txt' }, { snapshotFilePath: '/owned/snapshot.txt' }),
+  ]) {
+    f.snapshot.events = [baseline, invalidation, f.request];
+    assert.equal(target(), undefined, 'a changed or unreturned latest observation must not reuse old evidence');
+    f.snapshot.events.splice(2, 0, f.completed(13, 'take_snapshot', { pageId: 11 }, { snapshot: f.tree }));
+    assert.equal(target().observation.sequence, 13, 'an explicit new recorded snapshot can establish evidence again');
+  }
+  f.snapshot.events = [baseline, f.completed(12, 'navigate_page', { pageId: 12, type: 'reload' }, {}), f.request];
+  assert.equal(target().observation.sequence, 10, 'another page does not replace this page observation');
+  f.runtime.tools = f.runtime.tools.map(tool => ({ ...tool, pluginUri: 'plugin://external-chrome@user' }));
+  assert.equal(target(), undefined, 'same canonical names from an external MCP cannot borrow builtin Chrome evidence');
+});
+
 test('permission decision wire fields remain English while the reason preserves the user language', () => {
   assert.deepEqual(decodeApprovalReview('{"decision":"allow","reason":"按用户要求读取文件"}'),
     { decision: 'allow', reason: '按用户要求读取文件' });
