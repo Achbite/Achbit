@@ -433,7 +433,7 @@ const store = create<LocalAgentState>((set, get) => ({
         const cached = projectionCache.get(sessionId);
         const status = items?.find((item) => item.sessionId === sessionId);
         if (cached && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
-          && !['running', 'releasing'].includes(status.run?.status ?? '')) {
+          && !['running', 'waiting', 'releasing'].includes(status.run?.status ?? '')) {
           return;
         }
         const projection = await readProjection(sessionId, signal);
@@ -1037,6 +1037,7 @@ function shouldApplyProjection(
   if (!current || incoming.revision > current.revision) return true;
   if (incoming.revision < current.revision) return false;
   return !sameAssistantDraft(current.assistantDraft, incoming.assistantDraft)
+    || JSON.stringify(current.pendingAgentDecisions ?? []) !== JSON.stringify(incoming.pendingAgentDecisions ?? [])
     || current.activities.some((activity, index) => {
       const next = incoming.activities[index];
       return activity.activityId !== next?.activityId

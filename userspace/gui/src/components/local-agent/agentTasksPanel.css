@@ -7,14 +7,14 @@
 .agent-tasks__revision > div { display: flex; flex-wrap: wrap; gap: 10px; }
 .local-agent__tool-group-heading { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; }
 .agent-tasks__members { display:inline-flex; align-items:center; flex-wrap:wrap; gap:4px; min-width:0; }
-.local-agent .agent-tasks__member, .local-agent .agent-activity { display:inline-flex; align-items:center; gap:7px; border:0; box-shadow:none; border-radius:6px; padding:5px 7px; color:var(--dc-muted); background:transparent; font:inherit; cursor:pointer; text-align:left; }
+.agent-tasks__group-status { color:var(--dc-muted); padding-right:4px; }
+.local-agent .agent-tasks__member { display:inline-flex; align-items:center; gap:5px; border:0; box-shadow:none; border-radius:4px; padding:4px; color:var(--dc-muted); background:transparent; font:inherit; cursor:pointer; text-align:left; }
 .agent-tasks__member > span:first-of-type { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.agent-tasks__member svg, .agent-activity svg { width:17px; height:17px; flex:none; }
+.agent-tasks__member svg { width:16px; height:16px; flex:none; }
 .agent-tasks__member--running svg { color:var(--dc-accent); animation:agent-pulse 1.8s ease-in-out infinite; }
 .agent-tasks__member--completed svg { color:var(--dc-success); }
-.agent-tasks__member:hover, .agent-tasks__member[aria-pressed=true], .agent-activity:hover { background:var(--dc-surface-hover); color:var(--dc-foreground); }
-.agent-activity { display:flex; width:100%; padding:8px 0; }
-.agent-activity > span:nth-of-type(2) { color:var(--dc-muted); }
+.agent-tasks__member--updated svg { color:var(--dc-accent); }
+.agent-tasks__member:hover, .agent-tasks__member[aria-pressed=true] { background:var(--dc-surface-hover); color:var(--dc-foreground); }
 .agent-tasks__drawer { position:absolute; right:0; top:0; bottom:0; width:min(520px, 48%); z-index:25; background:var(--dc-background); border-left:1px solid var(--dc-border); box-shadow:var(--dc-shadow-panel); display:flex; flex-direction:column; min-height:0; }
 .agent-tasks__drawer > header { display:flex; align-items:center; gap:12px; padding:16px 20px; flex:none; }
 .agent-tasks__drawer > header > span { color:var(--dc-muted); font-size:var(--dc-font-caption); margin-left:auto; }

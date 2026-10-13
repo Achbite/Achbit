@@ -142,7 +142,10 @@ export function projectionItems(projection: SessionProjection | null): Projectio
   for (const item of displayItems) {
     const previous = grouped.at(-1);
     if (item.type === 'toolGroup' && previous?.type === 'toolGroup'
-      && item.values[0]?.runId === previous.values[0]?.runId) {
+      && item.values[0]?.runId === previous.values[0]?.runId
+      // An arriving member notification belongs at its event position, after preceding tools.
+      && !item.values.some(activity => activity.agent && activity.agent.phase !== 'started')
+      && !previous.values.some(activity => activity.agent && activity.agent.phase !== 'started')) {
       previous.values.push(...item.values);
     } else grouped.push(item);
   }

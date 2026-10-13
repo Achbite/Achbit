@@ -714,6 +714,15 @@
   font-size: var(--dc-font-caption);
 }
 
+.deepcode-gui-agent-summary, .deepcode-gui-agent-member { display:flex; align-items:center; gap:8px; width:100%; border:0; border-radius:4px; background:transparent; color:var(--dc-muted); padding:6px 0; font:inherit; font-size:var(--dc-font-caption); text-align:left; cursor:pointer; }
+.deepcode-gui-agent-summary svg, .deepcode-gui-agent-member svg { width:16px; height:16px; flex:none; }
+.deepcode-gui-agent-summary__active { display:flex; flex-wrap:wrap; gap:4px 8px; flex:1; }
+.deepcode-gui-agent-summary:hover, .deepcode-gui-agent-member:hover, .deepcode-gui-agent-member:focus-visible { color:var(--dc-foreground); background:var(--dc-surface-hover); }
+.deepcode-gui-agent-members { margin-top:6px; }
+.deepcode-gui-agent-member > span:first-of-type { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.deepcode-gui-agent-member--completed svg { color:var(--dc-success); }
+.deepcode-gui-agent-member--running svg, .deepcode-gui-agent-member--needsInput svg { color:var(--dc-accent); }
+
 .deepcode-gui-task-list {
   display: grid;
 }
@@ -795,7 +804,9 @@
 }
 
 .deepcode-gui-output-more {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 6px;
   padding: 6px 4px;
   border: 0;
@@ -807,6 +818,15 @@
   text-align: left;
   cursor: pointer;
 }
+
+.deepcode-gui-output-more svg, .deepcode-gui-output-back svg { width: 16px; height: 16px; flex: none; }
+.deepcode-gui-context-panel--outputs { overflow: hidden; }
+.deepcode-gui-output-page { display: flex; flex-direction: column; min-height: 0; padding: 16px; height: 100%; }
+.deepcode-gui-output-page > .deepcode-gui-task-list-card__title { align-items: center; flex: none; }
+.deepcode-gui-output-page > .deepcode-gui-task-list-card__title > span { flex: 1; }
+.deepcode-gui-output-page > .deepcode-gui-output-list { max-height: none; flex: 1; min-height: 0; }
+.deepcode-gui-output-back { display: grid; place-items: center; border: 0; border-radius: 6px; padding: 5px; margin-left: -5px; background: transparent; color: var(--dc-muted); cursor: pointer; }
+.deepcode-gui-output-back:hover { background: var(--dc-surface-hover); color: var(--dc-foreground); }
 
 .deepcode-gui-output-more:hover {
   background: var(--dc-surface-hover);

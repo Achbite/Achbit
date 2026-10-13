@@ -5,7 +5,7 @@ import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { ApprovalActivity } from './ApprovalActivity';
-import { AgentActivity, AgentGroupSummary } from './agentNavigation';
+import { AgentGroupSummary } from './agentNavigation';
 import { FileChanges } from './FileChanges';
 import { useConversationRowState } from './ConversationVirtualRow';
 
@@ -80,9 +80,10 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   onOpenWorkspaceResource,
 }) => {
   const [expanded, setExpanded] = useConversationRowState('tool-group:expanded', false);
+  const tools = activities.filter(activity => !activity.agent);
   return (
     <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><article className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <div className="local-agent__tool-group-heading"><UiRegion slot="activity.summary" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><button
+      <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
@@ -93,22 +94,21 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
       >
         <span className="local-agent__tool-group-icon">
           <DeepCodeShellIcon
-            name={activities.every((activity) => activity.kind === 'providerHosted')
+            name={tools.every((activity) => activity.kind === 'providerHosted')
               ? 'search'
               : 'tool'}
           />
         </span>
-        <strong>{toolGroupSummary(activities, language)}</strong>
+        <strong>{toolGroupSummary(tools, language)}</strong>
         <span className="local-agent__tool-group-chevron" aria-hidden="true">
           <DeepCodeShellIcon name="chevronRight" />
         </span>
-      </button></UiRegion>{!expanded && <AgentGroupSummary activities={activities} language={language} />}</div>
-      {expanded && (
-        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
-          {activities.map((activity) => (
+      </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
+      {expanded && tools.length > 0 && (
+        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
+          {tools.map((activity) => (
             activity.kind === 'approval' ? <ApprovalActivity key={activity.activityId} activity={activity} language={language}
               pending={pendingApproval?.callId === activity.callId} reviewing={reviewingApproval} onExpand={onExpand} />
-              : activity.agent ? <AgentActivity key={activity.activityId} activity={activity} language={language} />
               : <ToolActivityEntry
               activity={activity}
               key={activity.activityId}

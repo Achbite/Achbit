@@ -1655,6 +1655,12 @@ test('continuous conversation keeps every message anchor while mounting nearby c
     } }));
   assert.match(withChanges, /data-conversation-anchor="run:long:file-changes"[^>]*data-virtual-rendered="false"/);
   assert.equal(withChanges.includes('old-history.txt'), false, 'historical file reads mount through the same virtual surface');
+  const withMembers = renderToStaticMarkup(createElement(ConversationTranscript, { ...props,
+    displaySettledRunIds: new Set(['run:long']), projection: { ...props.projection,
+      agentTasks: [{ taskId: 'task:old', agentSessionId: 'session:child', displayName: 'History member', parentRunId: 'run:long', status: 'completed' }],
+    } }));
+  assert.equal((withMembers.match(/data-conversation-anchor=/g) ?? []).length, rows.length, 'members do not add a duplicate round footer');
+  assert.doesNotMatch(withMembers, /History member/);
   const starting = renderToStaticMarkup(createElement(ConversationTranscript, { ...props, conversationItems: [], projection: { ...props.projection, run: { runId: 'run:starting', status: 'running' } } }));
   assert.match(starting, /data-conversation-anchor="run:starting:provider-status"/, 'a starting run retains its live status slot');
 });
@@ -3596,6 +3602,26 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   assert.equal(container.children.length, 0);
 });
 
+test('output overview remains compact while the sidebar page shows all deliveries', async t => {
+  const { ConversationOutputs } = await loadGuiModule(t, '/src/deepcode-gui/layout/DeepCodeTaskPanel.tsx');
+  const React = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const artifacts = Array.from({ length: 5 }, (_, index) => ({ artifactId: `artifact:${index}`, sessionId: 'session:outputs',
+    label: `Report ${index + 1}`, contentType: 'text/plain', contentMode: 'live', workspaceId: 'workspace:outputs', logicalPath: `report-${index + 1}.md` }));
+  const before = structuredClone(artifacts);
+  const props = { artifacts, language: 'en-US', onExpandedChange() {}, onOpen: async () => {} };
+  const overview = renderToStaticMarkup(React.createElement(ConversationOutputs, { ...props, expanded: false }));
+  const page = renderToStaticMarkup(React.createElement(ConversationOutputs, { ...props, expanded: true }));
+  assert.equal((overview.match(/document-artifacts__item/g) ?? []).length, 3);
+  assert.match(overview, /View all|Show all/);
+  assert.doesNotMatch(overview, /Report 4/);
+  assert.equal((page.match(/document-artifacts__item/g) ?? []).length, 5);
+  assert.match(page, /Back to overview/);
+  assert.match(page, /deepcode-gui-output-page/);
+  assert.doesNotMatch(page, /deepcode-gui-output-more/);
+  assert.deepEqual(artifacts, before);
+});
+
 test('usage widget restores the summary position after temporary Reader docking', async (t) => {
   const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t);
   let input = { visibility: 'summary', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
@@ -3828,17 +3854,190 @@ test('child file changes render with the scoped Session even when no main Sessio
   assert.match(html, /conversation-change-file/);
 });
 
-test('collapsed child history defers closed leaves but retains potential decisions and descendants', async t => {
-  const { childNeedsBackgroundRead } = await loadGuiModule(t, '/src/components/local-agent/useAgentChildConversation.ts');
-  const leaf = { agentSessionId: 'session:leaf', displayName: 'Leaf', closed: true,
-    capabilities: { messaging: false, continuation: false, delegation: false } };
-  const settled = [{ status: 'completed' }];
-  assert.equal(childNeedsBackgroundRead(leaf, settled), false, 'a closed terminal leaf has no unseen active work');
-  assert.equal(childNeedsBackgroundRead(leaf, [{ status: 'running' }]), true, 'a running task may be waiting for a user decision');
-  assert.equal(childNeedsBackgroundRead({ ...leaf, closed: false }, settled), true, 'an open child can receive another continuation');
-  assert.equal(childNeedsBackgroundRead({ ...leaf, capabilities: { ...leaf.capabilities, delegation: true } }, settled), true,
-    'parent terminality alone does not prove every descendant has settled');
-  assert.equal(childNeedsBackgroundRead(undefined, settled), true, 'a task reference without its direct instance cannot prove closure');
+test('child decisions use lightweight references without mounting collapsed history', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const [{ AgentTasksPanel }, { AgentNavigationScope, AgentGroupSummary }] = await loadGuiModules(t, [
+    '/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/agentNavigation.tsx',
+  ]);
+  const projection = projectSession(emptySessionState('session:root'));
+  projection.pendingAgentDecisions = [{ agentSessionId: 'session:grandchild', displayName: 'Writer', runId: 'run:child',
+    plan: { planId: 'plan:child', revision: 2 }, interactionIds: [], approval: { approvalId: 'approval:child', callId: 'call:child' } }];
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  const task = { taskId: 'task:child', agentSessionId: 'session:grandchild', displayName: 'Writer', childRunId: 'run:child', status: 'running' };
+  const activity = { activityId: 'activity:child', kind: 'agent', label: 'Writer', status: 'active',
+    agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase: 'started' } };
+  const html = renderToStaticMarkup(createElement(AgentNavigationScope, { tasks: [task], pendingDecisions: projection.pendingAgentDecisions },
+    createElement(AgentGroupSummary, { activities: [activity], language: 'en-US' }), createElement(AgentTasksPanel, { projection, language: 'en-US' })));
+  assert.match(html, /Writer/);
+  assert.match(html, /Needs your input/);
+  assert.doesNotMatch(html, /Loading conversation|agent-tasks__drawer|<article/);
+  const malformed = structuredClone(projection);
+  malformed.pendingAgentDecisions[0].plan.revision = 0;
+  await assert.rejects(decodeGuiProjection(malformed), /conversation_projection_invalid/);
+  delete malformed.pendingAgentDecisions[0].plan;
+  delete malformed.pendingAgentDecisions[0].approval;
+  await assert.rejects(decodeGuiProjection(malformed), /conversation_projection_invalid/, 'an empty decision reference is not a pending question');
+});
+
+test('child entries stay beside ordinary tool folds with one shared status and no extra agent fold', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const [{ ToolActivityGroup }, { AgentNavigationScope }, { ConversationVirtualRow }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ToolActivityDetails.tsx', '/src/components/local-agent/agentNavigation.tsx',
+    '/src/components/local-agent/ConversationVirtualRow.tsx',
+  ]);
+  const tasks = [
+    { taskId: 'task:a1', agentSessionId: 'session:a', displayName: 'Frontend', parentRunId: 'run:one', status: 'completed' },
+    { taskId: 'task:a2', agentSessionId: 'session:a', displayName: 'Frontend', parentRunId: 'run:one', status: 'completed' },
+    { taskId: 'task:b', agentSessionId: 'session:b', displayName: 'Tests', parentRunId: 'run:two', status: 'completed' },
+  ];
+  const agent = { activityId: 'activity:agent', kind: 'agent', label: 'Frontend', status: 'completed',
+    agent: { taskId: 'task:a2', agentSessionId: 'session:a', phase: 'completed' } };
+  const read = { activityId: 'activity:read', kind: 'tool', label: 'fs.read', status: 'completed', tool: { operation: 'fs.read', resources: [] } };
+  const layout = { state: new Map() };
+  const renderGroup = activities => renderToStaticMarkup(createElement(AgentNavigationScope, { tasks },
+    createElement(ConversationVirtualRow, { rowKey: 'test', eager: true, virtualizer: { layout: () => layout },
+      children: () => createElement(ToolActivityGroup, { activities, language: 'zh-CN', onExpand() {}, onOpenWorkspaceResource() {} }) })));
+  const onlyAgent = renderGroup([agent]);
+  assert.match(onlyAgent, /Frontend/);
+  assert.doesNotMatch(onlyAgent, /已调用子代理|aria-expanded|local-agent__tool-group-summary/);
+  const mixed = renderGroup([read, agent]);
+  assert.match(mixed, /已读取文件/);
+  assert.match(mixed, /Frontend/);
+  layout.state.set('tool-group:expanded', true);
+  const expanded = renderGroup([read, agent]);
+  assert.equal(expanded.match(/>Frontend</g)?.length, 1, 'expanding tool calls does not repeat a child control');
+  const secondAgent = { ...agent, activityId: 'activity:second', label: 'Tests',
+    agent: { taskId: 'task:b', agentSessionId: 'session:b', phase: 'completed' } };
+  const twoMembers = renderGroup([agent, secondAgent]);
+  assert.equal(twoMembers.match(/>已完成</g)?.length, 1, 'members in the same state share one compact status label');
+  assert.equal(twoMembers.match(/aria-pressed="false"/g)?.length, 2, 'each member retains its own clickable history entry');
+});
+
+test('member updates stay at their arrival position and remain distinct from completed tasks', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const [{ projectionItems }, { AgentNavigationScope, AgentGroupSummary }] = await loadGuiModules(t, [
+    '/src/components/local-agent/conversationItems.ts', '/src/components/local-agent/agentNavigation.tsx',
+  ]);
+  const projection = projectSession(emptySessionState('session:parent'));
+  projection.revision = 3;
+  const update = { activityId: 'activity:update', kind: 'agent', label: 'Frontend', status: 'completed', runId: 'run:one', sequence: 2,
+    agent: { agentSessionId: 'session:frontend', phase: 'updated' } };
+  const finished = { ...update, activityId: 'activity:finished', sequence: 3, agent: { ...update.agent, phase: 'completed', taskId: 'task:frontend' } };
+  const read = { activityId: 'activity:read', kind: 'tool', label: 'fs.read', status: 'completed', runId: 'run:one', sequence: 1,
+    tool: { operation: 'fs.read', resources: [] } };
+  projection.activities = [read, update, finished];
+  projection.timeline = projection.activities.map(activity => ({ kind: 'toolGroup', timelineId: activity.activityId,
+    sequence: activity.sequence, activityIds: [activity.activityId],
+    ...(activity.kind === 'tool' ? { providerRequestId: 'provider-request:read' } : {}) }));
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  const before = structuredClone(projection);
+  const rows = projectionItems(projection);
+  assert.deepEqual(rows.map(row => row.values.map(value => value.activityId)), [['activity:read'], ['activity:update'], ['activity:finished']]);
+  const html = renderToStaticMarkup(createElement(AgentNavigationScope, { tasks: [{ taskId: 'task:frontend', status: 'completed' }] },
+    createElement(AgentGroupSummary, { activities: [update, finished], language: 'zh-CN' })));
+  assert.match(html, /已更新/); assert.match(html, /已完成/);
+  assert.equal((html.match(/aria-pressed="false"/g) ?? []).length, 2);
+  assert.deepEqual(projection, before);
+});
+
+test('a reused child keeps historical task outcomes while only the matching live task needs input', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentNavigationScope, AgentGroupSummary } = await loadGuiModule(t, '/src/components/local-agent/agentNavigation.tsx');
+  const tasks = [
+    { taskId: 'task:old', agentSessionId: 'session:reused', childRunId: 'run:old', status: 'completed' },
+    { taskId: 'task:current', agentSessionId: 'session:reused', childRunId: 'run:current', status: 'running' },
+  ];
+  const decision = { agentSessionId: 'session:reused', displayName: 'North', runId: 'run:current',
+    plan: { planId: 'plan:current', revision: 1 }, interactionIds: [] };
+  const render = task => renderToStaticMarkup(createElement(AgentNavigationScope, { tasks, pendingDecisions: [decision] },
+    createElement(AgentGroupSummary, { language: 'en-US', activities: [{ activityId: `activity:${task.taskId}`, kind: 'agent',
+      label: 'North', status: task.status === 'running' ? 'active' : task.status,
+      agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase: 'started' } }] })));
+  assert.match(render(tasks[0]), />Completed</);
+  assert.doesNotMatch(render(tasks[0]), /Needs your input/);
+  assert.match(render(tasks[1]), />Needs your input</);
+  const contiguous = renderToStaticMarkup(createElement(AgentNavigationScope, { tasks, pendingDecisions: [decision] },
+    createElement(AgentGroupSummary, { language: 'en-US', activities: tasks.map(task => ({
+      activityId: `activity:${task.taskId}`, kind: 'agent', label: 'North',
+      status: task.status === 'running' ? 'active' : task.status,
+      agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase: 'started' },
+    })) })));
+  assert.equal(contiguous.match(/aria-pressed="false"/g)?.length, 2, 'contiguous tasks on one Session keep separate history entries');
+  assert.match(contiguous, />Completed</);
+  assert.match(contiguous, />Needs your input</);
+  tasks[1].childRunId = 'run:other';
+  assert.doesNotMatch(render(tasks[1]), /Needs your input/, 'Session identity alone does not match a current decision');
+});
+
+test('the side overview counts latest members without history reads or a panel for an empty Session', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentOverview, agentOverviewMembers } = await loadGuiModule(t, '/src/components/local-agent/AgentOverview.tsx');
+  const projection = projectSession(emptySessionState('session:overview'));
+  assert.equal(renderToStaticMarkup(createElement(AgentOverview, { projection, language: 'en-US' })), '');
+  projection.agentTasks = [
+    { taskId: 'task:old', agentSessionId: 'session:a', displayName: 'North', status: 'completed' },
+    { taskId: 'task:b', agentSessionId: 'session:b', displayName: 'South', status: 'completed' },
+    { taskId: 'task:latest', agentSessionId: 'session:a', displayName: 'North', childRunId: 'run:current', status: 'running' },
+  ];
+  projection.pendingAgentDecisions = [{ agentSessionId: 'session:a', displayName: 'North', runId: 'run:current',
+    plan: { planId: 'plan:current', revision: 1 }, interactionIds: [] }];
+  const before = structuredClone(projection);
+  assert.deepEqual(agentOverviewMembers(projection).map(member => [member.name, member.status]), [['North', 'needsInput'], ['South', 'completed']]);
+  const html = renderToStaticMarkup(createElement(AgentOverview, { projection, language: 'en-US' }));
+  assert.match(html, /1 Needs your input/);
+  assert.match(html, /1 Completed/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /<article|Loading conversation/);
+  assert.deepEqual(projection, before);
+});
+
+test('child decision positioning follows the current decision identity, not every projection update', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const { agentDecisionKey } = await loadGuiModule(t, '/src/components/local-agent/AgentTasksPanel.tsx');
+  const projection = projectSession(emptySessionState('session:decision'));
+  assert.equal(agentDecisionKey(projection), null);
+  projection.pendingPlan = { planId: 'plan:review', revision: 1 };
+  const key = agentDecisionKey(projection);
+  assert.ok(key);
+  projection.revision += 10;
+  assert.equal(agentDecisionKey(projection), key, 'ordinary polling must not scroll the reader again');
+  projection.pendingPlan.revision = 2;
+  assert.notEqual(agentDecisionKey(projection), key);
+  projection.pendingPlan = null;
+  projection.pendingApproval = { approvalId: 'approval:review', preview: { approvalReviewer: 'agent' } };
+  projection.run = { status: 'running' };
+  assert.equal(agentDecisionKey(projection), null, 'automatic review does not request a human reply');
+  projection.run.status = 'waiting';
+  assert.ok(agentDecisionKey(projection));
+});
+
+test('a parent accepts changed child decision references at the same journal revision', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const base = projectSession(emptySessionState('session:parent-pending'));
+  const decision = { agentSessionId: 'session:child', displayName: 'Writer', runId: 'run:child',
+    plan: { planId: 'plan:child', revision: 1 }, interactionIds: [] };
+  let incoming = { ...base, pendingAgentDecisions: [decision] };
+  installGuiFetch(t, (url) => {
+    if (url.pathname === '/api/conversation/statuses') return Response.json({ ok: true, data: [] });
+    assert.equal(url.pathname, `/api/conversation/sessions/${encodeURIComponent(base.sessionId)}/projection`, 'no child history is needed to show a pending entry');
+    return Response.json({ ok: true, data: incoming });
+  });
+  const store = await loadGuiModelStore(t);
+  store.setState({ sessionId: base.sessionId, projection: base });
+  await store.getState().refresh();
+  assert.deepEqual(store.getState().projection.pendingAgentDecisions, [decision]);
+  incoming = base;
+  await store.getState().refresh();
+  assert.equal(store.getState().projection.pendingAgentDecisions, undefined, 'a replied decision disappears without fabricating a parent event');
+  assert.equal(store.getState().projection.revision, base.revision);
 });
 
 test('child conversation details mount their canonical messages only when expanded', async t => {

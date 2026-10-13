@@ -35,6 +35,10 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
       <SubagentModelFields profiles={profiles} connections={connections} mainProfileId={mainProfileId} language={language}
         profileId={String(settings['agent.subagents.profileId'] ?? '')} reasoningEffort={String(settings['agent.subagents.reasoningEffort'] ?? '')}
         onChange={patches => void save(patches)} />
+      <label className="deepcode-subagent-config__toggle"><span title={t(language, 'settings.subagents.fullConfigurationHelp')}>{t(language, 'settings.subagents.allowFullConfiguration')}</span>
+        <ToggleSwitch checked={settings['agent.subagents.allowFullConfiguration'] === true}
+          onChange={event => void save({ 'agent.subagents.allowFullConfiguration': event.target.checked })} />
+      </label>
     </fieldset>
     {error && <p className="deepcode-session-model__error" role="alert">{error}</p>}
   </div>;

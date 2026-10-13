@@ -11,7 +11,7 @@ import { message, useModelLanguage } from './shared';
 const numericSettings = ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'] as const;
 
 function editableSettings(settings: UserSettings): UserSettings {
-  return Object.fromEntries(['enabled', 'profileId', 'reasoningEffort', ...numericSettings, 'allowMemberAnalysis']
+  return Object.fromEntries(['enabled', 'profileId', 'reasoningEffort', ...numericSettings, 'allowMemberAnalysis', 'allowFullConfiguration']
     .map(name => [`agent.subagents.${name}`, settings[`agent.subagents.${name}`]]));
 }
 
@@ -84,6 +84,10 @@ export default function SubagentSettings({ profiles, connections }: {
           <label className="model-toggle-row"><span>{t(language, 'settings.subagents.allowMemberAnalysis')}</span>
             <ToggleSwitch checked={draft['agent.subagents.allowMemberAnalysis'] === true}
               onChange={event => set('allowMemberAnalysis', event.target.checked)} /></label>
+          <label className="model-toggle-row"><span title={t(language, 'settings.subagents.fullConfigurationHelp')}>{t(language, 'settings.subagents.allowFullConfiguration')}</span>
+            <ToggleSwitch checked={draft['agent.subagents.allowFullConfiguration'] === true}
+              onChange={event => set('allowFullConfiguration', event.target.checked)} /></label>
+          <p className="model-wide">{t(language, 'settings.subagents.fullConfigurationHelp')}</p>
           {!configured && <p className="model-wide">{t(language, 'settings.subagents.profileRequired')}</p>}
           {unsupportedEffort && <p className="settings-error model-wide" role="alert">{t(language, 'settings.subagents.effortUnavailable')}</p>}
           {error && <div className="settings-error model-wide" role="alert">{error}</div>}
