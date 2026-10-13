@@ -1243,6 +1243,20 @@ pub(crate) async fn local_agent_agent_lifecycle_read(
     }
 }
 
+pub(crate) async fn local_agent_provider_usage_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.journal.read_provider_usage(&session_id) {
+        Ok(read) => ApiResponse::ok(read),
+        Err(error) => store_error(error),
+    }
+}
+
 pub(crate) async fn local_agent_command_read(
     State(state): State<AppState>,
     headers: HeaderMap,

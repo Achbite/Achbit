@@ -988,6 +988,8 @@ mod tests {
             "contextCompositions": [], "tokenUsageHistory": [], "activities": [], "artifacts": [], "deliverables": [],
             "tokenUsage": {"providerCallCount":0,"reportedCallCount":0,"inputTokens":0,"outputTokens":0,
                 "cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
+            "totalTokenUsage": {"providerCallCount":0,"reportedCallCount":0,"inputTokens":0,"outputTokens":0,
+                "cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
             "run": {"runId":"run:test","profileId":"profile:test","workspaceBindings":[],"status":"running"}
         })).unwrap()
     }

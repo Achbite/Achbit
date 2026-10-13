@@ -75,6 +75,17 @@ export class InMemoryCommandJournal {
       events: events.flatMap(event => { const value = projectAgentLifecycleEvent(event); return value ? [value] : []; }) };
   }
 
+  async readProviderUsage(sessionId) {
+    const events = this.#events.get(sessionId);
+    if (!events) throw new Error('session_not_found');
+    return { sessionId, revision: events.at(-1)?.sequence ?? 0, events: events.flatMap(event => {
+      if (!['provider.turn.settled', 'context.updated'].includes(event.type)) return [];
+      return [{ sessionId, sequence: event.sequence, runId: event.runId, type: event.type,
+        payload: event.type === 'context.updated' ? structuredClone(event.payload)
+          : { providerRequestId: event.payload.providerRequestId } }];
+    }) };
+  }
+
   async commitCommand(
     command,
     events,

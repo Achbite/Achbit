@@ -1313,6 +1313,8 @@ export function projectSession(
       || index === state.contextCompositions.length - 1
     )).map(cloneContextComposition),
     tokenUsage: { ...state.tokenUsage },
+    // SessionService adds descendants at the public snapshot boundary.
+    totalTokenUsage: { ...state.tokenUsage },
     tokenUsageHistory: Object.values(state.tokenUsageHistory)
       .sort((left, right) => right.sequence - left.sequence)
       .map((usage) => ({ ...usage })),
@@ -2348,6 +2350,45 @@ function withProviderUsage<T extends SessionProjection['tokenUsage']>(
       reported.cacheMissInputTokens ?? 0,
     ),
   });
+}
+
+export function combineTokenUsage(
+  own: SessionProjection['tokenUsage'],
+  descendant: SessionProjection['tokenUsage'],
+): SessionProjection['tokenUsage'] {
+  return recomputeCacheAggregate({
+    ...own,
+    providerCallCount: addTokenCount(own.providerCallCount, descendant.providerCallCount),
+    reportedCallCount: addTokenCount(own.reportedCallCount, descendant.reportedCallCount),
+    inputTokens: addTokenCount(own.inputTokens, descendant.inputTokens),
+    outputTokens: addTokenCount(own.outputTokens, descendant.outputTokens),
+    cacheReadInputTokens: addTokenCount(own.cacheReadInputTokens, descendant.cacheReadInputTokens),
+    cacheMissInputTokens: addTokenCount(own.cacheMissInputTokens, descendant.cacheMissInputTokens),
+  });
+}
+
+/** Replay compact receipts without loading child prompts, outputs or execution state. */
+export function providerUsageFromEvents(read: import('@deepcode/protocol').ProviderUsageRead): SessionProjection['tokenUsage'] {
+  let usage = emptySessionState(read.sessionId).tokenUsage;
+  const completed = new Set<string>(), reported = new Set<string>();
+  let previous = 0;
+  for (const event of read.events) {
+    if (event.sessionId !== read.sessionId) throw new Error('session_event_identity_mismatch');
+    if (event.sequence <= previous || event.sequence > read.revision) throw new Error('provider_usage_sequence_invalid');
+    previous = event.sequence;
+    const requestId = event.payload.providerRequestId;
+    if (event.type === 'provider.turn.settled') {
+      if (completed.has(requestId)) throw new Error('provider_turn_completion_duplicate');
+      completed.add(requestId);
+      usage = withProviderCompletion(usage);
+    } else {
+      if (!completed.has(requestId)) throw new Error('provider_turn_missing');
+      if (reported.has(requestId)) throw new Error('provider_usage_duplicate');
+      reported.add(requestId);
+      usage = withProviderUsage(usage, event.payload);
+    }
+  }
+  return usage;
 }
 
 function recomputeCacheAggregate<T extends SessionProjection['tokenUsage']>(usage: T): T {

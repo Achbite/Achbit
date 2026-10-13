@@ -232,6 +232,7 @@ pub struct SessionProjection {
     pub context_usage: Option<ContextUsageProjection>,
     pub context_compositions: Vec<ContextCompositionProjection>,
     pub token_usage: TokenUsageProjection,
+    pub total_token_usage: TokenUsageProjection,
     pub token_usage_history: Vec<TokenUsageRoundProjection>,
     pub run: Option<RunProjection>,
     pub activities: Vec<ActivityProjection>,
@@ -804,17 +805,22 @@ impl SessionProjection {
                 "shared Session projection context usage has no exact request receipt".to_string(),
             );
         }
-        if !valid_token_usage_fields(
-            self.token_usage.provider_call_count,
-            self.token_usage.reported_call_count,
-            self.token_usage.input_tokens,
-            self.token_usage.output_tokens,
-            self.token_usage.cache_read_input_tokens,
-            self.token_usage.cache_miss_input_tokens,
-            self.token_usage.cache_available,
-            self.token_usage.cache_complete,
-            self.token_usage.cache_hit_ratio,
-        ) {
+        if [&self.token_usage, &self.total_token_usage]
+            .iter()
+            .any(|usage| {
+                !valid_token_usage_fields(
+                    usage.provider_call_count,
+                    usage.reported_call_count,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_input_tokens,
+                    usage.cache_miss_input_tokens,
+                    usage.cache_available,
+                    usage.cache_complete,
+                    usage.cache_hit_ratio,
+                )
+            })
+        {
             return Err("shared Session projection has invalid cumulative token usage".to_string());
         }
         let mut usage_run_ids = HashSet::new();
@@ -3087,6 +3093,7 @@ mod tests {
             "deliverables": [],
             "terminalError": null
         });
+        value["totalTokenUsage"] = value["tokenUsage"].clone();
         value["interactions"] = json!([]);
         value["queuedInputs"] = json!([]);
         value["timeline"] = json!([
@@ -3544,6 +3551,23 @@ mod tests {
         let projection: SessionProjection =
             serde_json::from_value(value).expect("projection decodes");
         assert!(projection.validate().is_err());
+    }
+
+    #[test]
+    fn validates_descendant_total_usage_independently_of_own_usage() {
+        let mut value = projection_value();
+        value["totalTokenUsage"]["inputTokens"] = json!(180);
+        value["totalTokenUsage"]["cacheReadInputTokens"] = json!(100);
+        value["totalTokenUsage"]["cacheMissInputTokens"] = json!(80);
+        value["totalTokenUsage"]["cacheHitRatio"] = json!(100.0 / 180.0);
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(projection.validate(), Ok(()));
+        assert_eq!(projection.token_usage.input_tokens, 80);
+        value["totalTokenUsage"]["cacheHitRatio"] = json!(0.625);
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
     }
 
     #[test]

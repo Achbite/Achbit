@@ -337,6 +337,53 @@ impl LocalAgentJournal {
         Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
     }
 
+    /// Read compact Provider receipts only; Session owns aggregation and cache coverage.
+    pub(crate) fn read_provider_usage(
+        &self,
+        session_id: &str,
+    ) -> Result<Value, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let connection = self.lock()?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT (SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id=?1)
+             FROM sessions WHERE session_id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
+        let mut statement = connection.prepare(
+            "SELECT sequence, event_type, run_id,
+             CASE WHEN event_type='provider.turn.settled'
+               THEN json_object('providerRequestId', json_extract(payload_json, '$.providerRequestId'))
+               ELSE payload_json END
+             FROM session_events WHERE session_id=?1 AND sequence<=?2
+               AND event_type IN ('provider.turn.settled','context.updated') ORDER BY sequence ASC",
+        ).map_err(sql_error("session_usage_read_prepare_failed"))?;
+        let rows = statement
+            .query_map(params![session_id, revision], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql_error("session_usage_read_failed"))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (sequence, event_type, run_id, payload) =
+                row.map_err(sql_error("session_usage_read_failed"))?;
+            events.push(
+                json!({"sessionId":session_id,"sequence":sequence,"type":event_type,
+                "runId":run_id,"payload":decode_json(&payload, "session_event_corrupt")?}),
+            );
+        }
+        Ok(json!({"sessionId":session_id,"revision":revision,"events":events}))
+    }
+
     /// Project journal fields only. Agent relationship semantics belong to Session.
     pub(crate) fn read_agent_lifecycle(
         &self,
@@ -5597,6 +5644,58 @@ mod tests {
         assert_eq!(
             journal
                 .read_agent_lifecycle("session:missing")
+                .unwrap_err()
+                .code,
+            "session_not_found"
+        );
+    }
+
+    #[test]
+    fn provider_usage_read_keeps_receipts_without_provider_or_conversation_bodies() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let session_id = "session:provider-usage";
+        journal
+            .create_session(session_id, "Usage", &json!([]), None, None)
+            .unwrap();
+        journal.append(&json!({"type":"message.committed","sessionId":session_id,
+            "payload":{"messageId":"message:input","role":"user","content":"Large conversation body"}})).unwrap();
+        journal.append(&json!({"type":"run.started","sessionId":session_id,"runId":"run:usage",
+            "payload":{"inputMessageId":"message:input","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
+        journal.append(&json!({"type":"provider.turn.settled","sessionId":session_id,"runId":"run:usage",
+            "payload":{"providerRequestId":"provider-request:usage","purpose":"agent",
+                "providerRuntimeRef":"provider-runtime:test","outcome":"completed","orderedCallIds":[],
+                "reasoningContent":"Large reasoning body","orderedOutputBlocks":[{"outputIndex":0,"kind":"reasoning",
+                    "item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Large output block"}]}},
+                    {"outputIndex":1,"kind":"finalMessage","messageId":"message:final",
+                    "item":{"type":"message","content":[{"type":"output_text","text":"Large final body"}]}}]}})).unwrap();
+        let usage = json!({"providerRequestId":"provider-request:usage","providerRuntimeRef":"provider-runtime:test",
+            "inputTokens":100,"outputTokens":20,"contextWindowTokens":128000});
+        journal.append(&json!({"type":"context.updated","sessionId":session_id,"runId":"run:usage","payload":usage})).unwrap();
+        let read = journal.read_provider_usage(session_id).unwrap();
+        assert_eq!(read["revision"], 5);
+        assert_eq!(read["events"].as_array().unwrap().len(), 2);
+        assert_eq!(read["events"][0]["sequence"], 4);
+        assert_eq!(
+            read["events"][0]["payload"],
+            json!({"providerRequestId":"provider-request:usage"})
+        );
+        assert_eq!(read["events"][1]["payload"], usage);
+        for excluded in [
+            "Large",
+            "orderedOutputBlocks",
+            "reasoningContent",
+            "runtimeSnapshot",
+            "occurredAt",
+            "eventId",
+        ] {
+            assert!(
+                !read.to_string().contains(excluded),
+                "unexpected body field: {excluded}"
+            );
+        }
+        assert_eq!(
+            journal
+                .read_provider_usage("session:missing")
                 .unwrap_err()
                 .code,
             "session_not_found"

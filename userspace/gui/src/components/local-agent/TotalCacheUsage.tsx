@@ -2,7 +2,7 @@ import type { SessionProjection } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { inputCacheMetric } from '../../utils/providerUsage';
 
-/** Display the current session's canonical aggregate below the composer. */
+/** Display the Session-owned aggregate for this conversation and its descendant Agents. */
 export default function TotalCacheUsage({ projection, language }: {
   projection: SessionProjection | null;
   language: UiLanguage;
@@ -18,7 +18,7 @@ function cacheHitSummary(
   projection: SessionProjection | null,
   language: UiLanguage,
 ): { value: string; title: string } {
-  const usage = projection?.tokenUsage;
+  const usage = projection?.totalTokenUsage;
   const cache = inputCacheMetric(usage);
   const running = projection?.run?.status === 'running';
   if (cache) {

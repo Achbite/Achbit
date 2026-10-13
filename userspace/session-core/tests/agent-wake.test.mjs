@@ -929,3 +929,85 @@ test('delegation changes during execution preserve the provider call and result 
   await fixture.service.submit(messageCommand(ownerId, 'command:in-flight-toggle', 'Read example.txt.'));
   await completed(fixture.service, ownerId);
 });
+
+test('total usage includes nested and closed Agents once and updates without a parent journal event', async t => {
+  const ownerId = 'session:descendant-usage';
+  let releaseChild, releaseChildFinal, releaseRoot;
+  const childGate = new Promise(resolve => { releaseChild = resolve; });
+  const childFinalGate = new Promise(resolve => { releaseChildFinal = resolve; });
+  const rootGate = new Promise(resolve => { releaseRoot = resolve; });
+  t.after(() => { releaseChild(); releaseChildFinal(); releaseRoot(); });
+  let childId, grandchildId, rootWaiting = false, childWaiting = false;
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal }) {
+    let usage;
+    if (sessionId === ownerId) {
+      usage = { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 50, cacheMissInputTokens: 50 };
+      if (turn === 1) yield call(request, 'usage:spawn', 'agent', { action: 'spawn', preset: 'collaboration',
+        name: 'Usage child', task: 'Delegate one detail, then report.', delivery: 'async' });
+      else if (turn === 2) { rootWaiting = true; await rootGate; yield answer(request, 'Initial work complete.'); }
+      else if (turn === 3) yield call(request, 'usage:continue', 'agent', { action: 'send', agentId: childId, text: 'One follow-up.' });
+      else if (turn === 4) yield call(request, 'usage:wait', 'agent', { action: 'wait' });
+      else if (turn === 5) yield call(request, 'usage:close', 'agent', { action: 'close', agentId: childId });
+      else yield answer(request, 'Archived work complete.');
+    } else {
+      const creation = (await readEvents(journal, sessionId))[0];
+      if (creation.payload.agentContext.parentSessionId === ownerId) {
+        childId = sessionId;
+        if (turn === 1) {
+          await childGate;
+          yield call(request, 'usage:nested', 'agent', { action: 'spawn', name: 'Usage grandchild',
+            task: 'Return the detail.', delivery: 'wait' });
+          usage = { inputTokens: 300, outputTokens: 30, cacheReadInputTokens: 180, cacheMissInputTokens: 120 };
+        } else if (turn === 2) {
+          childWaiting = true; await childFinalGate;
+          yield answer(request, 'Child work complete.');
+          usage = { inputTokens: 120, outputTokens: 12 }; // Provider omitted cache detail.
+        } else yield answer(request, 'Follow-up complete.'); // Provider omitted all usage.
+      } else {
+        grandchildId = sessionId;
+        yield answer(request, 'Detail complete.');
+        usage = { inputTokens: 200, outputTokens: 20, cacheReadInputTokens: 100, cacheMissInputTokens: 100 };
+      }
+    }
+    yield providerEvent(request.requestId, 'completed', usage ? { usage: { ...usage, contextWindowTokens: 100_000 } } : {});
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:usage:first', 'Delegate the details.'));
+  await waitUntil(() => rootWaiting && childId, 'parent Provider is held while its child runs');
+  const before = await fixture.service.snapshot(ownerId);
+  assert.equal(before.totalTokenUsage.inputTokens, 100);
+  releaseChild();
+  await waitUntil(() => childWaiting, 'nested result has arrived before child final response');
+  const during = await fixture.service.snapshot(ownerId);
+  assert.equal(during.revision, before.revision, 'child usage does not manufacture a parent journal event');
+  assert.equal(during.tokenUsage.inputTokens, 100);
+  assert.equal(during.totalTokenUsage.inputTokens, 600);
+  assert.equal(during.totalTokenUsage.cacheReadInputTokens, 330);
+  assert.equal(during.totalTokenUsage.cacheHitRatio, 330 / 600);
+  assert.deepEqual(during.contextUsage, before.contextUsage);
+  const childDuring = await fixture.service.snapshot(childId);
+  assert.equal(childDuring.tokenUsage.inputTokens, 300);
+  assert.equal(childDuring.totalTokenUsage.inputTokens, 500);
+  releaseChildFinal();
+  await completed(fixture.service, childId);
+  releaseRoot();
+  await completed(fixture.service, ownerId);
+  await fixture.service.submit(messageCommand(ownerId, 'command:usage:again', 'Continue and archive the same member.'));
+  const result = await completed(fixture.service, ownerId);
+  assert.equal(result.agentChildren.length, 1);
+  assert.equal(result.agentTasks.length, 2);
+  assert.equal(result.agentChildren[0].closed, true);
+  const child = await fixture.service.snapshot(childId), grandchild = await fixture.service.snapshot(grandchildId);
+  assert.equal(child.tokenUsage.providerCallCount, 3);
+  assert.equal(child.tokenUsage.reportedCallCount, 1);
+  assert.equal(result.totalTokenUsage.inputTokens, result.tokenUsage.inputTokens + 420 + 200);
+  assert.equal(result.totalTokenUsage.cacheReadInputTokens, result.tokenUsage.cacheReadInputTokens + 180 + 100);
+  assert.equal(result.totalTokenUsage.providerCallCount, result.tokenUsage.providerCallCount + 3 + 1);
+  assert.equal(result.totalTokenUsage.reportedCallCount, result.tokenUsage.reportedCallCount + 1 + 1);
+  assert.equal(result.totalTokenUsage.cacheComplete, false);
+  assert.equal(grandchild.totalTokenUsage.inputTokens, 200);
+  await fixture.service.dispose();
+  const reopened = new SessionService(fixture.journal, { async create() { throw new Error('history_must_not_open_actor'); } });
+  t.after(() => reopened.dispose());
+  assert.deepEqual((await reopened.snapshot(ownerId)).totalTokenUsage, result.totalTokenUsage,
+    'closed descendants and their unknown usage remain included when history is read without Actors');
+});

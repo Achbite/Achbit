@@ -366,6 +366,7 @@ function decodeProjection(value: unknown): SessionProjection {
       'contextUsage',
       'contextCompositions',
       'tokenUsage',
+      'totalTokenUsage',
       'tokenUsageHistory',
       'run',
       'activities',
@@ -408,6 +409,7 @@ function decodeProjection(value: unknown): SessionProjection {
     || !isNullable(value.contextUsage, isContextUsage)
     || !isArrayOf(value.contextCompositions, isContextComposition)
     || !isTokenUsage(value.tokenUsage)
+    || !isTokenUsage(value.totalTokenUsage)
     || !isTokenUsageHistory(value.tokenUsageHistory)
     || !isNullable(value.run, isRun)
     || !isArrayOf(value.activities, isActivity)

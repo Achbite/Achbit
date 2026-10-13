@@ -19,7 +19,7 @@ import type {
 import { SessionActor } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { projectSession, recoverSession } from './reducer.js';
+import { combineTokenUsage, projectSession, providerUsageFromEvents, recoverSession } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
@@ -253,16 +253,47 @@ export class SessionService implements ConversationPort {
   }
 
   async snapshot(sessionId: string): Promise<SessionProjection> {
+    const projection = await this.ownSnapshot(sessionId);
+    const ownerSessionId = projection.agentContext?.ownerSessionId ?? sessionId;
+    const seen = new Set<string>([sessionId]);
+    let totalTokenUsage = projection.tokenUsage;
+    const visit = async (parent: { sessionId: string; agentChildren?: AgentManagementSnapshot['agentChildren'];
+      agentTasks?: AgentManagementSnapshot['agentTasks'] }): Promise<void> => {
+      for (const member of parent.agentChildren ?? []) {
+        if (seen.has(member.agentSessionId)) continue;
+        seen.add(member.agentSessionId);
+        let child: AgentManagementSnapshot;
+        try { child = await this.agentManagement(member.agentSessionId); }
+        catch (error) {
+          // A task reservation precedes child creation; failed creation can leave no Session.
+          const started = parent.agentTasks?.some(task => task.agentSessionId === member.agentSessionId && task.childRunId);
+          if (!started && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') continue;
+          throw error;
+        }
+        if (child.agentContext?.parentSessionId !== parent.sessionId
+          || child.agentContext.ownerSessionId !== ownerSessionId) throw new Error('agent_lineage_mismatch');
+        // Each own aggregate already accounts for each Provider request exactly once.
+        // Follow creation identities, never tasks or recursively aggregated snapshots.
+        const read = await this.journal.readProviderUsage(child.sessionId);
+        if (read.sessionId !== child.sessionId) throw new Error('session_event_identity_mismatch');
+        totalTokenUsage = combineTokenUsage(totalTokenUsage, providerUsageFromEvents(read));
+        await visit(child);
+      }
+    };
+    await visit(projection);
+    const pendingAgentDecisions = await this.agentDecisionRoutes(projection);
+    return { ...projection, totalTokenUsage, ...(pendingAgentDecisions.length ? { pendingAgentDecisions } : {}) };
+  }
+
+  private async ownSnapshot(sessionId: string): Promise<SessionProjection> {
     if (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
     const live = this.#actors.get(sessionId);
-    const projection = live ? await this.withActor(sessionId, actor => actor.snapshot())
+    return live ? await this.withActor(sessionId, actor => actor.snapshot())
       : await (async () => {
         const events = await readSessionEvents(this.journal, sessionId);
         if (!events.length) throw new Error('session_not_found');
         return projectSession(recoverSession(sessionId, events));
       })();
-    const pendingAgentDecisions = await this.agentDecisionRoutes(projection);
-    return pendingAgentDecisions.length ? { ...projection, pendingAgentDecisions } : projection;
   }
 
   private async agentDecisionRoutes(parent: Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks'>): Promise<PendingAgentDecision[]> {

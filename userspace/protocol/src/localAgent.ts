@@ -1627,7 +1627,10 @@ export interface SessionProjection {
   contextUsage: ContextUsageProjection | null;
   /** Composition for the displayed Agent usage plus the latest composition; history is read on demand. */
   contextCompositions: ContextCompositionProjection[];
+  /** Usage incurred by this Session alone; run history and current context keep this scope. */
   tokenUsage: TokenUsageProjection;
+  /** Usage incurred by this Session and every descendant Agent Session, including closed history. */
+  totalTokenUsage: TokenUsageProjection;
   tokenUsageHistory: TokenUsageRoundProjection[];
   run: RunProjection | null;
   activities: ActivityProjection[];
@@ -2220,12 +2223,24 @@ export interface AgentLifecycleRead {
   events: AgentLifecycleEvent[];
 }
 
+/** Compact persisted receipts; aggregation remains owned by Session. */
+export type ProviderUsageEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'provider.turn.settled' }>, 'providerRequestId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'context.updated' }>, keyof Extract<SessionEvent, { type: 'context.updated' }>['payload']>;
+
+export interface ProviderUsageRead {
+  sessionId: string;
+  revision: number;
+  events: ProviderUsageEvent[];
+}
+
 export interface JournalPort {
   append(event: NewSessionEvent): Promise<SessionEvent>;
   appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]>;
   read(sessionId: string, afterSequence?: number): AsyncIterable<SessionEvent>;
   readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
   readAgentLifecycle(sessionId: string): Promise<AgentLifecycleRead>;
+  readProviderUsage(sessionId: string): Promise<ProviderUsageRead>;
 }
 
 export interface StoredCommand {
