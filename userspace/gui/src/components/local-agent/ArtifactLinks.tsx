@@ -6,6 +6,7 @@ import { workspaceResourceLink } from './documentResources';
 import { requestReader } from './readerState';
 import { useConversationHost } from './ConversationHost';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import { ImageReview } from './ImageReview';
 
 export function ArtifactLinks({ artifacts, onOpen }: { artifacts: readonly ArtifactProjection[]; onOpen(workspaceId: string, logicalPath: string): Promise<void> }) {
   const host = useConversationHost();
@@ -20,9 +21,11 @@ export function ArtifactLinks({ artifacts, onOpen }: { artifacts: readonly Artif
       const imagePreview = artifact.contentType.startsWith('image/') && fixed;
       const label = artifact.label.split(/[\\/]/u).at(-1) ?? artifact.label;
       const location = artifact.logicalPath ?? artifact.uri ?? artifact.label;
-      const content = <><span className="document-artifacts__thumbnail">{imagePreview ? <ArtifactImage artifact={artifact} /> : <DeepCodeShellIcon name={artifact.contentType === 'text/html' ? 'browser' : 'artifact'} />}</span><strong>{label}</strong></>;
+      const title = `${location}\n${formatArtifactTime('updatedAt' in artifact ? String(artifact.updatedAt) : artifact.createdAt)}`;
+      if (imagePreview) return <ArtifactImageLink key={artifact.artifactId} artifact={artifact} label={label} title={title} />;
+      const content = <><span className="document-artifacts__thumbnail"><DeepCodeShellIcon name={artifact.contentType === 'text/html' ? 'browser' : 'artifact'} /></span><strong>{label}</strong></>;
       return fixed || resource || external ? <button type="button" className="deepcode-gui-output-item document-artifacts__item" key={artifact.artifactId}
-        aria-label={label} title={`${location}\n${formatArtifactTime('updatedAt' in artifact ? String(artifact.updatedAt) : artifact.createdAt)}`}
+        aria-label={label} title={title}
         onClick={() => { setError(null); if(fixed) {requestReader(artifact.sessionId,{kind:'artifact',artifact});return;} void (resource ? onOpen(resource.workspaceId, resource.logicalPath) : host.openExternalLink(external!))
           .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }}>{content}</button>
         : <div className="deepcode-gui-output-item document-artifacts__item" title={location} key={artifact.artifactId}>{content}</div>;
@@ -31,7 +34,7 @@ export function ArtifactLinks({ artifacts, onOpen }: { artifacts: readonly Artif
   </div>;
 }
 
-function ArtifactImage({artifact}:{artifact:ArtifactProjection}) {
+function ArtifactImageLink({ artifact, label, title }: { artifact: ArtifactProjection; label: string; title: string }) {
   const language = useUiLanguage();
   const host=useConversationHost();
   const [url,setUrl]=React.useState('');
@@ -44,9 +47,14 @@ function ArtifactImage({artifact}:{artifact:ArtifactProjection}) {
     }).catch((reason:unknown)=>{if(!controller.signal.aborted)setError(String(reason));});
     return ()=>{controller.abort();release?.();};
   },[artifact.sessionId,artifact.artifactId,host]);
-  return error ? <span role="alert" title={error}>!</span>
-    : url ? <img className="document-artifact-image" src={url} alt=""/>
-    : <span aria-label={t(language, 'reader.imageLoading')}><DeepCodeShellIcon name="artifact" /></span>;
+  const failed = () => setError(t(language, 'content.image.decodeError'));
+  return <ImageReview source={error ? undefined : url || undefined} alt={label}
+    className="deepcode-gui-output-item document-artifacts__item" title={error ?? title} onError={failed}>
+    <span className="document-artifacts__thumbnail">{error ? <span role="alert" title={error}>!</span>
+      : url ? <img className="document-artifact-image" src={url} alt="" onError={failed} />
+      : <span aria-label={t(language, 'reader.imageLoading')}><DeepCodeShellIcon name="artifact" /></span>}</span>
+    <strong>{label}</strong>
+  </ImageReview>;
 }
 
 function formatArtifactTime(value: string): string {
