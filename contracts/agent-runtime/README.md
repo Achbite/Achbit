@@ -22,6 +22,10 @@ Catalog 拥有可变的 Session 标题和 Project 归类。Session projection �
 
 Provider 原生 `callId` 与 Session `LogicalCallId` 是两种身份。Session 在每次 Provider turn 为 call 生成独立且不复用原生值的 LogicalCallId；journal payload 以 `providerCallId` 保留 Provider 身份，顶层 `callId`、Interaction/Plan identity、Kernel request、ToolRecord 和 Session 重放使用 LogicalCallId。
 
+Session projection 的 `tokenUsage` 保留当前会话自身口径；`totalTokenUsage` 由 Session 沿既有 Agent 创建关系汇总当前会话及全部后代，每个 sessionId 只计一次，包含已经关闭的成员及其多次任务。用量来自各会话已有的 Provider 记录，不从 GUI 可见任务数推算，也不新建用量事实表；缺失用量保留 unavailable/partial。上下文估算和 Host 费用报告仍使用各自原有口径。
+
+委派开关变更以 `agent.delegation.changed` 进入已有 Session，保持通知顺序，不启动空闲 Loop。新建与续派任务按最新 Host 设置准入；关闭委派不取消已经运行或等待的子任务，也不删除消息、执行历史或用量。Plan 用于新增或扩大的授权，Todo 仅表达按需进度，两者不替代 Kernel 执行事实。
+
 `message.submit.filesystemReferences` 是文件与目录共用的消息级逻辑引用。Host 将工作区外文件导入 Session 私有快照 workspace；目录保持既有实时 workspace 生命周期。Session 只持久化 `referenceId/workspaceId/logicalPath/displayName/kind` 及文件媒体元数据，并将引用 workspace 与 Session creation snapshot 合并为该消息所启动 run 的不可变 workspace binding 快照。普通文件向 Provider 提供逻辑 workspace handle 与逻辑路径，内容按需通过基础文件工具读取；当前 run 的 PNG、JPEG、WebP、GIF 附件由 Session 纳入视觉输入，在 Provider 边界解析为图片内容，要求模型支持图片输入。journal 保留图片引用，不写入 base64；Host canonical path 不进入消息合同。PDF 仍是 `kind=file`，并由声明 `application/pdf` 激活媒体类型的 Skill 插件处理。
 
 ## 打开规则

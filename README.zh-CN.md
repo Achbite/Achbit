@@ -35,7 +35,15 @@ Agent 可以读取数据、提出修改计划、生成页面，再通过浏览�
 - **边工作边澄清：** Agent 可以先提出问题，继续不依赖答案的工作。用户回复接入同一任务，未答问题保留等待裁决。
 - **审核具体结果：** 交付文件、实时预览与固定版本引用留在对话中。Markdown 和 HTML 支持只读预览及源码切换；交互式 HTML 可在浏览器中打开。
 
-演示来自当前 macOS 开发构建，使用虚构数据。GUI 各平台支持浏览器检查；原生视口截图和外部桌面控制目前需要 macOS。PDF 导出需要配置[文档运行环境](skills/deepcode-documents/SKILL.md)。
+### 0.6.50 的变化
+
+- **在 macOS 跟随操控目标：** 无边框小预览显示当前原生窗口或内嵌浏览器页面。拖动画面可调整位置，点击可打开对应的精确目标，不向被控应用发送鼠标点击；预览会随聊天区和 Reader 布局调整。macOS 蓝色虚拟指针还作为独立项目出现在系统共享界面，并随任务保留和释放。
+- **查看图片和子智能体工作：** 产出图片、Markdown 图片和 Reader 图片共用原图查看器，支持滚动、关闭和 Esc。Reader 的子智能体标签提供列表、任务详情与返回操作，可查看对应消息、工具和结果。
+- **看清累计缓存：** 对话总缓存包含自身及全部后代智能体的调用，包括已经关闭的成员；复用同一智能体继续任务不会重复计算该成员。当前请求上下文和账单视图保留各自口径。
+- **按需使用进度与委派：** Plan 用于新增或扩大的工作区授权，现有许可范围内的必要修改可省略新 Plan；超出授权范围的执行由 Kernel 门禁拒绝，模型声明不能自行授予权限。Todo 是可选进度。关闭委派会阻止新的智能体任务，不取消已有工作或删除历史。
+- **将 Chrome 截图保存到会话：** macOS Chrome 接入将文件输出与相对路径绑定到当前会话私有目录，并保留上游临时目录；项目目录和附件目录不会自动加入这些根。委托审批可收到精确 Chrome 页面及本次元素的既有观察证据，不确定时仍交由用户决定。
+
+演示来自 macOS，使用虚构数据。原生桌面操作使用各平台的辅助组件；Windows 保留独立实现，不使用 macOS 系统共享控件。每次运行会报告实际可用工具及不可用原因。PDF 导出需要配置[文档运行环境](skills/deepcode-documents/SKILL.md)。
 
 ## 快速使用
 
@@ -90,6 +98,7 @@ Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版�
 
 - [插件发现与配置](docs/product/operations.md#settings-and-extensions)
 - [Computer Use：浏览器与桌面控制](plugins/computer-use/README.md)
+- [Chrome 页面控制与私有目录截图](plugins/chrome-devtools/README.md)
 - [UI 插件接口与示例](docs/product/ui-plugins.md)
 - [模型、订阅与用量](docs/product/model-services.md)
 - [工作区环境与权限](docs/product/execution-environments.md)

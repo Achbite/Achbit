@@ -35,7 +35,15 @@ The Agent can read the data, propose its changes, build the page, and use the br
 - **Questions without losing momentum:** the Agent can ask a clarification question and continue independent work. Your reply joins the same task; unanswered questions remain available for a decision.
 - **Results you can inspect:** delivered files, live previews, and fixed-version references stay with the conversation. Markdown and HTML have a read-only preview and source view; interactive HTML opens in the browser.
 
-The demos use the current macOS development build and fictional data. Browser inspection is available across the GUI platforms; native viewport screenshots and external desktop control currently require macOS. PDF export requires the [document runtime](skills/deepcode-documents/SKILL.md).
+### In 0.6.50
+
+- **Follow the controlled target on macOS:** a borderless preview shows the current native window or embedded browser page. Drag the image to move it; click to reveal that exact target without sending a click to the controlled application. It adjusts to the conversation and Reader layout. On macOS, the blue virtual pointer also appears as its own system sharing item and follows the run's lifetime.
+- **Open images and Agent work:** delivered images, Markdown images and Reader images open in the same original-image viewer, with scrolling, Close and Esc. The Reader's Subagents tab provides a list, task details and a back action, alongside the Agent's messages, tools and results.
+- **Understand total cache usage:** the conversation's total includes its own calls and all descendant Agents, including closed members; continuing an existing Agent does not count that member twice. Current-request context and billing views keep their separate scopes.
+- **Use progress and delegation when helpful:** Plans cover new or expanded workspace authorization; necessary changes within existing permission need no new Plan. Kernel blocks execution outside the granted scope; the Agent cannot authorize itself by declaring an action permitted. Todo is optional progress. Disabling delegation blocks new Agent tasks without cancelling existing work or deleting its history.
+- **Save Chrome screenshots in the conversation:** on macOS, the Chrome integration binds file output and relative paths to the current session's private directory, retaining the upstream temporary root. It does not add project or attachment directories to those roots. Delegated review receives recorded evidence for the exact Chrome page and requested elements; uncertainty still returns to the user.
+
+The demos use macOS and fictional data. Native desktop operations use a platform-specific helper; Windows has its own implementation and does not use macOS sharing controls. Each run reports which tools are actually available and why another tool is blocked. PDF export requires the [document runtime](skills/deepcode-documents/SKILL.md).
 
 ## Quick start
 
@@ -90,6 +98,7 @@ Add Skills, CLI tools, MCP connections, or UI plugins. Describe the operations a
 
 - [Plugin discovery and configuration](docs/product/operations.md#settings-and-extensions)
 - [Computer Use: browser and desktop control](plugins/computer-use/README.md)
+- [Chrome page control and private screenshot output](plugins/chrome-devtools/README.md)
 - [UI plugin API and example](docs/product/ui-plugins.md)
 - [Models, subscriptions and usage](docs/product/model-services.md)
 - [Workspace environments and permissions](docs/product/execution-environments.md)
