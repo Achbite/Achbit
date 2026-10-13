@@ -47,6 +47,56 @@ static ENDPOINTS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, NativeEndpoint>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+// Physical resources acquired by admitted calls. Keep all exact Host bindings
+// used by a run, including a previous Host after an explicit GUI rebind.
+static COMPUTER_RUNS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), Vec<Value>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn retain_computer_binding(binding: &Value) -> Result<(), NativeError> {
+    let key = (
+        binding["sessionId"]
+            .as_str()
+            .ok_or("computer_session_binding_missing")?
+            .to_string(),
+        binding["runId"]
+            .as_str()
+            .ok_or("computer_run_binding_missing")?
+            .to_string(),
+    );
+    let mut runs = COMPUTER_RUNS
+        .lock()
+        .map_err(|_| "computer_run_registry_unavailable")?;
+    let bindings = runs.entry(key).or_default();
+    if !bindings.contains(binding) {
+        bindings.push(binding.clone());
+    }
+    Ok(())
+}
+
+pub(crate) fn release_run(session: &str, run: &str) -> Result<(), String> {
+    let key = (session.to_string(), run.to_string());
+    let bindings = COMPUTER_RUNS
+        .lock()
+        .map_err(|_| "computer_run_registry_unavailable")?
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
+    for binding in bindings {
+        call(&binding, &json!({"action":"computer:releaseRun"})).map_err(String::from)?;
+        let mut runs = COMPUTER_RUNS
+            .lock()
+            .map_err(|_| "computer_run_registry_unavailable")?;
+        if let Some(owned) = runs.get_mut(&key) {
+            owned.retain(|candidate| candidate != &binding);
+            if owned.is_empty() {
+                runs.remove(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Registration {
@@ -225,6 +275,9 @@ pub(crate) fn execute(
             capture["observation"] = observation["result"].clone();
             capture
         } else {
+            // Register before dispatch: even a failed response can have acquired
+            // a stream. Final cleanup must not depend on model interpretation.
+            retain_computer_binding(binding)?;
             input["action"] = json!(format!(
                 "computer:{}",
                 input["action"].as_str().ok_or("computer_action_missing")?
@@ -482,6 +535,93 @@ pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_run_release_is_scoped_idempotent_and_keeps_failed_ownership() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let host = format!("native-cleanup-{address}");
+        let session = format!("session:{address}");
+        let binding = |run: &str| json!({"hostInstanceId":host,"windowLabel":"main","sessionId":session,"runId":run});
+        let a = binding("run:a");
+        let b = binding("run:b");
+        ENDPOINTS.lock().unwrap().insert(
+            host.clone(),
+            NativeEndpoint {
+                address,
+                token: "cleanup-test".into(),
+            },
+        );
+        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let incoming = received.clone();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut count = 0;
+            while count < 3 && std::time::Instant::now() < deadline {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                incoming
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str::<Value>(&line).unwrap());
+                let response = if count == 0 {
+                    json!({"ok":false,"message":"native stop failed"})
+                } else {
+                    json!({"ok":true,"data":{"released":true}})
+                };
+                writeln!(stream, "{response}").unwrap();
+                count += 1;
+            }
+        });
+        retain_computer_binding(&a).unwrap();
+        retain_computer_binding(&a).unwrap();
+        retain_computer_binding(&b).unwrap();
+        assert_eq!(
+            release_run(&session, "run:a").unwrap_err(),
+            "native stop failed"
+        );
+        assert_eq!(
+            COMPUTER_RUNS.lock().unwrap()[&(session.clone(), "run:a".into())],
+            vec![a.clone()]
+        );
+        release_run(&session, "run:a").unwrap();
+        release_run(&session, "run:a").unwrap();
+        release_run(&session, "unused").unwrap();
+        assert_eq!(
+            COMPUTER_RUNS.lock().unwrap()[&(session.clone(), "run:b".into())],
+            vec![b.clone()]
+        );
+        release_run(&session, "run:b").unwrap();
+        server.join().unwrap();
+        ENDPOINTS.lock().unwrap().remove(&host);
+        let requests = received.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["binding"].clone())
+                .collect::<Vec<_>>(),
+            vec![a.clone(), a, b]
+        );
+        assert!(requests
+            .iter()
+            .all(|request| request["input"] == json!({"action":"computer:releaseRun"})));
+    }
     #[test]
     fn pure_capture_has_an_explicit_target_and_native_failures_retain_executor_diagnostics() {
         for input in [

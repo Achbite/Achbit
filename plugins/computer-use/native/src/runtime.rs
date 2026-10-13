@@ -96,6 +96,11 @@ pub fn run() -> Result<(), String> {
             if let Err(error) = result {
                 eprintln!("computer_use_connection_closed: {error}");
             }
+            if let Err(error) =
+                crate::sharing::request(json!({"operation":"shutdown"}), &Value::Null)
+            {
+                eprintln!("computer_sharing_cleanup_failed: {error}");
+            }
             // The owning Host's connection is the component's lifetime. No orphan daemon.
             let _ = gui.run_on_main_thread(|| {
                 let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
@@ -128,7 +133,11 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
         let response = match result {
             Ok(data) => json!({"ok":true,"data":data}),
             Err(message) => {
-                let native = match crate::driver::status() {
+                let mut native = match crate::driver::status() {
+                    Ok(status) => status,
+                    Err(error) => json!({"statusError":error}),
+                };
+                native["sharing"] = match crate::sharing::status(binding) {
                     Ok(status) => status,
                     Err(error) => json!({"statusError":error}),
                 };

@@ -61,7 +61,7 @@ def assemble(root, native, destination, identity):
     info = dict(CFBundleIdentifier='com.achbite.deepcode.computer-use', CFBundleExecutable='DeepCode-Computer-Use',
         CFBundleName='DeepCode Computer Use', CFBundleDisplayName='DeepCode Computer Use', CFBundlePackageType='APPL',
         CFBundleInfoDictionaryVersion='6.0', CFBundleVersion=version, CFBundleShortVersionString=version,
-        LSMinimumSystemVersion='12.0', LSUIElement=True, NSHighResolutionCapable=True, NSPrincipalClass='NSApplication')
+        LSMinimumSystemVersion='15.2', LSUIElement=True, NSHighResolutionCapable=True, NSPrincipalClass='NSApplication')
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     shutil.copytree(root / 'plugins/computer-use/native/resources', resources, dirs_exist_ok=True)
     (resources / 'BUILDINFO.json').write_text(json.dumps(dict(version=version,

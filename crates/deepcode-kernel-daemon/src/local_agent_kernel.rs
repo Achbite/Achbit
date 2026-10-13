@@ -720,6 +720,8 @@ impl LocalAgentKernel {
         self.jobs
             .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
+        crate::browser_tools::release_run(&request.session_id, &request.run_id)
+            .map_err(|e| LocalAgentKernelError::new("computer_sharing_cleanup_failed", e))?;
         let mut state = self.lock_generations()?;
         let already_released = state.released_run_bindings.contains_key(&key);
         if let Some(generation) = state.run_bindings.remove(&key) {
@@ -1012,7 +1014,7 @@ impl LocalAgentKernel {
         self.jobs
             .shutdown()
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
-        let generations = {
+        let (generations, runs) = {
             let state = self.lock_generations()?;
             let mut generations = Vec::new();
             for generation in state.run_bindings.values() {
@@ -1023,9 +1025,19 @@ impl LocalAgentKernel {
                     generations.push(Arc::clone(generation));
                 }
             }
-            generations
+            let runs: std::collections::HashSet<_> = state
+                .run_bindings
+                .keys()
+                .map(|key| (key.session_id.clone(), key.run_id.clone()))
+                .collect();
+            (generations, runs)
         };
         let mut errors = Vec::new();
+        for (session_id, run_id) in runs {
+            if let Err(error) = crate::browser_tools::release_run(&session_id, &run_id) {
+                errors.push(format!("computer_sharing_cleanup_failed: {error}"));
+            }
+        }
         if let Err(error) = dispose_generations(generations) {
             errors.push(format!("{}: {}", error.code, error.message));
         }

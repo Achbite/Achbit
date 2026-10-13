@@ -7,6 +7,8 @@ mod indicator;
 mod protocol;
 #[cfg(target_os = "macos")]
 mod runtime;
+#[cfg(target_os = "macos")]
+mod sharing;
 #[cfg(windows)]
 mod win;
 #[cfg(target_os = "macos")]

@@ -364,30 +364,54 @@ impl ComputerUseHost {
             .connection
             .lock()
             .map_err(|_| "computer_component_state_unavailable")?;
-        let modified = std::fs::metadata(self.executable())
-            .and_then(|m| m.modified())
-            .map_err(|e| format!("computer_component_unavailable: {e}"))?;
-        // An explicit package replacement is observed only between calls. Retire
-        // the old process before starting the replacement; never replay an input.
-        if slot
-            .as_ref()
-            .is_some_and(|connection| connection.executable_modified != modified)
-        {
-            slot.as_mut().expect("checked component").stop()?;
-            *slot = None;
+        if input["action"] == "computer:releaseRun" {
+            // Releasing an unused run must never launch a desktop executor.
+            if slot.is_none() {
+                return Ok(json!({"ok":true,"data":{"released":true}}));
+            }
+            // Windows has no persistent native sharing stream in this batch.
+            #[cfg(windows)]
+            return Ok(json!({"ok":true,"data":{"released":true}}));
+            #[cfg(target_os = "macos")]
+            if slot
+                .as_ref()
+                .is_some_and(|connection| connection.failure.is_some())
+            {
+                // A failed channel is not proof of release. Close the owned
+                // executor and await its exact process before acknowledging it.
+                slot.as_mut().expect("connected component").stop()?;
+                *slot = None;
+                return Ok(json!({"ok":true,"data":{"released":true}}));
+            }
         }
-        // A failed helper whose exact process has exited has no input in flight,
-        // so a new process is not a competing executor. The failed call itself is
-        // never replayed; its error was already returned.
-        #[cfg(windows)]
-        if slot
-            .as_mut()
-            .is_some_and(|connection| connection.failure.is_some() && connection.exited())
-        {
-            *slot = None;
-        }
-        if slot.is_none() {
-            *slot = Some(self.start(modified)?);
+        // Release belongs to the connected executor even if its on-disk package
+        // changed. Never launch a replacement merely to release the old run.
+        if input["action"] != "computer:releaseRun" {
+            let modified = std::fs::metadata(self.executable())
+                .and_then(|m| m.modified())
+                .map_err(|e| format!("computer_component_unavailable: {e}"))?;
+            // An explicit package replacement is observed only between calls. Retire
+            // the old process before starting the replacement; never replay an input.
+            if slot
+                .as_ref()
+                .is_some_and(|connection| connection.executable_modified != modified)
+            {
+                slot.as_mut().expect("checked component").stop()?;
+                *slot = None;
+            }
+            // A failed helper whose exact process has exited has no input in flight,
+            // so a new process is not a competing executor. The failed call itself is
+            // never replayed; its error was already returned.
+            #[cfg(windows)]
+            if slot
+                .as_mut()
+                .is_some_and(|connection| connection.failure.is_some() && connection.exited())
+            {
+                *slot = None;
+            }
+            if slot.is_none() {
+                *slot = Some(self.start(modified)?);
+            }
         }
         let connection = slot.as_mut().expect("started component");
         if let Some(error) = &connection.failure {
