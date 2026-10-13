@@ -833,6 +833,7 @@
     "reader.address": "Page address",
     "reader.refresh": "Reload page",
     "reader.loading": "Loading…",
+    "reader.controlActive": "DeepCode is debugging this page",
     "reader.open": "Open",
     "reader.creating": "Opening page…",
     "reader.imageLoading": "Loading image…",

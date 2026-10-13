@@ -83,6 +83,11 @@
 .native-browser-preview__surface {flex:1;min-width:0;min-height:0;overflow:hidden;}
 .native-browser-preview input {min-width:40px;flex:1;}
 .native-browser-address {flex-wrap:nowrap;gap:6px;}
+.native-browser-location { position:relative; display:flex; flex:1; min-width:40px; }
+/* Feedback occupies the address field, never changing the native viewport/capture geometry. */
+.native-browser-control { position:absolute; inset:0; display:flex; align-items:center; gap:8px; padding:0 8px; border-radius:6px; font-size:12px; color:var(--dc-accent); background:var(--dc-surface-hover); pointer-events:none; }
+.native-browser-control > span:first-child { width:7px; height:7px; flex:none; border-radius:50%; background:currentColor; }
+.native-browser-control__label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .native-browser-address button {display:flex;align-items:center;justify-content:center;}
 .native-browser-address button {gap:5px;white-space:nowrap;}
 .native-browser-address button[aria-pressed=true] {color:var(--dc-accent);background:var(--dc-surface-hover);}

@@ -833,6 +833,7 @@
     "reader.address": "页面地址",
     "reader.refresh": "刷新页面",
     "reader.loading": "正在加载…",
+    "reader.controlActive": "DeepCode 正在调试此页面",
     "reader.open": "打开",
     "reader.creating": "正在创建页面…",
     "reader.imageLoading": "正在读取图片…",

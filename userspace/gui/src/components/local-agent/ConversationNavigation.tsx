@@ -16,13 +16,14 @@ export function ConversationNavigation({ entries, viewport, onNavigate, language
     const body = viewport.bodyRef.current;
     if (!body) return;
     let frame: number | null = null;
-    const keys = new Set(entries.map((entry) => entry.key));
     const update = () => {
       frame = null;
       const top = body.getBoundingClientRect().top + 40;
-      const anchors = [...body.querySelectorAll<HTMLElement>('[data-conversation-anchor]')]
-        .filter(node => keys.has(node.dataset.conversationAnchor!) && node.getClientRects().length > 0)
-        .map(node => ({ key: node.dataset.conversationAnchor!, top: node.getBoundingClientRect().top }));
+      const index = viewport.anchors.read(body);
+      const anchors = entries.flatMap(entry => {
+        const node = index.byKey.get(entry.key);
+        return node && !node.hidden ? [{ key: entry.key, get top() { return node.getBoundingClientRect().top; } }] : [];
+      });
       setActive(activeConversationAnchor(anchors, top, {
         scrollTop: body.scrollTop,
         scrollHeight: body.scrollHeight,
@@ -46,7 +47,7 @@ export function ConversationNavigation({ entries, viewport, onNavigate, language
       mutations.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
     };
-  }, [entries, viewport.bodyRef, viewport.transcriptRef]);
+  }, [entries, viewport.anchors, viewport.bodyRef, viewport.transcriptRef]);
   if (entries.length < 2) return null;
   const zh = language === 'zh-CN';
   return <nav className="conversation-navigation" aria-label={zh ? '对话导航' : 'Conversation navigation'}>

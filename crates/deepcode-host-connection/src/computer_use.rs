@@ -369,10 +369,6 @@ impl ComputerUseHost {
             if slot.is_none() {
                 return Ok(json!({"ok":true,"data":{"released":true}}));
             }
-            // Windows has no persistent native sharing stream in this batch.
-            #[cfg(windows)]
-            return Ok(json!({"ok":true,"data":{"released":true}}));
-            #[cfg(target_os = "macos")]
             if slot
                 .as_ref()
                 .is_some_and(|connection| connection.failure.is_some())
@@ -414,6 +410,14 @@ impl ComputerUseHost {
             }
         }
         let connection = slot.as_mut().expect("started component");
+        Self::exchange(connection, binding, input)
+    }
+
+    fn exchange(
+        connection: &mut Connection,
+        binding: &Value,
+        input: &Value,
+    ) -> Result<Value, String> {
         if let Some(error) = &connection.failure {
             return Err(error.clone());
         }
@@ -508,8 +512,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rejected["message"], "computer_host_binding_mismatch");
+        for _ in 0..2 {
+            let released = host
+                .call(&binding, &json!({"action":"computer:releaseRun"}))
+                .unwrap();
+            assert_eq!(released["ok"], true, "{released}");
+            assert_eq!(released["data"]["released"], true, "{released}");
+        }
+        let still_owned = host
+            .call(&binding, &json!({"action":"computer:status"}))
+            .unwrap();
+        assert_eq!(
+            still_owned["data"]["executor"]["pid"].as_u64(),
+            Some(pid),
+            "run cleanup keeps the same executor"
+        );
         host.stop().unwrap();
         assert!(host.connection.lock().unwrap().is_none());
+        let released = host
+            .call(&binding, &json!({"action":"computer:releaseRun"}))
+            .unwrap();
+        assert_eq!(released["data"]["released"], true, "{released}");
+        assert!(
+            host.connection.lock().unwrap().is_none(),
+            "cleanup must not launch a helper"
+        );
         let again = host
             .call(&binding, &json!({"action":"computer:status"}))
             .unwrap();

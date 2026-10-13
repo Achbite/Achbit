@@ -68,7 +68,7 @@ fn serve(executor: &mut Executor, host: &str, stream: &mut TcpStream) -> Result<
         } else {
             Err("computer_host_binding_mismatch".into())
         };
-        indicator::hide();
+        indicator::finish_call();
         let response = match result {
             Ok(data) => json!({"ok":true,"data":data}),
             Err(message) => json!({"ok":false,"message":message,"diagnostics":{
@@ -126,10 +126,22 @@ impl Executor {
             .ok_or("Missing action")?
             .trim_start_matches("computer:");
         match action {
+            // Kernel-owned run release; absent from public computer tools.
+            "releaseRun" => {
+                if self
+                    .observation
+                    .as_ref()
+                    .is_some_and(|saved| saved.binding == *binding)
+                {
+                    self.observation = None;
+                }
+                indicator::finish_run(binding)?;
+                return Ok(json!({"released":true}));
+            }
             "status" => return Ok(status()),
             "listApps" => return desktop::applications(),
             "listWindows" => return desktop::windows_json(),
-            "capture" => return self.capture(input),
+            "capture" => return self.capture(binding, input),
             _ => {}
         }
         let app = desktop::normalize_app(input["app"].as_str().ok_or("Missing app")?)?;
@@ -158,7 +170,11 @@ impl Executor {
         // A background observation promises not to move the user's foreground window.
         let guard = (!saved.foreground).then(desktop::ForegroundGuard::capture);
         if semantic {
-            indicator::show(&saved.window, uia::element_center(&saved.elements, input))?;
+            indicator::show(
+                &saved.window,
+                binding,
+                uia::element_center(&saved.elements, input),
+            )?;
             let performed = uia::perform(&saved.elements, input, action);
             if let Err(error) = performed {
                 return Err(
@@ -179,7 +195,7 @@ impl Executor {
             if desktop::snapshot(saved.window.id)? != saved.window {
                 return Err("Target window changed while restoring focus; observe again".into());
             }
-            indicator::show(&saved.window, None)?;
+            indicator::show(&saved.window, binding, None)?;
             input::dispatch(input, action, saved.image, saved.window.bounds)?;
         }
         // A short bounded delay lets the application process dispatched input. A
@@ -223,10 +239,11 @@ impl Executor {
         }
     }
 
-    fn capture(&self, input: &Value) -> Result<Value, String> {
+    fn capture(&self, binding: &Value, input: &Value) -> Result<Value, String> {
         let directory = capture_directory(input)?;
         let (image, target) = if let Some(id) = input["windowId"].as_u64() {
             let window = desktop::snapshot(u32::try_from(id).map_err(|_| "Invalid windowId")?)?;
+            indicator::show(&window, binding, None)?;
             (capture::window(&window)?, json!({"windowId":window.id}))
         } else if input["display"] == "primary" {
             (capture::primary_display()?, json!({"display":"primary"}))
@@ -276,7 +293,7 @@ impl Executor {
         if foreground {
             desktop::focus(&window)?;
         }
-        indicator::show(&window, None)?;
+        indicator::show(&window, binding, None)?;
         let tree = self.automation.tree(&window)?;
         let image = capture::window(&window)?;
         if desktop::snapshot(window.id)? != window {

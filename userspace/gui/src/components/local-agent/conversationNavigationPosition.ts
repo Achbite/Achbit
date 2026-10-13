@@ -15,10 +15,11 @@ export function activeConversationAnchor(
     && viewport.scrollHeight - viewport.clientHeight - Math.max(0, viewport.scrollTop) <= 2) {
     return viewport.latestKey ?? anchors.at(-1)?.key;
   }
-  let selected = anchors[0]?.key;
-  for (const anchor of anchors) {
-    if (anchor.top > readingTop) break;
-    selected = anchor.key;
+  let left = 0, right = anchors.length;
+  while (left < right) {
+    const middle = (left + right) >>> 1;
+    if (anchors[middle].top <= readingTop) left = middle + 1;
+    else right = middle;
   }
-  return selected;
+  return anchors[Math.max(0, left - 1)]?.key;
 }
