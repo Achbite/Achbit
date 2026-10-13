@@ -2,6 +2,7 @@ export interface NativeHostBinding { hostInstanceId: string; windowLabel: string
 export interface NativePage extends NativeHostBinding {
   previewId: string; url: string; status: string; visible: boolean; serviceOwner: string;
   kind:string; serviceId?:string;
+  control?: { activeRuns: string[] };
   surface: { generation: number; sequence: number; activationId: number; activationAck: number; reason: string; bounds: [number, number, number, number] | null };
 }
 /** Translate a user's address into the existing Host navigation contract. */

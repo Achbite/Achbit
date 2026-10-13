@@ -10,7 +10,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, WebviewUrl};
+#[cfg(windows)]
+mod control_indicator;
 mod services;
+#[cfg(windows)]
+use control_indicator::{ControlIndicator, ControlState};
 
 static PAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -43,6 +47,8 @@ struct Page {
     service_id: Option<String>,
     kind: String,
     surface: SurfaceState,
+    #[cfg(windows)]
+    control: ControlState,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -83,6 +89,8 @@ pub struct NativeBrowser {
     on_stop: Box<dyn Fn() + Send + Sync>,
     #[cfg(any(target_os = "macos", windows))]
     computer: deepcode_host_connection::computer_use::ComputerUseHost,
+    #[cfg(windows)]
+    controls: control_indicator::ControlRuns,
 }
 
 impl NativeBrowser {
@@ -90,6 +98,8 @@ impl NativeBrowser {
         if self.stop.swap(true, Ordering::AcqRel) {
             return;
         }
+        #[cfg(windows)]
+        control_indicator::wake_on_stop(self);
         (self.on_stop)();
         #[cfg(any(target_os = "macos", windows))]
         if let Err(error) = self.computer.stop() {
@@ -107,6 +117,9 @@ pub fn start(
     host_instance_id: String,
     token: String,
     self_bootstrap: String,
+    #[cfg(windows)] read_control_statuses: Box<
+        dyn Fn(&[String]) -> Result<Value, String> + Send + Sync,
+    >,
     on_stop: Box<dyn Fn() + Send + Sync>,
 ) -> Result<String, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
@@ -119,8 +132,13 @@ pub fn start(
         .map_err(|error| error.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     app.manage(NativeBrowser {
+        #[cfg(windows)]
+        controls: control_indicator::ControlRuns::default(),
         #[cfg(any(target_os = "macos", windows))]
-        computer: deepcode_host_connection::computer_use::ComputerUseHost::new(host_instance_id.clone(), token.clone())?,
+        computer: deepcode_host_connection::computer_use::ComputerUseHost::new(
+            host_instance_id.clone(),
+            token.clone(),
+        )?,
         directories,
         binding: HostBinding {
             host_instance_id,
@@ -134,6 +152,8 @@ pub fn start(
         self_bootstrap,
         on_stop,
     });
+    #[cfg(windows)]
+    control_indicator::start(app.clone(), read_control_statuses);
     let app = app.clone();
     std::thread::spawn(move || {
         while !stop.load(Ordering::Acquire) {
@@ -167,10 +187,18 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
         if request.get("token").and_then(Value::as_str) != Some(token) {
             return Err("native_browser_connection_rejected".into());
         }
-        if request["input"]["action"].as_str().is_some_and(|action| action.starts_with("computer:")) {
+        if request["input"]["action"]
+            .as_str()
+            .is_some_and(|action| action.starts_with("computer:"))
+        {
             checked_binding(&app, &request["binding"])?;
+            #[cfg(windows)]
+            let _control = ControlIndicator::begin(&app, &request["binding"], None)?;
             #[cfg(any(target_os = "macos", windows))]
-            return app.state::<NativeBrowser>().computer.call(&request["binding"], &request["input"]);
+            return app
+                .state::<NativeBrowser>()
+                .computer
+                .call(&request["binding"], &request["input"]);
             #[cfg(not(any(target_os = "macos", windows)))]
             return Err("External computer control currently requires macOS or Windows.".into());
         }
@@ -178,7 +206,8 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
             app,
             request["binding"].clone(),
             request["input"].clone(),
-        )).map(|data| json!({"ok":true,"data":data}))
+        ))
+        .map(|data| json!({"ok":true,"data":data}))
     });
     let envelope = match response {
         Ok(envelope) => envelope,
@@ -368,6 +397,8 @@ fn page_url(input: &Value) -> Result<tauri::Url, String> {
 pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Result<Value, String> {
     let session_id = binding["sessionId"].as_str().map(str::to_string);
     let tool_request = binding["runId"].is_string();
+    #[cfg(windows)]
+    let control_binding = binding.clone();
     let binding = checked_binding(&app, &binding)?;
     let action = string(&input, "action")?;
     if action.starts_with("computer:") {
@@ -456,6 +487,16 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             .cloned();
         if let Some(page) = existing {
             drop(opening);
+            #[cfg(windows)]
+            let _control = if tool_request {
+                Some(ControlIndicator::begin(
+                    &app,
+                    &control_binding,
+                    Some(&page.preview_id),
+                )?)
+            } else {
+                None
+            };
             let page = if tool_request {
                 ready_page(app.clone(), page.preview_id).await?
             } else {
@@ -484,6 +525,8 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             service_id,
             kind: kind.into(),
             surface: SurfaceState::default(),
+            #[cfg(windows)]
+            control: ControlState::default(),
         };
         app.state::<NativeBrowser>()
             .pages
@@ -560,9 +603,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             return Err(error);
         }
         let page = page_state(&app, &id)?;
+        #[cfg(windows)]
+        control_indicator::publish_current(&app, &id)?;
+        #[cfg(not(windows))]
         publish(&app, &page);
         drop(opening);
         if tool_request {
+            #[cfg(windows)]
+            let _control = ControlIndicator::begin(&app, &control_binding, Some(&id))?;
             return serde_json::to_value(ready_page(app.clone(), id).await?)
                 .map_err(|error| error.to_string());
         }
@@ -574,6 +622,16 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         return Err("native_browser_page_session_mismatch".into());
     }
     let view = app.get_webview(id).ok_or("native_browser_page_closed")?;
+    #[cfg(windows)]
+    let _control = if tool_request
+        && matches!(
+            action,
+            "act" | "capture" | "activate" | "navigate" | "reload"
+        ) {
+        Some(ControlIndicator::begin(&app, &control_binding, Some(id))?)
+    } else {
+        None
+    };
     if matches!(action, "act" | "capture" | "reviewStart") {
         page = ready_page(app.clone(), id.to_string()).await?;
     }
@@ -824,6 +882,9 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         page_state(&app, id)?
     };
     if action != "layout" {
+        #[cfg(windows)]
+        control_indicator::publish_current(&app, id)?;
+        #[cfg(not(windows))]
         publish(&app, &page);
     }
     serde_json::to_value(page).map_err(|error| error.to_string())
@@ -1094,6 +1155,8 @@ mod tests {
             status: "ready".into(),
             visible: false,
             surface: SurfaceState::default(),
+            #[cfg(windows)]
+            control: ControlState::default(),
         };
         assert!(
             page.matches_target(&page.session_id, &page.url, &None, "page"),

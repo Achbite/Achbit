@@ -390,6 +390,38 @@ impl ComputerUseHost {
             *slot = Some(self.start(modified)?);
         }
         let connection = slot.as_mut().expect("started component");
+        Self::exchange(connection, binding, input)
+    }
+
+    /// Windows presentation cleanup only; never launches a helper or dispatches input.
+    #[cfg(windows)]
+    pub fn finish_control(&self, binding: &Value) -> Result<(), String> {
+        let mut slot = self
+            .connection
+            .lock()
+            .map_err(|_| "computer_component_state_unavailable")?;
+        let Some(connection) = slot.as_mut() else {
+            return Ok(());
+        };
+        let response = Self::exchange(
+            connection,
+            binding,
+            &json!({"action":"computer:endControl"}),
+        )?;
+        if response["ok"] != true {
+            return Err(response["message"]
+                .as_str()
+                .unwrap_or("computer_control_cleanup_failed")
+                .into());
+        }
+        Ok(())
+    }
+
+    fn exchange(
+        connection: &mut Connection,
+        binding: &Value,
+        input: &Value,
+    ) -> Result<Value, String> {
         if let Some(error) = &connection.failure {
             return Err(error.clone());
         }
@@ -484,8 +516,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rejected["message"], "computer_host_binding_mismatch");
+        host.finish_control(&binding).unwrap();
+        let still_owned = host
+            .call(&binding, &json!({"action":"computer:status"}))
+            .unwrap();
+        assert_eq!(
+            still_owned["data"]["executor"]["pid"].as_u64(),
+            Some(pid),
+            "presentation cleanup keeps the same executor"
+        );
         host.stop().unwrap();
         assert!(host.connection.lock().unwrap().is_none());
+        host.finish_control(&binding).unwrap();
+        assert!(
+            host.connection.lock().unwrap().is_none(),
+            "cleanup must not launch a helper"
+        );
         let again = host
             .call(&binding, &json!({"action":"computer:status"}))
             .unwrap();

@@ -1,30 +1,39 @@
-//! Noninteractive, window-relative feedback for an active native call.
+//! Noninteractive, window-relative feedback retained for each debugging run.
 //! The badge sits directly above the target window in z-order, so it is visible
 //! only where the target is; it never activates, takes input or enters captures.
 use super::desktop::{self, Window};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::{mpsc, Mutex, OnceLock};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
-    MonitorFromWindow, Polygon, SelectObject, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_SOLID,
+    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, MonitorFromWindow, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_END_ELLIPSIS,
+    DT_SINGLELINE, DT_VCENTER, FW_MEDIUM, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS,
+    PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindow, IsIconic, IsWindow,
-    IsWindowVisible, PostThreadMessageW, RegisterClassExW, SetLayeredWindowAttributes, SetTimer,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, GW_HWNDPREV, HWND_TOP,
-    LWA_ALPHA, LWA_COLORKEY, MSG, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE,
-    WM_PAINT, WM_TIMER, WM_USER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetWindow,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostThreadMessageW,
+    RegisterClassExW, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
+    ShowWindow, TranslateMessage, GW_HWNDPREV, HWND_TOP, LWA_ALPHA, LWA_COLORKEY, MSG,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_PAINT, WM_TIMER, WM_USER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const REFRESH: u32 = WM_USER + 1;
 const TRANSPARENT_KEY: COLORREF = COLORREF(0x00FF00FF);
 const WHITE: COLORREF = COLORREF(0x00FFFFFF);
+const CONTROL_LABEL: &str = "DeepCode 正在调试此窗口";
+
+fn badge_size(icon_size: f64, scale: f64) -> (f64, f64) {
+    (260.0 * scale, icon_size + 12.0 * scale)
+}
 
 #[derive(Clone, Copy)]
 struct Config {
@@ -60,26 +69,72 @@ fn config() -> Config {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone)]
 struct Target {
-    window: Option<u32>,
+    window: Window,
+    runs: HashSet<(String, String)>,
     /// Physical pixels relative to the window frame's top-left.
     cursor: Option<(f64, f64)>,
 }
 
-static TARGET: Mutex<Target> = Mutex::new(Target {
-    window: None,
-    cursor: None,
-});
+#[derive(Default)]
+struct Targets(Vec<Target>);
+
+fn run_key(binding: &Value) -> (String, String) {
+    (
+        binding["sessionId"]
+            .as_str()
+            .expect("validated binding")
+            .into(),
+        binding["runId"].as_str().expect("validated binding").into(),
+    )
+}
+
+impl Targets {
+    fn record(&mut self, window: &Window, binding: &Value, cursor: Option<(f64, f64)>) {
+        self.0
+            .retain(|target| target.window.id != window.id || target.window.pid == window.pid);
+        let index = self
+            .0
+            .iter()
+            .position(|target| target.window.id == window.id)
+            .unwrap_or_else(|| {
+                self.0.push(Target {
+                    window: window.clone(),
+                    runs: HashSet::new(),
+                    cursor: None,
+                });
+                self.0.len() - 1
+            });
+        let target = &mut self.0[index];
+        target.runs.insert(run_key(binding));
+        target.cursor = cursor.map(|(x, y)| (x - window.bounds.x, y - window.bounds.y));
+    }
+    fn finish_call(&mut self) {
+        for target in &mut self.0 {
+            target.cursor = None;
+        }
+    }
+    fn finish_run(&mut self, binding: &Value) {
+        let key = run_key(binding);
+        for target in &mut self.0 {
+            target.runs.remove(&key);
+        }
+        self.0.retain(|target| !target.runs.is_empty());
+    }
+}
+
+static TARGETS: Mutex<Targets> = Mutex::new(Targets(Vec::new()));
 static THREAD: OnceLock<Result<u32, String>> = OnceLock::new();
 
+#[derive(Clone, Copy)]
 struct Windows {
     badge: HWND,
     cursor: HWND,
 }
 // Window handles are plain identifiers; only the indicator thread uses them.
 unsafe impl Send for Windows {}
-static WINDOWS: Mutex<Option<Windows>> = Mutex::new(None);
+static WINDOWS: Mutex<Vec<(u32, Windows)>> = Mutex::new(Vec::new());
 
 fn thread() -> Result<u32, String> {
     THREAD
@@ -103,25 +158,35 @@ fn post_refresh() {
 }
 
 /// Show the indicator on this window; `cursor` is a desktop point for semantic actions.
-pub fn show(window: &Window, cursor: Option<(f64, f64)>) -> Result<(), String> {
+pub fn show(window: &Window, binding: &Value, cursor: Option<(f64, f64)>) -> Result<(), String> {
     thread()?;
-    if let Ok(mut target) = TARGET.lock() {
-        target.window = Some(window.id);
-        target.cursor = cursor.map(|(x, y)| (x - window.bounds.x, y - window.bounds.y));
-    }
+    TARGETS
+        .lock()
+        .map_err(|_| "Indicator state unavailable")?
+        .record(window, binding, cursor);
     post_refresh();
     Ok(())
 }
 
-/// Visibility follows the native call: hidden when the call returns.
-pub fn hide() {
-    if let Ok(mut target) = TARGET.lock() {
-        if target.window.is_none() {
-            return;
-        }
-        *target = Target::default();
+/// Only the transient action pointer ends with the call; the target badge stays.
+pub fn finish_call() {
+    if let Ok(mut targets) = TARGETS.lock() {
+        targets.finish_call();
     }
-    post_refresh();
+    if THREAD.get().is_some() {
+        post_refresh();
+    }
+}
+
+pub fn finish_run(binding: &Value) -> Result<(), String> {
+    TARGETS
+        .lock()
+        .map_err(|_| "Indicator state unavailable")?
+        .finish_run(binding);
+    if THREAD.get().is_some() {
+        post_refresh();
+    }
+    Ok(())
 }
 
 fn run(started: mpsc::Sender<Result<u32, String>>) {
@@ -157,36 +222,38 @@ unsafe fn create() -> Result<(), String> {
         if RegisterClassExW(&class) == 0 {
             return Err("Cannot register the indicator window class".into());
         }
-        let make = |name: PCWSTR| {
-            CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                w!("DeepCodeComputerUseIndicator"),
-                name,
-                WS_POPUP,
-                0,
-                0,
-                1,
-                1,
-                None,
-                None,
-                Some(instance.into()),
-                None,
-            )
-            .map_err(|error| format!("Cannot create the indicator window: {error}"))
-        };
-        let badge = make(w!("DeepCode Computer Use"))?;
-        let cursor = make(w!("DeepCode Computer Use cursor"))?;
-        for window in [badge, cursor] {
-            SetLayeredWindowAttributes(window, TRANSPARENT_KEY, 235, LWA_COLORKEY | LWA_ALPHA)
-                .map_err(|error| error.to_string())?;
-            // Windows 10 2004+: keep feedback out of display captures. Older systems
-            // still exclude it from window captures, which render only the target.
-            let _ = SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
-        }
-        SetTimer(Some(badge), 1, 100, None);
-        *WINDOWS.lock().map_err(|_| "Indicator state unavailable")? =
-            Some(Windows { badge, cursor });
+        let timer = create_window(w!("DeepCode indicator timer"))?;
+        SetTimer(Some(timer), 1, 100, None);
         Ok(())
+    }
+}
+
+unsafe fn create_window(name: PCWSTR) -> Result<HWND, String> {
+    unsafe {
+        let instance = GetModuleHandleW(None).map_err(|error| error.to_string())?;
+        let window = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            w!("DeepCodeComputerUseIndicator"),
+            name,
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )
+        .map_err(|error| format!("Cannot create the indicator window: {error}"))?;
+        if let Err(error) =
+            SetLayeredWindowAttributes(window, TRANSPARENT_KEY, 235, LWA_COLORKEY | LWA_ALPHA)
+        {
+            let _ = DestroyWindow(window);
+            return Err(error.to_string());
+        }
+        let _ = SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
+        Ok(window)
     }
 }
 
@@ -209,26 +276,78 @@ unsafe extern "system" fn procedure(
     }
 }
 
-fn handles() -> Option<(HWND, HWND)> {
-    WINDOWS.lock().ok().and_then(|windows| {
-        windows
-            .as_ref()
-            .map(|windows| (windows.badge, windows.cursor))
-    })
+fn handles() -> Vec<(u32, Windows)> {
+    WINDOWS
+        .lock()
+        .map(|windows| windows.clone())
+        .unwrap_or_default()
 }
 
 fn refresh() {
-    let Some((badge, cursor)) = handles() else {
-        return;
+    let targets = match TARGETS.lock() {
+        Ok(mut targets) => {
+            targets.0.retain(|target| unsafe {
+                let window = target.window.hwnd();
+                let mut pid = 0;
+                GetWindowThreadProcessId(window, Some(&mut pid));
+                IsWindow(Some(window)).as_bool() && pid == target.window.pid
+            });
+            targets.0.clone()
+        }
+        Err(_) => return,
     };
-    let (target, offset) = match TARGET.lock() {
-        Ok(target) => (target.window, target.cursor),
-        Err(_) => (None, None),
-    };
-    let target = target.map(desktop::hwnd).filter(|target| unsafe {
-        IsWindow(Some(*target)).as_bool()
-            && IsWindowVisible(*target).as_bool()
-            && !IsIconic(*target).as_bool()
+    for (id, pair) in handles() {
+        if !targets.iter().any(|target| target.window.id == id) {
+            if let Ok(mut windows) = WINDOWS.lock() {
+                windows.retain(|(current, _)| *current != id);
+            }
+            unsafe {
+                let _ = DestroyWindow(pair.badge);
+                let _ = DestroyWindow(pair.cursor);
+            }
+        }
+    }
+    for target in targets {
+        let pair = handles()
+            .into_iter()
+            .find(|(id, _)| *id == target.window.id)
+            .map(|(_, pair)| pair);
+        let pair = match pair {
+            Some(pair) => pair,
+            None => {
+                let created = unsafe {
+                    (|| {
+                        let badge = create_window(w!("DeepCode Computer Use"))?;
+                        match create_window(w!("DeepCode Computer Use cursor")) {
+                            Ok(cursor) => Ok(Windows { badge, cursor }),
+                            Err(error) => {
+                                let _ = DestroyWindow(badge);
+                                Err(error)
+                            }
+                        }
+                    })()
+                };
+                let pair = match created {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        continue;
+                    }
+                };
+                if let Ok(mut windows) = WINDOWS.lock() {
+                    windows.push((target.window.id, pair));
+                }
+                pair
+            }
+        };
+        refresh_target(pair, &target);
+    }
+}
+
+fn refresh_target(Windows { badge, cursor }: Windows, target: &Target) {
+    let offset = target.cursor;
+    let target = Some(target.window.hwnd()).filter(|target| unsafe {
+        IsWindowVisible(*target).as_bool() && !IsIconic(*target).as_bool()
     });
     let Some((target, bounds)) = target.and_then(|target| {
         desktop::frame_bounds(target)
@@ -255,9 +374,9 @@ fn refresh() {
     while let Some(window) = above.filter(|window| *window == badge || *window == cursor) {
         above = unsafe { GetWindow(window, GW_HWNDPREV) }.ok();
     }
-    let place = |window: HWND, offset: Option<(f64, f64)>| unsafe {
+    let place = |window: HWND, offset: Option<(f64, f64)>, width: f64, height: f64| unsafe {
         let Some((x, y)) = offset.filter(|(x, y)| {
-            *x >= 0.0 && *y >= 0.0 && x + size <= bounds.width && y + size <= bounds.height
+            *x >= 0.0 && *y >= 0.0 && x + width <= bounds.width && y + height <= bounds.height
         }) else {
             let _ = ShowWindow(window, SW_HIDE);
             return;
@@ -267,18 +386,23 @@ fn refresh() {
             Some(above.unwrap_or(HWND_TOP)),
             (bounds.x + x).round() as i32,
             (bounds.y + y).round() as i32,
-            size as i32,
-            size as i32,
+            width as i32,
+            height as i32,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
     };
+    let (badge_width, badge_height) = badge_size(size, scale);
     place(
         badge,
         Some((settings.inset_x * scale, settings.inset_y * scale)),
+        badge_width.min((bounds.width - (settings.inset_x + 8.0) * scale).max(0.0)),
+        badge_height,
     );
     place(
         cursor,
         offset.map(|(x, y)| (x - size * 0.25, y - size * 0.15)),
+        size,
+        size,
     );
 }
 
@@ -296,7 +420,8 @@ unsafe fn paint(window: HWND) {
         let white = CreateSolidBrush(WHITE);
         let previous_brush = SelectObject(device, fill.into());
         let previous_pen = SelectObject(device, outline.into());
-        let (width, height) = (client.right as f64, client.bottom as f64);
+        let height = client.bottom as f64;
+        let width = height;
         let point = |x: f64, y: f64| POINT {
             x: (x * width).round() as i32,
             y: (y * height).round() as i32,
@@ -313,10 +438,45 @@ unsafe fn paint(window: HWND) {
             ]
             .map(|(x, y)| point(dx + x * scale, dy + y * scale))
         };
-        if Some(window) == handles().map(|(badge, _)| badge) {
-            let _ = Ellipse(device, 0, 0, client.right, client.bottom);
+        if handles().iter().any(|(_, pair)| pair.badge == window) {
+            let radius = (height * 0.5) as i32;
+            let _ = RoundRect(device, 0, 0, client.right, client.bottom, radius, radius);
             SelectObject(device, white.into());
-            let _ = Polygon(device, &arrow(0.62, 0.3, 0.16));
+            let _ = Polygon(device, &arrow(0.55, 0.25, 0.22));
+            let font = CreateFontW(
+                -(height * 0.42).round() as i32,
+                0,
+                0,
+                0,
+                FW_MEDIUM.0 as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                DEFAULT_PITCH.0 as u32,
+                w!("Microsoft YaHei UI"),
+            );
+            let previous_font = SelectObject(device, font.into());
+            SetBkMode(device, TRANSPARENT);
+            SetTextColor(device, WHITE);
+            let mut text: Vec<u16> = CONTROL_LABEL.encode_utf16().collect();
+            let mut text_bounds = RECT {
+                left: height as i32,
+                top: 0,
+                right: client.right - (height * 0.3) as i32,
+                bottom: client.bottom,
+            };
+            DrawTextW(
+                device,
+                &mut text,
+                &mut text_bounds,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+            SelectObject(device, previous_font);
+            let _ = DeleteObject(font.into());
         } else {
             let _ = Polygon(device, &arrow(1.0, 0.05, 0.02));
         }
@@ -332,6 +492,49 @@ unsafe fn paint(window: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_badges_survive_call_gaps_and_end_only_for_their_run() {
+        let binding = |run: &str| serde_json::json!({"sessionId":"s", "runId":run});
+        let window = |id| Window {
+            id,
+            pid: 1,
+            app: "test.exe".into(),
+            class: "test".into(),
+            title: "test".into(),
+            bounds: crate::protocol::Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 500.0,
+                height: 500.0,
+            },
+        };
+        let mut targets = Targets::default();
+        targets.record(&window(1), &binding("a"), Some((20.0, 20.0)));
+        targets.finish_call();
+        assert_eq!(
+            targets.0.len(),
+            1,
+            "thinking between calls retains the target"
+        );
+        assert!(
+            targets.0[0].cursor.is_none(),
+            "the transient action pointer is cleared"
+        );
+        targets.record(&window(2), &binding("a"), None);
+        targets.record(&window(1), &binding("b"), None);
+        targets.finish_call();
+        targets.finish_run(&binding("a"));
+        assert_eq!(
+            targets.0.len(),
+            1,
+            "all targets solely owned by the finished run are removed"
+        );
+        assert_eq!(targets.0[0].window.id, 1);
+        assert!(targets.0[0].runs.contains(&run_key(&binding("b"))));
+        targets.finish_run(&binding("b"));
+        assert!(targets.0.is_empty());
+    }
 
     #[test]
     fn shared_indicator_settings_apply_windows_overrides() {

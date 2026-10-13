@@ -4406,11 +4406,17 @@ test('browser page subscription retains updates during the initial snapshot and 
   await waitUntil(() => Boolean(resolveList));
   receive({ payload: page('closed', 'closed') });
   receive({ payload: page('new', 'loading') });
+  receive({ payload: { ...page('original'), control: { activeRuns: [] } } });
   receive({ payload: { ...page('foreign'), sessionId: 'session:other' } });
-  resolveList({ pages: [page('closed'), page('original')] });
+  resolveList({ pages: [page('closed'), { ...page('original'), control: { activeRuns: ['run:a'] } }] });
   const dispose = await ready;
   t.after(() => { if (receive) dispose(); });
   assert.deepEqual(snapshots.at(-1).map(page => [page.previewId, page.status]), [['original', 'ready'], ['new', 'loading']]);
+  assert.deepEqual(snapshots.at(-1).find(page => page.previewId === 'original').control.activeRuns, [],
+    'a completed run received during the initial snapshot cannot leave a stale control indicator');
+  receive({ payload: { ...page('original'), control: { activeRuns: ['run:a', 'run:b'] } } });
+  receive({ payload: { ...page('original'), control: { activeRuns: ['run:b'] } } });
+  assert.deepEqual(snapshots.at(-1).find(page => page.previewId === 'original').control.activeRuns, ['run:b']);
   receive({ payload: page('new') });
   assert.equal(snapshots.at(-1).find(page => page.previewId === 'new').status, 'ready');
   receive({ payload: page('original', 'closed') });

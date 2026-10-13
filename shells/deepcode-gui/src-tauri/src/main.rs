@@ -348,6 +348,8 @@ fn main() {
             };
             let mut host_tokens = HostConnectionTokens::resolve()?;
             let registration = Arc::clone(&host_tokens.browser_registration);
+            #[cfg(windows)]
+            let control_registration = Arc::clone(&host_tokens.browser_registration);
             let browser_id = host_tokens.browser_instance_id.clone();
             let callback_token = host_tokens.browser_token.clone();
             host_tokens.browser_endpoint = native_browser::start(
@@ -356,6 +358,40 @@ fn main() {
                 host_tokens.browser_instance_id.clone(),
                 host_tokens.browser_token.clone(),
                 host_bootstrap_script(&target, &host_tokens, true),
+                #[cfg(windows)]
+                Box::new(move |sessions| {
+                    let (host, port, token, _) = control_registration.lock()
+                        .map_err(|_| "native_control_registration_unavailable")?
+                        .clone().ok_or("native_control_host_unavailable")?;
+                    let request = http_request(&host, &port, "GET", "/api/conversation/statuses",
+                        &[(HOST_SHELL_TOKEN_HEADER, &token)]);
+                    let response: HostApiEnvelope<serde_json::Value> = request_loopback_json_until(
+                        &host, &port, &request, Instant::now() + Duration::from_secs(2))
+                        .map_err(|error| error.to_string())?;
+                    let mut statuses = response.into_data().map_err(|error| error.to_string())?
+                        .as_array().cloned().ok_or("native_control_statuses_invalid")?;
+                    // The sidebar catalog omits child Sessions. Read those exact
+                    // owned Sessions instead of interpreting absence as completion.
+                    for session in sessions {
+                        if statuses.iter().any(|status| status["sessionId"] == *session) { continue; }
+                        let body = r#"{"view":"summary","limit":1}"#;
+                        let request = http_request(&host, &port, "POST",
+                            &format!("/api/conversation/sessions/{session}/read"),
+                            &[(HOST_SHELL_TOKEN_HEADER, &token), ("Content-Type", "application/json")])
+                            .replace("Content-Length: 0", &format!("Content-Length: {}", body.len())) + body;
+                        let response: HostApiEnvelope<serde_json::Value> = request_loopback_json_until(
+                            &host, &port, &request, Instant::now() + Duration::from_secs(2))
+                            .map_err(|error| error.to_string())?;
+                        let run = if response.error.as_deref() == Some("session_not_found") { serde_json::Value::Null }
+                            else {
+                                let read = response.into_data().map_err(|error| error.to_string())?;
+                                read.get("summary").and_then(|summary| summary.get("run"))
+                                    .cloned().ok_or("native_control_run_status_missing")?
+                            };
+                        statuses.push(serde_json::json!({"sessionId":session,"run":run}));
+                    }
+                    Ok(serde_json::Value::Array(statuses))
+                }),
                 Box::new(move || {
                     if let Ok(mut registration) = registration.lock() {
                         if let Some((host, port, token, endpoint)) = registration.take() {
