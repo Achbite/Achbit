@@ -305,7 +305,7 @@ impl LocalAgentJournal {
              FROM session_events WHERE session_id=?1 AND sequence>?2 AND sequence<=?3
              AND event_type IN ('run.started','run.waiting','run.finishing','run.runtime.release_failed','run.runtime.released','run.settled',
                'interaction.requested','interaction.resolved','plan.published','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated',
-               'approval.requested','approval.resolved','approval.revoked','tool.completed','session.permissions.updated','conversation.revised')
+               'approval.requested','approval.resolved','approval.revoked','tool.completed','tool.input-rejected','tool.not-executed','session.permissions.updated','conversation.revised')
              ORDER BY sequence ASC",
         ).map_err(sql_error("session_lifecycle_read_prepare_failed"))?;
         let after = i64::try_from(after).unwrap_or(i64::MAX);
@@ -1306,6 +1306,8 @@ fn validate_new_event(
         "process.updated",
         "tool.input-rejected",
         "tool.interrupted",
+        "tool.not-executed",
+        "agent.delegation.changed",
         "session.control.rejected",
         "session.plugins.activated",
         "agent.task.created",
@@ -1342,6 +1344,7 @@ fn validate_new_event(
         "session.created"
             | "conversation.revised"
             | "session.model-settings.updated"
+            | "agent.delegation.changed"
             | "session.permissions.updated"
             | "session.directory-index.attached"
             | "session.directory-index.detached"
@@ -1366,6 +1369,7 @@ fn validate_new_event(
             | "process.updated"
             | "tool.input-rejected"
             | "tool.interrupted"
+            | "tool.not-executed"
             | "session.control.rejected"
             | "session.plugins.activated"
             | "artifacts.presented"
@@ -1697,6 +1701,32 @@ fn validate_new_event(
                         "startedAt 必须是 Kernel epoch 毫秒。",
                     )
                 })?;
+        }
+        "tool.not-executed" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["attemptId", "reason"], &["predecessorCallId"])?;
+            validate_id("attemptId", required_string(payload, "attemptId")?)?;
+            let reason = required_string(payload, "reason")?;
+            if !matches!(reason, "cancelled" | "dependencyFailed")
+                || (reason == "dependencyFailed") != payload.get("predecessorCallId").is_some()
+            {
+                return Err(LocalAgentStoreError::new(
+                    "tool_not_executed_invalid",
+                    "未执行原因与前驱引用不一致。",
+                ));
+            }
+            if let Some(id) = payload.get("predecessorCallId") {
+                validate_id("predecessorCallId", id.as_str().unwrap_or_default())?;
+            }
+        }
+        "agent.delegation.changed" => {
+            exact_object(&event["payload"], &["enabled"], &[])?;
+            if !event["payload"]["enabled"].is_boolean() {
+                return Err(LocalAgentStoreError::new(
+                    "agent_delegation_invalid",
+                    "enabled 必须是布尔值。",
+                ));
+            }
         }
         "tool.interrupted" => {
             let payload = &event["payload"];
@@ -2700,6 +2730,7 @@ fn validate_event_references(
                 | "process.updated"
                 | "tool.input-rejected"
                 | "tool.interrupted"
+                | "tool.not-executed"
                 | "approval.requested"
                 | "approval.resolved"
                 | "plan.confirmed"
@@ -4375,12 +4406,16 @@ fn validate_run_runtime_snapshot(
             "approvalReviewer",
             "approvalReviewerError",
             "agentToolsEnabled",
+            "agentDelegationEnabled",
         ],
     )?;
     validate_agent_capabilities(&value["agentCapabilities"])?;
     if value
         .get("agentToolsEnabled")
         .is_some_and(|enabled| !enabled.is_boolean())
+        || value
+            .get("agentDelegationEnabled")
+            .is_some_and(|enabled| !enabled.is_boolean())
     {
         return Err(LocalAgentStoreError::new(
             "run_agent_tools_invalid",

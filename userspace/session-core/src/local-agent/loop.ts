@@ -107,6 +107,7 @@ export interface AgentLoopDeps {
   composition: AgentComposition;
   capabilities?: SessionCapabilityManager;
   readSnapshot(): Promise<LoopSnapshot>;
+  waitForChange?(revision: number, signal: AbortSignal): Promise<void>;
   syncProcesses?(): Promise<void>;
   waitProcesses?(signal: AbortSignal): Promise<void>;
   agents?: {
@@ -190,6 +191,13 @@ interface ProviderControlRejection {
   error: LocalAgentError;
 }
 
+type ProviderDispatchCall = {
+  callId: string;
+  providerCallId: string;
+  name: string;
+  input: Record<string, unknown>;
+} & ({ owner: 'kernel' } | { owner: 'agent'; operation: AgentOperation } | { owner: 'rejected'; error: LocalAgentError });
+
 type ProviderTurn =
   | ({ kind: 'agent'; callId: string; providerCallId: string; operation: AgentOperation } & ProviderTurnCommon)
   | ({ kind: 'session'; callId: string; providerCallId: string; operation: SessionOperation } & ProviderTurnCommon)
@@ -214,12 +222,7 @@ type ProviderTurn =
     } & ProviderTurnCommon)
   | ({
       kind: 'tools';
-      calls: Array<{
-        callId: string;
-        providerCallId: string;
-        name: string;
-        input: Record<string, unknown>;
-      }>;
+      calls: ProviderDispatchCall[];
       progress?: ProviderTodoUpdate | {
         kind: 'controlRejected';
         rejection: ProviderControlRejection;
@@ -290,12 +293,12 @@ export async function runAgentLoop(
     }
 
     if (command.type === 'recover') {
-      const unresolved = pendingToolRequests(snapshot.events, runId)[0];
+      const pending = pendingToolRequests(snapshot.events, runId);
+      const unresolved = pending.find(request => {
+        const approval = latestApproval(snapshot.events, runId, request.callId);
+        return !approval.requested || approval.resolved;
+      });
       if (unresolved) {
-        const approval = latestApproval(snapshot.events, runId, unresolved.callId);
-        if (approval.requested && !approval.resolved) {
-          return { status: 'waiting', runId, reason: 'approval', callId: unresolved.callId };
-        }
         await commit({
           type: 'run.finishing',
           sessionId: snapshot.state.sessionId,
@@ -316,6 +319,7 @@ export async function runAgentLoop(
           },
         });
       }
+      if (pending.length) return { status: 'waiting', runId, reason: 'approval', callId: pending[0]!.callId };
     }
 
     if (command.type === 'cancel') return await cancelRun(snapshot, command, deps, commit);
@@ -342,109 +346,9 @@ export async function runAgentLoop(
         await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
         continue;
       }
-      const pending = pendingToolRequests(snapshot.events, runId);
-      for (const requestEvent of pending) {
-        snapshot = await deps.readSnapshot();
-        const runtime = runtimeForToolRequest(snapshot, requestEvent);
-        const approval = latestApproval(snapshot.events, runId, requestEvent.callId);
-        const existing = await deps.composition.kernel.readRecord(requestEvent.callId);
-        if (existing) {
-          await commitToolRecord(
-            existing,
-            expectedToolRecordIdentity(snapshot, requestEvent),
-            commit,
-          );
-          continue;
-        }
-        throwIfAborted(signal);
-        const request: ToolExecutionRequest = {
-          schemaVersion: KERNEL_REQUEST_VERSION,
-          type: 'tool.execute',
-          requestId: deps.nextId('kernel-request'),
-          sessionId: snapshot.state.sessionId,
-          runId,
-          extensionGenerationRef: runtime.extensionGenerationRef,
-          kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
-          toolBindingRef: runtimeTool(runtime, requestEvent.payload.toolName).toolBindingRef,
-          callId: requestEvent.callId,
-          attemptId: requestEvent.payload.attemptId,
-          toolName: requestEvent.payload.toolName,
-          input: requestEvent.payload.input,
-          workspaceBindings: contextForToolRequest(snapshot, requestEvent).workspaceBindings.map(binding => binding.itemId),
-          ...(selectedPlanAuthorities(snapshot.events, runId).length
-            ? { planAuthorities: selectedPlanAuthorities(snapshot.events, runId) }
-            : {}),
-          ...(approval.resolved
-            ? {
-                nonWorkspaceAuthority: {
-                  authorityId: approval.resolved.payload.authorityId,
-                  decision: approval.resolved.payload.decision,
-                },
-              }
-            : {}),
-        };
-        const reply = await executeUntilAbort(deps, request, signal);
-        if (reply.callId !== requestEvent.callId) {
-          throw new LoopFailure('kernel_call_identity_mismatch', 'Kernel 返回了其他工具调用的结果。');
-        }
-        if (reply.status === 'inputRejected') {
-          assertToolRecordIdentity(reply.rejection, expectedToolRecordIdentity(snapshot, requestEvent));
-          await commit({
-            type: 'tool.input-rejected',
-            sessionId: snapshot.state.sessionId,
-            runId,
-            callId: requestEvent.callId,
-            payload: { rejection: reply.rejection },
-          });
-          continue;
-        }
-        if (reply.status === 'approvalRequired') {
-          const approvalId = deps.nextId('approval');
-          await commit({ type: 'approval.requested', sessionId: snapshot.state.sessionId, runId,
-            callId: requestEvent.callId, payload: { approvalId, preview: reply.preview } });
-          if (reply.preview.approvalReviewer === 'agent'
-            && runRuntimeSnapshot(snapshot, runId).permissions['agent.permissions.shell'] === 'review') {
-            const baseline = JSON.stringify(snapshot.state.permissionOverrides);
-            const reviewRequestId = deps.nextId('provider-request');
-            let review: ReturnType<typeof prepareApprovalReview> | undefined;
-            let verdict: ReturnType<typeof decodeApprovalReview>;
-            try {
-              review = prepareApprovalReview(snapshot, runRuntimeSnapshot(snapshot, runId), snapshot.state.pendingApproval!, reviewRequestId);
-              await commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId, payload: review.receipt });
-              const result = await consumeTextProvider(review.request, deps, signal);
-              await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
-                ...(result.contextUsage ? [{ type: 'context.updated' as const, sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
-              verdict = decodeApprovalReview(result.summary);
-            } catch (error) {
-              if (signal.aborted) throw error;
-              const fact = errorFact(error);
-              if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
-                sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
-                  purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
-              verdict = { decision: 'ask', reason: `自动审查未完成：${fact.code}：${fact.message}` };
-            }
-            await commit(current => {
-              const changed = JSON.stringify(current.state.permissionOverrides) !== baseline;
-              const decision = changed ? { decision: 'ask' as const, reason: '审查期间权限设置已更改，正在重新检查。' } : verdict;
-              const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
-                callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...decision } }];
-              if (decision.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
-                callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
-                  authorityId: deps.nextId('authority'), decision: decision.decision, source: 'agent', reason: decision.reason } });
-              return events;
-            });
-            if (JSON.stringify(snapshot.state.permissionOverrides) !== baseline || !snapshot.state.pendingApproval) continue nextTurn;
-          }
-          await commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
-            payload: { reason: 'approval', detail: reply.preview.summary } });
-          return { status: 'waiting', runId, reason: 'approval', callId: requestEvent.callId };
-        }
-        await commitToolRecord(
-          reply.record,
-          expectedToolRecordIdentity(snapshot, requestEvent),
-          commit,
-        );
-      }
+      const waitingForTools = await dispatchPendingTools(deps, runId, signal);
+      if (waitingForTools) return waitingForTools;
+      snapshot = await deps.readSnapshot();
 
       throwIfAborted(signal);
       snapshot = await deps.takeQueuedInputs(runId);
@@ -564,22 +468,8 @@ export async function runAgentLoop(
             break;
           }
           case 'agent': {
-            let fact: NewSessionEvent;
-            try {
-              if (!deps.agents || !runtime.agentToolsEnabled
-                || !(runtime.agentCapabilities.messaging || runtime.agentCapabilities.delegation)) {
-                throw new LoopFailure('agent_unavailable', '当前任务未启用子代理能力。');
-              }
-              const result = await deps.agents.execute(runId, turn.callId, turn.operation, signal);
-              fact = { type: 'agent.control.completed', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
-                payload: { providerCallId: turn.providerCallId, operation: { ...turn.operation }, result:
-                  turn.operation.action === 'wait' || turn.operation.action === 'spawn' && turn.operation.delivery === 'wait'
-                    ? { ...result, wait: { afterSequence: preparedProviderRequest.receipt.modelView!.throughSequence } } : result } };
-            } catch (error) {
-              fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
-                providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_AGENT,
-                input: { ...turn.operation }, error: localAgentError(error) });
-            }
+            const fact = await agentControlFact(deps, snapshot.state.sessionId, runId, runtime, turn,
+              preparedProviderRequest.receipt.modelView!.throughSequence, signal);
             await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
             break;
           }
@@ -749,17 +639,13 @@ export async function runAgentLoop(
                 throw new LoopFailure('provider_tool_call_duplicate', 'Provider 重复了工具调用标识。');
               }
               seenCalls.add(call.callId);
-              if (call.name === SESSION_CONTROL_AGENT) {
-                try {
-                  const control = capabilities.controls.decode(call.callId, call.name, call.input);
-                  if (control?.kind !== 'agent' || !deps.agents || !runtime.agentToolsEnabled) throw new Error('agent_unavailable');
-                  const result = await deps.agents.execute(runId, call.callId, control.operation, signal);
-                  callFacts.push({ type: 'agent.control.completed', sessionId: snapshot.state.sessionId, runId, callId: call.callId,
-                    payload: { providerCallId: call.providerCallId, operation: { ...control.operation }, result } });
-                } catch (error) {
-                  signal.throwIfAborted();
-                  callFacts.push(controlRejectionFact(snapshot.state.sessionId, runId, { ...call, toolName: call.name, error: localAgentError(error) }));
-                }
+              if (call.owner === 'rejected') {
+                callFacts.push(controlRejectionFact(snapshot.state.sessionId, runId, { ...call, toolName: call.name }));
+                continue;
+              }
+              if (call.owner === 'agent') {
+                callFacts.push(await agentControlFact(deps, snapshot.state.sessionId, runId, runtime, call,
+                  preparedProviderRequest.receipt.modelView!.throughSequence, signal));
                 continue;
               }
               callFacts.push({
@@ -806,6 +692,7 @@ export async function runAgentLoop(
       }
     }
   } catch (error) {
+    snapshot = await deps.readSnapshot();
     // Finalization facts have already been admitted; cleanup errors cannot replace them.
     if (snapshot.state.pendingRunSettlements[runId]) throw error;
     const releaseFailed = error instanceof CapabilityReleaseFailure || error instanceof ToolViewRetirementFailure;
@@ -1647,16 +1534,16 @@ async function consumeProviderOutput(
   };
 
   const controlCalls: Array<SessionControlCall & { providerCallId: string }> = [];
-  const kernelCalls: typeof calls = [];
+  const dispatchCalls: ProviderDispatchCall[] = [];
   const agentBatch = calls.length > 1 && calls.every(call => call.name === SESSION_CONTROL_AGENT || call.name === SESSION_CONTROL_TODO_UPDATE);
   let progress: Extract<ProviderTurn, { kind: 'tools' }>['progress'];
   for (const call of calls) {
     try {
       const control = controls.decode(call.callId, call.name, call.input);
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
-      else if (control?.kind === 'agent' && agentBatch) kernelCalls.push(call);
+      else if (control?.kind === 'agent' && agentBatch) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
-      else kernelCalls.push(call);
+      else dispatchCalls.push({ ...call, owner: 'kernel' });
     } catch (error) {
       if (!(error instanceof SessionControlError)) throw error;
       const rejection: ProviderControlRejection = {
@@ -1670,7 +1557,7 @@ async function consumeProviderOutput(
         progress = { kind: 'controlRejected', rejection };
         continue;
       }
-      if (call.name === SESSION_CONTROL_AGENT && agentBatch) { kernelCalls.push(call); continue; }
+      if (call.name === SESSION_CONTROL_AGENT && agentBatch) { dispatchCalls.push({ ...call, owner: 'rejected', error: rejection.error }); continue; }
       return {
         kind: 'controlRejected',
         rejection,
@@ -1718,10 +1605,10 @@ async function consumeProviderOutput(
       ...common,
     };
   }
-  if (kernelCalls.length > 0 || rejectedCalls.length > 0 || progress) {
+  if (dispatchCalls.length > 0 || rejectedCalls.length > 0 || progress) {
     return {
       kind: 'tools',
-      calls: kernelCalls,
+      calls: dispatchCalls,
       ...(progress ? { progress } : {}),
       ...(narrative ? { narrative } : {}),
       ...common,
@@ -2078,6 +1965,250 @@ function cloneAuthority(authority: PlanAuthority): PlanAuthority {
   };
 }
 
+type ToolRequestEvent = Extract<SessionEvent, { type: 'tool.requested' }>;
+
+function executionRequest(snapshot: LoopSnapshot, requestEvent: ToolRequestEvent, deps: AgentLoopDeps): ToolExecutionRequest {
+  const runId = requestEvent.runId;
+  const runtime = runtimeForToolRequest(snapshot, requestEvent);
+  const approval = latestApproval(snapshot.events, runId, requestEvent.callId);
+  return {
+    schemaVersion: KERNEL_REQUEST_VERSION,
+    type: 'tool.execute',
+    requestId: deps.nextId('kernel-request'),
+    sessionId: snapshot.state.sessionId,
+    runId,
+    extensionGenerationRef: runtime.extensionGenerationRef,
+    kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+    toolBindingRef: runtimeTool(runtime, requestEvent.payload.toolName).toolBindingRef,
+    callId: requestEvent.callId,
+    attemptId: requestEvent.payload.attemptId,
+    toolName: requestEvent.payload.toolName,
+    input: requestEvent.payload.input,
+    workspaceBindings: contextForToolRequest(snapshot, requestEvent).workspaceBindings.map(binding => binding.itemId),
+    ...(selectedPlanAuthorities(snapshot.events, runId).length
+      ? { planAuthorities: selectedPlanAuthorities(snapshot.events, runId) }
+      : {}),
+    ...(approval.resolved
+      ? {
+          nonWorkspaceAuthority: {
+            authorityId: approval.resolved.payload.authorityId,
+            decision: approval.resolved.payload.decision,
+          },
+        }
+      : {}),
+  };
+}
+
+async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEvent, reply: ToolExecutionReply,
+  signal: AbortSignal): Promise<'terminal' | 'approval' | 'retry'> {
+  const runId = requestEvent.runId;
+  let snapshot = await deps.readSnapshot();
+  const commit = async (events: NewSessionEvent | readonly NewSessionEvent[] | ((current: LoopSnapshot) => readonly NewSessionEvent[])) => {
+    snapshot = await deps.commit(events);
+  };
+  if (reply.callId !== requestEvent.callId) throw new LoopFailure('kernel_call_identity_mismatch', 'Kernel 返回了其他工具调用的结果。');
+  if (reply.status === 'inputRejected') {
+    assertToolRecordIdentity(reply.rejection, expectedToolRecordIdentity(snapshot, requestEvent));
+    await commit({ type: 'tool.input-rejected', sessionId: snapshot.state.sessionId, runId,
+      callId: requestEvent.callId, payload: { rejection: reply.rejection } });
+    return 'terminal';
+  }
+  if (reply.status === 'approvalRequired') {
+    const approvalId = deps.nextId('approval');
+    await commit({ type: 'approval.requested', sessionId: snapshot.state.sessionId, runId,
+      callId: requestEvent.callId, payload: { approvalId, preview: reply.preview } });
+    if (reply.preview.approvalReviewer === 'agent'
+      && runRuntimeSnapshot(snapshot, runId).permissions['agent.permissions.shell'] === 'review') {
+      const baseline = JSON.stringify(snapshot.state.permissionOverrides);
+      const reviewRequestId = deps.nextId('provider-request');
+      let review: ReturnType<typeof prepareApprovalReview> | undefined;
+      let verdict: ReturnType<typeof decodeApprovalReview>;
+      try {
+        review = prepareApprovalReview(snapshot, runRuntimeSnapshot(snapshot, runId), snapshot.state.pendingApprovals.find(item => item.callId === requestEvent.callId)!, reviewRequestId);
+        await commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId, payload: review.receipt });
+        const result = await consumeTextProvider(review.request, deps, signal);
+        await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
+          ...(result.contextUsage ? [{ type: 'context.updated' as const, sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
+        verdict = decodeApprovalReview(result.summary);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const fact = errorFact(error);
+        if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
+          sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
+            purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
+        verdict = { decision: 'ask', reason: `自动审查未完成：${fact.code}：${fact.message}` };
+      }
+      await commit(current => {
+        const changed = JSON.stringify(current.state.permissionOverrides) !== baseline;
+        const decision = changed ? { decision: 'ask' as const, reason: '审查期间权限设置已更改，正在重新检查。' } : verdict;
+        const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
+          callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...decision } }];
+        if (decision.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
+          callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
+            authorityId: deps.nextId('authority'), decision: decision.decision, source: 'agent', reason: decision.reason } });
+        return events;
+      });
+      if (JSON.stringify(snapshot.state.permissionOverrides) !== baseline || !snapshot.state.pendingApprovals.some(item => item.callId === requestEvent.callId)) return 'retry';
+    }
+    return 'approval';
+  }
+  await commitToolRecord(reply.record, expectedToolRecordIdentity(snapshot, requestEvent), commit);
+  return 'terminal';
+}
+
+/** Execution is concurrent; all facts still pass through the Actor's serial commit port. */
+async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal): Promise<LoopResult | undefined> {
+  let snapshot = await deps.readSnapshot();
+  const pending = pendingToolRequests(snapshot.events, runId);
+  const isFile = (event: ToolRequestEvent) => event.payload.toolName === 'fs.write' || event.payload.toolName === 'fs.edit';
+  let enteredSegmentEnd = 0;
+  try {
+    for (let offset = 0; offset < pending.length;) {
+      signal.throwIfAborted();
+      const first = pending[offset]!;
+      let end = offset + 1;
+      if (isFile(first)) while (end < pending.length && isFile(pending[end]!)) end += 1;
+      const segment = pending.slice(offset, end);
+      const dependencies = new Map<string, string[]>();
+      if (isFile(first)) {
+        snapshot = await deps.readSnapshot();
+        const preparation = await deps.composition.kernel.prepareFileCalls({ requests: segment.map(event => executionRequest(snapshot, event, deps)) });
+        if (preparation.calls.length !== segment.length || preparation.calls.some((item, index) => item.callId !== segment[index]!.callId
+          || item.conflictsWith.some(id => !segment.slice(0, index).some(event => event.callId === id)))) {
+          throw new LoopFailure('tool_preparation_identity_mismatch', 'Kernel 文件准备结果与原始调用顺序不一致。');
+        }
+        for (const item of preparation.calls) {
+          dependencies.set(item.callId, item.conflictsWith);
+          if (item.rejection) await acceptToolReply(deps, segment.find(event => event.callId === item.callId)!, {
+            schemaVersion: KERNEL_REPLY_VERSION, type: 'tool.execution', requestId: deps.nextId('kernel-request'),
+            callId: item.callId, status: 'inputRejected', rejection: item.rejection,
+          }, signal);
+        }
+      }
+      enteredSegmentEnd = end;
+      const waiting = await executeToolSegment(deps, segment, dependencies, signal);
+      if (waiting) return waiting;
+      offset = end;
+    }
+  } catch (error) {
+    // Later order barriers were never submitted, even if the current segment failed.
+    const current = await deps.readSnapshot();
+    const unresolved = new Set(pendingToolRequests(current.events, runId).map(event => event.callId));
+    for (const event of pending.slice(enteredSegmentEnd)) if (unresolved.has(event.callId)) await deps.commit({
+      type: 'tool.not-executed', sessionId: event.sessionId, runId, callId: event.callId,
+      payload: { attemptId: event.payload.attemptId, reason: 'cancelled' },
+    });
+    throw error;
+  }
+  return undefined;
+}
+
+async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent[], dependencies: Map<string, string[]>,
+  signal: AbortSignal): Promise<LoopResult | undefined> {
+  const runId = segment[0]!.runId;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  type Completion = { event: ToolRequestEvent; permissions: string; reply?: ToolExecutionReply; error?: unknown };
+  const active = new Map<string, Promise<Completion>>();
+  const approvals = new Map<string, { permissions: string }>();
+  let failure: { error: unknown } | undefined;
+  const markNotExecuted = async (event: ToolRequestEvent, predecessorCallId?: string) => {
+    await deps.commit({ type: 'tool.not-executed', sessionId: event.sessionId, runId, callId: event.callId,
+      payload: { attemptId: event.payload.attemptId, reason: predecessorCallId ? 'dependencyFailed' : 'cancelled',
+        ...(predecessorCallId ? { predecessorCallId } : {}) } });
+  };
+  try {
+    while (true) {
+      let snapshot = await deps.readSnapshot();
+      const pending = new Set(pendingToolRequests(snapshot.events, runId).map(event => event.callId));
+      const remaining = segment.filter(event => pending.has(event.callId));
+      if (!remaining.length && !active.size) break;
+      for (const event of remaining) {
+        if (active.has(event.callId)) continue;
+        if (controller.signal.aborted) { await markNotExecuted(event); approvals.delete(event.callId); continue; }
+        const predecessors = dependencies.get(event.callId) ?? [];
+        const failed = predecessors.find(id => !pending.has(id) && snapshot.state.activities[`tool:${id}`]?.status !== 'completed');
+        if (failed) { await markNotExecuted(event, failed); continue; }
+        if (predecessors.some(id => pending.has(id))) continue;
+        const waiting = approvals.get(event.callId);
+        if (waiting) {
+          const approval = latestApproval(snapshot.events, runId, event.callId);
+          if (!approval.resolved && JSON.stringify(snapshot.state.permissionOverrides) === waiting.permissions) continue;
+          approvals.delete(event.callId);
+        }
+        if (active.size >= 4) continue;
+        const request = executionRequest(snapshot, event, deps);
+        const permissions = JSON.stringify(snapshot.state.permissionOverrides);
+        active.set(event.callId, executeUntilAbort(deps, request, controller.signal)
+          .then(reply => ({ event, permissions, reply }), error => ({ event, permissions, error })));
+      }
+      snapshot = await deps.readSnapshot();
+      if (!active.size) {
+        const stillPending = segment.filter(event => pendingToolRequests(snapshot.events, runId).some(item => item.callId === event.callId));
+        if (!stillPending.length) break;
+        if (controller.signal.aborted) continue;
+        if (!approvals.size) continue; // A predecessor terminal was committed during this pass.
+        if (snapshot.state.run?.status !== 'waiting') snapshot = await deps.commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId,
+          runId, payload: { reason: 'approval', detail: '等待工具执行审批。' } });
+        if (!deps.waitForChange) return { status: 'waiting', runId, reason: 'approval', callId: approvals.keys().next().value! };
+        await deps.waitForChange(snapshot.state.revision, controller.signal);
+        continue;
+      }
+      const waitController = new AbortController();
+      const wakeAbort = () => waitController.abort(controller.signal.reason);
+      controller.signal.addEventListener('abort', wakeAbort, { once: true });
+      let completed: Completion | undefined;
+      try {
+        const changed = deps.waitForChange && approvals.size && !controller.signal.aborted
+          ? deps.waitForChange(snapshot.state.revision, waitController.signal).then(() => undefined, () => undefined) : undefined;
+        completed = await Promise.race([...active.values(), ...(changed ? [changed] : [])]);
+      } finally {
+        waitController.abort();
+        controller.signal.removeEventListener('abort', wakeAbort);
+      }
+      if (!completed) continue;
+      active.delete(completed.event.callId);
+      if ('error' in completed) {
+        failure ??= { error: completed.error };
+        controller.abort(completed.error);
+        // The dispatched call remains unresolved until Kernel runtime release proves its final result.
+        segment = segment.filter(event => event.callId !== completed!.event.callId);
+        continue;
+      }
+      if (completed.reply!.status === 'approvalRequired' && controller.signal.aborted) {
+        await markNotExecuted(completed.event);
+        continue;
+      }
+      try {
+        const accepted = await acceptToolReply(deps, completed.event, completed.reply!, controller.signal);
+        if (accepted === 'approval') {
+          approvals.set(completed.event.callId, { permissions: completed.permissions });
+        }
+      } catch (error) {
+        failure ??= { error }; controller.abort(error);
+        segment = segment.filter(event => event.callId !== completed!.event.callId);
+      }
+    }
+  } catch (error) {
+    failure ??= { error }; controller.abort(error);
+    // Broadcast abort first; each execution owner receives cancellation before any drain is awaited.
+    const completed = await Promise.all(active.values());
+    for (const item of completed) if (item.reply) {
+      if (item.reply.status === 'approvalRequired') await markNotExecuted(item.event);
+      else await acceptToolReply(deps, item.event, item.reply, controller.signal);
+    }
+    const current = await deps.readSnapshot();
+    for (const event of segment) if (!active.has(event.callId)
+      && pendingToolRequests(current.events, runId).some(item => item.callId === event.callId)
+      && !current.events.some(item => item.type === 'tool.started' && item.callId === event.callId)) await markNotExecuted(event);
+  } finally { signal.removeEventListener('abort', onAbort); }
+  if (failure) throw failure.error;
+  signal.throwIfAborted();
+  return undefined;
+}
+
 async function cancelRun(
   snapshot: LoopSnapshot,
   command: Extract<LoopCommand, { type: 'cancel' }>,
@@ -2087,24 +2218,31 @@ async function cancelRun(
   if (hasSettlement(snapshot.events, command.runId)) {
     return settlementResult(snapshot.events, command.runId);
   }
-  let indeterminate: LocalAgentError | undefined;
-  const current = pendingToolRequests(snapshot.events, command.runId)[0];
-  if (current) {
-    const reply = await deps.composition.kernel.cancel(current.callId, current.payload.attemptId);
+  // The scheduler drains dispatched calls before cancellation settles the run.
+  // Their uncertain outcomes must survive after they leave the pending set.
+  const uncertain = snapshot.events.find(event => event.type === 'tool.completed'
+    && event.runId === command.runId && event.payload.record.outcome === 'indeterminate');
+  let indeterminate: LocalAgentError | undefined = uncertain?.type === 'tool.completed' && uncertain.payload.record.outcome === 'indeterminate'
+    ? uncertain.payload.record.error : undefined;
+  const pending = pendingToolRequests(snapshot.events, command.runId);
+  const replies = await Promise.allSettled(pending.map(current => deps.composition.kernel.cancel(current.callId, current.payload.attemptId)));
+  let cleanupFailure: unknown;
+  for (const [index, result] of replies.entries()) {
+    const current = pending[index]!;
+    if (result.status === 'rejected') { cleanupFailure ??= result.reason; continue; }
+    const reply = result.value;
     if (reply.status !== 'notFound') {
-      await commitToolRecord(
-        reply.record,
-        expectedToolRecordIdentity(snapshot, current),
-        commit,
-      );
+      await commitToolRecord(reply.record, expectedToolRecordIdentity(snapshot, current), commit);
       if (reply.record.outcome === 'indeterminate') indeterminate = reply.record.error;
-    } else if (!latestApproval(snapshot.events, command.runId, current.callId).requested) {
-      indeterminate = {
-        code: 'tool_effect_outcome_unknown',
-        message: '取消时 Kernel 没有该调用的确定记录。',
-      };
+    } else if (latestApproval(snapshot.events, command.runId, current.callId).requested) {
+      await commit({ type: 'tool.not-executed', sessionId: snapshot.state.sessionId, runId: command.runId,
+        callId: current.callId, payload: { attemptId: current.payload.attemptId, reason: 'cancelled' } });
+    } else {
+      indeterminate = { code: 'tool_effect_outcome_unknown', message: '取消时 Kernel 没有该调用的确定记录。' };
     }
   }
+  if (cleanupFailure) throw cleanupFailure;
+
   if (indeterminate) {
     await commit({
       type: 'run.finishing',
@@ -2290,7 +2428,7 @@ export function pendingToolRequests(
   runId: string,
 ): Array<Extract<SessionEvent, { type: 'tool.requested' }>> {
   const completed = new Set(events.flatMap((event) => (
-    (event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted')
+    (event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted' || event.type === 'tool.not-executed')
       && event.runId === runId ? [event.callId] : []
   )));
   return events.filter(
@@ -2368,6 +2506,32 @@ function decodeContextUsage(data: Record<string, unknown>): ProviderTokenUsage |
 function assertProviderEvent(event: ProviderEvent, requestId: string): void {
   if (event.requestId !== requestId) {
     throw new LoopFailure('provider_request_identity_mismatch', 'Provider 事件属于其他请求。');
+  }
+}
+
+async function agentControlFact(
+  deps: AgentLoopDeps,
+  sessionId: string,
+  runId: string,
+  runtime: RunRuntimeSnapshot,
+  call: { callId: string; providerCallId: string; operation: AgentOperation },
+  afterSequence: number,
+  signal: AbortSignal,
+): Promise<NewSessionEvent> {
+  try {
+    if (!deps.agents || !runtime.agentToolsEnabled
+      || !(runtime.agentCapabilities.messaging || runtime.agentCapabilities.delegation)) {
+      throw new LoopFailure('agent_unavailable', '当前任务未启用子代理能力。');
+    }
+    const result = await deps.agents.execute(runId, call.callId, call.operation, signal);
+    const waits = call.operation.action === 'wait' || call.operation.action === 'spawn' && call.operation.delivery === 'wait';
+    return { type: 'agent.control.completed', sessionId, runId, callId: call.callId,
+      payload: { providerCallId: call.providerCallId, operation: { ...call.operation },
+        result: waits ? { ...result, wait: { afterSequence } } : result } };
+  } catch (error) {
+    return controlRejectionFact(sessionId, runId, { callId: call.callId,
+      providerCallId: call.providerCallId, toolName: SESSION_CONTROL_AGENT,
+      input: { ...call.operation }, error: localAgentError(error) });
   }
 }
 

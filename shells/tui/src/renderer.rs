@@ -443,7 +443,20 @@ fn activity_summary(language: Language, activity: &ActivityProjection) -> String
             "tui.toolSummary",
             &[
                 operation.to_owned(),
-                status_label(language, &activity.status).to_owned(),
+                activity
+                    .not_executed
+                    .as_ref()
+                    .map_or_else(
+                        || status_label(language, &activity.status),
+                        |result| {
+                            language.text(if result.reason == "dependencyFailed" {
+                                "tui.status.notExecutedDependencyFailed"
+                            } else {
+                                "tui.status.notExecutedCancelled"
+                            })
+                        },
+                    )
+                    .to_owned(),
             ],
         )
     } else {
@@ -571,6 +584,28 @@ mod layout_tests {
     use crate::app::TuiHostOptions;
     use deepcode_kernel_client::{HttpKernelClient, KernelClientConfig};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn unexecuted_tools_report_the_explicit_reason() {
+        for (status, disposition, expected) in [
+            (
+                "cancelled",
+                serde_json::json!({"reason":"cancelled"}),
+                "未执行：已取消",
+            ),
+            (
+                "rejected",
+                serde_json::json!({"reason":"dependencyFailed","predecessorCallId":"call:earlier"}),
+                "未执行：前序调用未成功",
+            ),
+        ] {
+            let activity = serde_json::from_value(serde_json::json!({"activityId":"tool:pending", "kind":"tool", "status":status,
+                "label":"fs.write", "runId":"run:test", "callId":"call:pending", "sequence":1, "notExecuted":disposition})).unwrap();
+            let mut output = String::new();
+            render_activity_plain(Language::ZhCn, &mut output, &activity);
+            assert!(output.contains(expected));
+        }
+    }
 
     #[test]
     fn tool_progress_is_visible_before_the_terminal_snapshot() {

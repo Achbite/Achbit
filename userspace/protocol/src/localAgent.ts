@@ -1117,6 +1117,17 @@ export type SessionEvent =
       payload: { rejection: ToolInputRejection };
     })
   | (SessionEventBase & {
+      type: 'tool.not-executed';
+      runId: string;
+      callId: string;
+      /** Session knows that this call never entered effect execution. */
+      payload: { attemptId: string; reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
+    })
+  | (SessionEventBase & {
+      type: 'agent.delegation.changed';
+      payload: { enabled: boolean };
+    })
+  | (SessionEventBase & {
       type: 'tool.interrupted';
       runId: string;
       callId: string;
@@ -1436,6 +1447,7 @@ export interface ActivityProjection {
   tool?: ToolActivityProjection;
   inputRejection?: ToolInputRejection['error'];
   interruption?: LocalAgentError;
+  notExecuted?: { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
   providerHosted?: ProviderHostedActivityProjection;
   agent?: { agentSessionId: string } & (
     { taskId: string; phase: 'started' | 'completed' }
@@ -1605,6 +1617,8 @@ export interface SessionProjection {
   interactions: InteractionProjection[];
   /** Current reply target, derived from interactions. Only run.status indicates whether the Loop waits. */
   pendingInteraction: InteractionProjection | null;
+  /** All open decisions; pendingApproval is the first item for sequential presentation. */
+  pendingApprovals?: ApprovalProjection[];
   pendingApproval: ApprovalProjection | null;
   plans: PlanProjection[];
   activePlanRef: { planId: string; revision: number } | null;
@@ -1855,6 +1869,7 @@ export interface ProviderToolAlias {
 export interface RunRuntimeSnapshot {
   agentCapabilities: AgentCapabilities;
   agentToolsEnabled?: boolean;
+  agentDelegationEnabled?: boolean;
   permissions: UserSettings;
   environment: JsonObject;
   runRuntimeSnapshotRef: string;
@@ -2140,7 +2155,13 @@ export interface ProcessReadRequest {
   cancel?: boolean;
 }
 
+export interface FileCallPreparationRequest { requests: ToolExecutionRequest[] }
+export interface FileCallPreparationReply {
+  calls: Array<{ callId: string; conflictsWith: string[]; rejection?: ToolInputRejection }>;
+}
+
 export interface KernelPort {
+  prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply>;
   delegatedPlanScope(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<PlanAuthority[]>;
   readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]>;
   execute(request: ToolExecutionRequest, onProgress?: (progress: ToolExecutionProgress) => Promise<void>): Promise<ToolExecutionReply>;
@@ -2171,6 +2192,8 @@ export type RunLifecycleEvent =
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.resolved' }>, 'approvalId' | 'decision' | 'authorizationScope' | 'authorityId'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.revoked' }>, 'authorityId'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.completed' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.input-rejected' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.not-executed' }>>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.permissions.updated' }>>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'conversation.revised' }>, 'fromSequence' | 'throughSequence'>;
 

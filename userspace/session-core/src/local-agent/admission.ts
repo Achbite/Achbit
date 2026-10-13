@@ -74,6 +74,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     throw new Error('session_event_run_not_active');
   }
   switch (event.type) {
+    case 'agent.delegation.changed':
+      if (typeof event.payload.enabled !== 'boolean' || state.agentDelegationEnabled === event.payload.enabled) throw new Error('agent_delegation_change_invalid');
+      break;
     case 'session.created':
       if (state.revision !== 0) throw new Error('session_creation_duplicate');
       break;
@@ -167,8 +170,8 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.payload.source === 'agent') {
         const permissions = permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions, ...state.permissionOverrides });
         if (permissions['agent.permissions.shell'] !== 'review'
-          || state.pendingApproval?.preview.approvalReviewer !== 'agent'
-          || state.pendingApproval?.preview.review?.decision !== event.payload.decision
+          || state.pendingApprovals.find(item => item.callId === event.callId)?.preview.approvalReviewer !== 'agent'
+          || state.pendingApprovals.find(item => item.callId === event.callId)?.preview.review?.decision !== event.payload.decision
           || event.payload.authorizationScope !== undefined) throw new Error('approval_delegation_missing');
       }
       break;
@@ -252,10 +255,19 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'tool.started':
+    case 'tool.not-executed':
     case 'tool.interrupted': {
       const request = pendingToolRequests(events, event.runId).find((item) => item.callId === event.callId);
       if (!request || request.payload.attemptId !== event.payload.attemptId
         || event.type === 'tool.started' && state.runRuntimeReleases[event.runId]) throw new Error('tool_attempt_state_invalid');
+      if (event.type === 'tool.not-executed') {
+        if (state.activities[`tool:${event.callId}`]?.status !== 'requested') throw new Error('tool_not_executed_started');
+        const predecessor = event.payload.predecessorCallId;
+        if ((event.payload.reason === 'dependencyFailed') !== Boolean(predecessor)
+          || predecessor && (!state.activities[`tool:${predecessor}`] || ['requested', 'active', 'completed'].includes(state.activities[`tool:${predecessor}`]!.status))) {
+          throw new Error('tool_not_executed_dependency_invalid');
+        }
+      }
       break;
     }
     case 'run.settled':

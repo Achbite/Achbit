@@ -57,7 +57,9 @@ export interface SessionState {
   acceptedInputs: Record<string, { messageId: string; replyToInteraction?: { interactionId: string; prompt: string } }>;
   narratives: SessionProjection['narratives'];
   interactions: SessionProjection['interactions'];
+  pendingApprovals: NonNullable<SessionProjection['pendingApprovals']>;
   pendingApproval: SessionProjection['pendingApproval'];
+  agentDelegationEnabled: boolean | null;
   plans: SessionProjection['plans'];
   activePlanRef: SessionProjection['activePlanRef'];
   pendingPlan: SessionProjection['pendingPlan'];
@@ -124,7 +126,9 @@ export function emptySessionState(sessionId: string): SessionState {
     acceptedInputs: {},
     narratives: [],
     interactions: [],
+    pendingApprovals: [],
     pendingApproval: null,
+    agentDelegationEnabled: null,
     plans: [],
     activePlanRef: null,
     pendingPlan: null,
@@ -170,10 +174,14 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       ...(previous.run.waitingReason ? { waitingReason: previous.run.waitingReason } : {}) } : null,
     pendingInteractions: previous.interactions.filter(item => item.status === 'pending'),
     pendingPlan: previous.pendingPlan,
+    pendingApprovals: previous.pendingApprovals,
     pendingApproval: previous.pendingApproval,
   }, lifecycleEvent) : null;
 
   switch (event.type) {
+    case 'agent.delegation.changed':
+      next.agentDelegationEnabled = event.payload.enabled;
+      break;
     case 'provider.attempt.updated': {
       assertRunningRun(next, event.runId, 'provider_attempt_run_not_active');
       const fact = event.payload;
@@ -240,9 +248,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.authorityId !== event.payload.authorityId);
       break;
     case 'approval.reviewed':
-      if (!next.pendingApproval || next.pendingApproval.approvalId !== event.payload.approvalId) throw new Error('approval_review_request_missing');
-      next.pendingApproval = { ...next.pendingApproval, preview: { ...next.pendingApproval.preview,
-        review: { decision: event.payload.decision, reason: event.payload.reason } } };
+      if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
+      next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
+        ? { ...item, preview: { ...item.preview, review: { decision: event.payload.decision, reason: event.payload.reason } } } : item);
       break;
     case 'session.model-settings.updated':
       next.modelSettings = { ...event.payload.settings };
@@ -624,13 +632,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.activities[activity.activityId] = { ...activity, status: 'active', startedAt: event.payload.startedAt };
       break;
     }
-    case 'approval.requested':
-      if (next.pendingApproval) {
-        // A fresh Kernel preview replaces the pending decision after policy changes.
-        settleActivity(next, approvalActivityId(next.pendingApproval.approvalId), 'cancelled');
-      }
+    case 'approval.requested': {
+      const previousApproval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (previousApproval) settleActivity(next, approvalActivityId(previousApproval.approvalId), 'cancelled');
       next.activities = { ...next.activities };
-      next.pendingApproval = {
+      const approval = {
         approvalId: event.payload.approvalId,
         runId: event.runId,
         callId: event.callId,
@@ -643,6 +649,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         sequence: event.sequence,
         createdAt: event.occurredAt,
       };
+      next.pendingApprovals = [...next.pendingApprovals.filter(item => item.callId !== event.callId), approval];
       next.activities[approvalActivityId(event.payload.approvalId)] = {
         activityId: approvalActivityId(event.payload.approvalId),
         kind: 'approval',
@@ -653,38 +660,44 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         sequence: event.sequence,
       };
       break;
-    case 'approval.resolved':
+    }
+    case 'approval.resolved': {
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
       if (
-        !next.pendingApproval
-        || next.pendingApproval.approvalId !== event.payload.approvalId
-        || next.pendingApproval.callId !== event.callId
-        || next.pendingApproval.runId !== event.runId
+        !approval
+        || approval.approvalId !== event.payload.approvalId
+        || approval.callId !== event.callId
+        || approval.runId !== event.runId
       ) throw new Error('approval_request_missing');
-      if (event.payload.decision === 'allow' && event.payload.authorizationScope && next.pendingApproval.preview.authorizationContext) {
+      if (event.payload.decision === 'allow' && event.payload.authorizationScope && approval.preview.authorizationContext) {
         next.shellAuthorizations = [...next.shellAuthorizations, { authorityId: event.payload.authorityId,
-          runId: event.runId, scope: event.payload.authorizationScope, summary: next.pendingApproval.preview.summary,
-          context: structuredClone(next.pendingApproval.preview.authorizationContext) }];
+          runId: event.runId, scope: event.payload.authorizationScope, summary: approval.preview.summary,
+          context: structuredClone(approval.preview.authorizationContext) }];
       }
-      next.pendingApproval = null;
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       settleActivity(next, approvalActivityId(event.payload.approvalId), event.payload.decision === 'allow' ? 'completed' : 'denied');
       break;
-    case 'tool.input-rejected':
+    }
+    case 'tool.input-rejected': {
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       settleActivity(next, toolActivityId(event.callId), 'rejected');
       next.activities[toolActivityId(event.callId)] = {
         ...next.activities[toolActivityId(event.callId)],
         inputRejection: structuredClone(event.payload.rejection.error),
       };
       break;
+    }
     case 'process.updated': {
       next.processes = { ...next.processes, [event.payload.job.jobId]: structuredClone(event.payload.job) };
       projectProcess(next, event.payload.job);
       break;
     }
     case 'tool.completed': {
-      if (next.pendingApproval?.callId === event.callId) {
-        settleActivity(next, approvalActivityId(next.pendingApproval.approvalId), 'completed');
-        next.pendingApproval = null;
-      }
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'completed');
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       settleActivity(
         next,
         toolActivityId(event.callId),
@@ -710,6 +723,15 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       for (const artifact of artifacts) {
         next.artifacts[artifact.artifactId] = artifact;
       }
+      break;
+    }
+    case 'tool.not-executed': {
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
+      settleActivity(next, toolActivityId(event.callId), event.payload.reason === 'cancelled' ? 'cancelled' : 'rejected');
+      next.activities[toolActivityId(event.callId)] = { ...next.activities[toolActivityId(event.callId)],
+        notExecuted: { reason: event.payload.reason, ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) } };
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       break;
     }
     case 'tool.interrupted':
@@ -1062,6 +1084,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.pendingRunSettlements[event.runId] = cloneRunSettlement(event.payload);
       next.activePlanRef = null;
       closeInteractions(next, event.runId);
+      next.pendingApprovals = [];
       next.pendingApproval = null;
       break;
     case 'run.runtime.release_failed': {
@@ -1124,6 +1147,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         outcome: event.payload.outcome,
       };
       closeInteractions(next, event.runId);
+      next.pendingApprovals = [];
       next.pendingApproval = null;
       settleActivity(next, runActivityId(event.runId), event.payload.outcome);
       next.terminalError = event.payload.outcome === 'failed'
@@ -1149,6 +1173,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       ...(provider.thinking ? { thinking: provider.thinking } : {}),
     };
   }
+  next.pendingApproval = next.pendingApprovals[0] ?? null;
   return next;
 }
 
@@ -1275,6 +1300,7 @@ export function projectSession(
     assistantDraft: draft,
     interactions: state.interactions.map(item => cloneInteraction(item)!),
     pendingInteraction: cloneInteraction(pendingInteraction(state)),
+    pendingApprovals: state.pendingApprovals.map(item => cloneApproval(item)!),
     pendingApproval: cloneApproval(state.pendingApproval),
     plans: state.plans.map((plan) => clonePlanProjection(plan)),
     activePlanRef: state.activePlanRef ? { ...state.activePlanRef } : null,
@@ -1939,6 +1965,7 @@ function cloneActivity(activity: ActivityProjection): ActivityProjection {
   return {
     ...activity,
     ...(activity.inputRejection ? { inputRejection: structuredClone(activity.inputRejection) } : {}),
+    ...(activity.notExecuted ? { notExecuted: { ...activity.notExecuted } } : {}),
     ...(activity.interruption ? { interruption: { ...activity.interruption } } : {}),
     ...(activity.tool
       ? {

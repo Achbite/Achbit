@@ -34,7 +34,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 type BridgeRequest = {
   protocolVersion: typeof LOCAL_AGENT_PROTOCOL_VERSION;
   requestId: string;
-  operation: 'health' | 'activity' | 'createSession' | 'deleteSession' | 'submit' | 'snapshot' | 'statuses' | 'contextComposition' | 'read' | 'shutdown';
+  operation: 'health' | 'delegationChanged' | 'activity' | 'createSession' | 'deleteSession' | 'submit' | 'snapshot' | 'statuses' | 'contextComposition' | 'read' | 'shutdown';
   data: Record<string, unknown>;
 };
 
@@ -117,6 +117,10 @@ async function dispatch(
   request: BridgeRequest,
 ): Promise<unknown> {
   switch (request.operation) {
+    case 'delegationChanged':
+      if (typeof request.data.enabled !== 'boolean') throw new Error('agent_delegation_status_invalid');
+      await service.delegationChanged(request.data.enabled);
+      return { recorded: true };
     case 'activity':
       return await service.activity();
     case 'health':
@@ -176,7 +180,7 @@ function assertSessionServicePort(value: unknown): asserts value is SessionServi
   if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
   const methods = [
     'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'activity',
-    'contextComposition', 'read', 'replaceCapabilities', 'dispose',
+    'contextComposition', 'read', 'replaceCapabilities', 'delegationChanged', 'dispose',
   ] as const satisfies readonly (keyof SessionServicePort)[];
   for (const method of methods) {
     if (typeof value[method] !== 'function') throw new Error(`session_service_port_invalid:${method}`);
@@ -469,7 +473,7 @@ function decodeRequest(encoded: string): BridgeRequest {
     || value.protocolVersion !== LOCAL_AGENT_PROTOCOL_VERSION
     || typeof value.requestId !== 'string'
     || !value.requestId
-    || !['health', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown'].includes(String(value.operation))
+    || !['health', 'delegationChanged', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown'].includes(String(value.operation))
     || !isRecord(value.data)
   ) {
     throw new Error('session_service_request_invalid');

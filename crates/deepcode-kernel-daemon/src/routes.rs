@@ -114,6 +114,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             post(local_agent_delegated_plan_scope),
         )
         .route(
+            "/api/local-agent/kernel/prepare",
+            post(local_agent_kernel_prepare),
+        )
+        .route(
             "/api/local-agent/kernel/execute",
             post(local_agent_tool_execute),
         )

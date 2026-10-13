@@ -224,6 +224,7 @@ pub struct SessionProjection {
     pub interactions: Vec<InteractionProjection>,
     pub pending_interaction: Option<InteractionProjection>,
     pub pending_approval: Option<ApprovalProjection>,
+    pub pending_approvals: Option<Vec<ApprovalProjection>>,
     pub plans: Vec<PlanProjection>,
     pub active_plan_ref: Option<PlanRef>,
     pub pending_plan: Option<PendingPlanProjection>,
@@ -675,22 +676,27 @@ impl SessionProjection {
         {
             return Err("shared Session projection has an invalid interaction".to_string());
         }
-        if self.pending_approval.as_ref().is_some_and(|approval| {
-            approval.approval_id.is_empty()
-                || approval.call_id.is_empty()
-                || approval.run_id.is_empty()
-                || approval.preview.summary.is_empty()
-                || approval
-                    .preview
-                    .authorization_scope
-                    .as_deref()
-                    .is_some_and(|scope| {
-                        scope != "sessionBrowser"
-                            && !AUTHORIZATION_OPTIONS
-                                .iter()
-                                .any(|(candidate, _)| *candidate == scope)
-                    })
-        }) {
+        if self
+            .pending_approval
+            .iter()
+            .chain(self.pending_approvals.iter().flatten())
+            .any(|approval| {
+                approval.approval_id.is_empty()
+                    || approval.call_id.is_empty()
+                    || approval.run_id.is_empty()
+                    || approval.preview.summary.is_empty()
+                    || approval
+                        .preview
+                        .authorization_scope
+                        .as_deref()
+                        .is_some_and(|scope| {
+                            scope != "sessionBrowser"
+                                && !AUTHORIZATION_OPTIONS
+                                    .iter()
+                                    .any(|(candidate, _)| *candidate == scope)
+                        })
+            })
+        {
             return Err("shared Session projection has an invalid approval".to_string());
         }
         let mut plan_revisions = HashSet::new();
@@ -905,9 +911,32 @@ impl SessionProjection {
                         || activity.status != "active"
                         || activity.started_at.is_none())
                 || activity.kind != "tool" && activity.tool.is_some()
-                || (activity.kind == "tool" && activity.status == "rejected")
+                || (activity.kind == "tool"
+                    && activity.status == "rejected"
+                    && activity.not_executed.is_none())
                     != activity.input_rejection.is_some()
                 || activity.status == "rejected" && activity.tool.is_some()
+                || activity.not_executed.as_ref().is_some_and(|disposition| {
+                    activity.kind != "tool"
+                        || activity.tool.is_some()
+                        || activity.started_at.is_some()
+                        || activity.input_rejection.is_some()
+                        || activity.interruption.is_some()
+                        || match disposition.reason.as_str() {
+                            "cancelled" => {
+                                activity.status != "cancelled"
+                                    || disposition.predecessor_call_id.is_some()
+                            }
+                            "dependencyFailed" => {
+                                activity.status != "rejected"
+                                    || disposition
+                                        .predecessor_call_id
+                                        .as_deref()
+                                        .is_none_or(str::is_empty)
+                            }
+                            _ => true,
+                        }
+                })
                 || activity.interruption.as_ref().is_some_and(|error| {
                     activity.kind != "tool"
                         || activity.status != "indeterminate"
@@ -2076,6 +2105,7 @@ pub struct ActivityProjection {
     pub live_output: Option<ToolOutputProjection>,
     pub tool: Option<ToolActivityProjection>,
     pub input_rejection: Option<ToolInputRejectionProjection>,
+    pub not_executed: Option<ToolNotExecutedProjection>,
     pub interruption: Option<ConversationError>,
     pub provider_hosted: Option<ProviderHostedActivityProjection>,
     pub agent: Option<AgentActivityProjection>,
@@ -2098,6 +2128,13 @@ pub struct ToolInputRejectionProjection {
     pub message: String,
     pub diagnostics: Option<ErrorDiagnostics>,
     pub issues: Vec<ToolInputIssueProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolNotExecutedProjection {
+    pub reason: String,
+    pub predecessor_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2827,6 +2864,42 @@ mod tests {
             .unwrap()
             .validate()
             .is_err());
+    }
+
+    #[test]
+    fn projection_preserves_unexecuted_dispositions_and_approval_collection() {
+        for (status, disposition) in [
+            ("cancelled", json!({"reason":"cancelled"})),
+            (
+                "rejected",
+                json!({"reason":"dependencyFailed","predecessorCallId":"call:earlier"}),
+            ),
+        ] {
+            let mut value = projection_value();
+            value["pendingApprovals"] = json!([]);
+            value["activities"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("tool");
+            value["activities"][0]["status"] = json!(status);
+            value["activities"][0]["notExecuted"] = disposition.clone();
+            let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+            projection.validate().unwrap();
+            assert_eq!(projection.pending_approvals.unwrap().len(), 0);
+            assert_eq!(
+                projection.activities[0]
+                    .not_executed
+                    .as_ref()
+                    .unwrap()
+                    .reason,
+                disposition["reason"]
+            );
+            value["activities"][0]["startedAt"] = json!("1");
+            assert!(serde_json::from_value::<SessionProjection>(value)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
     }
 
     fn projection_value() -> Value {

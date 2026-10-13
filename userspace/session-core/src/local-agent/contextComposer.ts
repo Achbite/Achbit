@@ -93,7 +93,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   | { purpose: 'contextCompaction'; responseConstraint: 'answerOnly'; summaryInstruction: string }
 )): PreparedProviderRequest {
   const toolTerminals = new Set(input.events.flatMap((event) => (
-    event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted'
+    event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted' || event.type === 'tool.not-executed'
       ? [event.callId] : []
   )));
   const openCall = input.events.find((event) => event.type === 'tool.requested' && !toolTerminals.has(event.callId));
@@ -326,6 +326,8 @@ export function messagesFromJournal(
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
+  const retainedDelegation = events.findLast(event => event.type === 'agent.delegation.changed');
+  const retainedDelegationId = retainedDelegation ? `agent-delegation:${retainedDelegation.sequence}` : undefined;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
   const bindingsByRun = new Map(runs.map(event => [event.runId, event.payload.workspaceBindings]));
@@ -349,7 +351,8 @@ export function messagesFromJournal(
       || contribution.sourceSequence > throughSequence) continue;
     if (checkpoint && contribution.sourceSequence <= checkpoint.payload.coveredThroughSequence
       && contribution.contributionId !== `message:${retainedRunInputId}`
-      && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`) continue;
+      && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`
+      && contribution.contributionId !== retainedDelegationId) continue;
     retained.push({ ...contribution, message: cloneModelMessage(contribution.message) });
   }
   let todoList: TodoListProjection | null = null;
@@ -374,6 +377,7 @@ export function messagesFromJournal(
       checkpoint
       && event.sequence <= checkpoint.payload.coveredThroughSequence
       && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId)
+      && event !== retainedDelegation
     ) continue;
     if (event.sequence <= fixed.throughSequence
       && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId
@@ -626,6 +630,16 @@ export function messagesFromJournal(
     } else if (event.type === 'wake.triggered') {
       pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
+    } else if (event.type === 'agent.delegation.changed') {
+      // Settings can change while tools run. Deliver the ordered notice at the
+      // next request boundary without splitting a provider call/result group.
+      pendingAgentEvidence.push({
+        contributionId: `agent-delegation:${event.sequence}`, contributionKind: 'journalMessages',
+        label: 'Delegation status', sourceSequence: event.sequence,
+        message: { role: 'user', content: event.payload.enabled
+          ? 'Runtime setting changed: new agent delegation is enabled. Delegate only when useful.'
+          : 'Runtime setting changed: stop delegating new tasks. Existing tasks may continue; you may message running agents, wait for results, cancel or close them. New spawns and new tasks for idle agents are rejected locally.' },
+      });
     } else if (event.type === 'agent.message.received') {
       pendingAgentEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
         sourceSequence: event.sequence,
@@ -670,6 +684,14 @@ export function messagesFromJournal(
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
           content: JSON.stringify({ status: 'inputRejected', executed: false, error: event.payload.rejection.error }),
         },
+      });
+    } else if (event.type === 'tool.not-executed') {
+      messages.push({
+        contributionId: `tool-result:${event.callId}`, contributionKind: 'journalMessages', label: 'Tool not executed',
+        message: { role: 'tool', toolCallId: event.callId,
+          providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason,
+            ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) }) },
       });
     } else if (event.type === 'tool.interrupted') {
       messages.push({

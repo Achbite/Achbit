@@ -372,7 +372,7 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions'])
+    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals'])
     || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
     || (value.agentTasks !== undefined && !isArrayOf(value.agentTasks, isAgentTask))
     || (value.agentChildren !== undefined && !isArrayOf(value.agentChildren, isAgentChild))
@@ -400,6 +400,7 @@ function decodeProjection(value: unknown): SessionProjection {
     || !isArrayOf(value.interactions, isInteraction)
     || !isNullable(value.pendingInteraction, isInteraction)
     || !isNullable(value.pendingApproval, isApproval)
+    || (value.pendingApprovals !== undefined && !isArrayOf(value.pendingApprovals, isApproval))
     || !isArrayOf(value.plans, isPlanProjection)
     || !isNullable(value.activePlanRef, isPlanReference)
     || !isNullable(value.pendingPlan, isPendingPlan)
@@ -1359,7 +1360,7 @@ function isActivity(value: unknown): boolean {
   return isExactRecord(
     value,
     ['activityId', 'kind', 'status', 'label', 'runId', 'sequence'],
-    ['callId', 'tool', 'providerHosted', 'inputRejection', 'interruption', 'startedAt', 'liveOutput', 'agent'],
+    ['callId', 'tool', 'providerHosted', 'inputRejection', 'interruption', 'notExecuted', 'startedAt', 'liveOutput', 'agent'],
   )
     && isIdentifier(value.activityId)
     && ['run', 'tool', 'providerHosted', 'approval', 'plan', 'interaction', 'agent']
@@ -1377,17 +1378,27 @@ function isActivity(value: unknown): boolean {
     && (value.tool === undefined || isToolActivity(value.tool, String(value.status)))
     && (value.providerHosted === undefined || isProviderHostedActivity(value.providerHosted))
     && (value.kind === 'tool'
-      ? value.status === 'rejected' ? value.tool === undefined && isInputRejection(value.inputRejection)
+      ? value.notExecuted !== undefined ? isNotExecuted(value.notExecuted) && value.tool === undefined
+          && value.inputRejection === undefined && value.interruption === undefined
+          && value.status === (value.notExecuted.reason === 'cancelled' ? 'cancelled' : 'rejected')
+        : value.status === 'rejected' ? value.tool === undefined && isInputRejection(value.inputRejection)
         : value.status === 'requested' || value.status === 'active' && value.startedAt !== undefined || value.tool !== undefined
           || value.status === 'indeterminate' && isLocalAgentError(value.interruption)
       : value.tool === undefined)
-    && (value.status === 'rejected' && value.kind === 'tool') === (value.inputRejection !== undefined)
+    && (value.notExecuted === undefined || value.kind === 'tool')
+    && (value.status === 'rejected' && value.kind === 'tool' && value.notExecuted === undefined) === (value.inputRejection !== undefined)
     && (value.interruption === undefined || value.kind === 'tool' && value.status === 'indeterminate' && value.tool === undefined && isLocalAgentError(value.interruption))
     && (value.kind === 'providerHosted') === (value.providerHosted !== undefined)
     && (value.kind === 'agent' ? isExactRecord(value.agent, ['agentSessionId', 'phase'], ['taskId'])
       && isIdentifier(value.agent.agentSessionId)
       && (value.agent.phase === 'updated' ? value.agent.taskId === undefined
         : ['started', 'completed'].includes(String(value.agent.phase)) && isIdentifier(value.agent.taskId)) : value.agent === undefined);
+}
+
+function isNotExecuted(value: unknown): value is { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string } {
+  return isExactRecord(value, ['reason'], ['predecessorCallId'])
+    && ['cancelled', 'dependencyFailed'].includes(String(value.reason))
+    && (value.predecessorCallId === undefined || isIdentifier(value.predecessorCallId));
 }
 
 function isLiveToolOutput(value: unknown): boolean {

@@ -43,6 +43,12 @@ pub(crate) struct SessionServiceProcess {
     next_request: Arc<AtomicU64>,
 }
 
+/// Enqueue while the Host holds its settings transition; wait only after releasing it.
+pub(crate) struct PendingSessionResponse {
+    receiver: mpsc::Receiver<SessionReply>,
+    deadline: Instant,
+}
+
 impl std::fmt::Debug for SessionServiceProcess {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("SessionServiceProcess")
@@ -185,6 +191,33 @@ impl SessionServiceProcess {
         data: Value,
     ) -> Result<Value, SessionServiceError> {
         self.request_with_timeout(operation, data, REQUEST_TIMEOUT)
+    }
+
+    pub(crate) fn enqueue(
+        &self,
+        operation: &str,
+        data: Value,
+    ) -> Result<PendingSessionResponse, SessionServiceError> {
+        let request_id = format!("host:{}", self.next_request.fetch_add(1, Ordering::Relaxed));
+        let receiver = self
+            .process
+            .lock()
+            .map_err(|_| transport_lock_error())?
+            .begin_request(&request_id, operation, data)?;
+        Ok(PendingSessionResponse {
+            receiver,
+            deadline: Instant::now() + REQUEST_TIMEOUT,
+        })
+    }
+
+    pub(crate) fn receive(
+        &self,
+        pending: PendingSessionResponse,
+    ) -> Result<Value, SessionServiceError> {
+        self.receive_response(
+            pending.receiver,
+            pending.deadline.saturating_duration_since(Instant::now()),
+        )
     }
 
     fn request_with_timeout(

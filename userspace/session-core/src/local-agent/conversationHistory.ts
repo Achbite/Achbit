@@ -17,6 +17,7 @@ export function activeConversationEvents<Event extends SessionEvent | RunLifecyc
   const authorities = new Map(sessionGrants.map((event) => [event.payload.authorityId, event.runId]));
   return events.filter((event) => {
     if (event.type === 'conversation.revised') return false;
+    if (event.type === 'agent.delegation.changed') return true;
     if (event.type.startsWith('session.') && event.type !== 'session.control.rejected') return true;
     if (event.type === 'approval.requested' || event.type === 'approval.resolved') {
       const approval = approvals.get(event.payload.approvalId);

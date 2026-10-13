@@ -40,6 +40,7 @@ export interface SessionServicePort extends ConversationPort {
   snapshot: SessionService['snapshot'];
   statuses: SessionService['statuses'];
   activity: SessionService['activity'];
+  delegationChanged: SessionService['delegationChanged'];
   contextComposition: SessionService['contextComposition'];
   read: SessionService['read'];
   replaceCapabilities: SessionService['replaceCapabilities'];
@@ -74,6 +75,7 @@ export class SessionService implements ConversationPort {
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
   readonly #lifetime = new AbortController();
   #disposeTask?: Promise<void>;
+  #delegationNotifications: Promise<void> = Promise.resolve();
   readonly #agents?: AgentManager;
 
   constructor(
@@ -86,6 +88,20 @@ export class SessionService implements ConversationPort {
       withActor: (id, operation) => this.withActor(id, operation),
       read: id => this.agentManagement(id),
     }, configurations);
+  }
+
+  /** Ordered Host setting facts; this does not start a run or activate a new Actor. */
+  delegationChanged(enabled: boolean): Promise<void> {
+    this.assertOpen();
+    if (!this.#agents) return Promise.resolve();
+    const actors = [...this.#actors.values()];
+    const task = this.#delegationNotifications.then(async () => {
+      const results = await Promise.allSettled(actors.map(async actor => (await actor).delegationChanged(enabled)));
+      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, 'agent_delegation_notification_failed');
+    });
+    this.#delegationNotifications = task.catch(() => undefined);
+    return task;
   }
 
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {

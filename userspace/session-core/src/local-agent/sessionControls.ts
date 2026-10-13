@@ -264,7 +264,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
       description: capabilities && !capabilities.delegation
         ? capabilities.messaging === 'parent' ? 'Contact your parent. Call action=models for your contact and exact operations. Submit each operation alone.'
           : 'Exchange messages with permitted contacts. Call action=models for contacts and exact operations. Submit each operation alone.'
-        : 'Work with agents when useful. Call action=models for exact operations, available presets and configuration choices. Multiple async spawns may share a turn with todo.update. Other operations are submitted alone.',
+        : 'Delegate when useful and currently enabled. Disabling delegation stops new tasks; existing tasks may continue, exchange messages or be cancelled. Follow the latest delegation status in the conversation; local admission enforces it. Call action=models for exact operations, presets and configuration choices. Multiple async spawns may share a turn with todo.update. Other operations are submitted alone.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
@@ -294,7 +294,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Publish or revise a Plan; confirmation follows the current Plan setting. Keep steps to meaningful outcome phases, merging similar work. Use extendScope for additions; a full revision replaces the Plan and must include the complete intended manifest. Routine fixes within confirmed scope need no new Plan. Bash command is an optional example, not an exact script lock; writablePaths defines its write scope. Todo remains independent.',
+      description: 'Publish a Plan when workspace changes require new authorization, or extendScope before expanding confirmed scope; confirmation follows the current Plan setting. Necessary edits within confirmed scope need no new Plan. Kernel scope rejection requires obtaining the missing authorization, not declaring a Plan unnecessary. Keep meaningful outcome phases; a full revision replaces the Plan and must contain the complete intended manifest. Bash command is an optional example; writablePaths defines its write scope. Todo is independent.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {

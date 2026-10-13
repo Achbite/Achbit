@@ -6,11 +6,12 @@ export interface RunLifecycleState {
   run: ConversationSessionStatus['run'];
   pendingInteractions: readonly { interactionId: string; runId: string; mode?: 'wait' | 'continue' }[];
   pendingPlan: { planId: string; revision: number; runId: string; callId: string } | null;
+  pendingApprovals: readonly { approvalId: string; runId: string; callId: string }[];
   pendingApproval: { approvalId: string; runId: string; callId: string } | null;
 }
 
 export function emptyRunLifecycle(): RunLifecycleState {
-  return { run: null, pendingInteractions: [], pendingPlan: null, pendingApproval: null };
+  return { run: null, pendingInteractions: [], pendingPlan: null, pendingApprovals: [], pendingApproval: null };
 }
 
 /** Shared by full Session replay and compact navigation reads. Payload admission
@@ -23,6 +24,7 @@ export function reduceRunLifecycle(previous: RunLifecycleState, event: RunLifecy
   };
   const closeInputs = (runId: string) => {
     next.pendingInteractions = next.pendingInteractions.filter(item => item.runId !== runId);
+    next.pendingApprovals = [];
     next.pendingApproval = null;
   };
   switch (event.type) {
@@ -78,22 +80,26 @@ export function reduceRunLifecycle(previous: RunLifecycleState, event: RunLifecy
       }
       break;
     case 'approval.requested':
-      next.pendingApproval = { approvalId: event.payload.approvalId, runId: event.runId, callId: event.callId };
+      next.pendingApprovals = [...next.pendingApprovals.filter(item => item.callId !== event.callId),
+        { approvalId: event.payload.approvalId, runId: event.runId, callId: event.callId }];
       break;
     case 'approval.resolved':
-      next.pendingApproval = null;
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.approvalId !== event.payload.approvalId);
       // Session grants survive edits even when their original run is excluded.
       if (event.payload.decision !== 'allow'
         || !(event.payload.authorizationScope && isSessionAuthorizationScope(event.payload.authorizationScope))
         || next.run?.runId === event.runId) resume(event.runId);
       break;
+    case 'tool.input-rejected':
+    case 'tool.not-executed':
     case 'tool.completed':
-      if (next.pendingApproval?.callId === event.callId) {
-        next.pendingApproval = null;
+      if (next.pendingApprovals.some(item => item.callId === event.callId)) {
+        next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
         resume(event.runId);
       }
       break;
   }
+  next.pendingApproval = next.pendingApprovals[0] ?? null;
   return next;
 }
 
@@ -135,6 +141,8 @@ export function projectRunLifecycleEvent(event: SessionEvent): RunLifecycleEvent
       } };
     case 'approval.revoked':
       return { ...base, type: event.type, runId: event.runId, payload: { authorityId: event.payload.authorityId } };
+    case 'tool.input-rejected':
+    case 'tool.not-executed':
     case 'tool.completed':
       return { ...base, type: event.type, runId: event.runId, callId: event.callId, payload: {} };
     case 'session.permissions.updated':

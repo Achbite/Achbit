@@ -137,6 +137,11 @@ export function runtimeSnapshot(runId, options = {}) {
 
 export function emptyKernel(overrides = {}) {
   return {
+    async prepareFileCalls({ requests }) {
+      return { calls: requests.map((request, index) => ({ callId: request.callId,
+        conflictsWith: requests.slice(0, index).filter(previous => previous.input.workspaceId === request.input.workspaceId
+          && previous.input.path === request.input.path).map(previous => previous.callId) })) };
+    },
     async delegatedPlanScope() { return []; },
     async prepareCatalog() { throw new Error('unexpected_prepare_catalog'); },
     async releaseCatalog() { throw new Error('unexpected_release_catalog'); },

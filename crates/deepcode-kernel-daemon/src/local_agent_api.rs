@@ -603,9 +603,16 @@ impl LocalAgentRuntime {
             "environment": environment,
             "agentCapabilities": agent_capabilities,
         });
-        if settings["agent.subagents.enabled"] == true {
-            response["agentToolsEnabled"] = json!(true);
-        }
+        // Handler availability is stable; latest admission policy is a separate fact.
+        response["agentToolsEnabled"] = json!(true);
+        response["agentDelegationEnabled"] = json!(
+            self.active_runtime_settings()
+                .map_err(|message| RunPreparationError::new(
+                    "active_runtime_settings_unavailable",
+                    message
+                ))?["agent.subagents.enabled"]
+                == true
+        );
         match &approval_reviewer_binding {
             Ok(binding) => response["approvalReviewer"] = json!(binding.snapshot()),
             Err(message) => {
@@ -1313,6 +1320,22 @@ pub(crate) async fn local_agent_run_runtime_release(
     }
 }
 
+pub(crate) async fn local_agent_kernel_prepare(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::local_agent_kernel::LocalToolPreparationRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let kernel = state.local_agent.kernel.clone();
+    match tokio::task::spawn_blocking(move || kernel.prepare_file_calls(body)).await {
+        Ok(Ok(reply)) => ApiResponse::ok(reply),
+        Ok(Err(error)) => kernel_error(error),
+        Err(error) => ApiResponse::error("tool_prepare_failed", error.to_string()),
+    }
+}
+
 pub(crate) async fn local_agent_tool_execute(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1386,13 +1409,12 @@ pub(crate) async fn local_agent_tool_cancel(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state
-        .local_agent
-        .kernel
-        .cancel(&body.call_id, &body.attempt_id)
+    let kernel = state.local_agent.kernel.clone();
+    match tokio::task::spawn_blocking(move || kernel.cancel(&body.call_id, &body.attempt_id)).await
     {
-        Ok(reply) => ApiResponse::ok(reply),
-        Err(error) => kernel_error(error),
+        Ok(Ok(reply)) => ApiResponse::ok(reply),
+        Ok(Err(error)) => kernel_error(error),
+        Err(error) => ApiResponse::error("tool_cancel_failed", error.to_string()),
     }
 }
 

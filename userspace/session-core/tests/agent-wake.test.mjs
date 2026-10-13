@@ -29,6 +29,7 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
       runPreparation: { ...preparation.port, async prepare(input) {
         const prepared = await preparation.port.prepare(input);
         prepared.runtimeSnapshot.agentToolsEnabled = true;
+        prepared.runtimeSnapshot.agentDelegationEnabled = settings.enabled;
         const creation = (await readEvents(journal, sessionId))[0];
         if (creation.payload.agentContext) prepared.runtimeSnapshot.agentCapabilities = creation.payload.agentContext.capabilities;
         const inputs = preparations.get(sessionId) ?? [];
@@ -848,4 +849,83 @@ test('one contribution registry validates, describes and restores supported inst
   assert.deepEqual(agentPermissions({ 'agent.permissions.workspaceMutation': 'allow' }, { 'agent.permissions.workspaceMutation': 'plan' }), { 'agent.permissions.workspaceMutation': 'plan' });
   const presets = agentPresets({ presets: JSON.stringify([{ id: 'custom', name: 'Custom', capabilities: { messaging: false, continuation: true, delegation: false }, configuration }]) });
   assert.equal(presets[2].configuration.context.id, 'registered-context');
+});
+
+test('delegation toggles append ordered facts without changing tools or accepting disabled tasks', async t => {
+  const ownerId = 'session:delegation-toggle';
+  let fixture;
+  fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
+    assert.equal(sessionId, ownerId, 'disabled delegation must not start a child');
+    assert.ok(request.tools.some(tool => tool.name === 'agent'), 'the installed handler remains discoverable when off');
+    if (turn === 1) {
+      for (const enabled of [true, false, true, true, false]) {
+        fixture.settings.enabled = enabled;
+        await service.delegationChanged(enabled);
+      }
+      yield call(request, 'toggle:discover', 'agent', { action: 'models' });
+    } else if (turn === 2) {
+      const first = fixture.requests.get(ownerId)[0];
+      assert.deepEqual(request.tools, first.tools);
+      assert.deepEqual(request.messages.slice(0, first.messages.length), first.messages);
+      assert.equal(occurrences(textOf(request), 'stop delegating new tasks'), 3);
+      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 2);
+      yield call(request, 'toggle:rejected', 'agent', { action: 'spawn', name: 'Disabled', task: 'Must not start', delivery: 'async' });
+    } else {
+      assert.equal(turn, 3);
+      assert.match(textOf(request), /agent_disabled/u);
+      yield answer(request, 'Continued without delegating.');
+    }
+    yield done(request);
+  }, { settings: { enabled: false } });
+  await fixture.service.submit(messageCommand(ownerId, 'command:toggle', 'Inspect available agent operations.'));
+  const state = await completed(fixture.service, ownerId);
+  assert.deepEqual(state.agentTasks ?? [], []);
+  const events = await readEvents(fixture.journal, ownerId);
+  assert.deepEqual(events.filter(event => event.type === 'agent.delegation.changed').map(event => event.payload.enabled),
+    [false, true, false, true, false]);
+  const last = events.at(-1);
+  const compacted = [...events, { ...last, eventId: 'event:toggle-compacted', sequence: last.sequence + 1,
+    type: 'context.compacted', payload: { compactionId: 'compact:toggle', coveredThroughSequence: last.sequence,
+      summary: 'The task inspected available agent operations.' } }];
+  const retained = messagesFromJournal(compacted, state.run.runId, [workspaceBinding]);
+  const policies = retained.filter(item => item.contributionId.startsWith('agent-delegation:'));
+  assert.equal(policies.length, 1, 'compaction retains the latest exact policy independently of summary wording');
+  assert.match(policies[0].message.content, /stop delegating new tasks/u);
+  const before = fixture.requests.get(ownerId).length;
+  fixture.settings.enabled = true;
+  await fixture.service.delegationChanged(true);
+  assert.equal(fixture.requests.get(ownerId).length, before, 'a setting change does not start a model request');
+});
+
+test('delegation changes during execution preserve the provider call and result group', async t => {
+  const ownerId = 'session:delegation-in-flight';
+  let fixture;
+  const tool = { toolBindingRef: 'binding:toggle-read', name: 'fs.read', description: 'Read one file.',
+    origin: 'coreBuiltin', availability: 'callable', possibleEffects: [],
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } };
+  fixture = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
+    if (turn === 1) yield call(request, 'toggle:read', 'fs_read', { path: 'example.txt' });
+    else {
+      assert.equal(turn, 2);
+      const callIndex = request.messages.findIndex(message => message.role === 'assistant' && message.toolCalls?.length);
+      assert.ok(callIndex >= 0);
+      const result = request.messages[callIndex + 1];
+      assert.equal(result.role, 'tool', 'runtime notices must not split the call/result group');
+      assert.equal(result.providerCallId, 'toggle:read');
+      const notices = request.messages.slice(callIndex + 2).filter(message => message.role === 'user' && message.content.startsWith('Runtime setting changed:'));
+      assert.equal(notices.length, 2);
+      assert.match(notices[0].content, /stop delegating new tasks/u);
+      assert.match(notices[1].content, /new agent delegation is enabled/u);
+      yield answer(request, 'Read complete.');
+    }
+    yield done(request);
+  }, { preparation: { tools: [tool] }, kernel: () => emptyKernel({ async execute(request) {
+    for (const enabled of [false, true]) {
+      fixture.settings.enabled = enabled;
+      await fixture.service.delegationChanged(enabled);
+    }
+    return completedExecutionReply(request, { content: 'Read evidence.' });
+  } }) });
+  await fixture.service.submit(messageCommand(ownerId, 'command:in-flight-toggle', 'Read example.txt.'));
+  await completed(fixture.service, ownerId);
 });

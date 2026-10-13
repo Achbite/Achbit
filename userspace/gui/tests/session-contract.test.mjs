@@ -2997,6 +2997,27 @@ test('GUI consumes Session-normalized tool errors and record-local detail failur
     diagnostics: { source: 'kernel', phase: 'prepare', category: 'input', retryable: false, causes: [] },
     issues: [{ path: '$.path', rule: 'type', message: 'Expected a string.' }] };
   assert.deepEqual(await decodeGuiProjection(inputRejected), inputRejected);
+  assert.deepEqual(await decodeGuiProjection({ ...projection, pendingApprovals: [] }), { ...projection, pendingApprovals: [] });
+  await assert.rejects(decodeGuiProjection({ ...projection, pendingApprovals: [{ approvalId: 'invalid' }] }), /conversation_projection_invalid/);
+  const { toolActivitySummary } = await loadGuiModule(t, '/src/components/local-agent/ToolActivityDetails.tsx');
+  for (const [reason, status, zh, en] of [
+    ['cancelled', 'cancelled', '未执行：已取消', 'Not executed: cancelled'],
+    ['dependencyFailed', 'rejected', '未执行：前序调用未成功', 'Not executed: predecessor did not succeed'],
+  ]) {
+    const notExecuted = structuredClone(inputRejected);
+    const item = notExecuted.activities.find((entry) => entry.activityId === activity.activityId);
+    delete item.inputRejection;
+    item.status = status;
+    item.notExecuted = { reason, ...(reason === 'dependencyFailed' ? { predecessorCallId: 'call:predecessor' } : {}) };
+    assert.deepEqual(await decodeGuiProjection(notExecuted), notExecuted);
+    assert.ok(toolActivitySummary(item, 'zh-CN').includes(zh));
+    assert.ok(toolActivitySummary(item, 'en-US').includes(en));
+    item.notExecuted.reason = 'unknown';
+    await assert.rejects(decodeGuiProjection(notExecuted), /conversation_projection_invalid/);
+    item.notExecuted.reason = reason;
+    item.inputRejection = activity.inputRejection;
+    await assert.rejects(decodeGuiProjection(notExecuted), /conversation_projection_invalid/);
+  }
 });
 
 test('GUI ordinary input queues during a decision without answering it or changing the active model', async (t) => {

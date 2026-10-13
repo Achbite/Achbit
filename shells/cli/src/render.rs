@@ -535,7 +535,17 @@ pub(crate) fn render_tool_activity(
         .as_ref()
         .map(|tool| tool.operation.as_str())
         .unwrap_or(activity.label.as_str());
-    writeln!(out, "工具 {operation} [{}]", activity.status)?;
+    let status = activity
+        .not_executed
+        .as_ref()
+        .map_or(activity.status.as_str(), |result| {
+            if result.reason == "dependencyFailed" {
+                "未执行：前序调用未成功"
+            } else {
+                "未执行：已取消"
+            }
+        });
+    writeln!(out, "工具 {operation} [{status}]")?;
     if activity.status == "active" {
         if let Some(elapsed) = activity.started_at.as_ref().and_then(|started| {
             let started = started.parse::<u128>().ok()?;
@@ -980,6 +990,24 @@ mod tests {
                 "cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
             "run": {"runId":"run:test","profileId":"profile:test","workspaceBindings":[],"status":"running"}
         })).unwrap()
+    }
+
+    #[test]
+    fn unexecuted_tools_report_the_explicit_reason() {
+        for (status, disposition, expected) in [
+            ("cancelled", json!({"reason":"cancelled"}), "未执行：已取消"),
+            (
+                "rejected",
+                json!({"reason":"dependencyFailed","predecessorCallId":"call:earlier"}),
+                "未执行：前序调用未成功",
+            ),
+        ] {
+            let activity = serde_json::from_value(json!({"activityId":"tool:pending", "kind":"tool", "status":status,
+                "label":"fs.write", "runId":"run:test", "callId":"call:pending", "sequence":1, "notExecuted":disposition})).unwrap();
+            let mut output = Vec::new();
+            render_tool_activity(&mut output, &projection(), &activity).unwrap();
+            assert!(String::from_utf8(output).unwrap().contains(expected));
+        }
     }
 
     #[test]

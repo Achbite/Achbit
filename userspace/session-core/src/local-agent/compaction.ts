@@ -121,6 +121,7 @@ function closesModelContextPrefix(event: SessionEvent): boolean {
     || event.type === 'agent.message.received'
     || event.type === 'session.control.rejected'
     || event.type === 'tool.input-rejected'
+    || event.type === 'tool.not-executed'
     || event.type === 'tool.completed';
 }
 

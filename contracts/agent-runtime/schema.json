@@ -705,6 +705,7 @@
         "approvalReviewerError": {"$ref": "#/$defs/LocalAgentError"},
         "agentCapabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "agentToolsEnabled": {"type": "boolean"},
+        "agentDelegationEnabled": {"type": "boolean"},
         "instructions": {
           "type": "array",
           "items": {
@@ -2130,6 +2131,8 @@
             "approval.revoked",
             "tool.input-rejected",
             "tool.interrupted",
+            "tool.not-executed",
+            "agent.delegation.changed",
             "process.updated",
             "tool.completed",
             "session.plugins.activated",
@@ -2888,6 +2891,15 @@
           }
         },
         {
+          "if": {"properties": {"type": {"const": "tool.not-executed"}}},
+          "then": {"properties": {"payload": {"$ref": "#/$defs/ToolNotExecuted"}}, "required": ["runId", "callId"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "agent.delegation.changed"}}},
+          "then": {"properties": {"payload": {"type": "object", "additionalProperties": false,
+            "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}}}
+        },
+        {
           "if": {"properties": {"type": {"const": "tool.interrupted"}}},
           "then": {
             "properties": {
@@ -3262,6 +3274,7 @@
         "assistantDraft": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AssistantDraftProjection"}]},
         "interactions": {"type":"array","items":{"$ref":"#/$defs/InteractionProjection"}},
         "pendingInteraction": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/InteractionProjection"}]},
+        "pendingApprovals": {"type": "array", "items": {"$ref": "#/$defs/ApprovalProjection"}},
         "pendingApproval": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/ApprovalProjection"}]},
         "plans": {"type": "array", "items": {"$ref": "#/$defs/PlanProjection"}},
         "activePlanRef": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/PlanRef"}]},
@@ -3802,6 +3815,12 @@
         "issues": {"type": "array", "items": {"$ref": "#/$defs/ToolInputIssue"}}
       }
     },
+    "ToolNotExecuted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attemptId", "reason"],
+      "properties": {"attemptId": {"$ref": "#/$defs/Id"}, "reason": {"enum": ["cancelled", "dependencyFailed"]},
+        "predecessorCallId": {"$ref": "#/$defs/Id"}}
+    },
     "ToolInputRejection": {
       "type": "object",
       "additionalProperties": false,
@@ -4247,6 +4266,8 @@
         "tool": {"$ref": "#/$defs/ToolActivityProjection"},
         "inputRejection": {"$ref": "#/$defs/ToolInputError"},
         "interruption": {"$ref": "#/$defs/LocalAgentError"},
+        "notExecuted": {"type": "object", "additionalProperties": false, "required": ["reason"],
+          "properties": {"reason": {"enum": ["cancelled", "dependencyFailed"]}, "predecessorCallId": {"$ref": "#/$defs/Id"}}},
         "agent": {"type": "object", "additionalProperties": false, "required": ["agentSessionId", "taskId", "phase"], "properties": {"agentSessionId": {"$ref": "#/$defs/Id"}, "taskId": {"$ref": "#/$defs/Id"}, "phase": {"enum": ["started", "completed"]}}},
         "providerHosted": {
           "type": "object",

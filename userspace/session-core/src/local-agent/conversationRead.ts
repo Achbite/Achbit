@@ -82,10 +82,11 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   const candidates = events.filter((event) => {
     if (event.sequence >= (query.before ?? Infinity)) return false;
     switch (view) {
-      case 'summary': return event.type === 'tool.completed';
+      case 'summary': return event.type === 'tool.completed' || event.type === 'tool.not-executed';
       case 'messages': return event.type === 'message.committed' || event.type === 'narrative.committed';
       case 'tools': return event.type === 'tool.completed'
-        && (!query.recordId || event.payload.record.recordId === query.recordId);
+        ? !query.recordId || event.payload.record.recordId === query.recordId
+        : event.type === 'tool.not-executed' && !query.recordId;
       case 'plans': return event.type.startsWith('plan.') || event.type.startsWith('todo.');
       case 'reasoning': return event.type === 'provider.turn.settled' && event.payload.outcome === 'completed'
         && (!query.providerRequestId || event.payload.providerRequestId === query.providerRequestId);
@@ -119,6 +120,7 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
   if (event.type === 'message.committed' || event.type === 'narrative.committed') {
     return { ...base, role: event.type === 'message.committed' ? event.payload.role : 'assistant', ...textExcerpt(event.payload.content, 12 * 1024) };
   }
+  if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
   if (event.type === 'tool.completed') {
     const record = event.payload.record;
     return {

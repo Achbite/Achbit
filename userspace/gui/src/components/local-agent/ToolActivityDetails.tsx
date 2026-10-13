@@ -232,7 +232,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
       >
         <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name={shell ? 'terminal' : isFileMutationOperation(tool?.operation) ? 'compose' : tool?.operation?.startsWith('fs.') ? 'artifact' : 'tool'} /></span>
         <strong>{toolActivitySummary(activity, language)}</strong>
-        {activity.status !== 'completed' && (
+        {activity.status !== 'completed' && !activity.notExecuted && (
           <span>{toolActivityStatus(activity.status, language)}</span>
         )}
         {activity.status === 'active' && activity.startedAt && (
@@ -282,6 +282,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
             )}
           </dl>
           {activity.interruption && <p role="status">{activity.interruption.message}</p>}
+          {activity.notExecuted && <p role="status">{notExecutedStatus(activity, language)}</p>}
           {activity.inputRejection && (
             <div className="local-agent__input-rejection">
               <p>{activity.inputRejection.message}</p>
@@ -431,6 +432,7 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
   const operation = activity.tool?.operation ?? activity.label;
   const target = activity.tool?.resources[0]?.label;
   const command = activity.tool?.shell?.command;
+  if (activity.notExecuted) return `${operation} · ${notExecutedStatus(activity, language)}`;
   if (activity.status === 'requested' || activity.status === 'waiting') {
     return t(language, `agent.tool.summary.${activity.status}One`, { operation: command ?? operation });
   }
@@ -465,6 +467,11 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
     operation,
     target: target ? ` · ${target}` : '',
   });
+}
+
+function notExecutedStatus(activity: ActivityProjection, language: UiLanguage): string {
+  return t(language, activity.notExecuted?.reason === 'cancelled'
+    ? 'agent.tool.notExecuted.cancelled' : 'agent.tool.notExecuted.dependencyFailed');
 }
 
 function providerHostedSummary(hosted: ProviderHostedActivityProjection, status: ActivityProjection['status'], language: UiLanguage): string {

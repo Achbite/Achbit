@@ -80,6 +80,13 @@ pub(crate) async fn user_settings_patch(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
+    match tokio::task::spawn_blocking(move || apply_user_settings_patch(state, body)).await {
+        Ok(response) => response,
+        Err(error) => ApiResponse::error("user_settings_update_failed", error.to_string()),
+    }
+}
+
+fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> {
     let _runtime_transition = match state.local_agent.runtime_transition() {
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
@@ -88,11 +95,15 @@ pub(crate) async fn user_settings_patch(
     let Some(patch_object) = patches.as_object() else {
         return ApiResponse::error("invalid_user_settings", "设置补丁必须是 JSON 对象。");
     };
-    let (next_settings, settings_path) = {
+    let (next_settings, settings_path, previous_delegation) = {
         let gui = state.gui.lock().expect("gui state lock");
         let mut next = gui.user_settings.clone();
         merge_object(&mut next, &patches);
-        (next, gui.paths.settings_path.clone())
+        (
+            next,
+            gui.paths.settings_path.clone(),
+            gui.user_settings["agent.subagents.enabled"] == true,
+        )
     };
     if let Err(message) = validate_agent_runtime_settings(&next_settings) {
         return ApiResponse::error("invalid_agent_runtime_settings", message);
@@ -154,6 +165,26 @@ pub(crate) async fn user_settings_patch(
     {
         let mut gui = state.gui.lock().expect("gui state lock");
         gui.user_settings = next_settings.clone();
+    }
+    let delegation = next_settings["agent.subagents.enabled"] == true;
+    let notification = if delegation != previous_delegation {
+        match state
+            .session_service
+            .enqueue("delegationChanged", json!({"enabled": delegation}))
+        {
+            Ok(pending) => Some(pending),
+            Err(error) => return ApiResponse::error(error.code, error.message),
+        }
+    } else {
+        None
+    };
+    // Enqueue in setting order, then release the runtime lock before Session
+    // appends events: an Actor may still be completing its initial run preparation.
+    drop(_runtime_transition);
+    if let Some(pending) = notification {
+        if let Err(error) = state.session_service.receive(pending) {
+            return ApiResponse::error(error.code, error.message);
+        }
     }
     ApiResponse::ok(json!({
         "settings": next_settings,

@@ -33,6 +33,8 @@ import type {
   SessionEvent,
   StoredCommand,
   ToolCancelReply,
+  FileCallPreparationRequest,
+  FileCallPreparationReply,
   ToolExecutionRecord,
   ToolExecutionReply,
   ToolExecutionRequest,
@@ -239,6 +241,18 @@ export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPo
 }
 
 export class HttpKernelPort extends LocalAgentHttpPort implements KernelPort {
+  async prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply> {
+    const value = await this.json<FileCallPreparationReply>('/api/local-agent/kernel/prepare', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    if (!Array.isArray(value.calls) || value.calls.length !== request.requests.length
+      || value.calls.some((call, index) => call.callId !== request.requests[index]?.callId
+        || !Array.isArray(call.conflictsWith) || call.conflictsWith.some(id => typeof id !== 'string'))) {
+      throw new Error('kernel_file_preparation_reply_invalid');
+    }
+    return value;
+  }
+
   async delegatedPlanScope(request: Parameters<KernelPort['delegatedPlanScope']>[0]): Promise<PlanAuthority[]> {
     const result = await this.json<{ authorities: PlanAuthority[] }>('/api/local-agent/plans/delegated-scope', {
       method: 'POST', body: JSON.stringify(request),
@@ -450,7 +464,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'selectedPlugins',
       'environment',
       'agentCapabilities',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'agentDelegationEnabled'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -467,6 +481,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
     try {
       const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
       if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
+      if (value.agentDelegationEnabled !== undefined && typeof value.agentDelegationEnabled !== 'boolean') throw new Error('agent_delegation_status_invalid');
       const provider = decodeProviderRuntime(value.provider);
       const approvalReviewer = value.approvalReviewer === undefined
         ? undefined : decodeProviderRuntime(value.approvalReviewer);
@@ -514,7 +529,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       return {
         runtimeSnapshot: Object.freeze({
           agentCapabilities,
-          ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true } : {}),
+          ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true, agentDelegationEnabled: value.agentDelegationEnabled === true } : {}),
           runRuntimeSnapshotRef: `run-runtime:${request.sessionId}:${request.runId}`,
           extensionGenerationRef: value.extensionGenerationRef,
           kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,

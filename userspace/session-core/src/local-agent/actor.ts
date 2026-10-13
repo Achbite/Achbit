@@ -272,15 +272,18 @@ export class SessionActor {
     }
   }
 
-  private async waitForChange(revision: number): Promise<void> {
+  private async waitForChange(revision: number, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     let wake!: () => void;
     const changed = new Promise<void>(resolve => { wake = resolve; });
     this.#changes.add(wake);
+    signal?.addEventListener('abort', wake, { once: true });
     try {
       // Subscribe before the read so a settlement between the two cannot be missed.
       if ((await this.loadSnapshot()).state.revision !== revision || this.#loopFailure || this.#disposed) return;
       await changed;
-    } finally { this.#changes.delete(wake); }
+      signal?.throwIfAborted();
+    } finally { this.#changes.delete(wake); signal?.removeEventListener('abort', wake); }
   }
 
   async hasActiveWork(): Promise<boolean> {
@@ -329,6 +332,15 @@ export class SessionActor {
       errors.push(error);
     }
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
+  }
+
+  async delegationChanged(enabled: boolean): Promise<void> {
+    if (!this.#agents) return;
+    await this.enqueue(() => this.withWrite(async () => {
+      const current = await this.loadSnapshot();
+      if (current.state.agentDelegationEnabled === enabled) return;
+      await this.appendEvents([{ type: 'agent.delegation.changed', sessionId: this.sessionId, payload: { enabled } }], current);
+    }));
   }
 
   /** Trusted operator entry; never exposed through the model's callable catalog. */
@@ -729,9 +741,14 @@ export class SessionActor {
         ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) }
         : {}),
     });
-    const runtimeSnapshot = prepared.runtimeSnapshot;
+    const runtimeSnapshot = !this.#agents && prepared.runtimeSnapshot.agentToolsEnabled
+      ? { ...prepared.runtimeSnapshot, agentToolsEnabled: false }
+      : prepared.runtimeSnapshot;
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
+      ...(this.#agents && typeof runtimeSnapshot.agentDelegationEnabled === 'boolean'
+        && before.state.agentDelegationEnabled !== runtimeSnapshot.agentDelegationEnabled
+        ? [{ type: 'agent.delegation.changed' as const, sessionId: this.sessionId, payload: { enabled: runtimeSnapshot.agentDelegationEnabled } }] : []),
       {
         type: 'session.model-settings.updated',
         sessionId: this.sessionId,
@@ -910,15 +927,14 @@ export class SessionActor {
     command: Extract<ConversationCommand, { type: 'approval.respond' }>,
   ): Promise<CommandReply> {
     const snapshot = await this.loadSnapshot();
-    const approval = snapshot.state.pendingApproval;
+    const approval = snapshot.state.pendingApprovals.find(item => item.approvalId === command.approvalId);
     if (
       !approval
       || approval.approvalId !== command.approvalId
       || approval.callId !== command.callId
       || approval.runId !== command.runId
       || snapshot.state.run?.runId !== command.runId
-      || snapshot.state.run.status !== 'waiting'
-      || snapshot.state.run.waitingReason !== 'approval'
+      || !['running', 'waiting'].includes(snapshot.state.run.status)
     ) {
       return await this.recordRejection(
         command,
@@ -947,8 +963,7 @@ export class SessionActor {
       }],
       acceptedReply(command),
     );
-    if (this.#active) await this.#active.task;
-    this.startLoop({ type: 'resume', runId: command.runId });
+    if (!this.#active) this.startLoop({ type: 'resume', runId: command.runId });
     return reply;
   }
 
@@ -1107,6 +1122,7 @@ export class SessionActor {
         waitForInput: (runId, wait, signal) => this.waitForInput(runId, signal, undefined, undefined, wait),
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
         waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
+        waitForChange: (revision, signal) => this.waitForChange(revision, signal),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
         commit: (events) => this.withWrite(async () => {
           const current = await this.loadSnapshot();
@@ -1452,7 +1468,7 @@ export class SessionActor {
       this.restoreWakeTimers(await this.loadSnapshot());
     }
     for (const wake of this.#changes) wake();
-    if (event.type === 'tool.completed' || event.type === 'tool.interrupted' || event.type === 'tool.input-rejected') {
+    if (event.type === 'tool.completed' || event.type === 'tool.interrupted' || event.type === 'tool.input-rejected' || event.type === 'tool.not-executed') {
       this.#liveToolOutput.delete(event.callId);
     }
     if (event.type === 'run.settled') this.#liveToolOutput.clear();

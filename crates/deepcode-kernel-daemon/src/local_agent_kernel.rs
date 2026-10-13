@@ -1,4 +1,5 @@
 use crate::command_denylist::CommandDenylist;
+mod file_mutations;
 mod file_permissions;
 use crate::local_agent_mcp::McpRuntime;
 use crate::local_agent_store::{LocalAgentJournal, LocalAgentStoreError};
@@ -17,6 +18,7 @@ use deepcode_kernel_tools::kernel_internal::{
     KernelCanonicalInvocation, KernelDeleteTarget, KernelExecutionScope, KernelWorkspaceMode,
 };
 use deepcode_kernel_tools::{ToolAvailability, ToolInputIssue};
+use file_mutations::{FileMutationLocks, PreparedFileCall};
 use file_permissions::RequestedFiles;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
@@ -332,6 +334,12 @@ pub(crate) struct LocalToolExecutionRequest {
     non_workspace_authority: Option<NonWorkspaceAuthority>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LocalToolPreparationRequest {
+    pub(crate) requests: Vec<LocalToolExecutionRequest>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PrepareToolCatalogRequest {
@@ -403,6 +411,8 @@ pub(crate) struct LocalAgentKernel {
     resolver: Arc<dyn WorkspaceResolverPort>,
     generations: Arc<Mutex<KernelGenerationState>>,
     active: Arc<Mutex<HashMap<String, ActiveCall>>>,
+    file_mutations: Arc<FileMutationLocks>,
+    prepared_file_calls: Arc<Mutex<HashMap<String, PreparedFileCall>>>,
     pub(crate) jobs: crate::managed_processes::Jobs,
     pub(crate) desktop: Arc<crate::desktop_tools::DesktopHost>,
 }
@@ -509,6 +519,14 @@ impl AttemptControl {
         complete.notify_all();
     }
 
+    fn completed_before_execution(&self) -> bool {
+        let (state, _) = self.completion.as_ref();
+        let state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.complete && state.phase == ActivePhase::Prepared
+    }
+
     fn wait_complete(&self, timeout: Duration) -> bool {
         let (state, complete) = self.completion.as_ref();
         let state = state
@@ -540,6 +558,8 @@ impl LocalAgentKernel {
                 released_run_bindings: HashMap::new(),
             })),
             active: Arc::new(Mutex::new(HashMap::new())),
+            file_mutations: Arc::default(),
+            prepared_file_calls: Arc::default(),
             jobs: Default::default(),
             desktop: Arc::new(crate::desktop_tools::DesktopHost::unbound()),
         })
@@ -719,6 +739,7 @@ impl LocalAgentKernel {
         }
         // Final run cleanup still drains jobs even when the requested initial view retired earlier.
         self.cancel_and_drain_attempts(Some((&request.session_id, &request.run_id)))?;
+        self.release_prepared_file_calls(Some((&request.session_id, &request.run_id)))?;
         self.jobs
             .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
@@ -770,51 +791,17 @@ impl LocalAgentKernel {
 
         let prepared = match self.prepare_tool(&request) {
             Ok(prepared) => prepared,
-            Err(mut error) => {
-                if let Some(issues) = error.input_issues.take() {
-                    return Ok(json!({
-                        "schemaVersion": KERNEL_REPLY_VERSION,
-                        "type": "tool.execution",
-                        "requestId": request.request_id,
-                        "callId": request.call_id,
-                        "status": "inputRejected",
-                        "rejection": {
-                            "sessionId": request.session_id,
-                            "runId": request.run_id,
-                            "extensionGenerationRef": request.extension_generation_ref,
-                            "kernelCatalogSnapshotRef": request.kernel_catalog_snapshot_ref,
-                            "toolBindingRef": request.tool_binding_ref,
-                            "callId": request.call_id,
-                            "attemptId": request.attempt_id,
-                            "toolName": request.tool_name,
-                            "input": request.input,
-                            "rejectedAt": crate::now_text(),
-                            "error": { "code": error.code, "message": error.message, "issues": issues }
-                        }
-                    }));
-                }
-                return Err(error);
+            Err(error) if error.input_issues.is_some() => {
+                return Ok(input_rejection_reply(&request, error));
             }
+            Err(error) => return Err(error),
         };
+        if let Some(targets) = prepared.file_mutation_targets() {
+            self.validate_prepared_file_call(&request, &targets)?;
+        }
         let admission = self.admit(&request, &prepared)?;
         match admission {
-            Admission::ApprovalRequired => {
-                let mut preview = prepared.preview(&prepared.operation);
-                preview["approvalReviewer"] = json!(if prepared.agent_can_review() {
-                    "agent"
-                } else {
-                    "user"
-                });
-                Ok(json!({
-                "schemaVersion": KERNEL_REPLY_VERSION,
-                "type": "tool.execution",
-                "requestId": request.request_id,
-                "callId": request.call_id,
-                "status": "approvalRequired",
-                "approvalId": random_id("approval")?,
-                "preview": preview,
-                }))
-            }
+            Admission::ApprovalRequired => approval_reply(&request, &prepared),
             Admission::Denied { authority, error } => {
                 let now = crate::now_text();
                 let record = tool_record(
@@ -850,8 +837,71 @@ impl LocalAgentKernel {
                     );
                 }
 
-                let start_execution = control.start_execution();
-                let result = start_execution.then(|| {
+                let final_result = (|| {
+                    let mut prepared = prepared;
+                    let mut authority = authority;
+                    let targets = prepared.file_mutation_targets();
+                    let _file_guard = targets
+                        .as_ref()
+                        .map(|targets| {
+                            self.file_mutations.acquire(
+                                &request.call_id,
+                                targets.clone(),
+                                &control.cancellation(),
+                            )
+                        })
+                        .transpose()?
+                        .flatten();
+                    if _file_guard.is_some() {
+                        // Preparation fixes target identity, never an authorization.
+                        // Refresh only after ownership of the complete read/modify/write
+                        // interval is available, including change snapshots.
+                        let fresh = match self.prepare_tool(&request) {
+                            Ok(fresh) => fresh,
+                            Err(error) if error.input_issues.is_some() => {
+                                return Ok(input_rejection_reply(&request, error));
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if fresh.file_mutation_targets() != targets {
+                            return Err(LocalAgentKernelError::new(
+                                "file_preparation_changed",
+                                "等待文件目标锁期间真实目标发生变化。",
+                            ));
+                        }
+                        self.validate_prepared_file_call(&request, targets.as_ref().unwrap())?;
+                        prepared = fresh;
+                        match self.admit(&request, &prepared)? {
+                            Admission::Allowed(fresh_authority) => authority = fresh_authority,
+                            Admission::ApprovalRequired => {
+                                if control.claim_outcome().is_none() {
+                                    return approval_reply(&request, &prepared);
+                                }
+                            }
+                            Admission::Denied {
+                                authority: denied_authority,
+                                error,
+                            } => {
+                                if control.claim_outcome().is_none() {
+                                    let now = crate::now_text();
+                                    let record = tool_record(
+                                        &request,
+                                        &prepared,
+                                        denied_authority,
+                                        &started_at,
+                                        &now,
+                                        "denied",
+                                        None,
+                                        Some(error),
+                                    )?;
+                                    self.records.insert(&record)?;
+                                    return Ok(execution_reply(&request, &record));
+                                }
+                            }
+                        }
+                    }
+                    let start_execution = control.start_execution();
+                    let result = start_execution.then(|| {
                     if !is_shell_tool(&prepared.operation)
                         && !matches!(&prepared.input, PreparedToolInput::Container { input, .. } if input.action != "inspect")
                     {
@@ -865,80 +915,81 @@ impl LocalAgentKernel {
                         progress,
                     )
                 });
-                let cancel_phase = control.claim_outcome();
-                let completed_at = crate::now_text();
-                let record_result = match (cancel_phase, result) {
-                    (Some(ActivePhase::Prepared), _) => tool_record(
-                        &request,
-                        &prepared,
-                        authority,
-                        &started_at,
-                        &completed_at,
-                        "cancelled",
-                        None,
-                        None,
-                    ),
-                    (Some(ActivePhase::Executing), result) => {
-                        let output = result
-                            .as_ref()
-                            .and_then(|value| value.as_ref().ok())
-                            .map(|value| value.output.clone());
-                        let failure = match result {
-                            Some(Err(message)) => Some(message),
-                            Some(Ok(result)) => result
-                                .error
-                                .map(|error| format!("{}: {}", error.code, error.message)),
-                            None => None,
-                        };
-                        let mut message =
-                            "取消发生时工具 effect 已进入执行边界，结果无法确定。".to_string();
-                        if let Some(failure) = failure {
-                            message.push_str(&format!(" 原始执行失败：{failure}"));
-                        }
-                        tool_record(
+                    let cancel_phase = control.claim_outcome();
+                    let completed_at = crate::now_text();
+                    let record_result = match (cancel_phase, result) {
+                        (Some(ActivePhase::Prepared), _) => tool_record(
                             &request,
                             &prepared,
                             authority,
                             &started_at,
                             &completed_at,
-                            "indeterminate",
-                            output,
+                            "cancelled",
+                            None,
+                            None,
+                        ),
+                        (Some(ActivePhase::Executing), result) => {
+                            let output = result
+                                .as_ref()
+                                .and_then(|value| value.as_ref().ok())
+                                .map(|value| value.output.clone());
+                            let failure = match result {
+                                Some(Err(message)) => Some(message),
+                                Some(Ok(result)) => result
+                                    .error
+                                    .map(|error| format!("{}: {}", error.code, error.message)),
+                                None => None,
+                            };
+                            let mut message =
+                                "取消发生时工具 effect 已进入执行边界，结果无法确定。".to_string();
+                            if let Some(failure) = failure {
+                                message.push_str(&format!(" 原始执行失败：{failure}"));
+                            }
+                            tool_record(
+                                &request,
+                                &prepared,
+                                authority,
+                                &started_at,
+                                &completed_at,
+                                "indeterminate",
+                                output,
+                                Some(json!({
+                                    "code": "tool_effect_outcome_unknown",
+                                    "message": message,
+                                })),
+                            )
+                        }
+                        (None, Some(Ok(result))) => tool_record_from_execution_result(
+                            &request,
+                            &prepared,
+                            authority,
+                            &started_at,
+                            &completed_at,
+                            result,
+                        ),
+                        (None, Some(Err(message))) => tool_record(
+                            &request,
+                            &prepared,
+                            authority,
+                            &started_at,
+                            &completed_at,
+                            "failed",
+                            None,
                             Some(json!({
-                                "code": "tool_effect_outcome_unknown",
+                                "code": "tool_execution_failed",
                                 "message": message,
                             })),
-                        )
-                    }
-                    (None, Some(Ok(result))) => tool_record_from_execution_result(
-                        &request,
-                        &prepared,
-                        authority,
-                        &started_at,
-                        &completed_at,
-                        result,
-                    ),
-                    (None, Some(Err(message))) => tool_record(
-                        &request,
-                        &prepared,
-                        authority,
-                        &started_at,
-                        &completed_at,
-                        "failed",
-                        None,
-                        Some(json!({
-                            "code": "tool_execution_failed",
-                            "message": message,
-                        })),
-                    ),
-                    (None, None) => Err(LocalAgentKernelError::new(
-                        "tool_call_state_lost",
-                        "工具调用在进入执行前丢失了确定状态。",
-                    )),
-                };
-                let final_result = record_result.and_then(|record| {
-                    self.records.insert(&record)?;
-                    Ok(execution_reply(&request, &record))
-                });
+                        ),
+                        (None, None) => Err(LocalAgentKernelError::new(
+                            "tool_call_state_lost",
+                            "工具调用在进入执行前丢失了确定状态。",
+                        )),
+                    };
+                    record_result.and_then(|record| {
+                        self.records.insert(&record)?;
+                        Ok(execution_reply(&request, &record))
+                    })
+                })();
                 let remove_result = self
                     .lock_active()
                     .map(|mut active| active.remove(&request.call_id));
@@ -993,12 +1044,18 @@ impl LocalAgentKernel {
                 "工具取消后物理资源未在限定时间内完成回收。",
             ));
         }
-        let record = self.records.read(call_id)?.ok_or_else(|| {
-            LocalAgentKernelError::new(
-                "tool_call_state_lost",
-                "工具执行 owner 完成清理后没有写入唯一终态记录。",
-            )
-        })?;
+        let record = match self.records.read(call_id)? {
+            Some(record) => record,
+            None if active.control.completed_before_execution() => {
+                return Ok(cancel_reply(call_id, attempt_id, "notFound", None));
+            }
+            None => {
+                return Err(LocalAgentKernelError::new(
+                    "tool_call_state_lost",
+                    "工具执行 owner 完成清理后没有写入唯一终态记录。",
+                ))
+            }
+        };
         validate_record_replay(&record, &active.request)?;
         let outcome = required_record_string(&record, "outcome")?.to_string();
         Ok(cancel_reply(call_id, attempt_id, &outcome, Some(record)))
@@ -1014,6 +1071,7 @@ impl LocalAgentKernel {
 
     pub(crate) fn shutdown_plugins(&self) -> Result<(), LocalAgentKernelError> {
         self.cancel_and_drain_attempts(None)?;
+        self.release_prepared_file_calls(None)?;
         self.jobs
             .shutdown()
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
@@ -1129,6 +1187,21 @@ impl LocalAgentKernel {
         &self,
         request: &LocalToolExecutionRequest,
     ) -> Result<PreparedEffect, LocalAgentKernelError> {
+        self.prepare_tool_internal(request, true)
+    }
+
+    fn prepare_tool_target(
+        &self,
+        request: &LocalToolExecutionRequest,
+    ) -> Result<PreparedEffect, LocalAgentKernelError> {
+        self.prepare_tool_internal(request, false)
+    }
+
+    fn prepare_tool_internal(
+        &self,
+        request: &LocalToolExecutionRequest,
+        include_permissions: bool,
+    ) -> Result<PreparedEffect, LocalAgentKernelError> {
         let generation = self.bound_generation(request)?;
         let binding = generation
             .catalog
@@ -1166,7 +1239,7 @@ impl LocalAgentKernel {
                 if let Some(workspace_id) = input.workspace_id {
                     inner.input["workspaceId"] = json!(workspace_id);
                 }
-                let mut prepared = self.prepare_tool(&inner)?;
+                let mut prepared = self.prepare_tool_internal(&inner, include_permissions)?;
                 prepared.source_binding = Some(binding);
                 return Ok(prepared);
             }
@@ -1439,6 +1512,9 @@ impl LocalAgentKernel {
             network_request: None,
             network_authority: None,
         };
+        if !include_permissions {
+            return Ok(prepared);
+        }
         prepared.network_request = network_request;
         self.prepare_process_permissions(request, &mut prepared)?;
         self.prepare_file_permissions(request, &mut prepared)?;
@@ -3159,6 +3235,57 @@ fn tool_record(
     Ok(record)
 }
 
+fn input_rejection(request: &LocalToolExecutionRequest, error: LocalAgentKernelError) -> Value {
+    json!({
+        "sessionId": request.session_id,
+        "runId": request.run_id,
+        "extensionGenerationRef": request.extension_generation_ref,
+        "kernelCatalogSnapshotRef": request.kernel_catalog_snapshot_ref,
+        "toolBindingRef": request.tool_binding_ref,
+        "callId": request.call_id,
+        "attemptId": request.attempt_id,
+        "toolName": request.tool_name,
+        "input": request.input,
+        "rejectedAt": crate::now_text(),
+        "error": { "code": error.code, "message": error.message, "issues": error.input_issues }
+    })
+}
+
+fn input_rejection_reply(
+    request: &LocalToolExecutionRequest,
+    error: LocalAgentKernelError,
+) -> Value {
+    json!({
+        "schemaVersion": KERNEL_REPLY_VERSION,
+        "type": "tool.execution",
+        "requestId": request.request_id,
+        "callId": request.call_id,
+        "status": "inputRejected",
+        "rejection": input_rejection(request, error),
+    })
+}
+
+fn approval_reply(
+    request: &LocalToolExecutionRequest,
+    prepared: &PreparedEffect,
+) -> Result<Value, LocalAgentKernelError> {
+    let mut preview = prepared.preview(&prepared.operation);
+    preview["approvalReviewer"] = json!(if prepared.agent_can_review() {
+        "agent"
+    } else {
+        "user"
+    });
+    Ok(json!({
+        "schemaVersion": KERNEL_REPLY_VERSION,
+        "type": "tool.execution",
+        "requestId": request.request_id,
+        "callId": request.call_id,
+        "status": "approvalRequired",
+        "approvalId": random_id("approval")?,
+        "preview": preview,
+    }))
+}
+
 fn execution_reply(request: &LocalToolExecutionRequest, record: &Value) -> Value {
     json!({
         "schemaVersion": KERNEL_REPLY_VERSION,
@@ -3294,7 +3421,7 @@ fn is_shell_tool(name: &str) -> bool {
 mod attempt_control_tests {
     use super::*;
 
-    fn kernel_with_request(
+    pub(super) fn kernel_with_request(
         resolver: Arc<dyn WorkspaceResolverPort>,
         tool_name: &str,
         input: Value,
