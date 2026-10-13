@@ -1,5 +1,4 @@
-import { createPortal } from 'react-dom';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { CONVERSATION_COMMAND_VERSION, type AgentChildProjection, type AgentTaskProjection,
   type PlanResponse, type SessionProjection, type ShellAuthorizationScope, type UserSettings } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
@@ -12,44 +11,51 @@ import { planScopeAddition } from './planReview';
 import { useAgentChildConversation } from './useAgentChildConversation';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ArtifactLinks } from './ArtifactLinks';
-import { requestWorkspacePreview } from './readerState';
-import { AgentNavigationScope, useAgentNavigation } from './agentNavigation';
+import { requestWorkspacePreview, type AgentReaderTarget } from './readerState';
+import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { projectionItems, assistantDraftItems } from './conversationItems';
 import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
 import PlanCard from './PlanCard';
+import { useLocalAgentStore } from '../../state/localAgentStore';
+import { useConversationHost } from './ConversationHost';
+import { AgentOverviewList } from './AgentOverview';
 import './agentTasksPanel.css';
 
-export function AgentTasksPanel({ projection, language, visible = true }: {
-  projection: SessionProjection; language: UiLanguage; visible?: boolean;
+/** Read the selected child's actual parent projection, including for nested navigation. */
+export function AgentConversationPage({ target, language, active }: {
+  target: AgentReaderTarget; language: UiLanguage; active: boolean;
 }) {
-  const tasks = projection.agentTasks ?? [];
-  const children = projection.agentChildren ?? [];
-  const navigation = useAgentNavigation();
-  const pending = projection.pendingAgentDecisions ?? [];
-  const sessionIds = [...new Set([...children.map(child => child.agentSessionId), ...tasks.map(task => task.agentSessionId),
-    ...pending.map(decision => decision.agentSessionId)])];
-  useEffect(() => {
-    if (!navigation.selected) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.defaultPrevented) { navigation.open(null); event.preventDefault(); } };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [navigation.selected, navigation.open]);
-  if (!sessionIds.length) return null;
-  return <>
-    {sessionIds.map(sessionId => <AgentChildView key={sessionId} sessionId={sessionId}
-      tasks={tasks.filter(task => task.agentSessionId === sessionId)}
-      instance={children.find(child => child.agentSessionId === sessionId)} language={language}
-      displayName={pending.find(decision => decision.agentSessionId === sessionId)?.displayName}
-      expanded={visible && navigation.selected?.sessionId === sessionId} onClose={() => navigation.open(null)} />)}
-  </>;
+  const main = useLocalAgentStore(state => state.projection?.sessionId === target.parentSessionId ? state.projection : null);
+  const parent = useAgentChildConversation(target.parentSessionId, '', false, active && !main);
+  const projection = main ?? parent.projection;
+  if (!projection) return <div className="agent-tasks__child-body">
+    {parent.readError ? <div role="alert" className="agent-tasks__error"><p>{parent.readError}</p>
+      <button type="button" onClick={() => void parent.refresh()}>{t(language, 'agent.team.refresh')}</button></div>
+      : <p role="status">{t(language, 'agent.team.loading')}</p>}
+  </div>;
+  if (!target.agentSessionId) return <AgentOverviewList projection={projection} language={language} />;
+  return <AgentTasksPanel projection={projection} language={language} visible={active}
+    selectedSessionId={target.agentSessionId} entryId={target.entryId} onBack={() => requestAgentOverview(target.parentSessionId)} />;
 }
 
-function AgentChildView({ sessionId, tasks, instance, displayName, language, expanded, onClose }: {
-  sessionId: string; tasks: AgentTaskProjection[]; instance?: AgentChildProjection; language: UiLanguage;
-  displayName?: string; expanded: boolean; onClose(): void;
+export function AgentTasksPanel({ projection, language, visible = true, selectedSessionId, entryId = '', onBack = () => {} }: {
+  projection: SessionProjection; language: UiLanguage; visible?: boolean;
+  selectedSessionId?: string; entryId?: string; onBack?(): void;
 }) {
-  const { surface, selected } = useAgentNavigation();
+  if (!selectedSessionId) return null;
+  const tasks = (projection.agentTasks ?? []).filter(task => task.agentSessionId === selectedSessionId);
+  const instance = projection.agentChildren?.find(child => child.agentSessionId === selectedSessionId);
+  const pending = projection.pendingAgentDecisions?.find(decision => decision.agentSessionId === selectedSessionId);
+  if (!instance && !tasks.length && !pending) return <p role="alert" className="agent-tasks__error">agent_child_not_found:{selectedSessionId}</p>;
+  return <AgentChildView key={selectedSessionId} sessionId={selectedSessionId} tasks={tasks} instance={instance}
+    displayName={pending?.displayName} language={language} expanded={visible} entryId={entryId} onBack={onBack} />;
+}
+
+function AgentChildView({ sessionId, tasks, instance, displayName, language, expanded, entryId, onBack }: {
+  sessionId: string; tasks: AgentTaskProjection[]; instance?: AgentChildProjection; language: UiLanguage;
+  displayName?: string; expanded: boolean; entryId: string; onBack(): void;
+}) {
   const body = useRef<HTMLDivElement>(null);
   const decision = useRef<HTMLDivElement>(null);
   const revision = tasks.map(task => `${task.taskId}:${task.childRunId ?? ''}:${task.status}`).join('|');
@@ -62,13 +68,11 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
     const target = decision.current;
     if (!expanded || !pendingKey || !container || !target) return;
     container.scrollTop += target.getBoundingClientRect().top - container.getBoundingClientRect().top - 12;
-  }, [expanded, pendingKey, selected?.entryId]);
-  return <ConversationSessionScope.Provider value={sessionId}><AgentNavigationScope sessionId={sessionId} surface={surface} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}>
-    {surface && createPortal(<aside hidden={!expanded} className="agent-tasks__drawer" aria-label={name} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
-      <header><strong>{name}</strong>
-        <span>{pendingKey ? t(language, 'agent.team.needsInput') : tasks.at(-1) && t(language, `agent.team.status.${tasks.at(-1)!.status}`)}{instance?.closed && ` · ${t(language, 'agent.team.closed')}`}</span>
-        <button type="button" aria-label={t(language, 'agent.team.closeView')} onClick={onClose}><DeepCodeShellIcon name="close" /></button>
-      </header>
+  }, [expanded, pendingKey, entryId]);
+  return <ConversationSessionScope.Provider value={sessionId}><AgentNavigationScope sessionId={sessionId} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}>
+    <section hidden={!expanded} className="agent-tasks__page" aria-label={t(language, 'agent.page.title')} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); onBack(); } }}>
+      <AgentPageInformation name={name} sessionId={sessionId} projection={projection} language={language} onBack={onBack}
+        status={`${pendingKey ? t(language, 'agent.team.needsInput') : tasks.at(-1) ? t(language, `agent.team.status.${tasks.at(-1)!.status}`) : ''}${instance?.closed ? ` · ${t(language, 'agent.team.closed')}` : ''}`} />
       <div ref={body} className="agent-tasks__child-body">
         {child.readError && <div role="alert" className="agent-tasks__error"><p>{child.readError}</p>
           <button type="button" onClick={() => void child.refresh()}>{t(language, 'agent.team.refresh')}</button></div>}
@@ -82,10 +86,42 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
           {projection.terminalError && <p role="alert" className="agent-tasks__error">{projection.terminalError.message}</p>}
         </>}
       </div>
-      {projection && <AgentTasksPanel key={projection.sessionId} projection={projection} language={language}
-        visible={expanded} />}
-    </aside>, surface)}
+    </section>
   </AgentNavigationScope></ConversationSessionScope.Provider>;
+}
+
+export function AgentPageInformation({ name, sessionId, projection, language, onBack, status }: {
+  name: string; sessionId: string; projection: SessionProjection | null; language: UiLanguage; onBack?(): void; status?: string;
+}) {
+  const host = useConversationHost();
+  const [copied, setCopied] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const model = projection?.agentContext?.model;
+  const effort = projection?.run?.reasoningEffort ?? model?.reasoningEffort;
+  const thinking = projection?.run?.thinking ?? model?.thinking;
+  const modelDetails = model ? `${t(language, 'agent.page.profile')}: ${model.profileId}\n${t(language, 'agent.page.contextWindow')}: ${model.parameters.contextWindowTokens.toLocaleString(language)}\n${t(language, 'agent.page.maxOutput')}: ${model.parameters.maxOutputTokens.toLocaleString(language)}` : undefined;
+  const copy = async (key: string, text: string) => {
+    try { await host.copyText(text); setCopied(key); setCopyError(null); }
+    catch (error) { setCopyError(error instanceof Error ? error.message : String(error)); }
+  };
+  const modelName = model?.model ?? t(language, projection ? 'agent.page.unavailable' : 'agent.team.loading');
+  return <>
+    <div className="document-preview__toolbar native-browser-address agent-tasks__toolbar" aria-label={t(language, 'agent.page.information')}>
+      <button type="button" className="reader-icon-button" onClick={onBack} aria-label={t(language, 'agent.page.back')} title={t(language, 'agent.page.back')}><DeepCodeShellIcon name="chevronLeft" /></button>
+      <DeepCodeShellIcon name="subagents" />
+      <div className="agent-tasks__identity">
+        {([['name', name], ['id', sessionId]] as const).map(([key, value]) => <button key={key} type="button" className={`agent-tasks__identity-${key}`}
+          onClick={() => void copy(key, value)} aria-label={t(language, copied === key ? 'agent.message.copied' : `agent.page.copy${key === 'name' ? 'Name' : 'Id'}`)}
+          title={`${t(language, `agent.page.${key}`)}: ${value}${status ? ` · ${status}` : ''}`}><span>{value}</span></button>)}
+      </div>
+      <div className="agent-tasks__model" title={modelDetails} aria-label={t(language, 'agent.page.model')}>
+        <span>{modelName}</span>
+        {effort && <small title={t(language, 'settings.llm.reasoningEffort')}> · {t(language, `settings.llm.effort.${effort}`)}</small>}
+        {thinking && <small title={t(language, 'agent.page.thinking')}> · {t(language, `settings.common.${thinking}`)}</small>}
+      </div>
+    </div>
+    {copyError && <p role="alert" className="agent-tasks__error">{copyError}</p>}
+  </>;
 }
 
 /** Stable identity keeps ordinary polling from repeatedly moving the reader's scroll position. */

@@ -2878,7 +2878,7 @@ test('resource preview keeps expansion beside the shared sidebar control while c
   assert.doesNotMatch(html, /aria-label="铺满工作区"|aria-label="浏览器与预览"/);
   for (const expanded of [false, true]) {
     const controls = renderToStaticMarkup(createElement(ReaderControls, { language: 'zh-CN', disabled: false,
-      preview: { visible: true, expanded, expand() {}, toggle() {} } }));
+      preview: { tabs: [], activeId: null, visible: true, expanded, expand() {}, toggle() {} } }));
     const label = expanded ? '返回并排' : '铺满工作区';
     assert.ok(controls.includes(`aria-label="${label}"`));
     assert.match(controls, /aria-label="浏览器与预览"/);
@@ -4177,7 +4177,7 @@ test('the side overview counts latest members without history reads or a panel f
   const html = renderToStaticMarkup(createElement(AgentOverview, { projection, language: 'en-US' }));
   assert.match(html, /1 Needs your input/);
   assert.match(html, /1 Completed/);
-  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /aria-label="View all subagents"/);
   assert.doesNotMatch(html, /<article|Loading conversation/);
   assert.deepEqual(projection, before);
 });

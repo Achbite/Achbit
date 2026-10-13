@@ -3,11 +3,13 @@ import { resourceKey, type ResourceReference } from '../../services/conversation
 import type { ArtifactProjection } from '@deepcode/protocol';
 import type { SourcePosition } from './resourceLinks';
 import type { NativePage } from '../../services/nativeBrowser';
+export type AgentReaderTarget = { kind: 'agent'; parentSessionId: string; agentSessionId?: string; entryId?: string };
 export type ReaderTarget = (({ kind: 'workspace'; workspaceId: string; logicalPath: string } & SourcePosition)
   | { kind: 'resource'; resource: ResourceReference; name: string }
   | { kind: 'diff'; file: ChangedFile }
   | { kind: 'file'; path: string }
-  | { kind: 'artifact'; artifact: ArtifactProjection }) & { sourceSessionId?: string }
+  | { kind: 'artifact'; artifact: ArtifactProjection }
+  | AgentReaderTarget) & { sourceSessionId?: string }
   | { kind: 'browser'; previewId?: string; url?: string; filePath?: string; selfPreview?: boolean };
 export type ResolvedReaderTarget = Exclude<ReaderTarget, { kind: 'browser' }>
   | (Extract<ReaderTarget, { kind: 'browser' }> & { previewId: string });
@@ -66,10 +68,11 @@ export function saveViewState(key: string, value: unknown): void {
 
 export function readerTargetKey(target: ReaderTarget): string {
   const key = readerResourceKey(target);
-  return target.kind !== 'browser' && target.sourceSessionId ? JSON.stringify([target.sourceSessionId, key]) : key;
+  return target.kind !== 'browser' && target.kind !== 'agent' && target.sourceSessionId ? JSON.stringify([target.sourceSessionId, key]) : key;
 }
 
 function readerResourceKey(target: ReaderTarget): string {
+  if (target.kind === 'agent') return 'agents';
   if (target.kind === 'diff') return 'diff:' + JSON.stringify(target.file.changes.map(entry => [entry.recordId, entry.index]));
   if (target.kind === 'resource') return 'resource:' + resourceKey(target.resource);
   if (target.kind === 'file') return 'file:' + target.path;

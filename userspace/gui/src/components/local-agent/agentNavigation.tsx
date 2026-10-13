@@ -1,33 +1,37 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 import type { ActivityProjection, AgentTaskProjection, SessionProjection } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 
+import { requestReader, type AgentReaderTarget } from './readerState';
+
 type AgentSelection = { sessionId: string; entryId: string };
-const AGENT_OPEN_EVENT = 'deepcode:agent-open';
 export function requestAgentConversation(parentSessionId: string, sessionId: string, entryId: string): void {
-  window.dispatchEvent(new CustomEvent(AGENT_OPEN_EVENT, { detail: { parentSessionId, selection: { sessionId, entryId } } }));
+  requestReader(parentSessionId, { kind: 'agent', parentSessionId, agentSessionId: sessionId, entryId });
 }
-const AgentNavigation = createContext({ surface: null as HTMLElement | null, selected: null as AgentSelection | null,
+export function requestAgentOverview(parentSessionId: string): void {
+  requestReader(parentSessionId, { kind: 'agent', parentSessionId });
+}
+const AgentNavigation = createContext({ selected: null as AgentSelection | null,
+  activeAgent: null as AgentReaderTarget | null, closeAgent: () => {},
   tasks: [] as readonly AgentTaskProjection[], pendingDecisions: [] as NonNullable<SessionProjection['pendingAgentDecisions']>,
   open: (_selection: AgentSelection | null) => {} });
 
-/** Local navigation only; switching this view never starts or stops an Agent. */
-export function AgentNavigationScope({ children, sessionId, surface = null, tasks = [], pendingDecisions = [] }: {
-  children: ReactNode; surface?: HTMLElement | null; tasks?: readonly AgentTaskProjection[];
+/** Reader owns navigation state; switching this view never starts or stops an Agent. */
+export function AgentNavigationScope({ children, sessionId, activeAgent, onCloseAgent, tasks = [], pendingDecisions = [] }: {
+  children: ReactNode; tasks?: readonly AgentTaskProjection[];
   sessionId?: string | null; pendingDecisions?: SessionProjection['pendingAgentDecisions'];
+  activeAgent?: AgentReaderTarget | null; onCloseAgent?(): void;
 }) {
-  const [selected, open] = useState<AgentSelection | null>(null);
-  useEffect(() => {
-    if (!sessionId) return;
-    const onOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ parentSessionId: string; selection: AgentSelection }>).detail;
-      if (detail.parentSessionId === sessionId) open(detail.selection);
-    };
-    window.addEventListener(AGENT_OPEN_EVENT, onOpen);
-    return () => window.removeEventListener(AGENT_OPEN_EVENT, onOpen);
-  }, [sessionId]);
-  return <AgentNavigation.Provider value={{ selected, open, surface, tasks, pendingDecisions }}>{children}</AgentNavigation.Provider>;
+  const parent = useContext(AgentNavigation);
+  const active = activeAgent === undefined ? parent.activeAgent : activeAgent;
+  const closeAgent = onCloseAgent ?? parent.closeAgent;
+  const selected = active?.agentSessionId && active.parentSessionId === sessionId ? { sessionId: active.agentSessionId, entryId: active.entryId ?? '' } : null;
+  const open = (selection: AgentSelection | null) => {
+    if (!selection) closeAgent();
+    else if (sessionId) requestAgentConversation(sessionId, selection.sessionId, selection.entryId);
+  };
+  return <AgentNavigation.Provider value={{ selected, open, activeAgent: active, closeAgent, tasks, pendingDecisions }}>{children}</AgentNavigation.Provider>;
 }
 
 export const useAgentNavigation = () => useContext(AgentNavigation);

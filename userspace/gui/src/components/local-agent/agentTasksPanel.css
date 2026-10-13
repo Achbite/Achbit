@@ -15,17 +15,31 @@
 .agent-tasks__member--completed svg { color:var(--dc-success); }
 .agent-tasks__member--updated svg { color:var(--dc-accent); }
 .agent-tasks__member:hover, .agent-tasks__member[aria-pressed=true] { background:var(--dc-surface-hover); color:var(--dc-foreground); }
-.agent-tasks__drawer { position:absolute; right:0; top:0; bottom:0; width:min(520px, 48%); z-index:25; background:var(--dc-background); border-left:1px solid var(--dc-border); box-shadow:var(--dc-shadow-panel); display:flex; flex-direction:column; min-height:0; }
-.agent-tasks__drawer > header { display:flex; align-items:center; gap:12px; padding:16px 20px; flex:none; }
-.agent-tasks__drawer > header > span { color:var(--dc-muted); font-size:var(--dc-font-caption); margin-left:auto; }
-.agent-tasks__drawer > header > button { display:grid; place-items:center; border:0; border-radius:6px; padding:6px; color:var(--dc-muted); background:transparent; }
-.agent-tasks__drawer > header > button:hover { background:var(--dc-surface-hover); }
-.agent-tasks__drawer > header svg { width:18px; height:18px; }
-.agent-tasks__drawer[hidden] { display:none; }
+.agent-tasks__page { height:100%; min-width:0; display:flex; flex-direction:column; min-height:0; }
+.agent-tasks__page[hidden] { display:none; }
 .agent-tasks__child-body { overflow:auto; flex:1; min-width:0; padding:0 22px 20px; }
 .agent-tasks__conversation { margin:0; }
 .agent-tasks__conversation > article { margin:16px 0 24px; }
 .agent-tasks__conversation > article > header { font-size:var(--dc-font-caption); margin-bottom:8px; }
 @keyframes agent-pulse { 50% { opacity:.5; } }
 @media (prefers-reduced-motion:reduce) { .agent-tasks__member--running svg { animation:none; } }
-@media (max-width:900px) { .agent-tasks__drawer { width:min(520px, 100%); }  }
+
+.local-agent__reader .agent-tasks__toolbar { min-height:48px; box-sizing:border-box; flex:none; padding:6px 12px; border-bottom:1px solid var(--dc-border); gap:8px; }
+.agent-tasks__toolbar > svg { width:16px; height:16px; flex:none; color:var(--dc-muted); }
+.agent-tasks__identity { display:flex; align-items:center; gap:6px; flex:1 1 45%; min-width:0; }
+.local-agent .agent-tasks__identity button { min-width:0; min-height:28px; padding:3px 2px; text-align:left; }
+.local-agent__reader .agent-tasks__identity-name { flex:1 1 auto; font-weight:600; color:var(--dc-foreground); }
+.local-agent__reader .agent-tasks__identity-id { flex:0 1 100px; color:var(--dc-muted); font-size:11px; }
+.agent-tasks__identity span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; user-select:text; }
+.agent-tasks__model { display:flex; align-items:center; justify-content:flex-end; flex:1 1 45%; min-width:0; color:var(--dc-muted); white-space:nowrap; }
+.agent-tasks__model > span { min-width:0; overflow:hidden; text-overflow:ellipsis; user-select:text; }
+.agent-tasks__model > small { flex:none; font:inherit; }
+.agent-tasks__overview { flex:1; min-height:0; padding:20px 24px; overflow:auto; }
+.agent-tasks__overview > section + section { margin-top:24px; }
+.agent-tasks__overview h3 { display:flex; gap:8px; margin:0 0 8px; font:inherit; font-weight:600; }
+.agent-tasks__overview h3 > span { color:var(--dc-muted); font-weight:400; }
+.agent-tasks__overview .deepcode-gui-agent-member { padding:10px 6px; align-items:flex-start; }
+.agent-tasks__overview .deepcode-gui-agent-member > span { display:grid; gap:4px; }
+.agent-tasks__overview .deepcode-gui-agent-member strong { color:var(--dc-foreground); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
+.agent-tasks__overview .deepcode-gui-agent-member small { overflow:hidden; text-overflow:ellipsis; font:inherit; }
+.agent-tasks__list-empty { margin:24px; color:var(--dc-muted); }

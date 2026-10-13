@@ -19,8 +19,7 @@ import { ConversationLayoutCache } from './conversationVirtualizer';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
 import { ArtifactLinks } from './ArtifactLinks';
 import './localAgentPanel.css';
-import { AgentTasksPanel } from './AgentTasksPanel';
-import { AgentNavigationScope } from './agentNavigation';
+import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import type { ReaderNavigation } from './readerState';
 
 export interface ConversationReaderLayout {
@@ -48,7 +47,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const loading = useLocalAgentStore((state) => state.loading);
   const refresh = useLocalAgentStore((state) => state.refresh);
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
-  const [agentSurface, setAgentSurface] = useState<HTMLElement | null>(null);
   const [uiActionError, setUiActionError] = useState<string | null>(null);
   const conversationLayouts = useRef(new ConversationLayoutCache());
   useEffect(() => setUiActionError(null), [sessionId]);
@@ -103,6 +101,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const { bodyRef, bodyHandlers, showJumpToLatest, scrollToLatest } = viewport;
   const composer = useAgentComposer(language, viewport.setLatestFollowMode);
   const resourcePreview = useResourcePreview(sessionId, readerNavigation);
+  const activeReader = resourcePreview.tabs.find(tab => tab.id === resourcePreview.activeId)?.target;
+  const activeAgent = resourcePreview.visible && activeReader?.kind === 'agent' ? activeReader : null;
   const [readerHeader, setReaderHeader] = useState<HTMLDivElement | null>(null);
   const [conversationBounds, setConversationBounds] = useState<HTMLDivElement | null>(null);
   const readerLayout = { '--reader-width': `${resourcePreview.width}%` } as React.CSSProperties;
@@ -139,7 +139,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   );
 
   return (
-    <AgentNavigationScope key={sessionId} sessionId={sessionId} surface={agentSurface} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section ref={setAgentSurface} className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
+    <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
       <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
@@ -203,7 +203,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           }}
         />
       )}
-      {projection && <AgentTasksPanel projection={projection} language={language} />}
     </section></AgentNavigationScope>
   );
 };
