@@ -2497,6 +2497,41 @@ test('desktop startup diagnostics render the Host failure and log reference verb
   assert.doesNotMatch(workspaceFailure, /host_startup_process_exited|startup.log|<button/);
 });
 
+test('conversation batches layout corrections and samples reader movement before restoring', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
+  const previousWindow = globalThis.window;
+  const frames = new Map(); let sequence = 0;
+  globalThis.window = { requestAnimationFrame(fn) { frames.set(++sequence, fn); return sequence; }, cancelAnimationFrame(id) { frames.delete(id); } };
+  t.after(() => { globalThis.window = previousWindow; });
+  let viewport;
+  function Probe() {
+    viewport = useConversationViewport({ sessionId: 'batch', projection: { sessionId: 'batch' }, loading: false,
+      presentationLayoutKey: '', assistantDraftLayoutKey: '', timelineExtentKey: '' });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  let anchorTop = 400;
+  const body = { scrollTop: 500, scrollHeight: 2000, clientHeight: 500,
+    getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [anchor] };
+  const anchor = { dataset: { conversationAnchor: 'reading' }, hidden: false,
+    getBoundingClientRect: () => ({ top: anchorTop - body.scrollTop, bottom: anchorTop + 1000 - body.scrollTop }) };
+  viewport.bodyRef.current = body;
+  viewport.setLatestFollowMode(false);
+  anchorTop += 100;
+  for (let i = 0; i < 20; i++) viewport.preserveReadingPosition();
+  assert.equal(frames.size, 1, 'all changed rows and the transcript share one correction frame');
+  const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn()); };
+  flush();
+  assert.equal(body.scrollTop, 600, 'the saved reading anchor keeps its offset after growth above it');
+  viewport.preserveReadingPosition();
+  body.scrollTop = 720;
+  flush();
+  assert.equal(body.scrollTop, 720, 'native reader movement during the pending frame wins');
+  assert.equal(frames.size, 0);
+});
+
 test('conversation reading intent survives native scroll deliveries and layout growth', async (t) => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -2549,14 +2584,17 @@ test('conversation reading intent survives native scroll deliveries and layout g
 
   body.scrollTop = 790;
   viewport.preserveReadingPosition();
+  flushFrames();
   assert.equal(top, 790, 'continued keyboard or inertial movement cannot be restored to the previous sample');
   anchorTop += 160;
   body.scrollHeight += 160;
   viewport.preserveReadingPosition();
+  flushFrames();
   assert.equal(top, 950, 'growth above the reader compensates layout using the latest reader anchor');
   assert.equal(anchor.getBoundingClientRect().top, 110);
   deliverScroll();
   viewport.preserveReadingPosition();
+  flushFrames();
   assert.equal(top, 950, 'a delayed callback from the programmatic correction does not become reader movement');
 
   body.scrollTop = 990;
@@ -2564,6 +2602,7 @@ test('conversation reading intent survives native scroll deliveries and layout g
   anchorTop += 80;
   body.scrollHeight += 80;
   viewport.preserveReadingPosition();
+  flushFrames();
   assert.equal(top, 1_070, 'a native scroll callback records the next reading position without wheel or touch flags');
 
   body.scrollTop = body.scrollHeight - body.clientHeight;

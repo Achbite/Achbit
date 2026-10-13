@@ -56,7 +56,7 @@ export class ConversationVirtualizer {
     }, { root: body, rootMargin: '800px 0px' });
     this.resize = new ResizeObserver((entries) => {
       if (!this.connected) return;
-      for (const entry of entries) this.measure(entry.target as HTMLElement);
+      for (const entry of entries) this.measure(entry.target as HTMLElement, entry.borderBoxSize?.[0]?.blockSize);
     });
     body.addEventListener('focusout', this.interactionEnded);
     body.ownerDocument.addEventListener('selectionchange', this.interactionEnded);
@@ -75,10 +75,10 @@ export class ConversationVirtualizer {
     };
   }
 
-  measure(node: HTMLElement): void {
+  measure(node: HTMLElement, measuredHeight?: number): void {
     if (node.hidden || node.dataset.virtualRendered !== 'true') return;
     const layout = this.layout(node.dataset.conversationAnchor!);
-    const height = node.getBoundingClientRect().height;
+    const height = measuredHeight ?? node.getBoundingClientRect().height;
     if (layout.height === height) return;
     layout.height = height;
     this.onLayout();
