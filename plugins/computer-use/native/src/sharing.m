@@ -83,6 +83,8 @@ void dc_computer_install_pointer_content(void *window) {
 @property uint64_t generation;
 @property BOOL selectedByUser;
 @property BOOL pointerSource;
+@property BOOL pointerWindowLookupPending;
+@property NSTimeInterval pointerWindowDeadline;
 @property DCShare *pointer;
 @property (weak) DCShare *owner;
 @property NSDictionary *pointerPosition;
@@ -358,27 +360,58 @@ void dc_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
     owner.pointerPosition = @{ @"x": @(x), @"y": @(y), @"coordinateSpace": @"target-normalized", @"pulse": @(pulse) };
     // In particular, a system-stopped pointer stream stays stopped for this
     // target binding. Rendering another action cannot silently re-share it.
-    if (owner.pointer) return;
-    DCShare *pointer = [DCShare new];
-    pointer.key = owner.key; pointer.pointerSource = YES; pointer.owner = owner;
-    pointer.window = pointerWindow; pointer.pid = NSProcessInfo.processInfo.processIdentifier;
-    pointer.app = NSBundle.mainBundle.bundleIdentifier;
-    pointer.title = @"DeepCode Agent Pointer";
-    pointer.generation = ++Generation; pointer.phase = @"starting";
-    owner.pointer = pointer;
-    [owner publish];
-    if (!pointerWindow) { [pointer ended:@"The Agent pointer has no WindowServer identity"]; return; }
+    DCShare *pointer = owner.pointer;
+    if (!pointer) {
+        pointer = [DCShare new];
+        pointer.key = owner.key; pointer.pointerSource = YES; pointer.owner = owner;
+        pointer.window = pointerWindow; pointer.pid = NSProcessInfo.processInfo.processIdentifier;
+        pointer.app = NSBundle.mainBundle.bundleIdentifier;
+        pointer.title = @"DeepCode Agent Pointer";
+        pointer.generation = ++Generation; pointer.phase = @"starting";
+        pointer.pointerWindowDeadline = NSProcessInfo.processInfo.systemUptime + 2.0;
+        owner.pointer = pointer;
+        [owner publish];
+        // The deadline also settles startup if local feedback is hidden before
+        // the next tick. A released or system-stopped binding is never revived.
+        DCShare *pending = pointer;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (Shares[owner.key] == owner && owner.pointer == pending && owner.generation == targetGeneration && [owner.phase isEqual:@"active"] && [pending.phase isEqual:@"starting"] && !pending.stream) {
+                [pending ended:@"The Agent pointer window did not publish valid capture geometry within 2 seconds"]; pending.phase = @"failed";
+            }
+        });
+    }
+    if (![pointer.phase isEqual:@"starting"] || pointer.stream) return;
+    if (!pointerWindow || pointer.window != pointerWindow) {
+        [pointer ended:@"The Agent pointer WindowServer identity changed during startup"]; pointer.phase = @"failed"; return;
+    }
+    if (NSProcessInfo.processInfo.systemUptime >= pointer.pointerWindowDeadline) {
+        [pointer ended:@"The Agent pointer window did not publish valid capture geometry within 2 seconds"]; pointer.phase = @"failed"; return;
+    }
+    if (pointer.pointerWindowLookupPending) return;
+    pointer.pointerWindowLookupPending = YES;
+    uint64_t pointerGeneration = pointer.generation;
+    // A newly ordered panel can already have an ID while WindowServer still
+    // reports a zero-size SCWindow. The existing feedback tick waits for its
+    // real geometry before creating the one stream; it never restarts a stream.
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content, NSError *error) {
         Main(^{
-            if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"]) return;
+            if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || pointer.generation != pointerGeneration || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"] || pointer.stream) return;
+            pointer.pointerWindowLookupPending = NO;
             if (error) { [pointer ended:NativeError(error)]; pointer.phase = @"failed"; return; }
+            if (NSProcessInfo.processInfo.systemUptime >= pointer.pointerWindowDeadline) {
+                [pointer ended:@"The Agent pointer window did not publish valid capture geometry within 2 seconds"]; pointer.phase = @"failed"; return;
+            }
             SCWindow *window = nil;
             for (SCWindow *candidate in content.windows) {
                 if (candidate.windowID == pointerWindow && candidate.owningApplication.processID == pointer.pid) { window = candidate; break; }
             }
-            if (!window) { [pointer ended:@"The Agent pointer window is not available to ScreenCaptureKit"]; pointer.phase = @"failed"; return; }
-            pointer.filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:window];
-            SCStreamConfiguration *configuration = Configuration(pointer.filter, NO);
+            if (!window || !isfinite(window.frame.size.width) || !isfinite(window.frame.size.height) || CGRectIsEmpty(window.frame)) return;
+            SCContentFilter *filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:window];
+            CGSize size = filter.contentRect.size;
+            double scale = filter.pointPixelScale;
+            if (!isfinite(scale) || scale <= 0 || !isfinite(size.width * scale) || !isfinite(size.height * scale) || size.width * scale < 1 || size.height * scale < 1) return;
+            pointer.filter = filter;
+            SCStreamConfiguration *configuration = Configuration(filter, NO);
             configuration.minimumFrameInterval = CMTimeMake(1, 8);
             SCStream *stream = [[SCStream alloc] initWithFilter:pointer.filter configuration:configuration delegate:pointer];
             pointer.stream = stream;
@@ -394,10 +427,10 @@ void dc_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
             UpdatePicker();
             [stream startCaptureWithCompletionHandler:^(NSError *startError) {
                 Main(^{
+                    // Stop/release owns invalidated streams; a late startup
+                    // callback must not overwrite or restart their state.
+                    if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || pointer.generation != pointerGeneration || pointer.stream != stream || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"]) return;
                     if (startError) { [pointer ended:NativeError(startError)]; pointer.phase = @"failed"; return; }
-                    if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"]) {
-                        StopSingle(pointer, ^(NSError *ignored) {}); return;
-                    }
                     pointer.phase = @"active";
                 });
             }];
