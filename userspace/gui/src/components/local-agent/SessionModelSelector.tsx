@@ -19,16 +19,24 @@ interface SessionModelSelectorProps {
   contextCompositions: readonly ContextCompositionProjection[];
   busy?: boolean;
   confirmed: boolean;
+  requestedPanel?: { kind: 'model' | 'context'; sequence: number } | null;
   onSelect(profileId: string, effort: LlmReasoningEffort | null): Promise<void>;
 }
 
 export default function SessionModelSelector({ language, profiles, connections = [], selectedProfileId,
-  reasoningEffortOverride, contextUsage, contextCompositions, busy = false, confirmed, onSelect }: SessionModelSelectorProps) {
+  reasoningEffortOverride, contextUsage, contextCompositions, busy = false, confirmed, requestedPanel, onSelect }: SessionModelSelectorProps) {
   const [open, setOpen] = useState(false);
   const [choosingModel, setChoosingModel] = useState(false);
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [contextOpen, setContextOpen] = useState(false);
   const [subagentsOpen, setSubagentsOpen] = useState(false);
+  useEffect(() => {
+    if (!requestedPanel) return;
+    setCandidateId(null); setSubagentsOpen(false);
+    setContextOpen(requestedPanel.kind === 'context');
+    setOpen(requestedPanel.kind === 'model');
+    setChoosingModel(requestedPanel.kind === 'model');
+  }, [requestedPanel]);
   const settings = useSettingsStore(state => state.effectiveSettings);
   const rootRef = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null), triggerRef = useRef<HTMLButtonElement>(null);
   const menuId = useId(), theme = useDisplayTheme(), chinese = language === 'zh-CN';

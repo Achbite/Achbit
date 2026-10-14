@@ -1588,6 +1588,8 @@
   bottom: calc(100% + 7px);
   left: 10px;
   padding: 6px;
+  max-height: min(360px, 45vh);
+  overflow-y: auto;
   border: 1px solid var(--dc-border-strong);
   border-radius: 12px;
   background: var(--dc-surface-raised);
@@ -1604,9 +1606,12 @@
   padding: 7px 9px;
   border: 0;
   border-radius: 8px;
-  background: var(--dc-surface-hover);
+  background: transparent;
   text-align: left;
 }
+
+.local-agent .local-agent__command-suggestions > button[aria-selected="true"] { background: var(--dc-surface-hover); }
+.local-agent .local-agent__command-suggestions > button:disabled { opacity: .45; }
 
 .local-agent__command-suggestions svg {
   width: 16px;

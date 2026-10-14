@@ -865,7 +865,7 @@ test('scope-only Plan review foregrounds additions and keeps the complete confir
   const decision = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', uiActionError: null, composer: {
     pendingPlan: current, pendingScopeAddition: addition, textareaRef: { current: null }, draft: '', submitting: false,
     profiles: [], selectedProfileId: null, pastedTexts: [], failedDrafts: [], pendingFilesystemPaths: [],
-    pluginSelections: [], filteredPlugins: [], textDecision: true,
+    pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textDecision: true,
   } }));
   assert.match(decision, />确认新增范围<\/b>/);
   assert.ok(decision.includes('Expose the shared options'));
@@ -2778,7 +2778,7 @@ test('pending approvals replace ordinary input while preserving its draft for re
     pendingApproval: { approvalId: 'approval:one', preview: { summary: 'Write the requested file', effects: [], logicalTargets: [] } },
     projection: { contextCompositions:[], queuedInputs: [{ commandId: 'queued:one', text: 'Keep the public API unchanged', status: 'queued', filesystemReferences: [] }] },
     profiles: [], selectedProfileId: null, draft: 'Second request', pastedTexts: [], failedDrafts: [],
-    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], showStopAction: false, canSend: false, submitting: true,
+    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], showStopAction: false, canSend: false, submitting: true,
     textareaRef: { current: null }, respondApproval() {},
   };
   const html = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', composer, uiActionError: null }));
@@ -2828,7 +2828,7 @@ test('questions and Plan revisions share the main input and render a single prim
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { ConversationComposer } = await loadGuiModule(t, '/src/components/local-agent/ConversationComposer.tsx');
   const base = { profiles: [], selectedProfileId: null, draft: '保留构建配置', pastedTexts: [], failedDrafts: [],
-    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], textareaRef: { current: null },
+    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     canSend: true, showStopAction: false, textDecision: true };
   for (const decision of [
     { pendingInteraction: { interactionId: 'question:one', prompt: '需要保留什么？', allowFreeform: true, options: [] } },
@@ -2914,7 +2914,7 @@ test('unavailable plugins preserve their source error and cannot be selected in 
   const { ConversationComposer } = await loadGuiModule(t, '/src/components/local-agent/ConversationComposer.tsx');
   const html = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', uiActionError: null, composer: {
     profiles: [], selectedProfileId: null, draft: '@', pastedTexts: [], failedDrafts: [],
-    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [plugin], pluginPickerOpen: true,
+    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [plugin], commandSuggestions: [], pluginPickerOpen: true,
     textareaRef: { current: null },
   } }));
   assert.match(html, /role="option"[^>]*disabled=""/);

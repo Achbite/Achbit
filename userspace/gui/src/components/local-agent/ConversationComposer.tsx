@@ -73,8 +73,10 @@ export function ConversationComposer({
     pluginQuery,
     setPluginQuery,
     selectPlugin,
-    focusCommandSuggestionVisible,
-    selectFocusCommand,
+    commandSuggestions,
+    commandActiveIndex,
+    setCommandActiveIndex,
+    selectCommand,
     updateDraft,
     openPluginPicker,
     insertFocusCommand,
@@ -91,6 +93,11 @@ export function ConversationComposer({
     addAttachments: composer.selectMessageAttachments,
   };
   const pickerId = useId();
+  const commandMenuId = useId();
+  const commandMenuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    commandMenuRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [commandActiveIndex, draft]);
   const annotations = composer.pastedTexts.filter(item => item.browserReview);
   const attachmentRail = useRef<HTMLDivElement>(null);
   const previousAttachments = useRef(new Set<string>());
@@ -237,25 +244,32 @@ export function ConversationComposer({
             </div>
           </div>
         )}
-        {focusCommandSuggestionVisible && (
+        {commandSuggestions.length > 0 && (
           <div
+            id={commandMenuId}
+            ref={commandMenuRef}
             className="local-agent__command-suggestions"
             role="listbox"
-            aria-label={t(language, 'agent.context.focusCommand')}
+            aria-label={t(language, 'agent.commands.title')}
           >
-            <button
+            {commandSuggestions.map((command, index) => <button
+              key={command.id}
+              id={`${commandMenuId}-${index}`}
               type="button"
               role="option"
-              aria-selected="true"
-              onClick={selectFocusCommand}
+              aria-selected={index === commandActiveIndex}
+              disabled={!command.enabled}
+              onMouseEnter={() => { if (command.enabled) setCommandActiveIndex(index); }}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => void selectCommand(command.id)}
             >
-              <DeepCodeShellIcon name="activity" />
+              <DeepCodeShellIcon name={command.icon} />
               <span>
-                <b>{t(language, 'agent.context.focusCommand')}</b>
-                <small>{t(language, 'agent.context.focusCommandDescription')}</small>
+                <b>{t(language, command.id === 'focus' ? 'agent.context.focusCommand' : `agent.commands.${command.id}`)}</b>
+                <small>{t(language, command.id === 'focus' ? 'agent.context.focusCommandDescription' : `agent.commands.${command.id}Description`)}</small>
               </span>
-              <kbd>/focus</kbd>
-            </button>
+              <kbd>/{command.id}</kbd>
+            </button>)}
           </div>
         )}
         {selectedProfileId && !profiles.some((profile) => profile.id === selectedProfileId && profile.enabled) && (
@@ -335,6 +349,8 @@ export function ConversationComposer({
         <textarea
           ref={textareaRef}
           value={draft}
+          aria-controls={commandSuggestions.length ? commandMenuId : undefined}
+          aria-activedescendant={commandSuggestions.length && commandActiveIndex >= 0 ? `${commandMenuId}-${commandActiveIndex}` : undefined}
           rows={compactInput ? 1 : 3}
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'
             : pendingInteraction ? 'agent.composer.placeholder.interaction' : 'agent.composer.placeholder.task')}
@@ -426,6 +442,7 @@ export function ConversationComposer({
               contextUsage={projection?.contextUsage ?? null}
               contextCompositions={projection?.contextCompositions ?? []}
               busy={loading || submitting || modelSettingsBusy}
+              requestedPanel={composer.modelPanelRequest}
               confirmed={modelSelectionConfirmed}
               onSelect={selectModel}
             />}
