@@ -4,12 +4,17 @@ export function useProjectionPolling(
   sessionId: string | null,
   projectionPollingActive: boolean,
   refresh: () => Promise<void>,
+  hostReady: boolean,
 ) {
-  useEffect(() => startProjectionPolling(projectionPollingActive, refresh), [projectionPollingActive, refresh, sessionId]);
+  useEffect(() => startProjectionPolling(projectionPollingActive, refresh, hostReady), [projectionPollingActive, refresh, sessionId, hostReady]);
 }
 
 /** One in-flight snapshot read; visibility changes never create a second polling chain. */
-export function startProjectionPolling(active: boolean, refresh: () => Promise<void>): () => void {
+export function startProjectionPolling(active: boolean, refresh: () => Promise<void>, hostReady: boolean): () => void {
+  // SSH authentication can keep the transport unavailable for several minutes.
+  // Host readiness owns when snapshot requests may start; an idle run only
+  // changes the polling interval after that connection exists.
+  if (!hostReady) return () => {};
   let cancelled = false;
   let refreshing = false;
   let timeout: number | null = null;

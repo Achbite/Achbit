@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
+import useAppStatusStore from '../../state/appStatusStore';
 import { usePresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
@@ -46,6 +47,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const projection = useLocalAgentStore((state) => state.projection);
   const loading = useLocalAgentStore((state) => state.loading);
   const refresh = useLocalAgentStore((state) => state.refresh);
+  const hostReady = useAppStatusStore((state) => state.apiStatus === 'connected');
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
   const [uiActionError, setUiActionError] = useState<string | null>(null);
   const conversationLayouts = useRef(new ConversationLayoutCache());
@@ -89,7 +91,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     || Boolean(projection?.pendingPlan)
     || Boolean(projection?.terminalError);
   useProfilesUpdated(refreshProfiles);
-  useProjectionPolling(sessionId, projectionPollingActive, refresh);
+  useProjectionPolling(sessionId, projectionPollingActive, refresh, hostReady);
   const viewport = useConversationViewport({
     sessionId,
     loading,

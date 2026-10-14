@@ -2283,7 +2283,13 @@ test('projection polling stays serial through visibility changes and stops after
   const visibility = (state) => { document.visibilityState = state; for (const listener of listeners) listener(); };
   let calls = 0;
   let release;
-  stop = startProjectionPolling(true, () => { calls += 1; return new Promise((resolve) => { release = resolve; }); });
+  const stopDisconnected = startProjectionPolling(true, async () => { calls += 1; }, false);
+  visibility('hidden'); visibility('visible');
+  assert.equal(calls, 0, 'authentication and disconnected Hosts must not read session status');
+  assert.equal(timers.size, 0);
+  assert.equal(listeners.size, 0);
+  stopDisconnected();
+  stop = startProjectionPolling(true, () => { calls += 1; return new Promise((resolve) => { release = resolve; }); }, true);
   assert.equal(timers.values().next().value.delay, 120);
   fire();
   visibility('hidden'); visibility('visible');
@@ -2298,7 +2304,7 @@ test('projection polling stays serial through visibility changes and stops after
   stop(); release(); await Promise.resolve();
   assert.equal(timers.size, 0);
   assert.equal(listeners.size, 0);
-  stopIdle = startProjectionPolling(false, async () => {});
+  stopIdle = startProjectionPolling(false, async () => {}, true);
   assert.equal(timers.values().next().value.delay, 4_000);
   stopIdle();
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConversationCommand, SessionProjection } from '@deepcode/protocol';
 import { getLocalAgentProjection, submitLocalAgentCommand } from '../../services/localAgentApi';
 import { startProjectionPolling } from './useProjectionPolling';
+import useAppStatusStore from '../../state/appStatusStore';
 
 export type ChildDecisionCommand = Extract<ConversationCommand, {
   type: 'interaction.respond' | 'approval.respond' | 'plan.respond' | 'session.permissions.set';
@@ -9,6 +10,7 @@ export type ChildDecisionCommand = Extract<ConversationCommand, {
 
 /** This is a view of a child Session, not a child execution owner. */
 export function useAgentChildConversation(sessionId: string, taskRevision: string, running: boolean, expanded: boolean) {
+  const hostReady = useAppStatusStore(state => state.apiStatus === 'connected');
   const [projection, setProjection] = useState<SessionProjection | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
@@ -52,12 +54,12 @@ export function useAgentChildConversation(sessionId: string, taskRevision: strin
     lifetime.current = controller;
     return () => { controller.abort(); lifetime.current = null; };
   }, [sessionId]);
-  useEffect(() => { if (expanded) void refresh(); }, [refresh, taskRevision, expanded]);
+  useEffect(() => { if (expanded && hostReady) void refresh(); }, [refresh, taskRevision, expanded, hostReady]);
   const live = running || Boolean(projection?.run && ['running', 'waiting', 'releasing'].includes(projection.run.status))
     || Boolean(projection?.agentTasks?.some(task => task.status === 'running'));
   useEffect(() => {
-    if (expanded && live) return startProjectionPolling(true, refresh);
-  }, [live, expanded, refresh]);
+    if (expanded && live) return startProjectionPolling(true, refresh, hostReady);
+  }, [live, expanded, refresh, hostReady]);
 
   const submit = useCallback(async (command: ChildDecisionCommand) => {
     if (command.sessionId !== sessionId) throw new Error('child_decision_session_mismatch');
