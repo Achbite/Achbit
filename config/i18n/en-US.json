@@ -1,5 +1,4 @@
 {
-  "$schema": "https://deepcode.local/schemas/i18n.schema.json",
   "locale": "en-US",
   "name": "English",
   "status": "active",

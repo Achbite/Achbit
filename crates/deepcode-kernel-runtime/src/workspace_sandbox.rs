@@ -1,11 +1,13 @@
 //! Platform implementations of the existing workspace Shell policy.
-#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
+#[cfg(any(target_os = "linux", windows, test))]
 use deepcode_kernel_abi::KernelError;
 #[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 use deepcode_kernel_abi::KernelResult;
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", windows, test))]
+use std::path::PathBuf;
 
 pub fn validate_backend_id(id: &str) -> Result<(), String> {
     if matches!(
