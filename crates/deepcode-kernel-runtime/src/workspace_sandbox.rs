@@ -7,6 +7,120 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 use std::path::{Path, PathBuf};
 
+pub fn validate_backend_id(id: &str) -> Result<(), String> {
+    if matches!(
+        id,
+        "platform-default" | "windows-lpac" | "sandbox-exec" | "bubblewrap"
+    ) {
+        Ok(())
+    } else {
+        Err(format!("sandbox_backend_unknown:{id}"))
+    }
+}
+
+pub fn native_backend_id() -> &'static str {
+    if cfg!(windows) {
+        "windows-lpac"
+    } else if cfg!(target_os = "macos") {
+        "sandbox-exec"
+    } else if cfg!(target_os = "linux") {
+        "bubblewrap"
+    } else {
+        "unavailable"
+    }
+}
+
+/// A backend owns the entire launch/wait/cancel/cleanup sequence. Windows LPAC
+/// cannot be represented as an ordinary Command without losing its token checks.
+pub struct SandboxProcessRequest<'a> {
+    pub invocation: crate::executors::KernelToolInvocation,
+    pub context: crate::executors::KernelToolExecutionContext,
+    pub shell: Option<&'a crate::shell_environment::ShellProgram>,
+    pub execution_path: Option<&'a str>,
+    pub temporary_root: Option<&'a std::path::Path>,
+}
+
+pub trait SandboxBackend: Send + Sync {
+    fn id(&self) -> &str;
+    fn probe(&self) -> SandboxStatus;
+    fn execute(
+        &self,
+        request: SandboxProcessRequest<'_>,
+    ) -> deepcode_kernel_abi::KernelResult<crate::executors::KernelToolExecutionResult>;
+}
+
+pub struct SandboxBackendRegistry {
+    backends: Vec<Box<dyn SandboxBackend>>,
+}
+
+impl std::fmt::Debug for SandboxBackendRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.backends.iter().map(|backend| backend.id()))
+            .finish()
+    }
+}
+
+impl SandboxBackendRegistry {
+    pub fn new(backends: Vec<Box<dyn SandboxBackend>>) -> Result<Self, String> {
+        let mut ids = std::collections::BTreeSet::new();
+        for backend in &backends {
+            if backend.id().is_empty()
+                || backend.id() == "platform-default"
+                || !ids.insert(backend.id().to_string())
+            {
+                return Err("sandbox_backend_duplicate_or_invalid".into());
+            }
+        }
+        Ok(Self { backends })
+    }
+
+    pub fn resolve(&self, id: &str) -> deepcode_kernel_abi::KernelResult<&dyn SandboxBackend> {
+        let id = if id == "platform-default" {
+            native_backend_id()
+        } else {
+            id
+        };
+        self.backends
+            .iter()
+            .find(|backend| backend.id() == id)
+            .map(|backend| backend.as_ref())
+            .ok_or_else(|| deepcode_kernel_abi::KernelError::Structured {
+                code: "sandbox_backend_unavailable",
+                stage: "execution",
+                message: format!(
+                    "Sandbox backend {id} is not registered for this execution environment."
+                ),
+                details: serde_json::json!({"backendId":id}),
+            })
+    }
+}
+
+impl Default for SandboxBackendRegistry {
+    fn default() -> Self {
+        Self {
+            backends: vec![Box::new(NativeSandboxBackend)],
+        }
+    }
+}
+
+struct NativeSandboxBackend;
+impl SandboxBackend for NativeSandboxBackend {
+    fn id(&self) -> &str {
+        native_backend_id()
+    }
+    fn probe(&self) -> SandboxStatus {
+        probe()
+    }
+    fn execute(
+        &self,
+        request: SandboxProcessRequest<'_>,
+    ) -> deepcode_kernel_abi::KernelResult<crate::executors::KernelToolExecutionResult> {
+        crate::executors::execute_workspace_shell(request)
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 #[cfg(windows)]
@@ -71,11 +185,24 @@ pub fn probe() -> SandboxStatus {
     {
         SandboxStatus::observed(
             "sandbox-exec",
-            if Path::new("/usr/bin/sandbox-exec").is_file() {
-                Ok(())
-            } else {
-                Err("sandbox-exec is unavailable.".into())
-            },
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .args([
+                    "-p",
+                    "(version 1)(allow default)(deny network*)",
+                    "/usr/bin/true",
+                ])
+                .output()
+                .map_err(|error| format!("Start sandbox-exec probe: {error}"))
+                .and_then(|output| {
+                    if output.status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "sandbox-exec probe failed: {}",
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        ))
+                    }
+                }),
         )
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

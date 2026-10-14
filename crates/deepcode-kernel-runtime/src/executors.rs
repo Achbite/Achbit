@@ -5,6 +5,7 @@ use deepcode_kernel_tools::kernel_internal::{
 };
 use deepcode_kernel_tools::KernelToolRegistry;
 use deepcode_kernel_tools::ToolAvailability;
+pub(crate) use process::invoke_workspace_shell as execute_workspace_shell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -20,6 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default)]
 pub struct KernelExecutorConfig {
+    pub sandbox_backend: Option<String>,
+    /// Trusted registration at Host startup; never supplied by a model or tool argument.
+    pub sandbox_backends: Arc<crate::workspace_sandbox::SandboxBackendRegistry>,
     pub web_search_endpoint_template: String,
     pub web_search_auth_header_name: String,
     pub web_search_auth_secret_ref: String,
@@ -299,6 +303,7 @@ fn executor_for_binding(
                 program: config.shell_program,
                 execution_path: config.execution_path,
                 temporary_root: config.temporary_root,
+                sandbox_backends: config.sandbox_backends,
             })
         }
     }

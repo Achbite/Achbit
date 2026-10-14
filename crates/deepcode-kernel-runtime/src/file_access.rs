@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileAccessScope {
+    /// Kernel-selected backend; also transported to a WSL worker with this scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_backend: Option<String>,
     #[serde(default)]
     pub network_access: bool,
     pub read: Vec<PathBuf>,

@@ -117,6 +117,7 @@ pub(super) struct ConfiguredShellExecutor {
     pub program: Option<ShellProgram>,
     pub execution_path: Option<String>,
     pub temporary_root: Option<PathBuf>,
+    pub sandbox_backends: std::sync::Arc<crate::workspace_sandbox::SandboxBackendRegistry>,
 }
 
 impl KernelToolExecutor for ConfiguredShellExecutor {
@@ -125,6 +126,31 @@ impl KernelToolExecutor for ConfiguredShellExecutor {
         invocation: KernelToolInvocation,
         context: KernelToolExecutionContext,
     ) -> KernelResult<KernelToolExecutionResult> {
+        let workspace = match &invocation.input {
+            KernelCanonicalInvocation::ProcessShell {
+                execution_scope, ..
+            }
+            | KernelCanonicalInvocation::ProcessPowerShell {
+                execution_scope, ..
+            } => execution_scope.as_str() == "workspace",
+            _ => false,
+        };
+        if workspace {
+            let backend = self.sandbox_backends.resolve(
+                context
+                    .file_access
+                    .sandbox_backend
+                    .as_deref()
+                    .unwrap_or("platform-default"),
+            )?;
+            return backend.execute(crate::workspace_sandbox::SandboxProcessRequest {
+                invocation,
+                context,
+                shell: self.program.as_ref(),
+                execution_path: self.execution_path.as_deref(),
+                temporary_root: self.temporary_root.as_deref(),
+            });
+        }
         invoke_shell(
             invocation,
             context,
@@ -133,6 +159,34 @@ impl KernelToolExecutor for ConfiguredShellExecutor {
             self.temporary_root.as_deref(),
         )
     }
+}
+
+pub(crate) fn invoke_workspace_shell(
+    request: crate::workspace_sandbox::SandboxProcessRequest<'_>,
+) -> KernelResult<KernelToolExecutionResult> {
+    match &request.invocation.input {
+        KernelCanonicalInvocation::ProcessShell {
+            execution_scope, ..
+        }
+        | KernelCanonicalInvocation::ProcessPowerShell {
+            execution_scope, ..
+        } if execution_scope.as_str() == "workspace" => {}
+        _ => {
+            return Err(KernelError::InvalidCommand(
+                "Sandbox backend requires an admitted workspace Shell".into(),
+            ))
+        }
+    }
+    let mut result = invoke_shell(
+        request.invocation,
+        request.context,
+        request.shell,
+        request.execution_path,
+        request.temporary_root,
+    )?;
+    result.output["sandboxBackend"] =
+        serde_json::json!(crate::workspace_sandbox::native_backend_id());
+    Ok(result)
 }
 
 fn invoke_shell(
