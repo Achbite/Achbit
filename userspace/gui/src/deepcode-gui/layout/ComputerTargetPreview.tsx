@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { ConversationReaderLayout } from '../../components/local-agent/LocalAgentPanel';
 import type { UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -21,17 +21,13 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
   const runId = run && ['running', 'waiting'].includes(run.status) ? run.runId : null;
   const owner = `${sessionId}:${runId}`;
   const [views, setViews] = useState<{ owner: string; desktop: ComputerPreview | null; browser: ComputerPreview<BrowserPreviewTarget> | null }>({ owner, desktop: null, browser: null });
-  const [activationError, setActivationError] = useState<string | null>(null);
-  const [activating, setActivating] = useState(false);
   const binding = useRef<NativeHostBinding | undefined>(undefined);
-  const boundary = useRef<HTMLDivElement>(null);
-  const manualPosition = useRef<{ owner: string; left: number; top: number } | null>(null);
-  const alignPreview = useRef<(() => void) | null>(null);
-  const currentOwner = useRef(owner); currentOwner.current = owner;
+  const overlay = useRef<HTMLDivElement>(null);
+  const [frontTarget, setFrontTarget] = useState<string | null>(null);
   const label = copy[language === 'zh-CN' ? 'zh-CN' : 'en-US'];
 
   useEffect(() => {
-    setViews({ owner, desktop: null, browser: null }); setActivationError(null); setActivating(false); binding.current = undefined;
+    setViews({ owner, desktop: null, browser: null }); setFrontTarget(null); binding.current = undefined;
     if (!sessionId || !runId || !hasNativeBrowser() || !/Mac/.test(navigator.platform)) return;
     const abort = new AbortController();
     let desktopTimer: ReturnType<typeof setTimeout> | undefined;
@@ -81,9 +77,32 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
   const live = views.owner === owner ? views : { desktop: null, browser: null };
   const cards = [live.desktop, live.browser].filter((view): view is ComputerPreview | ComputerPreview<BrowserPreviewTarget> => Boolean(view && (view.target || view.reason || view.frameError) && !(view.state === 'inactive' && !view.reason)));
   const concealed = hidden || readerLayout.expanded || !runId;
+  return <div ref={overlay} className="computer-target-preview" hidden={concealed || cards.length === 0} aria-label={label.title}>
+    {cards.map((view, index) => {
+      const identity = `${owner}:${targetIdentity(view.target) ?? index}`;
+      return <FloatingComputerPreview key={identity} view={view} sessionId={sessionId} runId={runId} language={language}
+        readerLayout={readerLayout} concealed={concealed} index={index} overlay={overlay}
+        raised={frontTarget === identity} onRaise={() => setFrontTarget(identity)} />;
+    })}
+  </div>;
+}
+
+/** Each exact target owns its position, bounds and activation state. */
+function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise }: {
+  view: ComputerPreview<DesktopPreviewTarget | BrowserPreviewTarget>; sessionId: string | null; runId: string | null; language: UiLanguage;
+  readerLayout: ConversationReaderLayout; concealed: boolean; index: number; overlay: RefObject<HTMLDivElement | null>;
+  raised: boolean; onRaise(): void;
+}) {
+  const boundary = useRef<HTMLDivElement>(null);
+  const manualPosition = useRef<{ left: number; top: number } | null>(null);
+  const alignPreview = useRef<(() => void) | null>(null);
+  const [activationError, setActivationError] = useState<string | null>(null);
+  const [activating, setActivating] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useLayoutEffect(() => {
     const element = boundary.current;
-    const shell = element?.parentElement;
+    const shell = overlay.current?.parentElement;
     const conversation = readerLayout.conversationBounds ?? shell?.querySelector<HTMLElement>('.deepcode-gui-session-main');
     if (!element || !shell || !conversation) return;
     const rail = readerLayout.visible ? null : shell.querySelector<HTMLElement>('.deepcode-gui-context-panel');
@@ -94,8 +113,8 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
       const cardsBottom = content.length ? Math.max(...content.map(child => child.getBoundingClientRect().bottom)) : railRect?.top ?? 0;
       const viewport = { width: window.innerWidth, height: window.innerHeight };
       const composerTop = composer?.getBoundingClientRect().top ?? window.innerHeight;
-      let position = previewPlacement(conversation.getBoundingClientRect(), railRect?.width ? railRect : null, cardsBottom, viewport, composerTop);
-      if (manualPosition.current?.owner === owner) {
+      let position = previewPlacement(conversation.getBoundingClientRect(), railRect?.width ? railRect : null, cardsBottom, viewport, composerTop, index);
+      if (manualPosition.current) {
         const bounds = (readerLayout.visible ? conversation : shell).getBoundingClientRect();
         const available = constrainPreviewPosition(manualPosition.current, { width: 240, height: 0 }, bounds, viewport, composerTop);
         element.style.width = `${available.width}px`;
@@ -122,9 +141,9 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
       alignPreview.current = null;
       observer.disconnect(); mutation.disconnect(); window.removeEventListener('resize', align); rail?.removeEventListener('scroll', align);
     };
-  }, [owner, readerLayout.visible, readerLayout.expanded, readerLayout.conversationBounds, concealed, cards.length]);
+  }, [readerLayout.visible, readerLayout.expanded, readerLayout.conversationBounds, concealed, index, overlay]);
 
-  async function activate(view: ComputerPreview<DesktopPreviewTarget | BrowserPreviewTarget>) {
+  async function activate() {
     const target = view.target;
     if (!sessionId || !runId || !target || view.state !== 'active' || activating) return;
     setActivationError(null);
@@ -135,17 +154,16 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
       } else {
         await activateDesktopPreview(sessionId, runId, target, new AbortController().signal);
       }
-    } catch (error) { if (currentOwner.current === owner) setActivationError(String(error)); }
-    finally { if (currentOwner.current === owner) setActivating(false); }
+    } catch (error) { if (mounted.current) setActivationError(String(error)); }
+    finally { if (mounted.current) setActivating(false); }
   }
 
-  return <div ref={boundary} className="computer-target-preview" hidden={concealed || cards.length === 0} aria-label={label.title}>
-    {cards.map((view, index) => <div className="computer-target-preview__card" key={targetIdentity(view.target) ?? index}>
-      <ComputerPreviewTarget view={view} language={language} activating={activating} onActivate={() => void activate(view)}
-        getPosition={() => boundary.current?.getBoundingClientRect() ?? null}
-        onMove={position => { manualPosition.current = { owner, ...position }; alignPreview.current?.(); }} />
-      {(view.reason || view.frameError) && <p className="computer-target-preview__error" role="status">{view.frameError || view.reason}</p>}
-    </div>)}
+  return <div ref={boundary} className="computer-target-preview__card" style={{ zIndex: raised ? 1 : 0 }}
+    onPointerDownCapture={onRaise} onFocusCapture={onRaise}>
+    <ComputerPreviewTarget view={view} language={language} activating={activating} onActivate={() => void activate()}
+      getPosition={() => boundary.current?.getBoundingClientRect() ?? null}
+      onMove={position => { manualPosition.current = position; alignPreview.current?.(); }} />
+    {(view.reason || view.frameError) && <p className="computer-target-preview__error" role="status">{view.frameError || view.reason}</p>}
     {activationError && <p className="computer-target-preview__error" role="alert">{activationError}</p>}
   </div>;
 }

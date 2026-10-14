@@ -42,6 +42,27 @@ test('preview sits below right-rail cards and follows the bounded conversation w
   assert.ok(resized.left >= 80 && resized.top + resized.maxHeight < 620);
 });
 
+test('multiple preview targets start staggered and may overlap while remaining inside the available area', async t => {
+  const { previewPlacement } = await loadGuiModule(t, '/src/services/computerPreview.ts');
+  const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+  const conversation = rect(240, 60, 900, 840), rail = rect(1140, 60, 300, 840);
+  const first = previewPlacement(conversation, rail, 400, { width: 1440, height: 900 }, 780, 0);
+  const second = previewPlacement(conversation, rail, 400, { width: 1440, height: 900 }, 780, 1);
+  assert.equal(second.left, first.left - 24);
+  assert.equal(second.top, first.top + 24);
+  assert.ok(second.left + second.width > first.left && second.top < first.top + 180,
+    'the default offset leaves both previews exposed without forcing separate rows');
+  assert.ok(second.left >= rail.left + 12 && second.top > 400);
+  assert.equal(second.top + second.maxHeight, first.top + first.maxHeight);
+  const reader = previewPlacement(rect(240, 60, 480, 840), null, 0, { width: 1440, height: 900 }, 710, 1);
+  assert.ok(reader.left >= 252 && reader.left + reader.width <= 708);
+  assert.ok(reader.top + reader.maxHeight < 710);
+  const narrow = previewPlacement(rect(80, 60, 200, 840), null, 0, { width: 1440, height: 900 }, 620, 1);
+  assert.equal(narrow.left, 92, 'horizontal stagger is constrained when the thumbnail fills a narrow area');
+  assert.equal(narrow.width, 176);
+  assert.equal(narrow.top, 96);
+});
+
 test('preview measures real cards through the builtin UiRegion display-contents hosts', async t => {
   const { previewRailElements, previewPlacement } = await loadGuiModule(t, '/src/services/computerPreview.ts');
   const previous = globalThis.getComputedStyle;
@@ -144,4 +165,48 @@ test('preview can still move while target activation is pending without submitti
   assert.match(html, /aria-disabled="true"/);
   assert.doesNotMatch(html, / disabled=""/);
   assert.deepEqual(moves, [{ left: 100, top: 210 }]);
+});
+
+test('two preview controls move and activate their own targets without sharing drag or pending state', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/deepcode-gui/layout/ComputerTargetPreview.tsx');
+  const page = { hostInstanceId: 'host:1', windowLabel: 'main', sessionId: 'session:1', previewId: 'page:2', url: 'https://example.test/preview' };
+  const positions = [{ left: 900, top: 400 }, { left: 876, top: 424 }], activated = [];
+  const captures = new Set();
+  const handle = { dataset: {}, setPointerCapture: id => captures.add(id), hasPointerCapture: id => captures.has(id), releasePointerCapture: id => captures.delete(id) };
+  const pointer = (x, y) => ({ button: 0, isPrimary: true, pointerId: 1, clientX: x, clientY: y, currentTarget: handle, preventDefault() {} });
+  const click = () => ({ detail: 1, preventDefault() {}, stopPropagation() {} });
+  function Probe() {
+    const controls = [target, page].map((boundTarget, index) => ComputerPreviewTarget({
+      view: { state: 'active', target: boundTarget, frame }, language: 'en-US', activating: index === 0,
+      getPosition: () => positions[index], onMove: position => { positions[index] = position; },
+      onActivate: () => activated.push(boundTarget),
+    }));
+    controls[0].props.onPointerDown(pointer(10, 10));
+    controls[0].props.onPointerMove(pointer(50, 30));
+    controls[0].props.onPointerUp(pointer(50, 30));
+    controls[0].props.onClick(click());
+    assert.deepEqual(positions, [{ left: 940, top: 420 }, { left: 876, top: 424 }]);
+    assert.deepEqual(activated, []);
+    controls[1].props.onPointerDown(pointer(50, 30));
+    controls[1].props.onPointerUp(pointer(50, 30));
+    controls[1].props.onClick(click());
+    assert.deepEqual(activated, [page], 'the browser remains activatable while the desktop target is pending');
+    controls[1].props.onPointerDown(pointer(50, 30));
+    controls[1].props.onPointerMove(pointer(114, 26));
+    controls[1].props.onPointerUp(pointer(114, 26));
+    controls[1].props.onClick(click());
+    assert.deepEqual(positions, [{ left: 940, top: 420 }, { left: 940, top: 420 }], 'independent targets may occupy the same position');
+    assert.deepEqual(activated, [page], 'the dragged browser does not activate on release');
+    controls[1].props.onPointerDown(pointer(114, 26));
+    controls[1].props.onPointerUp(pointer(114, 26));
+    controls[1].props.onClick(click());
+    assert.deepEqual(activated, [page, page], 'the next ordinary click is not swallowed by the previous drag');
+    return createElement('div', null, ...controls.map((control, index) => createElement('div', { key: index }, control)));
+  }
+  const html = renderToStaticMarkup(createElement(Probe));
+  assert.equal((html.match(/<button\b/g) ?? []).length, 2);
+  assert.equal((html.match(/aspect-ratio:640 \/ 480/g) ?? []).length, 2);
+  assert.equal(captures.size, 0);
 });

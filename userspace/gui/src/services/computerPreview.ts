@@ -68,13 +68,14 @@ export function constrainPreviewPosition(position: { left: number; top: number }
 }
 
 /** Fit the bounded thumbnail to actual free rail space, or to the conversation beside Reader. */
-export function previewPlacement(conversation: PreviewRect, rail: PreviewRect | null, cardsBottom: number, viewport: { width: number; height: number }, composerTop: number) {
+export function previewPlacement(conversation: PreviewRect, rail: PreviewRect | null, cardsBottom: number, viewport: { width: number; height: number }, composerTop: number, index = 0) {
   const margin = 12;
+  const stagger = index * 24;
   const area = rail && rail.width > 0 ? rail : conversation;
   const right = Math.min(area.right, viewport.width) - margin;
   const left = Math.max(area.left, 0) + margin;
-  const top = Math.max(area.top + margin, rail ? cardsBottom + margin : area.top + margin, 0);
+  const top = Math.max(area.top + margin, rail ? cardsBottom + margin : area.top + margin, 0) + stagger;
   const bottom = Math.min(area.bottom, viewport.height, rail ? viewport.height : composerTop) - margin;
   const width = Math.min(240, Math.max(0, right - left));
-  return { left: right - width, top, width, maxHeight: Math.max(0, bottom - top) };
+  return { left: Math.max(left, right - width - stagger), top, width, maxHeight: Math.max(0, bottom - top) };
 }
