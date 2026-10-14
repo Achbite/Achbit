@@ -321,7 +321,7 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.subagents.maxCallsPerRun": 16,
         "agent.subagents.maxMembersPerSession": 4,
         "agent.subagents.allowMemberAnalysis": true,
-        "agent.subagents.allowFullConfiguration": false,
+        "agent.subagents.allowFullConfiguration": true,
         "agent.subagents.presets": "[]",
         "agent.responseLanguage": "auto",
         "agent.windows.shell": "auto",

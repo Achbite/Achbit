@@ -1,3 +1,4 @@
+import { decodeAgentRecipe } from '@deepcode/protocol';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
@@ -23,6 +24,7 @@ import { combineTokenUsage, projectSession, providerUsageFromEvents, recoverSess
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
+import { AgentLoopRegistry } from './loopRegistry.js';
 
 export interface SessionCompositionFactory {
   create(input: {
@@ -52,10 +54,11 @@ export type SessionServiceFactory = (input: {
   compositions: SessionCompositionFactory;
   agentHost?: AgentHostPort;
   configurations?: SessionConfigurationRegistry;
+  loops?: AgentLoopRegistry;
 }) => Promise<SessionServicePort>;
 
-export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations }) => (
-  new SessionService(journal, compositions, agentHost, configurations)
+export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations, loops }) => (
+  new SessionService(journal, compositions, agentHost, configurations, loops)
 );
 
 export class SessionDeletionError extends AggregateError {
@@ -76,6 +79,8 @@ export class SessionService implements ConversationPort {
   readonly #lifetime = new AbortController();
   #disposeTask?: Promise<void>;
   #delegationNotifications: Promise<void> = Promise.resolve();
+  #delegationEnabled?: boolean;
+  readonly #initialDelegation: Promise<boolean | undefined>;
   readonly #agents?: AgentManager;
 
   constructor(
@@ -83,17 +88,22 @@ export class SessionService implements ConversationPort {
     readonly compositions: SessionCompositionFactory,
     agentHost?: AgentHostPort,
     readonly configurations = new SessionConfigurationRegistry(),
+    readonly loops = new AgentLoopRegistry(),
   ) {
+    // One bootstrap read per service lifetime; updates are delivered by Host.
+    this.#initialDelegation = agentHost ? agentHost.settings().then(settings => settings.enabled) : Promise.resolve(undefined);
+    void this.#initialDelegation.catch(() => undefined);
     if (agentHost) this.#agents = new AgentManager(agentHost, {
       withActor: (id, operation) => this.withActor(id, operation),
       read: id => this.agentManagement(id),
-    }, configurations);
+    }, configurations, loops);
   }
 
   /** Ordered Host setting facts; this does not start a run or activate a new Actor. */
   delegationChanged(enabled: boolean): Promise<void> {
     this.assertOpen();
     if (!this.#agents) return Promise.resolve();
+    this.#delegationEnabled = enabled;
     const actors = [...this.#actors.values()];
     const task = this.#delegationNotifications.then(async () => {
       const results = await Promise.allSettled(actors.map(async actor => (await actor).delegationChanged(enabled)));
@@ -106,15 +116,26 @@ export class SessionService implements ConversationPort {
 
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {
     this.assertOpen();
+    if (input.recipe) {
+      const recipe = decodeAgentRecipe(input.recipe);
+      if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
+      if (recipe.configuration) this.configurations.resolve(recipe.configuration, {}, true);
+      if (recipe.runner) this.loops.validate(recipe.runner);
+      if (input.agentContext?.configuration && recipe.configuration
+        && JSON.stringify(input.agentContext.configuration) !== JSON.stringify(recipe.configuration)) throw new Error('session_configuration_owner_conflict');
+      input = { ...input, recipe, profileId: input.profileId ?? recipe.profileId };
+    }
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
+        ...(input.recipe ? { recipe: input.recipe } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.profileId ? { profileId: input.profileId } : {}) },
     }]);
     await this.journal.createSession({
       sessionId: input.sessionId,
       displayTitle: input.displayTitle,
+      ...(input.recipe ? { recipe: input.recipe } : {}),
       workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
       ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
       ...(input.profileId ? { profileId: input.profileId } : {}),
@@ -479,16 +500,22 @@ export class SessionService implements ConversationPort {
       sessionId,
       workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
     });
-    if (first.payload.agentContext?.configuration) {
-      try {
+    const configuration = first.payload.recipe?.configuration ?? first.payload.agentContext?.configuration;
+    try {
+      if (configuration) {
         if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');
-        installed.composition.capabilities = await this.configurations.create(first.payload.agentContext.configuration);
-      } catch (error) {
-        const cleanup = await Promise.allSettled([installed.composition.capabilities?.dispose(), installed.composition.dispose()]);
-        const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-        if (failures.length) throw new AggregateError([error, ...failures], 'session_configuration_initialization_failed');
-        throw error;
+        installed.composition.capabilities = await this.configurations.create(configuration);
       }
+      if (first.payload.recipe?.runner) {
+        if (installed.composition.runner) throw new Error('session_loop_owner_conflict');
+        installed.composition.runner = this.loops.create(first.payload.recipe.runner);
+      }
+    } catch (error) {
+      const cleanup = await Promise.allSettled([installed.composition.capabilities?.dispose(),
+        installed.composition.runner?.dispose?.(), installed.composition.dispose()]);
+      const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length) throw new AggregateError([error, ...failures], 'session_configuration_initialization_failed');
+      throw error;
     }
     const actor = new SessionActor(sessionId, this.journal, installed.composition, {
       initialEvents: events,
@@ -497,6 +524,9 @@ export class SessionService implements ConversationPort {
     });
     try {
       this.assertOpen();
+      const initialDelegation = await this.#initialDelegation;
+      const delegation = this.#delegationEnabled ?? initialDelegation;
+      if (delegation !== undefined) await actor.delegationChanged(delegation);
       await actor.recover(this.#lifetime.signal);
       this.assertOpen();
       return actor;

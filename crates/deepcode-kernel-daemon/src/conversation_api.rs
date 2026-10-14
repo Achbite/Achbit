@@ -23,6 +23,7 @@ pub(crate) struct CreateConversationSessionRequest {
     workspace_paths: Option<Vec<String>>,
     project_id: Option<String>,
     profile_id: Option<String>,
+    recipe: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +34,7 @@ pub(crate) struct CreateAgentSessionRequest {
     workspace_bindings: Vec<WorkspaceBindingDisplayRecord>,
     profile_id: String,
     agent_context: Value,
+    recipe: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1011,8 +1013,29 @@ pub(crate) async fn conversation_project_delete(
 
 pub(crate) async fn conversation_session_create(
     State(state): State<AppState>,
-    Json(body): Json<CreateConversationSessionRequest>,
+    Json(mut body): Json<CreateConversationSessionRequest>,
 ) -> Json<ApiResponse> {
+    let recipe = match body
+        .recipe
+        .as_ref()
+        .map(crate::local_agent_recipe::AgentRecipe::decode)
+        .transpose()
+    {
+        Ok(recipe) => recipe,
+        Err(error) => return ApiResponse::error("agent_recipe_invalid", error),
+    };
+    if let Some(recipe) = &recipe {
+        if body.profile_id.is_some()
+            && recipe.profile_id.is_some()
+            && body.profile_id != recipe.profile_id
+        {
+            return ApiResponse::error(
+                "agent_recipe_model_conflict",
+                "Model selection conflicts with the Agent recipe.",
+            );
+        }
+        body.profile_id = body.profile_id.or_else(|| recipe.profile_id.clone());
+    }
     let session_id = match body.session_id {
         Some(value) if valid_id(&value) => value,
         Some(_) => {
@@ -1088,6 +1111,7 @@ pub(crate) async fn conversation_session_create(
             updated_at: now,
         },
         None,
+        recipe.map(|recipe| json!(recipe)),
     )
     .await
 }
@@ -1097,6 +1121,7 @@ async fn create_registered_session(
     state: &AppState,
     session: ConversationSessionRecord,
     agent_context: Option<Value>,
+    recipe: Option<Value>,
 ) -> Json<ApiResponse> {
     let session_id = session.id.clone();
     let mut creation = json!({
@@ -1105,6 +1130,9 @@ async fn create_registered_session(
         "workspaceBindings": session.workspace_bindings,
         "profileId": session.profile_id,
     });
+    if let Some(recipe) = recipe {
+        creation["recipe"] = recipe;
+    }
     if let Some(context) = agent_context {
         creation["agentContext"] = context;
     }
@@ -1256,7 +1284,49 @@ pub(crate) async fn create_agent_session(
             updated_at: now,
         }
     };
-    let created = create_registered_session(&state, session, Some(body.agent_context)).await;
+    let parent_recipe = match state.local_agent.journal.agent_recipe(parent_id) {
+        Ok(recipe) => recipe,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut recipe = match body
+        .recipe
+        .as_ref()
+        .map(crate::local_agent_recipe::AgentRecipe::decode)
+        .transpose()
+    {
+        Ok(Some(recipe)) => recipe,
+        Ok(None) => crate::local_agent_recipe::AgentRecipe {
+            permission_policy: parent_recipe.permission_policy.clone(),
+            workspace_sandbox: parent_recipe.workspace_sandbox.clone(),
+            ..Default::default()
+        },
+        Err(error) => return ApiResponse::error("agent_recipe_invalid", error),
+    };
+    if let Err(error) = parent_recipe.validate_child(&recipe) {
+        return ApiResponse::error("agent_policy_not_grantable", error);
+    }
+    let parent_permissions = match state
+        .local_agent
+        .journal
+        .run_permission_settings(parent_id, parent_run)
+    {
+        Ok(permissions) => permissions,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    recipe.permissions = match crate::local_agent_recipe::inherit_permissions(
+        &parent_permissions,
+        recipe.permissions.as_ref(),
+    ) {
+        Ok(permissions) => Some(permissions),
+        Err(error) => return ApiResponse::error("agent_permission_not_grantable", error),
+    };
+    let created = create_registered_session(
+        &state,
+        session,
+        Some(body.agent_context),
+        Some(json!(recipe)),
+    )
+    .await;
     if !created.0.ok {
         return created;
     }
@@ -1908,7 +1978,14 @@ pub(crate) async fn conversation_projection_get(
     )
     .await
     {
-        Ok(value) => ApiResponse::ok(value),
+        Ok(mut value) => match state
+            .local_agent
+            .journal
+            .project_permissions(&session_id, &mut value)
+        {
+            Ok(()) => ApiResponse::ok(value),
+            Err(error) => ApiResponse::error(error.code, error.message),
+        },
         Err(error) => session_service_error(error),
     }
 }

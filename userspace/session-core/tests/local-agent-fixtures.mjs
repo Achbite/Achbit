@@ -142,7 +142,7 @@ export function emptyKernel(overrides = {}) {
         conflictsWith: requests.slice(0, index).filter(previous => previous.input.workspaceId === request.input.workspaceId
           && previous.input.path === request.input.path).map(previous => previous.callId) })) };
     },
-    async delegatedPlanScope() { return []; },
+    async planAdmission() { return { source: 'user', authorities: [] }; },
     async prepareCatalog() { throw new Error('unexpected_prepare_catalog'); },
     async releaseCatalog() { throw new Error('unexpected_release_catalog'); },
     async execute() { throw new Error('unexpected_tool_execution'); },
@@ -288,6 +288,7 @@ export function jsonMessagePayload(message) {
 
 export function forwardingJournal(delegate, read) {
   return {
+    subscribePermissions: (...args) => delegate.subscribePermissions(...args),
     createSession: (input) => delegate.createSession(input),
     deleteSession: (sessionId) => delegate.deleteSession(sessionId),
     append: (event) => delegate.append(event),

@@ -3,7 +3,7 @@ import { isProcessActivity } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { validatePermissionPatches } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
-import { decodeAgentContext } from '@deepcode/protocol';
+import { decodeAgentContext, decodeAgentRecipe } from '@deepcode/protocol';
 import type {
   AssistantDraftBlockProjection,
   CommandReply,
@@ -373,7 +373,8 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals'])
+    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals'])
+    || (value.recipe !== undefined && !isAgentRecipe(value.recipe))
     || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
     || (value.agentTasks !== undefined && !isArrayOf(value.agentTasks, isAgentTask))
     || (value.agentChildren !== undefined && !isArrayOf(value.agentChildren, isAgentChild))
@@ -462,6 +463,10 @@ function isAgentContext(value: unknown): boolean {
     const context = decodeAgentContext(value);
     return [context.ownerSessionId, context.parentSessionId, context.parentRunId, context.parentCallId].every(isIdentifier);
   } catch { return false; }
+}
+
+function isAgentRecipe(value: unknown): boolean {
+  try { decodeAgentRecipe(value); return true; } catch { return false; }
 }
 
 function isAgentTaskResult(value: unknown): boolean {

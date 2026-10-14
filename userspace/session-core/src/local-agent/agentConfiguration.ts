@@ -1,11 +1,11 @@
-import { decodeAgentConfiguration, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@deepcode/protocol';
-import type { AgentCapabilities, AgentConfiguration, AgentOperation, AgentSettings, UserSettings } from '@deepcode/protocol';
+import { decodeAgentRecipe, decodeAgentConfiguration, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@deepcode/protocol';
+import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentOperation, AgentSettings, UserSettings } from '@deepcode/protocol';
 
 export const DEFAULT_AGENT_CONFIGURATION: AgentConfiguration = {
   context: { id: 'journal' }, compaction: { id: 'summary' }, controls: { id: 'standard' },
 };
 
-export interface AgentPreset {
+export interface AgentPreset extends AgentRecipe {
   id: string;
   name: string;
   capabilities: AgentCapabilities;
@@ -25,11 +25,13 @@ export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const ids = new Set(builtins.map(preset => preset.id));
   for (const item of stored) {
     if (!item || typeof item !== 'object' || Array.isArray(item)
-      || Object.keys(item).some(key => !['id', 'name', 'capabilities', 'profileId', 'reasoningEffort', 'configuration', 'permissions'].includes(key))
+      || Object.keys(item).some(key => !['id', 'name', 'capabilities', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
       || typeof item.id !== 'string' || !item.id.trim() || ids.has(item.id)
       || typeof item.name !== 'string' || !item.name.trim()
       || item.profileId !== undefined && (typeof item.profileId !== 'string' || !item.profileId.trim())
       || item.reasoningEffort !== undefined && !isLlmReasoningEffort(item.reasoningEffort)) throw new Error('agent_presets_invalid');
+    const { id: _id, name: _name, capabilities: _capabilities, ...recipe } = item;
+    decodeAgentRecipe(recipe);
     ids.add(item.id);
     if (item.permissions !== undefined) validatePermissionPatches(item.permissions);
     builtins.push({ ...item, capabilities: decodeAgentCapabilities(item.capabilities),
@@ -54,30 +56,15 @@ export function resolveAgentCapabilities(preset: AgentPreset, overrides: Partial
   return capabilities;
 }
 
-/** Only restrictions of already granted policy can be chosen by the creating Agent. */
-export function agentPermissions(parent: UserSettings, ...patches: Array<UserSettings | undefined>): UserSettings {
-  const permissions = structuredClone(parent);
-  const levels: Record<string, readonly string[]> = {
-    'agent.permissions.workspaceMutation': ['plan', 'allow'],
-    'agent.permissions.engineeringDecisions': ['ask', 'delegate'],
-    'agent.permissions.shell': ['ask', 'review', 'allow'],
-    'agent.permissions.shellAccess': ['workspace', 'full'],
-    'agent.permissions.networkRead': ['deny', 'ask', 'allow'],
-    'agent.permissions.external': ['deny', 'ask', 'allow'],
-  };
+/** Pass declarative requests to the Kernel; it owns inheritance and admission. */
+export function agentPermissionPatches(...patches: Array<UserSettings | undefined>): UserSettings | undefined {
+  const permissions: UserSettings = {};
   for (const patch of patches) {
     if (!patch) continue;
     validatePermissionPatches(patch);
-    for (const [key, value] of Object.entries(patch)) {
-      if (JSON.stringify(value) === JSON.stringify(permissions[key])) continue;
-      const choices = levels[key];
-      if (!choices || choices.indexOf(String(value)) > choices.indexOf(String(permissions[key]))) {
-        throw new Error(`agent_permission_not_grantable:${key}`);
-      }
-      permissions[key] = value;
-    }
+    Object.assign(permissions, structuredClone(patch));
   }
-  return permissions;
+  return Object.keys(permissions).length ? permissions : undefined;
 }
 
 export type AgentSpawn = Extract<AgentOperation, { action: 'spawn' }>;

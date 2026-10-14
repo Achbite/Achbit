@@ -857,6 +857,10 @@ impl PreparedCatalogBinding {
         matches!(&self.entry().binding, ToolExecutorBinding::Process)
     }
 
+    pub(crate) fn uses_external_runtime(&self) -> bool {
+        matches!(&self.entry().binding, ToolExecutorBinding::Mcp(_))
+    }
+
     pub(crate) fn container_adapter(&self) -> Option<&crate::container_tools::Containers> {
         match &self.entry().binding {
             ToolExecutorBinding::Container(adapter) => Some(adapter),

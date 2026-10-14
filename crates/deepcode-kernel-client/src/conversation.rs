@@ -52,6 +52,8 @@ impl ConversationCatalog {
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationSessionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_paths: Option<Vec<String>>,
@@ -206,6 +208,8 @@ pub struct PluginSelectionInput {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionProjection {
+    #[serde(default)]
+    pub recipe: Option<Value>,
     pub schema_version: String,
     pub session_id: String,
     pub revision: u64,

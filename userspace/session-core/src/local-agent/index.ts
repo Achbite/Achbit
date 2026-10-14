@@ -1,6 +1,7 @@
 export * from './actor.js';
 export * from './httpPorts.js';
 export * from './loop.js';
+export * from './loopRegistry.js';
 export * from './plugins.js';
 export * from './reducer.js';
 export * from './sessionControls.js';

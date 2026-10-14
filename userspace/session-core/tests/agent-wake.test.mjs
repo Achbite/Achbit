@@ -52,9 +52,9 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
       { profileId: 'profile:chosen', name: 'Chosen model', model: 'chosen-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['high'] },
     ]; },
     async createSession(input) { return service.createSession(input); },
-  });
+  }, options.configurations, options.loops);
   t.after(() => service.dispose());
-  if (!options.reopen) await service.createSession({ sessionId: ownerId, displayTitle: 'Wake owner', workspaceBindings: [workspaceBinding] });
+  if (!options.reopen) await service.createSession({ sessionId: ownerId, displayTitle: 'Wake owner', workspaceBindings: [workspaceBinding], ...(options.recipe ? { recipe: options.recipe } : {}) });
   return { journal, service, requests, preparations, disposed, settings };
 }
 
@@ -511,14 +511,14 @@ test('a child Plan retains the original parent authority reference without inven
   }, {
     preparation: { tools: [tool] },
     kernel: ({ sessionId, journal }) => emptyKernel({
-      async delegatedPlanScope(request) {
-        assert.notEqual(sessionId, ownerId);
+      async planAdmission(request) {
+        if (sessionId === ownerId) return { source: 'user', authorities: [] };
         scopeRequests.push(structuredClone(request));
         const confirmed = (await readEvents(journal, ownerId)).find(event => event.type === 'plan.confirmed');
         assert.equal(confirmed.payload.source, 'user');
         parentAuthority = structuredClone(confirmed.payload.authorities[0]);
         assert.deepEqual(request.mutationManifest, parentAuthority.coveredOperations);
-        return [parentAuthority];
+        return { source: 'parent', authorities: [parentAuthority] };
       },
       async execute(request) {
         executions.push(structuredClone(request));
@@ -803,11 +803,11 @@ test('a permitted peer wakes a dormant instance without changing lineage or its 
   assert.equal(child.agentContext.parentSessionId, ownerId);
   assert.equal(child.agentContext.ownerSessionId, ownerId);
   assert.equal(child.agentContext.model.profileId, 'profile:default');
-  assert.deepEqual(child.agentContext.configuration.controls.parameters.optionalTools, []);
+  assert.deepEqual(child.recipe.configuration.controls.parameters.optionalTools, []);
   const northEvents = await readEvents(fixture.journal, northId);
   assert.equal(northEvents.filter(event => event.type === 'session.created').length, 1);
   assert.equal(northEvents.filter(event => event.type === 'run.started').length, 2);
-  assert.equal(northEvents.filter(event => event.type === 'session.permissions.updated').length, 1);
+  assert.equal(northEvents.filter(event => event.type === 'session.permissions.updated').length, 0);
   const southId = parent.agentChildren.find(value => value.agentSessionId !== northId).agentSessionId;
   const south = await fixture.service.snapshot(southId);
   assert.equal(south.agentTasks[0].agentSessionId, northId);
@@ -816,7 +816,7 @@ test('a permitted peer wakes a dormant instance without changing lineage or its 
 
 test('one contribution registry validates, describes and restores supported instance choices', async () => {
   const { SessionConfigurationRegistry, builtinSessionContributions } = await import('../dist/index.js');
-  const { agentPermissions, agentPresets } = await import('../dist/local-agent/agentConfiguration.js');
+  const { agentPresets } = await import('../dist/local-agent/agentConfiguration.js');
   const registry = new SessionConfigurationRegistry();
   const controls = { id: 'standard', parameters: { optionalTools: [] } };
   const saved = registry.resolve(undefined, { controls });
@@ -845,10 +845,91 @@ test('one contribution registry validates, describes and restores supported inst
     await ports.dispose();
   }
   assert.deepEqual([created, disposed], [2, 2]);
-  assert.throws(() => agentPermissions({ 'agent.permissions.workspaceMutation': 'plan' }, { 'agent.permissions.workspaceMutation': 'allow' }), /agent_permission_not_grantable/);
-  assert.deepEqual(agentPermissions({ 'agent.permissions.workspaceMutation': 'allow' }, { 'agent.permissions.workspaceMutation': 'plan' }), { 'agent.permissions.workspaceMutation': 'plan' });
   const presets = agentPresets({ presets: JSON.stringify([{ id: 'custom', name: 'Custom', capabilities: { messaging: false, continuation: true, delegation: false }, configuration }]) });
   assert.equal(presets[2].configuration.context.id, 'registered-context');
+});
+
+test('recipes select registered drivers for root and model-composed child sessions and restore them', async t => {
+  const { AgentLoopRegistry, builtinAgentLoops, runAgentLoop } = await import('../dist/index.js');
+  const ownerId = 'session:composed-drivers';
+  const runs = [], disposed = [];
+  const loops = new AgentLoopRegistry([...builtinAgentLoops(), {
+    id: 'instrumented', description: 'Host-installed instrumented driver.',
+    parametersSchema: { type: 'object', required: ['label'], properties: { label: { type: 'string' } } },
+    validate(parameters) { if (typeof parameters.label !== 'string') throw new Error('label_required'); },
+    create({ label }) { return {
+      label,
+      async run(...args) { runs.push(this.label); return runAgentLoop(...args); },
+      async dispose() { disposed.push(this.label); },
+    }; },
+  }]);
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
+    if (sessionId !== ownerId) {
+      assert.equal(request.tools.some(tool => tool.name === 'todo_update'), false);
+      yield answer(request, 'Composed worker finished.');
+    } else if (turn === 1) yield call(request, 'compose:discover', 'agent', { action: 'models' });
+    else if (turn === 2) {
+      const choices = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+      assert.deepEqual(choices.presets.map(preset => preset.id), ['analysis', 'collaboration']);
+      assert.ok(choices.runners.some(runner => runner.id === 'instrumented'));
+      assert.ok(choices.permissionPolicies.some(policy => policy.id === 'workspace-only'));
+      assert.equal(choices.workspaceSandbox.defaultBackendId, 'platform-default');
+      yield call(request, 'compose:spawn', 'agent', { action: 'spawn', task: 'Inspect with a task-specific driver.',
+        name: 'Dependency investigator', delivery: 'wait', profileId: 'profile:chosen', reasoningEffort: 'high',
+        capabilities: { messaging: false, continuation: false, delegation: false },
+        runner: { id: 'instrumented', parameters: { label: 'child' } },
+        context: { id: 'journal' }, loop: { controls: { id: 'standard', parameters: { optionalTools: [] } },
+          compaction: { id: 'summary', parameters: { pressureRatio: 0.75 } } },
+        permissionPolicy: { id: 'workspace-only' }, workspaceSandbox: { backendId: 'platform-default' },
+      });
+    } else yield answer(request, 'Composed task complete.');
+    yield done(request);
+  }, { loops, settings: { allowFullConfiguration: true }, recipe: {
+    runner: { id: 'instrumented', parameters: { label: 'root' } }, permissionPolicy: { id: 'workspace-only' },
+  } });
+  await fixture.service.submit(messageCommand(ownerId, 'command:composition', 'Compose a worker.'));
+  const parent = await completed(fixture.service, ownerId);
+  const childId = parent.agentTasks[0].agentSessionId;
+  const child = await fixture.service.snapshot(childId);
+  assert.equal(child.run.status, 'completed');
+  assert.equal(child.recipe.runner.parameters.label, 'child');
+  assert.equal(child.recipe.profileId, 'profile:chosen');
+  assert.equal(child.recipe.configuration.compaction.parameters.pressureRatio, 0.75);
+  assert.equal(child.recipe.permissionPolicy.id, 'workspace-only');
+  assert.equal(child.agentContext.configuration, undefined, 'one creation owner for new configuration');
+  await fixture.service.dispose();
+  assert.deepEqual(runs.sort(), ['child', 'root']);
+  assert.deepEqual(disposed.sort(), ['child', 'root']);
+  const restored = await serviceFixture(t, ownerId, async function* ({ request }) {
+    yield answer(request, 'Restored driver completed.'); yield done(request);
+  }, { journal: fixture.journal, reopen: true, loops });
+  await restored.service.submit(messageCommand(ownerId, 'command:restored-driver', 'Continue.'));
+  await completed(restored.service, ownerId);
+  await restored.service.dispose();
+  assert.equal(runs.filter(label => label === 'root').length, 2);
+  assert.equal(disposed.filter(label => label === 'root').length, 2);
+});
+
+test('unknown drivers and child policy escalation are rejected before child creation', async t => {
+  const ownerId = 'session:recipe-denials';
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
+    assert.equal(sessionId, ownerId);
+    if (turn <= 2) yield call(request, `deny:${turn}`, 'agent', {
+      action: 'spawn', name: 'Rejected worker', task: 'Must not start.', delivery: 'wait',
+      ...(turn === 1 ? { runner: { id: 'uninstalled' } } : { permissionPolicy: { id: 'local-standard' } }),
+    });
+    else {
+      assert.match(textOf(request), /agent_loop_unavailable/u);
+      assert.match(textOf(request), /agent_policy_not_grantable/u);
+      yield answer(request, 'All invalid compositions were rejected.');
+    }
+    yield done(request);
+  }, { recipe: { permissionPolicy: { id: 'workspace-only' }, permissions: { 'agent.permissions.workspaceMutation': 'plan' } } });
+  await assert.rejects(fixture.service.createSession({ sessionId: 'session:bad-runner', displayTitle: 'Bad',
+    workspaceBindings: [workspaceBinding], recipe: { runner: { id: 'uninstalled' } } }), /agent_loop_unavailable/);
+  await assert.rejects(readEvents(fixture.journal, 'session:bad-runner'), /session_not_found/);
+  await fixture.service.submit(messageCommand(ownerId, 'command:deny-recipes', 'Try invalid compositions.'));
+  assert.deepEqual((await completed(fixture.service, ownerId)).agentTasks ?? [], []);
 });
 
 test('delegation toggles append ordered facts without changing tools or accepting disabled tasks', async t => {

@@ -1,3 +1,4 @@
+import type { AgentRecipe } from './agentRecipe.js';
 import type { UserSettings } from './userSettings.js';
 import type { ShellAuthorizationScope } from './permissions.js';
 import type { LlmReasoningEffort, LlmThinkingMode } from './llm.js';
@@ -160,6 +161,9 @@ export type AgentOperation =
       task: string; name: string; delivery: 'wait' | 'async';
       profileId?: string; reasoningEffort?: LlmReasoningEffort;
       loop?: Partial<Pick<AgentConfiguration, 'controls' | 'compaction'>>;
+      runner?: AgentContributionSelection;
+      permissionPolicy?: AgentContributionSelection;
+      workspaceSandbox?: AgentRecipe['workspaceSandbox'];
       context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
   | { action: 'wait'; taskIds?: string[] }
@@ -909,6 +913,7 @@ export type SessionEvent =
   | (SessionEventBase & {
       type: 'session.created';
       payload: {
+        recipe?: AgentRecipe;
         agentContext?: AgentContext;
         displayTitle: string;
         workspaceBindings: WorkspaceBindingDisplay[];
@@ -1590,6 +1595,7 @@ export interface QueuedInputProjection {
 }
 
 export interface SessionProjection {
+  recipe?: AgentRecipe;
   agentContext?: AgentContext;
   agentTasks?: AgentTaskProjection[];
   agentChildren?: AgentChildProjection[];
@@ -2165,7 +2171,7 @@ export interface FileCallPreparationReply {
 
 export interface KernelPort {
   prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply>;
-  delegatedPlanScope(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<PlanAuthority[]>;
+  planAdmission(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<{ source: 'agent' | 'parent' | 'user'; authorities: PlanAuthority[] }>;
   readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]>;
   execute(request: ToolExecutionRequest, onProgress?: (progress: ToolExecutionProgress) => Promise<void>): Promise<ToolExecutionReply>;
   cancel(callId: string, attemptId: string): Promise<ToolCancelReply>;
@@ -2249,6 +2255,7 @@ export interface StoredCommand {
 }
 
 export interface SessionCreationInput {
+  recipe?: AgentRecipe;
   agentContext?: AgentContext;
   sessionId: string;
   displayTitle: string;
@@ -2258,6 +2265,8 @@ export interface SessionCreationInput {
 
 /** Session journal owns atomic command admission; it is not a second state machine. */
 export interface CommandJournalPort extends JournalPort {
+  /** Kernel policy publications; callback is synchronous and never writes facts. */
+  subscribePermissions(sessionId: string, publish: (settings: RunRuntimeSnapshot['permissions']) => void): () => void;
   createSession(input: SessionCreationInput): Promise<SessionEvent>;
   deleteSession(sessionId: string): Promise<void>;
   readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null>;
@@ -2265,5 +2274,5 @@ export interface CommandJournalPort extends JournalPort {
     command: ConversationCommand,
     events: readonly NewSessionEvent[],
     reply: Omit<CommandReply, 'revision'>,
-  ): Promise<CommandReply>;
+  ): Promise<{ reply: CommandReply; events: SessionEvent[] }>;
 }

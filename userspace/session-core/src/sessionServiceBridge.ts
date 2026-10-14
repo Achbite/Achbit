@@ -15,6 +15,7 @@ import {
   HttpProviderPort,
   HttpRunPreparationPort,
 } from './local-agent/httpPorts.js';
+import { decodeAgentRecipe } from '@deepcode/protocol';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSessionService, SessionDeletionError, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
@@ -130,6 +131,7 @@ async function dispatch(
         sessionId: requiredString(request.data, 'sessionId'),
         displayTitle: requiredString(request.data, 'displayTitle'),
         workspaceBindings: decodeWorkspaceBindings(request.data.workspaceBindings),
+        ...(request.data.recipe !== undefined ? { recipe: decodeAgentRecipe(request.data.recipe) } : {}),
         ...(request.data.agentContext ? { agentContext: decodeAgentContext(request.data.agentContext) } : {}),
         ...(optionalString(request.data, 'profileId')
           ? { profileId: optionalString(request.data, 'profileId') }

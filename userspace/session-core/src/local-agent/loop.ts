@@ -107,7 +107,7 @@ export interface AgentLoopDeps {
   composition: AgentComposition;
   capabilities?: SessionCapabilityManager;
   readSnapshot(): Promise<LoopSnapshot>;
-  waitForChange?(revision: number, signal: AbortSignal): Promise<void>;
+  waitForChange?(revision: number, signal: AbortSignal, permissions?: SessionState['publishedPermissions']): Promise<void>;
   syncProcesses?(): Promise<void>;
   waitProcesses?(signal: AbortSignal): Promise<void>;
   agents?: {
@@ -570,12 +570,10 @@ export async function runAgentLoop(
               ...completionDerivedFacts,
             ]);
             if (fact.type !== 'plan.published') break;
-            const inherited = snapshot.state.agentContext && fact.payload.mutationManifest.length
-              ? await deps.composition.kernel.delegatedPlanScope({ sessionId: snapshot.state.sessionId,
-                runId, mutationManifest: fact.payload.mutationManifest }) : [];
-            await commit(current => runRuntimeSnapshot(current, runId).permissions['agent.permissions.workspaceMutation'] === 'allow'
-              ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('agent-decision'), 'agent', deps.nextId)
-              : inherited.length ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('parent-plan'), 'parent', deps.nextId, inherited)
+            const admission = await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
+              runId, mutationManifest: fact.payload.mutationManifest });
+            await commit(current => admission.source !== 'user'
+              ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('plan-admission'), admission.source, deps.nextId, admission.authorities)
               : [{ type: 'run.waiting', sessionId: current.state.sessionId, runId, payload: { reason: 'plan', detail: fact.payload.title } }]);
             if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
             break;
@@ -2017,9 +2015,7 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
     const approvalId = deps.nextId('approval');
     await commit({ type: 'approval.requested', sessionId: snapshot.state.sessionId, runId,
       callId: requestEvent.callId, payload: { approvalId, preview: reply.preview } });
-    if (reply.preview.approvalReviewer === 'agent'
-      && runRuntimeSnapshot(snapshot, runId).permissions['agent.permissions.shell'] === 'review') {
-      const baseline = JSON.stringify(snapshot.state.permissionOverrides);
+    if (reply.preview.approvalReviewer === 'agent') {
       const reviewRequestId = deps.nextId('provider-request');
       let review: ReturnType<typeof prepareApprovalReview> | undefined;
       let verdict: ReturnType<typeof decodeApprovalReview>;
@@ -2039,16 +2035,14 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
         verdict = { decision: 'ask', reason: `自动审查未完成：${fact.code}：${fact.message}` };
       }
       await commit(current => {
-        const changed = JSON.stringify(current.state.permissionOverrides) !== baseline;
-        const decision = changed ? { decision: 'ask' as const, reason: '审查期间权限设置已更改，正在重新检查。' } : verdict;
         const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
-          callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...decision } }];
-        if (decision.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
+          callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } }];
+        if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
           callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
-            authorityId: deps.nextId('authority'), decision: decision.decision, source: 'agent', reason: decision.reason } });
+            authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });
         return events;
       });
-      if (JSON.stringify(snapshot.state.permissionOverrides) !== baseline || !snapshot.state.pendingApprovals.some(item => item.callId === requestEvent.callId)) return 'retry';
+      if (!snapshot.state.pendingApprovals.some(item => item.callId === requestEvent.callId)) return 'retry';
     }
     return 'approval';
   }
@@ -2135,12 +2129,12 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         const waiting = approvals.get(event.callId);
         if (waiting) {
           const approval = latestApproval(snapshot.events, runId, event.callId);
-          if (!approval.resolved && JSON.stringify(snapshot.state.permissionOverrides) === waiting.permissions) continue;
+          if (!approval.resolved && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === waiting.permissions) continue;
           approvals.delete(event.callId);
         }
         if (active.size >= 4) continue;
         const request = executionRequest(snapshot, event, deps);
-        const permissions = JSON.stringify(snapshot.state.permissionOverrides);
+        const permissions = JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides);
         active.set(event.callId, executeUntilAbort(deps, request, controller.signal)
           .then(reply => ({ event, permissions, reply }), error => ({ event, permissions, error })));
       }
@@ -2153,7 +2147,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         if (snapshot.state.run?.status !== 'waiting') snapshot = await deps.commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId,
           runId, payload: { reason: 'approval', detail: '等待工具执行审批。' } });
         if (!deps.waitForChange) return { status: 'waiting', runId, reason: 'approval', callId: approvals.keys().next().value! };
-        await deps.waitForChange(snapshot.state.revision, controller.signal);
+        await deps.waitForChange(snapshot.state.revision, controller.signal, snapshot.state.publishedPermissions);
         continue;
       }
       const waitController = new AbortController();
@@ -2162,7 +2156,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
       let completed: Completion | undefined;
       try {
         const changed = deps.waitForChange && approvals.size && !controller.signal.aborted
-          ? deps.waitForChange(snapshot.state.revision, waitController.signal).then(() => undefined, () => undefined) : undefined;
+          ? deps.waitForChange(snapshot.state.revision, waitController.signal, snapshot.state.publishedPermissions).then(() => undefined, () => undefined) : undefined;
         completed = await Promise.race([...active.values(), ...(changed ? [changed] : [])]);
       } finally {
         waitController.abort();
@@ -2572,7 +2566,7 @@ function runRuntimeSnapshot(snapshot: LoopSnapshot, runId: string): RunRuntimeSn
   if (snapshot.state.run?.runId === runId && snapshot.state.run.hostBinding) {
     view.environment = { ...view.environment, hostBinding: { ...snapshot.state.run.hostBinding } };
   }
-  const permissions = permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
+  const permissions = snapshot.state.publishedPermissions ?? permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
   return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'deepcode.workspace-autonomy'
     ? { ...instruction, text: permissionInstructionText(permissions,
       view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_INTERACTION_REQUEST)?.wireName,

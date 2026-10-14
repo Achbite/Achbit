@@ -3,9 +3,7 @@ use crate::local_agent_kernel::{
     PermissionMode, PrepareToolCatalogRequest, ReleaseToolCatalogRequest, WorkspaceResolverPort,
 };
 use crate::local_agent_provider_runtime::{ProviderRuntimeRegistry, ProviderRuntimeSnapshot};
-use crate::local_agent_store::{
-    delete_session_archive, LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime,
-};
+use crate::local_agent_store::{LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime};
 use crate::prelude::*;
 use crate::*;
 use axum::http::HeaderMap;
@@ -115,6 +113,13 @@ impl LocalAgentRuntime {
             .journal
             .agent_context(&request.session_id)
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let recipe = self
+            .journal
+            .agent_recipe(&request.session_id)
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let policy_constraints = recipe
+            .constraints()
+            .map_err(|error| RunPreparationError::new("permission_policy_invalid", error))?;
         let agent_capabilities = agent_context
             .as_ref()
             .map(|context| context["capabilities"].clone())
@@ -172,11 +177,11 @@ impl LocalAgentRuntime {
             .map(|prepared| &prepared.runtime_settings)
             .unwrap_or(&gui.user_settings)
             .clone();
-        let overrides = self
+        let permissions = self
             .journal
-            .permission_overrides(&request.session_id)
+            .permissions_for_run(&request.session_id, &settings)
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
-        merge_object(&mut settings, &overrides);
+        merge_object(&mut settings, &permissions);
         let settings = &settings;
         if request.restore_environment {
             return prepared_runs
@@ -198,6 +203,21 @@ impl LocalAgentRuntime {
         .map_err(|message| {
             RunPreparationError::new("extension_snapshot_prepare_failed", message)
         })?;
+        if (!policy_constraints.allow_external_tools || !policy_constraints.allow_host_execution)
+            && (!plugin_selection.mcp_plugin_instances().is_empty()
+                || plugin_selection.computer_use_instance().is_some())
+        {
+            return Err(RunPreparationError::new("agent_plugin_isolation_required",
+                "The selected policy prohibits Host CLI/MCP processes. No plugin process was started."));
+        }
+        if !policy_constraints.allow_host_execution
+            && plugin_selection.container_instance().is_some()
+        {
+            return Err(RunPreparationError::new(
+                "permission_policy_denied",
+                "Container tools require a Host execution route.",
+            ));
+        }
         let requested_plugin_identity = json!({
             "pluginCatalogRevision": request.plugin_catalog_revision.clone(),
             "refreshPlugins":request.refresh_plugins,
@@ -284,6 +304,9 @@ impl LocalAgentRuntime {
             )
             .map_err(|message| RunPreparationError::new("session_environment_invalid", message))?
         };
+        recipe
+            .bind_environment(&mut environment)
+            .map_err(|error| RunPreparationError::new("agent_composition_unavailable", error))?;
         // A new task binds its own originating window; it never inherits the
         // preceding task's GUI capability from the saved execution environment.
         if previous.is_none() {
@@ -402,6 +425,14 @@ impl LocalAgentRuntime {
                 RunPreparationError::new("kernel_runtime_config_prepare_failed", message)
             })?
         };
+        executor_config.sandbox_backend =
+            if recipe.workspace_sandbox.backend_id == "platform-default" {
+                None
+            } else {
+                environment["workspaceSandbox"]["backend"]
+                    .as_str()
+                    .map(str::to_owned)
+            };
         executor_config.shell_program = serde_json::from_value(environment["shell"].clone())
             .map_err(|error| {
                 RunPreparationError::new("session_environment_invalid", error.to_string())
@@ -481,8 +512,9 @@ impl LocalAgentRuntime {
                 }
             }
         }
-        let permissions = LocalAgentPermissionPolicy::from_settings(settings)
+        let mut permissions = LocalAgentPermissionPolicy::from_settings(settings)
             .map_err(RunPreparationError::from)?;
+        permissions.constraints = policy_constraints;
         let web_search = prepare_web_search_binding(
             &provider_runtime,
             permissions.clone(),
@@ -795,7 +827,7 @@ impl LocalAgentRuntime {
     }
 
     fn delete_session_archive(&self, session_id: &str) -> Result<usize, LocalAgentStoreError> {
-        delete_session_archive(
+        self.journal.delete_archive(
             self.session_store_path.as_ref(),
             self.tool_record_store_path.as_ref(),
             session_id,
@@ -872,6 +904,7 @@ pub(crate) struct CreateLocalSessionRequest {
     workspace_bindings: Value,
     profile_id: Option<String>,
     agent_context: Option<Value>,
+    recipe: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1039,12 +1072,13 @@ pub(crate) async fn local_agent_session_create(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.create_session(
+    match state.local_agent.journal.create_session_with_recipe(
         &body.session_id,
         &body.display_title,
         &body.workspace_bindings,
         body.profile_id.as_deref(),
         body.agent_context.as_ref(),
+        body.recipe.as_ref(),
     ) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
@@ -1159,11 +1193,17 @@ pub(crate) async fn local_agent_session_delete(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.delete_session_archive(&session_id) {
-        Ok(tool_record_count) => ApiResponse::ok(json!({
-            "deleted": true,
-            "toolRecordCount": tool_record_count,
-        })),
+    match state
+        .local_agent
+        .delete_session_archive(&session_id)
+        .and_then(|count| {
+            state.local_agent.journal.publication(
+                json!({"deleted": true, "toolRecordCount": count}),
+                &session_id,
+                true,
+            )
+        }) {
+        Ok(publication) => ApiResponse::ok(publication),
         Err(error) => store_error(error),
     }
 }
@@ -1176,7 +1216,12 @@ pub(crate) async fn local_agent_event_append(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.append(&body) {
+    match state.local_agent.journal.append(&body).and_then(|event| {
+        state
+            .local_agent
+            .journal
+            .event_publication(event, std::slice::from_ref(&body))
+    }) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
     }
@@ -1190,8 +1235,17 @@ pub(crate) async fn local_agent_events_append_batch(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.append_batch(&body.events) {
-        Ok(events) => ApiResponse::ok(Value::Array(events)),
+    match state
+        .local_agent
+        .journal
+        .append_batch(&body.events)
+        .and_then(|events| {
+            state
+                .local_agent
+                .journal
+                .event_publication(json!(events), &body.events)
+        }) {
+        Ok(events) => ApiResponse::ok(events),
         Err(error) => store_error(error),
     }
 }
@@ -1209,8 +1263,13 @@ pub(crate) async fn local_agent_events_read(
         .local_agent
         .journal
         .read_events(&session_id, query.after.unwrap_or(0))
-    {
-        Ok(events) => ApiResponse::ok(Value::Array(events)),
+        .and_then(|events| {
+            state
+                .local_agent
+                .journal
+                .publication(json!(events), &session_id, true)
+        }) {
+        Ok(events) => ApiResponse::ok(events),
         Err(error) => store_error(error),
     }
 }
@@ -1288,7 +1347,16 @@ pub(crate) async fn local_agent_command_commit(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.commit_command(&body) {
+    match state
+        .local_agent
+        .journal
+        .commit_command_with_events(&body)
+        .and_then(|commit| {
+            state
+                .local_agent
+                .journal
+                .event_publication(commit, body["events"].as_array().expect("validated events"))
+        }) {
         Ok(reply) => ApiResponse::ok(reply),
         Err(error) => store_error(error),
     }
@@ -1406,15 +1474,15 @@ pub(crate) async fn local_agent_tool_execute(
         .into_response()
 }
 
-pub(crate) async fn local_agent_delegated_plan_scope(
+pub(crate) async fn local_agent_plan_admission(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<crate::local_agent_kernel::DelegatedPlanScopeRequest>,
+    Json(body): Json<crate::local_agent_kernel::PlanAdmissionRequest>,
 ) -> Json<ApiResponse> {
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.kernel.delegated_plan_scope(body) {
+    match state.local_agent.kernel.plan_admission(body) {
         Ok(scope) => ApiResponse::ok(scope),
         Err(error) => kernel_error(error),
     }

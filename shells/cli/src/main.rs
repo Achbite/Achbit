@@ -138,6 +138,7 @@ struct Args {
     session_id: Option<String>,
     plain: bool,
     profile_id: Option<String>,
+    recipe: Option<Value>,
     plugins: Vec<String>,
     files: Vec<String>,
     directories: Vec<String>,
@@ -152,6 +153,7 @@ impl Args {
         let mut session_id = None;
         let mut plain = false;
         let mut profile_id = None;
+        let mut recipe = None;
         let mut plugins = Vec::new();
         let mut files = Vec::new();
         let mut directories = Vec::new();
@@ -163,6 +165,18 @@ impl Args {
                 "--api" => {
                     index += 1;
                     api = Some(required_arg(&values, index, "--api")?.to_string());
+                }
+                "--recipe" => {
+                    index += 1;
+                    let path = required_arg(&values, index, "--recipe")?;
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|error| format!("读取 Agent 配方失败 {path}: {error}"))?;
+                    let value: Value = serde_json::from_str(&text)
+                        .map_err(|error| format!("Agent 配方 JSON 无效: {error}"))?;
+                    if !value.is_object() {
+                        return Err("Agent 配方必须是 JSON 对象。".into());
+                    }
+                    recipe = Some(value);
                 }
                 "--model" => {
                     index += 1;
@@ -333,6 +347,11 @@ impl Args {
         if !read_query.is_empty() && !matches!(command, Command::Read { .. }) {
             return Err("--view/--record/--request/--before/--limit 仅用于 read。".into());
         }
+        if recipe.is_some()
+            && (session_id.is_some() || !matches!(command, Command::Ask(_) | Command::Chat))
+        {
+            return Err("--recipe 仅用于 ask/chat 创建新会话，不能与 --session 同用。".into());
+        }
         Ok(Self {
             api,
             no_auto_start_kernel,
@@ -340,6 +359,7 @@ impl Args {
             session_id,
             plain,
             profile_id,
+            recipe,
             plugins,
             files,
             directories,
@@ -560,6 +580,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 args.session_id.as_deref(),
                 args.workspace.as_ref(),
                 args.profile_id.as_deref(),
+                args.recipe.as_ref(),
             )
             .await?;
             let filesystem_references = resolve_cli_filesystem_references(
@@ -592,6 +613,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 args.workspace.as_ref(),
                 &args.plugins,
                 args.profile_id.as_deref(),
+                args.recipe.as_ref(),
             )
             .await
         }
@@ -717,8 +739,12 @@ async fn open_session(
     session_id: Option<&str>,
     workspace: Option<&PathBuf>,
     profile_id: Option<&str>,
+    recipe: Option<&Value>,
 ) -> Result<SessionProjection, String> {
     if let Some(session_id) = session_id {
+        if recipe.is_some() {
+            return Err("--recipe 仅用于创建新会话；已有会话保留其配方。".into());
+        }
         return client
             .conversation_projection(session_id)
             .await
@@ -734,6 +760,7 @@ async fn open_session(
     };
     client
         .create_conversation_session(&CreateConversationSessionRequest {
+            recipe: recipe.cloned(),
             session_id: None,
             workspace_paths,
             project_id: None,
@@ -933,11 +960,13 @@ async fn run_chat(
     workspace: Option<&PathBuf>,
     initial_plugin_uris: &[String],
     initial_profile_id: Option<&str>,
+    recipe: Option<&Value>,
 ) -> Result<Outcome, String> {
     if !io::stdin().is_terminal() {
         return Err("chat 需要交互式终端；非交互调用请使用 ask。".to_string());
     }
-    let mut projection = open_session(client, session_id, workspace, initial_profile_id).await?;
+    let mut projection =
+        open_session(client, session_id, workspace, initial_profile_id, recipe).await?;
     let mut plugin_catalog = client
         .conversation_plugin_catalog()
         .await
@@ -1067,6 +1096,7 @@ async fn run_chat(
                     target.as_deref(),
                     if target.is_none() { workspace } else { None },
                     None,
+                    if target.is_none() { recipe } else { None },
                 )
                 .await
                 {
@@ -1444,6 +1474,7 @@ chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启
 chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，/reply <说明> 修改计划或回答问题，/reply 1/2 允许/拒绝操作；cancel-plan 取消计划。
 权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
 文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
+ask/chat 创建新会话时支持 --recipe <JSON 文件> 选择模型、Loop 组件、权限策略和 Sandbox 后端。
 ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务。"#,
     );
 }

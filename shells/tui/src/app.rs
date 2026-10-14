@@ -170,6 +170,7 @@ impl TuiApp {
         } else {
             self.client
                 .create_conversation_session(&CreateConversationSessionRequest {
+                    recipe: None,
                     session_id: None,
                     workspace_paths: self
                         .host

@@ -11,6 +11,7 @@ import type { decodeSessionControlCall } from './sessionControls.js';
 import type { publishPlan } from './planStage.js';
 import type { presentArtifacts } from './deliverables.js';
 import type { todoUpdateFact } from './todoState.js';
+import type { AgentLoopDriver } from './loopRegistry.js';
 
 export interface ContextMessageContribution {
   contributionId: string;
@@ -51,5 +52,7 @@ export interface AgentComposition {
   runPreparation: RunPreparationPort;
   /** Actor owns this implementation; replacement is a trusted Session operator action. */
   capabilities?: SessionCapabilities;
+  /** Actor owns this driver and disposes it after all active execution stops. */
+  runner?: AgentLoopDriver;
   dispose(): Promise<void>;
 }

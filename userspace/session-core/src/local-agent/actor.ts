@@ -2,7 +2,7 @@ import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protoco
 import type { SessionOperation, JsonObject } from '@deepcode/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
-import { permissionSettings, validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
@@ -76,7 +76,9 @@ export class SessionActor {
   #loopFailure?: Error;
   #snapshot?: LoopSnapshot;
   #initialEvents?: readonly SessionEvent[];
-  #snapshotReads: Promise<void> = Promise.resolve();
+  #initialSnapshot?: Promise<LoopSnapshot>;
+  #publishedPermissions?: NonNullable<SessionProjection['effectivePermissions']>;
+  readonly #unsubscribePermissions: () => void;
   #assistantDraft: AssistantDraftProjection | null = null;
   readonly liveReasoning = new LiveReasoning();
   readonly #liveToolOutput = new LiveToolOutput();
@@ -94,6 +96,11 @@ export class SessionActor {
     this.#agents = options.agents;
     this.#nextId = options.nextId ?? defaultIdFactory(sessionId);
     this.#initialEvents = options.initialEvents;
+    this.#unsubscribePermissions = journal.subscribePermissions(sessionId, settings => {
+      this.#publishedPermissions = settings;
+      if (this.#snapshot) this.#snapshot = { ...this.#snapshot, state: { ...this.#snapshot.state, publishedPermissions: settings } };
+      for (const wake of this.#changes) wake();
+    });
   }
 
   async recover(signal?: AbortSignal): Promise<void> {
@@ -144,12 +151,11 @@ export class SessionActor {
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
-  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run' | 'effectivePermissions'>> {
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
     const state = (await this.loadSnapshot()).state;
-    return structuredClone({ sessionId: state.sessionId, agentContext: state.agentContext,
+    return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, agentContext: state.agentContext,
       agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
-      effectivePermissions: state.run ? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions,
-        ...state.permissionOverrides }) : null });
+      environment: state.run ? state.runRuntimeSnapshots[state.run.runId]?.environment : undefined });
   }
 
   /** Called only after the service's last external Actor lease has been released. */
@@ -181,7 +187,7 @@ export class SessionActor {
     const deadline = acceptedWait?.deadline ?? (timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000);
     for (;;) {
       signal?.throwIfAborted();
-      // Subscribe before checking the journal to avoid losing an arriving input.
+      // Subscribe before reading the published snapshot to avoid losing an arriving input.
       let wake!: () => void;
       const changed = new Promise<void>(resolve => { wake = resolve; });
       this.#changes.add(wake);
@@ -272,7 +278,7 @@ export class SessionActor {
     }
   }
 
-  private async waitForChange(revision: number, signal?: AbortSignal): Promise<void> {
+  private async waitForChange(revision: number, signal?: AbortSignal, permissions?: NonNullable<SessionProjection['effectivePermissions']>): Promise<void> {
     signal?.throwIfAborted();
     let wake!: () => void;
     const changed = new Promise<void>(resolve => { wake = resolve; });
@@ -280,7 +286,9 @@ export class SessionActor {
     signal?.addEventListener('abort', wake, { once: true });
     try {
       // Subscribe before the read so a settlement between the two cannot be missed.
-      if ((await this.loadSnapshot()).state.revision !== revision || this.#loopFailure || this.#disposed) return;
+      const current = await this.loadSnapshot();
+      if (current.state.revision !== revision || permissions && current.state.publishedPermissions !== permissions
+        || this.#loopFailure || this.#disposed) return;
       await changed;
       signal?.throwIfAborted();
     } finally { this.#changes.delete(wake); signal?.removeEventListener('abort', wake); }
@@ -322,6 +330,11 @@ export class SessionActor {
       errors.push(error);
     }
     try {
+      await this.#composition.runner?.dispose?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await this.#capabilities.dispose();
     } catch (error) {
       errors.push(error);
@@ -331,6 +344,7 @@ export class SessionActor {
     } catch (error) {
       errors.push(error);
     }
+    this.#unsubscribePermissions();
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
   }
 
@@ -452,13 +466,24 @@ export class SessionActor {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }
-    if (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow') {
-      events.push(...confirmationFacts(snapshot.state, snapshot.state.pendingPlan, command.commandId, 'agent', this.#nextId));
-    }
     const reply = await this.commitCommand(command, events, acceptedReply(command));
+    let planConfirmed = false;
+    if (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow') {
+      const plan = snapshot.state.pendingPlan;
+      const admission = await this.#composition.kernel.planAdmission({ sessionId: this.sessionId,
+        runId: plan.runId, mutationManifest: plan.mutationManifest });
+      if (admission.source !== 'user') {
+        await this.withWrite(async () => {
+          const current = await this.loadSnapshot();
+          await this.appendEvents(confirmationFacts(current.state, plan, command.commandId,
+            admission.source as 'agent' | 'parent', this.#nextId, admission.authorities), current);
+        });
+        planConfirmed = true;
+      }
+    }
     if (!this.#active && snapshot.state.run?.status === 'waiting'
       && (snapshot.state.run.waitingReason === 'approval'
-        || (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow'))) {
+        || planConfirmed)) {
       this.startLoop({ type: 'resume', runId: snapshot.state.run.runId });
     }
     return reply;
@@ -1111,7 +1136,8 @@ export class SessionActor {
   ): Promise<void> {
     const snapshot = await this.loadSnapshot();
     await this.ensureProcesses(command.runId);
-    const result = await runAgentLoop(
+    const runner = this.#composition.runner ?? { run: runAgentLoop };
+    const result = await runner.run(
       snapshot,
       command,
       {
@@ -1122,7 +1148,7 @@ export class SessionActor {
         waitForInput: (runId, wait, signal) => this.waitForInput(runId, signal, undefined, undefined, wait),
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
         waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
-        waitForChange: (revision, signal) => this.waitForChange(revision, signal),
+        waitForChange: (revision, signal, permissions) => this.waitForChange(revision, signal, permissions),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
         commit: (events) => this.withWrite(async () => {
           const current = await this.loadSnapshot();
@@ -1412,9 +1438,11 @@ export class SessionActor {
       const committed = events.length === 1
         ? [await this.#journal.append(events[0]!)]
         : await this.#journal.appendBatch(events);
+      this.publishEvents(committed);
       for (const event of committed) await this.observe(event);
     } catch (error) {
       if (closesDraft) this.#assistantDraft = previousDraft;
+      await this.recoverFailedWrite(error);
       throw error;
     }
   }
@@ -1434,10 +1462,15 @@ export class SessionActor {
   ): Promise<CommandReply> {
     const current = await this.loadSnapshot();
     admitSessionEvents(current, events, { input: command, reply });
-    const committed = await this.#journal.commitCommand(command, events, reply);
-    const next = await this.loadSnapshot();
-    for (const event of next.journalEvents.slice(current.journalEvents.length)) await this.observe(event);
-    return committed;
+    try {
+      const committed = await this.#journal.commitCommand(command, events, reply);
+      this.publishEvents(committed.events);
+      for (const event of committed.events) await this.observe(event);
+      return committed.reply;
+    } catch (error) {
+      await this.recoverFailedWrite(error);
+      throw error;
+    }
   }
 
   private async withWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -1446,21 +1479,44 @@ export class SessionActor {
     return await result;
   }
 
+  private publishEvents(added: readonly SessionEvent[]): void {
+    const current = this.#snapshot!;
+    if (added.some((event, index) => event.sessionId !== this.sessionId
+      || event.sequence !== current.state.revision + index + 1)) throw new Error('journal_publication_sequence_invalid');
+    this.#snapshot = !added.length ? current : added.some(event => event.type === 'conversation.revised')
+      ? loopSnapshot(this.sessionId, [...current.journalEvents, ...added])
+      : { journalEvents: [...current.journalEvents, ...added], events: [...current.events, ...added],
+        state: added.reduce(reduceSession, current.state) };
+    this.#snapshot = { ...this.#snapshot, state: { ...this.#snapshot.state, publishedPermissions: this.#publishedPermissions } };
+  }
+
   private async loadSnapshot(): Promise<LoopSnapshot> {
-    const read = this.#snapshotReads.then(async () => {
-      const current = this.#snapshot ?? loopSnapshot(this.sessionId, this.#initialEvents ?? []);
-      const added: SessionEvent[] = [];
-      for await (const event of this.#journal.read(this.sessionId, current.state.revision)) added.push(event);
-      const snapshot = !added.length ? current : added.some((event) => event.type === 'conversation.revised')
-        ? loopSnapshot(this.sessionId, [...current.journalEvents, ...added])
-        : { journalEvents: [...current.journalEvents, ...added], events: [...current.events, ...added],
-          state: added.reduce(reduceSession, current.state) };
-      this.#snapshot = snapshot;
+    if (this.#snapshot) return this.#snapshot;
+    this.#initialSnapshot ??= (async () => {
+      const events: SessionEvent[] = [...this.#initialEvents ?? []];
+      if (!this.#initialEvents) for await (const event of this.#journal.read(this.sessionId)) events.push(event);
       this.#initialEvents = undefined;
-      return snapshot;
-    });
-    this.#snapshotReads = read.then(() => undefined, () => undefined);
-    return await read;
+      const snapshot = loopSnapshot(this.sessionId, events);
+      snapshot.state.publishedPermissions = this.#publishedPermissions;
+      return this.#snapshot = snapshot;
+    })();
+    return this.#initialSnapshot;
+  }
+
+  /** A failed transport can hide a successful durable commit. Recover at the
+   * failed write boundary, before admitting another command, never on reads. */
+  private async recoverFailedWrite(original: unknown): Promise<void> {
+    const revision = this.#snapshot?.state.revision ?? 0;
+    this.#snapshot = undefined;
+    this.#initialEvents = undefined;
+    this.#initialSnapshot = undefined;
+    try {
+      const recovered = await this.loadSnapshot();
+      for (const event of recovered.journalEvents) if (event.sequence > revision) await this.observe(event);
+    } catch (error) {
+      this.#loopFailure = new AggregateError([original, error], 'session_commit_recovery_failed');
+      throw this.#loopFailure;
+    }
   }
 
   private async observe(event: SessionEvent): Promise<void> {

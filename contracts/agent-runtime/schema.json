@@ -50,6 +50,9 @@
             "profileId": {"type": "string", "minLength": 1},
             "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
             "context": {"$ref": "#/$defs/AgentContributionSelection"},
+            "runner": {"$ref": "#/$defs/AgentContributionSelection"},
+            "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
+            "workspaceSandbox": {"$ref": "#/$defs/AgentRecipe/properties/workspaceSandbox"},
             "loop": {"type": "object", "additionalProperties": false, "properties": {
               "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
               "controls": {"$ref": "#/$defs/AgentContributionSelection"}
@@ -105,6 +108,21 @@
         "context": {"$ref": "#/$defs/AgentContributionSelection"},
         "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
         "controls": {"$ref": "#/$defs/AgentContributionSelection"}
+      }
+    },
+    "AgentRecipe": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "profileId": {"$ref": "#/$defs/Id"},
+        "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
+        "configuration": {"$ref": "#/$defs/AgentConfiguration"},
+        "runner": {"$ref": "#/$defs/AgentContributionSelection"},
+        "permissions": {"$ref": "#/$defs/PermissionSettings"},
+        "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
+        "workspaceSandbox": {
+          "type": "object", "additionalProperties": false, "required": ["backendId"],
+          "properties": {"backendId": {"$ref": "#/$defs/Id"}, "requireIsolatedProcesses": {"type": "boolean"}}
+        }
       }
     },
     "AgentContext": {
@@ -2433,6 +2451,7 @@
                   "displayTitle": {"type": "string"},
                   "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
                   "profileId": {"$ref": "#/$defs/Id"},
+                  "recipe": {"$ref": "#/$defs/AgentRecipe"},
                   "agentContext": {"$ref": "#/$defs/AgentContext"}
                 }
               }
@@ -3259,6 +3278,7 @@
         "modelSettings"
       ],
       "properties": {
+        "recipe": {"$ref": "#/$defs/AgentRecipe"},
         "agentContext": {"$ref": "#/$defs/AgentContext"},
         "agentTasks": {"type": "array", "items": {"$ref": "#/$defs/AgentTaskProjection"}},
         "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},

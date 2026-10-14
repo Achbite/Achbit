@@ -362,7 +362,7 @@ test('delegated Plan confirmation records Agent authority without waiting for a 
     } });
     else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
     yield providerEvent(request.requestId, 'completed', {});
-  } }, emptyKernel(), prep.port, 'delegated');
+  } }, emptyKernel({ async planAdmission() { return { source: 'agent', authorities: [] }; } }), prep.port, 'delegated');
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:start', 'Inspect the project.'));
   const done = await waitForProjection(actor, state => state.run?.status === 'completed');
@@ -426,7 +426,7 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
   } }, emptyKernel({ async execute(request) {
     const changes = (await readEvents(journal, sessionId)).filter(event => event.type === 'session.permissions.updated');
     const mode = changes.at(-1)?.payload.patches['agent.permissions.shell'] ?? 'review';
-    if (mode === 'allow' || request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
+    if (mode === 'allow' || mode === 'review' && request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
     return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: mode === 'review' ? 'agent' : 'user', authorizationContext: context } };
@@ -439,7 +439,8 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
   releaseReview();
   const state = await waitForProjection(actor, state => state.run?.status === (nextMode === 'ask' ? 'waiting' : 'completed'));
   assert.equal(reviews, 1); assert.equal(executions, nextMode === 'ask' ? 0 : 1);
-  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), false);
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), true,
+    'The review is retained as evidence; current Kernel admission decides whether it grants execution.');
   if (nextMode === 'ask') {
     assert.equal(state.pendingApproval.preview.approvalReviewer, 'user');
     assert.equal(state.activities.filter(activity => activity.kind === 'approval' && activity.status === 'waiting').length, 1);

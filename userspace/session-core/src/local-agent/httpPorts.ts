@@ -1,4 +1,4 @@
-import { decodeAgentCapabilities, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
+import { permissionSettings, decodeAgentCapabilities, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
 import type {
@@ -139,6 +139,29 @@ function transportErrorMessage(error: unknown): string {
 }
 
 export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJournalPort {
+  readonly #permissions = new Map<string, { revision: number; settings: RunRuntimeSnapshot['permissions'] }>();
+  readonly #permissionListeners = new Map<string, Set<(settings: RunRuntimeSnapshot['permissions']) => void>>();
+
+  subscribePermissions(sessionId: string, publish: (settings: RunRuntimeSnapshot['permissions']) => void): () => void {
+    const listeners = this.#permissionListeners.get(sessionId) ?? new Set();
+    this.#permissionListeners.set(sessionId, listeners);
+    listeners.add(publish);
+    const current = this.#permissions.get(sessionId);
+    if (current) publish(current.settings);
+    return () => { listeners.delete(publish); if (!listeners.size) this.#permissionListeners.delete(sessionId); };
+  }
+
+  private async publication<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const result = await this.json<{ value: T; permissions: Record<string, { revision: number; settings: RunRuntimeSnapshot['permissions'] }> }>(path, init);
+    for (const [id, view] of Object.entries(result.permissions)) {
+      if ((this.#permissions.get(id)?.revision ?? -1) >= view.revision) continue;
+      const settings = permissionSettings(view.settings);
+      this.#permissions.set(id, { revision: view.revision, settings });
+      for (const publish of this.#permissionListeners.get(id) ?? []) publish(settings);
+    }
+    return result.value;
+  }
+
   async createSession(input: SessionCreationInput): Promise<SessionEvent> {
     return await this.json('/api/local-agent/journal/sessions', {
       method: 'POST',
@@ -147,27 +170,28 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    await this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}`, {
+    await this.publication(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
     });
+    this.#permissions.delete(sessionId);
   }
 
   async append(event: NewSessionEvent): Promise<SessionEvent> {
-    return await this.json('/api/local-agent/journal/events', {
+    return await this.publication('/api/local-agent/journal/events', {
       method: 'POST',
       body: JSON.stringify(event),
     });
   }
 
   async appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]> {
-    return await this.json('/api/local-agent/journal/events/batch', {
+    return await this.publication('/api/local-agent/journal/events/batch', {
       method: 'POST',
       body: JSON.stringify({ events }),
     });
   }
 
   async *read(sessionId: string, afterSequence = 0): AsyncIterable<SessionEvent> {
-    const events = await this.json<SessionEvent[]>(
+    const events = await this.publication<SessionEvent[]>(
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`,
     );
     for (const event of events) yield event;
@@ -197,8 +221,8 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     command: ConversationCommand,
     events: readonly NewSessionEvent[],
     reply: Omit<CommandReply, 'revision'>,
-  ): Promise<CommandReply> {
-    return await this.json('/api/local-agent/journal/commands', {
+  ): Promise<{ reply: CommandReply; events: SessionEvent[] }> {
+    return await this.publication('/api/local-agent/journal/commands', {
       method: 'POST',
       body: JSON.stringify({ command, events, reply }),
     });
@@ -257,12 +281,13 @@ export class HttpKernelPort extends LocalAgentHttpPort implements KernelPort {
     return value;
   }
 
-  async delegatedPlanScope(request: Parameters<KernelPort['delegatedPlanScope']>[0]): Promise<PlanAuthority[]> {
-    const result = await this.json<{ authorities: PlanAuthority[] }>('/api/local-agent/plans/delegated-scope', {
+  async planAdmission(request: Parameters<KernelPort['planAdmission']>[0]): ReturnType<KernelPort['planAdmission']> {
+    const result = await this.json<Awaited<ReturnType<KernelPort['planAdmission']>>>('/api/local-agent/plans/admission', {
       method: 'POST', body: JSON.stringify(request),
     });
-    if (!Array.isArray(result.authorities)) throw new Error('delegated_plan_scope_invalid');
-    return result.authorities;
+    if (!['agent', 'parent', 'user'].includes(result.source) || !Array.isArray(result.authorities)
+      || result.source === 'parent' && !result.authorities.length) throw new Error('plan_admission_invalid');
+    return result;
   }
   async readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]> {
     const value: unknown = await this.json('/api/local-agent/kernel/processes', {

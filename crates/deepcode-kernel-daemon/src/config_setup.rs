@@ -160,13 +160,23 @@ mod tests {
             let gui = crate::GuiState::open_at(&root.0).unwrap();
             assert_eq!(
                 gui.user_settings["agent.subagents.allowFullConfiguration"],
-                false
+                true
             );
             assert_eq!(gui.user_settings["agent.subagents.presets"], "[]");
             assert_eq!(gui.user_settings["agent.subagents.enabled"], true);
             assert_eq!(gui.user_settings["agent.subagents.maxConcurrent"], 2);
         }
         assert_eq!(fs::read(&paths.settings_path).unwrap(), original);
+        atomic_write_json(
+            &paths.settings_path,
+            &json!({"agent.subagents.allowFullConfiguration":false}),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::GuiState::open_at(&root.0).unwrap().user_settings
+                ["agent.subagents.allowFullConfiguration"],
+            false
+        );
         atomic_write_json(
             &paths.settings_path,
             &json!({"agent.subagents.allowFullConfiguration":"invalid"}),

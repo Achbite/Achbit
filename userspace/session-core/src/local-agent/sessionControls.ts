@@ -13,6 +13,7 @@ import type {
 import {
   isLlmReasoningEffort,
   decodeAgentContribution,
+  decodeAgentRecipe,
   validatePermissionPatches,
   LLM_REASONING_EFFORTS,
   SESSION_CONTROL_INTERACTION_REQUEST,
@@ -238,6 +239,12 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         compaction: { type: 'object', description: 'A returned compaction contribution id and its supported parameters.' },
       } },
       permissions: { type: 'object', description: 'Optional restrictions of inherited agent.permissions settings. Cannot grant new authority or approve a Plan.' },
+      runner: { type: 'object', description: 'Select an installed Loop driver from runners by id and parameters. Presets are defaults, not fixed agent types.' },
+      permissionPolicy: { type: 'object', description: 'Select a returned policy by id and parameters; only narrow parent authority.' },
+      workspaceSandbox: { type: 'object', additionalProperties: false, required: ['backendId'], properties: {
+        backendId: { type: 'string', description: 'platform-default or the observed available backend.' },
+        requireIsolatedProcesses: { type: 'boolean', description: 'Require usable Shell isolation and prohibit Host/external execution routes.' },
+      } },
     }, ['task', 'name', 'delivery'])] : []),
     ...(messaging || delegation ? [operation('send', 'Send a message or continue a permitted agent in its existing Session.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation ? [
@@ -404,8 +411,8 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       assertExactKeys(input, ['action']);
       return { action: 'models' };
     case 'spawn': {
-      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions'],
-        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions']);
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox'],
+        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox']);
       if (input.preset !== undefined) requiredText(input.preset, 'preset');
       if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
         || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key)
@@ -426,7 +433,10 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
         loop = Object.fromEntries(Object.entries(input.loop).map(([key, value]) => [key, decodeAgentContribution(value)]));
       }
       if (input.permissions !== undefined) validatePermissionPatches(input.permissions);
+      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox']
+        .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
+        ...components,
         ...(input.preset !== undefined ? { preset: input.preset as string } : {}),
         ...(input.capabilities !== undefined ? { capabilities: { ...input.capabilities } as Partial<AgentCapabilities> } : {}),
         ...(input.profileId !== undefined ? { profileId: requiredText(input.profileId, 'profileId') } : {}),

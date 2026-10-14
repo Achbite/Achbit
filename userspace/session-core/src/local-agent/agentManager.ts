@@ -1,4 +1,4 @@
-import { CONVERSATION_COMMAND_VERSION } from '@deepcode/protocol';
+import { CONVERSATION_COMMAND_VERSION, inheritAgentRecipe } from '@deepcode/protocol';
 import type {
   AgentCapabilities, AgentChildProjection, AgentHostPort, AgentOperation, AgentTaskProjection,
   CommandReply, JsonObject, SessionProjection,
@@ -8,8 +8,9 @@ import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js'
 import { agentOperationDefinitions } from './sessionControls.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
 import type { ControlWait } from './sessionWake.js';
-import { agentPresets, agentPermissions, resolveAgentCapabilities, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
+import { agentPresets, agentPermissionPatches, resolveAgentCapabilities, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
+import { AgentLoopRegistry } from './loopRegistry.js';
 
 export interface AgentWait extends ControlWait { taskIds?: string[] }
 
@@ -50,6 +51,7 @@ export class AgentManager {
     readonly host: AgentHostPort,
     readonly sessions: AgentSessionAccess,
     readonly configurations = new SessionConfigurationRegistry(),
+    readonly loops = new AgentLoopRegistry(),
   ) {}
 
   forSession(sessionId: string): AgentSessionRuntime {
@@ -98,6 +100,17 @@ export class AgentManager {
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
             defaultProfileId: settings.profileId || owner.run?.profileId,
+            runners: this.loops.describe(),
+            permissionPolicies: [
+              { id: 'local-standard', description: 'Keep Kernel admission and automatic Plan/file gates. Parameters can only restrict the inherited policy.',
+                parametersSchema: { type: 'object', additionalProperties: false, properties: {
+                  allowHostExecution: { type: 'boolean' }, allowExternalTools: { type: 'boolean' } } } },
+              { id: 'workspace-only', description: 'Deny Host processes and external tools; file tools still pass Kernel admission.',
+                parametersSchema: { type: 'object', additionalProperties: false, properties: {} } },
+            ],
+            workspaceSandbox: { defaultBackendId: 'platform-default',
+              observed: caller.environment?.workspaceSandbox ?? null,
+              description: 'Select platform-default or the observed backend. Shell isolation never grants file mutation authority. Unavailable isolation fails closed.' },
             configuration: this.configurations.describe(fullConfiguration) } : {}) };
       }
       case 'spawn': {
@@ -149,10 +162,9 @@ export class AgentManager {
     const presets = agentPresets(settings);
     const preset = presets.find(item => item.id === (operation.preset ?? 'analysis'));
     if (!preset) throw new Error('agent_preset_unavailable');
-    const configuration = !existingChild ? this.configurations.resolve(preset.configuration ?? DEFAULT_AGENT_CONFIGURATION,
+    const configuration = !existingChild ? this.configurations.resolve(preset.configuration ?? caller.recipe?.configuration ?? DEFAULT_AGENT_CONFIGURATION,
       { ...operation.loop, ...(operation.context ? { context: operation.context } : {}) }, settings.allowFullConfiguration === true) : undefined;
-    if (!existingChild && !caller.effectivePermissions) throw new Error('agent_parent_permissions_missing');
-    const permissions = !existingChild ? agentPermissions(caller.effectivePermissions!, preset.permissions, operation.permissions) : undefined;
+    const permissions = !existingChild ? agentPermissionPatches(preset.permissions, operation.permissions) : undefined;
     let modelSelection: { profileId: string; reasoningEffortOverride: import('@deepcode/protocol').LlmReasoningEffort | null } | undefined;
     let instanceModel: import('@deepcode/protocol').AgentModelConfiguration | undefined;
     if (!existingChild) {
@@ -174,6 +186,13 @@ export class AgentManager {
       instanceModel = { profileId, model: model.model, reasoningEffort: reasoningEffortOverride,
         thinking: model.thinking ?? null, parameters: structuredClone(model.parameters) };
     }
+    const recipe = !existingChild ? inheritAgentRecipe(caller.recipe, {
+      configuration, runner: this.loops.validate(operation.runner ?? preset.runner ?? caller.recipe?.runner),
+      permissionPolicy: operation.permissionPolicy ?? preset.permissionPolicy,
+      workspaceSandbox: operation.workspaceSandbox ?? preset.workspaceSandbox,
+      profileId: modelSelection!.profileId, ...(modelSelection!.reasoningEffortOverride ? { reasoningEffort: modelSelection!.reasoningEffortOverride } : {}),
+      permissions,
+    }) : undefined;
     const callerCapabilities = await this.sessions.withActor(caller.sessionId, actor => actor.agentCapabilities(runId));
     if (!existingChild && (!callerCapabilities.delegation || caller.agentContext && !settings.allowMemberAnalysis)) {
       throw new Error('agent_delegation_disabled');
@@ -202,18 +221,14 @@ export class AgentManager {
     try {
       if (!existingChild) {
         await this.host.createSession({ sessionId: task.agentSessionId, displayTitle: task.displayName,
-          workspaceBindings: caller.run!.workspaceBindings, profileId: modelSelection!.profileId,
-          agentContext: { capabilities, configuration, model: instanceModel, ownerSessionId: ownerId, parentSessionId: caller.sessionId,
+          workspaceBindings: caller.run!.workspaceBindings, profileId: modelSelection!.profileId, recipe,
+          agentContext: { capabilities, model: instanceModel, ownerSessionId: ownerId, parentSessionId: caller.sessionId,
             parentRunId: runId, parentCallId: callId } });
         childCreated = true;
       }
       await this.sessions.withActor(task.agentSessionId, async child => {
         signal.throwIfAborted();
         previousChildRunId = (await child.agentSnapshot()).run?.runId;
-        if (!existingChild) {
-          accepted(await child.submit({ schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'session.permissions.set',
-            sessionId: task.agentSessionId, commandId: id('agent-permissions'), patches: permissions! }));
-        }
         signal.throwIfAborted();
         childInputSubmitted = true;
         accepted(await child.submit({ schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'message.submit',

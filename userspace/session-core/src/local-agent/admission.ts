@@ -1,6 +1,5 @@
 import { decodeAgentCapabilities, isManagedProcessSnapshot } from '@deepcode/protocol';
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import { permissionSettings } from '@deepcode/protocol';
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
@@ -151,8 +150,6 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'plan.confirmed':
-      if (event.payload.source === 'agent' && permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions,
-        ...state.permissionOverrides })['agent.permissions.workspaceMutation'] !== 'allow') throw new Error('plan_delegation_missing');
       if (event.payload.source === 'parent' && (!state.agentContext || !event.payload.authorities.length
         || event.payload.authorities.some(authority => authority.sessionId === state.sessionId))) throw new Error('parent_plan_reference_missing');
       break;
@@ -168,9 +165,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     }
     case 'approval.resolved':
       if (event.payload.source === 'agent') {
-        const permissions = permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions, ...state.permissionOverrides });
-        if (permissions['agent.permissions.shell'] !== 'review'
-          || state.pendingApprovals.find(item => item.callId === event.callId)?.preview.approvalReviewer !== 'agent'
+        if (state.pendingApprovals.find(item => item.callId === event.callId)?.preview.approvalReviewer !== 'agent'
           || state.pendingApprovals.find(item => item.callId === event.callId)?.preview.review?.decision !== event.payload.decision
           || event.payload.authorizationScope !== undefined) throw new Error('approval_delegation_missing');
       }

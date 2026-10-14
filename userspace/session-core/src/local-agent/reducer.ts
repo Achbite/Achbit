@@ -38,12 +38,14 @@ import {
 } from '@deepcode/protocol';
 
 export interface SessionState {
+  recipe?: SessionProjection['recipe'];
   agentContext?: SessionProjection['agentContext'];
   agentTasks: NonNullable<SessionProjection['agentTasks']>;
   agentChildren: NonNullable<SessionProjection['agentChildren']>;
   providerAttempts: Record<string, NonNullable<SessionProjection['providerAttempts']>[number]>;
   failureSnapshots: Record<string, NonNullable<SessionProjection['failureSnapshot']>>;
   permissionOverrides: SessionProjection['permissionOverrides'];
+  publishedPermissions?: NonNullable<SessionProjection['effectivePermissions']>;
   shellAuthorizations: SessionProjection['shellAuthorizations'];
   modelSettings: SessionProjection['modelSettings'];
   sessionId: string;
@@ -256,9 +258,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.modelSettings = { ...event.payload.settings };
       break;
     case 'session.created':
+      if (event.payload.recipe) next.recipe = structuredClone(event.payload.recipe);
+      next.permissionOverrides = structuredClone(event.payload.recipe?.permissions ?? {});
       if (event.payload.agentContext) next.agentContext = structuredClone(event.payload.agentContext);
       next.modelSettings = event.payload.profileId
-        ? { profileId: event.payload.profileId, reasoningEffortOverride: null } : null;
+        ? { profileId: event.payload.profileId, reasoningEffortOverride: event.payload.recipe?.reasoningEffort ?? null } : null;
       next.display = { creationTitle: event.payload.displayTitle };
       next.creationWorkspaceBindings = event.payload.workspaceBindings.map((binding) => ({ ...binding }));
       next.sessionDirectoryIndexes = [];
@@ -1264,6 +1268,7 @@ export function projectSession(
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
   return {
+    ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
     ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
@@ -1271,7 +1276,7 @@ export function projectSession(
       .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
     ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),
     permissionOverrides: structuredClone(state.permissionOverrides),
-    effectivePermissions: state.run ? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions, ...state.permissionOverrides }) : null,
+    effectivePermissions: state.run ? state.publishedPermissions ?? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions, ...state.permissionOverrides }) : null,
     shellAuthorizations: structuredClone(state.shellAuthorizations),
     schemaVersion: SESSION_PROJECTION_VERSION,
     ...(rounds.size ? { fileChangeRounds: [...rounds].map(([runId, recordIds]) => ({ runId, recordIds })) } : {}),

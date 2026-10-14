@@ -1,7 +1,8 @@
+use crate::local_agent_permissions::KernelPermissionModel;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 const SESSION_STORE_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/session.sql");
 const EVENT_VERSION: &str = "deepcode.session-event.v5";
@@ -15,7 +16,7 @@ pub(crate) struct LocalAgentStoreError {
 }
 
 impl LocalAgentStoreError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -26,6 +27,7 @@ impl LocalAgentStoreError {
 #[derive(Clone)]
 pub(crate) struct LocalAgentJournal {
     connection: Arc<Mutex<Connection>>,
+    permissions: Arc<RwLock<KernelPermissionModel>>,
 }
 
 #[derive(Debug)]
@@ -67,11 +69,39 @@ impl LocalAgentJournal {
                 .map_err(sql_error("session_store_schema_create_failed"))?;
         }
         verify_session_store(&connection)?;
+        let mut permissions = KernelPermissionModel::default();
+        {
+            let mut statement = connection.prepare("SELECT session_id,event_type,payload_json,run_id,call_id,sequence FROM session_events ORDER BY rowid")
+                .map_err(sql_error("permission_model_restore_failed"))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })
+                .map_err(sql_error("permission_model_restore_failed"))?;
+            for row in rows {
+                let (session, kind, payload, run, call, sequence) =
+                    row.map_err(sql_error("permission_model_restore_failed"))?;
+                let event = json!({"sessionId":session,"type":kind,"payload":decode_json(&payload, "permission_model_restore_failed")?,
+                    "runId":run,"callId":call,"sequence":sequence});
+                if KernelPermissionModel::observes(&event) {
+                    permissions.restore(&event)?;
+                }
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            permissions: Arc::new(RwLock::new(permissions)),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn create_session(
         &self,
         session_id: &str,
@@ -80,6 +110,30 @@ impl LocalAgentJournal {
         profile_id: Option<&str>,
         agent_context: Option<&Value>,
     ) -> Result<Value, LocalAgentStoreError> {
+        self.create_session_with_recipe(
+            session_id,
+            display_title,
+            workspace_bindings,
+            profile_id,
+            agent_context,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_session_with_recipe(
+        &self,
+        session_id: &str,
+        display_title: &str,
+        workspace_bindings: &Value,
+        profile_id: Option<&str>,
+        agent_context: Option<&Value>,
+        recipe: Option<&Value>,
+    ) -> Result<Value, LocalAgentStoreError> {
+        if let Some(recipe) = recipe {
+            crate::local_agent_recipe::AgentRecipe::decode(recipe)
+                .map_err(|error| LocalAgentStoreError::new("agent_recipe_invalid", error))?;
+        }
         validate_id("sessionId", session_id)?;
         validate_display_title(display_title)?;
         if let Some(profile_id) = profile_id {
@@ -123,14 +177,32 @@ impl LocalAgentJournal {
                 "workspaceBindings": bindings,
                 "profileId": profile_id,
                 "agentContext": agent_context,
+                "recipe": recipe,
             }
         });
         let event = strip_null_object_fields(event);
         let committed = insert_event(&transaction, validate_new_event(&event, true)?)?;
-        transaction
-            .commit()
-            .map_err(sql_error("session_create_commit_failed"))?;
+        self.commit_with_permissions(
+            transaction,
+            std::slice::from_ref(&committed),
+            "session_create_commit_failed",
+        )?;
         Ok(committed)
+    }
+
+    pub(crate) fn agent_recipe(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::local_agent_recipe::AgentRecipe, LocalAgentStoreError> {
+        let connection = self.lock()?;
+        let encoded = connection.query_row(
+            "SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.created'",
+            [session_id], |row| row.get::<_, String>(0),
+        ).optional().map_err(sql_error("session_creation_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session creation fact is missing"))?;
+        let payload = decode_json(&encoded, "session_creation_corrupt")?;
+        crate::local_agent_recipe::AgentRecipe::decode(payload.get("recipe").unwrap_or(&json!({})))
+            .map_err(|error| LocalAgentStoreError::new("agent_recipe_invalid", error))
     }
 
     pub(crate) fn agent_context(
@@ -189,9 +261,7 @@ impl LocalAgentJournal {
         for event in validated_events {
             committed.push(insert_event(&transaction, event)?);
         }
-        transaction
-            .commit()
-            .map_err(sql_error("session_event_commit_failed"))?;
+        self.commit_with_permissions(transaction, &committed, "session_event_commit_failed")?;
         Ok(committed)
     }
 
@@ -472,7 +542,15 @@ impl LocalAgentJournal {
             .transpose()
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_command(&self, input: &Value) -> Result<Value, LocalAgentStoreError> {
+        Ok(self.commit_command_with_events(input)?["reply"].clone())
+    }
+
+    pub(crate) fn commit_command_with_events(
+        &self,
+        input: &Value,
+    ) -> Result<Value, LocalAgentStoreError> {
         let object = exact_object(input, &["command", "events", "reply"], &[])?;
         let command = object.get("command").expect("required command");
         let events = object
@@ -515,8 +593,12 @@ impl LocalAgentJournal {
                 "commandId 已经提交。",
             ));
         }
+        let mut committed = Vec::with_capacity(events.len());
         for event in events {
-            insert_event(&transaction, validate_new_event(event, false)?)?;
+            committed.push(insert_event(
+                &transaction,
+                validate_new_event(event, false)?,
+            )?);
         }
         let revision: i64 = transaction
             .query_row(
@@ -543,10 +625,8 @@ impl LocalAgentJournal {
                 ],
             )
             .map_err(sql_error("session_command_append_failed"))?;
-        transaction
-            .commit()
-            .map_err(sql_error("session_command_commit_failed"))?;
-        Ok(admitted)
+        self.commit_with_permissions(transaction, &committed, "session_command_commit_failed")?;
+        Ok(json!({"reply": admitted, "events": committed}))
     }
 
     pub(crate) fn is_descendant_session(
@@ -731,30 +811,23 @@ impl LocalAgentJournal {
     ) -> Result<bool, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         validate_id("runId", run_id)?;
-        let connection = self.lock()?;
-        connection
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM session_events
-                     WHERE session_id=?1 AND run_id=?2 AND event_type='run.settled'
-                 )",
-                params![session_id, run_id],
-                |row| row.get(0),
-            )
-            .map_err(sql_error("session_run_fact_read_failed"))
+        Ok(self
+            .permission_model()?
+            .authorities
+            .settled(session_id, run_id))
     }
-
     pub(crate) fn active_plan_authorities(
         &self,
         session_id: &str,
     ) -> Result<Option<Vec<Value>>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
-        let connection = self.lock()?;
-        active_plan_authorities_from_connection(&connection, session_id)
+        let model = self.permission_model()?;
+        let mut authorities = model.authorities.active_plan(session_id);
+        if let Some(authorities) = &mut authorities {
+            retain_authorities(authorities, &model);
+        }
+        Ok(authorities)
     }
-
-    /// Resolve authorization through the current delegation, not the child's creation run.
-    /// The existing task and Plan events remain the only persisted facts.
     pub(crate) fn delegated_plan_authorities(
         &self,
         session_id: &str,
@@ -762,69 +835,8 @@ impl LocalAgentJournal {
     ) -> Result<Vec<Value>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         validate_id("runId", run_id)?;
-        let connection = self.lock()?;
-        let mut child = (session_id.to_string(), run_id.to_string());
-        let mut visited = std::collections::HashSet::new();
-        let mut authorities = Vec::new();
-        loop {
-            if !visited.insert(child.clone()) {
-                return Err(LocalAgentStoreError::new(
-                    "agent_task_lineage_invalid",
-                    "Agent 任务引用形成了循环。",
-                ));
-            }
-            let mut statement = connection.prepare(
-                "SELECT started.session_id, started.run_id
-                 FROM session_events started JOIN session_events created
-                   ON created.session_id=started.session_id AND created.run_id=started.run_id
-                   AND created.event_type='agent.task.created'
-                   AND json_extract(created.payload_json, '$.taskId')=json_extract(started.payload_json, '$.taskId')
-                 WHERE started.event_type='agent.task.started'
-                   AND json_extract(started.payload_json, '$.childRunId')=?2
-                   AND json_extract(created.payload_json, '$.agentSessionId')=?1
-                   AND EXISTS(SELECT 1 FROM session_events child_run
-                     WHERE child_run.session_id=?1 AND child_run.run_id=?2 AND child_run.event_type='run.started')
-                   AND NOT EXISTS(SELECT 1 FROM session_events child_end
-                     WHERE child_end.session_id=?1 AND child_end.run_id=?2 AND child_end.event_type IN ('run.finishing','run.settled'))
-                   AND NOT EXISTS(SELECT 1 FROM session_events parent_end
-                     WHERE parent_end.session_id=started.session_id AND parent_end.run_id=started.run_id
-                     AND parent_end.event_type IN ('run.finishing','run.settled'))
-                   AND NOT EXISTS(SELECT 1 FROM session_events completed
-                     WHERE completed.session_id=started.session_id AND completed.run_id=started.run_id
-                     AND completed.event_type='agent.task.completed'
-                     AND json_extract(completed.payload_json, '$.taskId')=json_extract(started.payload_json, '$.taskId'))",
-            ).map_err(sql_error("agent_task_lineage_read_failed"))?;
-            let parents = statement
-                .query_map(params![child.0, child.1], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(sql_error("agent_task_lineage_read_failed"))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sql_error("agent_task_lineage_read_failed"))?;
-            if parents.len() > 1 {
-                return Err(LocalAgentStoreError::new(
-                    "agent_task_lineage_invalid",
-                    "同一子运行存在多个当前委派任务。",
-                ));
-            }
-            let Some(parent) = parents.into_iter().next() else {
-                break;
-            };
-            // Forwarded references are resolved at their original confirmation below.
-            // They never create a fresh authorization lifetime in the child session.
-            if let Some(committed) =
-                active_plan_authorities_from_connection(&connection, &parent.0)?
-            {
-                authorities.extend(committed.into_iter().filter(|authority| {
-                    authority["sessionId"].as_str() == Some(parent.0.as_str())
-                        && authority["runId"].as_str() == Some(parent.1.as_str())
-                }));
-            }
-            child = parent;
-        }
-        Ok(authorities)
+        delegated_authorities(&*self.permission_model()?, session_id, run_id)
     }
-
     pub(crate) fn non_workspace_authority_is_committed(
         &self,
         session_id: &str,
@@ -844,97 +856,177 @@ impl LocalAgentJournal {
         if !matches!(decision, "allow" | "deny") {
             return Ok(false);
         }
-        let connection = self.lock()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT payload_json FROM session_events
-                 WHERE session_id=?1 AND run_id=?2 AND call_id=?3
-                   AND event_type='approval.resolved'
-                 ORDER BY sequence DESC",
-            )
-            .map_err(sql_error("approval_authority_fact_read_failed"))?;
-        let rows = statement
-            .query_map(params![session_id, run_id, call_id], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(sql_error("approval_authority_fact_read_failed"))?;
-        for row in rows {
-            let payload = decode_json(
-                &row.map_err(sql_error("approval_authority_fact_read_failed"))?,
-                "approval_authority_fact_corrupt",
-            )?;
-            if payload.get("authorityId").and_then(Value::as_str) == Some(authority_id)
-                && payload.get("decision").and_then(Value::as_str) == Some(decision)
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(self
+            .permission_model()?
+            .authorities
+            .grant(session_id, authority_id)
+            .is_some_and(|grant| {
+                grant.run == run_id
+                    && grant.call == call_id
+                    && grant.payload["decision"] == decision
+            }))
     }
-
-    /// Only an explicitly presented Session browser grant can authorize later calls.
-    /// Ordinary one-call approvals are never widened into a browser grant.
     pub(crate) fn session_browser_authority(
         &self,
         session_id: &str,
     ) -> Result<Option<String>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
-        let connection = self.lock()?;
-        let payload: Option<String> = connection.query_row(
-            "SELECT resolved.payload_json FROM session_events resolved
-             JOIN session_events requested ON requested.session_id=resolved.session_id
-               AND requested.call_id=resolved.call_id AND requested.run_id=resolved.run_id
-               AND requested.event_type='approval.requested'
-               AND json_extract(requested.payload_json, '$.approvalId')=json_extract(resolved.payload_json, '$.approvalId')
-             WHERE resolved.session_id=?1 AND resolved.event_type='approval.resolved'
-               AND json_extract(requested.payload_json, '$.preview.authorizationScope')='sessionBrowser'
-               AND NOT EXISTS (
-                 SELECT 1 FROM session_events revision
-                 WHERE revision.session_id=resolved.session_id AND revision.event_type='conversation.revised'
-                   AND (resolved.sequence BETWEEN json_extract(revision.payload_json, '$.fromSequence') AND json_extract(revision.payload_json, '$.throughSequence')
-                     OR requested.sequence BETWEEN json_extract(revision.payload_json, '$.fromSequence') AND json_extract(revision.payload_json, '$.throughSequence'))
-               )
-             ORDER BY resolved.sequence DESC LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        ).optional().map_err(sql_error("browser_authority_fact_read_failed"))?;
-        let Some(payload) = payload else {
-            return Ok(None);
-        };
-        let payload = decode_json(&payload, "browser_authority_fact_corrupt")?;
-        match required_string(&payload, "decision")? {
-            "allow" => Ok(Some(required_string(&payload, "authorityId")?.to_string())),
-            "deny" => Ok(None),
-            _ => Err(LocalAgentStoreError::new(
-                "browser_authority_fact_corrupt",
-                "浏览器授权决策无效。",
-            )),
-        }
+        Ok(self.permission_model()?.authorities.browser(session_id))
     }
 
-    pub(crate) fn permission_overrides(
+    /// Attach the owner's current publication at a write/bootstrap boundary.
+    /// Transport can reorder responses; each view carries the producer revision.
+    pub(crate) fn publication(
+        &self,
+        value: Value,
+        session_id: &str,
+        descendants: bool,
+    ) -> Result<Value, LocalAgentStoreError> {
+        Ok(
+            json!({"value": value, "permissions": self.permission_model()?.publication(session_id, descendants)}),
+        )
+    }
+
+    pub(crate) fn event_publication(
+        &self,
+        value: Value,
+        events: &[Value],
+    ) -> Result<Value, LocalAgentStoreError> {
+        if let Some(event) = events.iter().find(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("session.created" | "run.started" | "session.permissions.updated")
+            )
+        }) {
+            return self.publication(value, required_string(event, "sessionId")?, true);
+        }
+        Ok(json!({"value": value, "permissions": {}}))
+    }
+
+    pub(crate) fn effective_permissions(
         &self,
         session_id: &str,
+    ) -> Result<Arc<crate::local_agent_kernel::LocalAgentPermissionPolicy>, LocalAgentStoreError>
+    {
+        self.permission_model()?.effective(session_id)
+    }
+
+    pub(crate) fn permissions_for_run(
+        &self,
+        session_id: &str,
+        defaults: &Value,
     ) -> Result<Value, LocalAgentStoreError> {
-        validate_id("sessionId", session_id)?;
-        let connection = self.lock()?;
-        let mut statement = connection.prepare("SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.permissions.updated' ORDER BY sequence")
-            .map_err(sql_error("permission_fact_read_failed"))?;
-        let rows = statement
-            .query_map(params![session_id], |row| row.get::<_, String>(0))
-            .map_err(sql_error("permission_fact_read_failed"))?;
-        let mut settings = serde_json::Map::new();
-        for row in rows {
-            let payload = decode_json(
-                &row.map_err(sql_error("permission_fact_read_failed"))?,
-                "permission_fact_corrupt",
-            )?;
-            let patches = payload["patches"].as_object().ok_or_else(|| {
-                LocalAgentStoreError::new("permission_fact_corrupt", "权限变更必须是对象。")
-            })?;
-            settings.extend(patches.clone());
+        self.permission_model()?.for_run(session_id, defaults)
+    }
+
+    /// Publish Kernel-owned fields at the projection boundary. The Session's
+    /// historical run snapshot is not the current inherited permission model.
+    pub(crate) fn project_permissions(
+        &self,
+        session_id: &str,
+        projection: &mut Value,
+    ) -> Result<(), LocalAgentStoreError> {
+        let model = self.permission_model()?;
+        if projection["run"].is_object() {
+            projection["effectivePermissions"] = model.effective(session_id)?.settings.clone();
         }
-        Ok(Value::Object(settings))
+        if let Some(grants) = projection["shellAuthorizations"].as_array_mut() {
+            grants.retain(|grant| {
+                !grant["authorityId"]
+                    .as_str()
+                    .is_some_and(|id| model.revoked(session_id, id))
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn run_permission_settings(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Value, LocalAgentStoreError> {
+        let exists = self
+            .permission_model()?
+            .authorities
+            .has_run(session_id, run_id);
+        if !exists {
+            return Err(LocalAgentStoreError::new(
+                "session_run_fact_missing",
+                "Delegating run is missing.",
+            ));
+        }
+        Ok(self.effective_permissions(session_id)?.settings.clone())
+    }
+
+    fn permission_model(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, KernelPermissionModel>, LocalAgentStoreError> {
+        self.permissions.read().map_err(|_| {
+            LocalAgentStoreError::new(
+                "kernel_permission_model_poisoned",
+                "Kernel permission model lock is poisoned.",
+            )
+        })
+    }
+
+    fn commit_with_permissions(
+        &self,
+        transaction: Transaction<'_>,
+        events: &[Value],
+        code: &'static str,
+    ) -> Result<(), LocalAgentStoreError> {
+        if !events.iter().any(KernelPermissionModel::observes) {
+            return transaction.commit().map_err(sql_error(code));
+        }
+        // Lock order is journal connection -> model. Admission reads only the model.
+        // Keep readers out until both the durable facts and their projection agree.
+        let mut model = self.permissions.write().map_err(|_| {
+            LocalAgentStoreError::new(
+                "kernel_permission_model_poisoned",
+                "Kernel permission model lock is poisoned.",
+            )
+        })?;
+        let mut next = model.clone();
+        for event in events {
+            if event["type"] == "plan.confirmed"
+                && event["payload"]["source"] == "agent"
+                && !delegated_authorities(
+                    &next,
+                    required_string(event, "sessionId")?,
+                    required_string(event, "runId")?,
+                )?
+                .is_empty()
+            {
+                return Err(LocalAgentStoreError::new(
+                    "plan_delegation_missing",
+                    "An inherited Plan must retain its original parent authority.",
+                ));
+            }
+            next.apply(event)?;
+        }
+        transaction.commit().map_err(sql_error(code))?;
+        *model = next;
+        Ok(())
+    }
+
+    pub(crate) fn delete_archive(
+        &self,
+        session_store_path: &Path,
+        tool_record_store_path: &Path,
+        session_id: &str,
+    ) -> Result<usize, LocalAgentStoreError> {
+        let _connection = self.lock()?;
+        let mut model = self.permissions.write().map_err(|_| {
+            LocalAgentStoreError::new(
+                "kernel_permission_model_poisoned",
+                "Kernel permission model lock is poisoned.",
+            )
+        })?;
+        let mut next = model.clone();
+        next.remove(session_id)?;
+        let count = delete_session_archive(session_store_path, tool_record_store_path, session_id)?;
+        *model = next;
+        Ok(count)
     }
 
     pub(crate) fn file_authorizations(
@@ -943,49 +1035,19 @@ impl LocalAgentJournal {
         run_id: &str,
         environment: &Value,
     ) -> Result<Vec<Value>, LocalAgentStoreError> {
-        let connection = self.lock()?;
-        let mut statement = connection.prepare(
-            "SELECT requested.payload_json FROM session_events resolved
-             JOIN session_events requested ON requested.session_id=resolved.session_id AND requested.run_id=resolved.run_id AND requested.call_id=resolved.call_id
-               AND requested.event_type='approval.requested' AND json_extract(requested.payload_json,'$.approvalId')=json_extract(resolved.payload_json,'$.approvalId')
-             WHERE resolved.session_id=?1 AND resolved.event_type='approval.resolved'
-               AND json_extract(resolved.payload_json,'$.decision')='allow' AND json_extract(resolved.payload_json,'$.source')='user'
-               AND (json_extract(resolved.payload_json,'$.authorizationScope')='sessionFiles'
-                 OR (resolved.run_id=?2 AND json_extract(resolved.payload_json,'$.authorizationScope')='runFiles'))
-               AND EXISTS (SELECT 1 FROM json_each(json_extract(requested.payload_json,'$.preview.authorizationScopes')) scope
-                   WHERE scope.value=json_extract(resolved.payload_json,'$.authorizationScope'))
-               AND NOT EXISTS (SELECT 1 FROM session_events revoked WHERE revoked.session_id=resolved.session_id AND revoked.event_type='approval.revoked'
-                   AND json_extract(revoked.payload_json,'$.authorityId')=json_extract(resolved.payload_json,'$.authorityId'))"
-        ).map_err(sql_error("file_authority_read_failed"))?;
-        let rows = statement
-            .query_map(params![session_id, run_id], |row| row.get::<_, String>(0))
-            .map_err(sql_error("file_authority_read_failed"))?;
-        let mut grants = Vec::new();
-        for row in rows {
-            let requested = row.map_err(sql_error("file_authority_read_failed"))?;
-            let requested = decode_json(&requested, "file_authority_corrupt")?;
-            let context = &requested["preview"]["authorizationContext"];
-            if context["fileEnvironment"] == *environment {
-                grants.push(context["fileAccess"].clone());
-            }
-        }
-        Ok(grants)
+        Ok(self
+            .permission_model()?
+            .authorities
+            .files(session_id, run_id, environment))
     }
-
     pub(crate) fn authority_revoked(
         &self,
         session_id: &str,
-        run_id: &str,
+        _run_id: &str,
         authority_id: &str,
     ) -> Result<bool, LocalAgentStoreError> {
-        let connection = self.lock()?;
-        connection.query_row("SELECT EXISTS(SELECT 1 FROM session_events revoked WHERE revoked.session_id=?1 AND revoked.run_id=?2 AND revoked.event_type='approval.revoked' AND json_extract(revoked.payload_json, '$.authorityId')=?3)
-            OR EXISTS(SELECT 1 FROM session_events resolved JOIN session_events changed ON changed.session_id=resolved.session_id AND changed.sequence>resolved.sequence AND changed.event_type='session.permissions.updated', json_each(json_extract(changed.payload_json, '$.patches')) patch
-              WHERE resolved.session_id=?1 AND resolved.run_id=?2 AND resolved.event_type='approval.resolved' AND json_extract(resolved.payload_json, '$.authorityId')=?3
-                AND patch.key IN ('agent.permissions.shell', 'agent.permissions.shellAccess', 'agent.permissions.commandRules', 'agent.permissions.commandDenylist', 'agent.permissions.networkRead'))",
-            params![session_id, run_id, authority_id], |row| row.get(0)).map_err(sql_error("approval_authority_fact_read_failed"))
+        Ok(self.permission_model()?.revoked(session_id, authority_id))
     }
-
     pub(crate) fn approval_matches_request(
         &self,
         session_id: &str,
@@ -996,53 +1058,54 @@ impl LocalAgentJournal {
         input: &Value,
         context: Option<&Value>,
     ) -> Result<bool, LocalAgentStoreError> {
-        let connection = self.lock()?;
-        let row: Option<(String, String)> = connection.query_row(
-            "SELECT tool.payload_json, requested.payload_json FROM session_events resolved
-             JOIN session_events requested ON requested.session_id=resolved.session_id AND requested.run_id=resolved.run_id AND requested.call_id=resolved.call_id AND requested.event_type='approval.requested' AND json_extract(requested.payload_json, '$.approvalId')=json_extract(resolved.payload_json, '$.approvalId')
-             JOIN session_events tool ON tool.session_id=resolved.session_id AND tool.run_id=resolved.run_id AND tool.call_id=resolved.call_id AND tool.event_type='tool.requested'
-             WHERE resolved.session_id=?1 AND resolved.run_id=?2 AND resolved.call_id=?3 AND resolved.event_type='approval.resolved' AND json_extract(resolved.payload_json, '$.authorityId')=?4 ORDER BY resolved.sequence DESC LIMIT 1",
-            params![session_id, run_id, call_id, authority_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(sql_error("approval_binding_read_failed"))?;
-        let Some((tool, requested)) = row else {
-            return Ok(false);
-        };
-        let tool = decode_json(&tool, "approval_binding_corrupt")?;
-        let requested = decode_json(&requested, "approval_binding_corrupt")?;
-        Ok(tool["toolName"] == tool_name
-            && tool["input"] == *input
-            && context
-                .is_none_or(|context| requested["preview"]["authorizationContext"] == *context))
+        Ok(self
+            .permission_model()?
+            .authorities
+            .grant(session_id, authority_id)
+            .is_some_and(|grant| {
+                grant.run == run_id
+                    && grant.call == call_id
+                    && grant.tool["toolName"] == tool_name
+                    && grant.tool["input"] == *input
+                    && !grant.requested.is_null()
+                    && context.is_none_or(|context| {
+                        grant.requested["preview"]["authorizationContext"] == *context
+                    })
+            }))
     }
-
     pub(crate) fn approval_has_review(
         &self,
         session_id: &str,
         authority_id: &str,
         decision: &str,
     ) -> Result<bool, LocalAgentStoreError> {
-        let connection = self.lock()?;
-        connection.query_row("SELECT EXISTS(SELECT 1 FROM session_events resolved
-            JOIN session_events review ON review.session_id=resolved.session_id AND review.run_id=resolved.run_id AND review.call_id=resolved.call_id AND review.sequence<resolved.sequence AND review.event_type='approval.reviewed' AND json_extract(review.payload_json, '$.approvalId')=json_extract(resolved.payload_json, '$.approvalId')
-            JOIN session_events requested ON requested.session_id=review.session_id AND requested.run_id=review.run_id AND requested.call_id=review.call_id AND requested.sequence<review.sequence AND requested.event_type='approval.requested' AND json_extract(requested.payload_json, '$.approvalId')=json_extract(review.payload_json, '$.approvalId')
-            JOIN session_events provider ON provider.session_id=review.session_id AND provider.run_id=review.run_id AND provider.sequence<review.sequence AND provider.event_type='provider.turn.settled' AND json_extract(provider.payload_json, '$.providerRequestId')=json_extract(review.payload_json, '$.providerRequestId')
-            WHERE resolved.session_id=?1 AND resolved.event_type='approval.resolved' AND json_extract(resolved.payload_json, '$.authorityId')=?2
-              AND json_extract(resolved.payload_json, '$.authorizationScope') IS NULL
-              AND json_extract(requested.payload_json, '$.preview.approvalReviewer')='agent'
-              AND json_extract(review.payload_json, '$.decision')=?3 AND json_extract(provider.payload_json, '$.purpose')='approvalReview' AND json_extract(provider.payload_json, '$.outcome')='completed')",
-            params![session_id, authority_id, decision], |row| row.get(0)).map_err(sql_error("approval_review_read_failed"))
+        Ok(self
+            .permission_model()?
+            .authorities
+            .grant(session_id, authority_id)
+            .is_some_and(|grant| grant.review.as_deref() == Some(decision)))
     }
-
     pub(crate) fn approval_source(
         &self,
         session_id: &str,
         authority_id: &str,
     ) -> Result<String, LocalAgentStoreError> {
-        let connection = self.lock()?;
-        connection.query_row("SELECT COALESCE(json_extract(payload_json, '$.source'), 'user') FROM session_events WHERE session_id=?1 AND event_type='approval.resolved' AND json_extract(payload_json, '$.authorityId')=?2 ORDER BY sequence DESC LIMIT 1",
-            params![session_id, authority_id], |row| row.get(0)).map_err(sql_error("approval_authority_fact_read_failed"))
+        self.permission_model()?
+            .authorities
+            .grant(session_id, authority_id)
+            .map(|grant| {
+                grant.payload["source"]
+                    .as_str()
+                    .unwrap_or("user")
+                    .to_owned()
+            })
+            .ok_or_else(|| {
+                LocalAgentStoreError::new(
+                    "approval_authority_fact_read_failed",
+                    "Approval authority is missing.",
+                )
+            })
     }
-
-    /// Reuse a user-granted scope in its task or session, against the prepared environment.
     pub(crate) fn execution_authority(
         &self,
         session_id: &str,
@@ -1052,57 +1115,10 @@ impl LocalAgentJournal {
     ) -> Result<Option<Value>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         validate_id("runId", run_id)?;
-        let connection = self.lock()?;
-        let mut statement = connection.prepare(
-            "SELECT resolved.payload_json, requested.payload_json FROM session_events resolved
-             JOIN session_events requested ON requested.session_id=resolved.session_id
-               AND requested.call_id=resolved.call_id AND requested.run_id=resolved.run_id
-               AND requested.event_type='approval.requested'
-               AND json_extract(requested.payload_json, '$.approvalId')=json_extract(resolved.payload_json, '$.approvalId')
-             WHERE resolved.session_id=?1 AND (resolved.run_id=?2 OR ?4=1) AND resolved.event_type='approval.resolved'
-               AND COALESCE(json_extract(resolved.payload_json, '$.source'), 'user')='user'
-               AND json_extract(resolved.payload_json, '$.authorizationScope')=?3
-               AND NOT EXISTS (SELECT 1 FROM session_events revoked WHERE revoked.session_id=resolved.session_id AND revoked.run_id=resolved.run_id AND revoked.event_type='approval.revoked' AND json_extract(revoked.payload_json, '$.authorityId')=json_extract(resolved.payload_json, '$.authorityId'))
-               AND NOT EXISTS (SELECT 1 FROM session_events changed, json_each(json_extract(changed.payload_json, '$.patches')) patch WHERE changed.session_id=resolved.session_id AND changed.sequence>resolved.sequence AND changed.event_type='session.permissions.updated' AND patch.key IN ('agent.permissions.shell', 'agent.permissions.shellAccess', 'agent.permissions.commandRules', 'agent.permissions.commandDenylist', 'agent.permissions.networkRead'))
-             ORDER BY resolved.sequence DESC"
-        ).map_err(sql_error("run_authority_fact_read_failed"))?;
-        let session_scope = matches!(
-            scope,
-            "sessionCommand" | "sessionHostShell" | "sessionNetwork" | "sessionContainer"
-        );
-        let rows = statement
-            .query_map(params![session_id, run_id, scope, session_scope], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(sql_error("run_authority_fact_read_failed"))?;
-        for row in rows {
-            let (resolved, requested) = row.map_err(sql_error("run_authority_fact_read_failed"))?;
-            let resolved = decode_json(&resolved, "run_authority_fact_corrupt")?;
-            let requested = decode_json(&requested, "run_authority_fact_corrupt")?;
-            let offered = requested["preview"]["authorizationScopes"]
-                .as_array()
-                .is_some_and(|scopes| scopes.iter().any(|candidate| candidate == scope));
-            let mut binding = requested["preview"]["authorizationContext"].clone();
-            if matches!(scope, "runHostShell" | "sessionHostShell") {
-                if let Some(binding) = binding.as_object_mut() {
-                    for key in ["command", "cwd", "terminal", "workspaceMode", "toolName"] {
-                        binding.remove(key);
-                    }
-                }
-            }
-            if matches!(scope, "runNetwork" | "sessionNetwork") {
-                binding = binding["networkEnvironment"].clone();
-            }
-            if matches!(scope, "runContainer" | "sessionContainer") {
-                binding = binding["container"].clone();
-            }
-            if offered && binding == *context && resolved["decision"] == "allow" {
-                return Ok(Some(
-                    json!({"decision":"allow", "source":"user", "authorityId":required_string(&resolved, "authorityId")?, "authorizationScope":scope}),
-                ));
-            }
-        }
-        Ok(None)
+        Ok(self
+            .permission_model()?
+            .authorities
+            .execution(session_id, run_id, scope, context))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, LocalAgentStoreError> {
@@ -1110,6 +1126,24 @@ impl LocalAgentJournal {
             LocalAgentStoreError::new("session_store_lock_failed", "Session Store 锁已损坏。")
         })
     }
+}
+
+fn retain_authorities(authorities: &mut Vec<Value>, model: &KernelPermissionModel) {
+    authorities.retain(|authority| {
+        !model.revoked(
+            authority["sessionId"].as_str().unwrap_or(""),
+            authority["authorityId"].as_str().unwrap_or(""),
+        )
+    });
+}
+fn delegated_authorities(
+    model: &KernelPermissionModel,
+    session_id: &str,
+    run_id: &str,
+) -> Result<Vec<Value>, LocalAgentStoreError> {
+    let mut authorities = model.authorities.delegated(session_id, run_id)?;
+    retain_authorities(&mut authorities, model);
+    Ok(authorities)
 }
 
 /// Explicit Session deletion is the sole lifecycle operation that removes
@@ -1189,71 +1223,6 @@ pub(crate) fn delete_session_archive(
         .commit()
         .map_err(sql_error("session_archive_delete_commit_failed"))?;
     Ok(tool_record_count)
-}
-
-fn active_plan_authorities_from_connection(
-    connection: &Connection,
-    session_id: &str,
-) -> Result<Option<Vec<Value>>, LocalAgentStoreError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT event_type, payload_json, run_id FROM session_events
-             WHERE session_id=?1 AND event_type IN (
-               'plan.confirmed', 'plan.revision.requested', 'plan.superseded',
-               'plan.cancelled', 'plan.invalidated', 'run.finishing'
-             ) ORDER BY sequence ASC",
-        )
-        .map_err(sql_error("plan_authority_fact_read_failed"))?;
-    let rows = statement
-        .query_map(params![session_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(sql_error("plan_authority_fact_read_failed"))?;
-    let mut active_authorities: Option<Vec<Value>> = None;
-    let mut active_plan: Option<(String, u64, String)> = None;
-    for row in rows {
-        let (event_type, encoded, run_id) =
-            row.map_err(sql_error("plan_authority_fact_read_failed"))?;
-        if event_type == "run.finishing" {
-            if active_plan
-                .as_ref()
-                .is_some_and(|active| active.2 == run_id)
-            {
-                active_plan = None;
-                active_authorities = None;
-            }
-            continue;
-        }
-        let payload = decode_json(&encoded, "plan_authority_fact_corrupt")?;
-        let plan_id = required_string(&payload, "planId")?.to_string();
-        let revision = required_u64(&payload, "revision")?;
-        if event_type == "plan.confirmed" {
-            active_plan = Some((plan_id, revision, run_id));
-            active_authorities = Some(
-                payload
-                    .get("authorities")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        LocalAgentStoreError::new(
-                            "plan_authority_fact_corrupt",
-                            "plan.confirmed 缺少 authorities。",
-                        )
-                    })?
-                    .clone(),
-            );
-        } else if active_plan
-            .as_ref()
-            .is_some_and(|active| active.0 == plan_id && active.1 == revision)
-        {
-            active_plan = None;
-            active_authorities = None;
-        }
-    }
-    Ok(active_authorities)
 }
 
 fn insert_event(
@@ -1606,8 +1575,12 @@ fn validate_new_event(
             exact_object(
                 payload,
                 &["displayTitle", "workspaceBindings"],
-                &["profileId", "agentContext"],
+                &["profileId", "agentContext", "recipe"],
             )?;
+            if let Some(recipe) = payload.get("recipe") {
+                crate::local_agent_recipe::AgentRecipe::decode(recipe)
+                    .map_err(|error| LocalAgentStoreError::new("agent_recipe_invalid", error))?;
+            }
             validate_display_title(required_string(payload, "displayTitle")?)?;
             validate_workspace_bindings(&payload["workspaceBindings"])?;
             if let Some(profile_id) = payload.get("profileId") {
@@ -2815,7 +2788,7 @@ fn validate_event_references(
     Ok(())
 }
 
-fn validate_permission_patches(value: &Value) -> Result<(), LocalAgentStoreError> {
+pub(crate) fn validate_permission_patches(value: &Value) -> Result<(), LocalAgentStoreError> {
     let settings = value.as_object().ok_or_else(|| {
         LocalAgentStoreError::new("permission_settings_invalid", "权限设置必须是对象。")
     })?;
@@ -6071,6 +6044,115 @@ mod tests {
             "reply":{"schemaVersion":REPLY_VERSION,"sessionId":"session:loop","commandId":command_id,
                 "status":"accepted","revision":0}
         })
+    }
+
+    #[test]
+    fn permission_commits_update_existing_descendants_atomically_and_restore_without_tools() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let broad = json!({"agent.permissions.workspaceMutation":"allow", "agent.permissions.shell":"allow",
+            "agent.permissions.shellAccess":"full", "agent.permissions.external":"allow"});
+        for (id, parent) in [
+            ("root", None),
+            ("child", Some("root")),
+            ("grandchild", Some("child")),
+        ] {
+            let context = parent.map(|parent| json!({"ownerSessionId":"session:root", "parentSessionId":format!("session:{parent}"),
+                "parentRunId":"run:parent", "parentCallId":"call:spawn",
+                "capabilities":{"messaging":true,"continuation":true,"delegation":true}}));
+            journal
+                .create_session_with_recipe(
+                    &format!("session:{id}"),
+                    id,
+                    &json!([]),
+                    None,
+                    context.as_ref(),
+                    Some(&json!({"permissions":broad})),
+                )
+                .unwrap();
+        }
+        let old_child = journal.effective_permissions("session:child").unwrap();
+        assert_eq!(
+            old_child.settings["agent.permissions.workspaceMutation"],
+            "allow"
+        );
+        let patches = json!({"agent.permissions.workspaceMutation":"plan", "agent.permissions.shell":"ask",
+            "agent.permissions.shellAccess":"workspace"});
+        let event = json!({"type":"session.permissions.updated","sessionId":"session:root",
+            "payload":{"commandId":"command:tighten", "patches":patches}});
+        let commit = json!({"command":{"schemaVersion":COMMAND_VERSION,"type":"session.permissions.set",
+            "sessionId":"session:root", "commandId":"command:tighten", "patches":patches},
+            "events":[event], "reply":{"schemaVersion":REPLY_VERSION,"sessionId":"session:root",
+                "commandId":"command:tighten","status":"accepted","revision":0}});
+        let mut invalid = commit.clone();
+        invalid["events"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"run.finishing", "sessionId":"session:root",
+            "runId":"run:missing", "payload":{"outcome":"cancelled"}}));
+        assert!(journal.commit_command(&invalid).is_err());
+        assert!(Arc::ptr_eq(
+            &old_child,
+            &journal.effective_permissions("session:child").unwrap()
+        ));
+        assert_eq!(journal.read_events("session:root", 0).unwrap().len(), 1);
+
+        journal.commit_command(&commit).unwrap();
+        for id in ["session:root", "session:child", "session:grandchild"] {
+            let current = journal.effective_permissions(id).unwrap();
+            assert_eq!(
+                current.settings["agent.permissions.workspaceMutation"],
+                "plan"
+            );
+            assert_eq!(
+                current.settings["agent.permissions.shellAccess"],
+                "workspace"
+            );
+        }
+        assert!(!Arc::ptr_eq(
+            &old_child,
+            &journal.effective_permissions("session:child").unwrap()
+        ));
+        // A child update and a stale prepared run cannot restore the old ceiling.
+        journal
+            .append(
+                &json!({"type":"session.permissions.updated","sessionId":"session:child",
+            "payload":{"commandId":"command:child", "patches":broad}}),
+            )
+            .unwrap();
+        let mut runtime = runtime_snapshot();
+        runtime["permissions"] = crate::settings_api::permission_settings(&broad);
+        journal.append(&json!({"type":"run.started","sessionId":"session:child","runId":"run:child",
+            "payload":{"inputMessageId":"message:child","workspaceBindings":[],"runtimeSnapshot":runtime}})).unwrap();
+        assert_eq!(
+            journal
+                .run_permission_settings("session:child", "run:child")
+                .unwrap()["agent.permissions.workspaceMutation"],
+            "plan"
+        );
+        assert_eq!(
+            journal
+                .permissions_for_run("session:grandchild", &broad)
+                .unwrap()["agent.permissions.shell"],
+            "ask"
+        );
+
+        drop(journal);
+        let restored = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(
+            restored
+                .effective_permissions("session:grandchild")
+                .unwrap()
+                .settings["agent.permissions.workspaceMutation"],
+            "plan"
+        );
+        assert_eq!(
+            restored
+                .effective_permissions("session:child")
+                .unwrap()
+                .settings["agent.permissions.shellAccess"],
+            "workspace"
+        );
     }
 
     #[test]

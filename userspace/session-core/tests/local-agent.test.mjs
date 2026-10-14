@@ -12,6 +12,7 @@ import {
   prepareToolPromptContributions,
   renderActiveToolGuidance,
   SessionService,
+  SessionActor,
   emptySessionState,
   reduceSession,
   recoverSession,
@@ -23,7 +24,7 @@ import {
 import { buildAgentProviderRequest, messagesFromJournal } from '../dist/local-agent/contextComposer.js';
 import { agentOperationDefinitions, decodeSessionControlCall } from '../dist/local-agent/sessionControls.js';
 import { publishPlan } from '../dist/local-agent/planStage.js';
-import { HttpProviderPort } from '../dist/local-agent/httpPorts.js';
+import { HttpProviderPort, HttpCommandJournal } from '../dist/local-agent/httpPorts.js';
 import { responseFrames } from '../dist/responseFrames.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
@@ -1214,7 +1215,7 @@ for (const lateRecord of [false, true]) test(`lost Kernel reply closes tool hist
   assert.equal(requests.length, 2);
 });
 
-test('snapshot reads only new journal events and matches full replay', async (t) => {
+test('snapshot consumes the write publication without journal reads and matches full replay', async (t) => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:incremental';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1226,13 +1227,92 @@ test('snapshot reads only new journal events and matches full replay', async (t)
   const first = await actor.snapshot();
   const second = await actor.snapshot();
   assert.deepEqual(second, first);
-  assert.deepEqual(reads, [0, first.revision]);
-  await journal.append({ type: 'session.model-settings.updated', sessionId,
-    payload: { commandId: 'command:settings', settings: { profileId: 'profile:new', reasoningEffortOverride: null } } });
+  assert.deepEqual(reads, [0]);
+  await actor.recordAgentEvents([{ type: 'session.model-settings.updated', sessionId,
+    payload: { commandId: 'command:settings', settings: { profileId: 'profile:new', reasoningEffortOverride: null } } }]);
+  assert.deepEqual(reads, [0]);
   const updated = await actor.snapshot();
   const { projectSession } = await import('../dist/local-agent/reducer.js');
   assert.deepEqual(updated, projectSession(loopSnapshot(sessionId, await readEvents(journal, sessionId)).state, null));
   assert.equal(updated.modelSettings.profileId, 'profile:new');
+});
+
+test('Actor recovers a lost write acknowledgement once and publishes before subsequent reads', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:lost-ack';
+  await createSession(journal, sessionId);
+  const read = journal.read.bind(journal), reads = [];
+  journal.read = async function* (id, after = 0) { reads.push(after); yield* read(id, after); };
+  const actor = actorWith(journal, sessionId, { async *stream() {} }, emptyKernel(), fakeRunPreparation().port, 'lost-ack');
+  t.after(() => actor.dispose());
+  await actor.snapshot();
+  const append = journal.append.bind(journal);
+  journal.append = async event => { await append(event); throw Error('lost_ack_after_commit'); };
+  await assert.rejects(actor.recordAgentEvents([{ type: 'session.model-settings.updated', sessionId,
+    payload: { commandId: 'command:committed', settings: { profileId: 'profile:committed', reasoningEffortOverride: null } } }]), /lost_ack_after_commit/);
+  assert.equal((await actor.snapshot()).modelSettings.profileId, 'profile:committed');
+  await actor.snapshot();
+  assert.deepEqual(reads, [0, 0]);
+  const before = await actor.snapshot();
+  journal.append = async () => { throw Error('write_not_committed'); };
+  await assert.rejects(actor.recordAgentEvents([{ type: 'session.model-settings.updated', sessionId,
+    payload: { commandId: 'command:failed', settings: { profileId: 'profile:failed', reasoningEffortOverride: null } } }]), /write_not_committed/);
+  assert.deepEqual(await actor.snapshot(), before);
+  assert.deepEqual(reads, [0, 0, 0]);
+});
+
+test('HTTP journal publishes inherited policy before acknowledging writes and orders delayed delivery', async () => {
+  const requests = [], seen = [];
+  const journal = new HttpCommandJournal({ apiBase: 'http://fixture', serviceToken: 'fixture',
+    fetchImpl: () => new Promise(resolve => requests.push(resolve)) });
+  const unsubscribe = journal.subscribePermissions('child', settings => seen.push(settings['agent.permissions.workspaceMutation']));
+  const older = journal.append({ type: 'session.permissions.updated', sessionId: 'parent', payload: { commandId: 'older', patches: {} } });
+  const newer = journal.append({ type: 'session.permissions.updated', sessionId: 'parent', payload: { commandId: 'newer', patches: {} } });
+  const response = (revision, mode) => new Response(JSON.stringify({ ok: true, data: { value: {}, permissions: {
+    child: { revision, settings: { 'agent.permissions.workspaceMutation': mode } },
+  } } }));
+  requests[1](response(2, 'plan'));
+  await newer;
+  assert.deepEqual(seen, ['plan']);
+  requests[0](response(1, 'allow'));
+  await older;
+  assert.deepEqual(seen, ['plan']);
+  const restored = [];
+  const dispose = journal.subscribePermissions('child', settings => restored.push(settings['agent.permissions.workspaceMutation']));
+  assert.deepEqual(restored, ['plan']);
+  unsubscribe(); dispose();
+});
+
+test('inherited permission publications wake a Loop even when the journal revision is unchanged', { timeout: 3000 }, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:permission-wake';
+  await createSession(journal, sessionId);
+  let publish;
+  journal.subscribePermissions = (_id, listener) => { publish = listener; return () => {}; };
+  const completed = [];
+  const actor = new SessionActor(sessionId, journal, {
+    provider: { async *stream() { throw Error('unexpected_provider'); } }, kernel: emptyKernel(),
+    runPreparation: fakeRunPreparation().port, async dispose() {},
+    runner: { async run(_initial, command, deps, signal) {
+      publish({ 'agent.permissions.workspaceMutation': 'allow' });
+      const before = await deps.readSnapshot();
+      publish({ 'agent.permissions.workspaceMutation': 'plan' });
+      // Delivery happened before subscribing; the publication identity closes the gap.
+      await deps.waitForChange(before.state.revision, signal, before.state.publishedPermissions);
+      const after = await deps.readSnapshot();
+      assert.equal(after.state.revision, before.state.revision);
+      assert.equal(after.state.publishedPermissions['agent.permissions.workspaceMutation'], 'plan');
+      const waiting = deps.waitForChange(after.state.revision, signal, after.state.publishedPermissions);
+      publish({ 'agent.permissions.workspaceMutation': 'allow' });
+      await waiting;
+      completed.push(true);
+      await deps.commit({ type: 'run.finishing', sessionId, runId: command.runId, payload: { outcome: 'cancelled' } });
+      return { status: 'finishing', runId: command.runId, settlement: { outcome: 'cancelled' } };
+    } },
+  });
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:permission-wake', 'Observe policy changes.'));
+  const result = await waitForProjection(actor, value => ['cancelled', 'failed'].includes(value.run?.status));
+  assert.equal(result.run.status, 'cancelled', JSON.stringify(result.terminalError));
+  assert.deepEqual(completed, [true]);
 });
 
 test('transport: oversized Unicode replies preserve content within bounded frames', () => {
@@ -3196,25 +3276,16 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
   const baseJournal = new InMemoryCommandJournal();
   const sessionId = 'session:delete-unloadable';
   await createSession(baseJournal, sessionId);
-  let readCount = 0;
   let recoveryStartedResolve;
   let releaseRecoveryResolve;
   const recoveryStarted = new Promise((resolve) => { recoveryStartedResolve = resolve; });
   const releaseRecovery = new Promise((resolve) => { releaseRecoveryResolve = resolve; });
-  const journal = forwardingJournal(baseJournal, async function* (targetSessionId, afterSequence) {
-    readCount += 1;
-    if (readCount !== 2) {
-      for await (const event of baseJournal.read(targetSessionId, afterSequence)) yield event;
-      return;
-    }
-    recoveryStartedResolve();
-    await releaseRecovery;
-    throw new Error('fixture_recovery_failed');
-  });
+  const journal = baseJournal;
   let disposeCount = 0;
   const preparation = fakeRunPreparation();
   const service = new SessionService(journal, {
     async create() {
+      recoveryStartedResolve();
       return {
         composition: {
               provider: { async *stream() { throw new Error('unexpected_provider_turn'); } },
@@ -3224,7 +3295,7 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
         },
       };
     },
-  });
+  }, { async settings() { await releaseRecovery; throw Error('fixture_recovery_failed'); } });
 
   const snapshot = service.submit(messageCommand(sessionId, 'command:open-for-delete', 'Start explicitly.'));
   await recoveryStarted;
@@ -3314,6 +3385,7 @@ test('an escaped Loop fault remains Session-local and releases its runtime', asy
   const failingSessionId = 'session:contained-loop-failure';
   const healthySessionId = 'session:healthy-after-loop-failure';
   const journal = {
+    subscribePermissions: (...args) => baseJournal.subscribePermissions(...args),
     createSession: (input) => baseJournal.createSession(input),
     deleteSession: (sessionId) => baseJournal.deleteSession(sessionId),
     append: (event) => baseJournal.append(event),
@@ -5147,12 +5219,15 @@ test('the real Session bridge persists model commands and passes effort through 
       for await (const chunk of request) body += chunk;
       const input = body ? JSON.parse(body) : null;
       let data;
-      if (url.pathname === '/api/local-agent/journal/sessions') data = await journal.createSession(input);
+      if (url.pathname === '/api/local-agent/agents/settings') data = { enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 4, maxCallsPerRun: 10, maxMembersPerSession: 10, allowMemberAnalysis: false, allowFullConfiguration: true, presets: '[]' };
+      else if (url.pathname === '/api/local-agent/journal/events') data = { value: await journal.append(input), permissions: {} };
+      else if (url.pathname === '/api/local-agent/journal/sessions') data = await journal.createSession(input);
       else if (parts[6] === 'events') {
         data = [];
         for await (const event of journal.read(parts[5], Number(url.searchParams.get('after')))) data.push(event);
+        data = { value: data, permissions: {} };
       } else if (parts[6] === 'commands') data = await journal.readCommand(parts[5], parts[7]);
-      else if (url.pathname === '/api/local-agent/journal/commands') data = await journal.commitCommand(input.command, input.events, input.reply);
+      else if (url.pathname === '/api/local-agent/journal/commands') data = { value: await journal.commitCommand(input.command, input.events, input.reply), permissions: {} };
       else if (url.pathname === '/api/local-agent/runtime/prepare-run') {
         prepared.push(input);
         if (input.sessionId === 'session:bridge-held') await heldPreparation;

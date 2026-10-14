@@ -36,7 +36,7 @@ const ATTEMPT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct DelegatedPlanScopeRequest {
+pub(crate) struct PlanAdmissionRequest {
     pub(crate) session_id: String,
     pub(crate) run_id: String,
     pub(crate) mutation_manifest: Value,
@@ -189,11 +189,12 @@ enum PreparedEffectScope {
 /// selected here, never from model-supplied permission switches.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalAgentPermissionPolicy {
+    pub(crate) constraints: crate::local_agent_recipe::PolicyConstraints,
     workspace_mutation: WorkspaceMutationMode,
     shell: ShellApprovalMode,
     shell_full_access: bool,
     command_rules: Vec<ShellCommandRule>,
-    settings: Value,
+    pub(crate) settings: Value,
     network: PermissionMode,
     external: PermissionMode,
     command_denylist: CommandDenylist,
@@ -279,6 +280,7 @@ impl LocalAgentPermissionPolicy {
             ));
         }
         Ok(Self {
+            constraints: Default::default(),
             shell,
             shell_full_access,
             command_rules,
@@ -294,6 +296,14 @@ impl LocalAgentPermissionPolicy {
                 LocalAgentKernelError::new("agent_permission_setting_invalid", message)
             })?,
         })
+    }
+
+    fn with_constraints(
+        mut self,
+        constraints: crate::local_agent_recipe::PolicyConstraints,
+    ) -> Self {
+        self.constraints = constraints;
+        self
     }
 
     fn mode(&self, scope: PreparedEffectScope) -> Option<PermissionMode> {
@@ -1479,14 +1489,12 @@ impl LocalAgentKernel {
             ),
             _ => (None, None),
         };
-        let mut effective_settings = generation.permissions.settings.clone();
-        let overrides = self.journal.permission_overrides(&request.session_id)?;
-        effective_settings
-            .as_object_mut()
-            .expect("permission settings")
-            .extend(overrides.as_object().expect("permission overrides").clone());
+        let permissions = self.journal.effective_permissions(&request.session_id)?;
         let mut prepared = PreparedEffect {
-            permissions: LocalAgentPermissionPolicy::from_settings(&effective_settings)?,
+            permissions: permissions
+                .as_ref()
+                .clone()
+                .with_constraints(generation.permissions.constraints),
             generation,
             binding,
             source_binding: None,
@@ -1518,6 +1526,8 @@ impl LocalAgentKernel {
         prepared.network_request = network_request;
         self.prepare_process_permissions(request, &mut prepared)?;
         self.prepare_file_permissions(request, &mut prepared)?;
+        prepared.file_access.sandbox_backend =
+            prepared.generation.executor_config.sandbox_backend.clone();
         if let PreparedToolInput::Container { input, target } = &mut prepared.input {
             *target = prepared
                 .binding
@@ -1635,6 +1645,19 @@ impl LocalAgentKernel {
             return Ok(Admission::denied(
                 "run_already_settled",
                 "当前 run 已 settled，所有 authority 均已失效。",
+            ));
+        }
+        let constraints = prepared.permissions.constraints;
+        if (!constraints.allow_host_execution || !constraints.allow_external_tools)
+            && prepared.binding.uses_external_runtime()
+            || !constraints.allow_host_execution
+                && (prepared.is_host_process()
+                    || matches!(prepared.input, PreparedToolInput::Container { .. }))
+            || !constraints.allow_external_tools && prepared.scope == PreparedEffectScope::External
+        {
+            return Ok(Admission::denied(
+                "permission_policy_denied",
+                "The selected Agent policy does not permit this execution route.",
             ));
         }
         let rules = &prepared.permissions.command_denylist;
@@ -2142,16 +2165,27 @@ impl LocalAgentKernel {
         Ok((None, has_confirmed_plan))
     }
 
-    /// Read-only scope proof for Session Plan acceptance. The returned values retain
-    /// their original parent confirmation identities and are revalidated at execution.
-    pub(crate) fn delegated_plan_scope(
+    /// The Kernel decides Plan admission from its published model. A Loop never
+    /// determines automatic confirmation from its historical runtime snapshot.
+    pub(crate) fn plan_admission(
         &self,
-        request: DelegatedPlanScopeRequest,
+        request: PlanAdmissionRequest,
     ) -> Result<Value, LocalAgentKernelError> {
         crate::local_agent_store::validate_plan_operations(&request.mutation_manifest)?;
         let authorities = self
             .journal
             .delegated_plan_authorities(&request.session_id, &request.run_id)?;
+        // An inherited Plan remains the scope ceiling even when the permission
+        // mode permits automatic confirmation. Keep its original grant identity.
+        if authorities.is_empty()
+            && self
+                .journal
+                .effective_permissions(&request.session_id)?
+                .workspace_mutation
+                == WorkspaceMutationMode::Allow
+        {
+            return Ok(json!({"source":"agent", "authorities":[]}));
+        }
         let mut covered = Vec::new();
         for operation in request
             .mutation_manifest
@@ -2168,13 +2202,13 @@ impl LocalAgentKernel {
                                 .any(|scope| plan_operation_covers(scope, operation))
                         })
             }) else {
-                return Ok(json!({"authorities":[]}));
+                return Ok(json!({"source":"user", "authorities":[]}));
             };
             if !covered.contains(authority) {
                 covered.push(authority.clone());
             }
         }
-        Ok(json!({"authorities":covered}))
+        Ok(json!({"source":if covered.is_empty() {"user"} else {"parent"}, "authorities":covered}))
     }
 
     fn execute_prepared(
@@ -2642,7 +2676,7 @@ impl PreparedEffect {
             return None;
         }
         let args = &self.canonical_invocation["arguments"];
-        Some(json!({
+        let mut context = json!({
             "workspaceId":self.workspace_id, "workspaceRoot":self.workspace_root,
             "environment": {"shell":self.generation.executor_config.shell_program,
                 "wsl":self.generation.executor_config.wsl, "executionPath":self.generation.executor_config.execution_path,
@@ -2650,7 +2684,16 @@ impl PreparedEffect {
                 "networkAccess":self.is_host_process() || self.file_access.network_access},
             "toolName":self.operation, "command":args["command"], "cwd":self.workspace_root,
             "terminal":args["terminal"], "workspaceMode":self.process_workspace_mode,
-        }))
+        });
+        if let Some(backend) = &self.generation.executor_config.sandbox_backend {
+            context["environment"]["sandboxBackend"] = json!(backend);
+        }
+        if !self.permissions.constraints.allow_host_execution
+            || !self.permissions.constraints.allow_external_tools
+        {
+            context["environment"]["policyConstraints"] = json!(self.permissions.constraints);
+        }
+        Some(context)
     }
 
     fn command_rule(&self) -> Option<&str> {
@@ -4154,7 +4197,7 @@ mod attempt_control_tests {
     }
 
     #[test]
-    fn delegated_plan_scope_uses_current_task_and_original_confirmation() {
+    fn plan_admission_uses_current_task_and_original_confirmation() {
         struct Workspace;
         impl WorkspaceResolverPort for Workspace {
             fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
@@ -4210,7 +4253,7 @@ mod attempt_control_tests {
         };
         let scope = |session: &str, run: &str, manifest: Value| {
             kernel
-                .delegated_plan_scope(DelegatedPlanScopeRequest {
+                .plan_admission(PlanAdmissionRequest {
                     session_id: session.into(),
                     run_id: run.into(),
                     mutation_manifest: manifest,
@@ -4239,6 +4282,43 @@ mod attempt_control_tests {
             scope(&request.session_id, &request.run_id, manifest.clone()),
             json!([first])
         );
+        journal.append(&json!({"type":"session.permissions.updated","sessionId":request.session_id,
+            "payload":{"commandId":"permissions:auto", "patches":{"agent.permissions.workspaceMutation":"allow"}}})).unwrap();
+        let admission = |manifest| {
+            kernel
+                .plan_admission(PlanAdmissionRequest {
+                    session_id: request.session_id.clone(),
+                    run_id: request.run_id.clone(),
+                    mutation_manifest: manifest,
+                })
+                .unwrap()
+        };
+        assert_eq!(admission(manifest.clone())["source"], "parent");
+        let invented = json!({"type":"plan.confirmed", "sessionId":request.session_id, "runId":request.run_id,
+            "callId":"call:invented", "payload":{"planId":"plan:invented", "revision":1,
+                "commandId":"command:invented", "decisionId":"decision:invented", "source":"agent", "authorities":[{
+                    "authorityId":"authority:invented", "planId":"plan:invented", "revision":1,
+                    "decisionId":"decision:invented", "sessionId":request.session_id, "runId":request.run_id,
+                    "workspaceId":"workspace:test", "coveredOperations":manifest}]}});
+        let published = json!({"type":"plan.published", "sessionId":request.session_id, "runId":request.run_id,
+            "callId":"call:invented", "payload":{"planId":"plan:invented", "revision":1,
+                "providerCallId":"provider:invented", "title":"Independent authority", "summary":"Must keep parent identity",
+                "steps":[{"stepId":"write", "title":"Write", "details":"Write results"}], "mutationManifest":manifest}});
+        assert_eq!(
+            journal
+                .append_batch(&[published, invented])
+                .unwrap_err()
+                .code,
+            "plan_delegation_missing"
+        );
+        assert_eq!(
+            admission(
+                json!([{"workspaceId":"workspace:test","operation":"fs.write","target":"outside/result.txt"}])
+            )["source"],
+            "user"
+        );
+        journal.append(&json!({"type":"session.permissions.updated","sessionId":request.session_id,
+            "payload":{"commandId":"permissions:plan", "patches":{"agent.permissions.workspaceMutation":"plan"}}})).unwrap();
         let effect = kernel.prepare_tool(&request).unwrap();
         assert!(
             matches!(kernel.admit(&request,&effect).unwrap(),Admission::Allowed(authority)

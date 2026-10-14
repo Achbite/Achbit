@@ -10,6 +10,8 @@ export class InMemoryCommandJournal {
   #tail = Promise.resolve();
   #eventCounter = 0;
 
+  subscribePermissions() { return () => {}; }
+
   async createSession(input) {
     return await this.serial(async () => {
       if (this.#events.has(input.sessionId)) throw new Error('session_already_exists');
@@ -20,6 +22,7 @@ export class InMemoryCommandJournal {
         payload: {
           displayTitle: input.displayTitle,
           workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
+          ...(input.recipe ? { recipe: structuredClone(input.recipe) } : {}),
           ...(input.profileId ? { profileId: input.profileId } : {}),
           ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
         },
@@ -95,14 +98,14 @@ export class InMemoryCommandJournal {
       const key = commandKey(command.sessionId, command.commandId);
       if (this.#commands.has(key)) throw new Error('command_already_recorded');
       if (reply.status !== 'rejected') assertRuntimeContract('ConversationCommand', command);
-      for (const event of events) this.appendNow(event);
+      const committed = events.map(event => this.appendNow(event));
       const revision = this.#events.get(command.sessionId)?.at(-1)?.sequence ?? 0;
       const admitted = { ...reply, revision };
       this.#commands.set(key, {
         command: structuredClone(command),
         reply: structuredClone(admitted),
       });
-      return admitted;
+      return { reply: admitted, events: committed };
     });
   }
 
