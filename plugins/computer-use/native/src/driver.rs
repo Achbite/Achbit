@@ -285,6 +285,27 @@ unsafe fn raise(window: Ref) -> Result<(), String> {
     Ok(())
 }
 
+unsafe fn activate_window(pid: i32, window: Ref) -> Result<(), String> {
+    let application: *mut AnyObject =
+        msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier:pid];
+    if application.is_null() {
+        return Err(format!(
+            "The observed application is no longer running (PID {pid})"
+        ));
+    }
+    set_true(window, "AXMain")?;
+    // Request application activation through AppKit. Setting AXFrontmost can
+    // succeed while the application remains inactive. The caller still checks
+    // AXFrontmost and the exact focused window before dispatching any input.
+    let requested: bool = msg_send![application, activateWithOptions:0_usize];
+    if !requested {
+        return Err(format!(
+            "macOS did not accept activation of the observed application (PID {pid})"
+        ));
+    }
+    raise(window)
+}
+
 impl ObservedWindow {
     unsafe fn validate_geometry(&self) -> Result<(), String> {
         if window_bounds(self.element.0)? != self.bounds {
@@ -327,14 +348,13 @@ unsafe fn restore_observed_window(
     gui: &crate::runtime::MainThread,
     saved: &Observation,
 ) -> Result<(), String> {
-    with_observed_window(gui, saved.pid, |root, window| {
+    let pid = saved.pid;
+    with_observed_window(gui, pid, move |root, window| {
         window.validate_geometry()?;
         if !window.focused(root)? {
             // Restore only the retained window. Never choose the application's
             // current window as a substitute after approval changes focus.
-            set_true(window.element.0, "AXMain")?;
-            set_true(root, "AXFrontmost")?;
-            raise(window.element.0)?;
+            activate_window(pid, window.element.0)?;
         }
         Ok(())
     })?;
@@ -347,7 +367,27 @@ unsafe fn restore_observed_window(
             return Ok(());
         }
         if started.elapsed() > Duration::from_secs(2) {
-            return Err("Observed window did not regain focus; observe again before acting".into());
+            // Read only after the original timeout; this snapshot does not
+            // change the focus check or authorize dispatching input.
+            let focus_state = with_observed_window(gui, saved.pid, |root, window| {
+                let is_frontmost = frontmost(root)?;
+                let focused = attribute(root, "AXFocusedWindow")?;
+                Ok(json!({
+                    "AXFrontmost": is_frontmost,
+                    "focusedWindowID": focused.as_ref()
+                        .map(|focused| crate::window_identity::id(focused.0)).transpose()?,
+                    "observedWindowID": crate::window_identity::id(window.element.0)?,
+                    "CFEqual": focused.as_ref()
+                        .map(|focused| CFEqual(focused.0, window.element.0)),
+                }))
+            });
+            let focus_state = match focus_state {
+                Ok(snapshot) => snapshot,
+                Err(error) => json!({"focusStateError": error}),
+            };
+            return Err(format!(
+                "Observed window did not regain focus; observe again before acting; focus state after timeout: {focus_state}"
+            ));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -556,9 +596,7 @@ unsafe fn observe(
         move |root| {
             let (element, window_id, bounds) = select_window(root, window_id, pid)?;
             if foreground {
-                set_true(element.0, "AXMain")?;
-                set_true(root, "AXFrontmost")?;
-                raise(element.0)?;
+                activate_window(pid, element.0)?;
             }
             let window_info = json!({"windowId":window_id,"title":text_attribute(element.0, "AXTitle")?,"bounds":rect_json(bounds)});
             let (items, accessibility, elements) = tree(element.0);
@@ -1058,9 +1096,7 @@ fn activate_shared_target(
         if scalar_attribute(element.0, "AXMinimized")? == Some(json!(true)) {
             return Err("The shared window is minimized".into());
         }
-        set_true(element.0, "AXMain")?;
-        set_true(root, "AXFrontmost")?;
-        raise(element.0)?;
+        activate_window(pid, element.0)?;
         Ok(())
     })?;
     let started = Instant::now();
