@@ -36,6 +36,12 @@ static NSString *NativeError(NSError *error) {
     [arrow lineToPoint:NSMakePoint(12, 15)];
     [arrow lineToPoint:NSMakePoint(21, 15)];
     [arrow closePath];
+    // Keep the desktop arrow at 26pt while the same shared window supplies
+    // transparent padding for the system preview. Its tip remains at (3, 3)
+    // within the centered glyph, matching indicator.rs's panel anchor.
+    NSAffineTransform *position = [NSAffineTransform transform];
+    [position translateXBy:(NSWidth(self.bounds) - 26.0) / 2.0 yBy:(NSHeight(self.bounds) - 26.0) / 2.0];
+    [arrow transformUsingAffineTransform:position];
     [[NSColor colorWithCalibratedRed:0.2 green:0.38 blue:0.94 alpha:1] setFill];
     [arrow fill];
     [NSColor.whiteColor setStroke];
@@ -46,7 +52,7 @@ static NSString *NativeError(NSError *error) {
 
 void dc_computer_install_pointer_content(void *window) {
     NSPanel *panel = (__bridge NSPanel *)window;
-    DCPointerView *view = [[DCPointerView alloc] initWithFrame:NSMakeRect(0, 0, 26, 26)];
+    DCPointerView *view = [[DCPointerView alloc] initWithFrame:panel.contentView.bounds];
     view.wantsLayer = YES;
     panel.contentView = view;
     view.needsDisplay = YES;
@@ -393,7 +399,7 @@ void dc_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
     // A newly ordered panel can already have an ID while WindowServer still
     // reports a zero-size SCWindow. The existing feedback tick waits for its
     // real geometry before creating the one stream; it never restarts a stream.
-    [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content, NSError *error) {
+    [SCShareableContent getCurrentProcessShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
         Main(^{
             if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || pointer.generation != pointerGeneration || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"] || pointer.stream) return;
             pointer.pointerWindowLookupPending = NO;
@@ -412,6 +418,12 @@ void dc_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
             if (!isfinite(scale) || scale <= 0 || !isfinite(size.width * scale) || !isfinite(size.height * scale) || size.width * scale < 1 || size.height * scale < 1) return;
             pointer.filter = filter;
             SCStreamConfiguration *configuration = Configuration(filter, NO);
+            configuration.pixelFormat = kCVPixelFormatType_32BGRA;
+            configuration.backgroundColor = NSColor.clearColor.CGColor;
+            configuration.shouldBeOpaque = NO;
+            // Preserve this window's transparent padding when the pointer is
+            // near a display edge; the input target and tip do not move.
+            configuration.ignoreGlobalClipSingleWindow = YES;
             configuration.minimumFrameInterval = CMTimeMake(1, 8);
             SCStream *stream = [[SCStream alloc] initWithFilter:pointer.filter configuration:configuration delegate:pointer];
             pointer.stream = stream;

@@ -7,6 +7,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+const POINTER_CANVAS_SIZE: f64 = 160.0;
+const POINTER_GLYPH_SIZE: f64 = 26.0;
+// DCPointerView centers its unchanged arrow path, whose tip is at (3, 3).
+const POINTER_TIP_INSET: f64 = (POINTER_CANVAS_SIZE - POINTER_GLYPH_SIZE) / 2.0 + 3.0;
+
 struct Feedback {
     window: u32,
     generation: u64,
@@ -81,7 +86,7 @@ pub unsafe fn show(window: u32, cursor: Option<Point>, generation: u64) -> Resul
         None => Feedback {
             window,
             generation,
-            cursor: panel("cursorarrow", 26.0, 1.0)?,
+            cursor: panel("cursorarrow", POINTER_CANVAS_SIZE, 1.0)?,
             halo: panel("circle.fill", 38.0, 0.22)?,
             offset: Point { x: 0.0, y: 0.0 },
             expires: Instant::now(),
@@ -135,7 +140,10 @@ pub fn refresh() {
                 return Err("Display is unavailable".into());
             }
             let primary: NSRect = msg_send![screen, frame];
-            for (panel, size, inset) in [(&active.halo, 38.0, 19.0), (&active.cursor, 26.0, 3.0)] {
+            for (panel, size, inset) in [
+                (&active.halo, 38.0, 19.0),
+                (&active.cursor, POINTER_CANVAS_SIZE, POINTER_TIP_INSET),
+            ] {
                 if size == 38.0 && Instant::now() >= active.expires {
                     let _: () = msg_send![&**panel, orderOut:std::ptr::null::<AnyObject>()];
                     continue;
