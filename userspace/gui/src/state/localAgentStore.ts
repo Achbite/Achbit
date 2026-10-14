@@ -432,7 +432,7 @@ const store = create<LocalAgentState>((set, get) => ({
         if (!sessionId || generation !== refreshGeneration || (get().loading && !get().projection)) return;
         const cached = projectionCache.get(sessionId);
         const status = items?.find((item) => item.sessionId === sessionId);
-        if (cached && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
+        if (cached && !cached.agentContext && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
           && !['running', 'waiting', 'releasing'].includes(status.run?.status ?? '')) {
           return;
         }
@@ -1036,26 +1036,10 @@ function shouldApplyProjection(
 ): boolean {
   if (!current || incoming.revision > current.revision) return true;
   if (incoming.revision < current.revision) return false;
-  return !sameAssistantDraft(current.assistantDraft, incoming.assistantDraft)
-    || JSON.stringify(current.totalTokenUsage) !== JSON.stringify(incoming.totalTokenUsage)
-    || JSON.stringify(current.pendingAgentDecisions ?? []) !== JSON.stringify(incoming.pendingAgentDecisions ?? [])
-    || current.activities.some((activity, index) => {
-      const next = incoming.activities[index];
-      return activity.activityId !== next?.activityId
-        || JSON.stringify(activity.liveOutput) !== JSON.stringify(next.liveOutput);
-    });
-}
-
-function sameAssistantDraft(
-  left: SessionProjection['assistantDraft'],
-  right: SessionProjection['assistantDraft'],
-): boolean {
-  if (left === null || right === null) return left === right;
-  return left.runId === right.runId
-    && left.turnId === right.turnId
-    && JSON.stringify(left.activity) === JSON.stringify(right.activity)
-    && JSON.stringify(left.planPreview) === JSON.stringify(right.planPreview)
-    && JSON.stringify(left.blocks) === JSON.stringify(right.blocks);
+  // Reads are serialized. The producer owns all live fields, including inherited
+  // permissions that can change without a fact in this Session's own journal.
+  // Equality only avoids an unnecessary render; it must not whitelist updates.
+  return JSON.stringify(current) !== JSON.stringify(incoming);
 }
 
 function requiredFilesystemPluginSelections(
