@@ -472,6 +472,7 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("PATCH", ["api", "workspaces", "current", "settings"])
         | ("GET", ["api", "fs", "initial-locations"])
         | ("GET", ["api", "fs", "browse"])
+        | ("POST", ["api", "fs", "read"])
         | ("POST", ["api", "host", "inspect"])
         | ("POST", ["api", "host", "computer-preview"])
         | ("POST", ["api", "host", "computer-preview", "activate"])

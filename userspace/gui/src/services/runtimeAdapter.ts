@@ -1,6 +1,7 @@
 import type { ApiResponse, HealthStatus } from '@deepcode/protocol';
 import { activeT } from '../i18n';
 import * as api from './apiClient';
+import { isRemoteHost } from './hostTarget';
 
 type TauriCoreApi = {
   invoke?: <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -54,7 +55,7 @@ export interface NativePathOptions {
 }
 
 export function hasNativePathPicker(): boolean {
-  return typeof window !== 'undefined' && tauriInvoke() !== null;
+  return !isRemoteHost() && typeof window !== 'undefined' && tauriInvoke() !== null;
 }
 
 export interface NativePathSelection {
@@ -184,7 +185,7 @@ export async function getHostStartupStatus(): Promise<ApiResponse<HostStartupSta
 }
 
 export async function getDefaultWorkspacePath(): Promise<ApiResponse<string | null>> {
-  if (document.documentElement.dataset.product === 'deepcode-gui') {
+  if (!isRemoteHost() && document.documentElement.dataset.product === 'deepcode-gui') {
     const invoke = tauriInvoke();
     if (invoke) {
       try {
@@ -201,6 +202,33 @@ export async function getDefaultWorkspacePath(): Promise<ApiResponse<string | nu
 }
 
 export const getHealth = api.getHealth;
+
+export interface SshTarget {
+  destination: string;
+  port?: number;
+  identityFile?: string;
+  configFile?: string;
+  cliPath: string;
+  userRoot?: string;
+}
+
+export async function connectSsh(target: SshTarget): Promise<void> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('ssh_requires_desktop_host');
+  await invoke('deepcode_connect_ssh', { target });
+}
+
+export async function openLocalWindow(): Promise<void> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('local_window_requires_desktop_host');
+  await invoke('deepcode_open_local');
+}
+
+export async function getSshTarget(): Promise<SshTarget | null> {
+  const invoke = tauriInvoke();
+  if (!invoke) return null;
+  return (await invoke<{ ssh: SshTarget | null }>('deepcode_boot_target')).ssh;
+}
 export const getCurrentWorkspace = api.getCurrentWorkspace;
 export const openWorkspace = api.openWorkspace;
 export const saveWorkspaceFile = api.saveWorkspaceFile;

@@ -4,6 +4,8 @@ import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
 import { readDocumentText } from './documentResources';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { AgentConversationPage } from './AgentTasksPanel';
+import SshConnection from '../../deepcode-gui/layout/SshConnection';
+import { isRemoteHost } from '../../services/hostTarget';
 import { ResourceTree } from './ResourceTree';
 import { FileChangePreview } from './FileChanges';
 import { resourceKey, type ResourceReference } from '../../services/conversationResources';
@@ -485,6 +487,7 @@ export function ReaderControls({ language, preview, disabled }: {
     {preview.visible && <button type="button" className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
       <DeepCodeShellIcon name={preview.expanded ? 'collapse' : 'expand'} />
     </button>}
+    <SshConnection language={language} />
     <button type="button" className="reader-icon-button" disabled={disabled} aria-label={sidebarLabel} title={sidebarLabel} aria-pressed={preview.visible} onClick={preview.toggle}>
       <DeepCodeShellIcon name="sidebar" />
     </button>
@@ -508,14 +511,14 @@ function ReaderStart({
     [choosing, setChoosing] = useState<'file' | 'browser' | null>(null);
   return (
     <div className="reader-start">
+      <button type="button" className="reader-start__entry" onClick={() => setChoosing('file')}>
+        <DeepCodeShellIcon name="folder" />
+        <span>{language === 'zh-CN' ? '打开文件' : 'Open file'}</span>
+        <DeepCodeShellIcon name="chevronRight" />
+      </button>
       {hasNativeBrowser() ? (
         <>
           <div className="reader-start__entries">
-            <button type="button" className="reader-start__entry" onClick={() => setChoosing('file')}>
-              <DeepCodeShellIcon name="folder" />
-              <span>{language === 'zh-CN' ? '打开文件' : 'Open file'}</span>
-              <DeepCodeShellIcon name="chevronRight" />
-            </button>
             <button
               ref={browserButton}
               type="button"
@@ -579,11 +582,7 @@ function ReaderStart({
             </section>
           )}
         </>
-      ) : (
-        <p>
-          {language === 'zh-CN' ? '文件按原始内容阅读；网页和本地 HTML 可在浏览器中运行。' : 'Read original file contents, or run a web page or local HTML in the browser.'}
-        </p>
-      )}
+      ) : null}
       {error && (
         <p role="alert" className="local-agent__resource-error">
           {error}

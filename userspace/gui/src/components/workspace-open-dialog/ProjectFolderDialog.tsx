@@ -230,7 +230,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
                 else if (selectedPath && selectedType) onSelect(selectedPath, selectedType);
               }}
             >
-              {t(language, allowsFiles
+              {t(language, selectionMode === 'file' ? 'reader.open' : allowsFiles
                 ? 'agent.attachment.attachSelected'
                 : 'workspaceDialog.openSelectedFolder')}
             </button>

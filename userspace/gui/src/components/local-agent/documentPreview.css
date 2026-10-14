@@ -168,7 +168,7 @@
 .reader-diff { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .reader-diff > small,.reader-diff > p { padding:8px 12px; }
 .reader-diff .conversation-diff-editor { flex:1; min-height:0; overflow:auto; }
-.reader-tree-panel { position:relative; display:flex; flex:none; min-height:0; }
+.reader-tree-panel { position:relative; display:flex; flex:none; flex-direction:column; min-height:0; }
 .reader-tree-panel[hidden] { display:none; }
 .reader-tree-panel > .reader-tree-resize { position:absolute; inset-block:0; left:0; transform:translateX(-50%); }
 .resource-tree { display:flex; flex-direction:column; width:100%; flex:1; min-height:0; border-left:0; background:var(--dc-surface); font-size:12px; }

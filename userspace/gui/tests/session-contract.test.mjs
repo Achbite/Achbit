@@ -4412,7 +4412,7 @@ test('browser page subscription retains updates during the initial snapshot and 
   let receive, resolveList, unsubscribed = 0;
   const snapshots = [], commands = [];
   globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
-  globalThis.window = { __TAURI__: {
+  globalThis.window = { location: { protocol: 'deepcode-gui:', hostname: 'localhost' }, __TAURI__: {
     core: { invoke: async (command, input) => {
       commands.push({ command, input });
       assert.ok(receive, 'events must be subscribed before requesting the snapshot');

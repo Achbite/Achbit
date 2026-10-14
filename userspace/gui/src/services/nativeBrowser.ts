@@ -1,3 +1,5 @@
+import { isRemoteHost } from './hostTarget';
+
 export interface NativeHostBinding { hostInstanceId: string; windowLabel: string; sessionId?:string }
 export interface NativePage extends NativeHostBinding {
   previewId: string; url: string; status: string; visible: boolean; serviceOwner: string;
@@ -21,7 +23,7 @@ export function nativeNavigationInput(address: string): { url: string } | { file
   return { url: url.href };
 }
 export function hasNativeBrowser(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke)
+  return !isRemoteHost() && typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke)
     && !window.__DEEPCODE_BROWSER_PREVIEW__
     && document.documentElement.dataset.product === 'deepcode-gui';
 }

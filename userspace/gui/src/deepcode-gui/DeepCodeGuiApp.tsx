@@ -6,6 +6,8 @@ import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 
 import useAppStatusStore from '../state/appStatusStore';
 import { useSettingsStore } from '../state/settingsStore';
 import { initializeHostWorkspace } from '../services/workspaceInitialization';
+import { isRemoteHost } from '../services/hostTarget';
+import { requestInterfaceReload } from '../services/interfaceReload';
 import { useLocalAgentStore } from '../state/localAgentStore';
 import { normalizeUiLanguage, setActiveUiLanguage, t, type UiLanguage } from '../i18n';
 import {
@@ -59,12 +61,16 @@ const HOST_STARTUP_MESSAGE_KEYS: Readonly<Record<string, string>> = {
   host_startup_process_exited: 'deepcodeGui.hostStartup.processExited',
   host_startup_process_status_failed: 'deepcodeGui.hostStartup.processStatusFailed',
   host_startup_health_timeout: 'deepcodeGui.hostStartup.healthTimeout',
+  host_ssh_connecting: 'deepcodeGui.ssh.connecting',
+  host_ssh_connect_failed: 'deepcodeGui.ssh.failed',
+  host_ssh_disconnected: 'deepcodeGui.ssh.disconnected',
 };
 
 function startupStatusMessage(
   language: UiLanguage,
   status: {
     code: string;
+    message?: string;
     reasonCode?: string;
     diagnosticRef?: string;
   },
@@ -73,7 +79,7 @@ function startupStatusMessage(
   const message = messageKey
     ? t(language, messageKey)
     : t(language, 'deepcodeGui.hostStartup.unknown', { code: status.code });
-  const details = [status.code, status.reasonCode, status.diagnosticRef].filter(Boolean);
+  const details = [status.code, status.reasonCode, status.code.startsWith('host_ssh_') ? status.message : undefined, status.diagnosticRef].filter(Boolean);
   return details.length > 0
     ? `${message} (${details.join(' · ')})`
     : message;
@@ -160,6 +166,9 @@ const DeepCodeGuiApp: React.FC = () => {
         setServerVersion(healthVersion(result.data));
         setKernelStartMessage(null);
         setKernelStartBusy(false);
+        // A new SSH tunnel also replaces file watchers and pending preview reads.
+        // The shared reload path preserves this window's view and composer drafts.
+        if (isRemoteHost() && loadedIncarnationRef.current !== null) requestInterfaceReload();
         return;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 500));
@@ -184,6 +193,7 @@ const DeepCodeGuiApp: React.FC = () => {
       || !connectedIncarnation
       || loadedIncarnationRef.current === connectedIncarnation
     ) return;
+    const reconnectingRemote = isRemoteHost() && loadedIncarnationRef.current !== null;
     loadedIncarnationRef.current = connectedIncarnation;
     setWorkspaceInitializationError(null);
     void initializeHostWorkspace().catch((error: unknown) => {
@@ -192,7 +202,17 @@ const DeepCodeGuiApp: React.FC = () => {
       }
     });
     void loadUserSettings();
-    void useLocalAgentStore.getState().initialize();
+    const store = useLocalAgentStore.getState();
+    if (reconnectingRemote) {
+      // This window still targets the same remote Host. Refresh its facts while
+      // preserving the user's selected conversation and in-progress input.
+      void store.refreshCatalog();
+      void store.refreshPluginCatalog();
+      void store.refreshProfiles();
+      void store.refresh();
+    } else {
+      void store.initialize();
+    }
   }, [apiStatus, connectedIncarnation, loadUserSettings]);
 
 
@@ -237,7 +257,7 @@ const DeepCodeGuiApp: React.FC = () => {
         setApiStatus('connected');
         setServerVersion(healthVersion(result.data));
         setKernelStartMessage(null);
-        timeout = window.setTimeout(() => void check(), 30000);
+        timeout = window.setTimeout(() => void check(), isRemoteHost() ? 5000 : 30000);
       } else {
         healthWasReadyRef.current = false;
         if (startup.ok && startup.data) {

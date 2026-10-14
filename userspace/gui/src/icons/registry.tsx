@@ -5,6 +5,7 @@
  */
 export const UI_ICON_GLYPHS = {
   sidebar: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></>,
+  link: <><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/></>,
   expand: <><path d="M14 4h6v6M20 4l-7 7M4 14v6h6M4 20l7-7"/></>,
   collapse: <><path d="M20 4l-7 7m0-6v6h6M4 20l7-7m-6 0h6v6"/></>,
   refresh: <><path d="M20 7v5h-5M19 12a7 7 0 1 0-1.5 5M20 12a8 8 0 0 0-2-6"/></>,

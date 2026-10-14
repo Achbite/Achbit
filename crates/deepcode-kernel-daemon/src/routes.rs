@@ -29,6 +29,7 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api/workspaces/save-file", post(workspace_save_file))
         .route("/api/fs/initial-locations", get(fs_initial_locations))
         .route("/api/fs/browse", get(fs_browse))
+        .route("/api/fs/read", post(fs_read))
         .route(
             "/api/user-settings",
             get(user_settings_get).patch(user_settings_patch),

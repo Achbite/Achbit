@@ -10,6 +10,7 @@ pub mod loopback_http;
 pub mod process;
 #[cfg(test)]
 mod regression_tests;
+pub mod selected_file;
 pub mod shell_lifecycle;
 pub mod ssh;
 pub mod startup;

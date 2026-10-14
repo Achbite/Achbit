@@ -9,6 +9,8 @@ mod open_file;
 mod native_browser;
 #[path = "../../../shared/native_path_dialog/mod.rs"]
 mod native_path_dialog;
+mod ssh_auth;
+mod ssh_gui;
 
 use deepcode_host_connection::loopback_http::{
     connect_loopback, parse_port, request_loopback_json_until,
@@ -78,6 +80,7 @@ struct HostProcessGroup {
 }
 
 struct HostProcessState {
+    ssh: Option<deepcode_host_connection::ssh::SshGuiConnection>,
     external_client: Option<deepcode_host_connection::HostClientLease>,
     children: Option<OwnedHostChildren>,
     active_startups: usize,
@@ -180,6 +183,7 @@ impl HostProcessGroup {
     fn new(children: Option<OwnedHostChildren>) -> Self {
         Self {
             state: Mutex::new(HostProcessState {
+                ssh: None,
                 external_client: None,
                 children,
                 active_startups: 0,
@@ -231,6 +235,13 @@ impl HostProcessGroup {
     }
 
     fn reclaim_current(&self, deadline: Instant) -> std::io::Result<()> {
+        let remote = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ssh
+            .take();
+        drop(remote);
         let current = self
             .state
             .lock()
@@ -260,6 +271,7 @@ impl HostProcessGroup {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.shutting_down = true;
+        drop(state.ssh.take());
         drop(state.external_client.take());
         if let Some(mut children) = state.children.take() {
             children.shutdown();
@@ -301,6 +313,10 @@ impl Drop for HostProcessGroup {
 }
 
 fn main() {
+    let auth_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        ssh_auth::deepcode_ssh_auth_context,
+        ssh_auth::deepcode_ssh_auth_respond
+    ];
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         native_path_dialog::deepcode_pick_path,
         open_file::deepcode_open_file,
@@ -314,6 +330,8 @@ fn main() {
         deepcode_window_toggle_maximize,
         deepcode_window_close,
         deepcode_open_external_url,
+        ssh_gui::deepcode_connect_ssh,
+        ssh_gui::deepcode_open_local,
         native_browser::deepcode_browser_host,
         native_browser::deepcode_browser_command
     ];
@@ -322,7 +340,11 @@ fn main() {
         .register_uri_scheme_protocol(APP_ASSET_SCHEME, |_ctx, request| {
             serve_bundled_asset(APP_ASSET_DIR, request)
         })
+        .register_uri_scheme_protocol(ssh_auth::SCHEME, |_ctx, _request| ssh_auth::page())
         .invoke_handler(move |invoke| {
+            if invoke.message.webview_ref().label() == "ssh-auth" {
+                return auth_handler(invoke);
+            }
             if invoke.message.webview_ref().label() != "main" {
                 invoke
                     .resolver
@@ -337,6 +359,7 @@ fn main() {
                 Ok(target) => target,
                 Err(error) => {
                     eprintln!("host_startup_configuration_failed: {error}");
+                    ssh_gui::write_startup_receipt(false, &error.to_string(), None);
                     let handle = app.handle().clone();
                     app.dialog()
                         .message(error.to_string())
@@ -352,67 +375,110 @@ fn main() {
             let control_registration = Arc::clone(&host_tokens.browser_registration);
             let browser_id = host_tokens.browser_instance_id.clone();
             let callback_token = host_tokens.browser_token.clone();
-            host_tokens.browser_endpoint = native_browser::start(
-                app.handle(),
-                runtime_locations().user.clone(),
-                host_tokens.browser_instance_id.clone(),
-                host_tokens.browser_token.clone(),
-                host_bootstrap_script(&target, &host_tokens, true),
-                #[cfg(windows)]
-                Box::new(move |sessions| {
-                    let (host, port, token, _) = control_registration.lock()
-                        .map_err(|_| "native_control_registration_unavailable")?
-                        .clone().ok_or("native_control_host_unavailable")?;
-                    let request = http_request(&host, &port, "GET", "/api/conversation/statuses",
-                        &[(HOST_SHELL_TOKEN_HEADER, &token)]);
-                    let response: HostApiEnvelope<serde_json::Value> = request_loopback_json_until(
-                        &host, &port, &request, Instant::now() + Duration::from_secs(2))
-                        .map_err(|error| error.to_string())?;
-                    let mut statuses = response.into_data().map_err(|error| error.to_string())?
-                        .as_array().cloned().ok_or("native_control_statuses_invalid")?;
-                    // The sidebar catalog omits child Sessions. Read those exact
-                    // owned Sessions instead of interpreting absence as completion.
-                    for session in sessions {
-                        if statuses.iter().any(|status| status["sessionId"] == *session) { continue; }
-                        let body = r#"{"view":"summary","limit":1}"#;
-                        let request = http_request(&host, &port, "POST",
-                            &format!("/api/conversation/sessions/{session}/read"),
-                            &[(HOST_SHELL_TOKEN_HEADER, &token), ("Content-Type", "application/json")])
-                            .replace("Content-Length: 0", &format!("Content-Length: {}", body.len())) + body;
-                        let response: HostApiEnvelope<serde_json::Value> = request_loopback_json_until(
-                            &host, &port, &request, Instant::now() + Duration::from_secs(2))
-                            .map_err(|error| error.to_string())?;
-                        let run = if response.error.as_deref() == Some("session_not_found") { serde_json::Value::Null }
-                            else {
-                                let read = response.into_data().map_err(|error| error.to_string())?;
-                                read.get("summary").and_then(|summary| summary.get("run"))
-                                    .cloned().ok_or("native_control_run_status_missing")?
-                            };
-                        statuses.push(serde_json::json!({"sessionId":session,"run":run}));
-                    }
-                    Ok(serde_json::Value::Array(statuses))
-                }),
-                Box::new(move || {
-                    if let Ok(mut registration) = registration.lock() {
-                        if let Some((host, port, token, endpoint)) = registration.take() {
-                            let _ = register_native_browser(
+            if target.ssh.is_none() {
+                host_tokens.browser_endpoint = native_browser::start(
+                    app.handle(),
+                    runtime_locations().user.clone(),
+                    host_tokens.browser_instance_id.clone(),
+                    host_tokens.browser_token.clone(),
+                    host_bootstrap_script(&target, &host_tokens, true),
+                    #[cfg(windows)]
+                    Box::new(move |sessions| {
+                        let (host, port, token, _) = control_registration
+                            .lock()
+                            .map_err(|_| "native_control_registration_unavailable")?
+                            .clone()
+                            .ok_or("native_control_host_unavailable")?;
+                        let request = http_request(
+                            &host,
+                            &port,
+                            "GET",
+                            "/api/conversation/statuses",
+                            &[(HOST_SHELL_TOKEN_HEADER, &token)],
+                        );
+                        let response: HostApiEnvelope<serde_json::Value> =
+                            request_loopback_json_until(
                                 &host,
                                 &port,
-                                &token,
-                                &browser_id,
-                                &endpoint,
-                                &callback_token,
-                                true,
-                            );
+                                &request,
+                                Instant::now() + Duration::from_secs(2),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        let mut statuses = response
+                            .into_data()
+                            .map_err(|error| error.to_string())?
+                            .as_array()
+                            .cloned()
+                            .ok_or("native_control_statuses_invalid")?;
+                        // The sidebar catalog omits child Sessions. Read those exact
+                        // owned Sessions instead of interpreting absence as completion.
+                        for session in sessions {
+                            if statuses
+                                .iter()
+                                .any(|status| status["sessionId"] == *session)
+                            {
+                                continue;
+                            }
+                            let body = r#"{"view":"summary","limit":1}"#;
+                            let request = http_request(
+                                &host,
+                                &port,
+                                "POST",
+                                &format!("/api/conversation/sessions/{session}/read"),
+                                &[
+                                    (HOST_SHELL_TOKEN_HEADER, &token),
+                                    ("Content-Type", "application/json"),
+                                ],
+                            )
+                            .replace(
+                                "Content-Length: 0",
+                                &format!("Content-Length: {}", body.len()),
+                            ) + body;
+                            let response: HostApiEnvelope<serde_json::Value> =
+                                request_loopback_json_until(
+                                    &host,
+                                    &port,
+                                    &request,
+                                    Instant::now() + Duration::from_secs(2),
+                                )
+                                .map_err(|error| error.to_string())?;
+                            let run = if response.error.as_deref() == Some("session_not_found") {
+                                serde_json::Value::Null
+                            } else {
+                                let read =
+                                    response.into_data().map_err(|error| error.to_string())?;
+                                read.get("summary")
+                                    .and_then(|summary| summary.get("run"))
+                                    .cloned()
+                                    .ok_or("native_control_run_status_missing")?
+                            };
+                            statuses.push(serde_json::json!({"sessionId":session,"run":run}));
                         }
-                    }
-                }),
-            )
-            .map_err(std::io::Error::other)?;
+                        Ok(serde_json::Value::Array(statuses))
+                    }),
+                    Box::new(move || {
+                        if let Ok(mut registration) = registration.lock() {
+                            if let Some((host, port, token, endpoint)) = registration.take() {
+                                let _ = register_native_browser(
+                                    &host,
+                                    &port,
+                                    &token,
+                                    &browser_id,
+                                    &endpoint,
+                                    &callback_token,
+                                    true,
+                                );
+                            }
+                        }
+                    }),
+                )
+                .map_err(std::io::Error::other)?;
+            }
             app.manage(target.clone());
             app.manage(host_tokens.clone());
             app.manage(HostProcessGroup::new(None));
             app.manage(HostStartupStatusStore::new());
+            app.manage(ssh_auth::AuthUi::default());
             // Host startup and WebView initialization are independent. A cold
             // WebView2 profile must not delay the daemon's startup work.
             let app_handle = app.handle().clone();
@@ -421,10 +487,18 @@ fn main() {
             std::thread::spawn(move || {
                 let processes = app_handle.state::<HostProcessGroup>();
                 let status = app_handle.state::<HostStartupStatusStore>();
-                start_host_processes(&startup_target, &startup_tokens, &processes, &status);
+                start_host_processes(
+                    &app_handle,
+                    &startup_target,
+                    &startup_tokens,
+                    &processes,
+                    &status,
+                );
             });
             if let Err(error) = initialize_main_window(app, &target, &host_tokens) {
-                app.state::<native_browser::NativeBrowser>().stop();
+                if let Some(browser) = app.try_state::<native_browser::NativeBrowser>() {
+                    browser.stop();
+                }
                 app.state::<HostProcessGroup>().detach();
                 return Err(error);
             }
@@ -432,7 +506,17 @@ fn main() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
-                window.state::<native_browser::NativeBrowser>().stop();
+                if window.label() == "ssh-auth" {
+                    window.state::<ssh_auth::AuthUi>().close_prompt();
+                    return;
+                }
+                if window.label() != "main" {
+                    return;
+                }
+                window.state::<ssh_auth::AuthUi>().cancel();
+                if let Some(browser) = window.try_state::<native_browser::NativeBrowser>() {
+                    browser.stop();
+                }
                 window.state::<HostProcessGroup>().detach();
                 window.app_handle().exit(0);
             }
@@ -443,6 +527,9 @@ fn main() {
 
     app.run(|app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            if let Some(auth) = app_handle.try_state::<ssh_auth::AuthUi>() {
+                auth.cancel();
+            }
             if let Some(browser) = app_handle.try_state::<native_browser::NativeBrowser>() {
                 browser.stop();
             }
@@ -461,6 +548,8 @@ struct LaunchTarget {
     port: String,
     #[serde(skip)]
     daemon_port: String,
+    ssh: Option<deepcode_host_connection::ssh::SshTarget>,
+    ssh_endpoint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -624,18 +713,45 @@ fn deepcode_default_workspace_path() -> Option<String> {
 }
 
 #[tauri::command]
-fn deepcode_host_startup_status(status: State<'_, HostStartupStatusStore>) -> HostStartupStatusV1 {
+fn deepcode_host_startup_status(
+    status: State<'_, HostStartupStatusStore>,
+    processes: State<'_, HostProcessGroup>,
+) -> HostStartupStatusV1 {
+    let error = processes
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .ssh
+        .as_mut()
+        .and_then(|connection| connection.check().err());
+    if let Some(error) = error {
+        let current = status.read();
+        if current.phase != "failed" {
+            return status.update(
+                &current.attempt_id,
+                "failed",
+                "ssh",
+                "host_ssh_disconnected",
+                None,
+                error.to_string(),
+                true,
+                true,
+                current.diagnostic_ref,
+            );
+        }
+    }
     status.read()
 }
 
 #[tauri::command(async)]
 fn deepcode_start_kernel_after_permission(
+    app: tauri::AppHandle,
     target: State<'_, LaunchTarget>,
     host_tokens: State<'_, HostConnectionTokens>,
     processes: State<'_, HostProcessGroup>,
     status: State<'_, HostStartupStatusStore>,
 ) -> KernelStartResult {
-    let current = start_host_processes(&target, &host_tokens, &processes, &status);
+    let current = start_host_processes(&app, &target, &host_tokens, &processes, &status);
     let started = current.phase == "ready";
     KernelStartResult {
         started,
@@ -712,7 +828,14 @@ fn resolve_launch_target() -> std::io::Result<LaunchTarget> {
         Err(std::env::VarError::NotPresent) => None,
         Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
     };
-    select_launch_ports(host, explicit_port)
+    let mut target = select_launch_ports(host, explicit_port)?;
+    target.ssh = ssh_gui::launch_target()?;
+    target.ssh_endpoint = target
+        .ssh
+        .as_ref()
+        .map(|ssh| ssh.endpoint_label())
+        .transpose()?;
+    Ok(target)
 }
 
 fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Result<LaunchTarget> {
@@ -746,6 +869,8 @@ fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Res
         host,
         port: port.to_string(),
         daemon_port: daemon_port.to_string(),
+        ssh: None,
+        ssh_endpoint: None,
     })
 }
 
@@ -798,7 +923,7 @@ fn create_main_window(
     let boot_url = format!("{APP_ASSET_SCHEME}://localhost/index.html");
     let initialization_script = host_bootstrap_script(target, host_tokens, false);
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(boot_url.parse()?))
-        .data_directory(runtime_locations().user.cache_dir.join("webview"))
+        .data_directory(ssh_gui::webview_directory(target))
         .initialization_script(initialization_script)
         .on_navigation(trusted_app_navigation)
         .title("DeepCode-GUI")
@@ -832,7 +957,8 @@ fn host_bootstrap_script(
 ) -> String {
     let bootstrap = serde_json::json!({
         "schemaVersion":"deepcode.host-ui-bootstrap", "host":target.host, "port":target.port.to_string(),
-        "uiToken":host_tokens.ui_token(), "windowChrome":if cfg!(target_os="macos") && !preview {"nativeOverlay"} else {"custom"}
+        "uiToken":host_tokens.ui_token(), "windowChrome":if cfg!(target_os="macos") && !preview {"nativeOverlay"} else {"custom"},
+        "remote": target.ssh.is_some(), "remoteLabel": target.ssh_endpoint
     });
     format!("Object.defineProperty(window,'__DEEPCODE_HOST_BOOT__',{{value:Object.freeze({bootstrap}),writable:false,configurable:true}});")
 }
@@ -921,6 +1047,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
 }
 
 fn start_host_processes(
+    app: &tauri::AppHandle,
     target: &LaunchTarget,
     host_tokens: &HostConnectionTokens,
     processes: &HostProcessGroup,
@@ -941,6 +1068,17 @@ fn start_host_processes(
             None,
         );
     };
+    if let Some(ssh) = &target.ssh {
+        return ssh_gui::connect(
+            app,
+            ssh,
+            target,
+            host_tokens,
+            processes,
+            status,
+            &attempt_id,
+        );
+    }
     if env_truthy("DEEPCODE_SHELL_CONNECT_ONLY") {
         let result = deepcode_host_connection::HostClientLease::connect_until(
             &format!("http://{}:{}", target.host, target.daemon_port),
@@ -1985,6 +2123,8 @@ mod tests {
             host: "127.0.0.1".into(),
             port: proxy.local_addr().unwrap().port().to_string(),
             daemon_port: daemon.local_addr().unwrap().port().to_string(),
+            ssh: None,
+            ssh_endpoint: None,
         };
         let occupied_proxy = admit_private_host_ports(&target, true).unwrap_err();
         assert_eq!(occupied_proxy.code, "host_startup_port_in_use");

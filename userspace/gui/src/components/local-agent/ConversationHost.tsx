@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { readConversation, readConversationImage, readFileChange, resolveConversationResource, readConversationArtifact } from '../../services/localAgentApi';
 import { openExternalUrl } from '../../services/runtimeAdapter';
 import type { SourcePosition } from './resourceLinks';
+import { isRemoteHost, getKernelApiBase, getHostConnectionHeaders } from '../../services/hostTarget';
 
 /** Web conversation content receives host operations here; it owns no native shell API. */
 export interface ConversationHost {
@@ -24,6 +25,17 @@ const defaultHost: ConversationHost = {
   copyText: async (text) => navigator.clipboard.writeText(text),
   openExternalLink: openExternalUrl,
   readLocalFile: async (path) => {
+    if (isRemoteHost()) {
+      const response = await fetch(`${getKernelApiBase()}/fs/read`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...getHostConnectionHeaders() },
+        body: JSON.stringify({ path }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message ?? error.error ?? `file_read_failed:HTTP ${response.status}`);
+      }
+      return response.blob();
+    }
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error('Local file reading requires the desktop Host.');
     const bytes = await invoke<ArrayBuffer>('deepcode_read_local_file', { path });
@@ -31,12 +43,12 @@ const defaultHost: ConversationHost = {
   },
   readArtifact: readConversationArtifact,
   resolveResource: resolveConversationResource,
-  openFile: async (path, position) => {
+  openFile: isRemoteHost() ? undefined : async (path, position) => {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error('Open in VS Code requires the desktop Host.');
     await invoke('deepcode_open_file', { path, line: position?.line, column: position?.column });
   },
-  locatePath: async (path) => {
+  locatePath: isRemoteHost() ? undefined : async (path) => {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error('Manual file location requires the desktop Host.');
     await invoke('deepcode_locate_path', { path });
