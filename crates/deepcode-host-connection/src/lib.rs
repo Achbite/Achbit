@@ -11,6 +11,7 @@ pub mod process;
 #[cfg(test)]
 mod regression_tests;
 pub mod shell_lifecycle;
+pub mod ssh;
 pub mod startup;
 pub use client_lease::{HostClientLease, HOST_LIFETIME_ENV};
 use deepcode_kernel_abi::{

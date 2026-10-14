@@ -1,6 +1,7 @@
 #[path = "../../shared/conversation_input.rs"]
 mod conversation_input;
 // CLI retains its existing Chinese messages; TUI also uses the shared locale loader.
+mod gui_attach;
 #[allow(dead_code)]
 #[path = "../../shared/i18n.rs"]
 mod i18n;
@@ -8,6 +9,7 @@ mod model_services;
 mod render;
 #[path = "../../shared/session_navigation.rs"]
 mod session_navigation;
+mod ssh;
 
 use deepcode_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, CreateConversationSessionRequest,
@@ -40,7 +42,18 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
 async fn main() {
-    let args = match Args::parse(env::args().skip(1).collect()) {
+    if std::env::var("DEEPCODE_SSH_ASKPASS").as_deref() == Ok("1") {
+        if let Err(error) = deepcode_host_connection::ssh::run_askpass_helper() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let values: Vec<String> = env::args().skip(1).collect();
+    if values.first().map(String::as_str) == Some("ssh") {
+        std::process::exit(ssh::run(&values[1..]));
+    }
+    let args = match Args::parse(values) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("{error}");
@@ -52,10 +65,17 @@ async fn main() {
         print_help();
         return;
     }
+    if matches!(args.command, Command::GuiAttach) && args.api.is_some() {
+        eprintln!("gui-attach uses the shared Host of DEEPCODE_USER_ROOT; --api is not supported");
+        std::process::exit(EXIT_BAD_ARGS);
+    }
     let bootstrap = match KernelBootstrap::connect(
         KernelBootstrapOptions::new(args.api.clone())
             .auto_start(!args.no_auto_start_kernel && !matches!(args.command, Command::StopHost))
-            .persistent(matches!(args.command, Command::StartHost)),
+            .persistent(matches!(
+                args.command,
+                Command::StartHost | Command::GuiAttach
+            )),
     )
     .await
     {
@@ -102,6 +122,7 @@ enum Command {
     Status,
     StopHost,
     StartHost,
+    GuiAttach,
     Diff {
         record_id: String,
         index: usize,
@@ -266,6 +287,7 @@ impl Args {
             },
             Some("stop-host") if positional.len() == 1 => Command::StopHost,
             Some("start-host") if positional.len() == 1 => Command::StartHost,
+            Some("gui-attach") if positional.len() == 1 => Command::GuiAttach,
             Some("diff") if positional.len() == 3 => Command::Diff {
                 record_id: positional[1].clone(),
                 index: positional[2]
@@ -541,6 +563,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
             )
             .await
         }
+        Command::GuiAttach => gui_attach::serve().await.map(|()| Outcome::Done),
         Command::StartHost => {
             println!("共享 Host 已启动为常驻服务。");
             Ok(Outcome::Done)
@@ -1468,6 +1491,7 @@ fn print_help() {
   deepcode-cli start-host
   deepcode-cli stop-host
   deepcode-cli status
+  deepcode-cli ssh help
 
 使用 -C/--workspace 为新对话指定工作目录；已有对话通过 attach-directory/detach-directory 管理目录。
 chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启动目录新建；切换不会取消原会话或复制权限。序号仅对应本进程最后显示的列表。

@@ -29,6 +29,20 @@ pub struct OwnedHostProcess {
 pub struct WindowsKillOnCloseJob {
     handle: Option<OwnedHandle>,
 }
+
+/// A user-facing shell outlives the command or window that opened it. It must
+/// not share that launcher's terminal process group or own a kill-on-close job.
+pub fn spawn_independent_shell(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(
+        windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP
+            | windows_sys::Win32::System::Threading::DETACHED_PROCESS,
+    );
+    command.spawn()
+}
+
 pub fn wait_for_child_exit(process: &mut OwnedHostProcess, attempts: usize) -> bool {
     for _ in 0..attempts {
         match process.child.try_wait() {
