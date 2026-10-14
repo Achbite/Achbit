@@ -56,6 +56,10 @@ fn setting_activates_at_next_run(key: &str) -> bool {
 }
 
 pub(crate) async fn user_settings_get(State(state): State<AppState>) -> Json<ApiResponse> {
+    let _transition = match state.local_agent.runtime_transition() {
+        Ok(guard) => guard,
+        Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
+    };
     let runtime_settings = match state.local_agent.active_runtime_settings() {
         Ok(settings) => settings,
         Err(error) => {
@@ -87,6 +91,17 @@ pub(crate) async fn user_settings_patch(
 }
 
 fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> {
+    // Serialize the complete publication, including its acknowledgement. This
+    // lock is independent of run preparation, so IPC can commit Actor facts.
+    let _publication = match state.local_agent.settings_publication.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return ApiResponse::error(
+                "settings_publication_lock_failed",
+                "Settings publication lock is poisoned.",
+            )
+        }
+    };
     let _runtime_transition = match state.local_agent.runtime_transition() {
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
@@ -95,15 +110,11 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
     let Some(patch_object) = patches.as_object() else {
         return ApiResponse::error("invalid_user_settings", "设置补丁必须是 JSON 对象。");
     };
-    let (next_settings, settings_path, previous_delegation) = {
+    let (next_settings, settings_path) = {
         let gui = state.gui.lock().expect("gui state lock");
         let mut next = gui.user_settings.clone();
         merge_object(&mut next, &patches);
-        (
-            next,
-            gui.paths.settings_path.clone(),
-            gui.user_settings["agent.subagents.enabled"] == true,
-        )
+        (next, gui.paths.settings_path.clone())
     };
     if let Err(message) = validate_agent_runtime_settings(&next_settings) {
         return ApiResponse::error("invalid_agent_runtime_settings", message);
@@ -148,43 +159,41 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
     );
-    if let Err(error) = atomic_write_json(&settings_path, &next_settings) {
-        return ApiResponse::error("write_settings_failed", error);
-    }
-    if !immediate_patch
-        .as_object()
-        .is_some_and(serde_json::Map::is_empty)
     {
+        let mut gui = match state.gui.lock() {
+            Ok(gui) => gui,
+            Err(_) => {
+                return ApiResponse::error(
+                    "settings_publication_lock_failed",
+                    "Settings state lock is poisoned.",
+                )
+            }
+        };
         if let Err(error) = state
             .local_agent
-            .apply_immediate_runtime_settings(&immediate_patch)
+            .publish_runtime_settings(&immediate_patch, || {
+                atomic_write_json(&settings_path, &next_settings)
+            })
         {
-            return ApiResponse::error("active_runtime_settings_update_failed", error);
+            return ApiResponse::error("write_settings_failed", error);
         }
-    }
-    {
-        let mut gui = state.gui.lock().expect("gui state lock");
         gui.user_settings = next_settings.clone();
     }
-    let delegation = next_settings["agent.subagents.enabled"] == true;
-    let notification = if delegation != previous_delegation {
-        match state
-            .session_service
-            .enqueue("delegationChanged", json!({"enabled": delegation}))
-        {
-            Ok(pending) => Some(pending),
-            Err(error) => return ApiResponse::error(error.code, error.message),
-        }
-    } else {
-        None
-    };
-    // Enqueue in setting order, then release the runtime lock before Session
-    // appends events: an Actor may still be completing its initial run preparation.
+    // The persisted setting is the durable desired state. Every publication
+    // delivers it, including retries of an identical value after a lost/failed
+    // acknowledgement. New Session processes bootstrap it before opening Actors.
+    // Do not infer delivery from equality with the already-persisted value.
     drop(_runtime_transition);
-    if let Some(pending) = notification {
-        if let Err(error) = state.session_service.receive(pending) {
-            return ApiResponse::error(error.code, error.message);
-        }
+    let delivery = state
+        .session_service
+        .enqueue(
+            "delegationChanged",
+            json!({"enabled": next_settings["agent.subagents.enabled"] == true}),
+        )
+        .and_then(|pending| state.session_service.receive(pending));
+    if let Err(error) = delivery {
+        return ApiResponse::error("settings_publication_pending",
+            format!("Settings were saved; Session publication is pending. Retry the settings update to deliver it: {}", error.message));
     }
     ApiResponse::ok(json!({
         "settings": next_settings,

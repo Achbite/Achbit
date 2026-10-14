@@ -20,6 +20,7 @@ pub(crate) struct LocalAgentRuntime {
     provider_runtimes: ProviderRuntimeRegistry,
     pub(crate) provider_transport: crate::provider_transport::ProviderTransport,
     runtime_transition: Arc<Mutex<()>>,
+    pub(crate) settings_publication: Arc<Mutex<()>>,
     prepared_runs: Arc<Mutex<HashMap<PreparedRunKey, Vec<PreparedRunRecord>>>>,
     active_runtime_settings: Arc<Mutex<Value>>,
     session_store_path: Arc<std::path::PathBuf>,
@@ -52,6 +53,7 @@ impl LocalAgentRuntime {
             provider_transport: crate::provider_transport::ProviderTransport::new()
                 .map_err(|error| format!("provider_client_init_failed: {error}"))?,
             runtime_transition: Arc::new(Mutex::new(())),
+            settings_publication: Arc::new(Mutex::new(())),
             prepared_runs: Arc::new(Mutex::new(HashMap::new())),
             active_runtime_settings: Arc::new(Mutex::new(settings.clone())),
             session_store_path: Arc::new(session_store_path.to_path_buf()),
@@ -83,12 +85,21 @@ impl LocalAgentRuntime {
             .map_err(|_| "Agent active runtime settings 锁已损坏。".to_string())
     }
 
-    pub(crate) fn apply_immediate_runtime_settings(&self, patch: &Value) -> Result<(), String> {
+    /// Acquire all fallible resources before persisting. Once persistence succeeds,
+    /// publishing the prepared in-memory value cannot fail.
+    pub(crate) fn publish_runtime_settings(
+        &self,
+        patch: &Value,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut settings = self
             .active_runtime_settings
             .lock()
             .map_err(|_| "Agent active runtime settings 锁已损坏。".to_string())?;
-        merge_object(&mut settings, patch);
+        let mut next = settings.clone();
+        merge_object(&mut next, patch);
+        persist()?;
+        *settings = next;
         Ok(())
     }
 
