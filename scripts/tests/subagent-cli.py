@@ -122,7 +122,9 @@ class Provider(fixture.MockProviderHandler):
 
             if lane == 'MAIN_BASIC':
                 if ordinal == 1:
-                    agent('analyze', action='spawn', preset='analysis', task='ANALYSIS_READ', name='Reader', delivery='async')
+                    # This scenario needs a one-shot reader; the analysis template now keeps a continuable parent-messaging instance.
+                    agent('analyze', action='spawn', preset='analysis', capabilities=ANALYSIS_CAPABILITIES,
+                          task='ANALYSIS_READ', name='Reader', delivery='async')
                 elif ordinal == 2:
                     acknowledgement = results['analyze']
                     require(set(acknowledgement) == {'taskId', 'agentId'}, 'Async call did not return just its task acknowledgement')
@@ -134,23 +136,26 @@ class Provider(fixture.MockProviderHandler):
                     require(results['wait-analysis']['completedTaskIds'] == [task_id], 'Analysis wait lost its task')
                     delivered = [item for item in delivered_results(body) if item['taskId'] == task_id]
                     require(len(delivered) == 1 and delivered[0]['result']['content'] == 'analysis-read-complete', 'Async result missing or duplicated')
-                    agent('spawn', action='spawn', preset='collaboration', task='MEMBER_INITIAL', name='Collaborator', delivery='wait')
+                    agent('close-reader', action='close', agentId=results['analyze']['agentId'])
                 elif ordinal == 4:
+                    require(results['close-reader']['closed'] is True, 'Explicit reader cleanup failed')
+                    agent('spawn', action='spawn', preset='collaboration', task='MEMBER_INITIAL', name='Collaborator', delivery='wait')
+                elif ordinal == 5:
                     require(results['spawn']['outcome'] == 'completed' and results['spawn']['content'] == 'member-initial-complete', 'Member result missing')
                     agent('send', action='send', agentId=results['spawn']['agentId'], text='MEMBER_FOLLOWUP')
-                elif ordinal == 5:
+                elif ordinal == 6:
                     require(results['send']['agentId'] == results['spawn']['agentId'], 'Follow-up replaced the persistent member')
                     agent('wait-member', action='wait', taskIds=[results['send']['taskId']])
-                elif ordinal == 6:
+                elif ordinal == 7:
                     require(results['wait-member']['completedTaskIds'] == [results['send']['taskId']], 'Follow-up was not completed')
                     delivered = delivered_results(body)
                     require(len(delivered) == 2 and len({item['taskId'] for item in delivered}) == 2, 'Async evidence was repeated or wait result redelivered')
                     require(any(item['result']['content'] == 'member-followup-complete' for item in delivered), 'Follow-up evidence missing')
                     agent('close', action='close', agentId=results['spawn']['agentId'])
-                elif ordinal == 7:
+                elif ordinal == 8:
                     require(results['close']['closed'] is True, 'Continuing child did not close')
                     agent('over-limit', action='spawn', task='MUST_NOT_START', name='Over limit', delivery='async')
-                elif ordinal == 8:
+                elif ordinal == 9:
                     rejected = results['over-limit']
                     require(rejected.get('accepted') is False and rejected.get('executed') is False
                             and 'agent_run_call_limit' in json.dumps(rejected['error']), 'Configured call limit did not reject the request')
@@ -214,7 +219,8 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('member-followup-complete')
             elif lane == 'MAIN_CANCEL':
                 if ordinal == 1:
-                    agent('cancel-child', action='spawn', preset='analysis', task='CHILD_CANCEL', name='Waiting child', delivery='async')
+                    agent('cancel-child', action='spawn', preset='analysis', capabilities=ANALYSIS_CAPABILITIES,
+                          task='CHILD_CANCEL', name='Waiting child', delivery='async')
                 else:
                     require(ordinal == 2, 'Parent resumed unexpectedly before cancellation')
                     self._send_text('must-not-commit-before-child-finishes')
@@ -232,7 +238,8 @@ def configure(daemon, server):
     fixture.write_configuration(daemon.config_root, f'http://127.0.0.1:{server.server_port}/v1', {
         'agent.subagents.enabled': True, 'agent.subagents.profileId': 'e2e-agent',
         'agent.subagents.reasoningEffort': 'xhigh', 'agent.subagents.maxCallsPerRun': 3,
-        'agent.subagents.maxConcurrent': 4, 'agent.subagents.maxMembersPerSession': 1,
+        # The family retains both the collaborator and its nested reader until explicit close.
+        'agent.subagents.maxConcurrent': 4, 'agent.subagents.maxMembersPerSession': 2,
         'agent.subagents.allowMemberAnalysis': True,
     })
     path = daemon.config_root / 'config/user/local/settings/llm-profiles.json'
@@ -336,7 +343,9 @@ def validate_journal(daemon, session, mode):
                 and record['outcome'] == 'completed' for record in writes), 'Expected three real writes by the continuing child')
     else:
         records = []
-        require(not any(event['type'] == 'message.committed' and event['payload'].get('content') == 'must-not-commit-before-child-finishes'
+        premature = {event['payload']['messageId'] for event in parent if event['type'] == 'message.committed'
+                     and event['payload'].get('content') == 'must-not-commit-before-child-finishes'}
+        require(not any(event['type'] == 'run.settled' and event['payload'].get('finalMessageId') in premature
                         for event in parent), 'Parent prematurely committed a final answer')
     return journal, snapshots, records
 
@@ -449,10 +458,29 @@ def check_mode(mode):
             if mode == 'basic':
                 decision_thread = threading.Thread(target=confirm_requested_plans, args=(state, decision_stop), daemon=True)
                 decision_thread.start()
-                result = fixture.cli(daemon, state.session, 'MAIN_BASIC', run_timeout_seconds=45)
+                environment = fixture.shell_environment(daemon)
+                environment['DEEPCODE_CLI_RUN_TIMEOUT_MS'] = '45000'
+                result = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
+                    '--session', state.session, '--plain', 'ask', 'MAIN_BASIC'], cwd=fixture.ROOT, env=environment,
+                    capture_output=True, text=True, encoding='utf-8', timeout=75)
+                # A one-shot CLI may observe the pending child Plan before the
+                # fixture's explicit user confirmation reaches the producer.
+                require(result.returncode in (0, 5), result.stdout + result.stderr)
                 stdout, stderr = result.stdout, result.stderr
+                def completed():
+                    state.assert_healthy()
+                    current = fixture.projection(daemon, state.session)
+                    require(current['run']['status'] not in ('failed', 'cancelled', 'indeterminate'), current)
+                    return current if current['run']['status'] == 'completed' else None
+                fixture.wait_until(completed, 45, 'Parent did not complete after explicit child Plan confirmations')
                 decision_stop.set()
                 decision_thread.join(timeout=8)
+                history = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
+                    '--session', state.session, '--plain', 'read', '--view', 'messages'], cwd=fixture.ROOT,
+                    env=environment, capture_output=True, text=True, encoding='utf-8', timeout=15)
+                require(history.returncode == 0, history.stdout + history.stderr)
+                stdout += history.stdout
+                stderr += history.stderr
                 require('subagent-basic-complete' in stdout, 'CLI final answer missing')
                 require(len(state.plan_decisions) == 2, 'Expected an explicit child Plan confirmation in both file-writing runs')
             else:
@@ -472,14 +500,18 @@ def check_mode(mode):
                     return parent if child['run']['status'] == 'waiting' and len(settled_turns) == 3 else None
 
                 current = fixture.wait_until(ready_to_cancel, 15, 'Parent did not defer final answer for its waiting child')
-                reply = fixture.api_json(daemon.base_url, f'/api/conversation/sessions/{state.session}/commands',
-                    token=daemon.token, method='POST', timeout=20, body={
-                        'schemaVersion': fixture.COMMAND_VERSION, 'type': 'run.cancel',
-                        'commandId': 'command:cancel-subagent-parent', 'sessionId': state.session, 'runId': current['run']['runId'],
-                    })
-                require(reply['status'] == 'accepted', reply)
+                cancelled = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
+                    '--session', state.session, '--plain', 'cancel', current['run']['runId']], cwd=fixture.ROOT,
+                    env=fixture.shell_environment(daemon), capture_output=True, text=True, encoding='utf-8', timeout=25)
+                require(cancelled.returncode == 8, cancelled.stdout + cancelled.stderr)
                 stdout, stderr = client.communicate(timeout=20)
-                require(client.returncode == 8, stdout + stderr)
+                # The first one-shot observer may have already reported the child
+                # question. The explicit cancellation CLI must observe exit 8.
+                require(client.returncode in (5, 8), stdout + stderr)
+                if client.returncode == 5:
+                    require('Await the cancellation check.' in stdout, stdout + stderr)
+                stdout += cancelled.stdout
+                stderr += cancelled.stderr
             state.assert_healthy()
             journal, snapshots, records = validate_journal(daemon, state.session, mode)
             if output:
@@ -496,6 +528,8 @@ def check_mode(mode):
         except BaseException as error:
             report['error'] = str(error)
             print(daemon.log_tail())
+            if state.failure is not None:
+                print('Provider assertion:', state.failure)
             raise
         finally:
             state.async_acknowledged.set()

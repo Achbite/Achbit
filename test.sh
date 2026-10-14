@@ -105,6 +105,7 @@ case "$profile" in
     cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
+    python3 -I -S ./scripts/tests/agent-composition-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py
     run_workspace_shell
     python3 -I -S ./scripts/tests/managed-process-cli.py
@@ -119,6 +120,7 @@ case "$profile" in
     printf '[test] 本地 Agent 真实链路与共享投影壳\n'
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
+    python3 -I -S ./scripts/tests/agent-composition-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py
     run_workspace_shell
     python3 -I -S ./scripts/tests/managed-process-cli.py
