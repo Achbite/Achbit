@@ -10,7 +10,7 @@ DeepCode 提供图形界面、CLI 和 TUI。三种入口共享模型设置、会
 
 macOS 安装包包含 DeepCode-GUI.app 和独立的 DeepCode Computer Use.app。桌面截图与操作由后者执行，需要首次为该辅助 App 授予辅助功能和屏幕录制权限；`computer.control status` 返回实际执行进程。运行 `bash build.sh --stage computer-use` 可单独更新辅助组件，下一次调用前由 GUI、CLI、TUI 共用的 Host 退出旧组件并启动新版，旧观察句柄需重新获取。工具定义和内置指南仍由 Kernel 构建提供。
 
-macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕录制授权。首次安装或从早期 ad-hoc 构建切换签名身份时，系统可能要求授权一次；日常更新不应通过重置权限完成。本机开发的固定签名设置见[运行管理](product/operations.md#macos-signing)。
+macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕录制授权。首次安装或从早期 ad-hoc 构建切换签名身份时，系统可能要求授权一次；日常更新不应通过重置权限完成。授权保留与系统的“继续允许”提醒是两件事：当前外部窗口采用直接捕获，macOS 仍可能再次提醒，不能据此断言签名失效或重新申请了首次授权。本机开发的固定签名设置见[运行管理](product/operations.md#macos-signing)。
 
 ## Windows
 

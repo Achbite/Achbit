@@ -88,7 +88,7 @@ TUI 和 CLI 交互中均可用 `/sessions` 查看会话、`/resume <序号或完
 <details>
 <summary>平台依赖、权限与本地数据</summary>
 
-Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版需自行准备该依赖。Linux GUI 需要 GTK/WebKitGTK。macOS 全量打包和 UI 更新复用固定签名身份，使正常更新可以保留辅助功能和屏幕录制授权；从早期 ad-hoc 构建切换时可能需要授权一次。桌面控制由独立的 **DeepCode Computer Use** App 执行，首次需为它单独授权；之后可用 `bash build.sh --stage computer-use` 单独更新，通过 `computer.control status` 核对实际执行进程。配置、持久数据、缓存、临时文件和日志分别使用对应的平台目录，详见[安装与用户文件](docs/distribution.md)。
+Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版需自行准备该依赖。Linux GUI 需要 GTK/WebKitGTK。macOS 全量打包和 UI 更新复用固定签名身份，使正常更新可以保留辅助功能和屏幕录制授权；从早期 ad-hoc 构建切换时可能需要授权一次。桌面控制由独立的 **DeepCode Computer Use** App 执行，首次需为它单独授权。直接访问屏幕时，macOS 仍可能显示“继续允许”提醒；固定签名不关闭这类系统提醒。之后可用 `bash build.sh --stage computer-use` 单独更新，通过 `computer.control status` 核对实际执行进程。配置、持久数据、缓存、临时文件和日志分别使用对应的平台目录，详见[安装与用户文件](docs/distribution.md)。
 
 </details>
 
