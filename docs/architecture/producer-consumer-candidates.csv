@@ -1,0 +1,193 @@
+path,discovery_lines,classification,disposition
+build.sh,27;31,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+crates/deepcode-first-party-tools/src/arxiv.rs,209;221,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-first-party-tools/src/github.rs,228,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-first-party-tools/src/lib.rs,11;215,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-host-connection/src/computer_use.rs,14;26;286;501;692,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+crates/deepcode-host-connection/src/lib.rs,33;34;428,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-host-connection/src/regression_tests.rs,14;89,TEST,回归测试名称/断言命中，不是运行时补偿
+crates/deepcode-host-connection/src/user_directories.rs,13;41;52;97;104;128;136;155;170;171;188;199;217;218,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-host-web/src/main.rs,296;703;705;721;722,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-host-web/src/ui_plugins.rs,108;128,PRODUCER,Host 观察源文件并发布；插件 runtime 替换与释放，消费者订阅结果
+crates/deepcode-kernel-abi/src/config.rs,7;8;18,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+crates/deepcode-kernel-abi/src/host.rs,179,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+crates/deepcode-kernel-client/src/conversation.rs,69;73;139;154;160;161;213;215;250;397;431;473;606;641;658;707;710;716;719;729;737;739;756;763;764;766;767;784;820;821;822;823;824;836;851;852;853;854;855;870;1053;1092;1096;1100;1209;1880;1899;1906;1926;1950;1951;1961;1962;1963;1964;1965;1982;1983;1984;1985;1986;1992;2402;2410;2422;2439;2523;2561;2568;2577;2581;2591;2728;2729;2730;2731;2732;2734;2740;2741;2742;2746;2750;2785;2792;2794;2919;2956;2977;2994;2995;3045;3046;3047;3048;3049;3063;3064;3065;3066;3067;3116;3137;3145;3146;3243;3263;3535;3539;3540;3542;3545;3552;3554;3564;3565;3566;3570,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+crates/deepcode-kernel-client/src/lib.rs,26,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+crates/deepcode-kernel-daemon/src/artifact_resources.rs,41;117;122;134;146;151,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/browser_tools.rs,375;377,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/config_root_lease.rs,46;53,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/conversation_api.rs,321;398;584;667;675;679;684;722;733;792;814;872;1076;1093;1272;1334;1337;1611;1641;1759;1781;1857;1881;1883;1887;1976;2063;2086;2173;2175;2181;2187;2188;2201;2215;2241;2328;2896;3046;3056;3066;3081;3085;3091;3101;3102,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/conversation_catalog.rs,21;69;70;72;77;308;537;581;582;583;585;587;622;829,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/conversation_resources.rs,83,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/host_lifecycle.rs,15;27;33;36;38;41;42;152;157;158;180;226;235;243;247;249;250;251;260;263;266,TRANSPORT,外部子进程存活/后台工作观测；revision 防止异步 idle 检查关闭新客户端
+crates/deepcode-kernel-daemon/src/kernel_api.rs,20,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/llm_stream_parser.rs,106;107;161;162;163;185;186;187;222;228;229;232;234;235;240;241;247;248;259;262;279;280;301;462;464;465;466;470;471;744;745;749;750;803;804;808;809;1048;1050;1051;1053;1077;1078;1080;1084;1085;1088;1092;1093;1096;1097;1101;1102;1109;1110;1263;1265;1267;1279;1448;1452;1462;1463;1469;1471;1475;1478;1479;1615;1694;1717;1718,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+crates/deepcode-kernel-daemon/src/llm_transport.rs,775;837;890;899;921;926;1473;1474;1476;1477;1519;1812;1862;1891;2565,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+crates/deepcode-kernel-daemon/src/local_agent_api.rs,201;204;222;223;367;394;583;601;616;621;654;668;701;711;721;729;780;791;796;886;896;940;942;981;1143;1145;1160;1164;1168;1487;1490;1546;1549;1590;1591;1637;1654;2094,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_authorities.rs,,FIXED-A4 / PRODUCER,新增提交时授权索引；任务/Plan/审批/修订/删除更新归属 Kernel；已复查
+crates/deepcode-kernel-daemon/src/local_agent_first_party_plugins.rs,51;96,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_kernel.rs,328;335;380;387;392;404;405;445;624;636;640;672;729;737;796;867;868;1179;1189;1582;2157;2169;2255;2262;2382;2392;2432;2443;2546;2759;2760;2762;2764;2773;2777;2781;2877;2879;2893;2913;2967;2983;3260;3286;3371;3430;3431;3432;3434;3436;3438;3440;3604;3657;3748;3750;3880;4143;4147;4149;4229;4233;4236;4298;4300;4304;4347;4349;4350;4547;4551;4553;4718;4722;4724;4759;5111,FIXED / ADMISSION,使用编译权限模型；保留实际文件范围、批准身份和 effect 准入
+crates/deepcode-kernel-daemon/src/local_agent_kernel/file_mutations.rs,16;122;459;640,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_kernel/file_permissions.rs,144;145;146;147;149;151;154,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_mcp.rs,1095;1805;2103;2118;2183;2200;2201;2202;2245;2246,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_permissions.rs,2;192;232;261;293;435;525;545,FIXED / PRODUCER,父状态变化立即计算受影响子树，废止旧授权和待完成审查；消费者只读模型
+crates/deepcode-kernel-daemon/src/local_agent_plugins.rs,126;204;252;266;297;341;345;351;352;404;425;430,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_provider_runtime.rs,27;33;34;56;57;59;60;95;98;99;126;127;128;210;237;384;410;411;414;415;421;425;437;450;451;452;487;488;489,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_resources.rs,143,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/local_agent_store.rs,335;345;357;358;371;377;401;404;411;430;448;458;468;486;510;589;595;597;602;609;659;662;666;670;914;915;916;917;954;1413;1414;1444;1446;1461;1551;1554;1619;1889;1900;1902;1903;1922;1924;1929;1930;1941;1948;2014;2177;2180;2261;2270;2321;2338;2343;2345;2347;2357;2364;2369;2373;2375;2378;2382;2386;2392;2393;2859;2882;2883;2884;2890;2891;2892;2999;3066;3177;3181;3332;3339;3352;3398;3399;3400;3406;3612;3630;3649;3658;4269;4510;4514;4517;4533;4600;4603;4606;4609;4610;4614;4617;4621;4622;4625;4626;4628;4632;4634;4640;4641;4647;4688;4690;4692;4694;4698;4699;4700;4704;4708;4719;5203;5429;5434;5450;5575;5663;5664;5666;5672;5674;5683;5706;5721;5742;5752;5754;5760;5761;5780;5814;5831;5878;5890;5921;5932;5994;6012;6016;6033;6054;6076;6107;6108;6131;6133;6134;6135;6136;6137;6142;6162;6169;6287;6328;6358;6365;6483;6496;6527;6559;6613;6647;6659;6666;6676,FIXED-A4,权限与授权索引在事务提交时发布；消费路径保留身份/范围检查，不再归约历史
+crates/deepcode-kernel-daemon/src/local_agent_tool_catalog.rs,199;200;602;676;689;716;727;728;781;791;807;814;817;818;829;832;833;908;1285;1287;1293;1298;1300;1434;1448;1741;1746;1843,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/main.rs,275,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/managed_processes.rs,1;77;85;104;113;118;119;120;121;123;135;162;164;166;167;168;169;182;185;196;198;203;204;208;209;221;225;237;239;241;242;243;245;246;249;250;253;256;260;291;298;301;325;345;361;362,BOUNDARY,生产者更新输出与完成状态；30 秒采样带心跳 revision，参见 B1
+crates/deepcode-kernel-daemon/src/model_auth.rs,20;52;66;118;120;122;133;192;212;213;219;223;226;227;522;640,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-daemon/src/model_usage.rs,14;15;30;40;61;62;126;127;246;247;281;288;311;312;313;316;325;351;354;365;366;367;451;455;463;469;478;479;483;492,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+crates/deepcode-kernel-daemon/src/prelude.rs,17,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/session_environment.rs,5;17;21;45;53;66;67;101;102;114;122;137;139;141;142;143;144;145;146;414;419;420;421;466;467;468,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-daemon/src/session_service.rs,273;380;422;790;870;879;901;951;961,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/settings_api.rs,11;19;26,FIXED-A1,保存前准备锁和值；持久目标支持同值重试与恢复；CLI 注入保存和通知失败
+crates/deepcode-kernel-daemon/src/tool_images.rs,287,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-daemon/src/utils.rs,196,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-runtime/src/execution_archive.rs,8;58;117,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/executors.rs,20;34;35;138;510;545;584,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-runtime/src/executors/process.rs,22;274;702;787;788;789;793;805;807;809;810;811;812;813;814;815;816;821;834;905;922;952;1278;1279;1283;1288;1292;1294;1339;1340;1368;1372;1380;1408;1412;1414;1619;1643;1922;1946;1971;1990,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/executors/process/windows_workspace.rs,153,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/executors/web.rs,191;625,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-runtime/src/executors/web/cloud.rs,92,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+crates/deepcode-kernel-runtime/src/executors/windows_job.rs,39;40;46;57;59,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/file_access.rs,24;27;182,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/shell_environment.rs,436,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/shell_environment/windows.rs,57;80,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_boundary.rs,32;73;107,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_sandbox.rs,152;153;157;158;163;167;168;191,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_sandbox/linux.rs,35;66;82,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_sandbox/windows/acl.rs,4,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_sandbox/windows/runner.rs,29;39;237;335,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_sandbox/windows/state.rs,52,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-runtime/src/workspace_sandbox/windows/token.rs,21;70;72;73,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+crates/deepcode-kernel-tools/src/text_range.rs,147,CONTRACT / PRODUCER,Kernel/Host 的持久化、资源身份、准备与准入；可疑热路径单列 A1–A4
+plugins/computer-use/native/build.rs,17;24,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+plugins/computer-use/native/src/driver.rs,10;203;230;370;385;426;565;624;639;718;896;947;966,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/indicator.rs,2;74;101;129;136,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/protocol.rs,9;62;70,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/runtime.rs,90;99,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/sharing.m,102;123;139;151;152;163;166;168;173;182;207;220;241;275;332;350;427;442;455;476;489;496;504;514;516;518;559,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/sharing.rs,40,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/win/desktop.rs,199;349;493;497;501,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/win/indicator.rs,29;154;156;167;177;187;201;202;268;286;343;347,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/win/mod.rs,163;166;195;245;283;292;299,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+plugins/computer-use/native/src/win/uia.rs,20;64;78;87;92;104;109;121;168;171;174;177;181;187;192;196;200;203;213;217;219;230;232;235,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+scripts/branch-flow.sh,109;242,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/build-platforms.sh,40;41;42;43;66;71;83;103;111;112;113;116,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/clean-caches.sh,2;6;10;13;15;16;32;35;38;44;47;63;64;65;70;74;78;175;179;181;226;230;244;246;251;252;257;261;264;277;340,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/computer_use_package.py,60;63;67,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/macos-build-bridge.py,18;138;166;169;222;273,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/package-installers.py,12;37;41;51;63;65,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/package-macos.sh,35,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/package-runtime.py,25;48;58;64;65;70;106;109,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/source-identity.sh,23;26,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+scripts/update-ui.py,79,BUILD,构建/打包/清理生命周期或产物身份；不位于 Agent 工具消费路径
+shells/cli/src/main.rs,28;37;243;383;484;818;924;987;988;990;1003;1004;1006;1020;1117;1136;1147;1238;1277;1358;1375;1441;1588;1629;1633;1642,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/cli/src/model_services.rs,128,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/cli/src/render.rs,8;37;118;161;166;168;172;181;182;306;310;423;432;485;487;552;741;745;747;757;758;759;964;967;968;969;984;990;992;1065;1066;1067;1072;1074;1075;1076;1182;1191;1216;1251;1262;1271;1333,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/deepcode-gui/src-tauri/src/main.rs,30;101;102;123;124;141;162;163;801;853;1456;2006,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/shared/conversation_input.rs,5;39;56;81;141;182;195;251;256;258;278,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/shared/i18n.rs,34;38,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/shared/native_browser/mod.rs,11;415;419;538;837;846;1027;1050;1066;1074;1091,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+shells/shared/native_browser/review.js,115,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+shells/shared/session_navigation.rs,15;95,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/tui/src/app.rs,13;144;164;193;210;230;688;762;1129;1215;1220;1223;1229;1231;1233;1238;1572;1603;1650;1674;1776;1890;1963;1967;2208;2257;2259;2270;2279;2295,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/tui/src/main.rs,240;241;247;250;272;392;430;431;453;455,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+shells/tui/src/renderer.rs,18;363;365;403;407;408;409;410;411;414;611;832;966;967;1151;1153;1154;1296;1297;1316;1317;1321;1327;1328;1330;1331;1332;1792;1797;1799;1802;1807;1881;1882;1885;2017;2020;2023;2125;2149;2152;2219;2359;2460;2462;2466;2467;2471;2480;2487;2491;2500;2505;2517;2518;2520;2524;2529;2534;2535;2538;2539;2542;2547;2548;2549;2550;2551;2553;2558;2567;2605;2608;2681;2685;2686,TRANSPORT / PRESENTATION,Shell 命令/视图与网络状态观察；保留响应身份和用户决定边界
+userspace/gui/src/components/local-agent/AgentTasksPanel.tsx,34;61;62;78;84;127;133;169;171;176;201;203;206;207,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/BufferedMarkdown.tsx,75,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ContextUsageControl.tsx,4;12;94;249;250;253;254;255;258;259;262;265;267;269;272;273;274;278,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/gui/src/components/local-agent/ConversationComposer.tsx,7;480,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ConversationTranscript.tsx,92;125;278;280;341;419;420;422,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ConversationVirtualRow.tsx,8;9;13;16,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/LocalAgentPanel.tsx,48;49;91;92,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/NativeBrowserControl.tsx,5,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+userspace/gui/src/components/local-agent/NativeBrowserPreview.tsx,231;284;285;287,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+userspace/gui/src/components/local-agent/PlanCard.tsx,30;74;148,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/PlanDocument.tsx,15,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ProviderStageStatus.tsx,21,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ReasoningDetails.tsx,19;25,TRANSPORT,已发布 Session/Host 视图的网络观测及响应排序，不承担权限树同步
+userspace/gui/src/components/local-agent/ResourcePreview.tsx,25;195;624;653;707;708;772,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ResourceTree.tsx,104;172,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/RichContent.tsx,20,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/RunFailureDetails.tsx,59;61;83;84;85;86;87,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/ToolActivityDetails.tsx,389,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/TotalCacheUsage.tsx,3;6;10;11;12;17;22;24;25;28;29;30;31;32;33;34;35;40;41;46;47;51;52;58,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/gui/src/components/local-agent/contextUsageMetrics.ts,3;172;173;176;177;178;179;180;181;182;183,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/gui/src/components/local-agent/conversationAnchors.ts,4;6;7;10;13;18,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/conversationItems.ts,75;76;79;109,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/conversationVirtualizer.ts,23;129,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/fileChangeSummary.ts,9;10;11;18;19;21;22;32;33,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/planReview.ts,4;9,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/readerState.ts,37,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/streamingMarkdown.ts,83;84;85;87;88;95;96;126,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/useAgentChildConversation.ts,26;28;29;30;32;33;34;37;46;55;59;60;72;74;75;88,TRANSPORT,已发布 Session/Host 视图的网络观测及响应排序，不承担权限树同步
+userspace/gui/src/components/local-agent/useAgentComposer.ts,49;53;56;150;252;253;285,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/useConversationViewport.ts,48,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/local-agent/useProjectionPolling.ts,6;8;11;12;14;17;19;21;24;25;26;27;32;44;47;51,TRANSPORT,已发布 Session/Host 视图的网络观测及响应排序，不承担权限树同步
+userspace/gui/src/components/settings-center/GuiFontSettings.tsx,8;19,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/settings-center/GuiPaletteSettings.tsx,11;28,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/settings-center/SettingsField.tsx,9;52;69,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/settings-center/model-services/SubscriptionAuth.tsx,32;33;38;46;71,EXTERNAL / ADMISSION,外部环境观测或执行/文件安全边界；不要求 Agent 维护内部权限模型
+userspace/gui/src/components/settings-center/model-services/UsageView.tsx,18;20;33;39;42,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/gui/src/components/settings-center/sections/CategorizedSettingsSections.tsx,258,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/settings-center/sections/LlmSection.tsx,149;164;170;174;179;215;217,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/settings-center/sections/PluginsSection.tsx,65;105;129;223;277;294;344;345;348;351;458,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/settings-center/settingDraft.ts,4,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/components/shared/useAutoDismiss.ts,9,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/deepcode-gui/DeepCodeGuiApp.tsx,165;240;248;252;257,TRANSPORT,已发布 Session/Host 视图的网络观测及响应排序，不承担权限树同步
+userspace/gui/src/deepcode-gui/layout/ComputerTargetPreview.tsx,33;34;39;51;53;67;69;72;128;135;137,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+userspace/gui/src/deepcode-gui/layout/DeepCodeTaskPanel.tsx,19,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/deepcode-gui/layout/DeepCodeWorkbenchLayout.tsx,80;86,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/icons/registry.tsx,10,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/presentation/PresentationRuntime.tsx,15;31,IMMUTABLE,缓存已提交文本，依赖其所属 Session revision；不缓存实时权限
+userspace/gui/src/services/conversationResources.ts,47,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/services/interfaceReload.ts,51;52;57;63;64,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/services/interfaceUpdates.ts,22;28;31,FIXED,模块消费不再等待发布版本检查；焦点更新提示独立运行
+userspace/gui/src/services/localAgentApi.ts,96;98;349;387;423;424;425;427;522;526;555;594;629;672;673;950;954;959;974;991;1048;1049;1051;1054;1055;1059;1061;1087;1100;1101;1104;1105;1106;1260;1261;1262;1263;1264;1285;1286;1287;1288;1289;1307;1308;1309;1310;1311;1314;1315;1319;1321;1322;1327;1328;1329;1332;1589;1590,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/services/nativeBrowser.ts,35;51;52,EXTERNAL,桌面/浏览器外部状态、观察有效期及原生回调所有权；保留当前目标校验
+userspace/gui/src/services/runtimeAdapter.ts,27;141,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/state/appStatusStore.ts,10;19,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/state/localAgentStore.ts,44;80;81;82;86;141;142;145;158;159;160;172;218;268;299;311;352;353;357;361;362;363;366;367;368;369;399;401;404;405;407;414;418;426;432;433;435;440;458;465;469;584;747;755;801;830;838;840;841;845;846;881;890;903;905;906;913;921;923;947;1037;1038,FIXED / TRANSPORT,接受同 journal revision 的生产者投影；保留异步导航顺序与网络读取
+userspace/gui/src/state/settingsStore.ts,336;337;340;344;345;347;352;353;384;385;386;397,CONTRACT,PATCH 未返回 runtime/environment 完整视图，随后 GET 用于补齐契约；参见 A1
+userspace/gui/src/theme/themeLibrary.ts,61,PRESENTATION,显示计时器、不可变内容缓存、草稿/导航顺序或显式用户刷新；无权限新鲜度门禁
+userspace/gui/src/ui-plugins/UiPlugins.tsx,54;68;70;104;114;115;130,PRODUCER,Host 观察源文件并发布；插件 runtime 替换与释放，消费者订阅结果
+userspace/gui/src/ui-plugins/UsageWidget.tsx,12;26;63;65,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/gui/src/ui-plugins/builtinUsage.mjs,171;192;195;197;199;208;209;219;225;226,PRODUCER-EVENT,Provider receipt revision 触发用量读模型请求；并发结果顺序与跨日时间边界
+userspace/gui/src/ui-plugins/runtime.ts,78;91;93,PRODUCER,Host 观察源文件并发布；插件 runtime 替换与释放，消费者订阅结果
+userspace/gui/src/ui-plugins/source.ts,24,PRODUCER,Host 观察源文件并发布；插件 runtime 替换与释放，消费者订阅结果
+userspace/gui/src/ui-plugins/types.ts,91,PRODUCER,Host 观察源文件并发布；插件 runtime 替换与释放，消费者订阅结果
+userspace/gui/src/ui-plugins/usageWidgetLabels.ts,3,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/gui/src/utils/providerUsage.ts,3;7;8;9;10;11;14;24;25;26;27;30;31;32;35;39;41;43;44;47;48;49,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/protocol/src/api.ts,25,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+userspace/protocol/src/localAgent.ts,205;260;269;306;362;430;553;562;663;664;680;681;682;683;684;685;833;1037;1045;1048;1055;1064;1067;1069;1077;1304;1384;1388;1611;1630;1651;1652;1673;1912;1913;1958;2019;2139;2162;2195;2196;2197;2198;2199;2212;2228;2239;2274,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+userspace/protocol/src/modelServices.ts,74;77;98;99,DATA / PRODUCER-EVENT,主要是 Provider token cache 计量和展示，或事件触发用量读取；不是程序状态缓存
+userspace/protocol/src/processes.ts,13,CONTRACT,协议字段、解码及绑定身份完整性；版本字段不是读取最新产物的循环
+userspace/session-core/src/local-agent/actor.ts,73;77;79;102;104;108;110;113;115;131;135;174;179;188;190;193;194;196;216;217;221;224;225;230;231;232;239;258;259;263;268;270;274;282;370;410;411;422;429;451;454;456;461;462;474;475;477;483;484;514;515;549;550;564;565;566;567;574;579;607;608;611;612;614;615;617;625;687;725;826;866;867;898;899;901;928;944;945;951;952;988;989;993;995;996;997;1015;1024;1030;1049;1072;1073;1076;1079;1090;1127;1131;1141;1154;1167;1219;1221;1222;1224;1232;1233;1237;1246;1247;1248;1259;1301;1302;1304;1308;1309;1314;1342;1347;1348;1349;1350;1351;1401;1441;1449;1466;1467;1469;1470;1474;1476;1478;1513;1544;1602;1609;1614;1621,FIXED-A2/A3,消费权限发布；提交 committed events 时更新投影；仅初始化及明确写失败恢复读历史
+userspace/session-core/src/local-agent/admission.ts,14;17;19;22;25;26;28;32;51;52;55;60;61;80;89;90;92;143;175;177;178;179;183;211;247,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/agentManager.ts,68;81;124;134;156;161;283;287;289;290;297;300;303;304;396;412;413;460,FIXED / PRODUCER,只提交所请求的限制；Kernel 创建边界负责权限继承；任务结果由所属 Actor 发布
+userspace/session-core/src/local-agent/approvalReview.ts,27;29;36;37;38;44;47;49;54;55;79;87;91;93;116;123;124;125;139;154;155;156;160;172;174;194,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/compaction.ts,26;80;85;86;87;91;98;100;112;114;136;140;141;142,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/contextComposer.ts,354;396;398;483;493;498;500;510;516;526;530;532;538;540;727;1325;1408,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/conversationHistory.ts,4;7;8;12;27,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/conversationRead.ts,48;77,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/deliverables.ts,23,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/failureSnapshot.ts,5;6;10;11;12;18;19,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/httpPorts.ts,199;274;618;671;690;704;707,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/loop.ts,110;244;246;251;254;255;266;269;274;281;284;289;296;298;304;325;329;330;342;344;346;351;354;355;358;361;367;368;369;375;378;380;384;393;404;410;433;445;456;463;467;471;473;479;481;485;493;500;503;511;513;515;523;531;545;549;564;565;569;573;578;585;587;592;593;594;616;622;623;632;633;641;645;651;664;673;679;693;695;700;701;707;711;714;720;729;745;748;753;771;774;777;821;832;834;837;838;844;850;857;864;1947;1950;1953;1968;1970;1971;1976;1985;1986;1987;2003;2005;2009;2010;2016;2023;2024;2026;2027;2032;2033;2045;2049;2055;2056;2068;2069;2118;2119;2126;2131;2132;2136;2137;2141;2143;2147;2150;2159;2207;2212;2213;2217;2221;2229;2231;2232;2243;2251;2336;2339;2341;2378;2384;2394;2397;2403;2470;2471;2472;2474;2475;2477;2483;2484;2485;2486;2494;2496;2553;2556;2558;2562;2563;2564;2565;2566;2567;2569;2576;2577;2578;2583;2584;2585;2588;2716;2719;2721,FIXED-A2,提示和审批等待消费已发布权限；同 journal revision 的父变更也会唤醒
+userspace/session-core/src/local-agent/managedProcesses.ts,22;23;28;41;49;75,BOUNDARY,进程事实订阅与结算同步边界；参见 B1，未判定为权限新鲜度检查
+userspace/session-core/src/local-agent/planStage.ts,21;60;61;67;76;79;81;97;112;115;120;121;123;125,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/providerAttempts.ts,11,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/providerToolCodec.ts,181,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/reducer.ts,51;120;144;145;146;147;148;169;171;202;203;309;310;311;312;313;316;480;481;494;495;509;513;524;528;532;534;536;544;550;560;565;566;568;576;577;578;579;581;583;591;793;1034;1035;1037;1038;1040;1041;1044;1074;1135;1235;1244;1283;1320;1353;1354;1357;1374;1375;1376;1377;1378;1379;1380;1381;1382;1390;1391;1513;1514;1515;1609;1716;1780;1838;1839;1842;1843;1844;1851;1854;1855;1857;1862;1867;1874;1875;1880;2319;2320;2332;2342;2343;2345;2348;2349;2350;2352;2353;2354;2363;2369;2370;2381;2398;2399;2402;2403;2405;2406,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/runLifecycle.ts,8;71;76;77;128;131;132;134,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/service.ts,42;76;138;270;291;306;333;351;353;364;365;366;370;387;389,READ-MODEL,关闭会话的管理/状态读取不启动 Actor；增量生命周期投影由该读取边界产生
+userspace/session-core/src/local-agent/sessionConfiguration.ts,121,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/sessionControls.ts,48;304,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/todoState.ts,12;23;28,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/local-agent/toolPromptContributions.ts,147,CONTRACT,核对已绑定工具和指导的身份；不回查当前版本、不替换绑定
+userspace/session-core/src/local-agent/workspaceBindings.ts,3,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
+userspace/session-core/src/sessionServiceBridge.ts,38;149;150;184;330;335;433;434;436;437;478,CONTRACT / PRODUCER,事件归约、组合、恢复或不可变绑定；命中 snapshot/revision 不等于刷新内核权限
