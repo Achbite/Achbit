@@ -140,8 +140,12 @@ test('an input rejection on permission recheck closes the outstanding approval',
 
 for (const outcome of ['cancelled', 'indeterminate']) test(`cancel drains every in-flight call, preserves ${outcome}, and marks queued calls unexecuted`, async t => {
   const executions = new Map(), cancellations = [], allCancelled = gate();
+  t.after(() => allCancelled.resolve());
   const records = new Map();
-  const calls = [...Array.from({ length: 6 }, (_, i) => ({ path: `file-${i}`, content: `${i}` })), { tool: 'fs_read', path: 'later' }];
+  const independent = [{ path: 'a', content: 'first-a' }, { path: 'b', content: 'first-b' }];
+  // Same-target successors stay queued regardless of the scheduler's capacity.
+  const calls = [...independent, ...independent.map(call => ({ ...call, content: `next-${call.path}` })),
+    { tool: 'fs_read', path: 'later' }];
   const { actor, journal, sessionId } = await setup(t, 'file-cancel', calls,
     emptyKernel({
       async execute(request) {
@@ -149,8 +153,11 @@ for (const outcome of ['cancelled', 'indeterminate']) test(`cancel drains every 
         return await wait.promise;
       },
       async cancel(callId, attemptId) {
+        assert.ok(executions.has(callId), 'only admitted calls can be cancelled');
+        assert.equal(attemptId, executions.get(callId).request.attemptId);
+        assert.equal(cancellations.includes(callId), false, 'each admitted call is cancelled once');
         cancellations.push(callId);
-        if (cancellations.length === 4) allCancelled.resolve();
+        if (cancellations.length === executions.size) allCancelled.resolve();
         await allCancelled.promise;
         const { request, wait } = executions.get(callId);
         const reply = completedExecutionReply(request, {});
@@ -162,15 +169,23 @@ for (const outcome of ['cancelled', 'indeterminate']) test(`cancel drains every 
       },
       async readRecord(callId) { return records.get(callId) ?? null; },
     }));
-  await waitUntil(() => executions.size === 4, 'bounded parallel limit');
+  await waitUntil(() => executions.size === independent.length, 'independent calls are in flight');
+  const admitted = [...executions.keys()].sort();
+  assert.deepEqual([...executions.values()].map(({ request }) => request.input.content).sort(),
+    independent.map(call => call.content).sort());
   const runId = (await actor.snapshot()).run.runId;
   await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, commandId: 'command:cancel-files', runId });
   const final = await waitForProjection(actor, value => value.run?.status === outcome);
   if (outcome === 'indeterminate') assert.equal(final.terminalError.code, 'tool_effect_outcome_unknown');
-  assert.equal(executions.size, 4);
-  assert.equal(new Set(cancellations).size, 4);
+  assert.deepEqual([...executions.keys()].sort(), admitted, 'cancellation cannot start a queued call');
+  assert.deepEqual(cancellations.sort(), admitted);
   const events = await readEvents(journal, sessionId);
-  assert.equal(events.filter(event => event.type === 'tool.completed').length, 4);
-  assert.equal(events.filter(event => event.type === 'tool.not-executed' && event.payload.reason === 'cancelled').length, 3);
+  const completed = events.filter(event => event.type === 'tool.completed');
+  assert.deepEqual(completed.map(event => event.callId).sort(), admitted);
+  assert.ok(completed.every(event => event.payload.record.outcome === outcome));
+  const queued = events.filter(event => event.type === 'tool.requested' && !admitted.includes(event.callId));
+  assert.equal(queued.length, calls.length - admitted.length);
+  assert.deepEqual(events.filter(event => event.type === 'tool.not-executed' && event.payload.reason === 'cancelled')
+    .map(event => event.callId).sort(), queued.map(event => event.callId).sort());
   assert.equal(events.some(event => event.type === 'tool.interrupted'), false);
 });

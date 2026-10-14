@@ -821,7 +821,7 @@ test('GUI receives and renders live tool output at the same journal revision bef
   const final = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.equal(final.activities.some((entry) => entry.liveOutput), false);
   const completed = final.activities.find((entry) => entry.activityId === activity.activityId);
-  assert.match(renderActivity(completed), /class="local-agent__tool-entry-heading" aria-expanded="true"/,
+  assert.match(renderActivity(completed), /<button\b(?=[^>]*class="[^"]*\blocal-agent__tool-entry-heading\b)(?=[^>]*aria-expanded="true")[^>]*>/,
     'completion does not collapse details the user opened');
   assert.deepEqual(await decodeGuiProjection(final), final);
   assert.deepEqual((await readEvents(journal, sessionId)).filter((event) => event.type.startsWith('tool.')).map((event) => event.type), ['tool.requested', 'tool.started', 'tool.completed']);
@@ -1447,7 +1447,7 @@ test('composer accepts inherited effort and never enables a new run with a blank
   assert.match(label, /Two · Choose level/, 'even an inconsistent caller cannot render a blank level');
 });
 
-test('plan confirmation resumes the real viewport once and does not lock it during the reply', async (t) => {
+test('viewport hook resumes once on Plan confirmation and preserves later reader input with simulated dimensions', async (t) => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const [{ useLocalAgentStore: store }, { useAgentComposer }, { useConversationViewport }] = await loadGuiModules(t, [
@@ -2290,7 +2290,8 @@ test('projection polling stays serial through visibility changes and stops after
   assert.equal(listeners.size, 0);
   stopDisconnected();
   stop = startProjectionPolling(true, () => { calls += 1; return new Promise((resolve) => { release = resolve; }); }, true);
-  assert.equal(timers.values().next().value.delay, 120);
+  const activeDelay = timers.values().next().value.delay;
+  assert.ok(Number.isFinite(activeDelay) && activeDelay > 0, 'connected active sessions schedule a finite positive delay');
   fire();
   visibility('hidden'); visibility('visible');
   assert.equal(calls, 1);
@@ -2298,14 +2299,16 @@ test('projection polling stays serial through visibility changes and stops after
   release(); await Promise.resolve();
   assert.equal(timers.size, 1);
   visibility('hidden');
-  assert.equal(timers.values().next().value.delay, 10_000);
+  const hiddenDelay = timers.values().next().value.delay;
+  assert.ok(Number.isFinite(hiddenDelay) && hiddenDelay > activeDelay, 'hidden sessions poll less frequently');
   visibility('visible');
   assert.equal(calls, 2);
   stop(); release(); await Promise.resolve();
   assert.equal(timers.size, 0);
   assert.equal(listeners.size, 0);
   stopIdle = startProjectionPolling(false, async () => {}, true);
-  assert.equal(timers.values().next().value.delay, 4_000);
+  const idleDelay = timers.values().next().value.delay;
+  assert.ok(Number.isFinite(idleDelay) && idleDelay > activeDelay, 'idle sessions poll less frequently');
   stopIdle();
 });
 

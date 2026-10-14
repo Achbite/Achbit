@@ -5,6 +5,7 @@ import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, t
 import { emptySessionState, projectSession } from '../../../session-core/src/local-agent/reducer';
 import { ConversationTranscript } from '../../src/components/local-agent/ConversationTranscript';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
+import { ConversationLayoutCache } from '../../src/components/local-agent/conversationVirtualizer';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
 import { useConversationViewport } from '../../src/components/local-agent/useConversationViewport';
 import { projectionItems } from '../../src/components/local-agent/conversationItems';
@@ -64,6 +65,7 @@ function Preview() {
   const [mode, setMode] = useState(initialMode);
   const [result, setResult] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [layoutCache] = useState(() => new ConversationLayoutCache());
   const [failEdit, setFailEdit] = useState(false);
   const [language, setLanguage] = useState<'zh-CN' | 'en-US'>(previewParams.get('language') === 'en-US' ? 'en-US' : 'zh-CN');
   const presentation = usePresentedCommittedContent(projection, language);
@@ -124,13 +126,15 @@ function Preview() {
       <select aria-label="配色模式" defaultValue={document.documentElement.dataset.theme} onChange={(event) => { document.documentElement.dataset.theme = event.target.value; }}><option value="light">浅色</option><option value="dark">深色</option></select>
       <select aria-label="语言" value={language} onChange={(event) => setLanguage(event.target.value as typeof language)}><option value="zh-CN">中文</option><option value="en-US">English</option></select>
       <label><input type="checkbox" checked={failEdit} onChange={(event) => setFailEdit(event.target.checked)} />模拟提交失败</label>
+      <button type="button" onClick={() => setError('preview_action_failed')}>显示操作错误</button>
     </nav>
     <main className="local-agent fixture-main"><div className="local-agent__viewport"><div className="local-agent__body" ref={viewport.bodyRef} {...viewport.bodyHandlers}>
-      <ConversationTranscript language={language} loading={false} projection={projection} activeProject={undefined}
-        hasConversationContent displaySettledRunIds={new Set(mode.startsWith('question') ? ['run:second'] : ['run:first', 'run:second'])} artifacts={[]} onDisplayed={() => {}}
+      <ConversationTranscript layoutCache={layoutCache} language={language} loading={false} projection={projection} activeProject={undefined}
+        hasConversationContent displaySettledRunIds={new Set(mode.startsWith('question') ? ['run:second'] : ['run:first', 'run:second'])} onDisplayed={() => {}}
         conversationItems={items} draftItems={[]} presentation={presentation} viewport={viewport}
         openWorkspaceResource={async () => {}} setUiActionError={setError} canEditMessage={composer.canEditMessage} onEditMessage={composer.beginMessageEdit} />
-    </div></div><ConversationComposer language={language} composer={composer} uiActionError={error} /></main>
+    </div></div><ConversationComposer language={language} composer={composer} uiActionError={error}
+      onDismissUiActionError={() => setError(null)} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} /></main>
     <output className="fixture-result" aria-label="命令回执">{result}</output>
   </>;
 }

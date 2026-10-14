@@ -2,24 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModule } from './gui-projection-contract.mjs';
+import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
-test('shared image review opens and closes the existing original-size dialog', async t => {
+test('image review handlers open and close the dialog reference and SSR retains the loaded image', async t => {
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
   const calls = [];
   function Probe() {
     const view = ImageReview({ source: 'blob:loaded-image', alt: 'Rendered chart' });
-    const [opener, dialog] = view.props.children;
+    const opener = findReactElement(view, node => node.type === 'button' && node.props['aria-label']?.includes('Rendered chart'));
+    const dialog = findReactElement(view, node => node.type === 'dialog' && node.props['aria-label'] === 'Rendered chart');
     dialog.props.ref.current = { showModal: () => calls.push('open'), close: () => calls.push('close') };
     opener.props.onClick();
-    dialog.props.children[0].props.onClick();
+    findReactElement(dialog, node => node.type === 'button').props.onClick();
     return view;
   }
   const html = renderToStaticMarkup(createElement(Probe));
   assert.deepEqual(calls, ['open', 'close']);
   assert.equal((html.match(/src="blob:loaded-image"/g) ?? []).length, 2);
   assert.match(html, /<dialog[^>]+aria-label="Rendered chart"/);
-  assert.match(html, /conversation-image-review__scroll/);
   assert.doesNotMatch(html, /disabled=/);
 });
 

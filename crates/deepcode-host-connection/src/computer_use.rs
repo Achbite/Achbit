@@ -591,11 +591,10 @@ mod tests {
 
     /// Runs against a built helper when DEEPCODE_TEST_COMPUTER_USE_HELPER names it.
     #[test]
+    #[ignore = "requires a built Windows helper; set DEEPCODE_TEST_COMPUTER_USE_HELPER and run with --include-ignored"]
     fn host_owns_the_exact_helper_process_and_retires_it_on_stop() {
-        let Some(helper) = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER") else {
-            eprintln!("skipped: DEEPCODE_TEST_COMPUTER_USE_HELPER is not set");
-            return;
-        };
+        let helper = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER")
+            .expect("DEEPCODE_TEST_COMPUTER_USE_HELPER must name the built Windows helper");
         let host = ComputerUseHost {
             app: PathBuf::from(helper),
             host: "host:test".into(),
@@ -658,11 +657,10 @@ mod tests {
 
     /// The Windows update replaces a mapped executable by renaming it aside.
     #[test]
+    #[ignore = "requires a built Windows helper; set DEEPCODE_TEST_COMPUTER_USE_HELPER and run with --include-ignored"]
     fn replaced_helper_is_retired_between_calls_and_its_image_removed() {
-        let Some(helper) = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER") else {
-            eprintln!("skipped: DEEPCODE_TEST_COMPUTER_USE_HELPER is not set");
-            return;
-        };
+        let helper = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER")
+            .expect("DEEPCODE_TEST_COMPUTER_USE_HELPER must name the built Windows helper");
         let directory =
             std::env::temp_dir().join(format!("deepcode-cu-update-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();

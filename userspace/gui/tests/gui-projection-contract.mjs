@@ -2,6 +2,21 @@ import assert from 'node:assert/strict';
 import { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
+import { Children, isValidElement } from 'react';
+
+// Find a semantic control in an already-rendered React tree without fixing its
+// wrapper depth or sibling position. This does not mount a browser DOM.
+export function findReactElement(root, matches) {
+  const found = [];
+  const visit = value => Children.forEach(value, node => {
+    if (!isValidElement(node)) return;
+    if (matches(node)) found.push(node);
+    visit(node.props.children);
+  });
+  visit(root);
+  assert.equal(found.length, 1, 'expected exactly one matching control');
+  return found[0];
+}
 
 // Load the real GUI module graph without a browser, file watcher, or listening server.
 function createGuiLoader() {

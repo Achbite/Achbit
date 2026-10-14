@@ -170,6 +170,9 @@ pub(crate) fn command(
             target.path.clone().into(),
         ]);
     }
+    // Synthetic ancestors must not accept writes that disappear with the
+    // sandbox. This non-recursive remount preserves the explicit writable binds.
+    command.extend(["--remount-ro", "/"].into_iter().map(OsString::from));
     command.extend(["--seccomp", "3", "--"].into_iter().map(OsString::from));
     command.push(shell.executable.as_os_str().into());
     command.extend(args.iter().map(OsString::from));

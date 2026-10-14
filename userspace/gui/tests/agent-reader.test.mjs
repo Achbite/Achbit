@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModules } from './gui-projection-contract.mjs';
+import { findReactElement, loadGuiModules } from './gui-projection-contract.mjs';
 
 test('subagent navigation uses Reader identity and preserves nested parent and child scope', async t => {
   const [{ requestAgentConversation, AgentNavigationScope, useAgentNavigation }, { READER_OPEN_EVENT, readerTargetKey }] = await loadGuiModules(t, [
@@ -72,13 +72,13 @@ test('selected subagent details render as Reader content instead of an overlay',
   const html = renderToStaticMarkup(createElement(AgentTasksPanel, {
     projection, language: 'zh-CN', selectedSessionId: 'session:child', entryId: 'activity:child',
   }));
-  assert.match(html, /<section class="agent-tasks__page" aria-label="子智能体"/);
+  assert.match(html, /<section\b[^>]*aria-label="子智能体"/);
   assert.doesNotMatch(html, /<strong>子智能体<\/strong>|关闭子智能体页面/, 'the Reader tab owns the title and close control');
-  assert.match(html, /document-preview__toolbar native-browser-address agent-tasks__toolbar/);
+  assert.match(html, /aria-label="子智能体信息"/);
   assert.match(html, /aria-label="返回子智能体列表"/);
   assert.match(html, /Reviewer/);
   assert.match(html, /session:child/);
-  assert.doesNotMatch(html, /agent-tasks__drawer/);
+  assert.doesNotMatch(html, /<dialog\b|role="dialog"/);
   assert.equal(renderToStaticMarkup(createElement(AgentTasksPanel, { projection, language: 'en-US' })), '');
 });
 
@@ -96,24 +96,26 @@ test('sidebar entry, grouped list, detail back and selection cycle all reuse the
     { agentSessionId: 'session:working', displayName: 'Worker', status: 'running', text: 'Inspect the source' },
     { agentSessionId: 'session:finished', displayName: 'Reviewer', status: 'completed', text: 'Review', result: { content: 'Review complete' } },
   ] };
-  const buttons = node => Array.isArray(node) ? node.flatMap(buttons)
-    : node && typeof node === 'object' ? [...(node.type === 'button' ? [node] : []), ...buttons(node.props?.children)] : [];
-  buttons(AgentOverview({ projection, language: 'en-US' }))[0].props.onClick();
+  findReactElement(AgentOverview({ projection, language: 'en-US' }), node => node.type === 'button'
+    && node.props['aria-label'] === 'View all subagents').props.onClick();
   const list = AgentOverviewList({ projection, language: 'en-US' });
   const html = renderToStaticMarkup(list);
   assert.match(html, /aria-label="Running"/);
   assert.match(html, /aria-label="Completed"/);
   assert.match(html, /Inspect the source/);
   assert.match(html, /Review complete/);
-  buttons(list)[0].props.onClick();
+  const member = name => findReactElement(list, node => node.type === 'button'
+    && renderToStaticMarkup(node).replace(/<[^>]*>/g, '').includes(name));
+  member('Worker').props.onClick();
   function BackProbe() {
     const information = AgentPageInformation({ name: 'Worker', sessionId: 'session:working', projection: {}, language: 'en-US',
       onBack: () => requestAgentOverview(projection.sessionId) });
-    buttons(information)[0].props.onClick();
+    findReactElement(information, node => node.type === 'button'
+      && node.props['aria-label'] === 'Back to subagents').props.onClick();
     return information;
   }
   renderToStaticMarkup(createElement(BackProbe));
-  buttons(list)[1].props.onClick();
+  member('Reviewer').props.onClick();
   assert.deepEqual(requests.map(request => request.target.agentSessionId), [undefined, 'session:working', undefined, 'session:finished']);
   assert.ok(requests.every(request => request.sessionId === projection.sessionId && request.target.parentSessionId === projection.sessionId));
   assert.equal(new Set(requests.map(request => readerTargetKey(request.target))).size, 1);

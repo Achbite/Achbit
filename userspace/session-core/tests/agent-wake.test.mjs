@@ -4,7 +4,7 @@ import { createSessionCapabilities, SessionService } from '../dist/index.js';
 import { messagesFromJournal } from '../dist/local-agent/contextComposer.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import {
-  completedExecutionReply, emptyKernel, fakeRunPreparation, messageCommand, providerEvent, readEvents,
+  completedExecutionReply, emptyKernel, fakeRunPreparation, forwardingJournal, messageCommand, providerEvent, readEvents,
   waitUntil, workspaceBinding,
 } from './local-agent-fixtures.mjs';
 
@@ -1013,6 +1013,7 @@ test('delegation changes during execution preserve the provider call and result 
 
 test('total usage includes nested and closed Agents once and updates without a parent journal event', async t => {
   const ownerId = 'session:descendant-usage';
+  const journal = new InMemoryCommandJournal();
   let releaseChild, releaseChildFinal, releaseRoot;
   const childGate = new Promise(resolve => { releaseChild = resolve; });
   const childFinalGate = new Promise(resolve => { releaseChildFinal = resolve; });
@@ -1051,7 +1052,7 @@ test('total usage includes nested and closed Agents once and updates without a p
       }
     }
     yield providerEvent(request.requestId, 'completed', usage ? { usage: { ...usage, contextWindowTokens: 100_000 } } : {});
-  });
+  }, { journal: forwardingJournal(journal, journal.read.bind(journal)) });
   await fixture.service.submit(messageCommand(ownerId, 'command:usage:first', 'Delegate the details.'));
   await waitUntil(() => rootWaiting && childId, 'parent Provider is held while its child runs');
   const before = await fixture.service.snapshot(ownerId);

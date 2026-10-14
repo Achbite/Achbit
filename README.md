@@ -121,7 +121,11 @@ cd DeepCode
 make shell
 ```
 
-`make shell` prepares the development container. On macOS it also starts the worktree's native build bridge. Run the desired command inside that container, or from the host while it is running:
+`make shell` prepares the development container. On macOS it also starts the worktree's native build bridge.
+
+The development container enables nested Bubblewrap with `SYS_ADMIN` and container-local AppArmor, seccomp, and system-path overrides. Existing containers without this setup are recreated while preserving dependency and build volumes. These settings apply to the development container; packaged runtimes retain their platform sandbox behavior.
+
+Run the desired command inside that container, or from the host while it is running:
 
 | Target                        | Command                                   | Output                                 |
 | ----------------------------- | ----------------------------------------- | -------------------------------------- |
@@ -153,6 +157,10 @@ bash ./test.sh full       # Also covers the terminal/web shells and document out
 ```
 
 `bash ./test.sh static` checks shell syntax and Git whitespace and can run on the host. End-to-end scripts use a local fixture Provider; they do not replace real model or native GUI acceptance. Native GUI tests have their own Cargo workspace: `shells/deepcode-gui/src-tauri/Cargo.toml`.
+
+Tests protect current input/output contracts and data flow, including required failure and cleanup behavior. When a contract or path is retired, update its tests and fixtures in the same change; passing tests alone does not establish complete correctness. Maintained manual GUI previews are type-checked by `required`, but are not browser interaction tests or production build inputs.
+
+On Windows, the two Computer Use helper lifecycle tests are explicitly ignored until a built helper is supplied. Set `DEEPCODE_TEST_COMPUTER_USE_HELPER` to its executable, then run `cargo test -p deepcode-host-connection computer_use::tests -- --include-ignored`. That explicit run fails if the helper is missing; an ignored test is not a passing runtime check.
 
 ## License
 
