@@ -24,7 +24,7 @@ export function codeViewerExtensions(language: Language | null, dark: boolean, f
     language ?? [],
     EditorView.theme({
       '&': { height: '100%', color: 'var(--dc-foreground)', backgroundColor: 'var(--dc-code-background)' },
-      '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--dc-font-mono, ui-monospace, monospace)', fontSize: '13px', lineHeight: '1.6' },
+      '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--dc-font-mono, ui-monospace, monospace)', fontSize: 'var(--dc-font-code-size, 13px)', lineHeight: 'var(--dc-line-code, 1.6)' },
       '.cm-content': { padding: '8px 0', caretColor: 'var(--dc-foreground)' },
       '.cm-gutters': { backgroundColor: 'var(--dc-code-background)', color: 'var(--dc-muted)', border: 'none' },
       '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--dc-surface-active)' },

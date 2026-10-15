@@ -6,4 +6,3 @@
 .settings-switch > input:checked + span::after { transform:translateX(12px); background:var(--dc-surface); }
 .settings-switch > input:disabled { cursor:default; }
 .settings-switch > input:disabled + span { opacity:.45; }
-.settings-switch > input:focus-visible + span { outline:2px solid var(--dc-focus-ring); outline-offset:3px; }

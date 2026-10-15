@@ -42,7 +42,7 @@ button, select, summary, [role='button'] {
 }
 
 ::selection {
-  background: rgb(70 145 245 / 28%);
+  background: color-mix(in srgb, var(--dc-accent) 22%, transparent);
   color: inherit;
 }
 
@@ -50,7 +50,7 @@ button, select, summary, [role='button'] {
    paint text fragments without WebKit's block-wide selection bands. */
 html[data-reading-selection] ::selection { background: transparent; }
 ::highlight(deepcode-reading-selection) {
-  background: rgb(70 145 245 / 28%);
+  background: color-mix(in srgb, var(--dc-accent) 22%, transparent);
   color: inherit;
 }
 
@@ -59,6 +59,22 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+/* Shared, quiet feedback; component-specific disclosure and visibility transitions stay local. */
+:where(:root[data-product='deepcode-gui']) :where(button, [role='button'], [role='tab'], summary, select) {
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+[data-ui-icon] {
+  flex-shrink: 0;
+  vertical-align: -.125em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-product='deepcode-gui'] :is(button, [role='button'], [role='tab'], summary, select) {
+    transition: none;
+  }
 }
 
 .deepcode-gui-bootstrap-error,

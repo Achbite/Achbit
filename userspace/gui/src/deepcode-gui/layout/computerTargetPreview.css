@@ -3,7 +3,6 @@
 .computer-target-preview__card { position: fixed; min-width: 0; border: 0; border-radius: 12px; overflow: auto; overscroll-behavior: contain; pointer-events: auto; background: var(--dc-surface); box-shadow: 0 4px 18px #0002; }
 .computer-target-preview__target { display: block; position: relative; width: 100%; padding: 0; color: inherit; border: 0; border-radius: inherit; background: transparent; text-align: left; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .computer-target-preview__target[data-dragging] { cursor: grabbing; }
-.computer-target-preview__target:focus-visible { outline: 2px solid var(--dc-accent, #639fea); outline-offset: -2px; }
 .computer-target-preview__status { position: absolute; top: 8px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: #8b949e; box-shadow: 0 0 3px #0006; pointer-events: none; }
 .computer-target-preview__status--active { background: #58a77b; }
 .computer-target-preview__status--failed, .computer-target-preview__status--closed { background: #d68769; }

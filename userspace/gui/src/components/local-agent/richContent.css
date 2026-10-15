@@ -1,28 +1,28 @@
-.conversation-markdown { min-width: 0; overflow-wrap: anywhere; font-family: var(--dc-font-ui); font-size: var(--dc-font-body, 14px); line-height: 1.78; }
-.conversation-markdown :is(h1, h2, h3, h4, h5, h6) { color: var(--dc-foreground-strong); font-weight: 600; line-height: 1.4; margin: 1.5em 0 .7em; letter-spacing: -.01em; }
+.conversation-markdown { min-width: 0; overflow-wrap: anywhere; font-family: var(--dc-font-reading, var(--dc-font-ui)); font-size: var(--dc-font-reading-size, var(--dc-font-body, 14px)); line-height: var(--dc-line-reading, 1.72); }
+.conversation-markdown :is(h1, h2, h3, h4, h5, h6) { color: var(--dc-foreground-strong); font-weight: 600; line-height: 1.4; margin: 1.4em 0 .6em; }
 .conversation-markdown h1 { font-size: 1.8em; }
-.conversation-markdown h2 { font-size: 1.3em; margin-top: 1.8em; }
+.conversation-markdown h2 { font-size: 1.3em; margin-top: 1.6em; }
 .conversation-markdown h3 { font-size: 1.12em; }
 .conversation-markdown h4 { font-size: 1.1em; }
 .conversation-markdown h5 { font-size: 1em; }
 .conversation-markdown h6 { font-size: .95em; color: var(--dc-muted); }
-.conversation-markdown :is(p, ul, ol, blockquote, pre), .conversation-markdown > :is(.conversation-code, .conversation-table, .conversation-diagram) { margin: .848em 0; }
+.conversation-markdown :is(p, ul, ol, blockquote, pre), .conversation-markdown > :is(.conversation-code, .conversation-table, .conversation-diagram) { margin: .8em 0; }
 .conversation-markdown :is(ul, ol) { padding-left: 1.6em; }
-.conversation-markdown li + li { margin-top: .48em; }
+.conversation-markdown li + li { margin-top: .4em; }
 .conversation-markdown li::marker { color: var(--dc-muted); }
 .conversation-markdown strong { font-weight: 600; }
 .conversation-markdown li > :is(p, ul, ol) { margin-block: 0; }
 .conversation-markdown blockquote { margin-inline: 0; padding-left: 1em; border-left: 3px solid var(--dc-border-strong); color: var(--dc-muted); }
 .conversation-markdown hr { height: 1px; margin: 1.6em 0; border: 0; background: var(--dc-border); }
-.conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 3px; background: var(--dc-code-background); font: calc(12px * var(--dc-ui-font-scale, 1))/1.6 var(--dc-font-mono); overflow-wrap: anywhere; }
+.conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--dc-code-background); font: .9em/var(--dc-line-code, 1.6) var(--dc-font-mono); overflow-wrap: anywhere; }
 .conversation-markdown a { color: var(--dc-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--dc-accent) 35%, transparent); text-underline-offset: 3px; }
 .conversation-markdown a:hover { text-decoration-color: currentColor; }
 .conversation-markdown > :first-child { margin-top: 0; }
 .conversation-markdown > :last-child { margin-bottom: 0; }
 .conversation-markdown img, .conversation-diagram svg { max-width: 100%; height: auto; }
 .conversation-code, .conversation-diagram { max-width: 100%; overflow: auto; }
-.conversation-code { border: 1px solid var(--dc-border); border-radius: 6px; background: var(--dc-code-background); }
-.conversation-code header { display: flex; align-items: center; gap: 12px; min-height: 24px; padding: 5px 12px; color: var(--dc-muted); font-size: calc(11px * var(--dc-ui-font-scale, 1)); }
+.conversation-code { border: 1px solid var(--dc-border); border-radius: 10px; background: var(--dc-code-background); }
+.conversation-code header { display: flex; align-items: center; gap: 12px; min-height: 24px; padding: 8px 16px; color: var(--dc-muted); font-size: var(--dc-font-caption, calc(12px * var(--dc-ui-font-scale, 1))); }
 .conversation-code header button { margin-left: auto; }
 .local-agent .conversation-copy-button { position: relative; display: grid; place-items: center; flex: none; width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--dc-muted); font: inherit; font-size: calc(11px * var(--dc-ui-font-scale, 1)); cursor: pointer; }
 .local-agent .conversation-copy-button:hover { color: var(--dc-foreground); background: var(--dc-surface-hover); }
@@ -30,12 +30,15 @@
 .conversation-copy-button > svg { width: 15px; height: 15px; }
 .conversation-code .conversation-copy-button { opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .conversation-code:hover .conversation-copy-button, .conversation-code:focus-within .conversation-copy-button { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .conversation-code .conversation-copy-button { opacity: 1; pointer-events: auto; }
+}
 .conversation-copy-hint, .local-agent__message-action-hint { position: absolute; z-index: 3; top: 50%; right: calc(100% + 6px); transform: translateY(-50%); width: max-content; padding: 3px 6px; border: 1px solid var(--dc-border); border-radius: 5px; background: var(--dc-surface); color: var(--dc-muted); box-shadow: 0 2px 6px color-mix(in srgb, var(--dc-shadow-color) 6.67%, transparent); font-size: calc(11px * var(--dc-ui-font-scale, 1)); font-weight: 400; line-height: 1.4; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .conversation-copy-button:hover .conversation-copy-hint, .conversation-copy-button:focus-visible .conversation-copy-hint,
 .local-agent__message-actions button:hover .local-agent__message-action-hint, .local-agent__message-actions button:focus-visible .local-agent__message-action-hint { opacity: 1; }
 .local-agent__message-actions :is(.conversation-copy-hint, .local-agent__message-action-hint) { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; transform: none; }
 .conversation-copy-error { display: block; padding: 0 10px 6px; color: var(--dc-danger); }
-.conversation-code pre { margin: 0; padding: 10px 18px 16px; overflow: auto; white-space: pre; font-size: calc(12px * var(--dc-ui-font-scale, 1)); }
+.conversation-code pre { margin: 0; padding: 8px 16px 16px; overflow: auto; white-space: pre; font: var(--dc-font-code-size, calc(13px * var(--dc-ui-font-scale, 1)))/var(--dc-line-code, 1.6) var(--dc-font-mono); }
 .conversation-code pre code { padding: 0; background: transparent; font-size: inherit; }
 .conversation-table { min-width: 0; max-width: 100%; }
 .conversation-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding-bottom: 6px; }

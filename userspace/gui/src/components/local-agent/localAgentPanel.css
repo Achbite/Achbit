@@ -372,7 +372,8 @@
 
 .local-agent__message-content {
   color: var(--dc-foreground);
-  font-size: var(--dc-font-body);
+  font-family: var(--dc-font-reading, var(--dc-font-ui));
+  font-size: var(--dc-font-reading-size, var(--dc-font-body));
   line-height: var(--dc-line-reading);
   overflow-wrap: anywhere;
 }
@@ -392,8 +393,8 @@
   user-select: text;
   min-width: 0;
   max-width: 100%;
-  padding: 10px 14px;
-  border-radius: 17px 17px 5px 17px;
+  padding: 12px 16px;
+  border-radius: 18px;
   background: var(--dc-surface-subtle);
 }
 
@@ -419,7 +420,7 @@
 .conversation-virtual-row { display: flow-root; }
 .conversation-virtual-row[hidden] { display: none; }
 .local-agent__paste-toggle { text-decoration: underline; }
-.local-agent__pasted-text textarea { max-height: 260px; overflow: auto; font-family: monospace; }
+.local-agent__pasted-text textarea { max-height: 260px; overflow: auto; font-family: var(--dc-font-mono); }
 
 .local-agent__message--tool .local-agent__message-content,
 .local-agent__message--system .local-agent__message-content {
@@ -442,8 +443,8 @@
 }
 
 .local-agent__message--assistant .local-agent__message-content {
-  font-size: calc(15px * var(--dc-ui-font-scale, 1));
-  line-height: 1.78;
+  font-size: var(--dc-font-reading-size, var(--dc-font-body-large));
+  line-height: var(--dc-line-reading);
 }
 
 .local-agent__message-actions {
@@ -894,7 +895,7 @@
   border-radius: 6px;
   background: var(--dc-surface-subtle);
   color: var(--dc-foreground);
-  font: var(--dc-font-micro)/1.5 var(--dc-font-mono);
+  font: var(--dc-font-code-size)/var(--dc-line-code) var(--dc-font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1047,7 +1048,7 @@
 .conversation-plan-verification li > .conversation-markdown > :last-child { margin-bottom: 0; }
 .conversation-plan-revision-note { font-size: var(--dc-font-label); color: var(--dc-muted); margin: 14px 22px 0; }
 .conversation-plan-preview-note { display: block; color: var(--dc-muted); padding: 0 22px 18px; }
-.conversation-markdown-inline code { padding: .1em .3em; border-radius: 3px; background: var(--dc-code-background); font: calc(12px * var(--dc-ui-font-scale, 1))/1.6 var(--dc-font-mono); }
+.conversation-markdown-inline code { padding: .12em .35em; border-radius: 4px; background: var(--dc-code-background); font: .9em/var(--dc-line-code, 1.6) var(--dc-font-mono); }
 
 .local-agent__plan-manifest {
   margin: 16px 0 0;
@@ -1512,12 +1513,17 @@
   flex: 0 0 auto;
   position: relative;
   overflow: visible;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--dc-border);
   border-radius: 18px;
   background: var(--dc-surface-raised);
-  box-shadow: var(--dc-shadow-panel);
+  box-shadow: var(--dc-shadow-small);
+  transition: border-color 140ms ease;
   -webkit-user-select: none;
   user-select: none;
+}
+
+.local-agent__composer:not(.local-agent__composer--approval):hover {
+  border-color: var(--dc-border-strong);
 }
 
 /* Composer chrome is not prose; editable fields and decision details remain selectable. */
@@ -1563,17 +1569,11 @@
   color: var(--dc-foreground);
   cursor: text;
   font-family: inherit;
-  font-size: var(--dc-font-body-large);
+  font-size: var(--dc-font-reading-size, var(--dc-font-body-large));
   line-height: var(--dc-line-body);
   opacity: 1;
   user-select: text;
   -webkit-text-fill-color: var(--dc-foreground);
-}
-
-:root[data-product='deepcode-gui'] .local-agent__composer textarea:focus,
-:root[data-product='deepcode-gui'] .local-agent__composer textarea:focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
 }
 
 .local-agent__composer textarea::placeholder {
@@ -1590,7 +1590,7 @@
   padding: 6px;
   max-height: min(360px, 45vh);
   overflow-y: auto;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--dc-border);
   border-radius: 12px;
   background: var(--dc-surface-raised);
   box-shadow: var(--dc-shadow-panel);
@@ -1807,7 +1807,7 @@
   min-width: max-content;
   margin: 0;
   color: var(--dc-foreground);
-  font: var(--dc-font-caption)/1.65 var(--dc-font-mono);
+  font: var(--dc-font-code-size)/var(--dc-line-code) var(--dc-font-mono);
   tab-size: 2;
   white-space: pre;
 }
@@ -1830,11 +1830,16 @@
   background: transparent !important;
   color: var(--dc-faint);
   opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease;
 }
 
 .local-agent__draft-attachments > span:hover > button,
 .local-agent__draft-attachments > span > button:focus-visible {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .local-agent__draft-attachments > span > button { opacity: 1; }
 }
 
 .local-agent__composer-footer {
@@ -1909,7 +1914,7 @@
   width: 236px;
   gap: 2px;
   padding: 6px;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--dc-border);
   border-radius: 12px;
   background: var(--dc-surface-raised);
   box-shadow: var(--dc-shadow-panel);
@@ -2005,17 +2010,18 @@
 .local-agent__permission-grants b, .local-agent__permission-grants > div > span > span { display: block; margin-bottom: 4px; }
 
 .local-agent--workbench .local-agent__transcript {
-  width: min(820px, calc(100% - 48px));
-  padding-top: 38px;
+  width: min(780px, calc(100% - 48px));
+  padding-top: 32px;
 }
 
 .local-agent--workbench .local-agent__composer-shell {
-  width: min(860px, 100%);
+  /* The shell's 20px padding aligns the input with the transcript at every width. */
+  width: min(820px, calc(100% - 8px));
   margin-inline: auto;
 }
 
 .local-agent--workbench .local-agent__composer {
-  border-radius: 16px;
+  border-radius: 18px;
 }
 
 .local-agent__jump-latest {
@@ -2201,6 +2207,14 @@
   .local-agent__composer-shell {
     padding-inline: 10px;
   }
+
+  .local-agent--workbench .local-agent__transcript {
+    width: calc(100% - 24px);
+  }
+
+  .local-agent--workbench .local-agent__composer-shell {
+    width: calc(100% - 4px);
+  }
 }
 
 .local-agent__profile-notice {
@@ -2213,7 +2227,7 @@
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: calc(12px * var(--dc-ui-font-scale, 1));
+  font: var(--dc-font-code-size)/var(--dc-line-code) var(--dc-font-mono);
   padding: 10px;
   border-radius: 8px;
   background: var(--dc-surface-subtle);
@@ -2264,9 +2278,10 @@
 .local-agent__path-menu {
   position: fixed;
   z-index: 300;
-  padding: 4px;
-  border-radius: 8px;
-  background: var(--dc-surface-subtle);
+  padding: 6px;
+  border: 1px solid var(--dc-border);
+  border-radius: 12px;
+  background: var(--dc-surface-raised);
   color: var(--dc-foreground);
   box-shadow: var(--dc-shadow-panel);
 }
@@ -2276,7 +2291,6 @@
 .local-agent__error-content { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .local-agent__error-close { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .local-agent__error-close:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
-.local-agent__error-close:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 .local-agent__link-choices { width: min(600px, calc(100vw - 48px)); padding: 20px; }
 .local-agent__link-choices header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .local-agent__link-choices h2 { margin: 0; font-size: 16px; }
@@ -2321,7 +2335,7 @@
 .local-agent__auto-review-spinner { width: 16px; height: 16px; border: 1.7px solid var(--dc-border); border-top-color: var(--dc-accent); border-radius: 50%; animation: local-agent-review-spin 1.2s linear infinite; flex: none; }
 @keyframes local-agent-review-spin { to { transform: rotate(360deg); } }
 .local-agent .local-agent__auto-review > header > button { margin-left: auto; white-space: nowrap; min-height: 29px; padding: 5px 10px; font-size: 12px; font-weight: 400; border: 1px solid var(--dc-border); border-radius: 7px; background: transparent; color: var(--dc-muted); }
-.local-agent__auto-review-command { padding: 11px 13px; margin: 0 0 10px; border: 1px solid var(--dc-border); border-radius: 8px; background: var(--dc-surface-subtle); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 110px; overflow: auto; font: 12px/1.8 var(--dc-font-mono); }
+.local-agent__auto-review-command { padding: 11px 13px; margin: 0 0 10px; border: 1px solid var(--dc-border); border-radius: 8px; background: var(--dc-surface-subtle); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 110px; overflow: auto; font: var(--dc-font-code-size)/var(--dc-line-code) var(--dc-font-mono); }
 .local-agent__auto-review .local-agent__decision-scope { font-size: 11px; color: var(--dc-muted); }
 .local-agent__decision-scope pre { min-width: 0; max-width: 100%; max-height: 150px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .local-agent__decision-scope > dl { max-height: min(260px, 28dvh); overflow: auto; }
@@ -2357,7 +2371,6 @@
 /* Questions stay at their original transcript position while the Loop continues. */
 .local-agent .local-agent__question-link { display: inline-flex; align-items: center; gap: 8px; border: 0; padding: 6px 0; background: transparent; color: var(--dc-muted); font: inherit; cursor: pointer; }
 .local-agent .local-agent__question-link:hover { color: var(--dc-foreground); }
-.local-agent .local-agent__question-link:focus-visible { outline: 2px solid var(--dc-focus-ring); outline-offset: 2px; }
 .local-agent__composer--interaction > .local-agent__question-options { grid-column: 1 / -1; width: 100%; min-width: 0; max-height: min(240px, 28dvh); overflow: auto; margin: 0; }
 .local-agent__question {
   box-sizing: border-box;
@@ -2437,7 +2450,6 @@
 }
 .local-agent .local-agent__question-form > button:hover:not(:disabled) { background: var(--dc-muted); }
 .local-agent .local-agent__question-form > button:active:not(:disabled) { background: var(--dc-foreground-strong); }
-.local-agent__question :is(button, textarea):focus-visible { outline: 2px solid var(--dc-focus-ring); outline-offset: 2px; }
 .local-agent .local-agent__question button:disabled { background: transparent; color: var(--dc-faint); cursor: default; }
 .local-agent__question-choice:disabled span { color: inherit; }
 .local-agent__question-answer, .local-agent__question > [role='alert'] { margin: 0; }

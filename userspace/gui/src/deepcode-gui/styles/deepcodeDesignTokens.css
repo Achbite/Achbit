@@ -28,24 +28,28 @@
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-blue-light-contrast));
-  /* Interaction focus stays neutral when the content accent changes. */
+  /* Used by the active code-search match, not by control focus chrome. */
   --dc-focus-ring: color-mix(in srgb, var(--dc-foreground) 45%, transparent);
 
   --dc-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --dc-font-reading: var(--dc-font-ui);
   --dc-font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --dc-font-micro: calc(11px * var(--dc-ui-font-scale, 1));
   --dc-font-caption: calc(12px * var(--dc-ui-font-scale, 1));
   --dc-font-label: calc(13px * var(--dc-ui-font-scale, 1));
   --dc-font-body: calc(14px * var(--dc-ui-font-scale, 1));
   --dc-font-body-large: calc(15px * var(--dc-ui-font-scale, 1));
+  --dc-font-reading-size: calc(16px * var(--dc-ui-font-scale, 1));
+  --dc-font-code-size: calc(13px * var(--dc-ui-font-scale, 1));
   --dc-font-title: calc(16px * var(--dc-ui-font-scale, 1));
   --dc-line-tight: 1.35;
   --dc-line-compact: 1.45;
   --dc-line-body: 1.6;
-  --dc-line-reading: 1.7;
+  --dc-line-reading: 1.72;
+  --dc-line-code: 1.6;
   --dc-weight-regular: 400;
-  --dc-weight-medium: 560;
-  --dc-weight-semibold: 650;
+  --dc-weight-medium: 500;
+  --dc-weight-semibold: 600;
   --dc-weight-bold: 700;
   --dc-titlebar-height: 52px;
   --dc-navigation-inset: 14px;
