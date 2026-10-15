@@ -424,13 +424,10 @@
 
 .local-agent__message--tool .local-agent__message-content,
 .local-agent__message--system .local-agent__message-content {
-  padding: 11px 13px;
-  border: 1px solid var(--dc-border);
-  border-radius: 12px;
-  background: var(--dc-code-background);
+  padding: 8px 0;
   color: var(--dc-muted);
-  font-family: var(--dc-font-mono);
-  font-size: var(--dc-font-caption);
+  font-family: var(--dc-font-ui);
+  font-size: var(--dc-font-label);
   line-height: var(--dc-line-body);
 }
 
@@ -633,31 +630,32 @@
 }
 
 .local-agent__tool-group-icon svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 
 .local-agent__tool-group {
-  width: min(420px, calc(100% - 8px));
-  margin: 0 0 12px 2px;
+  width: 100%;
+  margin: 4px 0 16px;
   border: 0;
   background: transparent;
   color: var(--dc-muted);
-  font-size: var(--dc-font-micro);
+  font-size: var(--dc-font-label);
+  line-height: var(--dc-line-body);
 }
 
 .local-agent__tool-group--expanded {
-  width: calc(100% - 8px);
+  width: 100%;
 }
 
 .local-agent .local-agent__tool-group-summary {
   display: inline-flex;
   width: auto;
   max-width: 100%;
-  min-height: 26px;
+  min-height: 30px;
   align-items: center;
-  gap: 4px;
-  padding: 1px 3px;
+  gap: 6px;
+  padding: 3px 6px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -689,7 +687,7 @@
   display: grid;
   place-items: center;
   color: var(--dc-faint);
-  transition: transform 120ms ease;
+  transition: transform var(--dc-motion-reveal) var(--dc-ease-out);
 }
 
 .local-agent__tool-group-summary[aria-expanded='true'] .local-agent__tool-group-chevron {
@@ -703,7 +701,8 @@
 
 .local-agent__tool-group-items {
   display: grid;
-  padding: 0 0 3px 18px;
+  gap: 4px;
+  padding: 4px 0 4px 24px;
 }
 
 .local-agent__tool-entry {
@@ -713,13 +712,13 @@
 
 .local-agent .local-agent__tool-entry-heading {
   display: inline-flex;
-  width: auto;
+  width: fit-content;
   max-width: 100%;
-  min-height: 24px;
+  min-height: 30px;
   min-width: 0;
   align-items: center;
-  gap: 3px;
-  padding: 1px 3px;
+  gap: 6px;
+  padding: 3px 6px;
   border: 0;
   border-radius: 5px;
   background: transparent;
@@ -757,7 +756,7 @@
   margin-left: 1px;
   place-items: center;
   color: var(--dc-faint);
-  transition: transform 120ms ease;
+  transition: transform var(--dc-motion-reveal) var(--dc-ease-out);
 }
 
 .local-agent__tool-entry-heading[aria-expanded='true'] .local-agent__tool-entry-chevron {
@@ -790,10 +789,9 @@
   max-height: min(420px, 50vh);
   overflow: auto;
   overscroll-behavior-y: contain;
-  gap: 7px;
-  margin: 1px 4px 5px 6px;
-  padding: 5px 7px 7px 10px;
-  border-left: 1px solid var(--dc-border);
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 12px 8px 24px;
   color: var(--dc-muted);
 }
 
@@ -806,7 +804,7 @@
 .local-agent__tool-entry-details dl > div {
   display: grid;
   min-width: 0;
-  grid-template-columns: 66px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr);
   gap: 7px;
 }
 
@@ -820,6 +818,7 @@
 }
 
 .local-agent__tool-entry-details code {
+  font: var(--dc-font-code-size)/var(--dc-line-code) var(--dc-font-mono);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -1517,13 +1516,65 @@
   border-radius: 18px;
   background: var(--dc-surface-raised);
   box-shadow: var(--dc-shadow-small);
-  transition: border-color 140ms ease;
   -webkit-user-select: none;
   user-select: none;
 }
 
-.local-agent__composer:not(.local-agent__composer--approval):hover {
-  border-color: var(--dc-border-strong);
+.local-agent__composer:not(.local-agent__composer--approval) {
+  isolation: isolate;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* A separate surface gives focus feedback without moving text, caret or hit targets. */
+.local-agent__composer:not(.local-agent__composer--approval)::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  pointer-events: none;
+  border: 0;
+  border-radius: inherit;
+  background: var(--dc-surface-raised);
+  box-shadow: var(--dc-shadow-small);
+  transform-origin: center bottom;
+  transition: transform var(--dc-motion-reveal) var(--dc-ease-out),
+    background-color var(--dc-motion-feedback) ease;
+}
+
+.local-agent__composer:not(.local-agent__composer--approval):hover::before {
+  background: color-mix(in srgb, var(--dc-surface-raised) 85%, var(--dc-surface-hover));
+}
+
+/* Engagement can end after a send while keyboard focus remains in the editor. */
+.local-agent__composer[data-press-feedback]:hover:has(> textarea:focus)::before {
+  background: var(--dc-surface-raised);
+  transform: translateY(-3px) scale(1.012, 1.025);
+}
+
+/* Click feedback is separate from the sustained lift, so every click responds. */
+.local-agent__composer[data-press-feedback]::before {
+  animation-duration: 280ms;
+  animation-timing-function: ease-out;
+}
+
+.local-agent__composer[data-press-feedback='a']::before {
+  animation-name: local-agent-composer-press-a;
+}
+
+.local-agent__composer[data-press-feedback='b']::before {
+  animation-name: local-agent-composer-press-b;
+}
+
+@keyframes local-agent-composer-press-a {
+  0%, 100% { scale: 1; }
+  35% { scale: 1.01 1.02; }
+}
+
+@keyframes local-agent-composer-press-b {
+  0%, 100% { scale: 1; }
+  35% { scale: 1.01 1.02; }
 }
 
 /* Composer chrome is not prose; editable fields and decision details remain selectable. */

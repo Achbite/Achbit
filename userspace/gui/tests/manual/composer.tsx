@@ -1,11 +1,12 @@
 // Isolated visual fixture. Uses production composer state and components, with no backend calls.
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { COMMAND_REPLY_VERSION, type CommandReply } from '@deepcode/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
+import { installTextSelectionBoundary } from '../../src/components/shared/textSelection';
 import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/local-agent/localAgentPanel.css';
@@ -20,11 +21,12 @@ const question = { interactionId: 'question:preview', prompt: '测试页使用�
 const review = { approvalId: 'approval:review', preview: { summary: 'docker ps --format json', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'], fileAccess: { read: ['/Applications/DeepCode.app'], write: [] }, operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps --format json' } } } };
 const approval = { approvalId: 'approval:preview', preview: { summary: '点击测试页中的“点我 +1”按钮', effects: ['external'], logicalTargets: ['browser:preview-1'], authorizationScope: 'sessionBrowser' } };
 useLocalAgentStore.setState({ sessionId: 'session:composer-preview', loading: false, catalogBusy: false, submitting: false,
-  profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto' }] as never, selectedProfileId: 'profile:preview',
+  profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto', reasoningEffort: 'medium' }] as never, selectedProfileId: 'profile:preview',
   projection: { sessionId: 'session:composer-preview', revision: 0, contextCompositions: [], queuedInputs: [], plans: [], pendingApproval: approval } as never,
 });
 
 function Preview() {
+  useEffect(() => installTextSelectionBoundary(document), []);
   const [mode, setMode] = useState('approval');
   const [result, setResult] = useState('');
   const initialized = useRef(false);

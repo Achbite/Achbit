@@ -77,7 +77,7 @@ export interface UiIconProps {
 
 export default function UiIcon({ name, className, size = 18, title }: UiIconProps) {
   return <svg className={className} data-ui-icon={name} viewBox="0 0 24 24"
-    width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.75"
+    width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.65"
     strokeLinecap="round" strokeLinejoin="round" focusable="false"
     aria-hidden={title ? undefined : true} role={title ? 'img' : undefined} aria-label={title}>
     {title && <title>{title}</title>}

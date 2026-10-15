@@ -51,6 +51,9 @@
   --dc-weight-medium: 500;
   --dc-weight-semibold: 600;
   --dc-weight-bold: 700;
+  --dc-motion-feedback: 140ms;
+  --dc-motion-reveal: 200ms;
+  --dc-ease-out: cubic-bezier(.2, .8, .2, 1);
   --dc-titlebar-height: 52px;
   --dc-navigation-inset: 14px;
   --dc-navigation-controls-height: var(--dc-titlebar-height);
@@ -161,5 +164,9 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  :root[data-product='deepcode-gui'] .local-agent__composer::before {
+    transform: none !important;
+    scale: none !important;
   }
 }

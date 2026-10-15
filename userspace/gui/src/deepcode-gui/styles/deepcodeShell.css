@@ -111,11 +111,10 @@
 }
 
 .deepcode-gui-context-card {
-  margin-bottom: 11px;
+  margin-bottom: 20px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--dc-border) 65%, transparent);
-  border-radius: var(--dc-radius-inner);
-  background: var(--dc-surface-raised);
+  border: 0;
+  background: transparent;
   box-shadow: none;
 }
 
@@ -126,7 +125,6 @@
   justify-content: space-between;
   gap: 10px;
   padding: 0 13px;
-  border-bottom: 1px solid color-mix(in srgb, var(--dc-border) 65%, transparent);
   color: var(--dc-muted);
   font-size: var(--dc-font-label);
   font-weight: var(--dc-weight-medium);
@@ -671,9 +669,9 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 24px;
   overflow: auto;
-  padding: 14px 12px;
+  padding: 20px 16px;
   border-left: 0;
   background: var(--dc-surface);
 }
@@ -681,10 +679,9 @@
 .deepcode-gui-task-list-card {
   display: grid;
   gap: 0;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--dc-border) 65%, transparent);
-  border-radius: var(--dc-radius-inner);
-  background: var(--dc-surface);
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
 }
 
 .deepcode-gui-task-list-card__title {
@@ -699,12 +696,12 @@
 }
 
 .deepcode-gui-task-list-card__empty {
-  min-height: 64px;
+  min-height: 36px;
   display: grid;
-  place-items: center;
+  align-items: center;
   color: var(--dc-faint);
   font-size: var(--dc-font-caption);
-  text-align: center;
+  text-align: left;
 }
 
 .deepcode-gui-task-list-card__note {
@@ -751,7 +748,6 @@
 .deepcode-gui-task-item--active .deepcode-gui-task-item__dot,
 .deepcode-gui-task-item--requested .deepcode-gui-task-item__dot {
   background: var(--dc-accent);
-  box-shadow: 0 0 0 4px var(--dc-accent-soft);
 }
 
 .deepcode-gui-task-item--waiting .deepcode-gui-task-item__dot,
@@ -771,8 +767,8 @@
 .deepcode-gui-task-item__title {
   color: var(--dc-foreground);
   font-size: var(--dc-font-label);
-  font-weight: var(--dc-weight-medium);
-  line-height: var(--dc-line-compact);
+  font-weight: var(--dc-weight-regular);
+  line-height: var(--dc-line-body);
 }
 
 .deepcode-gui-task-item__summary {
@@ -1193,7 +1189,7 @@
   width: min(410px, calc(100vw - 36px));
   max-height: min(560px, calc(100vh - 140px));
   overflow: hidden;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--dc-border);
   border-radius: 13px;
   background: var(--dc-surface-raised);
   box-shadow: var(--dc-shadow-panel);

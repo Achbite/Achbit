@@ -32,7 +32,7 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
     <header><span>{language || 'text'}</span><button type="button" className="conversation-copy-button" aria-label={t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')} onClick={() => {
       setCopied(false); setCopyError('');
       void host.copyText(code).then(() => setCopied(true)).catch((error: unknown) => setCopyError(String(error)));
-    }}><DeepCodeShellIcon name="copy" /><span className="conversation-copy-hint" role="status">{t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')}</span></button></header>
+    }}><DeepCodeShellIcon name={copied ? 'check' : 'copy'} /><span className="conversation-copy-hint" role="status">{t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')}</span></button></header>
     {copyError && <small className="conversation-copy-error" role="alert">{copyError}</small>}
     {highlightError && <small role="status">{t(uiLanguage, 'content.code.highlightError', { error: highlightError })}</small>}
     {!streaming && rendered?.code === code

@@ -63,12 +63,46 @@ textarea {
 
 /* Shared, quiet feedback; component-specific disclosure and visibility transitions stay local. */
 :where(:root[data-product='deepcode-gui']) :where(button, [role='button'], [role='tab'], summary, select) {
-  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+  transition: background-color var(--dc-motion-feedback) ease, color var(--dc-motion-feedback) ease, border-color var(--dc-motion-feedback) ease;
 }
 
 [data-ui-icon] {
   flex-shrink: 0;
   vertical-align: -.125em;
+}
+
+/* Move the glyph only: labels, hit targets and neighboring controls stay still. */
+@media (prefers-reduced-motion: no-preference) {
+  button > [data-ui-icon]:not([data-ui-icon='spinner']) {
+    transition: transform 100ms var(--dc-ease-out);
+  }
+  button:active:not(:disabled):not([aria-disabled='true']) > [data-ui-icon]:not([data-ui-icon='spinner']) {
+    transform: scale(.94);
+  }
+}
+
+/* Entry motion follows existing mounting and disclosure state; it never delays input. */
+:is(.local-agent__attachment-menu, .local-agent__plugin-picker,
+  .local-agent__command-suggestions, .local-agent__permission-menu,
+  .local-agent__path-menu, .deepcode-session-model__menu,
+  .deepcode-session-model__context-popover) {
+  transform-origin: center bottom;
+  animation: dc-surface-enter var(--dc-motion-reveal) var(--dc-ease-out);
+}
+
+:is(.local-agent__tool-group-items, .local-agent__tool-entry-details,
+  .local-agent__approval-record-body, .conversation-reasoning-body) {
+  animation: dc-content-reveal var(--dc-motion-reveal) var(--dc-ease-out);
+}
+
+@keyframes dc-surface-enter {
+  from { opacity: 0; transform: translateY(4px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes dc-content-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,6 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import type { BrowserAnnotationDraft } from './browserReview';
-import React, { useId, useLayoutEffect, useRef } from 'react';
+import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import SessionModelSelector from './SessionModelSelector';
@@ -94,6 +94,15 @@ export function ConversationComposer({
   };
   const pickerId = useId();
   const commandMenuId = useId();
+  const [pressFeedback, setPressFeedback] = useState<'a' | 'b' | null>(null);
+  // Alternating names restarts the surface pulse, including rapid repeat clicks.
+  const playPressFeedback = () => setPressFeedback(current => current === 'a' ? 'b' : 'a');
+  const draftEmpty = !draft && !pendingFilesystemPaths.length
+    && !composer.pastedTexts.length && !pluginSelections.length;
+  useLayoutEffect(() => {
+    // Submission clears this draft but may intentionally keep keyboard focus.
+    if (draftEmpty) setPressFeedback(null);
+  }, [draftEmpty]);
   const commandMenuRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     commandMenuRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
@@ -181,11 +190,20 @@ export function ConversationComposer({
       <ComposerQuestionPrompt language={language} composer={composer} />
       <div
         className={`local-agent__composer local-agent__composer--${inputMode}`}
+        data-press-feedback={pressFeedback ?? undefined}
+        onMouseLeave={() => setPressFeedback(null)}
         onMouseDown={(event) => {
+          const textarea = textareaRef.current;
+          if (event.button !== 0 || !textarea || textarea.disabled) return;
           const target = event.target as HTMLElement;
+          if (target === textarea) {
+            playPressFeedback();
+            return;
+          }
           if (target.closest('button, input, select, textarea, label, a, [role="button"], .local-agent__interaction-panel, .local-agent__decision')) return;
           event.preventDefault();
-          textareaRef.current?.focus();
+          textarea.focus();
+          playPressFeedback();
         }}
       >
         <ComposerDecisionPanels language={language} composer={composer} />
@@ -360,7 +378,10 @@ export function ConversationComposer({
             event.target.selectionStart ?? event.target.value.length,
           )}
           onFocus={(event) => recordComposerElementState(event.currentTarget, true)}
-          onBlur={(event) => recordComposerElementState(event.currentTarget, false)}
+          onBlur={(event) => {
+            setPressFeedback(null);
+            recordComposerElementState(event.currentTarget, false);
+          }}
           onSelect={(event) => recordComposerElementState(
             event.currentTarget,
             document.activeElement === event.currentTarget,

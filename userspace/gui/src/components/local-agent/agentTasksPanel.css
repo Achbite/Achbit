@@ -11,7 +11,7 @@
 .local-agent .agent-tasks__member { display:inline-flex; align-items:center; gap:5px; border:0; box-shadow:none; border-radius:4px; padding:4px; color:var(--dc-muted); background:transparent; font:inherit; cursor:pointer; text-align:left; }
 .agent-tasks__member > span:first-of-type { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-tasks__member svg { width:16px; height:16px; flex:none; }
-.agent-tasks__member--running svg { color:var(--dc-accent); animation:agent-pulse 1.8s ease-in-out infinite; }
+.agent-tasks__member--running svg { color:var(--dc-accent); }
 .agent-tasks__member--completed svg { color:var(--dc-success); }
 .agent-tasks__member--updated svg { color:var(--dc-accent); }
 .agent-tasks__member:hover, .agent-tasks__member[aria-pressed=true] { background:var(--dc-surface-hover); color:var(--dc-foreground); }
@@ -21,8 +21,6 @@
 .agent-tasks__conversation { margin:0; }
 .agent-tasks__conversation > article { margin:16px 0 24px; }
 .agent-tasks__conversation > article > header { font-size:var(--dc-font-caption); margin-bottom:8px; }
-@keyframes agent-pulse { 50% { opacity:.5; } }
-@media (prefers-reduced-motion:reduce) { .agent-tasks__member--running svg { animation:none; } }
 
 .local-agent__reader .agent-tasks__toolbar { min-height:48px; box-sizing:border-box; flex:none; padding:6px 12px; border-bottom:1px solid var(--dc-border); gap:8px; }
 .agent-tasks__toolbar > svg { width:16px; height:16px; flex:none; color:var(--dc-muted); }

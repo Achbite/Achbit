@@ -36,6 +36,12 @@ export function preventBlankTextSelection(event: MouseEvent): void {
     }
   }
   event.preventDefault();
+  // Cancelling blank-space selection also cancels the browser's focus transfer.
+  // Release an editor when the user explicitly clicks outside it.
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.matches(EDITABLE) && !active.contains(event.target)) {
+    active.blur();
+  }
   if (!event.shiftKey) document.getSelection()?.removeAllRanges();
 }
 
