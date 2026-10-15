@@ -1,6 +1,6 @@
 import { permissionSettings, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
-import { prepareApprovalReview, decodeApprovalReview } from './approvalReview.js';
+import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
 import type {
   AgentOperation,
@@ -2016,26 +2016,58 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
     await commit({ type: 'approval.requested', sessionId: snapshot.state.sessionId, runId,
       callId: requestEvent.callId, payload: { approvalId, preview: reply.preview } });
     if (reply.preview.approvalReviewer === 'agent') {
-      const reviewRequestId = deps.nextId('provider-request');
-      let review: ReturnType<typeof prepareApprovalReview> | undefined;
-      let verdict: ReturnType<typeof decodeApprovalReview>;
-      try {
-        review = prepareApprovalReview(snapshot, runRuntimeSnapshot(snapshot, runId), snapshot.state.pendingApprovals.find(item => item.callId === requestEvent.callId)!, reviewRequestId);
-        await commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId, payload: review.receipt });
-        const result = await consumeTextProvider(review.request, deps, signal);
-        await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
-          ...(result.contextUsage ? [{ type: 'context.updated' as const, sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
-        verdict = decodeApprovalReview(result.summary);
-      } catch (error) {
-        if (signal.aborted) throw error;
-        const fact = errorFact(error);
-        if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
-          sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
-            purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
-        verdict = { decision: 'ask', reason: `自动审查未完成：${fact.code}：${fact.message}` };
+      const baseline = JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides);
+      // Format recovery reviews the original operation and evidence, never a newer
+      // target or expanded permission scope. It does not retry an execution.
+      const reviewSnapshot = snapshot;
+      const runtime = runRuntimeSnapshot(reviewSnapshot, runId);
+      const pending = reviewSnapshot.state.pendingApprovals.find(item => item.callId === requestEvent.callId)!;
+      let reviewRequestId = '';
+      let reviewRecorded = false;
+      let verdict: ReturnType<typeof decodeApprovalReview> = { decision: 'ask', reason: '自动审查未完成。' };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        reviewRequestId = deps.nextId('provider-request');
+        reviewRecorded = false;
+        let review: ReturnType<typeof prepareApprovalReview> | undefined;
+        try {
+          review = prepareApprovalReview(reviewSnapshot, runtime, pending, reviewRequestId, attempt > 0);
+          await commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId, payload: review.receipt });
+          const result = await consumeTextProvider(review.request, deps, signal);
+          // The Provider completed even if its decision is malformed. Preserve its
+          // completion and usage; interpretation errors belong to the review fact.
+          await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
+            ...(result.contextUsage ? [{ type: 'context.updated' as const,
+            sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
+          if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)) return 'retry';
+          verdict = decodeApprovalReview(result.summary);
+          break;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          const fact = errorFact(error);
+          if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
+            sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
+              purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
+          verdict = { decision: 'ask', reason: `自动审查未完成：${fact.code}：${fact.message}` };
+          const retryFormat = attempt === 0 && error instanceof ApprovalReviewFormatFailure
+            && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline
+            && snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId);
+          if (error instanceof ApprovalReviewFormatFailure) {
+            const response = fact.diagnostics?.causes.find(cause => cause.kind === 'response')?.message;
+            verdict = { decision: 'ask', reason: `${retryFormat ? '审批结果格式无效，正在按原请求重试一次。' : '自动审查未完成。'}\n${fact.message}\n原始响应：${response}` };
+            // Withhold authority without entering run.waiting during recovery.
+            await commit({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId,
+              callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } });
+            reviewRecorded = true;
+          }
+          // Recording the failure yields to the Actor; a user decision or a
+          // permission update during that commit must prevent the next review.
+          if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)) return 'retry';
+          if (retryFormat && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline) continue;
+          break;
+        }
       }
       await commit(current => {
-        const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
+        const events: NewSessionEvent[] = reviewRecorded ? [] : [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
           callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } }];
         if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
           callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),

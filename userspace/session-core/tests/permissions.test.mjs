@@ -310,15 +310,20 @@ for (const needsReview of [false, true]) test(`a frozen reviewer configuration e
   }
 });
 
-test('cancelling an independent reviewer settles its own request and never executes the command', async t => {
+for (const malformedFirst of [false, true]) test(`cancelling an independent reviewer (format retry=${malformedFirst}) never executes the command`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:cancel-review';
   await createSession(journal, sessionId, [workspaceBinding]);
   let startedReview;
   const started = new Promise(resolve => { startedReview = resolve; });
   const preparation = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review' } });
-  let executions = 0;
+  let executions = 0, reviews = 0;
   const actor = actorWith(journal, sessionId, { async *stream(request, signal) {
     if (request.purpose === 'approvalReview') {
+      if (++reviews === 1 && malformedFirst) {
+        yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"bad "quote""}' });
+        yield providerEvent(request.requestId, 'completed', {});
+        return;
+      }
       startedReview();
       await new Promise((resolve, reject) => {
         if (signal.aborted) reject(signal.reason);
@@ -344,7 +349,8 @@ test('cancelling an independent reviewer settles its own request and never execu
   assert.equal(stopped.pendingApproval, null);
   assert.equal(executions, 0);
   const events = await readEvents(journal, sessionId);
-  const review = events.find(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview');
+  assert.equal(reviews, malformedFirst ? 2 : 1);
+  const review = events.filter(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview').at(-1);
   assert.equal(review.payload.providerRuntimeRef, 'provider-runtime:reviewer');
   assert.equal(review.payload.outcome, 'indeterminate');
   assert.equal(events.some(event => event.type === 'approval.resolved'), false);
@@ -377,10 +383,13 @@ for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents a
 ]) test(`unresolved review retains a user decision: ${result}`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:review-uncertain';
   await createSession(journal, sessionId, [workspaceBinding]);
-  let executions = 0;
+  let executions = 0, reviews = 0;
   const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'full' } });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
-    if (request.purpose === 'approvalReview') yield providerEvent(request.requestId, 'assistant.message', { content: result });
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      yield providerEvent(request.requestId, 'assistant.message', { content: result });
+    }
     else yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:script', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
@@ -393,7 +402,84 @@ for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents a
   const waiting = await waitForProjection(actor, state => state.run?.status === 'waiting');
   assert.equal(waiting.pendingApproval.preview.review.decision, 'ask');
   assert.ok(waiting.pendingApproval.preview.review.reason); assert.equal(executions, 0);
-  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved'), false);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.some(event => event.type === 'approval.resolved'), false);
+  const validAsk = result.startsWith('{"decision":"ask"');
+  assert.equal(reviews, validAsk ? 1 : 2, 'only invalid format gets one further review');
+  if (!validAsk) {
+    const failures = events.filter(event => event.type === 'approval.reviewed');
+    assert.equal(failures.length, 2);
+    for (const event of failures) {
+      assert.equal(event.payload.decision, 'ask');
+      assert.match(event.payload.reason, /approval_review_invalid/);
+      assert.ok(event.payload.reason.endsWith(result));
+    }
+  }
+});
+
+for (const decision of ['allow', 'deny', 'ask']) test(`one malformed review recovers to ${decision} without changing the operation`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:format-recovery-${decision}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review' } });
+  const requests = [];
+  let agentTurns = 0, executions = 0, denied = 0;
+  const invalid = '{"decision":"allow","reason":"Click "Name""}';
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      requests.push(request);
+      yield providerEvent(request.requestId, 'assistant.message', { content: requests.length === 1 ? invalid
+        : JSON.stringify({ decision, reason: 'Reviewed the original operation.' }) });
+    } else if (++agentTurns === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:format', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
+    } else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Finished.' });
+    yield providerEvent(request.requestId, 'completed', { usage: { inputTokens: 100, outputTokens: 20,
+      contextWindowTokens: request.purpose === 'approvalReview' ? 8192 : 4096 } });
+  } }, emptyKernel({ async execute(request) {
+    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      callId: request.callId, status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
+        approvalReviewer: 'agent', authorizationContext: context } };
+    const reply = shellReply(request);
+    if (request.nonWorkspaceAuthority.decision === 'deny') {
+      denied++;
+      reply.record.outcome = 'denied';
+      reply.record.error = { code: 'permission_denied', message: 'Review denied the operation.' };
+    } else executions++;
+    return reply;
+  } }), prep.port, 'format-recovery');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Run make check, without changing the command.'));
+  const state = await waitForProjection(actor, state => state.run?.status === (decision === 'ask' ? 'waiting' : 'completed'));
+  assert.equal(requests.length, 2);
+  assert.notEqual(requests[0].requestId, requests[1].requestId);
+  assert.deepEqual(requests[0].messages[1], requests[1].messages[1], 'original user, operation, evidence and permissions remain identical');
+  assert.deepEqual(requests[0].responseFormat, requests[1].responseFormat);
+  assert.deepEqual(requests[1].tools, []);
+  assert.match(requests[1].messages[0].content, /previous response did not satisfy/);
+  assert.equal(executions, decision === 'allow' ? 1 : 0);
+  assert.equal(denied, decision === 'deny' ? 1 : 0);
+  const events = await readEvents(journal, sessionId);
+  const reviews = events.filter(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview');
+  assert.deepEqual(reviews.map(event => event.payload.outcome), ['completed', 'completed'], 'format failure does not falsify a completed Provider request');
+  const verdicts = events.filter(event => event.type === 'approval.reviewed');
+  assert.deepEqual(verdicts.map(event => event.payload.decision), ['ask', decision]);
+  assert.ok(verdicts[0].payload.reason.endsWith(invalid));
+  assert.equal(events.filter(event => event.type === 'context.updated' && requests.some(request => request.requestId === event.payload.providerRequestId)).length, 2);
+  assert.equal(verdicts.at(-1).payload.providerRequestId, requests[1].requestId);
+  assert.equal(events.some(event => event.type === 'run.waiting'), decision === 'ask', 'format recovery does not enter a human wait');
+  if (decision === 'ask') assert.equal(state.pendingApproval.preview.review.decision, 'ask');
+});
+
+test('format diagnostics retain the parser error and a bounded original response', () => {
+  const invalid = '{"decision":"allow","reason":"' + 'x'.repeat(6000);
+  assert.throws(() => decodeApprovalReview(invalid), error => {
+    assert.equal(error.code, 'approval_review_invalid');
+    assert.equal(error.diagnostics.phase, 'approvalReview');
+    assert.ok(error.diagnostics.causes[0].message.length > 0);
+    assert.ok(error.diagnostics.causes[1].message.startsWith(invalid.slice(0, 4096)));
+    assert.match(error.diagnostics.causes[1].message, /response truncated/);
+    assert.ok(error.diagnostics.causes[1].message.length < 4200);
+    return true;
+  });
 });
 
 function shellReply(request) {
@@ -408,7 +494,7 @@ function shellReply(request) {
   return reply;
 }
 
-for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} during review applies before execution`, async t => {
+for (const nextMode of ['ask', 'allow']) for (const malformed of [false, true]) test(`changing Shell to ${nextMode} during review (malformed=${malformed}) applies before execution`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = `session:change-${nextMode}`;
   await createSession(journal, sessionId, [workspaceBinding]);
   let startReview, releaseReview;
@@ -419,7 +505,8 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
   const actor = actorWith(journal, sessionId, { async *stream(request) {
     if (request.purpose === 'approvalReview') {
       reviews++; startReview(); await released;
-      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"The requested command fits the delegated scope."}' });
+      yield providerEvent(request.requestId, 'assistant.message', { content: malformed ? 'not JSON'
+        : '{"decision":"allow","reason":"The requested command fits the delegated scope."}' });
     } else if (++turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:change', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
     else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
     yield providerEvent(request.requestId, 'completed', {});
@@ -439,8 +526,8 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
   releaseReview();
   const state = await waitForProjection(actor, state => state.run?.status === (nextMode === 'ask' ? 'waiting' : 'completed'));
   assert.equal(reviews, 1); assert.equal(executions, nextMode === 'ask' ? 0 : 1);
-  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), true,
-    'The review is retained as evidence; current Kernel admission decides whether it grants execution.');
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), !malformed,
+    'Only a valid review is retained as authority evidence; current Kernel admission still decides whether it grants execution.');
   if (nextMode === 'ask') {
     assert.equal(state.pendingApproval.preview.approvalReviewer, 'user');
     assert.equal(state.activities.filter(activity => activity.kind === 'approval' && activity.status === 'waiting').length, 1);

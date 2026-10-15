@@ -25,7 +25,7 @@ const MAX_REVIEW_CHARACTERS = 18000;
 
 /** A single text-only decision within the Session's existing Provider lifecycle. */
 export function prepareApprovalReview(snapshot: LoopSnapshot, runtime: RunRuntimeSnapshot,
-  approval: NonNullable<SessionProjection['pendingApproval']>, requestId: string) {
+  approval: NonNullable<SessionProjection['pendingApproval']>, requestId: string, correctFormat = false) {
   const run = snapshot.state.run;
   if (!run || run.runId !== approval.runId) throw new Error('approval_review_run_mismatch');
   if (runtime.approvalReviewerError) {
@@ -65,12 +65,15 @@ export function prepareApprovalReview(snapshot: LoopSnapshot, runtime: RunRuntim
       network: runtime.permissions['agent.permissions.networkRead'], external: runtime.permissions['agent.permissions.external'] },
     grant: 'thisCallOnly',
   });
-  if (content.length + APPROVAL_REVIEW_INSTRUCTIONS.length > MAX_REVIEW_CHARACTERS) {
+  const instructions = APPROVAL_REVIEW_INSTRUCTIONS + (correctFormat
+    ? '\nThe previous response did not satisfy the decision JSON schema. Review the same operation under the same authorization. Return one valid JSON object only; escape quotes, backslashes and newlines inside the reason. Do not change a decision merely to satisfy formatting.'
+    : '');
+  if (content.length + instructions.length > MAX_REVIEW_CHARACTERS) {
     throw new Error('approval_review_context_too_large: 原始用户约束或本次操作超过独立审查预算，未截断授权依据；需要确认本次操作。');
   }
   const contributions: ContextMessageContribution[] = [
     { contributionId: `approval-review:${requestId}:instructions`, contributionKind: 'instructions', label: '执行权限审查',
-      message: { role: 'system', content: APPROVAL_REVIEW_INSTRUCTIONS } },
+      message: { role: 'system', content: instructions } },
     { contributionId: `approval-review:${requestId}:operation`, contributionKind: 'instructions', label: '请求与执行范围',
       message: { role: 'user', content } },
   ];
@@ -206,12 +209,29 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+export class ApprovalReviewFormatFailure extends LoopFailure {
+  constructor(text: string, cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const limit = 4096;
+    super('approval_review_invalid', `approval_review_invalid: ${message}`, {
+      source: 'session', phase: 'approvalReview', category: 'protocol', retryable: false,
+      causes: [{ kind: 'format', message }, { kind: 'response', message: text.length > limit
+        ? `${text.slice(0, limit)}\n[response truncated; ${text.length} characters total]` : text }],
+    });
+    this.cause = cause;
+  }
+}
+
 export function decodeApprovalReview(text: string): { decision: 'allow' | 'deny' | 'ask'; reason: string } {
-  const result: unknown = JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1'));
-  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('approval_review_invalid');
-  const value = result as Record<string, unknown>;
-  if (Object.keys(value).some(key => !['decision', 'reason'].includes(key))
-    || typeof value.decision !== 'string' || !['allow', 'deny', 'ask'].includes(value.decision) || typeof value.reason !== 'string'
-    || !value.reason.trim() || value.reason.length > 4000) throw new Error('approval_review_invalid');
-  return { decision: value.decision as 'allow' | 'deny' | 'ask', reason: value.reason.trim() };
+  try {
+    const result: unknown = JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1'));
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Expected a decision object');
+    const value = result as Record<string, unknown>;
+    if (Object.keys(value).some(key => !['decision', 'reason'].includes(key))
+      || typeof value.decision !== 'string' || !['allow', 'deny', 'ask'].includes(value.decision) || typeof value.reason !== 'string'
+      || !value.reason.trim() || value.reason.length > 4000) throw new Error('Expected allow, deny or ask and a nonempty reason of at most 4000 characters');
+    return { decision: value.decision as 'allow' | 'deny' | 'ask', reason: value.reason.trim() };
+  } catch (error) {
+    throw new ApprovalReviewFormatFailure(text, error);
+  }
 }
