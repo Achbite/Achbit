@@ -1107,12 +1107,7 @@ impl Renderer {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled(
-                        left,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(left, Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(" ".repeat(gap)),
                     Span::raw(right),
                 ]),
@@ -1200,17 +1195,20 @@ impl Renderer {
                     };
                     lines.push(Line::from(vec![
                         Span::styled(format!("{marker} "), Style::default().fg(color)),
-                        Span::raw(format!(
-                            "{} · {}",
-                            item.text,
-                            language.text(match item.status.as_str() {
-                                "completed" => "deepcodeGui.tasks.status.completed",
-                                "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
-                                "inProgress" => "deepcodeGui.tasks.status.inProgress",
-                                "blocked" => "deepcodeGui.tasks.status.blocked",
-                                _ => "deepcodeGui.tasks.status.pending",
-                            })
-                        )),
+                        Span::raw(item.text.clone()),
+                        Span::styled(
+                            format!(
+                                " · {}",
+                                language.text(match item.status.as_str() {
+                                    "completed" => "deepcodeGui.tasks.status.completed",
+                                    "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
+                                    "inProgress" => "deepcodeGui.tasks.status.inProgress",
+                                    "blocked" => "deepcodeGui.tasks.status.blocked",
+                                    _ => "deepcodeGui.tasks.status.pending",
+                                })
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]));
                 }
             }
@@ -1232,6 +1230,8 @@ impl Renderer {
                 .block(
                     Block::default()
                         .borders(Borders::TOP)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title_style(Style::default().fg(Color::DarkGray))
                         .title(language.text("tui.tasksTitle")),
                 ),
             area,
@@ -1248,6 +1248,9 @@ impl Renderer {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(Color::DarkGray))
+                            .title_style(Style::default())
                             .title(language.text("tui.detailsTitle")),
                     ),
                 area,
@@ -1261,9 +1264,19 @@ impl Renderer {
             Paragraph::new(resource.content.as_str())
                 .scroll((app.detail_scroll(), 0))
                 .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title(
-                    language.format("tui.readOnlyTitle", &[format!("{}", resource.logical_path)]),
-                )),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title_style(Style::default())
+                        .title(
+                            language.format(
+                                "tui.readOnlyTitle",
+                                &[format!("{}", resource.logical_path)],
+                            ),
+                        ),
+                ),
             area,
         );
     }
@@ -1278,6 +1291,9 @@ impl Renderer {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title_style(Style::default())
                         .title(language.text("tui.contextTitle")),
                 ),
             area,
@@ -1412,7 +1428,7 @@ impl Renderer {
                         lines.extend(crate::markdown::render(
                             narrative.display_text(),
                             area.width,
-                            Style::default().fg(Color::Gray),
+                            Style::default(),
                         ));
                         lines.extend(crate::markdown::render(
                             &source_references(language, narrative.source_references.as_ref()),
@@ -1503,10 +1519,12 @@ impl Renderer {
             } else {
                 vec!["", "  DeepCode", ""]
             };
-            lines.extend(
-                logo.into_iter()
-                    .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))),
-            );
+            lines.extend(logo.into_iter().map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ))
+            }));
             lines.push(Line::from(""));
             lines.push(Line::from(language.text("tui.welcome")));
             lines.push(Line::from(Span::styled(
@@ -1537,6 +1555,7 @@ impl Renderer {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title(title)
+            .title_style(Style::default().add_modifier(Modifier::BOLD))
             .border_style(Style::default().fg(Color::DarkGray));
         let inner = block.inner(area).inner(Margin::new(1, 0));
         frame.render_widget(block, area);
@@ -1576,7 +1595,7 @@ impl Renderer {
             .map(|(label, selected)| {
                 Line::from(Span::styled(
                     format!("{} {label}", if *selected { ">" } else { " " }),
-                    Style::default().fg(if *selected { Color::Cyan } else { Color::Reset }),
+                    picker_style(*selected),
                 ))
             })
             .collect();
@@ -1585,10 +1604,17 @@ impl Renderer {
         }
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
-                " {} · ↑/↓ · Enter · Esc ",
-                app.language().text("agent.team.title")
-            ))),
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(format!(
+                        " {} · ↑/↓ · Enter · Esc ",
+                        app.language().text("agent.team.title")
+                    )),
+            ),
             area,
         );
     }
@@ -1608,7 +1634,7 @@ impl Renderer {
             .map(|(label, selected)| {
                 Line::from(Span::styled(
                     format!("{} {label}", if *selected { ">" } else { " " }),
-                    Style::default().fg(if *selected { Color::Cyan } else { Color::Reset }),
+                    picker_style(*selected),
                 ))
             })
             .collect();
@@ -1617,10 +1643,17 @@ impl Renderer {
         }
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
-                " {} · ↑/↓ · Enter · Esc ",
-                app.language().text("tui.sessionsTitle")
-            ))),
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(format!(
+                        " {} · ↑/↓ · Enter · Esc ",
+                        app.language().text("tui.sessionsTitle")
+                    )),
+            ),
             area,
         );
     }
@@ -1633,7 +1666,7 @@ impl Renderer {
             .map(|(_, label, selected)| {
                 Line::from(Span::styled(
                     format!("{} {label}", if *selected { ">" } else { " " }),
-                    Style::default().fg(if *selected { Color::Cyan } else { Color::Reset }),
+                    picker_style(*selected),
                 ))
             })
             .collect();
@@ -1648,10 +1681,15 @@ impl Renderer {
         frame.render_widget(Clear, area);
         frame.render_widget(
             Paragraph::new(lines).scroll((scroll as u16, 0)).block(
-                Block::default().borders(Borders::ALL).title(format!(
-                    " {} · ↑/↓ · Enter · Esc ",
-                    app.model_picker_title()
-                )),
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(format!(
+                        " {} · ↑/↓ · Enter · Esc ",
+                        app.model_picker_title()
+                    )),
             ),
             area,
         );
@@ -1702,13 +1740,7 @@ impl Renderer {
                 } else {
                     ""
                 };
-                let style = if entry.highlighted {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Reset)
-                };
+                let style = picker_style(entry.highlighted);
                 let width = area
                     .width
                     .saturating_sub(if borders == Borders::ALL { 2 } else { 0 });
@@ -1767,9 +1799,7 @@ fn context_lines(
         lines.push(Line::from(vec![
             Span::styled(
                 language.text("tui.contextPrefix"),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
                 "{} / {} Token · {}",
@@ -1800,7 +1830,7 @@ fn context_lines(
     lines.push(Line::from(vec![
         Span::styled(
             language.text("tui.lastRequestCacheTitle"),
-            Style::default().fg(Color::Cyan),
+            Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw(detail),
     ]));
@@ -1809,9 +1839,7 @@ fn context_lines(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         language.text("tui.requestTitle"),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        Style::default().add_modifier(Modifier::BOLD),
     )));
     let Some(receipt) = current_context_receipt(projection) else {
         lines.push(Line::from(Span::styled(
@@ -2220,7 +2248,7 @@ fn push_timeline_plan_lines(language: Language, lines: &mut Vec<Line<'_>>, plan:
                 status_label(language, &plan.status).to_string(),
             ],
         ),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(Color::DarkGray),
     )));
     lines.push(Line::from(Span::styled(
         plan.title.clone(),
@@ -2444,6 +2472,16 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
                 _ => "deepcodeGui.tasks.status.pending",
             })
         ));
+    }
+}
+
+fn picker_style(selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Reset)
     }
 }
 

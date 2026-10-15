@@ -107,11 +107,7 @@ impl Writer {
             Event::Start(tag) => match tag {
                 Tag::Heading { .. } => {
                     self.blank();
-                    self.push_style(
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    );
+                    self.push_style(Style::default().add_modifier(Modifier::BOLD));
                 }
                 Tag::Strong => self.push_style(Style::default().add_modifier(Modifier::BOLD)),
                 Tag::Emphasis => self.push_style(Style::default().add_modifier(Modifier::ITALIC)),
@@ -126,12 +122,14 @@ impl Writer {
                     self.blank();
                     if let CodeBlockKind::Fenced(language) = kind {
                         if !language.is_empty() {
+                            self.push_style(Style::default().fg(Color::DarkGray));
                             self.text(&format!("── {language}"));
+                            self.styles.pop();
                             self.newline();
                         }
                     }
                     self.prefixes.push("  ".into());
-                    self.push_style(Style::default().fg(Color::Cyan));
+                    self.push_style(Style::default());
                 }
                 Tag::List(start) => {
                     self.flush();
@@ -208,14 +206,16 @@ impl Writer {
             },
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(&text),
             Event::Code(text) => {
-                self.push_style(Style::default().fg(Color::Cyan));
+                self.push_style(Style::default().add_modifier(Modifier::BOLD));
                 self.text(&text);
                 self.styles.pop();
             }
             Event::SoftBreak | Event::HardBreak => self.newline(),
             Event::Rule => {
                 self.blank();
+                self.push_style(Style::default().fg(Color::DarkGray));
                 self.text("────────");
+                self.styles.pop();
                 self.blank();
             }
             Event::TaskListMarker(checked) => self.text(if checked { "[x] " } else { "[ ] " }),
