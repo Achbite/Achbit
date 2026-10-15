@@ -1,5 +1,9 @@
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
 
+export function computerPreviewSources(platform: string) {
+  return { desktop: /Mac|Win/.test(platform), browser: /Mac/.test(platform), stopTask: /Win/.test(platform) };
+}
+
 export interface PreviewFrame { sequence: number; capturedAt: string; width: number; height: number; dataUrl: string }
 export interface DesktopPreviewTarget { windowId: number; generation: number; pid: number; app: string; title: string; width: number; height: number }
 export interface BrowserPreviewTarget { previewId: string; url: string; hostInstanceId: string; windowLabel: string; sessionId: string }

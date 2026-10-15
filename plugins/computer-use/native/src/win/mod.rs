@@ -5,13 +5,16 @@ mod capture;
 mod desktop;
 mod indicator;
 mod input;
+mod sharing;
 mod uia;
+mod wgc;
 
 use crate::protocol::{self, Bounds};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::IUIAutomationElement;
@@ -43,15 +46,36 @@ pub fn run() -> Result<(), String> {
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| error.to_string())?;
+    let sharing = Arc::new(sharing::Sharing::default());
+    let preview_listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let preview_endpoint = preview_listener.local_addr().map_err(|e| e.to_string())?;
     writeln!(
         stream,
         "{}",
-        json!({"token":launch.token,"pid":std::process::id()})
+        json!({"token":launch.token,"pid":std::process::id(),"previewEndpoint":preview_endpoint.to_string()})
     )
     .map_err(|error| error.to_string())?;
-    let mut executor = Executor::new(protocol::instance_name()?)?;
+    let mut executor = Executor::new(protocol::instance_name()?, sharing.clone())?;
+    let (preview_sharing, preview_host) = (sharing.clone(), launch.host.clone());
+    std::thread::Builder::new()
+        .name("computer-preview".into())
+        .spawn(move || {
+            sharing::serve_previews(
+                preview_listener,
+                preview_sharing,
+                preview_host,
+                launch.token,
+            )
+        })
+        .map_err(|e| e.to_string())?;
     // The owning Host's connection is this process lifetime: EOF ends the process.
-    serve(&mut executor, &launch.host, &mut stream)
+    let result = serve(&mut executor, &launch.host, &mut stream);
+    let released = sharing.shutdown();
+    match (result, released) {
+        (Err(error), Err(cleanup)) => Err(format!("{error}; capture cleanup: {cleanup}")),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn serve(executor: &mut Executor, host: &str, stream: &mut TcpStream) -> Result<(), String> {
@@ -68,7 +92,6 @@ fn serve(executor: &mut Executor, host: &str, stream: &mut TcpStream) -> Result<
         } else {
             Err("computer_host_binding_mismatch".into())
         };
-        indicator::finish_call();
         let response = match result {
             Ok(data) => json!({"ok":true,"data":data}),
             Err(message) => json!({"ok":false,"message":message,"diagnostics":{
@@ -102,6 +125,7 @@ struct Observation {
     binding: Value,
     image: (f64, f64),
     elements: Vec<IUIAutomationElement>,
+    generation: u64,
 }
 
 struct Executor {
@@ -109,14 +133,16 @@ struct Executor {
     automation: uia::Automation,
     // One physical desktop observation at a time, across all bound sessions.
     observation: Option<Observation>,
+    sharing: Arc<sharing::Sharing>,
 }
 
 impl Executor {
-    fn new(instance: String) -> Result<Self, String> {
+    fn new(instance: String, sharing: Arc<sharing::Sharing>) -> Result<Self, String> {
         Ok(Self {
             instance,
             automation: uia::Automation::new()?,
             observation: None,
+            sharing,
         })
     }
 
@@ -135,13 +161,14 @@ impl Executor {
                 {
                     self.observation = None;
                 }
-                indicator::finish_run(binding)?;
+                self.sharing.release(binding)?;
                 return Ok(json!({"released":true}));
             }
             "status" => return Ok(status()),
             "listApps" => return desktop::applications(),
             "listWindows" => return desktop::windows_json(),
             "capture" => return self.capture(binding, input),
+            "activateTarget" => return self.sharing.activate(binding, input),
             _ => {}
         }
         let app = desktop::normalize_app(input["app"].as_str().ok_or("Missing app")?)?;
@@ -166,15 +193,15 @@ impl Executor {
         if desktop::snapshot(saved.window.id)? != saved.window {
             return Err("Target window changed; observe again before acting".into());
         }
+        self.sharing
+            .validate(binding, &saved.window, saved.generation)?;
         let semantic = matches!(action, "press" | "setValue");
         // A background observation promises not to move the user's foreground window.
         let guard = (!saved.foreground).then(desktop::ForegroundGuard::capture);
         if semantic {
-            indicator::show(
-                &saved.window,
-                binding,
-                uia::element_center(&saved.elements, input),
-            )?;
+            if let Some(point) = uia::element_center(&saved.elements, input) {
+                self.sharing.point(binding, &saved.window, point)?;
+            }
             let performed = uia::perform(&saved.elements, input, action);
             if let Err(error) = performed {
                 return Err(
@@ -196,7 +223,12 @@ impl Executor {
                 return Err("Target window changed while restoring focus; observe again".into());
             }
             indicator::show(&saved.window, binding, None)?;
-            input::dispatch(input, action, saved.image, saved.window.bounds)?;
+            if let Some(point) = input::dispatch(input, action, saved.image, saved.window.bounds)? {
+                // Feedback failure after dispatch must never invite replay of input.
+                if let Err(error) = self.sharing.point(binding, &saved.window, point) {
+                    eprintln!("computer_pointer_feedback_failed: {error}");
+                }
+            }
         }
         // A short bounded delay lets the application process dispatched input. A
         // screenshot remains an observation, not a claim that backend work settled.
@@ -241,12 +273,24 @@ impl Executor {
 
     fn capture(&self, binding: &Value, input: &Value) -> Result<Value, String> {
         let directory = capture_directory(input)?;
-        let (image, target) = if let Some(id) = input["windowId"].as_u64() {
+        let (image, target, captured_at) = if let Some(id) = input["windowId"].as_u64() {
             let window = desktop::snapshot(u32::try_from(id).map_err(|_| "Invalid windowId")?)?;
+            self.sharing.ensure(binding, &window)?;
             indicator::show(&window, binding, None)?;
-            (capture::window(&window)?, json!({"windowId":window.id}))
+            let frame = wgc::snapshot(&window)?;
+            if desktop::snapshot(window.id)? != window {
+                return Err("Target window changed during capture; capture again".into());
+            }
+            let id = protocol::resource_id(&self.instance);
+            let (path, width, height) = capture::save(&frame.image, directory, &id)?;
+            return Ok(json!({"captureId":id,"contentRef":path,
+                "contentType":"image/png","width":width,"height":height,"target":{"windowId":window.id},"capturedAt":frame.captured_at}));
         } else if input["display"] == "primary" {
-            (capture::primary_display()?, json!({"display":"primary"}))
+            (
+                capture::primary_display()?,
+                json!({"display":"primary"}),
+                protocol::timestamp_millis()?,
+            )
         } else {
             return Err("capture requires exactly one display=primary or a valid windowId".into());
         };
@@ -254,7 +298,7 @@ impl Executor {
         let (path, width, height) = capture::save(&image, directory, &id)?;
         Ok(
             json!({"captureId":id,"contentRef":path,"contentType":"image/png","width":width,
-            "height":height,"target":target,"capturedAt":protocol::timestamp_millis()?}),
+            "height":height,"target":target,"capturedAt":captured_at}),
         )
     }
 
@@ -293,14 +337,16 @@ impl Executor {
         if foreground {
             desktop::focus(&window)?;
         }
+        let generation = self.sharing.ensure(binding, &window)?;
         indicator::show(&window, binding, None)?;
         let tree = self.automation.tree(&window)?;
-        let image = capture::window(&window)?;
+        let frame = wgc::snapshot(&window)?;
+        self.sharing.validate(binding, &window, generation)?;
         if desktop::snapshot(window.id)? != window {
             return Err("Target window changed during observation; observe again".into());
         }
         let id = protocol::resource_id(&self.instance);
-        let (path, width, height) = capture::save(&image, directory, &id)?;
+        let (path, width, height) = capture::save(&frame.image, directory, &id)?;
         let image_size = (width as f64, height as f64);
         let elements: Vec<Value> = tree
             .items
@@ -322,7 +368,7 @@ impl Executor {
             "window":{"windowId":window.id,"title":window.title,"className":window.class,"bounds":rect_json(window.bounds)},
             "mode":mode,"elements":elements,"accessibility":tree.accessibility,
             "contentRef":path,"contentType":"image/png","width":width,"height":height,
-            "capturedAt":protocol::timestamp_millis()?,"coordinateSpace":"window screenshot pixels"});
+            "capturedAt":frame.captured_at,"coordinateSpace":"window screenshot pixels"});
         Ok((
             Observation {
                 id,
@@ -333,6 +379,7 @@ impl Executor {
                 binding: binding.clone(),
                 image: image_size,
                 elements: tree.handles,
+                generation,
             },
             output,
         ))

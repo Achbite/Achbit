@@ -179,7 +179,6 @@ pub struct ComputerUseHost {
     host: String,
     token: String,
     connection: Mutex<Option<Connection>>,
-    #[cfg(target_os = "macos")]
     preview_endpoint: Mutex<Option<std::net::SocketAddr>>,
 }
 
@@ -196,7 +195,6 @@ impl ComputerUseHost {
             host,
             token,
             connection: Mutex::new(None),
-            #[cfg(target_os = "macos")]
             preview_endpoint: Mutex::new(None),
         })
     }
@@ -217,7 +215,6 @@ impl ComputerUseHost {
             connection.stop()?;
             *slot = None;
         }
-        #[cfg(target_os = "macos")]
         {
             *self
                 .preview_endpoint
@@ -358,7 +355,6 @@ impl ComputerUseHost {
             }
             launched
         };
-        #[cfg(target_os = "macos")]
         {
             let endpoint: std::net::SocketAddr = handshake["previewEndpoint"]
                 .as_str()
@@ -399,7 +395,6 @@ impl ComputerUseHost {
                 // executor and await its exact process before acknowledging it.
                 slot.as_mut().expect("connected component").stop()?;
                 *slot = None;
-                #[cfg(target_os = "macos")]
                 {
                     *self
                         .preview_endpoint
@@ -423,7 +418,6 @@ impl ComputerUseHost {
             {
                 slot.as_mut().expect("checked component").stop()?;
                 *slot = None;
-                #[cfg(target_os = "macos")]
                 {
                     *self
                         .preview_endpoint
@@ -440,6 +434,13 @@ impl ComputerUseHost {
                 .is_some_and(|connection| connection.failure.is_some() && connection.exited())
             {
                 *slot = None;
+                #[cfg(windows)]
+                {
+                    *self
+                        .preview_endpoint
+                        .lock()
+                        .map_err(|_| "computer_preview_state_unavailable")? = None;
+                }
             }
             if slot.is_none() {
                 *slot = Some(self.start(modified)?);
@@ -462,7 +463,6 @@ impl ComputerUseHost {
         ) {
             return Err("computer_presentation_action_invalid".into());
         }
-        #[cfg(target_os = "macos")]
         if input["action"] == "computer:preview" {
             return self.read_preview(binding, input).map(Some);
         }
@@ -491,7 +491,6 @@ impl ComputerUseHost {
         Self::exchange(connection, binding, input)
     }
 
-    #[cfg(target_os = "macos")]
     fn read_preview(&self, binding: &Value, input: &Value) -> Result<Value, String> {
         let endpoint = self
             .preview_endpoint
@@ -499,7 +498,7 @@ impl ComputerUseHost {
             .map_err(|_| "computer_preview_state_unavailable")?
             .ok_or("computer_component_not_connected")?;
         // This is the helper's read-only cache endpoint. It is independent of
-        // the execute socket, so a long AX operation does not freeze the preview.
+        // the execute socket, so a long accessibility operation does not freeze the preview.
         let mut stream = TcpStream::connect_timeout(&endpoint, Duration::from_millis(300))
             .map_err(|error| format!("computer_preview_connect_failed: {error}"))?;
         stream
@@ -575,6 +574,7 @@ mod tests {
             host: "host".into(),
             token: "token".into(),
             connection: Mutex::new(None),
+            preview_endpoint: Mutex::new(None),
         };
         let started = Instant::now();
         let error = host
@@ -600,14 +600,45 @@ mod tests {
             host: "host:test".into(),
             token: "token-test".into(),
             connection: Mutex::new(None),
+            preview_endpoint: Mutex::new(None),
         };
         assert!(host.executable().is_file());
         let binding = json!({"hostInstanceId":"host:test","sessionId":"s","runId":"r"});
+        let preview_request = json!({"action":"computer:preview"});
+        assert_eq!(
+            host.try_call_existing(&binding, &preview_request)
+                .unwrap_err(),
+            "computer_component_not_connected"
+        );
+        assert!(
+            host.connection.lock().unwrap().is_none(),
+            "preview reads must never start a helper"
+        );
         let status = host
             .call(&binding, &json!({"action":"computer:status"}))
             .unwrap();
         assert_eq!(status["ok"], true, "{status}");
         let pid = status["data"]["executor"]["pid"].as_u64().unwrap();
+        {
+            let _busy = host.connection.lock().unwrap();
+            let preview = host
+                .try_call_existing(&binding, &preview_request)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                preview["data"]["state"], "inactive",
+                "preview remains responsive while the execute channel is busy"
+            );
+            let wrong_host = host
+                .try_call_existing(
+                    &json!({"hostInstanceId":"other","sessionId":"s","runId":"r"}),
+                    &preview_request,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(wrong_host["ok"], false);
+            assert_eq!(wrong_host["message"], "computer_preview_binding_mismatch");
+        }
         assert_eq!(
             Some(pid),
             host.connection
@@ -640,6 +671,12 @@ mod tests {
         );
         host.stop().unwrap();
         assert!(host.connection.lock().unwrap().is_none());
+        assert!(host.preview_endpoint.lock().unwrap().is_none());
+        assert_eq!(
+            host.try_call_existing(&binding, &preview_request)
+                .unwrap_err(),
+            "computer_component_not_connected"
+        );
         let released = host
             .call(&binding, &json!({"action":"computer:releaseRun"}))
             .unwrap();
@@ -671,6 +708,7 @@ mod tests {
             host: "host:update".into(),
             token: "token-update".into(),
             connection: Mutex::new(None),
+            preview_endpoint: Mutex::new(None),
         };
         let binding = json!({"hostInstanceId":"host:update","sessionId":"s","runId":"r"});
         let status = |host: &ComputerUseHost| {

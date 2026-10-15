@@ -73,8 +73,9 @@ fn config() -> Config {
 struct Target {
     window: Window,
     runs: HashSet<(String, String)>,
-    /// Physical pixels relative to the window frame's top-left.
+    /// Normalized position within the exact target window frame.
     cursor: Option<(f64, f64)>,
+    cursor_owner: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -103,22 +104,28 @@ impl Targets {
                     window: window.clone(),
                     runs: HashSet::new(),
                     cursor: None,
+                    cursor_owner: None,
                 });
                 self.0.len() - 1
             });
         let target = &mut self.0[index];
         target.runs.insert(run_key(binding));
-        target.cursor = cursor.map(|(x, y)| (x - window.bounds.x, y - window.bounds.y));
-    }
-    fn finish_call(&mut self) {
-        for target in &mut self.0 {
-            target.cursor = None;
+        if let Some((x, y)) = cursor {
+            target.cursor = Some((
+                (x - window.bounds.x) / window.bounds.width,
+                (y - window.bounds.y) / window.bounds.height,
+            ));
+            target.cursor_owner = Some(run_key(binding));
         }
     }
     fn finish_run(&mut self, binding: &Value) {
         let key = run_key(binding);
         for target in &mut self.0 {
             target.runs.remove(&key);
+            if target.cursor_owner.as_ref() == Some(&key) {
+                target.cursor = None;
+                target.cursor_owner = None;
+            }
         }
         self.0.retain(|target| !target.runs.is_empty());
     }
@@ -166,16 +173,6 @@ pub fn show(window: &Window, binding: &Value, cursor: Option<(f64, f64)>) -> Res
         .record(window, binding, cursor);
     post_refresh();
     Ok(())
-}
-
-/// Only the transient action pointer ends with the call; the target badge stays.
-pub fn finish_call() {
-    if let Ok(mut targets) = TARGETS.lock() {
-        targets.finish_call();
-    }
-    if THREAD.get().is_some() {
-        post_refresh();
-    }
 }
 
 pub fn finish_run(binding: &Value) -> Result<(), String> {
@@ -400,7 +397,12 @@ fn refresh_target(Windows { badge, cursor }: Windows, target: &Target) {
     );
     place(
         cursor,
-        offset.map(|(x, y)| (x - size * 0.25, y - size * 0.15)),
+        offset.map(|(x, y)| {
+            (
+                x * bounds.width - size * 0.25,
+                y * bounds.height - size * 0.15,
+            )
+        }),
         size,
         size,
     );
@@ -511,19 +513,19 @@ mod tests {
         };
         let mut targets = Targets::default();
         targets.record(&window(1), &binding("a"), Some((20.0, 20.0)));
-        targets.finish_call();
+        targets.record(&window(1), &binding("a"), None);
         assert_eq!(
             targets.0.len(),
             1,
             "thinking between calls retains the target"
         );
-        assert!(
-            targets.0[0].cursor.is_none(),
-            "the transient action pointer is cleared"
+        assert_eq!(
+            targets.0[0].cursor,
+            Some((0.04, 0.04)),
+            "the last operation position survives observation and thinking"
         );
         targets.record(&window(2), &binding("a"), None);
         targets.record(&window(1), &binding("b"), None);
-        targets.finish_call();
         targets.finish_run(&binding("a"));
         assert_eq!(
             targets.0.len(),
@@ -532,6 +534,10 @@ mod tests {
         );
         assert_eq!(targets.0[0].window.id, 1);
         assert!(targets.0[0].runs.contains(&run_key(&binding("b"))));
+        assert!(
+            targets.0[0].cursor.is_none(),
+            "a finished run cannot leave its pointer on another run's window"
+        );
         targets.finish_run(&binding("b"));
         assert!(targets.0.is_empty());
     }
