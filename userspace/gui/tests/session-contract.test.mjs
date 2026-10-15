@@ -2,6 +2,7 @@ import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJ
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SessionService, loopSnapshot } from '../../session-core/dist/index.js';
+import { assertRuntimeContract } from '../../session-core/tests/support/runtimeContract.mjs';
 import {
   decodeGuiProjection,
   inputCacheMetric,
@@ -27,6 +28,93 @@ import {
   waitForProjection,
   waitUntil,
 } from '../../session-core/tests/local-agent-fixtures.mjs';
+
+for (const withOutput of [false, true]) test(`cancelled Shell preserves its terminal fact and optional output (${withOutput}) across Session, GUI and continuation`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:shell-cancel-${withOutput}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const preparation = fakeRunPreparation({ tools: [{
+    toolBindingRef: 'binding:shell-cancel', name: 'bash', description: 'Run a Shell command.',
+    inputSchema: { type: 'object', required: ['command'], properties: { command: { type: 'string' } } },
+    possibleEffects: ['process', 'workspaceMutation', 'external'], availability: 'callable', origin: 'coreBuiltin',
+  }] });
+  let execution, finishExecution, record, turns = 0;
+  const waiting = new Promise(resolve => { finishExecution = resolve; });
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (++turns === 1) {
+      yield providerEvent(request.requestId, 'tool.call', {
+        callId: 'provider:shell-cancel', name: request.tools.find(tool => tool.inputSchema.properties?.command).name,
+        input: { workspace: 'primary', command: 'printf started; sleep 120; printf completed' },
+      });
+    } else {
+      const result = request.messages.map(jsonMessagePayload).find(value => value?.outcome === 'cancelled');
+      assert.ok(result, 'the next run must see the cancellation fact');
+      assert.equal(result.recordId, record.recordId);
+      assert.equal(result.error, undefined);
+      if (withOutput) {
+        assert.equal(result.output.stdout, 'started');
+        assert.equal(result.output.success, false);
+        assert.equal(result.output.exitCode, null);
+        assert.deepEqual(result.output.fullOutput, record.output.fullOutput);
+        assert.equal(result.output.environment, undefined, 'existing Shell diagnostics filtering still applies');
+      } else assert.equal(result.output, undefined);
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:continued', content: 'The Shell was cancelled.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({
+    async execute(request) { execution = request; return await waiting; },
+    async cancel(callId, attemptId) {
+      assert.equal(callId, execution.callId);
+      assert.equal(attemptId, execution.attemptId);
+      const reply = completedExecutionReply(execution, {
+        workspaceId: execution.input.workspaceId, command: execution.input.command, cwd: '.',
+        workspaceMode: 'read', executionScope: 'workspace', terminal: false,
+        stdout: 'started', stderr: '', exitCode: null, success: false, timedOut: false,
+        truncated: false, capturedBytes: 7, durationMs: 100,
+        fullOutput: { stdout: { path: '/kernel/archive/stdout.log', bytes: 7 } },
+        environment: { shell: '/bin/bash', interactive: false, executionScope: 'workspace', terminal: false,
+          pathSource: 'preparedRunEnvironment', writeScope: 'authorizedResources', homeWritable: true, networkAccess: false },
+      });
+      reply.status = reply.record.outcome = 'cancelled';
+      if (!withOutput) delete reply.record.output;
+      reply.record.preparedEffect.logicalTargets = ['.'];
+      Object.assign(reply.record.preparedEffect.canonicalInvocation.arguments, { workspaceMode: 'read', executionScope: 'workspace' });
+      record = reply.record;
+      assertRuntimeContract('ToolExecutionRecord', record);
+      assert.throws(() => assertRuntimeContract('ToolExecutionRecord', {
+        ...record, error: { code: 'unexpected_error', message: 'Cancelled must not carry an error.' },
+      }));
+      finishExecution(reply);
+      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:shell',
+        callId, attemptId, status: 'cancelled', record };
+    },
+    async readRecord() { return record ?? null; },
+  }), preparation.port, `shell-cancel-${withOutput}`);
+  t.after(async () => { finishExecution(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:shell-start', 'Run the long Shell command.'));
+  await waitUntil(() => execution !== undefined, 'Shell execution');
+  const runId = (await actor.snapshot()).run.runId;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:shell-stop' });
+  const projection = await waitForProjection(actor, state => state.run?.status === 'cancelled');
+  assert.equal(projection.terminalError, null);
+  const activity = projection.activities.find(item => item.callId === execution.callId);
+  assert.equal(activity.status, 'cancelled');
+  assert.equal(activity.tool.error, undefined);
+  assert.equal(activity.tool.projectionError, undefined);
+  assert.equal(activity.tool.shell.result?.stdout, withOutput ? 'started' : undefined);
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  if (withOutput) {
+    const malformed = structuredClone(projection);
+    malformed.activities.find(item => item.callId === execution.callId).tool.shell.result.exitCode = 'invalid';
+    await assert.rejects(() => decodeGuiProjection(malformed));
+  }
+  const events = await readEvents(journal, sessionId);
+  assert.deepEqual(singleEvent(events, 'tool.completed').payload.record, record);
+  assert.equal(singleEvent(events, 'run.settled').payload.outcome, 'cancelled');
+  assert.equal(singleEvent(events, 'run.finishing').payload.outcome, 'cancelled');
+  await actor.submit(messageCommand(sessionId, 'command:shell-continue', 'Explain what happened.'));
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(turns, 2);
+});
 
 test('Pane resizing follows the grabbed edge and stops at the usable width limits', async t => {
   const { PANE_GEOMETRY, resizedPaneWidth, boundedPaneWidth } = await loadGuiModule(t, '/src/components/shared/paneGeometry.ts');

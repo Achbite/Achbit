@@ -457,11 +457,6 @@ impl ForegroundGuard {
     }
 }
 
-pub fn foreground_is(window: &Window) -> bool {
-    let foreground = unsafe { GetForegroundWindow() };
-    foreground == window.hwnd()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

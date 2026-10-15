@@ -938,6 +938,20 @@ impl LocalAgentKernel {
                             None,
                             None,
                         ),
+                        (Some(ActivePhase::Executing), Some(Ok(result)))
+                            if is_confirmed_workspace_shell_cancellation(&prepared, &result) =>
+                        {
+                            tool_record(
+                                &request,
+                                &prepared,
+                                authority,
+                                &started_at,
+                                &completed_at,
+                                "cancelled",
+                                Some(result.output),
+                                None,
+                            )
+                        }
                         (Some(ActivePhase::Executing), result) => {
                             let output = result
                                 .as_ref()
@@ -3460,6 +3474,34 @@ fn is_shell_tool(name: &str) -> bool {
     matches!(name, "bash" | "powershell")
 }
 
+fn is_confirmed_workspace_shell_cancellation(
+    prepared: &PreparedEffect,
+    result: &KernelToolExecutionResult,
+) -> bool {
+    // The Linux workspace executor returns this result only after process
+    // reaping, output archival and temporary-directory cleanup have succeeded.
+    // Other executors and cleanup errors retain the indeterminate outcome.
+    cfg!(target_os = "linux")
+        && prepared.source_binding.is_none()
+        && matches!(
+            &prepared.input,
+            PreparedToolInput::Builtin(
+                KernelCanonicalInvocation::ProcessShell {
+                    execution_scope: KernelExecutionScope::Workspace,
+                    ..
+                } | KernelCanonicalInvocation::ProcessPowerShell {
+                    execution_scope: KernelExecutionScope::Workspace,
+                    ..
+                }
+            )
+        )
+        && result.outcome == KernelToolExecutionOutcome::Failed
+        && result
+            .error
+            .as_ref()
+            .is_some_and(|error| error.code == "tool_execution_cancelled")
+}
+
 #[cfg(test)]
 mod attempt_control_tests {
     use super::*;
@@ -5415,6 +5457,204 @@ mod attempt_control_tests {
         assert_eq!(control.claim_outcome(), Some(ActivePhase::Prepared));
         control.finish();
         assert!(control.wait_complete(Duration::ZERO));
+    }
+
+    #[test]
+    fn workspace_shell_cancel_receipt_preserves_output_and_cleanup_failures() {
+        use deepcode_kernel_runtime::workspace_sandbox::{
+            native_backend_id, SandboxBackend, SandboxBackendRegistry, SandboxProcessRequest,
+            SandboxStatus,
+        };
+        struct Workspace;
+        impl WorkspaceResolverPort for Workspace {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                Ok(ResolvedWorkspace {
+                    root: std::env::current_dir().unwrap().to_string_lossy().into(),
+                    access: WorkspaceAccess::Project,
+                })
+            }
+        }
+        // Exercise the real Kernel execution/record/cancel path at the trusted
+        // backend boundary; physical process reaping has executor and GUI tests.
+        struct CancelBackend(bool);
+        impl SandboxBackend for CancelBackend {
+            fn id(&self) -> &str {
+                native_backend_id()
+            }
+            fn probe(&self) -> SandboxStatus {
+                SandboxStatus {
+                    backend: self.id().into(),
+                    available: true,
+                    reason: None,
+                }
+            }
+            fn execute(
+                &self,
+                request: SandboxProcessRequest<'_>,
+            ) -> deepcode_kernel_abi::KernelResult<KernelToolExecutionResult> {
+                let directory = request.context.output_directory.as_ref().unwrap();
+                std::fs::create_dir_all(directory).unwrap();
+                let archive = directory.join("stdout.txt");
+                std::fs::write(&archive, "started").unwrap();
+                request.context.progress.started();
+                assert!(request.context.cancellation.is_cancelled());
+                if self.0 {
+                    return Err(deepcode_kernel_abi::KernelError::Structured {
+                        code: "shell_cleanup_failed",
+                        stage: "execution",
+                        message: "original cleanup failure".into(),
+                        details: json!({}),
+                    });
+                }
+                Ok(KernelToolExecutionResult {
+                    invocation_id: request.invocation.id,
+                    outcome: KernelToolExecutionOutcome::Failed,
+                    output: json!({"stdout":"started", "success":false, "exitCode":null,
+                        "fullOutput":{"stdout":{"path":archive}}}),
+                    error: Some(
+                        deepcode_kernel_runtime::executors::KernelToolExecutionFailure {
+                            code: "tool_execution_cancelled".into(),
+                            message: "Shell stopped".into(),
+                        },
+                    ),
+                })
+            }
+        }
+        for cleanup_failed in [false, true] {
+            let config = KernelExecutorConfig {
+                sandbox_backends: Arc::new(
+                    SandboxBackendRegistry::new(vec![Box::new(CancelBackend(cleanup_failed))])
+                        .unwrap(),
+                ),
+                ..Default::default()
+            };
+            let (kernel, request, _) = kernel_with_executor(
+                Arc::new(Workspace),
+                "bash",
+                json!({"workspaceId":"workspace:test", "command":"printf started; sleep 30"}),
+                crate::local_agent_product_tools::test_product_tools(),
+                config,
+            );
+            let kernel = Arc::new(kernel);
+            let cancelling_kernel = Arc::clone(&kernel);
+            let call_id = request.call_id.clone();
+            let progress = deepcode_kernel_runtime::executors::KernelProgressSink::new(move |_| {
+                cancelling_kernel.lock_active().unwrap()[&call_id]
+                    .control
+                    .request_cancel();
+            });
+            let reply = kernel
+                .execute_with_progress(request.clone(), progress)
+                .unwrap();
+            let expected = if cfg!(target_os = "linux") && !cleanup_failed {
+                "cancelled"
+            } else {
+                "indeterminate"
+            };
+            assert_eq!(reply["status"], expected, "{reply}");
+            let record = &reply["record"];
+            assert_eq!(record["outcome"], expected);
+            if cleanup_failed {
+                assert!(record["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("shell_cleanup_failed: original cleanup failure"));
+            } else {
+                assert_eq!(record["output"]["stdout"], "started");
+                assert_eq!(
+                    std::fs::read_to_string(
+                        record["output"]["fullOutput"]["stdout"]["path"]
+                            .as_str()
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    "started"
+                );
+                if expected == "cancelled" {
+                    assert!(record.get("error").is_none());
+                }
+            }
+            assert_eq!(
+                kernel.records.read(&request.call_id).unwrap().as_ref(),
+                Some(record)
+            );
+            for _ in 0..2 {
+                let cancelled = kernel
+                    .cancel(&request.call_id, &request.attempt_id)
+                    .unwrap();
+                assert_eq!(cancelled["status"], expected);
+                assert_eq!(&cancelled["record"], record);
+            }
+            std::fs::remove_dir_all(&kernel.output_root).unwrap();
+        }
+    }
+
+    #[test]
+    fn confirmed_cancellation_is_limited_to_foreground_workspace_shells() {
+        struct Workspace;
+        impl WorkspaceResolverPort for Workspace {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                Ok(ResolvedWorkspace {
+                    root: std::env::current_dir().unwrap().to_string_lossy().into(),
+                    access: WorkspaceAccess::Project,
+                })
+            }
+        }
+        let (kernel, request, _) = kernel_with_request(
+            Arc::new(Workspace),
+            "bash",
+            json!({"workspaceId":"workspace:test", "command":"pwd"}),
+        );
+        let mut prepared = kernel.prepare_tool(&request).unwrap();
+        let mut result = KernelToolExecutionResult {
+            invocation_id: "invocation:cancel".into(),
+            outcome: KernelToolExecutionOutcome::Failed,
+            output: json!({}),
+            error: Some(
+                deepcode_kernel_runtime::executors::KernelToolExecutionFailure {
+                    code: "tool_execution_cancelled".into(),
+                    message: "Shell stopped".into(),
+                },
+            ),
+        };
+        assert_eq!(
+            is_confirmed_workspace_shell_cancellation(&prepared, &result),
+            cfg!(target_os = "linux")
+        );
+        result.error.as_mut().unwrap().code = "bash_timed_out".into();
+        assert!(!is_confirmed_workspace_shell_cancellation(
+            &prepared, &result
+        ));
+        result.error.as_mut().unwrap().code = "tool_execution_cancelled".into();
+        result.outcome = KernelToolExecutionOutcome::Completed;
+        assert!(!is_confirmed_workspace_shell_cancellation(
+            &prepared, &result
+        ));
+        result.outcome = KernelToolExecutionOutcome::Failed;
+        prepared.source_binding = Some(prepared.binding.clone());
+        assert!(!is_confirmed_workspace_shell_cancellation(
+            &prepared, &result
+        ));
+        prepared.source_binding = None;
+        if let PreparedToolInput::Builtin(KernelCanonicalInvocation::ProcessShell {
+            execution_scope,
+            ..
+        }) = &mut prepared.input
+        {
+            *execution_scope = KernelExecutionScope::Host;
+        } else {
+            panic!("expected builtin Shell");
+        }
+        assert!(!is_confirmed_workspace_shell_cancellation(
+            &prepared, &result
+        ));
+        prepared.input = PreparedToolInput::Dynamic {
+            arguments: json!({}),
+            targets: vec![],
+        };
+        assert!(!is_confirmed_workspace_shell_cancellation(
+            &prepared, &result
+        ));
     }
 
     #[test]

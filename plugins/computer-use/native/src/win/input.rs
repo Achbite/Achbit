@@ -150,17 +150,20 @@ pub fn dispatch(
     action: &str,
     image: (f64, f64),
     bounds: Bounds,
-) -> Result<(), String> {
+) -> Result<Option<(f64, f64)>, String> {
     let point = |x: &str, y: &str| protocol::desktop_point(input, x, y, image, bounds);
     let mut events = Vec::new();
+    let mut position = None;
     match action {
         "click" => {
+            position = Some(point("x", "y")?);
             events.push(move_to(point("x", "y")?));
             events.push(mouse(0, 0, 0, MOUSEEVENTF_LEFTDOWN));
             events.push(mouse(0, 0, 0, MOUSEEVENTF_LEFTUP));
         }
         "drag" => {
             let (from, to) = (point("x", "y")?, point("toX", "toY")?);
+            position = Some(to);
             events.push(move_to(from));
             events.push(mouse(0, 0, 0, MOUSEEVENTF_LEFTDOWN));
             for step in 1..=12 {
@@ -204,6 +207,10 @@ pub fn dispatch(
             }
         }
         "scroll" => {
+            position = Some((
+                bounds.x + bounds.width / 2.0,
+                bounds.y + bounds.height / 2.0,
+            ));
             let delta = |field: &str| {
                 input[field]
                     .as_i64()
@@ -225,7 +232,8 @@ pub fn dispatch(
         }
         _ => return Err("Unsupported computer action".into()),
     }
-    send(&events)
+    send(&events)?;
+    Ok(position)
 }
 
 #[cfg(test)]

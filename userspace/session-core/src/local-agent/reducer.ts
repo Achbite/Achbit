@@ -2141,7 +2141,7 @@ function projectShellActivity(
   }
   const output = record.outcome === 'completed'
     ? record.output
-    : record.outcome === 'failed' || record.outcome === 'indeterminate'
+    : record.outcome === 'failed' || record.outcome === 'indeterminate' || record.outcome === 'cancelled'
       ? record.output
       : undefined;
   // Kernel failures before a process result exists carry diagnostics (or null),

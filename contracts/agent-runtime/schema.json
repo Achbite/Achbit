@@ -3475,7 +3475,7 @@
         {"if": {"properties": {"outcome": {"enum": ["failed", "indeterminate"]}}}, "then": {"required": ["error"]}},
         {
           "if": {"properties": {"outcome": {"const": "cancelled"}}},
-          "then": {"not": {"anyOf": [{"required": ["error"]}, {"required": ["output"]}]}}
+          "then": {"not": {"required": ["error"]}}
         }
       ]
     },

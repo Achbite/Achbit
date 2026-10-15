@@ -3,7 +3,7 @@ import type { ConversationReaderLayout } from '../../components/local-agent/Loca
 import type { UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { hasNativeBrowser, nativeBrowserCommand, nativeHostBinding, type NativeHostBinding } from '../../services/nativeBrowser';
-import { acceptPreview, activateDesktopPreview, constrainPreviewPosition, previewPlacement, previewRailElements, readDesktopPreview, targetIdentity,
+import { acceptPreview, activateDesktopPreview, computerPreviewSources, constrainPreviewPosition, previewPlacement, previewRailElements, readDesktopPreview, targetIdentity,
   type BrowserPreviewTarget, type ComputerPreview, type DesktopPreviewTarget } from '../../services/computerPreview';
 import './computerTargetPreview.css';
 
@@ -25,10 +25,11 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
   const overlay = useRef<HTMLDivElement>(null);
   const [frontTarget, setFrontTarget] = useState<string | null>(null);
   const label = copy[language === 'zh-CN' ? 'zh-CN' : 'en-US'];
+  const sources = computerPreviewSources(navigator.platform);
 
   useEffect(() => {
     setViews({ owner, desktop: null, browser: null }); setFrontTarget(null); binding.current = undefined;
-    if (!sessionId || !runId || !hasNativeBrowser() || !/Mac/.test(navigator.platform)) return;
+    if (!sessionId || !runId || !hasNativeBrowser() || !sources.desktop) return;
     const abort = new AbortController();
     let desktopTimer: ReturnType<typeof setTimeout> | undefined;
     let browserTimer: ReturnType<typeof setTimeout> | undefined;
@@ -67,12 +68,12 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
       browserTimer = setTimeout(pollBrowser, 500);
     };
     void pollDesktop();
-    void nativeHostBinding().then(value => {
+    if (sources.browser) void nativeHostBinding().then(value => {
       if (abort.signal.aborted || !value) return;
       binding.current = { ...value, sessionId }; void pollBrowser();
     }).catch(error => { if (!abort.signal.aborted) { browser = { state: 'failed', reason: String(error) }; publish(); } });
     return () => { abort.abort(); clearTimeout(desktopTimer); clearTimeout(browserTimer); };
-  }, [owner, sessionId, runId]);
+  }, [owner, sessionId, runId, sources.desktop, sources.browser]);
 
   const live = views.owner === owner ? views : { desktop: null, browser: null };
   const cards = [live.desktop, live.browser].filter((view): view is ComputerPreview | ComputerPreview<BrowserPreviewTarget> => Boolean(view && (view.target || view.reason || view.frameError) && !(view.state === 'inactive' && !view.reason)));
@@ -82,16 +83,16 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
       const identity = `${owner}:${targetIdentity(view.target) ?? index}`;
       return <FloatingComputerPreview key={identity} view={view} sessionId={sessionId} runId={runId} language={language}
         readerLayout={readerLayout} concealed={concealed} index={index} overlay={overlay}
-        raised={frontTarget === identity} onRaise={() => setFrontTarget(identity)} />;
+        raised={frontTarget === identity} onRaise={() => setFrontTarget(identity)} stopTask={sources.stopTask} />;
     })}
   </div>;
 }
 
 /** Each exact target owns its position, bounds and activation state. */
-function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise }: {
+function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise, stopTask }: {
   view: ComputerPreview<DesktopPreviewTarget | BrowserPreviewTarget>; sessionId: string | null; runId: string | null; language: UiLanguage;
   readerLayout: ConversationReaderLayout; concealed: boolean; index: number; overlay: RefObject<HTMLDivElement | null>;
-  raised: boolean; onRaise(): void;
+  raised: boolean; onRaise(): void; stopTask: boolean;
 }) {
   const boundary = useRef<HTMLDivElement>(null);
   const manualPosition = useRef<{ left: number; top: number } | null>(null);
@@ -165,7 +166,33 @@ function FloatingComputerPreview({ view, sessionId, runId, language, readerLayou
       onMove={position => { manualPosition.current = position; alignPreview.current?.(); }} />
     {(view.reason || view.frameError) && <p className="computer-target-preview__error" role="status">{view.frameError || view.reason}</p>}
     {activationError && <p className="computer-target-preview__error" role="alert">{activationError}</p>}
+    {stopTask && sessionId && runId && <ComputerPreviewStop sessionId={sessionId} runId={runId} language={language} />}
   </div>;
+}
+
+/** Cancel through the same run lifecycle as the composer, including resource release. */
+export function ComputerPreviewStop({ sessionId, runId, language }: { sessionId: string; runId: string; language: UiLanguage }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submitting = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  async function stop() {
+    const state = useLocalAgentStore.getState();
+    // A stale card must never cancel a different session or a newer run.
+    if (submitting.current || state.sessionId !== sessionId || state.projection?.run?.runId !== runId
+      || !['running', 'waiting'].includes(state.projection.run.status)) return;
+    submitting.current = true; setPending(true); setError(null);
+    try { await state.cancelRun(); }
+    catch (cause) { if (mounted.current) setError(String(cause)); }
+    finally { submitting.current = false; if (mounted.current) setPending(false); }
+  }
+  return <>
+    <button type="button" className="computer-target-preview__stop" disabled={pending} onClick={stop}>
+      {language === 'zh-CN' ? (pending ? '正在停止…' : '停止任务') : (pending ? 'Stopping…' : 'Stop task')}
+    </button>
+    {error && <p className="computer-target-preview__error" role="alert">{error}</p>}
+  </>;
 }
 
 /** The preview image is one control: a drag moves it, a click reveals its exact bound target. */

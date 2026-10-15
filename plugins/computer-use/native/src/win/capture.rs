@@ -1,36 +1,20 @@
-//! Pixel capture with GDI. Windows render through PrintWindow, so covered windows
-//! are captured without activation; displays copy the composed desktop.
-use super::desktop::{self, Window};
+//! Image encoding and the existing one-shot primary-display capture.
+//! Window pixels are supplied by WGC, without a screen-region fallback.
 use crate::protocol::{self, Bounds};
 use std::ffi::c_void;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, MonitorFromWindow,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, CAPTUREBLT, DIB_RGB_COLORS, HDC,
-    MONITOR_DEFAULTTONEAREST, ROP_CODE, SRCCOPY,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+    SelectObject, BITMAPINFO, BITMAPINFOHEADER, CAPTUREBLT, DIB_RGB_COLORS, HDC, ROP_CODE, SRCCOPY,
 };
-use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN,
-};
-
-/// PW_RENDERFULLCONTENT: include DirectComposition and DirectX content.
-const RENDER_FULL_CONTENT: PRINT_WINDOW_FLAGS = PRINT_WINDOW_FLAGS(2);
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 pub struct Image {
     pub width: u32,
     pub height: u32,
     /// Tightly packed RGB rows.
     pub rgb: Vec<u8>,
-}
-
-impl Image {
-    fn is_blank(&self) -> bool {
-        self.rgb.iter().all(|value| *value == 0)
-    }
 }
 
 /// A 32-bit top-down DIB selected into a memory DC; released on drop.
@@ -165,54 +149,8 @@ pub fn primary_display() -> Result<Image, String> {
     })
 }
 
-/// DPI-virtualized windows (unaware or system aware on another scale) render
-/// PrintWindow output in their own logical pixels, not physical desktop pixels.
-fn render_scale(hwnd: windows::Win32::Foundation::HWND) -> f64 {
-    unsafe {
-        let window = GetDpiForWindow(hwnd);
-        let (mut x, mut y) = (0u32, 0u32);
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        if window == 0
-            || GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y).is_err()
-            || x == 0
-        {
-            return 1.0;
-        }
-        window as f64 / x as f64
-    }
-}
-
-/// Captures the window's visible frame. PrintWindow renders covered windows; a
-/// blank result of the frontmost window falls back to its composed screen pixels.
-/// The image covers exactly the frame; coordinates map proportionally to it.
-pub fn window(window: &Window) -> Result<Image, String> {
-    let hwnd = window.hwnd();
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect) }
-        .map_err(|error| format!("Cannot read window rectangle: {error}"))?;
-    let scale = render_scale(hwnd);
-    let logical = |value: f64| (value * scale).round() as i32;
-    let surface = Surface::new(
-        logical((rect.right - rect.left) as f64),
-        logical((rect.bottom - rect.top) as f64),
-    )?;
-    if !unsafe { PrintWindow(hwnd, surface.memory, RENDER_FULL_CONTENT) }.as_bool() {
-        return Err("Window capture failed (PrintWindow); observe again".into());
-    }
-    // GetWindowRect includes the invisible resize border; crop to the DWM frame.
-    let left = logical(window.bounds.x - rect.left as f64).clamp(0, surface.width - 1);
-    let top = logical(window.bounds.y - rect.top as f64).clamp(0, surface.height - 1);
-    let width = logical(window.bounds.width).clamp(1, surface.width - left);
-    let height = logical(window.bounds.height).clamp(1, surface.height - top);
-    let image = surface.rgb(left, top, width, height);
-    if image.is_blank() && desktop::foreground_is(window) {
-        return screen_area(window.bounds);
-    }
-    Ok(image)
-}
-
 /// Area-averaging reduction; the archived pixels are exactly what the model receives.
-fn reduce(image: &Image, width: u32, height: u32) -> Image {
+pub fn reduce(image: &Image, width: u32, height: u32) -> Image {
     if (width, height) == (image.width, image.height) {
         return Image {
             width,
@@ -248,13 +186,10 @@ fn span(index: u32, target: u32, source: u32) -> (u32, u32) {
     (start, end.min(source))
 }
 
-pub fn save(image: &Image, directory: &Path, id: &str) -> Result<(PathBuf, u32, u32), String> {
-    let (width, height) =
-        protocol::scaled_size(image.width, image.height, protocol::IMAGE_EDGE_LIMIT);
-    let image = reduce(image, width, height);
+pub fn encode(image: &Image) -> Result<Vec<u8>, String> {
     let mut encoded = Vec::new();
     {
-        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        let mut encoder = png::Encoder::new(&mut encoded, image.width, image.height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Fast);
@@ -263,6 +198,13 @@ pub fn save(image: &Image, directory: &Path, id: &str) -> Result<(PathBuf, u32, 
             .write_image_data(&image.rgb)
             .map_err(|error| error.to_string())?;
     }
+    Ok(encoded)
+}
+
+pub fn save(image: &Image, directory: &Path, id: &str) -> Result<(PathBuf, u32, u32), String> {
+    let (width, height) =
+        protocol::scaled_size(image.width, image.height, protocol::IMAGE_EDGE_LIMIT);
+    let encoded = encode(&reduce(image, width, height))?;
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let path = directory.join(format!("{id}.png"));
     let mut file = std::fs::OpenOptions::new()

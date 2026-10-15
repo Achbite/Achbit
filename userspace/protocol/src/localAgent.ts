@@ -2064,7 +2064,7 @@ export type ToolExecutionRecord =
   | (ToolExecutionRecordBase & { outcome: 'completed'; output: unknown })
   | (ToolExecutionRecordBase & { outcome: 'denied'; error?: LocalAgentError })
   | (ToolExecutionRecordBase & { outcome: 'failed'; output?: unknown; error: LocalAgentError })
-  | (ToolExecutionRecordBase & { outcome: 'cancelled' })
+  | (ToolExecutionRecordBase & { outcome: 'cancelled'; output?: unknown })
   | (ToolExecutionRecordBase & { outcome: 'indeterminate'; output?: unknown; error: LocalAgentError });
 
 export interface ToolInputIssue {

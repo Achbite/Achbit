@@ -1,0 +1,63 @@
+{
+  "capturedAt": "2026-10-15T05:15:29.217685+00:00",
+  "sessionId": "session:ffc8abdc28cb0aedb952030ae993b3fc",
+  "provider": {
+    "connectionId": "deepseek-api",
+    "model": "deepseek-flash",
+    "requests": 4
+  },
+  "runSettlements": [
+    {
+      "run_id": "session:ffc8abdc28cb0aedb952030ae993b3fc:run:mv92y7eo:2",
+      "payload": {
+        "finalMessageId": "session:ffc8abdc28cb0aedb952030ae993b3fc:message:mv92yaf7:a",
+        "outcome": "completed"
+      }
+    },
+    {
+      "run_id": "session:ffc8abdc28cb0aedb952030ae993b3fc:run:mv92z9yz:c",
+      "payload": {
+        "outcome": "cancelled"
+      }
+    },
+    {
+      "run_id": "session:ffc8abdc28cb0aedb952030ae993b3fc:run:mv932tsd:j",
+      "payload": {
+        "finalMessageId": "session:ffc8abdc28cb0aedb952030ae993b3fc:message:mv932vc7:m",
+        "outcome": "completed"
+      }
+    }
+  ],
+  "readonly": {
+    "callId": "session:ffc8abdc28cb0aedb952030ae993b3fc:call:mv92y8s2:5",
+    "stdout": "deepcode-wsl-ssh-acceptance\nLinux\n/workspace\nWSL_CONTAINER_ONLY_67db0457\n",
+    "outcome": "completed"
+  },
+  "cancellation": {
+    "callId": "session:ffc8abdc28cb0aedb952030ae993b3fc:call:mv92zayb:f",
+    "outcome": "cancelled",
+    "stdout": "WSL_SSH_CANCEL_FIX_STARTED\n",
+    "durationMs": 42903,
+    "success": false,
+    "exitCode": null,
+    "timedOut": false,
+    "archiveBytes": 27,
+    "archiveMatchesOutput": true,
+    "projectionStatus": "cancelled",
+    "projectionHasPartialOutput": true
+  },
+  "continuation": {
+    "outcome": "completed",
+    "terminalError": null,
+    "toolCountUnchanged": true,
+    "answer": "上一条 Shell 工具记录（record:a700d1661b13b59a4378c921b1d3d33e）的实际结果：\n\n- **outcome**：`cancelled`（`success: false`，`exitCode: null`），并非 `completed`；`timedOut: false`，且未截断（`truncated: false`）。运行了约 42.9 秒（`durationMs: 42903`），远少于所设 180 秒超时和脚本自身的 120 秒 sleep，符合运行期间被外部取消。\n- **已捕获的 stdout**：仅 `WSL_SSH_CANCEL_FIX_STARTED\\n`（27 字节）；`stderr` 为空（0 字节）。完整输出保存在 `.../sha256-794d2669.../stdout.log` 与 `stderr.log`。\n- **完成标记**：未观察到 `WSL_SSH_CANCEL_FIX_COMPLETED`。即取消发生在 `sleep 120` 期间，第二条 `printf` 从未执行到。\n\n关于副作用：该命令本身只做 `printf` 与 `sleep`，未触及文件系统。但仅凭这条记录无法证明取消对其他任何先前操作有回滚作用——取消终止的是这条进程，不构成对既有状态的还原，因此不应假设先前的副作用被撤销。\n\n本次未再调用任何工具；仅依据上述工具记录作答。"
+  },
+  "previousIndeterminateRecordPreserved": true,
+  "loadedKernelSha256": "728e5b98967783b6f7abc251d06cffc6dcc435de66ecb5ef1406bb26714fed6f",
+  "packageBuildInfo": {
+    "version": "0.6.50",
+    "platform": "linux-x64",
+    "sourceCommit": "unknown",
+    "builtAt": "2026-10-15T05:05:04Z"
+  }
+}
