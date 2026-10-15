@@ -14,6 +14,8 @@
 
 `schema.json` 是 UI、CLI、TUI、Host、Session 与 Kernel 之间的当前 wire schema。SQL 只约束各自 store 的持久化边界，不能替代 wire schema，也不能跨 owner 推断另一层事实。
 
+`ToolExecutionRecord.outcome=cancelled` 表示执行已取消，不保证取消前的副作用已回滚；允许可选 `output` 保存停止前的输出，仍禁止 `error`。执行前取消可以没有输出。Linux 内置前台工作区 Shell 只有在受控执行器完成进程回收、输出归档与临时资源清理并返回明确取消结果后，才生成带输出的取消记录；清理失败或结果不明仍为 `indeterminate`。此扩展不改变数据库版本与历史记录，消费方需接受取消记录中的可选输出。
+
 模型 Profile 和侧边栏排序属于 Host 用户配置。模型配置错误通过设置接口保留并展示，不阻止 Host 打开有效的 Session store；运行请求仍要求可用的模型配置。GUI 排序不改变 Catalog 的项目归属或 Session 的语义事实。
 
 同一个配置根在任一时刻只有一个 daemon owner。daemon 在读取权威配置和打开三个业务 store 之前，必须持有 `<data_dir>/agent-runtime/root-owner.lock` 的进程生命周期租约；同根的第二个 daemon 以 `config_root_already_owned` 显式失败。`data_dir` 是 Host 的持久数据目录，平台路径与独立用户根规则见[用户目录](../../docs/distribution.md#用户目录)。该文件只是由操作系统锁生命周期约束的 owner 租约，不是第四个业务事实 store，进程退出或崩溃即释放所有权。

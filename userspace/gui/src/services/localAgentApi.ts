@@ -1467,7 +1467,7 @@ function isShellActivity(value: unknown, activityStatus: string): boolean {
     && resultMatchesShell
     && (activityStatus === 'completed'
       ? resultValid
-      : activityStatus === 'failed' || activityStatus === 'indeterminate'
+      : activityStatus === 'failed' || activityStatus === 'indeterminate' || activityStatus === 'cancelled'
         ? value.result === undefined || resultValid
         : value.result === undefined);
 }

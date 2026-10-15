@@ -1343,6 +1343,10 @@ function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown
     const output = toolOutputForModel(record, record.output);
     return { recordId: record.recordId, outcome: record.outcome, output };
   }
+  if (record.outcome === 'cancelled') {
+    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
+    return { recordId: record.recordId, outcome: record.outcome, ...(output === undefined ? {} : { output }) };
+  }
   if (record.outcome === 'failed') {
     const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
     return {
