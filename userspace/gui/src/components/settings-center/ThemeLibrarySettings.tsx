@@ -23,7 +23,7 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
   useInterfaceReloadGuard(importing && text.trim().length > 0, t(language, 'settings.themes.importTitle'), busy);
   const file = useRef<HTMLInputElement>(null);
   const target = useSettingsSearchTarget(THEME_LIBRARY_SETTING);
-  useSettingsSearchEntries('themes', [{ id: THEME_LIBRARY_SETTING, category: 'gui', title: t(language, 'settings.themes.title'), keywords: '主题 导入 浅色 深色 theme import presets Catppuccin Gruvbox Nord' }]);
+  useSettingsSearchEntries('themes', [{ id: THEME_LIBRARY_SETTING, category: 'gui', title: t(language, 'settings.themes.title'), keywords: '主题 配色 导入 浅色 深色 轻量工作台 温润阅读 theme colors import presets Light Workbench Warm Reading Catppuccin Gruvbox Nord' }]);
   const accent = normalizeGuiAccentColor(settings['gui.accentColor']);
   let library: SavedTheme[] = [];
   let colors = {};
@@ -80,8 +80,12 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
       {!configError && (['light', 'dark'] as const).map((mode) => {
         const selected = selectedThemeId(allThemes, colors, mode);
         const choices = [
-          { id: 'default', name: 'DeepCode', colors: {} },
-          ...allThemes.filter((theme) => Object.keys(theme[mode] ?? {}).length).map((theme) => ({ id: theme.id, name: theme.name, colors: themeOverrides(theme) })),
+          { id: 'default', name: t(language, 'settings.themes.default'), colors: {} },
+          ...allThemes.filter((theme) => Object.keys(theme[mode] ?? {}).length).map((theme) => ({
+            id: theme.id,
+            name: theme.id === 'builtin:Warm Reading' ? t(language, 'settings.themes.warmReading') : theme.name,
+            colors: themeOverrides(theme),
+          })),
           ...(selected === 'custom' ? [{ id: 'custom', name: t(language, 'settings.themes.custom'), colors }] : []),
         ];
         return <ThemePicker key={mode} label={t(language, `settings.themes.${mode}`)} choices={choices} selected={selected}
