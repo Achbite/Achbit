@@ -1,5 +1,6 @@
 use crate::i18n::Language;
 use crate::renderer::Renderer;
+use crossterm::event::KeyCode;
 use deepcode_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, ConversationResourceReadResult,
     ConversationSessionSummary, CreateConversationSessionRequest, HttpKernelClient,
@@ -24,6 +25,48 @@ fn agent_status_key(status: deepcode_kernel_client::AgentTaskStatus) -> &'static
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+// Presentation metadata for the existing submit_line commands. Completion never executes them.
+const COMMANDS: &[(&str, &str, bool)] = &[
+    ("/help", "tui.command.help", false),
+    ("/new", "tui.command.new", false),
+    ("/sessions", "tui.command.sessions", false),
+    ("/resume", "tui.command.resume", false),
+    ("/model", "tui.command.model", false),
+    ("/connection", "tui.command.model", false),
+    ("/context", "tui.command.context", false),
+    ("/tasks", "tui.command.tasks", false),
+    ("/agents", "tui.command.agents", false),
+    ("/agent", "tui.command.agent", true),
+    ("/back", "tui.command.back", false),
+    ("/focus", "tui.command.focus", true),
+    ("/reply", "tui.command.reply", true),
+    ("/attach", "tui.command.attach", true),
+    ("/detach", "tui.command.detach", true),
+    ("/open", "tui.command.open", true),
+    ("/next", "tui.command.next", false),
+    ("/diff", "tui.command.diff", true),
+    ("/reasoning", "tui.command.reasoning", false),
+    ("/reasoning-history", "tui.command.reasoningHistory", false),
+    ("/tool", "tui.command.tool", true),
+    ("/show", "tui.command.show", false),
+    ("/error", "tui.command.error", false),
+    ("/decision", "tui.command.decision", false),
+    ("/permissions", "tui.command.permissions", true),
+    ("/revoke", "tui.command.revoke", true),
+    ("/cancel", "tui.command.cancel", false),
+    ("/cancel-plan", "tui.command.cancelPlan", false),
+    ("/close", "tui.command.close", false),
+    ("/clear", "tui.command.clear", false),
+    ("/quit", "tui.command.quit", false),
+    ("/exit", "tui.command.quit", false),
+];
+
+pub struct CommandPickerEntry {
+    pub command: &'static str,
+    pub description: &'static str,
+    pub highlighted: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct TuiHostOptions {
@@ -74,6 +117,7 @@ pub struct TuiApp {
     host: TuiHostOptions,
     projection: Option<SessionProjection>,
     input: String,
+    command_picker: Option<usize>,
     status: String,
     connection_error: Option<String>,
     next_message_profile_id: Option<String>,
@@ -109,6 +153,7 @@ impl TuiApp {
             host,
             projection: None,
             input: String::new(),
+            command_picker: None,
             next_message_profile_id: None,
             model_connections: None,
             model_profiles: Vec::new(),
@@ -592,6 +637,7 @@ impl TuiApp {
                 }
                 self.projection = Some(child);
                 self.agent_picker = None;
+                self.command_picker = None;
                 self.transcript_scroll.set(None);
                 self.detail_preview = None;
                 self.resource_preview = None;
@@ -612,6 +658,7 @@ impl TuiApp {
         if let Some(parent) = self.agent_return_views.pop() {
             self.projection = Some(parent.projection);
             self.input = parent.input;
+            self.command_picker = None;
             self.transcript_scroll.set(parent.transcript_scroll);
             self.detail_preview = None;
             self.resource_preview = None;
@@ -1360,12 +1407,12 @@ impl TuiApp {
 
     pub fn push_input(&mut self, value: char) {
         self.input.push(value);
-        self.sync_plugin_picker_from_input();
+        self.sync_input_pickers();
     }
 
     pub fn push_input_text(&mut self, value: &str) {
         self.input.push_str(value);
-        self.sync_plugin_picker_from_input();
+        self.sync_input_pickers();
     }
 
     pub fn backspace_input(&mut self) {
@@ -1380,22 +1427,104 @@ impl TuiApp {
                 .retain(|candidate| candidate.uri != mention.uri);
             self.selected_plugins
                 .retain(|selection| selection.uri != mention.uri);
-            self.sync_plugin_picker_from_input();
+            self.sync_input_pickers();
             return;
         }
         self.input.pop();
-        self.sync_plugin_picker_from_input();
+        self.sync_input_pickers();
     }
 
     pub fn clear_input(&mut self) {
         self.input.clear();
+        self.command_picker = None;
         self.clear_plugin_selections();
     }
 
     pub fn take_input(&mut self) -> String {
+        self.command_picker = None;
         self.plugin_picker = None;
         self.selected_mentions.clear();
         std::mem::take(&mut self.input)
+    }
+
+    pub fn command_picker_open(&self) -> bool {
+        self.command_picker.is_some()
+            && !self.agent_picker_open()
+            && !self.session_picker_open()
+            && !self.model_picker_open()
+            && !self.plugin_picker_open()
+    }
+
+    pub fn command_completion_key(&mut self, key: KeyCode) -> bool {
+        if !self.command_picker_open() {
+            return false;
+        }
+        let commands = self.matching_commands();
+        let selected = self.command_picker.unwrap();
+        match key {
+            KeyCode::Esc => self.command_picker = None,
+            KeyCode::Up | KeyCode::BackTab => {
+                self.command_picker = Some((selected + commands.len() - 1) % commands.len());
+            }
+            KeyCode::Down => {
+                self.command_picker = Some((selected + 1) % commands.len());
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let (command, _, takes_argument) = commands[selected];
+                self.input = command.to_string();
+                if takes_argument {
+                    self.input.push(' ');
+                }
+                self.command_picker = None;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn command_picker_entries(&self, visible_count: usize) -> Vec<CommandPickerEntry> {
+        if !self.command_picker_open() {
+            return Vec::new();
+        }
+        let selected = self.command_picker.unwrap();
+        let start = selected.saturating_sub(visible_count.saturating_sub(1));
+        self.matching_commands()
+            .into_iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_count)
+            .map(|(index, (command, description, _))| CommandPickerEntry {
+                command,
+                description: self.host.language.text(description),
+                highlighted: index == selected,
+            })
+            .collect()
+    }
+
+    fn matching_commands(&self) -> Vec<(&'static str, &'static str, bool)> {
+        let query = self.input.trim_start();
+        if self.input.contains(['\n', '\r'])
+            || !query.starts_with('/')
+            || query.chars().any(char::is_whitespace)
+        {
+            return Vec::new();
+        }
+        COMMANDS
+            .iter()
+            .copied()
+            .filter(|(command, _, _)| command.starts_with(query))
+            .collect()
+    }
+
+    fn sync_input_pickers(&mut self) {
+        let commands = self.matching_commands();
+        // A fully typed command keeps its existing Enter-to-execute behavior.
+        self.command_picker = (!commands.is_empty()
+            && !commands
+                .iter()
+                .any(|(command, _, _)| *command == self.input.trim_start()))
+        .then_some(0);
+        self.sync_plugin_picker_from_input();
     }
 
     pub fn plugin_picker_open(&self) -> bool {
@@ -1801,6 +1930,165 @@ mod input_tests {
                 plugin_uris: vec![],
             },
         )
+    }
+
+    #[tokio::test]
+    async fn command_completion_accepts_text_without_executing_or_consuming_plugins() {
+        for key in [KeyCode::Tab, KeyCode::Enter] {
+            let mut app = test_app();
+            app.selected_plugins.push(PluginSelectionInput {
+                selection_id: "selection:test".into(),
+                uri: "plugin://test@builtin".into(),
+                label: "Test plugin".into(),
+            });
+            app.push_input_text("/he");
+            let entries = app.command_picker_entries(7);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].command, "/help");
+            assert!(app.command_completion_key(key));
+            assert_eq!(app.input(), "/help");
+            assert!(app.detail_preview().is_none());
+            assert!(app.projection().is_none());
+            assert_eq!(app.selected_plugin_labels(), vec!["Test plugin"]);
+            assert!(!app.command_picker_open());
+            assert!(!app.command_completion_key(KeyCode::Enter));
+            let input = app.take_input();
+            assert!(app.submit_line(&input).await);
+            assert!(app.detail_preview().unwrap().contains("DeepCode 命令"));
+
+            app.push_input_text("/att");
+            assert!(app.command_completion_key(key));
+            assert_eq!(app.input(), "/attach ");
+            app.push_input_text("/tmp/项目");
+            assert!(!app.command_picker_open());
+            assert_eq!(app.take_input(), "/attach /tmp/项目");
+        }
+    }
+
+    #[test]
+    fn command_completion_dismisses_and_resets_with_the_draft() {
+        let mut app = test_app();
+        app.push_input('/');
+        assert!(app.command_picker_open());
+        assert!(app.command_completion_key(KeyCode::Esc));
+        assert_eq!(app.input(), "/");
+        assert!(!app.command_picker_open());
+        app.push_input('h');
+        assert!(app.command_picker_open());
+        app.clear_input();
+        assert!(!app.command_picker_open());
+        assert_eq!(app.input(), "");
+        app.push_input_text("/con");
+        assert_eq!(app.take_input(), "/con");
+        assert!(!app.command_picker_open());
+        app.push_input_text("/ta");
+        app.new_session();
+        assert_eq!(app.input(), "");
+        assert!(!app.command_picker_open());
+    }
+
+    #[test]
+    fn command_completion_leaves_full_commands_text_and_existing_pickers_alone() {
+        let mut app = test_app();
+        for input in [
+            "ordinary /he",
+            "/help",
+            "/model profile:test",
+            "/he\n",
+            "\n/he",
+            "/unknown",
+            "中文 /he",
+            "@plugin",
+        ] {
+            app.clear_input();
+            app.push_input_text(input);
+            assert!(!app.command_picker_open(), "{input}");
+            assert!(!app.command_completion_key(KeyCode::Tab), "{input}");
+            assert!(!app.command_completion_key(KeyCode::Enter), "{input}");
+            assert_eq!(app.input(), input);
+        }
+        app.clear_input();
+        app.push_input_text("/help");
+        app.backspace_input();
+        assert!(app.command_picker_open());
+        app.session_picker = Some(0);
+        assert!(!app.command_completion_key(KeyCode::Enter));
+        app.session_picker = None;
+        app.model_picker = Some(ModelPicker {
+            connection_id: None,
+            selected: 0,
+        });
+        assert!(!app.command_completion_key(KeyCode::Tab));
+        app.model_picker = None;
+        app.agent_picker = Some(0);
+        assert!(!app.command_completion_key(KeyCode::Down));
+        app.agent_picker = None;
+        assert!(app.command_completion_key(KeyCode::Tab));
+        assert_eq!(app.input(), "/help");
+    }
+
+    #[test]
+    fn command_completion_keeps_scrolled_selection_visible_in_both_languages() {
+        use ratatui::{backend::TestBackend, Terminal};
+        for language in [Language::ZhCn, Language::EnUs] {
+            let mut app = test_app();
+            app.host.language = language;
+            app.push_input('/');
+            assert!(app.command_completion_key(KeyCode::Up));
+            assert_eq!(
+                app.command_picker_entries(7).last().unwrap().command,
+                "/exit"
+            );
+            for (width, height) in [(60, 24), (32, 12)] {
+                let screen = screen_rows(&app, width, height).join("\n");
+                assert!(screen.contains("> /exit"), "{screen}");
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| app.renderer().draw(frame, &app))
+                    .unwrap();
+                let cursor = terminal.get_cursor_position().unwrap();
+                assert!(
+                    cursor.x < width && cursor.y >= height - 5 && cursor.y < height - 2,
+                    "{cursor:?}"
+                );
+            }
+            assert!(app.command_completion_key(KeyCode::Down));
+            assert!(app.command_picker_entries(7)[0].highlighted);
+            for _ in 0..8 {
+                app.command_completion_key(KeyCode::Down);
+            }
+            let entries = app.command_picker_entries(7);
+            assert_eq!(entries.len(), 7);
+            assert!(entries.last().unwrap().highlighted);
+            assert_eq!(entries.last().unwrap().command, "/agents");
+            assert_eq!(
+                entries.last().unwrap().description,
+                language.text("tui.command.agents")
+            );
+            let screen = screen_rows(&app, 90, 24).join("\n");
+            assert!(
+                screen.contains(language.text("tui.command.agents")),
+                "{screen}"
+            );
+            assert!(
+                screen.contains(language.text("tui.commandPickerHint")),
+                "{screen}"
+            );
+            app.command_completion_key(KeyCode::BackTab);
+            app.command_completion_key(KeyCode::Enter);
+            assert_eq!(app.input(), "/tasks");
+            app.clear_input();
+            app.push_input_text("/con");
+            let commands: Vec<_> = app
+                .command_picker_entries(7)
+                .into_iter()
+                .map(|entry| entry.command)
+                .collect();
+            assert_eq!(commands, vec!["/connection", "/context"]);
+            app.command_completion_key(KeyCode::Down);
+            app.command_completion_key(KeyCode::Tab);
+            assert_eq!(app.input(), "/context");
+        }
     }
     #[tokio::test]
     async fn session_navigation_preserves_failed_targets_and_new_draft_is_isolated() {

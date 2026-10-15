@@ -123,7 +123,7 @@ impl Writer {
                     if let CodeBlockKind::Fenced(language) = kind {
                         if !language.is_empty() {
                             self.push_style(Style::default().fg(Color::DarkGray));
-                            self.text(&format!("── {language}"));
+                            self.text(&format!("  {language}"));
                             self.styles.pop();
                             self.newline();
                         }

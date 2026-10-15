@@ -259,6 +259,11 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                 continue;
             };
             let keep_running = match next_event {
+                CrosstermEvent::Key(key)
+                    if key.kind == KeyEventKind::Press && app.command_completion_key(key.code) =>
+                {
+                    true
+                }
                 CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.interrupt().await;

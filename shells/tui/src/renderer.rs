@@ -11,7 +11,9 @@ use ratatui::{
     prelude::Frame,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, Wrap,
+    },
 };
 use std::{
     cell::RefCell,
@@ -474,10 +476,22 @@ fn push_activity_summary(
     lines: &mut Vec<Line<'_>>,
     activity: &ActivityProjection,
 ) {
-    lines.push(Line::from(Span::styled(
-        activity_summary(language, activity),
-        Style::default().fg(activity_color(&activity.status)),
-    )));
+    let marker = match activity.status.as_str() {
+        "completed" => "✓",
+        "active" => "●",
+        "failed" | "denied" | "indeterminate" => "!",
+        _ => "○",
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{marker} "),
+            Style::default().fg(activity_color(&activity.status)),
+        ),
+        Span::styled(
+            activity_summary(language, activity),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
     for error in tool_error_lines(activity) {
         lines.push(Line::from(Span::styled(
             error,
@@ -805,6 +819,9 @@ impl Renderer {
             );
         }
         self.draw_input(frame, rows[4], app);
+        if app.command_picker_open() {
+            self.draw_command_picker(frame, rows[1], app);
+        }
         if app.plugin_picker_open() {
             self.draw_plugin_picker(frame, rows[1], app);
         }
@@ -1107,9 +1124,13 @@ impl Renderer {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled(left, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled("DeepCode", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!("  ·  {status}"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::raw(" ".repeat(gap)),
-                    Span::raw(right),
+                    Span::styled(right, Style::default().fg(Color::DarkGray)),
                 ]),
                 Line::from(Span::styled(
                     clipped(&workspace, area.width),
@@ -1247,8 +1268,8 @@ impl Renderer {
                     .wrap(Wrap { trim: false })
                     .block(
                         Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
+                            .borders(Borders::TOP)
+                            .padding(Padding::new(1, 1, 0, 1))
                             .border_style(Style::default().fg(Color::DarkGray))
                             .title_style(Style::default())
                             .title(language.text("tui.detailsTitle")),
@@ -1266,8 +1287,8 @@ impl Renderer {
                 .wrap(Wrap { trim: false })
                 .block(
                     Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
+                        .borders(Borders::TOP)
+                        .padding(Padding::new(1, 1, 0, 1))
                         .border_style(Style::default().fg(Color::DarkGray))
                         .title_style(Style::default())
                         .title(
@@ -1290,8 +1311,8 @@ impl Renderer {
                 .scroll((app.detail_scroll(), 0))
                 .block(
                     Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
+                        .borders(Borders::TOP)
+                        .padding(Padding::new(1, 1, 0, 1))
                         .border_style(Style::default().fg(Color::DarkGray))
                         .title_style(Style::default())
                         .title(language.text("tui.contextTitle")),
@@ -1378,18 +1399,13 @@ impl Renderer {
                     .map(str::to_string);
                 match item {
                     TimelineItem::Message { value: message, .. } => {
-                        let color = if message.role == "user" {
-                            Color::Blue
-                        } else if message.role == "assistant" {
-                            Color::Reset
+                        let role_style = if message.role == "user" {
+                            Style::default().add_modifier(Modifier::BOLD)
                         } else {
-                            Color::DarkGray
+                            Style::default().fg(Color::DarkGray)
                         };
                         let role = kind_label(language, &message.role);
-                        lines.push(Line::from(Span::styled(
-                            role.to_string(),
-                            Style::default().fg(color).add_modifier(Modifier::BOLD),
-                        )));
+                        lines.push(Line::from(Span::styled(role.to_string(), role_style)));
                         if message.role == "assistant" {
                             lines.extend(crate::markdown::render(
                                 message.display_text(),
@@ -1402,7 +1418,7 @@ impl Renderer {
                         lines.extend(crate::markdown::render(
                             &source_references(language, message.source_references.as_ref()),
                             area.width,
-                            Style::default(),
+                            Style::default().fg(Color::DarkGray),
                         ));
                         if !message.filesystem_references.is_empty() {
                             lines.push(Line::from(Span::styled(
@@ -1433,7 +1449,7 @@ impl Renderer {
                         lines.extend(crate::markdown::render(
                             &source_references(language, narrative.source_references.as_ref()),
                             area.width,
-                            Style::default(),
+                            Style::default().fg(Color::DarkGray),
                         ));
                     }
                     TimelineItem::Plan { value: plan, .. } => {
@@ -1552,16 +1568,21 @@ impl Renderer {
         }
         let title = clipped(&title, area.width.saturating_sub(2));
         let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .borders(Borders::TOP)
+            // Preserve the editor's wrap width and cursor geometry without an enclosing box.
+            .padding(Padding::new(2, 2, 0, 1))
             .title(title)
-            .title_style(Style::default().add_modifier(Modifier::BOLD))
+            .title_style(Style::default().fg(Color::DarkGray))
             .border_style(Style::default().fg(Color::DarkGray));
-        let inner = block.inner(area).inner(Margin::new(1, 0));
+        let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
+        frame.render_widget(
+            Paragraph::new("›").style(Style::default().fg(Color::Cyan)),
+            Rect::new(area.x, inner.y, 1, 1),
+        );
         let lines = input_lines(app.input(), inner.width);
         let column = lines
             .last()
@@ -1574,6 +1595,43 @@ impl Renderer {
             inner,
         );
         frame.set_cursor_position((inner.x + column.min(inner.width - 1), inner.y + row));
+    }
+
+    fn draw_command_picker(&self, frame: &mut Frame<'_>, anchor: Rect, app: &TuiApp) {
+        if anchor.height == 0 || anchor.width == 0 {
+            return;
+        }
+        let show_hint = anchor.height > 1;
+        let visible = usize::from(anchor.height.saturating_sub(u16::from(show_hint))).min(7);
+        let entries = app.command_picker_entries(visible);
+        let height = entries.len() as u16 + u16::from(show_hint);
+        let area = Rect::new(
+            anchor.x,
+            anchor.bottom().saturating_sub(height),
+            anchor.width,
+            height,
+        );
+        let mut lines = Vec::new();
+        for entry in entries {
+            let marker = if entry.highlighted { ">" } else { " " };
+            let label = format!("{marker} {:<20} ", entry.command);
+            let description_width = area.width.saturating_sub(label.len() as u16);
+            lines.push(Line::from(vec![
+                Span::styled(clipped(&label, area.width), picker_style(entry.highlighted)),
+                Span::styled(
+                    clipped(entry.description, description_width),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+        if show_hint {
+            lines.push(Line::from(Span::styled(
+                clipped(app.language().text("tui.commandPickerHint"), area.width),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        frame.render_widget(Clear, area);
+        frame.render_widget(Paragraph::new(lines), area);
     }
 
     fn draw_agent_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
@@ -1766,7 +1824,14 @@ impl Renderer {
             .unwrap_or_else(|| language.text("tui.pluginPickerTitle").to_string());
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(lines).block(Block::default().borders(borders).title(title)),
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(borders)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(title),
+            ),
             area,
         );
     }
@@ -2488,6 +2553,8 @@ fn picker_style(selected: bool) -> Style {
 fn activity_color(status: &str) -> Color {
     if status == "completed" {
         Color::Green
+    } else if status == "active" {
+        Color::Cyan
     } else if matches!(status, "failed" | "denied" | "indeterminate") {
         Color::Red
     } else {
