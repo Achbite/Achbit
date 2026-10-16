@@ -81,7 +81,7 @@ deepcode-cli --model <profile-id> chat -C /path/to/project
 deepcode-tui -C /path/to/project
 ```
 
-For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. See [terminal and window behavior](docs/distribution.md).
+For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. Use `/language en-US` or `/language zh-CN` to change and save the interface language; this is separate from the language requested in a message. See [terminal and window behavior](docs/distribution.md).
 
 ## See it in use
 

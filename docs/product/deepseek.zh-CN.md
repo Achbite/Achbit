@@ -103,6 +103,8 @@ deepcode-tui -C /path/to/project
 
 用 `/model` 选择已保存的 DeepSeek 模型，也可以用 `/model <profile-id>` 直接选择。会话没有明确的推理强度覆盖时，使用模型配置中保存的 `max`。用 `/sessions`、`/resume` 打开已有会话，输入 `/` 查看可用命令。详见[终端窗口与字体说明](../distribution.md)。
 
+用 `/language en-US` 或 `/language zh-CN` 立即切换 TUI 界面语言，并保存到共享设置。要求模型用英语回答只影响回复，不改变界面语言。也可以用 `deepcode-tui --language en-US` 在本次启动时覆盖已保存的语言。
+
 ## 参考
 
 - [DeepCode 模型、连接与用量](model-services.md)

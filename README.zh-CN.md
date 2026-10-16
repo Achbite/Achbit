@@ -81,7 +81,7 @@ deepcode-cli --model <profile-id> chat -C /path/to/project
 deepcode-tui -C /path/to/project
 ```
 
-解压版请将命令替换为对应启动器。`<profile-id>` 从 `connections` 中复制，是保存的配置 ID。TUI 中用 `/model` 选择模型、`/sessions` 和 `/resume` 继续会话，输入 `/` 查看可用命令。窗口和字体行为见[安装指南](docs/distribution.md)。
+解压版请将命令替换为对应启动器。`<profile-id>` 从 `connections` 中复制，是保存的配置 ID。TUI 中用 `/model` 选择模型、`/sessions` 和 `/resume` 继续会话，输入 `/` 查看可用命令。使用 `/language en-US` 或 `/language zh-CN` 切换并保存界面语言；它与消息中要求的回复语言分别设置。窗口和字体行为见[安装指南](docs/distribution.md)。
 
 ## 界面展示
 

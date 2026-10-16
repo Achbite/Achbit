@@ -332,7 +332,7 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                 continue;
             };
             input_task = spawn_terminal_event_task();
-            let Some(next_event) = terminal_event_result(language, event_task_result)? else {
+            let Some(next_event) = terminal_event_result(app.language(), event_task_result)? else {
                 continue;
             };
             let keep_running = match next_event {
@@ -466,7 +466,7 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
         }
     }
     .await;
-    let pump_result = terminal_event_result(language, input_task.await).map(|_| ());
+    let pump_result = terminal_event_result(app.language(), input_task.await).map(|_| ());
     match loop_result {
         Err(error) => Err(error),
         Ok(()) => pump_result,
