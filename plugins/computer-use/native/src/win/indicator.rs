@@ -19,11 +19,11 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetWindow,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostThreadMessageW,
-    RegisterClassExW, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
-    ShowWindow, TranslateMessage, GW_HWNDPREV, HWND_TOP, LWA_ALPHA, LWA_COLORKEY, MSG,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_PAINT, WM_TIMER, WM_USER,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostThreadMessageW, RegisterClassExW,
+    SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
+    TranslateMessage, GW_HWNDPREV, HWND_TOP, LWA_ALPHA, LWA_COLORKEY, MSG, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_PAINT, WM_TIMER, WM_USER, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const REFRESH: u32 = WM_USER + 1;
@@ -72,6 +72,8 @@ fn config() -> Config {
 #[derive(Clone)]
 struct Target {
     window: Window,
+    // A packaged app's semantic PID can differ from its top-level frame owner.
+    owner_pid: u32,
     runs: HashSet<(String, String)>,
     /// Normalized position within the exact target window frame.
     cursor: Option<(f64, f64)>,
@@ -92,9 +94,17 @@ fn run_key(binding: &Value) -> (String, String) {
 }
 
 impl Targets {
-    fn record(&mut self, window: &Window, binding: &Value, cursor: Option<(f64, f64)>) {
-        self.0
-            .retain(|target| target.window.id != window.id || target.window.pid == window.pid);
+    fn record(
+        &mut self,
+        window: &Window,
+        owner_pid: u32,
+        binding: &Value,
+        cursor: Option<(f64, f64)>,
+    ) {
+        self.0.retain(|target| {
+            target.window.id != window.id
+                || (target.owner_pid == owner_pid && target.window.pid == window.pid)
+        });
         let index = self
             .0
             .iter()
@@ -102,6 +112,7 @@ impl Targets {
             .unwrap_or_else(|| {
                 self.0.push(Target {
                     window: window.clone(),
+                    owner_pid,
                     runs: HashSet::new(),
                     cursor: None,
                     cursor_owner: None,
@@ -118,6 +129,12 @@ impl Targets {
             target.cursor_owner = Some(run_key(binding));
         }
     }
+
+    fn retain_open_windows(&mut self) {
+        self.0
+            .retain(|target| window_owner_pid(target.window.hwnd()) == Some(target.owner_pid));
+    }
+
     fn finish_run(&mut self, binding: &Value) {
         let key = run_key(binding);
         for target in &mut self.0 {
@@ -166,11 +183,13 @@ fn post_refresh() {
 
 /// Show the indicator on this window; `cursor` is a desktop point for semantic actions.
 pub fn show(window: &Window, binding: &Value, cursor: Option<(f64, f64)>) -> Result<(), String> {
+    let owner_pid =
+        window_owner_pid(window.hwnd()).ok_or("Target window is no longer available")?;
     thread()?;
     TARGETS
         .lock()
         .map_err(|_| "Indicator state unavailable")?
-        .record(window, binding, cursor);
+        .record(window, owner_pid, binding, cursor);
     post_refresh();
     Ok(())
 }
@@ -280,15 +299,16 @@ fn handles() -> Vec<(u32, Windows)> {
         .unwrap_or_default()
 }
 
+fn window_owner_pid(window: HWND) -> Option<u32> {
+    let mut pid = 0;
+    let thread = unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+    (thread != 0 && pid != 0).then_some(pid)
+}
+
 fn refresh() {
     let targets = match TARGETS.lock() {
         Ok(mut targets) => {
-            targets.0.retain(|target| unsafe {
-                let window = target.window.hwnd();
-                let mut pid = 0;
-                GetWindowThreadProcessId(window, Some(&mut pid));
-                IsWindow(Some(window)).as_bool() && pid == target.window.pid
-            });
+            targets.retain_open_windows();
             targets.0.clone()
         }
         Err(_) => return,
@@ -512,8 +532,8 @@ mod tests {
             },
         };
         let mut targets = Targets::default();
-        targets.record(&window(1), &binding("a"), Some((20.0, 20.0)));
-        targets.record(&window(1), &binding("a"), None);
+        targets.record(&window(1), 1, &binding("a"), Some((20.0, 20.0)));
+        targets.record(&window(1), 1, &binding("a"), None);
         assert_eq!(
             targets.0.len(),
             1,
@@ -524,8 +544,8 @@ mod tests {
             Some((0.04, 0.04)),
             "the last operation position survives observation and thinking"
         );
-        targets.record(&window(2), &binding("a"), None);
-        targets.record(&window(1), &binding("b"), None);
+        targets.record(&window(2), 1, &binding("a"), None);
+        targets.record(&window(1), 1, &binding("b"), None);
         targets.finish_run(&binding("a"));
         assert_eq!(
             targets.0.len(),
@@ -540,6 +560,87 @@ mod tests {
         );
         targets.finish_run(&binding("b"));
         assert!(targets.0.is_empty());
+    }
+
+    #[test]
+    fn packaged_app_targets_follow_the_native_window_owner() {
+        struct OwnedWindow(HWND);
+        impl Drop for OwnedWindow {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = DestroyWindow(self.0);
+                }
+            }
+        }
+        let native = OwnedWindow(unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("DeepCode indicator identity test"),
+                WS_POPUP,
+                0,
+                0,
+                500,
+                500,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create hidden test window")
+        });
+        let owner_pid = window_owner_pid(native.0).expect("native window owner");
+        let window = Window {
+            id: u32::try_from(native.0 .0 as usize).expect("window identifier"),
+            pid: owner_pid + 1,
+            app: "packaged-app.exe".into(),
+            class: "ApplicationFrameWindow".into(),
+            title: "test".into(),
+            bounds: crate::protocol::Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 500.0,
+                height: 500.0,
+            },
+        };
+        let binding = |run: &str| serde_json::json!({"sessionId":"s", "runId":run});
+        let mut targets = Targets::default();
+        targets.record(&window, owner_pid, &binding("a"), Some((20.0, 20.0)));
+        targets.record(&window, owner_pid, &binding("b"), None);
+        targets.retain_open_windows();
+        assert_eq!(
+            targets.0.len(),
+            1,
+            "a distinct app PID does not close the frame"
+        );
+        assert_eq!(
+            targets.0[0].window.pid, window.pid,
+            "app identity is preserved"
+        );
+        assert_eq!(
+            targets.0[0].runs.len(),
+            2,
+            "the same frame shares run ownership"
+        );
+        assert_eq!(targets.0[0].cursor, Some((0.04, 0.04)));
+
+        targets.record(&window, owner_pid + 1, &binding("replacement"), None);
+        assert_eq!(targets.0.len(), 1);
+        assert_eq!(
+            targets.0[0].runs,
+            HashSet::from([run_key(&binding("replacement"))])
+        );
+        assert!(
+            targets.0[0].cursor.is_none(),
+            "a different owner cannot inherit the old cursor"
+        );
+        targets.retain_open_windows();
+        assert!(targets.0.is_empty(), "a stale native owner is removed");
+
+        targets.record(&window, owner_pid, &binding("c"), None);
+        drop(native);
+        targets.retain_open_windows();
+        assert!(targets.0.is_empty(), "a destroyed window is removed");
     }
 
     #[test]
