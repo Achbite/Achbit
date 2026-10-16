@@ -10,7 +10,7 @@ DeepCode may include or depend on:
 - Node packages from npm, each under its own package license.
 - Tauri and related Rust/JavaScript dependencies.
 - React and related frontend packages.
-- Monaco Editor for the editor surface.
+- CodeMirror for code and diff views.
 - VS Code Codicons for iconography where included in source comments or assets.
 - Ratatui/Crossterm for terminal UI behavior.
 
@@ -18,7 +18,7 @@ Distribution artifacts should preserve third-party license texts where required 
 
 ## Bundled Fonts
 
-The DeepCode Quiet SC families are renamed derivatives distributed under the SIL Open Font License 1.1. Gentle reading and Compact terminal each have WenKai and sans-serif Chinese variants; the macOS TUI includes separate fixed-cell versions. They use these sources:
+The DeepCode Quiet SC families are renamed derivatives distributed under the SIL Open Font License 1.1. Gentle reading and Compact terminal each have WenKai and sans-serif Chinese variants; the macOS and Windows TUI include separate fixed-cell versions. They use these sources:
 
 | Source | Version | Use | Local notice |
 | --- | --- | --- | --- |
@@ -30,7 +30,7 @@ Preserve these notices when redistributing the fonts. The [font guide](userspace
 
 ## Editor and Workspace References
 
-DeepCode uses a Monaco-based editor surface and implements limited VS Code-style workspace interoperability, such as `.code-workspace` subset handling. This does not mean DeepCode derives from VS Code source or has a formal Microsoft / VS Code project relationship.
+DeepCode uses CodeMirror for code and diff views and implements limited VS Code-style workspace interoperability, such as `.code-workspace` subset handling. This does not mean DeepCode derives from VS Code source or has a formal Microsoft / VS Code project relationship.
 
 ## AI Coding Tool References
 

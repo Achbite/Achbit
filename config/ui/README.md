@@ -30,12 +30,12 @@
 
 字体详情只保留字体与字号选择，不提供独立 TUI 配置、字体下载或终端配置导出。macOS 的 `DeepCode-TUI.command` 与安装后的 `deepcode-tui` 通过专用 Terminal 窗口加载字体，Windows 使用专用控制台：启动时读取同一设置中的 `gui.terminalFontFamily`，为 `inherit` 时跟随 `gui.fontFamily`，字号读取 `gui.codeFontSize`。TUI 中 `/font` 列出选项，`/font compact` 等命令仅覆盖当前窗口，`/font follow` 重新读取 GUI 选择；没有第二套字体偏好存储。普通终端及其默认配置不变。`--in-place`、非交互管道和 `--smoke` 保留原终端运行方式；Linux 的字形仍由外部终端控制。字库来源与复现信息在 `userspace/gui/src/assets/fonts/README.md`。
 
-`userspace/gui/src/icons/registry.tsx` 是内置 UI 图标的注册入口，`UI_ICON_ROLES` 映射设置分类和活动栏的语义角色。使用 `UiIcon`，不在业务组件中定义 SVG 路径或用 Unicode 字符模拟图标。图标统一使用 24 × 24 网格、1.8 描边和 `currentColor`。品牌字标和资源内容图片不属于 UI 操作图标。
+`userspace/gui/src/icons/registry.tsx` 是内置 UI 图标的注册入口，`UI_ICON_ROLES` 映射设置分类和活动栏的语义角色。使用 `UiIcon`，不在业务组件中定义 SVG 路径或用 Unicode 字符模拟图标。图标统一使用 24 × 24 网格、1.65 描边和 `currentColor`。品牌字标和资源内容图片不属于 UI 操作图标。
 
 TUI 的四套内置字体使用同笔形的终端版本，统一为英文一格、中文两格；GUI 字库保留原来的比例字宽。字体切换保留专用窗口尺寸，现有 TUI 按更新的行列数重新排版。自定义终端字体须为固定字宽，不能将比例字体直接套入字符网格。
 
 ## 作用范围
 
-默认色表覆盖自有 GUI/Editor 样式、终端色表和差异背景。用户导入及可视化配色编辑针对 GUI 语义色。Monaco 语法主题、外部 HTML/PDF/图片、插件自带内容由各自渲染器拥有；本入口不改写其内容颜色。
+默认色表覆盖自有 GUI/Editor 样式、终端色表和差异背景。用户导入及可视化配色编辑针对 GUI 语义色。代码语法高亮、外部 HTML/PDF/图片、插件自带内容由各自渲染器拥有；本入口不改写其内容颜色。
 
 调整内置色号后使用项目 Docker 构建入口生成前端资源。用户保存主题或字体后立即应用于 GUI，无需重新构建；已打开的 macOS TUI 专用窗口使用 `/font follow` 重新读取字体与字号，或下次启动时应用。TUI 二进制、终端字库和原生窗口脚本的源码修改需要更新对应程序包并重启 TUI。
