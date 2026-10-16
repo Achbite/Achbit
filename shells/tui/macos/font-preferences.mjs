@@ -5,7 +5,7 @@ export const BUILTIN_FONTS = {
   compact: 'DeepCodeQuietTerminalMonoSC-Regular',
 };
 
-export function fontPreference(settings, defaults, choice = 'follow') {
+export function fontPreference(settings, defaults, choice = 'follow', platform = 'darwin') {
   if (choice !== 'follow' && choice !== 'system' && !Object.hasOwn(BUILTIN_FONTS, choice)) {
     throw new Error(`Unknown built-in font: ${choice}`);
   }
@@ -17,9 +17,12 @@ export function fontPreference(settings, defaults, choice = 'follow') {
   }
   const size = value('gui.codeFontSize');
   if (!Number.isInteger(size) || size < 10 || size > 18) throw new Error('Code font size must be an integer from 10 to 18.');
+  const windowsNames = { warm: 'DeepCode TUI Reading SC', 'warm-sans': 'DeepCode TUI Reading Sans SC',
+    'compact-kai': 'DeepCode TUI Mono Kai SC', compact: 'DeepCode TUI Mono SC', system: 'Consolas', mono: 'Consolas' };
   return {
     family, size,
-    name: BUILTIN_FONTS[family] ?? ({ system: 'Menlo-Regular', mono: 'Menlo-Regular', sans: 'Arial', serif: 'Georgia' })[family] ?? family.trim(),
+    name: (platform === 'win32' ? windowsNames[family] : BUILTIN_FONTS[family])
+      ?? ({ system: 'Menlo-Regular', mono: 'Menlo-Regular', sans: 'Arial', serif: 'Georgia' })[family] ?? family.trim(),
     file: Object.hasOwn(BUILTIN_FONTS, family) ? `${BUILTIN_FONTS[family]}.ttf` : null,
   };
 }

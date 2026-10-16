@@ -322,13 +322,14 @@ impl TuiApp {
             }
             value if value.starts_with("/font ") => {
                 let choice = value.trim_start_matches("/font ").trim();
-                self.status = match crate::fonts::apply(choice, self.host.language).await {
-                    Ok(()) => self
-                        .host
-                        .language
-                        .format("tui.font.changed", &[choice.into()]),
-                    Err(error) => self.host.language.format("tui.font.failed", &[error]),
-                };
+                self.status =
+                    match crate::fonts::apply(choice, self.host.language, &self.client).await {
+                        Ok(()) => self
+                            .host
+                            .language
+                            .format("tui.font.changed", &[choice.into()]),
+                        Err(error) => self.host.language.format("tui.font.failed", &[error]),
+                    };
             }
             "/show" => self.status = self.projection_label(),
             "/error" | "/decision" => {

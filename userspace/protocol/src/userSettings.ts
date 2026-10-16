@@ -27,7 +27,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   'gui.colorTheme': 'light',
   'gui.accentColor': 'blue',
   'gui.themeLibrary': '[]',
-  'gui.fontFamily': 'warm',
+  'gui.fontFamily': 'warm-sans',
   'gui.interfaceFontFamily': 'inherit',
   'gui.contentFontFamily': 'inherit',
   'gui.terminalFontFamily': 'inherit',

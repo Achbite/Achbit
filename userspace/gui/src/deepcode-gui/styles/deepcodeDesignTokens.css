@@ -31,7 +31,7 @@
   /* Used by the active code-search match, not by control focus chrome. */
   --dc-focus-ring: color-mix(in srgb, var(--dc-foreground) 45%, transparent);
 
-  --dc-font-ui: "DeepCode Quiet Reading SC", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --dc-font-ui: "DeepCode Quiet Reading Sans SC", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
   --dc-font-reading: var(--dc-font-ui);
   --dc-font-code: var(--dc-font-reading);
   --dc-font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;

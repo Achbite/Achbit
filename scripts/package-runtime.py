@@ -66,9 +66,21 @@ def shared(root, destination, dependency_list):
 
 
 def macos_tui_resources(root, resources):
-    """Ship native-loadable fonts only with the macOS terminal window adapter."""
+    """Ship the macOS terminal window adapter and native-loadable fonts."""
     target = resources / 'tui'
     shutil.copytree(root / 'shells/tui/macos', target)
+    tui_fonts(root, target)
+
+
+def windows_tui_resources(root, resources):
+    target = resources / 'tui'
+    (target / 'macos').mkdir(parents=True)
+    shutil.copy2(root / 'shells/tui/font-config.mjs', target / 'font-config.mjs')
+    shutil.copy2(root / 'shells/tui/macos/font-preferences.mjs', target / 'macos/font-preferences.mjs')
+    tui_fonts(root, target)
+
+
+def tui_fonts(root, target):
     fonts = root / 'userspace/gui/src/assets/fonts'
     with zipfile.ZipFile(fonts / 'DeepCode-Quiet-Terminal-SC.zip') as archive:
         for name in ('DeepCodeQuietTerminalReadingSC-Regular.ttf', 'DeepCodeQuietTerminalReadingSansSC-Regular.ttf',
@@ -111,6 +123,7 @@ def assemble(args):
     if args.platform.startswith('linux-'):
         shutil.copy2(shutil.which('bwrap'), binaries / 'bwrap')
     if windows:
+        windows_tui_resources(root, resources)
         (stage / 'libexec').mkdir()
         shutil.copy2(root / 'scripts/installers/windows-environment.ps1', stage / 'libexec/windows-environment.ps1')
         (stage / 'deepcode.cmd').write_text('@echo off\ncall "%~dp0deepcode-cli.bat" %*\nexit /b %errorlevel%\n')

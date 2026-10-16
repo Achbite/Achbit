@@ -55,7 +55,9 @@ def terminal_face(data, style):
     font['OS/2'].panose.bFamilyType = 2
     font['OS/2'].panose.bProportion = 9
     label = {'Reading': 'Reading', 'ReadingSans': 'Reading Sans', 'MonoKai': 'Mono Kai', 'Mono': 'Mono'}[style]
-    family = f'DeepCode Quiet Terminal {label} SC'
+    # CONSOLE_FONT_INFOEX has only 32 UTF-16 units. Distinct short family names
+    # let Windows select all four faces; macOS keeps the same PostScript names.
+    family = f'DeepCode TUI {label} SC'
     postscript = f'DeepCodeQuietTerminal{style}SC-Regular'
     names = {1: family, 2: 'Regular', 3: postscript + ';0.101', 4: family + ' Regular',
              5: 'Version 0.101; fixed terminal cells', 6: postscript, 16: family, 17: 'Regular'}

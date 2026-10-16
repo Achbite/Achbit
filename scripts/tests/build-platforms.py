@@ -279,6 +279,29 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
                 self.assertTrue((resources / 'tui' / name).is_file())
             self.assertTrue((resources / 'tui/fonts/WenKai-OFL.txt').is_file())
 
+    def test_windows_tui_fonts_fit_console_family_names_and_keep_all_four_faces(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-windows-tui-') as directory:
+            resources = Path(directory)
+            package.windows_tui_resources(ROOT, resources)
+            self.assertTrue((resources / 'tui/font-config.mjs').is_file())
+            self.assertTrue((resources / 'tui/macos/font-preferences.mjs').is_file())
+            self.assertTrue((resources / 'tui/fonts/WenKai-OFL.txt').is_file())
+            families = set()
+            for font in (resources / 'tui/fonts').glob('*.ttf'):
+                data = font.read_bytes()
+                tables = {tag: (offset, length) for tag, _, offset, length in struct.iter_unpack(
+                    '>4sIII', data[12:12 + struct.unpack_from('>H', data, 4)[0] * 16])}
+                offset, length = tables[b'name']
+                names = data[offset:offset + length]
+                _, count, strings = struct.unpack_from('>HHH', names)
+                for platform, _, _, name_id, size, position in struct.iter_unpack('>HHHHHH', names[6:6 + count * 12]):
+                    if platform == 3 and name_id == 1:
+                        family = names[strings + position:strings + position + size].decode('utf-16-be')
+                        self.assertLess(len(family.encode('utf-16-le')), 64)
+                        families.add(family)
+            self.assertEqual(families, {'DeepCode TUI Reading SC', 'DeepCode TUI Reading Sans SC',
+                                       'DeepCode TUI Mono Kai SC', 'DeepCode TUI Mono SC'})
+
     def test_identity_is_explicit_and_never_falls_back_to_ad_hoc(self):
         fingerprint = 'A' * 40
         listing = f'  1) {fingerprint} "DeepCode Local Development"\n  1 valid identities found\n'

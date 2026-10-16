@@ -4,6 +4,8 @@ mod conversation_input;
 mod fonts;
 #[path = "../../shared/i18n.rs"]
 mod i18n;
+#[cfg(windows)]
+mod windows_terminal;
 use i18n::Language;
 mod markdown;
 mod math;
@@ -36,17 +38,35 @@ async fn main() {
     let values: Vec<String> = env::args().skip(1).collect();
     // Language used before connecting only affects startup diagnostics.
     let mut language = startup_language(&values);
-    let args = match Args::parse(values) {
+    let args = match Args::parse(values.clone()) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("{error}");
             print_help(language);
-            std::process::exit(2);
+            exit(2);
         }
     };
     if args.help {
         print_help(language);
         return;
+    }
+    let interactive = !args.smoke
+        && !args.font_settings
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal();
+    #[cfg(windows)]
+    if interactive && !args.in_place && !windows_terminal::is_owned() {
+        match windows_terminal::launch(&values) {
+            Ok(status) => exit(status.code().unwrap_or(1)),
+            Err(error) => {
+                eprintln!("DeepCode TUI window: {error}");
+                exit(1);
+            }
+        }
+    }
+    if args.font != "follow" && (!interactive || args.in_place || !cfg!(windows)) {
+        eprintln!("{}", language.text("tui.font.requiresWindow"));
+        exit(2);
     }
     let bootstrap = match KernelBootstrap::connect(
         KernelBootstrapOptions::new(args.api).auto_start(!args.no_auto_start_kernel),
@@ -59,7 +79,7 @@ async fn main() {
                 "{}",
                 language.format("tui.connectionFailed", &[error.to_string()])
             );
-            std::process::exit(1);
+            exit(1);
         }
     };
     if args.font_settings {
@@ -74,7 +94,7 @@ async fn main() {
             Err(error) => {
                 eprintln!("{}", language.format("tui.settingsReadFailed", &[error]));
                 drop(bootstrap);
-                std::process::exit(1);
+                exit(1);
             }
         }
         return;
@@ -83,9 +103,16 @@ async fn main() {
         Ok(language) => language,
         Err(error) => {
             eprintln!("{}", language.format("tui.settingsReadFailed", &[error]));
-            std::process::exit(1);
+            exit(1);
         }
     };
+    #[cfg(windows)]
+    if interactive && windows_terminal::is_owned() {
+        if let Err(error) = fonts::apply(&args.font, language, bootstrap.client()).await {
+            eprintln!("{}", language.format("tui.font.failed", &[error]));
+            exit(1);
+        }
+    }
     let mut app = TuiApp::new(
         bootstrap.client().clone(),
         Renderer::default(),
@@ -96,11 +123,10 @@ async fn main() {
             plugin_uris: args.plugins,
         },
     );
-    let interactive = !args.smoke && io::stdin().is_terminal() && io::stdout().is_terminal();
     if !interactive {
         if let Err(error) = app.bootstrap().await {
             eprintln!("{}", language.format("tui.initializationFailed", &[error]));
-            std::process::exit(1);
+            exit(1);
         }
     }
 
@@ -117,14 +143,22 @@ async fn main() {
     match result {
         Ok(Some(message)) => {
             eprintln!("{message}");
-            std::process::exit(EXIT_ACTION_REQUIRED);
+            exit(EXIT_ACTION_REQUIRED);
         }
         Ok(None) => {}
         Err(error) => {
             eprintln!("{}", language.format("tui.failed", &[error.to_string()]));
-            std::process::exit(1);
+            exit(1);
         }
     }
+    #[cfg(windows)]
+    windows_terminal::finish(0);
+}
+
+fn exit(code: i32) -> ! {
+    #[cfg(windows)]
+    windows_terminal::finish(code);
+    std::process::exit(code)
 }
 
 fn startup_language(values: &[String]) -> Language {
@@ -156,6 +190,8 @@ struct Args {
     help: bool,
     smoke: bool,
     font_settings: bool,
+    font: String,
+    in_place: bool,
     workspace: Option<PathBuf>,
     session_id: Option<String>,
     plugins: Vec<String>,
@@ -171,6 +207,8 @@ impl Args {
             help: false,
             smoke: false,
             font_settings: false,
+            font: "follow".into(),
+            in_place: false,
             workspace: None,
             session_id: None,
             plugins: Vec::new(),
@@ -182,6 +220,12 @@ impl Args {
                 "--help" | "-h" => parsed.help = true,
                 "--smoke" => parsed.smoke = true,
                 "--font-settings" => parsed.font_settings = true,
+                "--in-place" => parsed.in_place = true,
+                "--font" => {
+                    index += 1;
+                    parsed.font = required_arg(language, &values, index, "--font")?.to_string();
+                    fonts::validate_choice(&parsed.font, language)?;
+                }
                 "--language" => {
                     index += 1;
                     let value = required_arg(language, &values, index, "--language")?;

@@ -6,7 +6,7 @@ import { BUILTIN_FONTS, fontPreference, shellQuote, windowArguments } from '../m
 
 test('TUI follows GUI defaults and the terminal group without writing another preference', () => {
   assert.deepEqual(fontPreference({}, DEFAULT_USER_SETTINGS), {
-    family: 'warm', name: 'DeepCodeQuietTerminalReadingSC-Regular', file: 'DeepCodeQuietTerminalReadingSC-Regular.ttf', size: 12,
+    family: 'warm-sans', name: 'DeepCodeQuietTerminalReadingSansSC-Regular', file: 'DeepCodeQuietTerminalReadingSansSC-Regular.ttf', size: 12,
   });
   const settings = { 'gui.fontFamily': 'warm-sans', 'gui.terminalFontFamily': 'inherit', 'gui.codeFontSize': 14 };
   const original = structuredClone(settings);
@@ -32,6 +32,21 @@ test('window options preserve TUI arguments and reject unavailable font selectio
   assert.throws(() => fontPreference({}, DEFAULT_USER_SETTINGS, 'unavailable'));
   assert.throws(() => fontPreference({ 'gui.codeFontSize': 0 }, DEFAULT_USER_SETTINGS));
   assert.throws(() => fontPreference({ 'gui.fontFamily': '' }, DEFAULT_USER_SETTINGS));
+});
+
+test('Windows resolves the same GUI choice to distinct console-loadable family names', () => {
+  const settings = { 'gui.fontFamily': 'warm-sans', 'gui.terminalFontFamily': 'inherit', 'gui.codeFontSize': 14 };
+  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'follow', 'win32').name, 'DeepCode TUI Reading Sans SC');
+  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'system', 'win32').name, 'Consolas');
+  const names = new Set();
+  for (const choice of Object.keys(BUILTIN_FONTS)) {
+    const font = fontPreference(settings, DEFAULT_USER_SETTINGS, choice, 'win32');
+    assert.ok(font.name.length < 32);
+    assert.equal(font.file, `${BUILTIN_FONTS[choice]}.ttf`);
+    assert.equal(font.size, 14);
+    names.add(font.name);
+  }
+  assert.equal(names.size, 4);
 });
 
 test('the dedicated window command preserves spaces quotes and literal shell syntax', () => {

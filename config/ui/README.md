@@ -24,11 +24,11 @@
 
 ## 字体和图标
 
-`userspace/gui/src/theme/typography.ts` 维护字体解析，所有选择通过同一用户设置存储保存。`gui.fontFamily` 默认温和阅读 · 文楷（`warm`，完整的 DeepCode Quiet Reading SC）。另有温和阅读 · 无衬线（`warm-sans`）、紧凑终端 · 文楷（`compact-kai`）、紧凑终端 · 无衬线（`compact`）、系统默认及已安装的自定义字体。每组的两版保持拉丁字形一致，只改变中文风格；紧凑两版均采用 ASCII 500、汉字 1000 单位的字宽。文楷是中文书写风格，无衬线版采用圆润黑体。主题只控制配色。
+`userspace/gui/src/theme/typography.ts` 维护字体解析，所有选择通过同一用户设置存储保存。`gui.fontFamily` 默认温和阅读 · 无衬线（`warm-sans`，完整的 DeepCode Quiet Reading Sans SC），已有显式选择保持不变。另有温和阅读 · 文楷（`warm`）、紧凑终端 · 文楷（`compact-kai`）、紧凑终端 · 无衬线（`compact`）、系统默认及已安装的自定义字体。每组的两版保持拉丁字形一致，只改变中文风格；紧凑两版均采用 ASCII 500、汉字 1000 单位的字宽。文楷是中文书写风格，无衬线版采用圆润黑体。主题只控制配色。
 
 外观设置默认展示总字体和预览，字体详情中按界面、内容、终端与代码分组。`gui.interfaceFontFamily`、`gui.contentFontFamily`、`gui.terminalFontFamily` 默认 `inherit`；修改总字体同时将三项恢复为跟随，之后可分别覆盖。界面 `gui.fontSize` 与内容 `gui.contentFontSize` 默认 14 px（12–18），代码 `gui.codeFontSize` 默认 12 px（10–18）。字号独立于字体选择。GUI 的代码、命令输出、文件和 diff 消费终端字体，真实等宽度量或数字标签仍可使用专用等宽 token。
 
-字体详情只保留字体与字号选择，不提供独立 TUI 配置、字体下载或终端配置导出。macOS 的 `DeepCode-TUI.command` 与安装后的 `deepcode-tui` 通过专用 Terminal 窗口加载字体：启动时读取同一设置中的 `gui.terminalFontFamily`，为 `inherit` 时跟随 `gui.fontFamily`，字号读取 `gui.codeFontSize`。TUI 中 `/font` 列出选项，`/font compact` 等命令仅覆盖当前窗口，`/font follow` 重新读取 GUI 选择；没有第二套字体偏好存储。普通终端及其默认配置不变。`--in-place`、非交互管道和 `--smoke` 保留原终端运行方式；其他平台的字形仍由外部终端控制。字库来源与复现信息在 `userspace/gui/src/assets/fonts/README.md`。
+字体详情只保留字体与字号选择，不提供独立 TUI 配置、字体下载或终端配置导出。macOS 的 `DeepCode-TUI.command` 与安装后的 `deepcode-tui` 通过专用 Terminal 窗口加载字体，Windows 使用专用控制台：启动时读取同一设置中的 `gui.terminalFontFamily`，为 `inherit` 时跟随 `gui.fontFamily`，字号读取 `gui.codeFontSize`。TUI 中 `/font` 列出选项，`/font compact` 等命令仅覆盖当前窗口，`/font follow` 重新读取 GUI 选择；没有第二套字体偏好存储。普通终端及其默认配置不变。`--in-place`、非交互管道和 `--smoke` 保留原终端运行方式；Linux 的字形仍由外部终端控制。字库来源与复现信息在 `userspace/gui/src/assets/fonts/README.md`。
 
 `userspace/gui/src/icons/registry.tsx` 是内置 UI 图标的注册入口，`UI_ICON_ROLES` 映射设置分类和活动栏的语义角色。使用 `UiIcon`，不在业务组件中定义 SVG 路径或用 Unicode 字符模拟图标。图标统一使用 24 × 24 网格、1.8 描边和 `currentColor`。品牌字标和资源内容图片不属于 UI 操作图标。
 

@@ -3685,7 +3685,12 @@ test('theme library and UI fonts persist without changing active colors or appea
   assert.throws(() => fonts.uiFontSize(0));
   assert.throws(() => fonts.uiFontSize(14.5));
   await reloaded.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: null, [fonts.UI_FONT_SIZE_SETTING]: null, [fonts.CODE_FONT_SIZE_SETTING]: null });
-  assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_FAMILY_SETTING], 'warm');
+  assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_FAMILY_SETTING], 'warm-sans');
+  const defaultFonts = fonts.typographyStyles(reloaded.getState().effectiveSettings);
+  for (const key of ['--dc-font-ui', '--dc-font-reading', '--dc-font-code']) {
+    assert.equal(defaultFonts[key], fonts.UI_FONT_PRESETS['warm-sans']);
+  }
+  assert.equal(fonts.uiFontFamily(undefined), fonts.UI_FONT_PRESETS['warm-sans']);
   assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_SIZE_SETTING], 14);
   assert.equal(reloaded.getState().effectiveSettings[fonts.CODE_FONT_SIZE_SETTING], 12);
   assert.deepEqual(library.decodeThemeLibrary(reloaded.getState().effectiveSettings[library.THEME_LIBRARY_SETTING]), saved);
