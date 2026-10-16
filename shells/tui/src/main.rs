@@ -1,10 +1,12 @@
 mod app;
 #[path = "../../shared/conversation_input.rs"]
 mod conversation_input;
+mod fonts;
 #[path = "../../shared/i18n.rs"]
 mod i18n;
 use i18n::Language;
 mod markdown;
+mod math;
 mod renderer;
 #[path = "../../shared/session_navigation.rs"]
 mod session_navigation;
@@ -12,8 +14,8 @@ mod session_navigation;
 use app::{TuiApp, TuiHostOptions};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode,
-        KeyEventKind, KeyModifiers, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -60,6 +62,23 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    if args.font_settings {
+        match bootstrap
+            .client()
+            .user_settings()
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|settings| fonts::settings_for_window(&settings))
+        {
+            Ok(settings) => println!("{settings}"),
+            Err(error) => {
+                eprintln!("{}", language.format("tui.settingsReadFailed", &[error]));
+                drop(bootstrap);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     language = match language_for_app(bootstrap.client(), args.language).await {
         Ok(language) => language,
         Err(error) => {
@@ -136,6 +155,7 @@ struct Args {
     api: Option<String>,
     help: bool,
     smoke: bool,
+    font_settings: bool,
     workspace: Option<PathBuf>,
     session_id: Option<String>,
     plugins: Vec<String>,
@@ -150,6 +170,7 @@ impl Args {
             api: None,
             help: false,
             smoke: false,
+            font_settings: false,
             workspace: None,
             session_id: None,
             plugins: Vec::new(),
@@ -160,6 +181,7 @@ impl Args {
             match values[index].as_str() {
                 "--help" | "-h" => parsed.help = true,
                 "--smoke" => parsed.smoke = true,
+                "--font-settings" => parsed.font_settings = true,
                 "--language" => {
                     index += 1;
                     let value = required_arg(language, &values, index, "--language")?;
@@ -237,6 +259,17 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
         let pump = terminal_event_result(language, input_task.await).map(|_| ());
         return initialization.map(|_| ()).and(pump);
     }
+    terminal.draw(|frame| app.renderer().draw(frame, &app))?;
+    if let Some(path) = env::var_os("DEEPCODE_TUI_READY_FILE") {
+        // Acknowledge only a bootstrapped, drawn TUI, not merely a spawned process.
+        let path = PathBuf::from(path);
+        let temporary = path.with_extension("tmp");
+        std::fs::write(
+            &temporary,
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )?;
+        std::fs::rename(temporary, path)?;
+    }
     let mut refresh = tokio::time::interval(Duration::from_millis(150));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let loop_result = async {
@@ -288,6 +321,10 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                     }
                     KeyCode::Backspace => {
                         app.backspace_input();
+                        true
+                    }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.push_input('\n');
                         true
                     }
                     KeyCode::Enter => {
@@ -366,7 +403,7 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                     _ => true,
                 },
                 CrosstermEvent::Paste(text) => {
-                    app.push_input_text(&text);
+                    app.push_input_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
                     true
                 }
                 CrosstermEvent::Mouse(mouse) => {
@@ -476,8 +513,18 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        if let Err(error) = execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        ) {
+            let _ = execute!(
+                io::stdout(),
+                DisableBracketedPaste,
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            );
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -487,7 +534,12 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
     }
 }
@@ -528,6 +580,19 @@ mod tests {
                 "plugin://pdf@builtin".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn font_settings_is_a_read_only_launcher_request() {
+        let args = Args::parse(vec![
+            "--font-settings".into(),
+            "--api".into(),
+            "http://127.0.0.1:3000".into(),
+        ])
+        .unwrap();
+        assert!(args.font_settings);
+        assert_eq!(args.api.as_deref(), Some("http://127.0.0.1:3000"));
+        assert!(!Args::parse(vec![]).unwrap().font_settings);
     }
 
     #[test]

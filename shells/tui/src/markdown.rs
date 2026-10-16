@@ -8,19 +8,27 @@ use ratatui::{
 pub(crate) fn render(input: &str, width: u16, style: Style) -> Vec<Line<'static>> {
     let mut events = Parser::new_ext(
         input,
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
+        Options::ENABLE_TABLES
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_TASKLISTS
+            | Options::ENABLE_MATH,
     );
-    let mut writer = Writer::new(style);
+    let mut writer = Writer::new(style, usize::from(width));
     while let Some(event) = events.next() {
         if let Event::Start(Tag::Table(alignments)) = event {
-            let rows = read_table(&mut events, style);
+            let rows = read_table(&mut events);
             let indent: usize = writer
                 .prefixes
                 .iter()
                 .map(|p| Line::from(p.as_str()).width())
                 .sum();
             writer.blank();
-            for line in table_lines(rows, &alignments, usize::from(width).saturating_sub(indent)) {
+            for line in table_lines(
+                rows,
+                &alignments,
+                usize::from(width).saturating_sub(indent),
+                style,
+            ) {
                 writer.begin_line();
                 writer.current.spans.extend(line.spans);
                 writer.newline();
@@ -40,10 +48,11 @@ struct Writer {
     prefixes: Vec<String>,
     lists: Vec<Option<u64>>,
     links: Vec<String>,
+    width: usize,
 }
 
 impl Writer {
-    fn new(style: Style) -> Self {
+    fn new(style: Style, width: usize) -> Self {
         Self {
             lines: vec![],
             current: Line::default(),
@@ -51,6 +60,7 @@ impl Writer {
             prefixes: vec![],
             lists: vec![],
             links: vec![],
+            width,
         }
     }
 
@@ -99,6 +109,42 @@ impl Writer {
         self.flush();
         if self.lines.last().is_some_and(|line| line.width() > 0) {
             self.lines.push(Line::default());
+        }
+    }
+
+    fn math(&mut self, source: &str, display: bool) {
+        let indent = Line::from(self.prefixes.concat()).width();
+        let available = self.width.saturating_sub(indent);
+        if display {
+            self.blank();
+        }
+        match crate::math::render(source, available) {
+            Ok(lines) => {
+                if !display && lines.len() == 1 {
+                    self.text(&lines[0]);
+                } else {
+                    self.flush();
+                    for line in lines {
+                        self.text(&line);
+                        self.newline();
+                    }
+                }
+            }
+            Err(error) => {
+                let delimiter = if display { "$$" } else { "$" };
+                self.text(&format!("{delimiter}{source}{delimiter}"));
+                self.newline();
+                self.push_style(Style::default().fg(Color::Yellow));
+                self.text(&format!(
+                    "⚠ LaTeX: {}",
+                    error.lines().next().unwrap_or(&error)
+                ));
+                self.styles.pop();
+                self.newline();
+            }
+        }
+        if display {
+            self.blank();
         }
     }
 
@@ -220,12 +266,8 @@ impl Writer {
             }
             Event::TaskListMarker(checked) => self.text(if checked { "[x] " } else { "[ ] " }),
             Event::FootnoteReference(text) => self.text(&format!("[{text}]")),
-            Event::InlineMath(text) => self.text(&format!("${text}$")),
-            Event::DisplayMath(text) => {
-                self.blank();
-                self.text(&format!("$${text}$$"));
-                self.blank();
-            }
+            Event::InlineMath(text) => self.math(&text, false),
+            Event::DisplayMath(text) => self.math(&text, true),
         }
     }
 
@@ -238,25 +280,31 @@ impl Writer {
     }
 }
 
-type Row = Vec<Vec<Line<'static>>>;
+type Row<'a> = Vec<Vec<Event<'a>>>;
 
-fn read_table<'a>(events: &mut impl Iterator<Item = Event<'a>>, style: Style) -> Vec<Row> {
+fn read_table<'a>(events: &mut impl Iterator<Item = Event<'a>>) -> Vec<Row<'a>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
-    let mut cell = Writer::new(style);
+    let mut cell = Vec::new();
     for event in events {
         match event {
             Event::End(TagEnd::Table) => break,
-            Event::Start(Tag::TableCell) => cell = Writer::new(style),
-            Event::End(TagEnd::TableCell) => {
-                row.push(std::mem::replace(&mut cell, Writer::new(style)).finish())
-            }
+            Event::Start(Tag::TableCell) => cell.clear(),
+            Event::End(TagEnd::TableCell) => row.push(std::mem::take(&mut cell)),
             Event::End(TagEnd::TableHead | TagEnd::TableRow) => rows.push(std::mem::take(&mut row)),
             Event::Start(Tag::TableHead | Tag::TableRow) => {}
-            other => cell.event(other),
+            other => cell.push(other),
         }
     }
     rows
+}
+
+fn render_cell(events: &[Event<'_>], width: usize, style: Style) -> Vec<Line<'static>> {
+    let mut writer = Writer::new(style, width);
+    for event in events {
+        writer.event(event.clone());
+    }
+    writer.finish()
 }
 
 fn wrap_cell(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
@@ -279,7 +327,12 @@ fn wrap_cell(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     wrapped
 }
 
-fn table_lines(rows: Vec<Row>, alignments: &[Alignment], width: usize) -> Vec<Line<'static>> {
+fn table_lines(
+    rows: Vec<Row<'_>>,
+    alignments: &[Alignment],
+    width: usize,
+    style: Style,
+) -> Vec<Line<'static>> {
     let columns = alignments.len();
     if columns == 0 {
         return vec![];
@@ -290,7 +343,7 @@ fn table_lines(rows: Vec<Row>, alignments: &[Alignment], width: usize) -> Vec<Li
             .first()
             .into_iter()
             .flatten()
-            .map(|cell| Text::from(cell.clone()).to_string())
+            .map(|cell| Text::from(render_cell(cell, width, style)).to_string())
             .collect();
         let mut lines = Vec::new();
         if rows.len() == 1 {
@@ -302,7 +355,7 @@ fn table_lines(rows: Vec<Row>, alignments: &[Alignment], width: usize) -> Vec<Li
                     format!("{}:", headers[index]),
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
-                lines.extend(cell);
+                lines.extend(render_cell(&cell, width, style));
             }
             lines.push(Line::default());
         }
@@ -311,7 +364,13 @@ fn table_lines(rows: Vec<Row>, alignments: &[Alignment], width: usize) -> Vec<Li
     let mut widths = vec![2; columns];
     for row in &rows {
         for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.iter().map(Line::width).max().unwrap_or(0));
+            widths[index] = widths[index].max(
+                render_cell(cell, width, style)
+                    .iter()
+                    .map(Line::width)
+                    .max()
+                    .unwrap_or(0),
+            );
         }
     }
     let available = width - columns * 3 - 1;
@@ -320,12 +379,26 @@ fn table_lines(rows: Vec<Row>, alignments: &[Alignment], width: usize) -> Vec<Li
         widths[index] -= 1;
     }
     let border = Style::default().fg(Color::DarkGray);
-    let mut output = Vec::new();
+    let edge = |left, middle: &str, right| {
+        Line::from(Span::styled(
+            format!(
+                "{left}{}{right}",
+                widths
+                    .iter()
+                    .map(|width| "─".repeat(width + 2))
+                    .collect::<Vec<_>>()
+                    .join(middle)
+            ),
+            border,
+        ))
+    };
+    let mut output = vec![edge("┌", "┬", "┐")];
+    let row_count = rows.len();
     for (row_index, row) in rows.into_iter().enumerate() {
         let cells: Vec<_> = row
             .into_iter()
             .zip(&widths)
-            .map(|(cell, &width)| wrap_cell(cell, width))
+            .map(|(cell, &width)| wrap_cell(render_cell(&cell, width, style), width))
             .collect();
         let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
         for line_index in 0..height {
@@ -358,26 +431,70 @@ fn table_lines(rows: Vec<Row>, alignments: &[Alignment], width: usize) -> Vec<Li
             }
             output.push(Line::from(spans));
         }
-        if row_index == 0 {
-            output.push(Line::from(Span::styled(
-                format!(
-                    "├{}┤",
-                    widths
-                        .iter()
-                        .map(|width| "─".repeat(width + 2))
-                        .collect::<Vec<_>>()
-                        .join("┼")
-                ),
-                border,
-            )));
+        if row_index == 0 && row_count > 1 {
+            output.push(edge("├", "┼", "┤"));
         }
     }
+    output.push(edge("└", "┴", "┘"));
     output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formulas_render_symbols_fractions_and_scripts_without_changing_code() {
+        let source = r"公式 $E = mc^2$；$a_{ij}^{(k)}$。
+
+$$\iiint_{\Omega} \nabla \cdot \mathbf{F}\;\mathrm{d}V = \oiint_{\partial\Omega} \mathbf{F}\cdot\mathbf{n}\;\mathrm{d}S$$
+
+$$\nabla \cdot \mathbf{F} = \frac{\partial P}{\partial x} + \frac{\partial Q}{\partial y} + \frac{\partial R}{\partial z}$$
+
+`$E = mc^2$`
+
+```latex
+\frac{x}{y}
+```";
+        let text = Text::from(render(source, 140, Style::default())).to_string();
+        assert!(text.contains("公式 E = mc²；aᵢⱼ⁽ᵏ⁾。"), "{text}");
+        assert!(
+            text.contains('∭') && text.contains('∯') && text.contains("∂Ω"),
+            "{text}"
+        );
+        assert!(text.contains('𝐅') && text.contains('𝐧'), "{text}");
+        assert!(
+            text.contains("∂P") && text.contains("∂x") && text.contains("──"),
+            "{text}"
+        );
+        assert!(!text.contains("\\iiint") && !text.contains("⚠"), "{text}");
+        assert!(
+            text.contains("$E = mc^2$") && text.contains(r"\frac{x}{y}"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn formula_errors_keep_the_exact_source_and_table_math_stays_inside_its_cell() {
+        let text = Text::from(render(r"$$\unknown{X}\;Y$$", 80, Style::default())).to_string();
+        assert!(
+            text.contains(r"$$\unknown{X}\;Y$$") && text.contains("⚠ LaTeX:"),
+            "{text}"
+        );
+        let incomplete =
+            Text::from(render(r"正在生成 $\frac{x}", 80, Style::default())).to_string();
+        assert!(
+            incomplete.contains(r"$\frac{x}") && !incomplete.contains("⚠"),
+            "{incomplete}"
+        );
+        let lines = render("| 说明 | 公式 |\n| --- | ---: |\n| 分式 | $\\frac{x}{y}$ |\n| 上下标 | $a_{ij}^{(k)}$ |", 40, Style::default());
+        assert!(lines.iter().all(|line| line.width() == lines[0].width()));
+        let text = Text::from(lines).to_string();
+        assert!(
+            text.contains("aᵢⱼ⁽ᵏ⁾") && !text.contains("\\frac"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn markdown_keeps_block_structure_and_inline_content() {
@@ -413,10 +530,13 @@ mod tests {
                 lines.iter().all(|line| line.width() <= usize::from(width)),
                 "{lines:?}"
             );
+            assert!(lines.first().unwrap().to_string().starts_with('┌'));
+            assert!(lines.last().unwrap().to_string().ends_with('┘'));
+            assert!(lines.iter().all(|line| line.width() == lines[0].width()));
             let visible: String = Text::from(lines)
                 .to_string()
                 .chars()
-                .filter(|c| !c.is_whitespace() && !"│├┼┤─".contains(*c))
+                .filter(|c| !c.is_whitespace() && !"│├┼┤─┌┬┐└┴┘".contains(*c))
                 .collect();
             assert!(visible.contains("DeepCode"), "{visible}");
             assert!(visible.contains("中文开发环境é"), "{visible}");

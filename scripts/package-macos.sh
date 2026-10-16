@@ -7,6 +7,16 @@ cd "$ROOT_DIR"
 CARGO="${DEEPCODE_MACOS_CARGO:-$(command -v cargo || printf '%s/bin/cargo' "${CARGO_HOME:-$HOME/.cargo}")}"
 NODE="${DEEPCODE_MACOS_NODE_BIN:-$(command -v node)}"
 command -v "$CARGO" >/dev/null || { printf 'Set DEEPCODE_MACOS_CARGO to the installed cargo executable.\n' >&2; exit 1; }
+# A TUI-only native component for isolated verification or subsequent assembly.
+# Full App assembly below remains the owner of package signing and publication.
+if [ "${1:-}" = --tui ]; then
+  [ "$#" -eq 2 ] || exit 2
+  export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
+  "$CARGO" build --release -p deepcode-tui
+  mkdir -p "$2"
+  cp "$CARGO_TARGET_DIR/release/deepcode-tui" "$2/deepcode-tui"
+  exit 0
+fi
 if [ "${1:-}" = --computer-use ]; then
   [ "$#" -eq 2 ] || exit 2
   export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"

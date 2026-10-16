@@ -62,6 +62,8 @@ run_required() {
   printf '[test] Userspace 共享依赖\n'
   pnpm --store-dir "${PNPM_STORE_DIR:-${PNPM_HOME:-$HOME/.local/share/pnpm}/store}" install --frozen-lockfile
   pnpm build:userspace-shared
+  printf '[test] TUI 字体选择与窗口启动参数\n'
+  node --test ./shells/tui/tests/*.test.mjs
   printf '[test] Session 数据流\n'
   pnpm --filter @deepcode/session-core test
   printf '[test] GUI 投影合同与状态交互\n'

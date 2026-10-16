@@ -11,5 +11,7 @@ deepcode-kernel-client.workspace = true
 crossterm.workspace = true
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-latex = "0.7.1"
+tui-math = "0.1.1"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }

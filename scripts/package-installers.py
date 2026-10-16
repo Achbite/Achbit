@@ -24,7 +24,8 @@ def macos(stage, output, version):
                 'APP_DIR="/Applications/DeepCode-GUI.app/Contents"\n'
                 'export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"\n'
                 'export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"\n'
-                f'exec "$APP_DIR/MacOS/deepcode-{shell}" "$@"\n')
+                + ('exec "$APP_DIR/Resources/node/bin/node" "$APP_DIR/Resources/tui/window.mjs" "$@"\n'
+                   if shell == 'tui' else f'exec "$APP_DIR/MacOS/deepcode-{shell}" "$@"\n'))
             launcher.chmod(0o755)
         components = work / 'components.plist'
         components.write_bytes(plistlib.dumps([{

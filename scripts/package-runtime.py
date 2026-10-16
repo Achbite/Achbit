@@ -65,6 +65,21 @@ def shared(root, destination, dependency_list):
     (destination / 'THIRD-PARTY.json').write_text(json.dumps(notices, ensure_ascii=False, indent=2) + '\n')
 
 
+def macos_tui_resources(root, resources):
+    """Ship native-loadable fonts only with the macOS terminal window adapter."""
+    target = resources / 'tui'
+    shutil.copytree(root / 'shells/tui/macos', target)
+    fonts = root / 'userspace/gui/src/assets/fonts'
+    with zipfile.ZipFile(fonts / 'DeepCode-Quiet-Terminal-SC.zip') as archive:
+        for name in ('DeepCodeQuietTerminalReadingSC-Regular.ttf', 'DeepCodeQuietTerminalReadingSansSC-Regular.ttf',
+                     'DeepCodeQuietTerminalMonoKaiSC-Regular.ttf', 'DeepCodeQuietTerminalMonoSC-Regular.ttf',
+                     'README.md', 'Maple-LICENSE.txt', 'Libertinus-OFL.txt',
+                     'Libertinus-AUTHORS.txt', 'WenKai-OFL.txt'):
+            destination = target / 'fonts' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.read(name))
+
+
 def assemble(args):
     root, stage = args.root, args.stage
     version = json.loads((root / 'package.json').read_text())['version']
@@ -106,18 +121,20 @@ def assemble(args):
     metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME']}
     (resources / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
     if macos:
+        macos_tui_resources(root, resources)
         info = {'CFBundleDevelopmentRegion': 'en', 'CFBundleDisplayName': 'DeepCode-GUI', 'CFBundleExecutable': 'DeepCode-GUI', 'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': 'DeepCode-GUI', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version, 'LSMinimumSystemVersion': '12.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication'}
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for shell in ('CLI', 'TUI'):
             launcher = stage / f'DeepCode-{shell}.command'
+            command = ('exec "$APP_DIR/Resources/node/bin/node" "$APP_DIR/Resources/tui/window.mjs" --command-window "$@"'
+                       if shell == 'TUI' else 'exec "$APP_DIR/MacOS/deepcode-cli" "$@"')
             launcher.write_text('''#!/usr/bin/env bash
 set -euo pipefail
 PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 APP_DIR="$PACKAGE_DIR/DeepCode-GUI.app/Contents"
 export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"
 export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"
-exec "$APP_DIR/MacOS/deepcode-''' + shell.lower() + '''" "$@"
-''')
+''' + command + '\n')
             launcher.chmod(0o755)
         sign_app(app, identity, native_components=True)
         assemble_computer_use(root, args.native, stage, identity)

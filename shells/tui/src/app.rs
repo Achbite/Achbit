@@ -8,7 +8,7 @@ use deepcode_kernel_client::{
 };
 use serde_json::json;
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,6 +35,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/model", "tui.command.model", false),
     ("/connection", "tui.command.model", false),
     ("/context", "tui.command.context", false),
+    ("/font", "tui.command.font", false),
     ("/tasks", "tui.command.tasks", false),
     ("/agents", "tui.command.agents", false),
     ("/agent", "tui.command.agent", true),
@@ -118,6 +119,8 @@ pub struct TuiApp {
     projection: Option<SessionProjection>,
     input: String,
     command_picker: Option<usize>,
+    recent_commands: VecDeque<&'static str>,
+    initialized: bool,
     status: String,
     connection_error: Option<String>,
     next_message_profile_id: Option<String>,
@@ -137,7 +140,9 @@ pub struct TuiApp {
     tasks_open: bool,
     detail_preview: Option<String>,
     reasoning_enabled: bool,
-    detail_scroll: u16,
+    detail_scroll: Cell<u16>,
+    detail_scroll_max: Cell<u16>,
+    viewport_height: Cell<u16>,
     transcript_scroll: Cell<Option<usize>>,
     transcript_scroll_max: Cell<usize>,
 }
@@ -154,6 +159,8 @@ impl TuiApp {
             projection: None,
             input: String::new(),
             command_picker: None,
+            recent_commands: VecDeque::new(),
+            initialized: false,
             next_message_profile_id: None,
             model_connections: None,
             model_profiles: Vec::new(),
@@ -171,7 +178,9 @@ impl TuiApp {
             tasks_open: false,
             detail_preview: None,
             reasoning_enabled: false,
-            detail_scroll: 0,
+            detail_scroll: Cell::new(0),
+            detail_scroll_max: Cell::new(0),
+            viewport_height: Cell::new(1),
             transcript_scroll: Cell::new(None),
             transcript_scroll_max: Cell::new(0),
         }
@@ -200,6 +209,7 @@ impl TuiApp {
         self.selected_plugins =
             plugin_selections_from_uris(self.host.language, &catalog, &self.host.plugin_uris)?;
         self.plugin_catalog = Some(catalog);
+        self.initialized = true;
         self.status = self.host.language.text("tui.readyHelp").to_string();
         Ok(())
     }
@@ -263,6 +273,7 @@ impl TuiApp {
         if input.is_empty() {
             return true;
         }
+        self.record_command(input);
         self.transcript_scroll.set(None);
         match input {
             "/quit" | "/exit" => return false,
@@ -299,15 +310,32 @@ impl TuiApp {
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.detail_preview = Some(self.host.language.text("tui.commandHelp").into());
+            }
+            "/font" => {
+                self.context_open = false;
+                self.tasks_open = false;
+                self.resource_preview = None;
+                self.detail_scroll.set(0);
+                self.detail_preview = Some(self.host.language.text("tui.font.help").into());
+            }
+            value if value.starts_with("/font ") => {
+                let choice = value.trim_start_matches("/font ").trim();
+                self.status = match crate::fonts::apply(choice, self.host.language).await {
+                    Ok(()) => self
+                        .host
+                        .language
+                        .format("tui.font.changed", &[choice.into()]),
+                    Err(error) => self.host.language.format("tui.font.failed", &[error]),
+                };
             }
             "/show" => self.status = self.projection_label(),
             "/error" | "/decision" => {
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 if input == "/decision"
                     && self.projection.as_ref().is_some_and(|projection| {
                         projection.pending_plan.is_none()
@@ -352,7 +380,7 @@ impl TuiApp {
                 self.context_open = false;
                 self.resource_preview = None;
                 self.detail_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
             }
             "/next" => self.next_resource().await,
             "/reasoning" => {
@@ -382,7 +410,7 @@ impl TuiApp {
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.detail_preview = Some(crate::renderer::tool_details(
                     self.host.language,
                     self.projection.as_ref(),
@@ -468,7 +496,7 @@ impl TuiApp {
         self.context_open = false;
         self.tasks_open = false;
         self.detail_preview = None;
-        self.detail_scroll = 0;
+        self.detail_scroll.set(0);
         self.transcript_scroll.set(None);
         self.transcript_scroll_max.set(0);
     }
@@ -1053,7 +1081,7 @@ impl TuiApp {
         {
             Ok(resource) => {
                 self.status = self.host.language.text("tui.resourceNext").into();
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.resource_preview = Some(resource);
             }
             Err(error) => self.status = error.to_string(),
@@ -1104,7 +1132,7 @@ impl TuiApp {
         };
         match result {
             Ok(content) => {
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.detail_preview = Some(content);
                 self.resource_preview = None;
                 self.context_open = false;
@@ -1156,7 +1184,7 @@ impl TuiApp {
                     ],
                 );
                 self.detail_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.resource_preview = Some(resource);
             }
             Err(error) => {
@@ -1333,20 +1361,41 @@ impl TuiApp {
     }
 
     pub fn scroll_content(&mut self, down: bool) {
-        self.scroll_lines(down, 12);
+        self.scroll_lines(down, self.viewport_height.get().saturating_sub(1).max(1));
     }
 
     pub fn scroll_lines(&mut self, down: bool, lines: u16) {
+        // An open picker owns navigation; do not scroll the obscured document.
+        let delta = if down { 1 } else { -1 };
+        if self.command_picker_open() {
+            self.command_completion_key(if down { KeyCode::Down } else { KeyCode::Up });
+            return;
+        } else if self.plugin_picker_open() {
+            self.plugin_picker_move(delta);
+            return;
+        } else if self.model_picker_open() {
+            self.model_picker_move(delta);
+            return;
+        } else if self.session_picker_open() {
+            self.session_picker_move(delta);
+            return;
+        } else if self.agent_picker_open() {
+            self.agent_picker_move(delta);
+            return;
+        }
         if self.detail_preview.is_some()
             || self.resource_preview.is_some()
             || self.context_open
             || self.tasks_open
         {
-            self.detail_scroll = if down {
-                self.detail_scroll.saturating_add(lines)
+            let current = self.detail_scroll.get();
+            self.detail_scroll.set(if down {
+                current
+                    .saturating_add(lines)
+                    .min(self.detail_scroll_max.get())
             } else {
-                self.detail_scroll.saturating_sub(lines)
-            };
+                current.saturating_sub(lines)
+            });
         } else {
             let maximum = self.transcript_scroll_max.get();
             let current = self.transcript_scroll.get().unwrap_or(maximum);
@@ -1374,8 +1423,21 @@ impl TuiApp {
     pub fn tasks_open(&self) -> bool {
         self.tasks_open
     }
-    pub fn detail_scroll(&self) -> u16 {
-        self.detail_scroll
+    pub fn set_viewport_height(&self, height: u16) {
+        self.viewport_height.set(height);
+    }
+
+    pub fn detail_offset(&self, maximum: usize, height: u16) -> u16 {
+        self.set_viewport_height(height);
+        let maximum = maximum.min(usize::from(u16::MAX)) as u16;
+        self.detail_scroll_max.set(maximum);
+        let offset = self.detail_scroll.get().min(maximum);
+        self.detail_scroll.set(offset);
+        offset
+    }
+
+    pub fn initialized(&self) -> bool {
+        self.initialized
     }
     pub fn detail_preview(&self) -> Option<&str> {
         self.detail_preview.as_deref()
@@ -1430,7 +1492,17 @@ impl TuiApp {
             self.sync_input_pickers();
             return;
         }
-        self.input.pop();
+        // Remove one displayed grapheme, including combining marks and emoji sequences.
+        let length = if self.input.ends_with('\n') {
+            1
+        } else {
+            ratatui::text::Line::from(self.input.as_str())
+                .styled_graphemes(ratatui::style::Style::default())
+                .last()
+                .map(|grapheme| grapheme.symbol.len())
+                .unwrap_or(0)
+        };
+        self.input.truncate(self.input.len().saturating_sub(length));
         self.sync_input_pickers();
     }
 
@@ -1509,11 +1581,35 @@ impl TuiApp {
         {
             return Vec::new();
         }
-        COMMANDS
+        let mut matches: Vec<_> = COMMANDS
             .iter()
             .copied()
             .filter(|(command, _, _)| command.starts_with(query))
-            .collect()
+            .collect();
+        // A bounded local history combines frequency with recency; stable ties retain
+        // the discoverable default order. Arguments and message contents are never stored.
+        matches.sort_by_cached_key(|(command, _, _)| {
+            std::cmp::Reverse(
+                self.recent_commands
+                    .iter()
+                    .rev()
+                    .enumerate()
+                    .filter(|(_, used)| *used == command)
+                    .map(|(age, _)| 32 - age)
+                    .sum::<usize>(),
+            )
+        });
+        matches
+    }
+
+    fn record_command(&mut self, input: &str) {
+        let name = input.split_whitespace().next().unwrap_or("");
+        if let Some((command, _, _)) = COMMANDS.iter().find(|(command, _, _)| *command == name) {
+            if self.recent_commands.len() == 32 {
+                self.recent_commands.pop_front();
+            }
+            self.recent_commands.push_back(command);
+        }
     }
 
     fn sync_input_pickers(&mut self) {
@@ -1831,7 +1927,7 @@ impl TuiApp {
     fn toggle_context(&mut self) {
         self.context_open = !self.context_open;
         self.tasks_open = false;
-        self.detail_scroll = 0;
+        self.detail_scroll.set(0);
         if self.context_open {
             self.resource_preview = None;
             self.status = self.host.language.text("tui.contextOpened").to_string();
@@ -1987,6 +2083,19 @@ mod input_tests {
         assert!(!app.command_picker_open());
     }
 
+    #[tokio::test]
+    async fn font_choices_are_local_ui_and_do_not_create_a_conversation() {
+        let mut app = test_app();
+        app.push_input_text("/fon");
+        assert!(app.command_completion_key(KeyCode::Tab));
+        assert_eq!(app.take_input(), "/font");
+        assert!(app.submit_line("/font").await);
+        assert!(app.detail_preview().unwrap().contains("/font compact-kai"));
+        assert!(app.submit_line("/font unavailable").await);
+        assert!(app.status().contains("unavailable"));
+        assert!(app.projection().is_none());
+    }
+
     #[test]
     fn command_completion_leaves_full_commands_text_and_existing_pickers_alone() {
         let mut app = test_app();
@@ -2054,7 +2163,12 @@ mod input_tests {
             }
             assert!(app.command_completion_key(KeyCode::Down));
             assert!(app.command_picker_entries(7)[0].highlighted);
-            for _ in 0..8 {
+            let agents_index = COMMANDS
+                .iter()
+                .position(|entry| entry.0 == "/agents")
+                .unwrap();
+            assert!(agents_index >= 7);
+            for _ in 0..agents_index {
                 app.command_completion_key(KeyCode::Down);
             }
             let entries = app.command_picker_entries(7);
@@ -2303,6 +2417,142 @@ mod input_tests {
                 "rendering must not mutate Session facts"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn detail_views_stop_at_the_rendered_bottom_and_reflow_after_resize() {
+        for language in [Language::ZhCn, Language::EnUs] {
+            let mut app = test_app();
+            app.host.language = language;
+            app.submit_line("/help").await;
+            let top = screen_rows(&app, 60, 18);
+            assert!(top
+                .join("\n")
+                .contains(language.text("tui.commandHelp").lines().next().unwrap()));
+            app.scroll_lines(true, u16::MAX);
+            let bottom = screen_rows(&app, 60, 18);
+            assert!(bottom.join("\n").contains("/quit"));
+            assert_ne!(top, bottom);
+            for _ in 0..5 {
+                app.scroll_content(true);
+                assert_eq!(screen_rows(&app, 60, 18), bottom);
+            }
+            let resized = screen_rows(&app, 140, 26);
+            assert!(resized.join("\n").contains("/quit"));
+            app.scroll_content(true);
+            assert_eq!(screen_rows(&app, 140, 26), resized);
+            app.scroll_lines(false, u16::MAX);
+            assert_eq!(screen_rows(&app, 60, 18), top);
+
+            for command in ["/context", "/tasks", "/font"] {
+                app.submit_line(command).await;
+                let visible = screen_rows(&app, 140, 50);
+                app.scroll_lines(true, u16::MAX);
+                assert_eq!(screen_rows(&app, 140, 50), visible, "{command}");
+            }
+        }
+    }
+
+    #[test]
+    fn detail_pages_overlap_by_one_visible_row_and_keep_file_truncation_visible() {
+        let mut app = test_app();
+        app.detail_preview = Some(
+            (0..60)
+                .map(|i| format!("row-{i:02} 中文内容"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let before = screen_rows(&app, 60, 18);
+        let last = before
+            .iter()
+            .filter(|line| line.contains("row-"))
+            .last()
+            .unwrap()
+            .clone();
+        app.scroll_content(true);
+        let after = screen_rows(&app, 60, 18);
+        assert_eq!(
+            after.iter().find(|line| line.contains("row-")).unwrap(),
+            &last
+        );
+        app.detail_preview = None;
+        app.resource_preview = Some(
+            serde_json::from_value(json!({
+                "workspaceId":"workspace:test", "logicalPath":"文本.txt", "content":"最后一行",
+                "sizeBytes":99, "startLine":1, "endLine":1, "nextByte":50, "truncated":true
+            }))
+            .unwrap(),
+        );
+        let screen = screen_rows(&app, 60, 18).join("\n");
+        assert!(screen.contains("最后一行"));
+        assert!(screen.contains("/next"));
+    }
+
+    #[tokio::test]
+    async fn completion_orders_recent_frequent_commands_but_completion_does_not_record_use() {
+        let mut app = test_app();
+        app.submit_line("/tasks").await;
+        app.submit_line("/tasks").await;
+        app.submit_line("/context").await;
+        app.push_input('/');
+        let names: Vec<_> = app
+            .command_picker_entries(7)
+            .into_iter()
+            .map(|entry| entry.command)
+            .collect();
+        assert_eq!(&names[..3], &["/tasks", "/context", "/help"]);
+        app.clear_input();
+        app.push_input_text("/he");
+        app.command_completion_key(KeyCode::Tab);
+        app.clear_input();
+        app.push_input('/');
+        assert_eq!(app.command_picker_entries(7)[0].command, "/tasks");
+        app.clear_input();
+        app.push_input_text("/con");
+        assert_eq!(app.command_picker_entries(7)[0].command, "/context");
+        app.command_completion_key(KeyCode::Enter);
+        assert_eq!(app.input(), "/context");
+        assert!(app.context_open()); // completion did not execute /context again
+        assert!(app.projection().is_none());
+        let mut fresh = test_app();
+        fresh.push_input('/');
+        assert_eq!(fresh.command_picker_entries(7)[0].command, "/help");
+    }
+
+    #[test]
+    fn picker_wheel_navigation_keeps_the_hidden_document_in_place() {
+        let mut app = test_app();
+        app.detail_preview = Some(
+            (0..80)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let before = screen_rows(&app, 60, 18);
+        app.push_input('/');
+        app.scroll_lines(true, 4);
+        assert!(app.command_picker_entries(7)[1].highlighted);
+        assert!(screen_rows(&app, 60, 18).join("\n").contains("> /new"));
+        app.clear_input();
+        assert_eq!(screen_rows(&app, 60, 18), before);
+    }
+
+    #[test]
+    fn ready_draft_header_and_grapheme_deletion_match_the_visible_state() {
+        let mut app = test_app();
+        assert!(screen_rows(&app, 60, 18)[0].contains("初始化"));
+        app.initialized = true;
+        assert!(screen_rows(&app, 60, 18)[0].contains("就绪"));
+        app.push_input_text("中文e\u{301}👩‍💻");
+        app.backspace_input();
+        assert_eq!(app.input(), "中文e\u{301}");
+        app.backspace_input();
+        assert_eq!(app.input(), "中文");
+        app.push_input_text("\n中");
+        app.backspace_input();
+        app.backspace_input();
+        assert_eq!(app.input(), "中文");
+        assert!(app.projection().is_none());
     }
 
     #[test]

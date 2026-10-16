@@ -572,7 +572,7 @@ fn multiline_text(lines: Vec<Line<'_>>) -> Text<'static> {
 fn input_lines(input: &str, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
     let mut lines = Vec::new();
-    let text = format!("{input} ");
+    let text = format!("{} ", input.replace('\t', "    "));
     for part in text.split('\n') {
         let source = Line::from(part);
         let mut current = String::new();
@@ -1104,7 +1104,11 @@ impl Renderer {
                 .map(|value| format!(" · {}", reasoning_effort_label(language, value)))
                 .unwrap_or_default()
         );
-        let status = run_label(language, projection);
+        let status = if projection.is_none() && app.initialized() {
+            language.text("tui.ready").to_string()
+        } else {
+            run_label(language, projection)
+        };
         let left = format!("DeepCode  ·  {status}");
         let available = area
             .width
@@ -1244,80 +1248,82 @@ impl Renderer {
                 lines.push(Line::from(note));
             }
         }
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .scroll((app.detail_scroll(), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title_style(Style::default().fg(Color::DarkGray))
-                        .title(language.text("tui.tasksTitle")),
-                ),
+        self.draw_detail(
+            frame,
             area,
+            app,
+            Text::from(lines),
+            language.text("tui.tasksTitle").into(),
         );
+    }
+
+    // All document views measure the same wrapped body that they render. Borders
+    // and padding are outside the viewport, and resizing clamps its local offset.
+    fn draw_detail(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        app: &TuiApp,
+        text: Text<'_>,
+        title: String,
+    ) {
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .padding(Padding::new(1, 1, 0, 0))
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title_style(Style::default())
+            .title(title);
+        let body = block.inner(area);
+        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+        let maximum = paragraph
+            .line_count(body.width)
+            .saturating_sub(usize::from(body.height));
+        let offset = app.detail_offset(maximum, body.height);
+        frame.render_widget(block, area);
+        frame.render_widget(paragraph.scroll((offset, 0)), body);
+        if maximum > 0 && body.height > 0 && area.width > 0 {
+            draw_scrollbar(
+                frame,
+                Rect::new(area.right() - 1, body.y, 1, body.height),
+                maximum,
+                usize::from(offset),
+            );
+        }
     }
 
     fn draw_resource(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         let language = app.language();
         if let Some(detail) = app.detail_preview() {
-            frame.render_widget(
-                Paragraph::new(detail)
-                    .scroll((app.detail_scroll(), 0))
-                    .wrap(Wrap { trim: false })
-                    .block(
-                        Block::default()
-                            .borders(Borders::TOP)
-                            .padding(Padding::new(1, 1, 0, 1))
-                            .border_style(Style::default().fg(Color::DarkGray))
-                            .title_style(Style::default())
-                            .title(language.text("tui.detailsTitle")),
-                    ),
+            self.draw_detail(
+                frame,
                 area,
+                app,
+                Text::raw(detail),
+                language.text("tui.detailsTitle").into(),
             );
-            return;
+        } else if let Some(resource) = app.resource_preview() {
+            let mut content = resource.content.clone();
+            if resource.truncated {
+                content.push_str(language.text("tui.partialResource"));
+            }
+            self.draw_detail(
+                frame,
+                area,
+                app,
+                Text::raw(content),
+                language.format("tui.readOnlyTitle", &[resource.logical_path.clone()]),
+            );
         }
-        let Some(resource) = app.resource_preview() else {
-            return;
-        };
-        frame.render_widget(
-            Paragraph::new(resource.content.as_str())
-                .scroll((app.detail_scroll(), 0))
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .padding(Padding::new(1, 1, 0, 1))
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title_style(Style::default())
-                        .title(
-                            language.format(
-                                "tui.readOnlyTitle",
-                                &[format!("{}", resource.logical_path)],
-                            ),
-                        ),
-                ),
-            area,
-        );
     }
 
     fn draw_context(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-        let language = app.language();
-        let width = usize::from(area.width.saturating_sub(4)).max(1);
-        frame.render_widget(
-            Paragraph::new(context_lines(language, app.projection(), width))
-                .wrap(Wrap { trim: false })
-                .scroll((app.detail_scroll(), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .padding(Padding::new(1, 1, 0, 1))
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title_style(Style::default())
-                        .title(language.text("tui.contextTitle")),
-                ),
+        let width = usize::from(area.width.saturating_sub(2)).max(1);
+        self.draw_detail(
+            frame,
             area,
+            app,
+            Text::from(context_lines(app.language(), app.projection(), width)),
+            app.language().text("tui.contextTitle").into(),
         );
     }
 
@@ -1363,22 +1369,13 @@ impl Renderer {
         }
         let cache = cache.as_mut().unwrap();
         let maximum = cache.line_count.saturating_sub(usize::from(body.height));
+        app.set_viewport_height(body.height);
         let offset = app.transcript_offset(maximum);
         cache.paragraph =
             std::mem::take(&mut cache.paragraph).scroll((offset.min(u16::MAX as usize) as u16, 0));
         frame.render_widget(&cache.paragraph, body);
         if maximum > 0 {
-            frame.render_stateful_widget(
-                Scrollbar::default()
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(Some("│"))
-                    .thumb_symbol("┃")
-                    .track_style(Style::default().fg(Color::DarkGray))
-                    .thumb_style(Style::default().fg(Color::Gray)),
-                area,
-                &mut ScrollbarState::new(maximum + 1).position(offset),
-            );
+            draw_scrollbar(frame, area, maximum, offset);
         }
     }
 
@@ -1612,9 +1609,14 @@ impl Renderer {
             height,
         );
         let mut lines = Vec::new();
+        let command_width = entries
+            .iter()
+            .map(|entry| entry.command.len())
+            .max()
+            .unwrap_or(0);
         for entry in entries {
             let marker = if entry.highlighted { ">" } else { " " };
-            let label = format!("{marker} {:<20} ", entry.command);
+            let label = format!("{marker} {:command_width$} ", entry.command);
             let description_width = area.width.saturating_sub(label.len() as u16);
             lines.push(Line::from(vec![
                 Span::styled(clipped(&label, area.width), picker_style(entry.highlighted)),
@@ -1835,6 +1837,20 @@ impl Renderer {
             area,
         );
     }
+}
+
+fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, maximum: usize, offset: usize) {
+    frame.render_stateful_widget(
+        Scrollbar::default()
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("┃")
+            .track_style(Style::default().fg(Color::DarkGray))
+            .thumb_style(Style::default().fg(Color::Gray)),
+        area,
+        &mut ScrollbarState::new(maximum + 1).position(offset),
+    );
 }
 
 const CONTEXT_PARTITIONS: [(&str, &str); 7] = [
