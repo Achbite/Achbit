@@ -1,6 +1,7 @@
 //! Optional Docker execution adapter. Admission and records remain Kernel-owned.
 use deepcode_kernel_runtime::executors::{
-    execute_cli_command, KernelToolExecutionContext, KernelToolExecutionResult,
+    execute_cli_command, KernelToolExecutionContext, KernelToolExecutionFailure,
+    KernelToolExecutionOutcome, KernelToolExecutionResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -257,14 +258,22 @@ impl Containers {
         let cleanup = self.metadata(Some(docker_context), &["exec".into(),container.into(),"/bin/sh".into(),"-c".into(),
             "if [ -f \"$1\" ]; then read -r pid < \"$1\" || :; kill -TERM -\"$pid\" 2>/dev/null || :; kill -KILL -\"$pid\" 2>/dev/null || :; rm -f -- \"$1\"; fi".into(),"deepcode".into(),marker]);
         if let Err(error) = cleanup {
-            return Err(format!(
-                "{}; container process cleanup: {error}",
-                result
-                    .as_ref()
-                    .err()
-                    .map(String::as_str)
-                    .unwrap_or("Command finished")
-            ));
+            let cleanup = format!("container process cleanup: {error}");
+            match &mut result {
+                Ok(result) => {
+                    result.outcome = KernelToolExecutionOutcome::Failed;
+                    match &mut result.error {
+                        Some(error) => error.message.push_str(&format!("; {cleanup}")),
+                        None => {
+                            result.error = Some(KernelToolExecutionFailure {
+                                code: "container_cleanup_failed".into(),
+                                message: cleanup,
+                            });
+                        }
+                    }
+                }
+                Err(error) => error.push_str(&format!("; {cleanup}")),
+            }
         }
         if let Ok(result) = &mut result {
             result.output["container"] = target.clone();
@@ -410,5 +419,68 @@ struct MetadataArchive(PathBuf);
 impl Drop for MetadataArchive {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn container_cleanup_retains_execution_result() {
+        let root = MetadataArchive(
+            std::env::temp_dir().join(
+                crate::utils::new_runtime_ref("container-cleanup-test")
+                    .unwrap()
+                    .replace(':', "-"),
+            ),
+        );
+        std::fs::create_dir_all(&root.0).unwrap();
+        let executable = root.0.join("docker");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nif [ \"$9\" = original-failure ]; then\n  echo original-output\n  echo original-error >&2\n  exit 7\nelif [ \"$9\" = original-success ]; then\n  echo original-output\n  exit 0\nfi\necho cleanup-error >&2\nexit 9\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let containers = Containers::new(root.0.to_str().unwrap()).unwrap();
+        let target = json!({"engine":{"context":"test"},"id":"test-container"});
+        for (command, original_failure) in [("original-failure", true), ("original-success", false)]
+        {
+            let input =
+                parse(json!({"action":"exec","container":"test-container","command":command}))
+                    .unwrap();
+            let context = KernelToolExecutionContext {
+                output_directory: Some(root.0.join(command)),
+                workspace_root: None,
+                workspace_id: None,
+                private_resolved_targets: vec![],
+                workspace_write_targets: None,
+                file_access: Default::default(),
+                cancellation: Default::default(),
+                progress: Default::default(),
+            };
+            let result = containers
+                .invoke(command, &input, &target, &context)
+                .unwrap();
+            assert_eq!(result.outcome, KernelToolExecutionOutcome::Failed);
+            assert_eq!(result.output["stdout"], "original-output\n");
+            assert_eq!(
+                result.output["exitCode"],
+                if original_failure { 7 } else { 0 }
+            );
+            assert_eq!(result.output["container"], target);
+            let error = result.error.unwrap();
+            assert!(error.message.contains("container process cleanup"));
+            assert!(error.message.contains("cleanup-error"));
+            if original_failure {
+                assert_eq!(error.code, "process_exit_nonzero");
+                assert!(error.message.contains("status 7"));
+                assert_eq!(result.output["stderr"], "original-error\n");
+            } else {
+                assert_eq!(error.code, "container_cleanup_failed");
+            }
+        }
     }
 }
