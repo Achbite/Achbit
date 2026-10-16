@@ -188,7 +188,7 @@ class ProviderHandler(fixture.MockProviderHandler):
                 self._send_tool_calls([("queued-file-read", read_name, {"workspace": reference["workspace"], "path": reference["path"]})])
             elif ordinal == 3:
                 result = next(json.loads(message["content"]) for message in body["messages"] if message.get("tool_call_id") == "queued-file-read")
-                require(result["outcome"] == "completed" and result["output"]["content"] == "queued notes\n", "Kernel 未读取本轮新接纳的文件快照")
+                require(result["outcome"] == "completed" and result["output"]["content"] == "queued notes\n", "Kernel 未读取本轮新接纳的原文件")
                 self._send_text("queued-attachments-complete")
             else:
                 raise AssertionError(f"多余附件请求：{ordinal}")
@@ -294,10 +294,14 @@ def verify_queued_attachments(daemon, state, root, workspace) -> None:
         queued = fixture.projection(daemon, session_id)
         require(len(queued["queuedInputs"]) == 2, "附件未留在同一任务队列")
         state.attachment_release.set()
+        fixture.wait_until(lambda: fixture.projection(daemon, session_id).get("pendingApproval"), 20, "外部原文件读取未请求批准")
+        pending = fixture.projection(daemon, session_id)["pendingApproval"]
+        require(pending["preview"]["fileAccess"]["read"] == [str((root / "notes.txt").resolve())], "外部读取批准目标不符")
+        fixture.cli(daemon, session_id, "/reply 1")
         completed = fixture.wait_completed(daemon, state, session_id, "queued-attachments-complete")
         require(completed["run"]["runId"] == run_id and not completed["queuedInputs"], "附件另起任务或未消费")
         require(len(state.attachment_requests) == 3, "附件链路请求次数不符")
-        print("[attachment-e2e] PASS: same-run image-only and file-only input, real PNG Provider encoding, immutable old prefix and Kernel snapshot read")
+        print("[attachment-e2e] PASS: same-run image-only and file-only input, real PNG Provider encoding, immutable old prefix and approved original-file read")
     finally:
         state.attachment_release.set()
 

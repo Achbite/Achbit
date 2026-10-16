@@ -174,11 +174,15 @@ def run_storage_checks(root: Path, server, provider) -> None:
         source.write_text("original attachment\n", encoding="utf-8")
         references = request(daemon, session_path(session_id) + "/filesystem-references/resolve",
                              method="POST", body={"references": [{"kind": "file", "path": str(source)}]})
-        require(len(references) == 1, "Attachment was not imported")
+        require(len(references) == 1, "File reference was not resolved")
         rows = workspace_rows(config_root, session_id)
-        snapshot = rows[references[0]["workspaceId"]][0] / references[0]["logicalPath"]
+        require(references[0]["workspaceId"] not in rows, "Original file was registered as Session-owned storage")
+        with closing(fixture.sqlite_read_only(config_root / "data/agent-runtime/catalog.sqlite3")) as connection:
+            address_root = connection.execute("SELECT canonical_root FROM workspaces WHERE workspace_id=?", (references[0]["workspaceId"],)).fetchone()[0]
+        referenced = Path(address_root) / references[0]["logicalPath"]
+        require(referenced.samefile(source), "Reference does not address the original file")
         source.write_text("changed source\n", encoding="utf-8")
-        require(snapshot.read_text(encoding="utf-8") == "original attachment\n", "Snapshot followed the source")
+        require(referenced.read_text(encoding="utf-8") == "changed source\n", "Reference does not follow the original target")
 
         input_id = "input:粘贴 文本"
         uploaded = upload(daemon, session_id, input_id, LONG_TEXT)
@@ -245,7 +249,7 @@ def run_storage_checks(root: Path, server, provider) -> None:
         reopened_rows = workspace_rows(config_root, session_id)
         require(reopened_rows == rows, "Restart or next message changed registered storage")
         require(reopened_rows[workdir_id] == (workdir, True), "Working directory was not reused")
-        require(snapshot.read_text(encoding="utf-8") == "original attachment\n", "Restart lost the snapshot")
+        require(referenced.read_text(encoding="utf-8") == "changed source\n", "Restart lost the original target")
         check_session_navigation(reopened, provider, session_id, second_id, root)
         request(reopened, session_path(session_id), method="DELETE")
         require(not workspace_rows(config_root, session_id), "Session deletion retained owned catalog entries")
@@ -262,7 +266,7 @@ def run_storage_checks(root: Path, server, provider) -> None:
                 "Second Session deletion retained its owned storage")
         reopened.shutdown()
         provider.assert_healthy()
-        print(f"[PASS] conversation storage ({os.name}): first message, attachment snapshot, text identities, "
+        print(f"[PASS] conversation storage ({os.name}): first message, original file reference, text snapshots and identities, "
               "conflict, cross-session isolation, long message, restart, reuse and owned cleanup", flush=True)
     finally:
         with ExitStack() as cleanup:

@@ -81,8 +81,11 @@ impl LocalAgentKernel {
             return Ok(());
         };
         let root = Path::new(workspace_root);
-        let mut files = FileAccessScope::workspace(root).map_err(file_error)?;
+        let mut files = FileAccessScope::default();
         let mut project_roots = Vec::new();
+        let working_directories = self
+            .journal
+            .run_workspace_binding_ids(&request.session_id, &request.run_id)?;
         for id in &request.workspace_bindings {
             let binding = self.resolver.resolve(id)?;
             if binding
@@ -90,6 +93,11 @@ impl LocalAgentKernel {
                 .owner_session_id()
                 .is_some_and(|owner| owner != request.session_id)
             {
+                continue;
+            }
+            // Catalog membership and message references never grant project access.
+            // Imported content is explicitly supplied read-only Session input.
+            if !working_directories.contains(id) && !binding.access.read_only() {
                 continue;
             }
             let path = resolve_path(Path::new(&binding.root)).map_err(file_error)?;
@@ -195,8 +203,12 @@ impl LocalAgentKernel {
         ) {
             for target in &prepared.private_resolved_targets {
                 let path = PathBuf::from(target);
+                let in_project_scope = prepared
+                    .workspace_policy
+                    .as_ref()
+                    .is_some_and(|policy| path.starts_with(&policy.root));
                 if prepared.scope != PreparedEffectScope::WorkspaceRead
-                    && !path.starts_with(root)
+                    && !in_project_scope
                     && overlaps_project(&path, &project_roots)
                 {
                     return Err(LocalAgentKernelError::input("$.workspaceId", "workspaceWriteScope",
@@ -206,7 +218,7 @@ impl LocalAgentKernel {
                     if !files.read.iter().any(|root| covers(root, &path)) {
                         prepared.file_requests.read.push(path);
                     }
-                } else if !path.starts_with(root) || files.protects(&path) {
+                } else if !in_project_scope || files.protects(&path) {
                     prepared.file_requests.write.push(path);
                 } else if prepared.operation == "fs.delete" && path.is_dir() {
                     // Deleting a project tree also deletes its otherwise read-only Git metadata.
@@ -219,6 +231,12 @@ impl LocalAgentKernel {
                     );
                 }
             }
+        }
+        if is_shell_tool(&prepared.operation)
+            && !files.read.iter().any(|allowed| covers(allowed, root))
+        {
+            // Selecting a referenced directory as cwd still needs an external read grant.
+            prepared.file_requests.read.push(root.to_path_buf());
         }
         prepared.git_write_requested = prepared
             .file_requests
@@ -273,11 +291,12 @@ impl PreparedEffect {
 
     pub(super) fn external_file_target(&self) -> bool {
         self.operation.starts_with("fs.")
-            && self.workspace_root.as_ref().is_some_and(|root| {
-                self.private_resolved_targets
-                    .iter()
-                    .any(|path| !Path::new(path).starts_with(root))
-            })
+            && (self.workspace_policy.is_none()
+                || self.workspace_policy.as_ref().is_some_and(|policy| {
+                    self.private_resolved_targets
+                        .iter()
+                        .any(|path| !Path::new(path).starts_with(&policy.root))
+                }))
     }
 
     pub(super) fn execution_file_access(&self) -> FileAccessScope {
@@ -293,5 +312,145 @@ impl PreparedEffect {
             });
         }
         files
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_agent_kernel::attempt_control_tests::kernel_with_request;
+
+    struct Resources(PathBuf);
+    impl WorkspaceResolverPort for Resources {
+        fn resolve(&self, id: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+            let path = match id {
+                "workspace:test" => "project",
+                "resource:subdir" => "project/src",
+                "resource:outside" => "outside",
+                _ => return Err(LocalAgentKernelError::new("workspace_not_found", id)),
+            };
+            Ok(ResolvedWorkspace {
+                root: self.0.join(path).to_string_lossy().into(),
+                access: WorkspaceAccess::Project,
+            })
+        }
+    }
+    impl Drop for Resources {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    fn resources() -> Arc<Resources> {
+        let root =
+            std::env::temp_dir().join(random_id("reference-policy").unwrap().replace(':', "-"));
+        for path in ["project/src", "outside"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+            std::fs::write(root.join(path).join("target.txt"), "original").unwrap();
+        }
+        Arc::new(Resources(root))
+    }
+
+    #[test]
+    fn resource_addresses_do_not_grant_external_reads_or_writes() {
+        let resources = resources();
+        for tool in ["fs.read", "fs.write", "bash"] {
+            let input = match tool {
+                "fs.read" => json!({"workspaceId":"resource:outside", "path":"target.txt"}),
+                "fs.write" => {
+                    json!({"workspaceId":"resource:outside", "path":"target.txt", "content":"changed"})
+                }
+                _ => json!({"workspaceId":"resource:outside", "command":"pwd"}),
+            };
+            let (mut kernel, mut request, _) = kernel_with_request(resources.clone(), tool, input);
+            kernel.output_root = resources.0.join("outputs");
+            request.workspace_bindings.push("resource:outside".into());
+            let effect = kernel.prepare_tool(&request).unwrap();
+            assert!(effect.workspace_policy.is_none());
+            assert!(effect.file_authority_required);
+            assert!(matches!(
+                kernel.admit(&request, &effect).unwrap(),
+                Admission::ApprovalRequired
+            ));
+            let target = resources.0.join("outside/target.txt");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+            assert!(!effect
+                .file_access
+                .read
+                .iter()
+                .any(|root| covers(root, &target)));
+            if tool == "fs.write" {
+                assert_eq!(effect.file_requests.write, vec![target]);
+            }
+        }
+    }
+
+    #[test]
+    fn referenced_subdirectory_uses_its_project_read_scope_and_plan() {
+        let resources = resources();
+        let (mut kernel, mut read, _) = kernel_with_request(
+            resources.clone(),
+            "fs.read",
+            json!({"workspaceId":"resource:subdir", "path":"target.txt"}),
+        );
+        kernel.output_root = resources.0.join("outputs");
+        read.workspace_bindings.push("resource:subdir".into());
+        let effect = kernel.prepare_tool(&read).unwrap();
+        assert!(!effect.file_authority_required);
+        assert!(matches!(
+            kernel.admit(&read, &effect).unwrap(),
+            Admission::Allowed(_)
+        ));
+
+        for (plan_workspace, target, directory) in [
+            ("workspace:test", "src/target.txt", false),
+            ("resource:subdir", "target.txt", false),
+            ("resource:subdir", "nested", true),
+        ] {
+            let path = if directory {
+                "nested/target.txt"
+            } else {
+                "target.txt"
+            };
+            let (mut kernel, mut request, _) = kernel_with_request(
+                resources.clone(),
+                "fs.write",
+                json!({"workspaceId":"resource:subdir", "path":path, "content":"changed"}),
+            );
+            kernel.output_root = resources.0.join("outputs");
+            request.workspace_bindings.push("resource:subdir".into());
+            let effect = kernel.prepare_tool(&request).unwrap();
+            assert!(
+                matches!(kernel.admit(&request, &effect).unwrap(), Admission::Denied { error, .. } if error["code"] == "plan_scope_required")
+            );
+            let mut authority = json!({"authorityId":"authority:plan", "planId":"plan:reference", "revision":1,
+                "decisionId":"decision:plan", "sessionId":request.session_id, "runId":request.run_id,
+                "workspaceId":plan_workspace, "coveredOperations":[{"workspaceId":plan_workspace, "operation":"fs.write", "target":target}]});
+            if directory {
+                authority["coveredOperations"][0]["targetKind"] = json!("directoryTree");
+            }
+            kernel.journal.append(&json!({"type":"plan.published", "sessionId":request.session_id,"runId":request.run_id,"callId":"call:plan",
+                "payload":{"providerCallId":"provider:plan", "planId":"plan:reference", "revision":1, "title":"Edit supplied target", "summary":"Edit one project file", "steps":[{"stepId":"write", "title":"Write", "details":"Edit target.txt"}], "mutationManifest":authority["coveredOperations"]}})).unwrap();
+            kernel.journal.append(&json!({"type":"plan.confirmed", "sessionId":request.session_id,"runId":request.run_id,"callId":"call:plan",
+                "payload":{"planId":"plan:reference", "revision":1, "commandId":"command:plan", "decisionId":"decision:plan", "authorities":[authority]}})).unwrap();
+            request.plan_authorities = vec![authority];
+            assert!(
+                matches!(kernel.admit(&request, &effect).unwrap(), Admission::Allowed(authority) if authority["workspaceId"] == "workspace:test")
+            );
+            request.input = json!({"workspaceId":"workspace:test", "path":format!("src/{path}"), "content":"changed"});
+            let primary = kernel.prepare_tool(&request).unwrap();
+            assert!(matches!(
+                kernel.admit(&request, &primary).unwrap(),
+                Admission::Allowed(_)
+            ));
+            request.input["path"] = json!("src/unplanned.txt");
+            let unplanned = kernel.prepare_tool(&request).unwrap();
+            assert!(
+                matches!(kernel.admit(&request, &unplanned).unwrap(), Admission::Denied { error, .. } if error["code"] == "plan_scope_required")
+            );
+            assert_eq!(
+                std::fs::read_to_string(resources.0.join("project/src/target.txt")).unwrap(),
+                "original"
+            );
+        }
     }
 }

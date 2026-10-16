@@ -540,11 +540,15 @@ pub(crate) fn resolve_provider_images(
                     .conversation_catalog
                     .workspace(&image.workspace_id)
                     .ok_or("图片附件目录不存在。")?;
-                if workspace.owner_session_id.as_deref() != Some(session_id)
-                    || workspace.session_workdir
+                if workspace
+                    .owner_session_id
+                    .as_deref()
+                    .is_some_and(|owner| owner != session_id)
                 {
-                    return Err("图片必须来自当前会话的输入快照。".into());
+                    return Err("图片引用不属于当前会话。".into());
                 }
+                // Exact images explicitly supplied by the user are model inputs.
+                // This does not grant tools access to the source file or its parent.
                 workspace.canonical_root.clone()
             };
             let path = crate::host_inspection::resolve_workspace_read_path(
@@ -663,25 +667,18 @@ pub(crate) async fn conversation_filesystem_references_resolve(
             return ApiResponse::error("conversation_session_not_found", "对话不存在。");
         }
         let mut workspaces = Vec::new();
-        let attachment_store_root = gui.paths.attachment_store_root.clone();
-        let mut created_snapshot_roots = Vec::new();
         let references = match resolve_filesystem_references(
             &gui.conversation_catalog,
             &mut workspaces,
-            &attachment_store_root,
-            &session_id,
             &body.references,
             &crate::now_text(),
-            &mut created_snapshot_roots,
         ) {
             Ok(value) => value,
             Err((code, message)) => {
-                cleanup_created_snapshot_roots(&created_snapshot_roots);
                 return ApiResponse::error(code, message);
             }
         };
         if let Err(error) = persist_catalog_rows(&mut gui, workspaces, None, None) {
-            cleanup_created_snapshot_roots(&created_snapshot_roots);
             return ApiResponse::error("conversation_catalog_write_failed", error);
         }
         references
@@ -2056,11 +2053,8 @@ fn canonical_roots(paths: &[String]) -> Result<Vec<String>, String> {
 fn resolve_filesystem_references(
     catalog: &ConversationCatalog,
     workspaces: &mut Vec<ConversationWorkspaceRecord>,
-    attachment_store_root: &FsPath,
-    session_id: &str,
     inputs: &[FilesystemReferencePathInput],
     now: &str,
-    created_snapshot_roots: &mut Vec<PathBuf>,
 ) -> Result<Vec<Value>, (&'static str, String)> {
     let mut references = Vec::with_capacity(inputs.len());
     let mut seen_sources = HashSet::new();
@@ -2164,62 +2158,29 @@ fn resolve_filesystem_references(
                         format!("{}: {}", error.code, error.message),
                     )
                 })?;
-                let workspace_id = random_id("workspace").map_err(|error| {
+                // Catalog roots locate objects. Only the Session's project bindings
+                // grant the Kernel a default workspace scope.
+                let parent = source.parent().ok_or((
+                    "conversation_filesystem_reference_invalid",
+                    "文件引用缺少父目录。".to_string(),
+                ))?;
+                let workspace_ids = prepare_roots(
+                    catalog,
+                    workspaces,
+                    vec![parent.to_string_lossy().to_string()],
+                    now,
+                )
+                .map_err(|error| {
                     (
                         "conversation_filesystem_reference_identity_failed",
                         format!("{}: {}", error.code, error.message),
                     )
                 })?;
-                let snapshot_root = session_attachment_root(attachment_store_root, session_id)
-                    .join(reference_storage_segment(&reference_id));
-                if snapshot_root.exists() {
-                    return Err((
-                        "conversation_filesystem_reference_identity_conflict",
-                        "文件引用的 Host 存储身份冲突。".to_string(),
-                    ));
-                }
-                fs::create_dir_all(&snapshot_root).map_err(|error| {
-                    (
-                        "conversation_filesystem_reference_import_failed",
-                        format!("创建文件引用存储目录失败：{error}"),
-                    )
-                })?;
-                created_snapshot_roots.push(snapshot_root.clone());
-                let destination = snapshot_root.join(&file_name);
-                let copied = fs::copy(&source, &destination).map_err(|error| {
-                    (
-                        "conversation_filesystem_reference_import_failed",
-                        format!("导入文件引用失败：{error}"),
-                    )
-                })?;
-                if copied != metadata.len() {
-                    return Err((
-                        "conversation_filesystem_reference_import_failed",
-                        "导入文件引用时复制字节数不一致。".to_string(),
-                    ));
-                }
-                let canonical_snapshot_root = fs::canonicalize(&snapshot_root)
-                    .map_err(|error| {
-                        (
-                            "conversation_filesystem_reference_import_failed",
-                            format!("解析文件引用存储目录失败：{error}"),
-                        )
-                    })?
-                    .to_string_lossy()
-                    .to_string();
                 let display_name = bounded_display_name(&file_name);
                 let media_type = filesystem_reference_media_type(&source);
-                workspaces.push(ConversationWorkspaceRecord {
-                    workspace_id: workspace_id.clone(),
-                    display_name: display_name.clone(),
-                    canonical_root: canonical_snapshot_root,
-                    owner_session_id: Some(session_id.to_string()),
-                    session_workdir: false,
-                    created_at: now.to_string(),
-                });
                 references.push(json!({
                     "referenceId": reference_id,
-                    "workspaceId": workspace_id,
+                    "workspaceId": workspace_ids[0],
                     "logicalPath": file_name,
                     "displayName": display_name,
                     "kind": "file",
@@ -2433,8 +2394,7 @@ fn validate_message_filesystem_references(
             "conversation_filesystem_reference_not_found",
             "文件系统引用不在 Host workspace catalog 中。".to_string(),
         ))?;
-        if workspace.display_name != display_name
-            || !reference_ids.insert(reference_id)
+        if !reference_ids.insert(reference_id)
             || !targets.insert(format!("{workspace_id}\0{logical_path}"))
         {
             return Err((
@@ -2447,6 +2407,7 @@ fn validate_message_filesystem_references(
             "directory" => {
                 if object.len() != 5
                     || logical_path != "."
+                    || workspace.display_name != display_name
                     || workspace.owner_session_id.is_some()
                     || !target.is_dir()
                 {
@@ -2472,22 +2433,35 @@ fn validate_message_filesystem_references(
                 let metadata = target.metadata().map_err(|error| {
                     (
                         "conversation_filesystem_reference_unavailable",
-                        format!("读取 Host 文件快照失败：{error}"),
+                        format!("读取文件引用元数据失败：{error}"),
                     )
                 })?;
                 let pasted = reference.get("source").is_some();
                 if (pasted && reference["source"] != "pastedText")
                     || object.len() != if pasted { 8 } else { 7 }
                     || logical_path == "."
-                    || workspace.owner_session_id.as_deref() != Some(session_id)
-                    || workspace.session_workdir
+                    || workspace
+                        .owner_session_id
+                        .as_deref()
+                        .is_some_and(|owner| owner != session_id)
+                    || (pasted
+                        && (workspace.owner_session_id.as_deref() != Some(session_id)
+                            || workspace.session_workdir))
                     || !metadata.is_file()
-                    || metadata.len() != byte_length
+                    || (pasted && metadata.len() != byte_length)
+                    || (pasted && workspace.display_name != display_name)
+                    || (!pasted
+                        && target
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(bounded_display_name)
+                            .as_deref()
+                            != Some(display_name))
                     || filesystem_reference_media_type(&target) != media_type
                 {
                     return Err((
                         "conversation_filesystem_reference_mismatch",
-                        "文件引用与 Host 导入快照不一致。".to_string(),
+                        "文件引用与 Host 登记对象不一致。".to_string(),
                     ));
                 }
             }
@@ -3043,9 +3017,8 @@ mod tests {
     }
 
     #[test]
-    fn file_reference_is_imported_as_session_owned_snapshot() {
+    fn file_reference_retains_original_target_and_catalog_identity() {
         let source_tree = TemporaryTree::new("deepcode-reference-source");
-        let attachment_tree = TemporaryTree::new("deepcode-reference-store");
         let source = source_tree.0.join("fixture.pdf");
         std::fs::write(&source, b"%PDF fixture bytes").expect("write source fixture");
         let mut catalog = catalog_fixture();
@@ -3053,19 +3026,9 @@ mod tests {
             path: source.to_string_lossy().to_string(),
             kind: "file".to_string(),
         }];
-        let mut created_snapshot_roots = Vec::new();
-
         let mut workspaces = Vec::new();
-        let references = resolve_filesystem_references(
-            &catalog,
-            &mut workspaces,
-            &attachment_tree.0,
-            "session:test",
-            &inputs,
-            "now",
-            &mut created_snapshot_roots,
-        )
-        .expect("import file reference");
+        let references = resolve_filesystem_references(&catalog, &mut workspaces, &inputs, "now")
+            .expect("resolve original file reference");
         assert_eq!(references.len(), 1);
         let reference = &references[0];
         assert_eq!(reference["kind"], "file");
@@ -3078,28 +3041,33 @@ mod tests {
         let workspace = workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == workspace_id)
-            .expect("snapshot workspace");
-        assert_eq!(workspace.owner_session_id.as_deref(), Some("session:test"));
-        let imported = PathBuf::from(&workspace.canonical_root).join("fixture.pdf");
+            .expect("resource address root");
+        assert_eq!(workspace.owner_session_id, None);
+        let referenced = PathBuf::from(&workspace.canonical_root).join("fixture.pdf");
+        assert_eq!(referenced, source.canonicalize().unwrap());
         assert_eq!(
-            std::fs::read(&imported).expect("read imported snapshot"),
+            std::fs::read(&referenced).expect("read original target"),
             b"%PDF fixture bytes"
         );
 
         std::fs::write(&source, b"changed source").expect("mutate source fixture");
         assert_eq!(
-            std::fs::read(&imported).expect("read stable snapshot"),
-            b"%PDF fixture bytes"
+            std::fs::read(&referenced).expect("read changed original"),
+            b"changed source"
         );
         catalog.workspaces.extend(workspaces);
         assert!(validate_message_filesystem_references(
             &catalog,
             "session:test",
-            &json!({ "filesystemReferences": references }),
+            &json!({ "filesystemReferences": references.clone() }),
         )
         .is_ok());
-        assert_eq!(created_snapshot_roots.len(), 1);
-        assert!(created_snapshot_roots[0].starts_with(&attachment_tree.0));
+        let mut additions = Vec::new();
+        let again =
+            resolve_filesystem_references(&catalog, &mut additions, &inputs, "later").unwrap();
+        assert!(additions.is_empty());
+        assert_eq!(again[0]["workspaceId"], references[0]["workspaceId"]);
+        assert_ne!(again[0]["referenceId"], references[0]["referenceId"]);
     }
 
     #[test]

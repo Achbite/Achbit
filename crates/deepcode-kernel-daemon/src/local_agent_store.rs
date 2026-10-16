@@ -691,7 +691,7 @@ impl LocalAgentJournal {
             .collect())
     }
 
-    /// Resource identities frozen in one Provider request, checked against admitted file inputs.
+    /// Address handles frozen in one Provider request; only run.started grants project scope.
     pub(crate) fn provider_workspace_binding_ids(
         &self,
         session_id: &str,
@@ -718,15 +718,19 @@ impl LocalAgentJournal {
             })?;
         let mut statement = connection
             .prepare(
-                "SELECT payload_json FROM session_events WHERE session_id=?1 AND run_id=?2
-             AND event_type='message.committed' AND sequence<?3
-             AND json_extract(payload_json, '$.role')='user' ORDER BY sequence",
+                "SELECT input.payload_json FROM session_events input
+             WHERE input.session_id=?1 AND input.event_type='message.committed'
+             AND input.sequence<?2 AND json_extract(input.payload_json, '$.role')='user'
+             AND NOT EXISTS (SELECT 1 FROM session_events revision
+               WHERE revision.session_id=input.session_id AND revision.event_type='conversation.revised'
+               AND revision.sequence<?2
+               AND input.sequence BETWEEN json_extract(revision.payload_json, '$.fromSequence')
+                 AND json_extract(revision.payload_json, '$.throughSequence'))
+             ORDER BY input.sequence",
             )
             .map_err(sql_error("session_input_resources_read_failed"))?;
         let inputs = statement
-            .query_map(params![session_id, run_id, sequence], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_map(params![session_id, sequence], |row| row.get::<_, String>(0))
             .map_err(sql_error("session_input_resources_read_failed"))?;
         for input in inputs {
             let input = decode_json(
@@ -734,10 +738,7 @@ impl LocalAgentJournal {
                 "session_input_resources_invalid",
             )?;
             if let Some(references) = input["filesystemReferences"].as_array() {
-                for reference in references
-                    .iter()
-                    .filter(|reference| reference["kind"] == "file")
-                {
+                for reference in references {
                     let id = required_string(reference, "workspaceId")?.to_string();
                     if !expected.contains(&id) {
                         expected.push(id);
@@ -756,7 +757,7 @@ impl LocalAgentJournal {
         if actual != expected {
             return Err(LocalAgentStoreError::new(
                 "session_request_workspace_mismatch",
-                "请求资源视图与项目目录及已接纳的文件快照不一致。",
+                "请求资源视图与项目目录及已接纳的资源引用不一致。",
             ));
         }
         Ok(actual)
@@ -2083,10 +2084,12 @@ fn validate_new_event(
                 ],
                 &["source"],
             )?;
-            if payload
-                .get("source")
-                .is_some_and(|source| !matches!(source.as_str(), Some("user" | "agent" | "parent")))
-            {
+            if payload.get("source").is_some_and(|source| {
+                !matches!(
+                    source.as_str(),
+                    Some("user" | "agent" | "parent" | "sessionWorkdir")
+                )
+            }) {
                 return Err(LocalAgentStoreError::new(
                     "plan_source_invalid",
                     "Plan 确认来源无效。",
@@ -3379,6 +3382,12 @@ fn validate_plan_authorities(
             )
         })?;
     let mut workspace_ids = std::collections::HashSet::with_capacity(authorities.len());
+    if payload["source"] == "sessionWorkdir" && !authorities.is_empty() {
+        return Err(LocalAgentStoreError::new(
+            "workdir_plan_authority_invalid",
+            "SessionWorkdir 准入使用既有目录权限，不能生成 Plan authority。",
+        ));
+    }
     for authority in authorities {
         exact_object(
             authority,
@@ -5972,7 +5981,7 @@ mod tests {
     }
 
     #[test]
-    fn request_resource_views_include_only_consumed_files_and_keep_old_views() {
+    fn request_resource_views_include_consumed_files_and_directories_and_keep_old_views() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
             .create_session("session:loop", "Resources", &json!([]), None, None)
@@ -5987,8 +5996,10 @@ mod tests {
             .clone();
         let reference = json!({"referenceId":"reference:image", "workspaceId":"workspace:image", "logicalPath":"screen.png",
             "displayName":"screen.png", "kind":"file", "mediaType":"image/png", "byteLength":8});
+        let directory = json!({"referenceId":"reference:directory", "workspaceId":"workspace:directory", "logicalPath":".",
+            "displayName":"Reference directory", "kind":"directory"});
         journal.append(&json!({"type":"input.queued", "sessionId":"session:loop", "runId":"run:loop",
-            "payload":{"commandId":"command:image", "messageId":"message:image", "text":"", "filesystemReferences":[reference]}})).unwrap();
+            "payload":{"commandId":"command:image", "messageId":"message:image", "text":"", "filesystemReferences":[reference, directory]}})).unwrap();
         assert_eq!(
             journal
                 .provider_workspace_binding_ids("session:loop", "run:loop", "provider-request:loop")
@@ -5999,9 +6010,9 @@ mod tests {
             .has_workspace_binding_view("session:loop", "run:loop", &["workspace:image".into()])
             .unwrap());
         journal.append(&json!({"type":"message.committed", "sessionId":"session:loop", "runId":"run:loop",
-            "payload":{"messageId":"message:image", "role":"user", "content":"", "filesystemReferences":[reference]}})).unwrap();
+            "payload":{"messageId":"message:image", "role":"user", "content":"", "filesystemReferences":[reference, directory]}})).unwrap();
         receipt["providerRequestId"] = json!("provider-request:image");
-        receipt["workspaceBindings"] = json!([{"itemId":"workspace:image","label":"screen.png"}]);
+        receipt["workspaceBindings"] = json!([{"itemId":"workspace:image","label":"screen.png"}, {"itemId":"workspace:directory","label":"Reference directory"}]);
         journal.append(&json!({"type":"context.composed", "sessionId":"session:loop", "runId":"run:loop", "payload":receipt})).unwrap();
         assert_eq!(
             journal
@@ -6011,10 +6022,14 @@ mod tests {
                     "provider-request:image"
                 )
                 .unwrap(),
-            vec!["workspace:image"]
+            vec!["workspace:image", "workspace:directory"]
         );
         assert!(journal
-            .has_workspace_binding_view("session:loop", "run:loop", &["workspace:image".into()])
+            .has_workspace_binding_view(
+                "session:loop",
+                "run:loop",
+                &["workspace:image".into(), "workspace:directory".into()]
+            )
             .unwrap());
         assert!(journal
             .has_workspace_binding_view("session:loop", "run:loop", &[])
