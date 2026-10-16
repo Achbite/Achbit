@@ -298,7 +298,8 @@ async fn ready_page(app: tauri::AppHandle, preview_id: String) -> Result<Page, S
     .map_err(|error| error.to_string())?
 }
 
-async fn activate(app: tauri::AppHandle, mut page: Page) -> Result<Value, String> {
+async fn activate(app: tauri::AppHandle, page: Page) -> Result<Value, String> {
+    let mut page = ready_page(app.clone(), page.preview_id).await?;
     let activation_id = PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     {
         let state = app.state::<NativeBrowser>();
@@ -315,8 +316,9 @@ async fn activate(app: tauri::AppHandle, mut page: Page) -> Result<Value, String
     }
     app.emit_to("main", "deepcode:browser-activate", &page)
         .map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<NativeBrowser>();
+    let app_for_wait = app.clone();
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_wait.state::<NativeBrowser>();
         let pages = state
             .pages
             .lock()
@@ -347,11 +349,27 @@ async fn activate(app: tauri::AppHandle, mut page: Page) -> Result<Value, String
                 page.session_id.as_deref().unwrap_or("")
             ));
         }
-        serde_json::to_value(page).map_err(|error| error.to_string())
+        Ok::<_, String>(page.clone())
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    let result = serde_json::to_value(&page).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        let view = app
+            .get_webview(&page.preview_id)
+            .ok_or("native_browser_page_closed")?;
+        let readiness = accessibility_macos::prepare(view, &page.url).await?;
+        let mut result = result;
+        result["readiness"] = readiness;
+        return Ok(result);
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(result)
 }
+
+#[cfg(target_os = "macos")]
+mod accessibility_macos;
 
 fn page_url(input: &Value) -> Result<tauri::Url, String> {
     if let Some(path) = input.get("filePath").and_then(Value::as_str) {

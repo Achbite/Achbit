@@ -33,6 +33,7 @@ pub(crate) struct Rect {
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXUIElementCreateApplication(pid: i32) -> Ref;
+    fn AXUIElementGetTypeID() -> usize;
     fn AXUIElementCopyAttributeValue(element: Ref, name: Ref, result: *mut Ref) -> i32;
     fn AXUIElementSetAttributeValue(element: Ref, name: Ref, value: Ref) -> i32;
     fn AXUIElementPerformAction(element: Ref, action: Ref) -> i32;
@@ -58,6 +59,7 @@ extern "C" {
     fn CFRetain(value: Ref) -> Ref;
     fn CFEqual(left: Ref, right: Ref) -> bool;
     fn CFGetTypeID(value: Ref) -> usize;
+    fn CFCopyTypeIDDescription(kind: usize) -> Ref;
     fn CFStringGetTypeID() -> usize;
     fn CFBooleanGetTypeID() -> usize;
     fn CFBooleanGetValue(value: Ref) -> bool;
@@ -208,7 +210,7 @@ unsafe fn text_value(value: Ref) -> Result<String, String> {
         .unwrap_or(bytes.len());
     String::from_utf8(bytes[..end].to_vec()).map_err(|error| error.to_string())
 }
-unsafe fn scalar_attribute(element: Ref, key: &str) -> Result<Option<Value>, String> {
+unsafe fn value_attribute(element: Ref, key: &str) -> Result<Option<Value>, String> {
     let Some(value) = attribute(element, key)? else {
         return Ok(None);
     };
@@ -229,7 +231,27 @@ unsafe fn scalar_attribute(element: Ref, key: &str) -> Result<Option<Value>, Str
         }
         return Err("AX numeric conversion failed".into());
     }
-    Err(format!("AXValue has unsupported scalar type {}", kind))
+    if kind == AXUIElementGetTypeID() {
+        // A selected control (for example a tab group) can be an AXValue.
+        // Preserve the reference's description without traversing its children
+        // or inventing an actionable id outside this observation's handle list.
+        let mut item = json!({"type":"AXUIElement"});
+        for (key, name) in [
+            ("AXRole", "role"),
+            ("AXTitle", "title"),
+            ("AXDescription", "description"),
+        ] {
+            if let Some(text) = text_attribute(value.0, key)? {
+                item[name] = json!(text);
+            }
+        }
+        return Ok(Some(item));
+    }
+    let description = Owned::new(CFCopyTypeIDDescription(kind))?;
+    Err(format!(
+        "{key} has unsupported type {} (CFTypeID {kind})",
+        text_value(description.0)?
+    ))
 }
 unsafe fn frontmost(root: Ref) -> Result<bool, String> {
     let value = attribute(root, "AXFrontmost")?
@@ -311,7 +333,7 @@ impl ObservedWindow {
         if window_bounds(self.element.0)? != self.bounds {
             return Err("Observed window moved or resized; observe again before acting".into());
         }
-        if scalar_attribute(self.element.0, "AXMinimized")? == Some(json!(true)) {
+        if value_attribute(self.element.0, "AXMinimized")? == Some(json!(true)) {
             return Err("Observed window is minimized; observe again before acting".into());
         }
         Ok(())
@@ -405,9 +427,6 @@ unsafe fn tree_item(element: Ref, depth: usize) -> Result<Value, String> {
             }
         }
     }
-    if let Some(value) = scalar_attribute(element, "AXValue")? {
-        item["value"] = value;
-    }
     let mut position = Point { x: 0.0, y: 0.0 };
     let mut size = Size {
         width: 0.0,
@@ -428,6 +447,62 @@ unsafe fn tree_item(element: Ref, depth: usize) -> Result<Value, String> {
     }
     Ok(item)
 }
+
+unsafe fn prepare_value_input(element: Ref, role: &Value) -> Result<(), String> {
+    let name = NSString::from_str("AXValue");
+    let mut settable = false;
+    let error =
+        AXUIElementIsAttributeSettable(element, (&*name as *const NSString).cast(), &mut settable);
+    if error != 0 || !settable {
+        return Err(format!(
+            "The observed control's AXValue is not writable (AX error {error}); setValue was not dispatched"
+        ));
+    }
+    if matches!(
+        role.as_str(),
+        Some("AXTextField" | "AXTextArea" | "AXComboBox")
+    ) && value_attribute(element, "AXFocused")? != Some(json!(true))
+    {
+        // WebKit edits through its current editor selection. Focus the exact
+        // retained control before setting its value; never inject global keys.
+        set_true(element, "AXFocused")?;
+        let started = Instant::now();
+        while value_attribute(element, "AXFocused")? != Some(json!(true)) {
+            if started.elapsed() >= Duration::from_secs(2) {
+                return Err("The observed text control did not acquire AX focus; setValue was not dispatched".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    Ok(())
+}
+
+fn verify_value_input(
+    gui: &crate::runtime::MainThread,
+    pid: i32,
+    index: usize,
+    expected: &str,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    loop {
+        let actual = with_observed_window(gui, pid, move |_, window| unsafe {
+            let element = window
+                .elements
+                .get(index)
+                .ok_or("Observed control was released")?;
+            value_attribute(element.0, "AXValue")?
+                .ok_or_else(|| "Observed control has no AXValue".into())
+        })?;
+        let matched = actual.as_str() == Some(expected);
+        if matched || started.elapsed() >= Duration::from_secs(2) {
+            return Ok(json!({"expected":expected,"actual":actual,"matched":matched}));
+        }
+        // AX setters may queue work in the target process. Poll the same
+        // retained element, with a deadline, without dispatching another write.
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 unsafe fn tree(root: Ref) -> (Vec<Value>, Value, Vec<Owned>) {
     // Arrays own their children while on the stack. No fixed element/depth cap.
     let mut stack: Vec<(Owned, isize, usize)> = vec![];
@@ -444,6 +519,13 @@ unsafe fn tree(root: Ref) -> (Vec<Value>, Value, Vec<Owned>) {
         match tree_item(element, depth) {
             Ok(mut item) => {
                 item["elementId"] = json!(format!("element:{}", handles.len()));
+                match value_attribute(element, "AXValue") {
+                    Ok(Some(value)) => item["value"] = value,
+                    Ok(None) => {}
+                    Err(message) => errors.push(json!({"depth":depth,
+                        "elementId":item["elementId"],"role":item["role"],
+                        "attribute":"AXValue","message":message})),
+                }
                 let retained = match Owned::new(CFRetain(element)) {
                     Ok(retained) => retained,
                     Err(message) => {
@@ -956,7 +1038,7 @@ pub fn execute(
         }
         let arguments = input.clone();
         let saved_for_input = saved.clone();
-        with_observed_window(gui, pid, move |root, window| {
+        let value_target = with_observed_window(gui, pid, move |root, window| {
             crate::sharing::validate(
                 &saved_for_input.binding,
                 saved_for_input.window_id,
@@ -994,6 +1076,7 @@ pub fn execute(
                     let action = NSString::from_str("AXPress");
                     AXUIElementPerformAction(element.0, (&*action as *const NSString).cast())
                 } else {
+                    prepare_value_input(element.0, &item["role"])?;
                     let name = NSString::from_str("AXValue");
                     let value =
                         NSString::from_str(arguments["text"].as_str().ok_or("Missing text")?);
@@ -1006,18 +1089,39 @@ pub fn execute(
                 if error != 0 {
                     return Err(format!("AX operation returned error {error}; effect is not confirmed. Observe before deciding any further action; no HID fallback was attempted."));
                 }
-                Ok(())
+                Ok((arguments["action"] == "computer:setValue").then_some(index))
             } else {
                 if !window.focused(root)? {
                     return Err("Observed window lost focus before input; observe again".into());
                 }
-                dispatch_input(&arguments, &saved_for_input)
+                dispatch_input(&arguments, &saved_for_input).map(|()| None)
             }
         })?;
         // A short bounded delay lets the application process dispatched input. A
         // screenshot remains an observation, not a claim that backend work settled.
         std::thread::sleep(Duration::from_millis(200));
         let mut result = json!({"app":bundle,"action":action,"dispatched":true});
+        if let Some(index) = value_target {
+            match verify_value_input(
+                gui,
+                pid,
+                index,
+                input["text"].as_str().ok_or("Missing text")?,
+            ) {
+                Ok(verification) => {
+                    if verification["matched"] != true {
+                        result["actionError"] = json!({"message":format!(
+                            "AX setValue was dispatched, but the observed value did not match: expected {}, observed {}. Inspect the returned observation before deciding any further action.",
+                            verification["expected"], verification["actual"])});
+                    }
+                    result["valueVerification"] = verification;
+                }
+                Err(message) => {
+                    result["actionError"] = json!({"message":format!(
+                    "AX setValue was dispatched, but its value could not be verified: {message}. Inspect before deciding any further action.")})
+                }
+            }
+        }
         let mut next = input.clone();
         next["windowId"] = json!(saved.window_id);
         next["mode"] = json!(if saved.foreground {
@@ -1028,8 +1132,10 @@ pub fn execute(
         match observe(gui, &next, bundle, pid, binding) {
             Ok((fresh, mut output)) => {
                 *observation = Some(fresh);
-                output["action"] = json!(action);
-                output["dispatched"] = json!(true);
+                output
+                    .as_object_mut()
+                    .ok_or("Invalid observation output")?
+                    .extend(result.as_object().ok_or("Invalid action output")?.clone());
                 Ok(output)
             }
             Err(message) => {
@@ -1093,7 +1199,7 @@ fn activate_shared_target(
     with_accessibility(gui, pid, move |root| unsafe {
         crate::sharing::validate(&binding, window, generation)?;
         let (element, _, _) = select_window(root, Some(window), pid)?;
-        if scalar_attribute(element.0, "AXMinimized")? == Some(json!(true)) {
+        if value_attribute(element.0, "AXMinimized")? == Some(json!(true)) {
             return Err("The shared window is minimized".into());
         }
         activate_window(pid, element.0)?;
