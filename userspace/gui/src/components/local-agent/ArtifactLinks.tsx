@@ -34,7 +34,9 @@ export function ArtifactLinks({ artifacts, onOpen }: { artifacts: readonly Artif
   </div>;
 }
 
-function ArtifactImageLink({ artifact, label, title }: { artifact: ArtifactProjection; label: string; title: string }) {
+export function ArtifactImageLink({ artifact, label, title, className = 'deepcode-gui-output-item document-artifacts__item' }: {
+  artifact: ArtifactProjection; label: string; title: string; className?: string;
+}) {
   const language = useUiLanguage();
   const host=useConversationHost();
   const [url,setUrl]=React.useState('');
@@ -49,7 +51,7 @@ function ArtifactImageLink({ artifact, label, title }: { artifact: ArtifactProje
   },[artifact.sessionId,artifact.artifactId,host]);
   const failed = () => setError(t(language, 'content.image.decodeError'));
   return <ImageReview source={error ? undefined : url || undefined} alt={label}
-    className="deepcode-gui-output-item document-artifacts__item" title={error ?? title} onError={failed}>
+    className={className} title={error ?? title} onError={failed}>
     <span className="document-artifacts__thumbnail">{error ? <span role="alert" title={error}>!</span>
       : url ? <img className="document-artifact-image" src={url} alt="" onError={failed} />
       : <span aria-label={t(language, 'reader.imageLoading')}><DeepCodeShellIcon name="artifact" /></span>}</span>

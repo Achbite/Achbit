@@ -288,6 +288,7 @@ export function ConversationTranscript({
       ) : (
         <ToolActivityGroup
           activities={item.values}
+          artifacts={projection?.artifacts}
           pendingApproval={projection?.pendingApproval}
           reviewingApproval={projection?.pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running'}
           key={item.groupId}
@@ -397,14 +398,17 @@ export function ConversationTranscript({
         const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
         const rows = round.rows.map((row) => ({
           key: row.key,
-          required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value),
+          process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
+          required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
+            || row.item?.type === 'interaction' && row.item.value.status === 'pending',
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
           content: () => row.item ? renderItem(row.item) : renderDraft(row.draft!),
         }));
-        if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, required: false, live: true, content: () => providerStatus });
-        if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
+        if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
+        if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
         const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
-        return <ConversationRoundView key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows} rows={rows}>
+        return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
+          displaySettled={displaySettled} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
           {changeActivities.some(activity => activity.tool?.fileChanges?.length) && <FileChanges activities={changeActivities} />}
         </ConversationRoundView>;
       })}
@@ -422,14 +426,32 @@ function samePlanReference(
   return reference?.planId === plan.planId && reference.revision === plan.revision;
 }
 
-function ConversationRoundView({ roundKey, virtualizer, eagerRows, rows, children }: {
-  roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
-  rows: Array<{ key: string; required: boolean; live: boolean; content(): React.ReactNode }>;
+function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, onToggleProcess, rows, children }: {
+  language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
+  displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
+  rows: Array<{ key: string; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
+  const state = virtualizer.layout(`${roundKey}:disclosure`).state;
+  const [disclosure, updateDisclosure] = useState(() => (state.get('process') as { displaySettled: boolean; open: boolean } | undefined) ?? { displaySettled, open: false });
+  const setDisclosure = (value: typeof disclosure) => { state.set('process', value); updateDisclosure(value); };
+  // Wait for the existing display acknowledgement; never collapse while final text is still arriving.
+  if (disclosure.displaySettled !== displaySettled) setDisclosure({ displaySettled, open: false });
+  const expanded = !displaySettled || disclosure.open;
+  const firstProcess = rows.find(row => row.process)?.key;
   return <section className="conversation-round">
-    {rows.map(row => <ConversationVirtualRow key={row.key} rowKey={row.key} virtualizer={virtualizer}
-      eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>)}
+    {rows.map(row => <React.Fragment key={row.key}>
+      {displaySettled && row.key === firstProcess && <button className="conversation-process-toggle" type="button"
+        data-conversation-anchor={`${roundKey}:disclosure`} aria-expanded={expanded} onClick={(event) => {
+        onToggleProcess(event.currentTarget);
+        setDisclosure({ displaySettled, open: !expanded });
+      }}>
+        <DeepCodeShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
+        <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
+      </button>}
+      <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} hidden={row.process && !expanded && !row.required}
+        eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
+    </React.Fragment>)}
     {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} virtualizer={virtualizer}>
       {() => children}
     </ConversationVirtualRow>}

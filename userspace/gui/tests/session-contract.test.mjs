@@ -2629,6 +2629,51 @@ test('conversation batches layout corrections and samples reader movement before
   assert.equal(frames.size, 0);
 });
 
+test('process disclosure keeps its clicked location through expansion and collapse', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
+  const previousWindow = globalThis.window;
+  const frames = new Map(); let sequence = 0;
+  globalThis.window = { requestAnimationFrame(fn) { frames.set(++sequence, fn); return sequence; }, cancelAnimationFrame(id) { frames.delete(id); } };
+  t.after(() => { globalThis.window = previousWindow; });
+  const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn()); };
+  let viewport;
+  function Probe() {
+    viewport = useConversationViewport({ sessionId: 'disclosure', projection: { sessionId: 'disclosure' }, loading: false,
+      presentationLayoutKey: '', assistantDraftLayoutKey: '', timelineExtentKey: '' });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  let processHeight = 0, disclosureTop = 600;
+  const body = { scrollTop: 500, scrollHeight: 2000, clientHeight: 500,
+    getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [toggle, answer] };
+  const toggle = { dataset: { conversationAnchor: 'round:disclosure' }, hidden: false,
+    getBoundingClientRect: () => ({ top: disclosureTop - body.scrollTop, bottom: disclosureTop + 30 - body.scrollTop }) };
+  const answer = { dataset: { conversationAnchor: 'answer' }, hidden: false,
+    getBoundingClientRect: () => ({ top: 650 + processHeight - body.scrollTop, bottom: 2000 + processHeight - body.scrollTop }) };
+  viewport.bodyRef.current = body;
+  viewport.anchorDisclosure(toggle);
+  processHeight = 900; body.scrollHeight += 900;
+  viewport.preserveReadingPosition(); flush();
+  assert.equal(body.scrollTop, 500, 'expanding puts the process below its button rather than preserving the final answer');
+  disclosureTop += 40; body.scrollHeight += 40;
+  viewport.preserveReadingPosition(); flush();
+  assert.equal(toggle.getBoundingClientRect().top, 100, 'late layout measurements retain the clicked anchor');
+  viewport.anchorDisclosure(toggle);
+  body.scrollHeight -= processHeight; processHeight = 0;
+  viewport.preserveReadingPosition(); flush();
+  assert.equal(toggle.getBoundingClientRect().top, 100, 'collapsing keeps the same control visible');
+  viewport.anchorDisclosure(toggle);
+  processHeight = 800; body.scrollHeight += 800;
+  viewport.preserveReadingPosition(); flush();
+  body.scrollTop += 180;
+  viewport.bodyHandlers.onScroll({ target: body, currentTarget: body });
+  processHeight += 50; body.scrollHeight += 50;
+  viewport.preserveReadingPosition(); flush();
+  assert.equal(body.scrollTop, 770, 'after scrolling, the new reading anchor replaces the disclosure');
+});
+
 test('conversation reading intent survives native scroll deliveries and layout growth', async (t) => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');

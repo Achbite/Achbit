@@ -49,12 +49,23 @@ test('preview keeps an unchanged target frame but never carries it across target
   assert.equal(acceptPreview(active, { state: 'active', target, pointer: { x: 0.4, y: 0.2, pulse: false, sharing: { state: 'stopped' } } }).pointer, undefined);
 });
 
-test('browser preview identity includes its Host, Session and exact previewId', async t => {
+test('browser preview preserves target identity and removes a closed page until a new target appears', async t => {
   const { acceptPreview } = await loadGuiModule(t, '/src/services/computerPreview.ts');
   const page = { hostInstanceId: 'host:1', windowLabel: 'main', sessionId: 'session:1', previewId: 'page:1', url: 'https://example.test' };
   const active = { state: 'active', target: page, frame };
   assert.equal(acceptPreview(active, { state: 'active', target: { ...page, sessionId: 'session:2' } }).frame, undefined);
-  assert.equal(acceptPreview(active, { state: 'closed', reason: 'native_browser_page_closed' }).frame, undefined);
+  const closed = acceptPreview(active, { state: 'closed', reason: 'native_browser_page_closed' });
+  assert.equal(closed, null, 'closing the page removes the preview, including its placeholder and reason');
+  const pending = acceptPreview(closed, { pending: true });
+  assert.deepEqual(pending, { state: 'starting' }, 'waiting for another target cannot revive the closed page');
+  const nextPage = { ...page, previewId: 'page:2', url: 'https://example.test/next' };
+  const next = acceptPreview(pending, { state: 'active', target: nextPage });
+  assert.deepEqual(next.target, nextPage);
+  assert.equal(next.frame, undefined, 'a new page cannot reuse the old screenshot');
+  const nextFrame = { ...frame, sequence: 5, dataUrl: 'data:image/jpeg;base64,AQ==' };
+  assert.equal(acceptPreview(next, { state: 'active', target: nextPage, frame: nextFrame }).frame, nextFrame);
+  assert.equal(acceptPreview(next, { state: 'failed', reason: 'capture failed' }).reason, 'capture failed',
+    'actual preview failures remain visible');
 });
 
 test('preview sits below right-rail cards and follows the bounded conversation when Reader resizes', async t => {

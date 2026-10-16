@@ -150,6 +150,7 @@
 }
 
 .local-agent__body {
+  container: conversation / inline-size;
   height: 100%;
   min-height: 0;
   overflow: auto;
@@ -701,12 +702,20 @@
 
 .local-agent__tool-group-items {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
   padding: 4px 0 4px 24px;
 }
 
+.local-agent__tool-group-items--individual {
+  padding-left: 0;
+}
+
 .local-agent__tool-entry {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 2px;
 }
 
@@ -782,6 +791,8 @@
 .local-agent__approval-record-body { padding: 8px 5px 4px; }
 .local-agent__approval-record-body p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .local-agent__approval-record-status { color: var(--dc-faint); }
+.local-agent__approval-review-reason { margin: 8px 0; color: var(--dc-muted); }
+.local-agent__approval-review-reason p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .local-agent__tool-entry-details {
   display: grid;
@@ -1548,7 +1559,7 @@
 }
 
 /* Engagement can end after a send while keyboard focus remains in the editor. */
-.local-agent__composer[data-press-feedback]:hover:has(> textarea:focus)::before {
+.local-agent__composer[data-press-feedback]:has(> textarea:focus)::before {
   background: var(--dc-surface-raised);
   transform: translateY(-3px) scale(1.012, 1.025);
 }
@@ -2072,6 +2083,7 @@
 }
 
 .local-agent--workbench .local-agent__composer {
+  width: 100%;
   border-radius: 18px;
 }
 

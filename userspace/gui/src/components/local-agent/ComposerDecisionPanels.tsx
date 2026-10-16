@@ -8,6 +8,7 @@ import type { AgentComposer } from './useAgentComposer';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { planOperationDetail } from './planReview';
 import { ApprovalOperationDetails } from './ApprovalOperationDetails';
+import { ApprovalReviewReason } from './ApprovalReviewReason';
 import { InteractionOptions } from './InteractionOptions';
 import type { LocalAgentState } from '../../state/localAgentStore';
 
@@ -176,7 +177,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
           {!sessionBrowser && <pre className="local-agent__decision-command">
             <code>{pendingApproval.preview.summary}</code>
           </pre>}
-          {pendingApproval.preview.review && <p>{pendingApproval.preview.review.reason}</p>}
+          {pendingApproval.preview.review && <ApprovalReviewReason review={pendingApproval.preview.review} language={language} />}
           <ApprovalOperationDetails preview={pendingApproval.preview} language={language} />
           <div className="local-agent__decision-controls">
           {(sessionBrowser || runCommand) ? (

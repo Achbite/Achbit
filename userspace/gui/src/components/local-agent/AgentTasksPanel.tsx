@@ -163,7 +163,7 @@ export function AgentConversationHistory({ projection, name, language, expanded 
   </div>;
 }
 
-function ChildDecisions({ child, projection, language }: {
+export function ChildDecisions({ child, projection, language }: {
   child: ReturnType<typeof useAgentChildConversation>; projection: SessionProjection; language: UiLanguage;
 }) {
   const [revisionText, setRevisionText] = useState('');

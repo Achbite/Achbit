@@ -95,14 +95,16 @@ export function ConversationComposer({
   const pickerId = useId();
   const commandMenuId = useId();
   const [pressFeedback, setPressFeedback] = useState<'a' | 'b' | null>(null);
+  const editedDraft = useRef<string | null>(null);
   // Alternating names restarts the surface pulse, including rapid repeat clicks.
   const playPressFeedback = () => setPressFeedback(current => current === 'a' ? 'b' : 'a');
   const draftEmpty = !draft && !pendingFilesystemPaths.length
     && !composer.pastedTexts.length && !pluginSelections.length;
   useLayoutEffect(() => {
-    // Submission clears this draft but may intentionally keep keyboard focus.
-    if (draftEmpty) setPressFeedback(null);
-  }, [draftEmpty]);
+    // Sending clears the draft; deleting the last character is still editing.
+    if (draftEmpty && editedDraft.current !== draft) setPressFeedback(null);
+    editedDraft.current = null;
+  }, [draftEmpty, draft]);
   const commandMenuRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     commandMenuRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
@@ -191,7 +193,6 @@ export function ConversationComposer({
       <div
         className={`local-agent__composer local-agent__composer--${inputMode}`}
         data-press-feedback={pressFeedback ?? undefined}
-        onMouseLeave={() => setPressFeedback(null)}
         onMouseDown={(event) => {
           const textarea = textareaRef.current;
           if (event.button !== 0 || !textarea || textarea.disabled) return;
@@ -373,11 +374,16 @@ export function ConversationComposer({
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'
             : pendingInteraction ? 'agent.composer.placeholder.interaction' : 'agent.composer.placeholder.task')}
           disabled={Boolean(pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}
-          onChange={(event) => updateDraft(
-            event.target.value,
-            event.target.selectionStart ?? event.target.value.length,
-          )}
-          onFocus={(event) => recordComposerElementState(event.currentTarget, true)}
+          onChange={(event) => {
+            // Typing after a send re-engages the surface even when focus was retained.
+            editedDraft.current = event.target.value;
+            setPressFeedback(current => current ?? 'a');
+            updateDraft(event.target.value, event.target.selectionStart ?? event.target.value.length);
+          }}
+          onFocus={(event) => {
+            setPressFeedback(current => current ?? 'a');
+            recordComposerElementState(event.currentTarget, true);
+          }}
           onBlur={(event) => {
             setPressFeedback(null);
             recordComposerElementState(event.currentTarget, false);

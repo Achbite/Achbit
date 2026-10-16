@@ -1,6 +1,6 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import React, { useEffect, useState } from 'react';
-import type { ActivityProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@deepcode/protocol';
+import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
@@ -8,6 +8,7 @@ import { ApprovalActivity } from './ApprovalActivity';
 import { AgentGroupSummary } from './agentNavigation';
 import { FileChanges } from './FileChanges';
 import { useConversationRowState } from './ConversationVirtualRow';
+import { ComputerActivity, computerActivitySummary } from './ComputerActivity';
 
 function shellWriteScopeLabel(language: UiLanguage, writeScope: string): string {
   const key = `agent.tool.shell.writeScope.${writeScope}`;
@@ -16,6 +17,7 @@ function shellWriteScopeLabel(language: UiLanguage, writeScope: string): string 
 }
 
 interface ToolActivityGroupProps {
+  artifacts?: readonly ArtifactProjection[];
   pendingApproval?: SessionProjection['pendingApproval'];
   reviewingApproval?: boolean;
   activities: ActivityProjection[];
@@ -74,22 +76,25 @@ export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> =
 };
 
 export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
+  artifacts = [],
   activities, pendingApproval, reviewingApproval = false,
   language,
   onExpand,
   onOpenWorkspaceResource,
 }) => {
-  const [expanded, setExpanded] = useConversationRowState('tool-group:expanded', false);
+  const [expansion, setExpanded] = useConversationRowState('tool-group:expanded', false);
   const tools = activities.filter(activity => !activity.agent);
+  const individual = tools.some(activity => Boolean(activity.tool?.computer));
+  const expanded = individual || expansion;
   return (
     <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><article className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
+      <div className="local-agent__tool-group-heading">{tools.length > 0 && !individual && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
         onClick={() => {
           if (!expanded) onExpand();
-          setExpanded((current) => !current);
+          setExpanded(!expanded);
         }}
       >
         <span className="local-agent__tool-group-icon">
@@ -105,12 +110,13 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
         </span>
       </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
       {expanded && tools.length > 0 && (
-        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
+        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className={`local-agent__tool-group-items${individual ? ' local-agent__tool-group-items--individual' : ''}`}>
           {tools.map((activity) => (
             activity.kind === 'approval' ? <ApprovalActivity key={activity.activityId} activity={activity} language={language}
               pending={pendingApproval?.callId === activity.callId} reviewing={reviewingApproval} onExpand={onExpand} />
               : <ToolActivityEntry
               activity={activity}
+              artifacts={artifacts}
               key={activity.activityId}
               language={language}
               onExpand={onExpand}
@@ -189,6 +195,7 @@ const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, statu
 
 interface ToolActivityEntryProps {
   activity: ActivityProjection;
+  artifacts: readonly ArtifactProjection[];
   language: UiLanguage;
   onExpand(): void;
   onOpenWorkspaceResource(workspaceId: string, logicalPath: string): void;
@@ -196,6 +203,7 @@ interface ToolActivityEntryProps {
 
 const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   activity,
+  artifacts,
   language,
   onExpand,
   onOpenWorkspaceResource,
@@ -209,6 +217,8 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const output = activity.liveOutput ?? process?.output;
   const resources = tool?.resources.filter((resource) => !(resource.kind === 'workspacePath'
     && tool.fileChanges?.some((change) => change.workspaceId === resource.workspaceId && change.path === resource.logicalPath))) ?? [];
+  if (tool?.computer) return <ComputerActivity activity={activity} computer={tool.computer} artifacts={artifacts}
+    language={language} statusLabel={toolActivityStatus(activity.status, language)} onExpand={onExpand} />;
   if (activity.providerHosted) {
     return (
       <ProviderHostedEntry
@@ -426,6 +436,7 @@ export function toolGroupSummary(
 }
 
 export function toolActivitySummary(activity: ActivityProjection, language: UiLanguage): string {
+  if (activity.tool?.computer) return computerActivitySummary(activity.tool.computer, language);
   if (activity.kind === 'providerHosted' && activity.providerHosted) {
     return providerHostedSummary(activity.providerHosted, activity.status, language);
   }

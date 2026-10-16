@@ -936,8 +936,7 @@ function isEffectPreview(value: unknown): boolean {
     && (value.fileAccess === undefined || (isRecord(value.fileAccess) && isArrayOf(value.fileAccess.read, isNonEmptyText) && isArrayOf(value.fileAccess.write, isNonEmptyText)))
     && (value.authorizationScopes === undefined || isArrayOf(value.authorizationScopes, scope => isShellAuthorizationScope(scope)))
     && (value.approvalReviewer === undefined || ['user', 'agent'].includes(String(value.approvalReviewer)))
-    && (value.review === undefined || isExactRecord(value.review, ['decision', 'reason'])
-      && ['allow', 'deny', 'ask'].includes(String(value.review.decision)) && isNonEmptyText(value.review.reason))
+    && (value.review === undefined || isApprovalReview(value.review))
     && isNonEmptyText(value.summary)
     && Array.isArray(value.effects)
     && value.effects.every((effect) => effects.includes(String(effect)))
@@ -985,7 +984,7 @@ function isPendingPlan(value: unknown): boolean {
 }
 
 function isPlanProjectionFields(value: Record<string, unknown>): boolean {
-  if (value.confirmationSource !== undefined && !['user', 'agent', 'parent'].includes(String(value.confirmationSource))) return false;
+  if (value.confirmationSource !== undefined && !['user', 'agent', 'parent', 'sessionWorkdir'].includes(String(value.confirmationSource))) return false;
   if (
     !isIdentifier(value.planId)
     || !isPositiveNaturalNumber(value.revision)
@@ -1363,11 +1362,16 @@ function isModelSettings(value: unknown): boolean {
     && (value.reasoningEffortOverride === null || isReasoningEffort(value.reasoningEffortOverride));
 }
 
+function isApprovalReview(value: unknown): boolean {
+  return isExactRecord(value, ['decision', 'reason'])
+    && ['allow', 'deny', 'ask'].includes(String(value.decision)) && isNonEmptyText(value.reason);
+}
+
 function isActivity(value: unknown): boolean {
   return isExactRecord(
     value,
     ['activityId', 'kind', 'status', 'label', 'runId', 'sequence'],
-    ['callId', 'tool', 'providerHosted', 'inputRejection', 'interruption', 'notExecuted', 'startedAt', 'liveOutput', 'agent'],
+    ['callId', 'tool', 'approvalReview', 'providerHosted', 'inputRejection', 'interruption', 'notExecuted', 'startedAt', 'liveOutput', 'agent'],
   )
     && isIdentifier(value.activityId)
     && ['run', 'tool', 'providerHosted', 'approval', 'plan', 'interaction', 'agent']
@@ -1383,6 +1387,7 @@ function isActivity(value: unknown): boolean {
     && (value.liveOutput === undefined || value.kind === 'tool' && value.status === 'active'
       && value.startedAt !== undefined && isLiveToolOutput(value.liveOutput))
     && (value.tool === undefined || isToolActivity(value.tool, String(value.status)))
+    && (value.approvalReview === undefined || value.kind === 'approval' && isApprovalReview(value.approvalReview))
     && (value.providerHosted === undefined || isProviderHostedActivity(value.providerHosted))
     && (value.kind === 'tool'
       ? value.notExecuted !== undefined ? isNotExecuted(value.notExecuted) && value.tool === undefined
@@ -1432,7 +1437,7 @@ function isProviderHostedActivity(value: unknown): boolean {
 }
 
 function isToolActivity(value: unknown, activityStatus: string): boolean {
-  return isExactRecord(value, ['operation', 'resources'], ['shell', 'process', 'fileChanges', 'recordId', 'error', 'projectionError'])
+  return isExactRecord(value, ['operation', 'resources'], ['shell', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
     && (value.error === undefined || isLocalAgentError(value.error))
     && (value.projectionError === undefined || isLocalAgentError(value.projectionError))
     && (value.recordId === undefined || isIdentifier(value.recordId))
@@ -1444,9 +1449,25 @@ function isToolActivity(value: unknown, activityStatus: string): boolean {
       && [change.before, change.after].every((side) => isRecord(side) && typeof side.exists === 'boolean'
         && (!side.exists || typeof side.contentRef === 'string' || typeof side.error === 'string'))))
     && (value.process === undefined || isProcessActivity(value.process))
+    && (value.computer === undefined || isComputerActivity(value.computer))
     && (value.process !== undefined ? value.shell === undefined : (value.operation === 'bash' || value.operation === 'powershell')
       ? value.shell === undefined && value.projectionError !== undefined || isShellActivity(value.shell, activityStatus)
       : value.shell === undefined);
+}
+
+function isComputerActivity(value: unknown): boolean {
+  return isExactRecord(value, ['action', 'input'], ['app', 'window', 'page', 'dispatched', 'observation', 'inputObservation', 'result'])
+    && typeof value.action === 'string' && isRecord(value.input)
+    && (value.app === undefined || typeof value.app === 'string')
+    && ['window', 'page', 'result'].every(key => value[key] === undefined || isRecord(value[key]))
+    && (value.dispatched === undefined || typeof value.dispatched === 'boolean')
+    && (value.observation === undefined || isExactRecord(value.observation, ['artifactIds'], ['observationId', 'interface'])
+      && isArrayOf(value.observation.artifactIds, isIdentifier)
+      && (value.observation.observationId === undefined || isIdentifier(value.observation.observationId))
+      && (value.observation.interface === undefined || isRecord(value.observation.interface)))
+    && (value.inputObservation === undefined || isExactRecord(value.inputObservation, ['observationId', 'artifactIds'], ['element'])
+      && isIdentifier(value.inputObservation.observationId) && isArrayOf(value.inputObservation.artifactIds, isIdentifier)
+      && (value.inputObservation.element === undefined || isRecord(value.inputObservation.element)));
 }
 
 function isShellActivity(value: unknown, activityStatus: string): boolean {

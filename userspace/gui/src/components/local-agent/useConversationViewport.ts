@@ -97,6 +97,21 @@ export function useConversationViewport({
     }
   }, [applyLatestFollowMode, capturePosition]);
 
+  const anchorDisclosure = useCallback((node: HTMLElement) => {
+    const body = bodyRef.current;
+    const id = activeViewRef.current;
+    const key = node.dataset.conversationAnchor;
+    if (!body || !id || !key) return;
+    applyLatestFollowMode(false);
+    observedScrollTopRef.current = body.scrollTop;
+    // The clicked disclosure owns this layout change, not the answer below it.
+    // Retain the anchor through virtual-row measurements until the reader moves.
+    sessionViewportsRef.current.set(id, {
+      mode: 'detached', scrollTop: body.scrollTop,
+      anchor: { key, offset: node.getBoundingClientRect().top - body.getBoundingClientRect().top },
+    });
+  }, [applyLatestFollowMode]);
+
   // Only a reader action can leave follow mode. Layout can clamp scrollTop more
   // than once before an observer runs (composer replacement, then text growth).
   // Once detached, consume native movement before restoring the reading anchor,
@@ -286,7 +301,7 @@ export function useConversationViewport({
   };
 
   return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, showJumpToLatest: !followingLatest && hasContentBelow,
-    setLatestFollowMode, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
+    setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
 }
 
 export type ConversationViewport = ReturnType<typeof useConversationViewport>;
