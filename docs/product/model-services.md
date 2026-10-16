@@ -1,6 +1,6 @@
 # Connections, models and usage
 
-Settings → Models and services groups **API connections** and **Coding Plans**. A connection owns its endpoint and credential reference; model profiles point to it and retain independent model and context settings. Connection details open directly into configuration. Saving one model leaves the others intact. The model last used for a submitted task remains the default for new conversations. Reasoning effort is chosen in the conversation selector and remembered per model; new conversations inherit that choice. A running request keeps its captured connection/model configuration.
+Settings → Models & services groups **API connections** and **Coding Plans**. A connection owns its endpoint and credential reference; model profiles point to it and retain independent model and context settings. Connection details open directly into configuration. Saving one model leaves the others intact. The model last used for a submitted task remains the default for new conversations. Reasoning effort is chosen in the conversation selector and remembered per model; new conversations inherit that choice. A running request keeps its captured connection/model configuration.
 
 The execution approval model has separate provider/model and reasoning selections. Leaving the model blank uses the conversation model; leaving reasoning blank uses that model's captured effort. The review runs with independent, compact context and the selected model's configured output budget. Saved changes apply to the next run. It reviews execution access, not Plan confirmations or user questions. Chrome review receives matching recorded page and element facts from structured snapshots, including all UIDs referenced by the prepared operation. These facts supplement the existing review context; they neither authorize the action nor guarantee an allow decision. The standard effort choices are low, medium, high, xhigh and max; provider-specific choices follow the adapter's supported settings.
 
@@ -16,7 +16,9 @@ Quota is a timestamped response from the provider, not an estimate from local to
 
 ## DeepSeek
 
-The built-in **DeepSeek V4.1 Flash** preset uses the API model name `deepseek-flash`. Get an API key from the [DeepSeek Platform](https://platform.deepseek.com/) and open **Settings → Models and services → API connections**. Open the existing DeepSeek connection, or choose **Add API connection**, select **DeepSeek**, enter your key, and save the connection. Open its model or choose **Add model**, then save these settings:
+For installation, configuration, a first task, and continued conversation, use the complete [English](deepseek.md) or [简体中文](deepseek.zh-CN.md) guide.
+
+The built-in **DeepSeek V4.1 Flash** preset uses the API model name `deepseek-flash`. Get an API key from the [DeepSeek Platform](https://platform.deepseek.com/) and open **Settings → Models & services → API connections**. Open the existing DeepSeek connection, or choose **Add connection → API connection**, select **DeepSeek**, enter your key, and save the connection. Open its model or choose **Add model**, then save these settings:
 
 | Setting | Value |
 | --- | --- |
@@ -43,7 +45,7 @@ deepcode-cli --model <profile-id> chat -C /path/to/project
 
 `<profile-id>` is the saved DeepCode configuration ID, not the API model name. Portable packages use the platform's CLI launcher instead of the installed `deepcode-cli` command; see [installation](../distribution.md). In TUI, use `/model` to select the saved model, or `/model <profile-id>` to select it directly.
 
-DeepSeek's [Responses API](https://api-docs.deepseek.com/guides/responses_api/) currently ignores the built-in `web_search` tool. Set **Web search** to **Off** in this model's settings; web-search tools have their own availability and configuration. See the [official pricing page](https://api-docs.deepseek.com/quick_start/pricing/) for current API charges.
+For `deepseek-flash`, DeepSeek's [Responses API](https://api-docs.deepseek.com/guides/responses_api/) ignores the built-in `web_search` tool. Set **Web search** to **Off** in this Flash model's settings. The API documents server-side web search for `deepseek-v4-pro`; this Flash guide does not establish DeepCode support for that separate model path. Other web-search tools have their own availability and configuration. See the [official pricing page](https://api-docs.deepseek.com/quick_start/pricing/) for current API charges.
 
 ## Web search citations
 
