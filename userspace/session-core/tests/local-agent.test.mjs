@@ -250,6 +250,41 @@ test('editing a settled message replaces active history while retaining journal 
   assert.equal(second.tokenUsage.inputTokens, 500);
 });
 
+for (const control of ['session', 'plugin_activate']) test(`editing settled controls removes their run-owned call facts (${control})`, async t => {
+  const sessionId = `session:edit-control-${control}`, journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const preparation = fakeRunPreparation({ contextWindowTokens: 16000, tools: [{
+    toolBindingRef: 'binding:plugin-search', name: 'plugin.search', description: 'Discover plugins.',
+    inputSchema: { type: 'object', properties: {} }, possibleEffects: ['localRead'], availability: 'callable', origin: 'coreBuiltin',
+  }] });
+  const requests = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) yield providerEvent(request.requestId, 'tool.call', {
+      callId: 'provider:edited-control', name: control,
+      input: control === 'session' ? { action: 'describe' } : { pluginUris: ['plugin://notes@local'] },
+    });
+    else yield providerEvent(request.requestId, 'text.delta', { text: requests.length === 2 ? 'Original answer.' : 'Revised answer.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), preparation.port, `edit-control-${control}`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:original', 'Original request.'));
+  const original = await waitForProjection(actor, value => value.run?.status === 'completed');
+  const saved = await readEvents(journal, sessionId);
+  assert.equal(saved.filter(event => event.type === (control === 'session' ? 'session.control.completed' : 'session.plugins.activated')).length, 1);
+  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+    commandId: 'command:edit-control', messageId: original.messages[0].messageId,
+    expectedRevision: original.revision, text: 'Revised request.' });
+  assert.equal(reply.status, 'accepted');
+  const edited = await waitForProjection(actor, value => value.run?.status === 'completed' && value.run.runId !== original.run.runId);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(edited.messages.map(message => message.content), ['Revised request.', 'Revised answer.']);
+  assert.equal(requests[2].messages.some(message => message.role === 'tool' || message.toolCalls?.length), false);
+  const events = await readEvents(journal, sessionId);
+  assert.deepEqual(events.slice(0, saved.length), saved, 'editing retains the original journal facts');
+  assert.deepEqual(projectSession(loopSnapshot(sessionId, events).state), edited);
+});
+
 test('editing conversation history preserves member lineage without replaying superseded results', async (t) => {
   const sessionId = 'session:member-edit', journal = new InMemoryCommandJournal();
   await createSession(journal, sessionId);

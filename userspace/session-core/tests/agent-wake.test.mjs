@@ -896,6 +896,45 @@ test('a permitted peer wakes a dormant instance without changing lineage or its 
   assert.deepEqual(south.agentChildren ?? [], [], 'the task sender does not acquire archival ownership');
 });
 
+test('nested spawn input errors return correction results before a valid child task starts', async t => {
+  const ownerId = 'session:spawn-input-correction';
+  const invalid = [
+    { fields: { loop: { controls: { id: '' } } }, message: 'agent_contribution_invalid' },
+    { fields: { runner: { id: '' } }, message: 'agent_contribution_invalid' },
+    { fields: { permissions: { 'agent.permissions.shell': 'invalid' } }, message: 'permission_setting_invalid:agent.permissions.shell' },
+  ];
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
+    if (sessionId !== ownerId) yield answer(request, 'Child correction completed.');
+    else if (turn <= invalid.length + 1) {
+      assert.deepEqual((await service.snapshot(ownerId)).agentTasks ?? [], [], 'invalid inputs cannot start a child');
+      if (turn > 1) {
+        const rejection = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+        assert.equal(rejection.error.code, 'agent_configuration_invalid');
+        assert.equal(rejection.error.message, invalid[turn - 2].message);
+      }
+      yield call(request, `spawn:correction:${turn}`, 'agent', {
+        action: 'spawn', name: 'Worker', task: 'Complete the corrected task.', delivery: 'wait',
+        ...(invalid[turn - 1]?.fields ?? {}),
+      });
+    } else {
+      assert.equal(turn, invalid.length + 2);
+      assert.ok(textOf(request).includes('Child correction completed.'));
+      yield answer(request, 'Parent correction completed.');
+    }
+    yield done(request);
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:spawn-correction', 'Delegate this task.'));
+  const projection = await completed(fixture.service, ownerId);
+  assert.equal(projection.agentTasks.length, 1);
+  assert.equal(projection.agentTasks[0].status, 'completed');
+  const events = await readEvents(fixture.journal, ownerId);
+  assert.equal(events.filter(event => event.type === 'run.started').length, 1);
+  assert.deepEqual(events.filter(event => event.type === 'session.control.rejected').map(event => event.payload.error.message),
+    invalid.map(item => item.message));
+  assert.equal(events.filter(event => event.type === 'agent.task.created').length, 1);
+  assert.equal(projection.messages.at(-1).content, 'Parent correction completed.');
+});
+
 test('one contribution registry validates, describes and restores supported instance choices', async () => {
   const { SessionConfigurationRegistry, builtinSessionContributions } = await import('../dist/index.js');
   const { agentPresets } = await import('../dist/local-agent/agentConfiguration.js');

@@ -382,6 +382,11 @@ for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents a
   ...['allow', 'deny', 'ask'].map(decision => JSON.stringify({ decision: [decision], reason: 'Malformed decision type.' })),
 ]) test(`unresolved review retains a user decision: ${result}`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:review-uncertain';
+  const appendBatch = journal.appendBatch.bind(journal);
+  journal.appendBatch = async events => {
+    assert.ok(events.length > 0, 'the Session store rejects empty event batches');
+    return await appendBatch(events);
+  };
   await createSession(journal, sessionId, [workspaceBinding]);
   let executions = 0, reviews = 0;
   const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'full' } });

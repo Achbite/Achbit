@@ -354,7 +354,13 @@ export function decodeSessionControlCall(
     return { kind: 'session', callId: canonicalCallId, operation };
   }
   if (name === SESSION_CONTROL_AGENT) {
-    return { kind: 'agent', callId: canonicalCallId, operation: decodeAgentOperation(input) };
+    try {
+      return { kind: 'agent', callId: canonicalCallId, operation: decodeAgentOperation(input) };
+    } catch (error) {
+      if (error instanceof SessionControlError) throw error;
+      // Shared recipe/permission decoders validate model input here, before any Agent execution.
+      throw new SessionControlError('agent_configuration_invalid', error instanceof Error ? error.message : String(error));
+    }
   }
   if (name === SESSION_CONTROL_ARTIFACT_PRESENT) {
     assertExactKeys(input, ['items']);

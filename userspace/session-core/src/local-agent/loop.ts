@@ -420,7 +420,6 @@ export async function runAgentLoop(
           signal,
           capabilities.controls,
         );
-        const providerCallFacts: NewSessionEvent[] = [];
         const completionDerivedFacts: NewSessionEvent[] = [];
         const turnNarratives = [
           ...(turn.narratives ?? []),
@@ -541,7 +540,7 @@ export async function runAgentLoop(
             await commit([
               ...orderedProviderCallFacts(
                 turn.completion,
-                [...providerCallFacts, interactionFact],
+                [interactionFact],
               ),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
@@ -572,7 +571,7 @@ export async function runAgentLoop(
             // Publish the Plan and its admission together. Shells must never
             // observe an automatically accepted Plan as a pending user decision.
             await commit(current => [
-              ...orderedProviderCallFacts(turn.completion, [...providerCallFacts, fact]),
+              ...orderedProviderCallFacts(turn.completion, [fact]),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
               ...(fact.type !== 'plan.published' || !admission ? [] : admission.source !== 'user'
@@ -588,7 +587,7 @@ export async function runAgentLoop(
           case 'answer': {
             const messageId = turn.messageId ?? deps.nextId('message');
             const answerFacts: NewSessionEvent[] = [
-              ...orderedProviderCallFacts(turn.completion, providerCallFacts),
+              ...orderedProviderCallFacts(turn.completion, []),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
               { type: 'message.committed', sessionId: snapshot.state.sessionId, runId,
@@ -632,7 +631,7 @@ export async function runAgentLoop(
           }
           case 'tools': {
             const seenCalls = new Set<string>();
-            const callFacts: NewSessionEvent[] = [...providerCallFacts];
+            const callFacts: NewSessionEvent[] = [];
             // Commit reported progress before executing the accompanying ordinary calls.
             if (turn.progress) {
               callFacts.push(turn.progress.kind === 'todoUpdate'
@@ -681,7 +680,7 @@ export async function runAgentLoop(
             await commit([
               ...orderedProviderCallFacts(
                 turn.completion,
-                [...providerCallFacts, rejectionEvent],
+                [rejectionEvent],
               ),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
@@ -1976,6 +1975,7 @@ function executionRequest(snapshot: LoopSnapshot, requestEvent: ToolRequestEvent
   const runId = requestEvent.runId;
   const runtime = runtimeForToolRequest(snapshot, requestEvent);
   const approval = latestApproval(snapshot.events, runId, requestEvent.callId);
+  const planAuthorities = selectedPlanAuthorities(snapshot.events, runId);
   return {
     schemaVersion: KERNEL_REQUEST_VERSION,
     type: 'tool.execute',
@@ -1990,9 +1990,7 @@ function executionRequest(snapshot: LoopSnapshot, requestEvent: ToolRequestEvent
     toolName: requestEvent.payload.toolName,
     input: requestEvent.payload.input,
     workspaceBindings: contextForToolRequest(snapshot, requestEvent).workspaceBindings.map(binding => binding.itemId),
-    ...(selectedPlanAuthorities(snapshot.events, runId).length
-      ? { planAuthorities: selectedPlanAuthorities(snapshot.events, runId) }
-      : {}),
+    ...(planAuthorities.length ? { planAuthorities } : {}),
     ...(approval.resolved
       ? {
           nonWorkspaceAuthority: {
@@ -2073,14 +2071,16 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
           break;
         }
       }
-      await commit(current => {
-        const events: NewSessionEvent[] = reviewRecorded ? [] : [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
-          callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } }];
-        if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
-          callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
-            authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });
-        return events;
-      });
+      if (!reviewRecorded) {
+        await commit(current => {
+          const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
+            callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } }];
+          if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
+            callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
+              authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });
+          return events;
+        });
+      }
       if (!snapshot.state.pendingApprovals.some(item => item.callId === requestEvent.callId)) return 'retry';
     }
     return 'approval';

@@ -9,7 +9,6 @@ import { failureSnapshotEvent } from './failureSnapshot.js';
 import { errorFact } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
-import { todoUpdateFact } from './todoState.js';
 import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
 import type {
@@ -1367,7 +1366,6 @@ export class SessionActor {
       if (ownRelease.status !== 'fulfilled') throw new Error('run_runtime_release_missing');
       released = ownRelease.value;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       await this.appendLifecycleEvents([{
         type: 'run.runtime.release_failed',
         sessionId: this.sessionId,

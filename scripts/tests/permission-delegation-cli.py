@@ -212,7 +212,7 @@ def check_review_failure(mode, scenario):
             if scenario != 'invalid-decision':
                 require(runtime.get('approvalReviewerError', {}).get('code') == 'approval_reviewer_prepare_failed'
                         and 'approvalReviewer' not in runtime, 'Failed reviewer binding was not preserved')
-            require(state.reviews == (1 if scenario == 'invalid-decision' else 0), 'Unexpected reviewer Provider request')
+            require(state.reviews == (2 if scenario == 'invalid-decision' else 0), 'Unexpected reviewer Provider request')
             require(sum(kind == 'run.runtime.released' for kind, _ in events) == 1, 'Runtime was not released')
             daemon.shutdown()
             print(f'[permission-delegation-cli] PASS: {mode}/{scenario}, real CLI, preserved error, human fallback or ordinary answer, no unauthorized write')
