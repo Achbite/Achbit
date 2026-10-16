@@ -83,16 +83,16 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
       const identity = `${owner}:${targetIdentity(view.target) ?? index}`;
       return <FloatingComputerPreview key={identity} view={view} sessionId={sessionId} runId={runId} language={language}
         readerLayout={readerLayout} concealed={concealed} index={index} overlay={overlay}
-        raised={frontTarget === identity} onRaise={() => setFrontTarget(identity)} stopTask={sources.stopTask} />;
+        raised={frontTarget === identity} onRaise={() => setFrontTarget(identity)} />;
     })}
   </div>;
 }
 
 /** Each exact target owns its position, bounds and activation state. */
-function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise, stopTask }: {
+function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise }: {
   view: ComputerPreview<DesktopPreviewTarget | BrowserPreviewTarget>; sessionId: string | null; runId: string | null; language: UiLanguage;
   readerLayout: ConversationReaderLayout; concealed: boolean; index: number; overlay: RefObject<HTMLDivElement | null>;
-  raised: boolean; onRaise(): void; stopTask: boolean;
+  raised: boolean; onRaise(): void;
 }) {
   const boundary = useRef<HTMLDivElement>(null);
   const manualPosition = useRef<{ left: number; top: number } | null>(null);
@@ -166,33 +166,7 @@ function FloatingComputerPreview({ view, sessionId, runId, language, readerLayou
       onMove={position => { manualPosition.current = position; alignPreview.current?.(); }} />
     {(view.reason || view.frameError) && <p className="computer-target-preview__error" role="status">{view.frameError || view.reason}</p>}
     {activationError && <p className="computer-target-preview__error" role="alert">{activationError}</p>}
-    {stopTask && sessionId && runId && <ComputerPreviewStop sessionId={sessionId} runId={runId} language={language} />}
   </div>;
-}
-
-/** Cancel through the same run lifecycle as the composer, including resource release. */
-export function ComputerPreviewStop({ sessionId, runId, language }: { sessionId: string; runId: string; language: UiLanguage }) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submitting = useRef(false);
-  const mounted = useRef(true);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  async function stop() {
-    const state = useLocalAgentStore.getState();
-    // A stale card must never cancel a different session or a newer run.
-    if (submitting.current || state.sessionId !== sessionId || state.projection?.run?.runId !== runId
-      || !['running', 'waiting'].includes(state.projection.run.status)) return;
-    submitting.current = true; setPending(true); setError(null);
-    try { await state.cancelRun(); }
-    catch (cause) { if (mounted.current) setError(String(cause)); }
-    finally { submitting.current = false; if (mounted.current) setPending(false); }
-  }
-  return <>
-    <button type="button" className="computer-target-preview__stop" disabled={pending} onClick={stop}>
-      {language === 'zh-CN' ? (pending ? '正在停止…' : '停止任务') : (pending ? 'Stopping…' : 'Stop task')}
-    </button>
-    {error && <p className="computer-target-preview__error" role="alert">{error}</p>}
-  </>;
 }
 
 /** The preview image is one control: a drag moves it, a click reveals its exact bound target. */

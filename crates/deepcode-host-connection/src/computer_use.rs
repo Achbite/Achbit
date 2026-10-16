@@ -16,9 +16,130 @@ use std::{
 
 /// Proof that the exact authenticated helper process has exited.
 #[cfg(target_os = "macos")]
-type ProcessExit = OwnedFd;
+struct ProcessExit {
+    queue: OwnedFd,
+    exited: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl ProcessExit {
+    fn wait(&mut self, duration: Duration) -> Result<bool, String> {
+        if self.exited {
+            return Ok(true);
+        }
+        let timeout = libc::timespec {
+            tv_sec: duration.as_secs() as _,
+            tv_nsec: duration.subsec_nanos() as _,
+        };
+        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
+        match unsafe {
+            libc::kevent(
+                self.queue.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                event.as_mut_ptr(),
+                1,
+                &timeout,
+            )
+        } {
+            1 => {
+                let event = unsafe { event.assume_init() };
+                if event.flags & libc::EV_ERROR != 0 || event.fflags & libc::NOTE_EXIT == 0 {
+                    return Err("computer_component_exit_watch_invalid_event".into());
+                }
+                // EV_ONESHOT consumes the event. Retain the proof for later cleanup.
+                self.exited = true;
+                Ok(true)
+            }
+            0 => Ok(false),
+            _ => Err(format!(
+                "computer_component_exit_wait_failed: {}",
+                std::io::Error::last_os_error()
+            )),
+        }
+    }
+}
 #[cfg(windows)]
 type ProcessExit = crate::process::OwnedHostProcess;
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_version_boundary_does_not_lower_the_gui_minimum() {
+        for version in ["12.0", "14.7.3", "15.1.1"] {
+            let error = require_macos_desktop_version(version).unwrap_err();
+            assert!(error.contains("15.2"));
+            assert!(error.contains(version));
+        }
+        for version in ["15.2", "15.2.1", "26.0"] {
+            require_macos_desktop_version(version).unwrap();
+        }
+        assert!(require_macos_desktop_version("unknown").is_err());
+    }
+
+    #[test]
+    fn exit_proof_is_absent_while_alive_and_retained_after_oneshot_delivery() {
+        let mut child = Command::new("/bin/cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut watch = watch_process_exit(child.id() as libc::pid_t).unwrap();
+        assert!(!watch.wait(Duration::ZERO).unwrap());
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert!(watch.wait(Duration::from_secs(5)).unwrap());
+        assert!(
+            watch.wait(Duration::ZERO).unwrap(),
+            "cleanup must not lose a consumed EV_ONESHOT exit event"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn require_macos_desktop_version(version: &str) -> Result<(), String> {
+    let parts = version
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| format!("computer_platform_version_unavailable: {version}"))?;
+    if parts.len() < 2 {
+        return Err(format!("computer_platform_version_unavailable: {version}"));
+    }
+    if (parts[0], parts[1]) < (15, 2) {
+        return Err(format!("computer_platform_unsupported: Desktop capture and control require macOS 15.2 or later (current: {version}). The main application supports macOS 12 or later; chat, file tools and browser tools remain available."));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn check_macos_desktop_version() -> Result<(), String> {
+    // The product version is independent of SYSTEM_VERSION_COMPAT and does not
+    // require launching the helper that the older OS itself cannot load.
+    let mut buffer = [0u8; 128];
+    let mut size = buffer.len();
+    if unsafe {
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Err(format!(
+            "computer_platform_version_unavailable: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let version = std::str::from_utf8(&buffer[..size.min(buffer.len())])
+        .map_err(|error| format!("computer_platform_version_unavailable: {error}"))?
+        .trim_end_matches('\0');
+    require_macos_desktop_version(version)
+}
 
 struct Connection {
     stream: BufReader<TcpStream>,
@@ -72,27 +193,10 @@ impl Connection {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or("computer_component_exit_timeout")?;
-        let timeout = libc::timespec {
-            tv_sec: remaining.as_secs() as _,
-            tv_nsec: remaining.subsec_nanos() as _,
-        };
-        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
-        match unsafe {
-            libc::kevent(
-                self.process_exit.as_raw_fd(),
-                std::ptr::null(),
-                0,
-                event.as_mut_ptr(),
-                1,
-                &timeout,
-            )
-        } {
-            1 => Ok(()),
-            0 => Err("computer_component_exit_timeout".into()),
-            _ => Err(format!(
-                "computer_component_exit_wait_failed: {}",
-                std::io::Error::last_os_error()
-            )),
+        if self.process_exit.wait(remaining)? {
+            Ok(())
+        } else {
+            Err("computer_component_exit_timeout".into())
         }
     }
 
@@ -101,7 +205,7 @@ impl Connection {
     #[cfg(windows)]
     fn wait_for_exit(&mut self, deadline: Instant) -> Result<(), String> {
         while Instant::now() < deadline {
-            if self.exited() {
+            if self.exited()? {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -114,13 +218,22 @@ impl Connection {
     }
 
     #[cfg(windows)]
-    fn exited(&mut self) -> bool {
-        matches!(self.process_exit.child.try_wait(), Ok(Some(_)))
+    fn exited(&mut self) -> Result<bool, String> {
+        self.process_exit
+            .child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(|error| format!("computer_component_exit_wait_failed: {error}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn exited(&mut self) -> Result<bool, String> {
+        self.process_exit.wait(Duration::ZERO)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn watch_process_exit(pid: libc::pid_t) -> Result<OwnedFd, String> {
+fn watch_process_exit(pid: libc::pid_t) -> Result<ProcessExit, String> {
     let descriptor = unsafe { libc::kqueue() };
     if descriptor < 0 {
         return Err(format!(
@@ -154,7 +267,10 @@ fn watch_process_exit(pid: libc::pid_t) -> Result<OwnedFd, String> {
             std::io::Error::last_os_error()
         ));
     }
-    Ok(queue)
+    Ok(ProcessExit {
+        queue,
+        exited: false,
+    })
 }
 
 /// Packaged location relative to the shared Host: a sibling App bundle on macOS, a sibling
@@ -184,6 +300,8 @@ pub struct ComputerUseHost {
 
 impl ComputerUseHost {
     pub fn new(host: String, token: String) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        check_macos_desktop_version()?;
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
         let app =
             match crate::configured_path("DEEPCODE_COMPUTER_APP").map_err(|e| e.to_string())? {
@@ -428,13 +546,12 @@ impl ComputerUseHost {
             // A failed helper whose exact process has exited has no input in flight,
             // so a new process is not a competing executor. The failed call itself is
             // never replayed; its error was already returned.
-            #[cfg(windows)]
-            if slot
-                .as_mut()
-                .is_some_and(|connection| connection.failure.is_some() && connection.exited())
-            {
+            let failed_process_exited = match slot.as_mut() {
+                Some(connection) if connection.failure.is_some() => connection.exited()?,
+                _ => false,
+            };
+            if failed_process_exited {
                 *slot = None;
-                #[cfg(windows)]
                 {
                     *self
                         .preview_endpoint
@@ -553,8 +670,8 @@ impl ComputerUseHost {
                 .map_err(|e| format!("computer_component_response_invalid: {e}"))
         })();
         if let Err(error) = &result {
-            // Keep this failed connection until explicit update or Host shutdown.
-            // A timeout must not launch a second executor while input is in flight.
+            // Keep this failure until the exact helper has exited or is explicitly
+            // stopped. A timeout alone must not launch a second executor.
             connection.failure = Some(error.clone());
             let _ = connection.stream.get_mut().shutdown(Shutdown::Write);
         }

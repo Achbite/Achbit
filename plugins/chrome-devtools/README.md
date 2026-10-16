@@ -1,6 +1,6 @@
-# Chrome page control (macOS)
+# Chrome page control (macOS and Windows)
 
-The packaged macOS runtime includes the official Google Chrome DevTools MCP server, pinned in package.json. Kernel discovers it as `plugin://chrome-devtools@builtin` using the existing MCP activation, permission, tool catalog and run disposal path. Windows integration is separate and is not enabled by this contribution.
+The packaged macOS and Windows runtimes include the official Google Chrome DevTools MCP server, pinned in package.json. Kernel discovers it as `plugin://chrome-devtools@builtin` using the existing MCP activation, permission, tool catalog and run disposal path. Windows uses the bundled node.exe; macOS uses the bundled node executable.
 
 The server uses `--autoConnect` to attach to the running Chrome profile through Chrome's supported remote debugging consent flow (Chrome 144 or later). Enable remote debugging at `chrome://inspect/#remote-debugging`; Chrome presents its own connection approval. An unavailable browser or denied connection remains an execution error, never an implicit switch to desktop input.
 

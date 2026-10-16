@@ -9,6 +9,8 @@ mod protocol;
 mod runtime;
 #[cfg(target_os = "macos")]
 mod sharing;
+#[cfg(any(target_os = "macos", windows, test))]
+mod value_verification;
 #[cfg(windows)]
 mod win;
 #[cfg(target_os = "macos")]

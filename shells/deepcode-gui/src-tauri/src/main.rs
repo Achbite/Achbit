@@ -817,12 +817,6 @@ async fn deepcode_open_external_url(url: String) -> Result<(), String> {
 
 fn resolve_launch_target() -> std::io::Result<LaunchTarget> {
     let host = std::env::var("DEEPCODE_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
-    if !is_loopback_host(&host) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "DeepCode desktop Host requires a loopback target",
-        ));
-    }
     let explicit_port = match std::env::var("DEEPCODE_PORT") {
         Ok(value) => Some(parse_port(&value)?),
         Err(std::env::VarError::NotPresent) => None,
@@ -839,6 +833,13 @@ fn resolve_launch_target() -> std::io::Result<LaunchTarget> {
 }
 
 fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Result<LaunchTarget> {
+    // Validate before OS name resolution: Windows accepts an empty bind host.
+    if !is_loopback_host(&host) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "DeepCode desktop Host requires a loopback target",
+        ));
+    }
     // Hold the selected proxy port until the daemon port has been chosen.
     let (port, _proxy_listener) = match explicit_port {
         Some(port) if port != 0 => (port, None),

@@ -502,7 +502,7 @@ pub(crate) fn available_server_sources(
         .into_iter()
         .map(external_server_source)
         .collect::<Result<Vec<_>, _>>()?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     sources.push(chrome_devtools_source(settings)?);
     let provider_binary = local_agent_first_party_plugins::provider_binary()
         .map_err(|message| McpRuntimeError::new("first_party_provider_unavailable", message))?;
@@ -606,7 +606,7 @@ fn external_server_source(setting: McpServerSetting) -> Result<McpServerSource, 
 
 /// The official MCP runs as an ordinary Kernel-owned tool plugin. Desktop
 /// capture and page debugging retain separate platform and target identities.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn chrome_devtools_source(settings: &Value) -> Result<McpServerSource, McpRuntimeError> {
     let executable = std::env::current_exe()
         .map_err(|e| McpRuntimeError::new("chrome_runtime_unavailable", e.to_string()))?;
@@ -617,8 +617,21 @@ fn chrome_devtools_source(settings: &Value) -> Result<McpServerSource, McpRuntim
         )
     })?)
     .map_err(|e| McpRuntimeError::new("chrome_runtime_unavailable", e.to_string()))?;
+    chrome_devtools_source_at(settings, &root, cfg!(windows))
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
+fn chrome_devtools_source_at(
+    settings: &Value,
+    root: &std::path::Path,
+    windows: bool,
+) -> Result<McpServerSource, McpRuntimeError> {
     let entry = root.join("chrome-devtools/build/src/bin/chrome-devtools-mcp.js");
-    let node = root.join("node/bin/node");
+    let node = root.join(if windows {
+        "node/bin/node.exe"
+    } else {
+        "node/bin/node"
+    });
     let disabled: Vec<String> = serde_json::from_str(
         settings
             .get("plugins.disabled")
@@ -1710,6 +1723,47 @@ const fn enabled_by_default() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chrome_platform_runtime_preserves_paths_and_disabled_settings() {
+        let directory = TestDirectory::new();
+        let root = directory.0.join("DeepCode runtime with spaces");
+        let entry = root.join("chrome-devtools/build/src/bin/chrome-devtools-mcp.js");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, "// runtime fixture").unwrap();
+        for windows in [false, true] {
+            let source = chrome_devtools_source_at(&json!({}), &root, windows).unwrap();
+            assert!(source.setting.enabled);
+            assert!(source.descriptor.error.is_none());
+            assert_eq!(source.descriptor.uri, "plugin://chrome-devtools@builtin");
+            assert_eq!(
+                source.setting.command,
+                root.join(if windows {
+                    "node/bin/node.exe"
+                } else {
+                    "node/bin/node"
+                })
+                .to_string_lossy()
+            );
+            assert_eq!(
+                split_args(&source.setting.args).unwrap()[0],
+                entry.to_string_lossy()
+            );
+            let disabled = chrome_devtools_source_at(
+                &json!({"plugins.disabled":"[\"plugin://chrome-devtools@builtin\"]"}),
+                &root,
+                windows,
+            )
+            .unwrap();
+            assert!(!disabled.setting.enabled);
+        }
+        std::fs::remove_file(entry).unwrap();
+        assert!(chrome_devtools_source_at(&json!({}), &root, true)
+            .unwrap()
+            .descriptor
+            .error
+            .is_some());
+    }
 
     struct TestDirectory(std::path::PathBuf);
 

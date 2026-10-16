@@ -5,6 +5,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('image review handlers open and close the dialog reference and SSR retains the loaded image', async t => {
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'Win32' } });
+  t.after(() => {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    else delete globalThis.navigator;
+  });
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
   const calls = [];
   function Probe() {
@@ -21,6 +27,10 @@ test('image review handlers open and close the dialog reference and SSR retains 
   assert.equal((html.match(/src="blob:loaded-image"/g) ?? []).length, 2);
   assert.match(html, /<dialog[^>]+aria-label="Rendered chart"/);
   assert.doesNotMatch(html, /disabled=/);
+  assert.match(html, /data-frameless="true"/, 'Windows image display remains a clickable viewer without button chrome');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'MacIntel' } });
+  const mac = renderToStaticMarkup(createElement(ImageReview, { source: 'blob:loaded-image', alt: 'Rendered chart' }));
+  assert.doesNotMatch(mac, /data-frameless/, 'macOS keeps its existing image presentation');
 });
 
 test('artifact image card is a single viewer trigger and stays unavailable until its image is loaded', async t => {

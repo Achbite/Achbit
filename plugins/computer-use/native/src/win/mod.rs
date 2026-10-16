@@ -198,22 +198,26 @@ impl Executor {
         let semantic = matches!(action, "press" | "setValue");
         // A background observation promises not to move the user's foreground window.
         let guard = (!saved.foreground).then(desktop::ForegroundGuard::capture);
+        let mut value_target = None;
         if semantic {
             if let Some(point) = uia::element_center(&saved.elements, input) {
                 self.sharing.point(binding, &saved.window, point)?;
             }
             let performed = uia::perform(&saved.elements, input, action);
-            if let Err(error) = performed {
-                return Err(
-                    match guard
-                        .as_ref()
-                        .and_then(|guard| guard.restore(&saved.window))
-                    {
-                        Some(change) => format!("{error} Foreground change: {change}"),
-                        None => error,
-                    },
-                );
-            }
+            value_target = match performed {
+                Ok(target) => target,
+                Err(error) => {
+                    return Err(
+                        match guard
+                            .as_ref()
+                            .and_then(|guard| guard.restore(&saved.window))
+                        {
+                            Some(change) => format!("{error} Foreground change: {change}"),
+                            None => error,
+                        },
+                    )
+                }
+            };
         } else {
             if !saved.foreground {
                 return Err("This input requires an explicit foreground observation; background mode supports press and setValue only".into());
@@ -233,6 +237,13 @@ impl Executor {
         // A short bounded delay lets the application process dispatched input. A
         // screenshot remains an observation, not a claim that backend work settled.
         std::thread::sleep(Duration::from_millis(200));
+        let mut result = json!({"app":app,"action":action,"dispatched":true});
+        if let Some(pattern) = value_target {
+            crate::value_verification::record(
+                &mut result,
+                uia::verify_value(&pattern, input["text"].as_str().ok_or("Missing text")?),
+            );
+        }
         let mut foreground = guard
             .as_ref()
             .and_then(|guard| guard.restore(&saved.window));
@@ -253,16 +264,18 @@ impl Executor {
         match observed {
             Ok((fresh, mut output)) => {
                 self.observation = Some(fresh);
-                output["action"] = json!(action);
-                output["dispatched"] = json!(true);
+                output
+                    .as_object_mut()
+                    .ok_or("Invalid observation output")?
+                    .extend(result.as_object().ok_or("Invalid action output")?.clone());
                 if let Some(change) = foreground {
                     output["foregroundChange"] = change;
                 }
                 Ok(output)
             }
             Err(message) => {
-                let mut output = json!({"app":app,"action":action,"dispatched":true,
-                    "observationError":{"message":message}});
+                let mut output = result;
+                output["observationError"] = json!({"message":message});
                 if let Some(change) = foreground {
                     output["foregroundChange"] = change;
                 }

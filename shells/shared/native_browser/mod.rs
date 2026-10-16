@@ -12,6 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, WebviewUrl};
 #[cfg(windows)]
 mod control_indicator;
+#[cfg(any(windows, test))]
+mod preview_image;
 mod services;
 #[cfg(windows)]
 use control_indicator::{ControlIndicator, ControlState};
@@ -837,6 +839,9 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             return Ok(json!({"page":page,"result":result}));
         }
         "capture" => {
+            let state = app.state::<NativeBrowser>();
+            let _capture_owner = state.previewing.lock().await;
+            page = page_state(&app, id)?;
             page.url = view.url().map_err(|error| error.to_string())?.to_string();
             // A capture belongs to one acknowledged surface geometry.
             let geometry = (page.surface.generation, page.surface.sequence);
@@ -1008,11 +1013,26 @@ async fn control_preview(
     let view = app
         .get_webview(&page.preview_id)
         .ok_or("native_browser_page_closed")?;
+    let geometry = (page.surface.generation, page.surface.sequence);
+    #[cfg(windows)]
+    let frame = match show_offscreen_for_capture(&app, &page.preview_id, &view) {
+        Ok(previous) => {
+            let frame = capture_preview(view.clone()).await;
+            if let Some(previous) = previous {
+                hide_after_offscreen_capture(&app, &page.preview_id, &view, previous, geometry);
+            }
+            frame
+        }
+        Err(error) => Err(error),
+    };
+    #[cfg(not(windows))]
     let frame = capture_preview(view).await;
     let current = page_state(&app, &page.preview_id)?;
     if current.preview_run_id != page.preview_run_id
         || current.preview_sequence != page.preview_sequence
         || current.url != page.url
+        || current.status != "ready"
+        || (current.surface.generation, current.surface.sequence) != geometry
     {
         return Ok(
             json!({"state":"updating","target":target,"reason":"native_browser_target_changed"}),
@@ -1052,9 +1072,28 @@ async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
     )
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
+    use base64::Engine;
+    let capture = capture(view).await?;
+    let (bytes, width, height) =
+        tauri::async_runtime::spawn_blocking(move || preview_image::jpeg(&capture.bytes))
+            .await
+            .map_err(|error| error.to_string())??;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    Ok(
+        json!({"sequence":PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed),"capturedAt":stamp.to_string(),
+        "width":width,"height":height,"dataUrl":format!("data:image/jpeg;base64,{encoded}")}),
+    )
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn capture_preview(_view: tauri::Webview) -> Result<Value, String> {
-    Err("native_browser_preview_requires_macos".into())
+    Err("native_browser_preview_requires_macos_or_windows".into())
 }
 
 #[cfg(target_os = "macos")]
@@ -1194,6 +1233,12 @@ async fn capture(view: tauri::Webview) -> Result<Capture, String> {
         unsafe {
             let mut stat = STATSTG::default();
             stream.Stat(&mut stat, STATFLAG_NONAME)?;
+            if stat.cbSize > 64 * 1024 * 1024 {
+                return Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_OUTOFMEMORY,
+                    "WebView2 capture exceeds 64 MiB",
+                ));
+            }
             stream.Seek(0, STREAM_SEEK_SET, None)?;
             let mut bytes = vec![0u8; stat.cbSize as usize];
             let mut read = 0u32;

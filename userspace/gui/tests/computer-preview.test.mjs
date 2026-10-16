@@ -1,40 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadGuiModule, loadGuiModules } from './gui-projection-contract.mjs';
+import { loadGuiModule } from './gui-projection-contract.mjs';
 
 const target = { windowId: 47, generation: 3, pid: 12, app: 'Editor', title: 'File', width: 800, height: 600 };
 const frame = { sequence: 4, width: 640, height: 480, capturedAt: 'now', dataUrl: 'data:image/jpeg;base64,AA==' };
 
-test('Windows enables desktop preview and task stop while macOS retains its existing sources', async t => {
+test('Windows and macOS enable desktop and browser preview', async t => {
   const { computerPreviewSources } = await loadGuiModule(t, '/src/services/computerPreview.ts');
-  assert.deepEqual(computerPreviewSources('Win32'), { desktop: true, browser: false, stopTask: true });
-  assert.deepEqual(computerPreviewSources('MacIntel'), { desktop: true, browser: true, stopTask: false });
-  assert.deepEqual(computerPreviewSources('Linux x86_64'), { desktop: false, browser: false, stopTask: false });
-});
-
-test('preview stop uses the existing cancelRun and cannot cancel a different or finished run', async t => {
-  const { createElement } = await import('react');
-  const { renderToStaticMarkup } = await import('react-dom/server');
-  const [{ ComputerPreviewStop }, { useLocalAgentStore: store }] = await loadGuiModules(t,
-    ['/src/deepcode-gui/layout/ComputerTargetPreview.tsx', '/src/state/localAgentStore.ts']);
-  let cancel, stop, calls = 0;
-  store.setState({ sessionId: 'session:1', projection: { run: { runId: 'run:1', status: 'running' } },
-    cancelRun: () => { calls++; return new Promise(resolve => { cancel = resolve; }); } });
-  function Probe() {
-    const control = ComputerPreviewStop({ sessionId: 'session:1', runId: 'run:1', language: 'zh-CN' });
-    stop = control.props.children[0].props.onClick;
-    return control;
-  }
-  assert.match(renderToStaticMarkup(createElement(Probe)), /停止任务/);
-  const pending = stop();
-  await stop();
-  assert.equal(calls, 1, 'a pending cancellation is not resubmitted');
-  cancel({ status: 'accepted' }); await pending;
-  for (const [sessionId, runId, status] of [['session:2', 'run:1', 'running'], ['session:1', 'run:2', 'running'], ['session:1', 'run:1', 'completed']]) {
-    store.setState({ sessionId, projection: { run: { runId, status } } });
-    await stop();
-  }
-  assert.equal(calls, 1, 'stale cards cannot stop another task');
+  assert.deepEqual(computerPreviewSources('Win32'), { desktop: true, browser: true });
+  assert.deepEqual(computerPreviewSources('MacIntel'), { desktop: true, browser: true });
+  assert.deepEqual(computerPreviewSources('Linux x86_64'), { desktop: false, browser: false });
 });
 
 test('preview keeps an unchanged target frame but never carries it across target generations or inactive/error states', async t => {

@@ -280,7 +280,7 @@ pub fn perform(
     elements: &[IUIAutomationElement],
     input: &Value,
     action: &str,
-) -> Result<(), String> {
+) -> Result<Option<IUIAutomationValuePattern>, String> {
     let element = element(elements, input)?;
     unsafe {
         if action == "setValue" {
@@ -288,22 +288,23 @@ pub fn perform(
             let pattern = element
                 .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
                 .map_err(|_| "Element does not support the UI Automation Value pattern; setValue was not attempted")?;
-            return pattern.SetValue(&BSTR::from(text)).map_err(unconfirmed);
+            pattern.SetValue(&BSTR::from(text)).map_err(unconfirmed)?;
+            return Ok(Some(pattern));
         }
         if let Ok(pattern) =
             element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
         {
-            return pattern.Invoke().map_err(unconfirmed);
+            return pattern.Invoke().map(|()| None).map_err(unconfirmed);
         }
         if let Ok(pattern) =
             element.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
         {
-            return pattern.Toggle().map_err(unconfirmed);
+            return pattern.Toggle().map(|()| None).map_err(unconfirmed);
         }
         if let Ok(pattern) = element
             .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
         {
-            return pattern.Select().map_err(unconfirmed);
+            return pattern.Select().map(|()| None).map_err(unconfirmed);
         }
         if let Ok(pattern) = element
             .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId)
@@ -314,17 +315,28 @@ pub fn perform(
             } else {
                 pattern.Expand()
             };
-            return result.map_err(unconfirmed);
+            return result.map(|()| None).map_err(unconfirmed);
         }
         if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
             UIA_LegacyIAccessiblePatternId,
         ) {
             if text(pattern.CurrentDefaultAction()).is_some() {
-                return pattern.DoDefaultAction().map_err(unconfirmed);
+                return pattern
+                    .DoDefaultAction()
+                    .map(|()| None)
+                    .map_err(unconfirmed);
             }
         }
     }
     Err("Element exposes no UI Automation press action (Invoke, Toggle, SelectionItem, ExpandCollapse or default action); no mouse or keyboard fallback was attempted.".into())
+}
+
+pub fn verify_value(pattern: &IUIAutomationValuePattern, expected: &str) -> Result<Value, String> {
+    crate::value_verification::verify(expected, || {
+        unsafe { pattern.CurrentValue() }
+            .map(|value| json!(value.to_string()))
+            .map_err(message)
+    })
 }
 
 /// UIA control type IDs are the contiguous range starting at UIA_ButtonControlTypeId.

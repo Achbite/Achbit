@@ -483,24 +483,16 @@ fn verify_value_input(
     index: usize,
     expected: &str,
 ) -> Result<Value, String> {
-    let started = Instant::now();
-    loop {
-        let actual = with_observed_window(gui, pid, move |_, window| unsafe {
+    crate::value_verification::verify(expected, || {
+        with_observed_window(gui, pid, move |_, window| unsafe {
             let element = window
                 .elements
                 .get(index)
                 .ok_or("Observed control was released")?;
             value_attribute(element.0, "AXValue")?
                 .ok_or_else(|| "Observed control has no AXValue".into())
-        })?;
-        let matched = actual.as_str() == Some(expected);
-        if matched || started.elapsed() >= Duration::from_secs(2) {
-            return Ok(json!({"expected":expected,"actual":actual,"matched":matched}));
-        }
-        // AX setters may queue work in the target process. Poll the same
-        // retained element, with a deadline, without dispatching another write.
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        })
+    })
 }
 
 unsafe fn tree(root: Ref) -> (Vec<Value>, Value, Vec<Owned>) {
@@ -1102,25 +1094,15 @@ pub fn execute(
         std::thread::sleep(Duration::from_millis(200));
         let mut result = json!({"app":bundle,"action":action,"dispatched":true});
         if let Some(index) = value_target {
-            match verify_value_input(
-                gui,
-                pid,
-                index,
-                input["text"].as_str().ok_or("Missing text")?,
-            ) {
-                Ok(verification) => {
-                    if verification["matched"] != true {
-                        result["actionError"] = json!({"message":format!(
-                            "AX setValue was dispatched, but the observed value did not match: expected {}, observed {}. Inspect the returned observation before deciding any further action.",
-                            verification["expected"], verification["actual"])});
-                    }
-                    result["valueVerification"] = verification;
-                }
-                Err(message) => {
-                    result["actionError"] = json!({"message":format!(
-                    "AX setValue was dispatched, but its value could not be verified: {message}. Inspect before deciding any further action.")})
-                }
-            }
+            crate::value_verification::record(
+                &mut result,
+                verify_value_input(
+                    gui,
+                    pid,
+                    index,
+                    input["text"].as_str().ok_or("Missing text")?,
+                ),
+            );
         }
         let mut next = input.clone();
         next["windowId"] = json!(saved.window_id);

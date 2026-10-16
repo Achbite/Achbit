@@ -10,8 +10,10 @@ export function ImageReview({ source, alt, children, className = '', imageClassN
 }) {
   const language = useUiLanguage();
   const dialog = useRef<HTMLDialogElement>(null);
+  const frameless = !className && typeof navigator !== 'undefined' && /Win/.test(navigator.platform);
   return <>
     <button type="button" className={className || 'conversation-image-review__open'} disabled={!source}
+      data-frameless={frameless || undefined}
       aria-label={`${t(language, 'content.image.expand')}${alt ? ` · ${alt}` : ''}`} title={title}
       onClick={() => dialog.current?.showModal()}>
       {children ?? <img className={imageClassName} src={source} alt={alt} loading="lazy" onError={onError} />}

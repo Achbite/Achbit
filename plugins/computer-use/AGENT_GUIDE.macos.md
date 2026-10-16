@@ -1,6 +1,6 @@
 ## Desktop control (macOS)
 
-Native screenshots and `computer.control` require macOS. Observation and input require Accessibility and Screen Recording; pure capture needs only Screen Recording. Missing access is reported, not changed by the tool. `status` reports the actual executor permissions.
+Native screenshots and `computer.control` require macOS 15.2 or later. On older supported macOS versions, desktop activation reports this requirement before launching the helper; chat, file tools and browser tools remain available. Observation and input require Accessibility and Screen Recording; pure capture needs only Screen Recording. Missing access is reported, not changed by the tool. `status` reports the actual executor permissions.
 
 Identify the target with `listApps` / `listWindows`. `app` is the exact bundle identifier, such as `com.google.Chrome`, not the display name. For pixels only, `capture` takes exactly one `windowId` or `display=primary` and does not create an actionable observation. For interaction, `observe` requires `app`; an exact `windowId` defaults to background mode. App-only observe uses the focused window in foreground mode. Explicit `mode=foreground` permits focus restoration.
 

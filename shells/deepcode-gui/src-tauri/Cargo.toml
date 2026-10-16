@@ -26,6 +26,8 @@ tauri-plugin-dialog = "2"
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [target.'cfg(windows)'.dependencies]
+base64 = "0.22"
+image = { version = "=0.25.6", default-features = false, features = ["png", "jpeg"] }
 webview2-com = "0.38"
 windows-core = "0.61"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
@@ -45,3 +47,6 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+[dev-dependencies]
+image = { version = "=0.25.6", default-features = false, features = ["png", "jpeg"] }

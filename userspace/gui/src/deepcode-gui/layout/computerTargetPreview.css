@@ -12,7 +12,3 @@
 .computer-target-preview__pointer--pulse { box-shadow: 0 0 0 5px #4398f055; }
 .computer-target-preview__placeholder { display: block; padding: 22px 10px; color: var(--dc-text-muted); font-size: 12px; }
 .computer-target-preview__error { margin: 0; padding: 7px 10px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; color: var(--dc-text-muted); background: var(--dc-surface); }
-.computer-target-preview__stop { display: block; width: 100%; padding: 7px 10px; border: 0; border-top: 1px solid var(--dc-border); background: transparent; color: var(--dc-text-muted); font: inherit; font-size: 11px; cursor: pointer; }
-.computer-target-preview__stop:hover, .computer-target-preview__stop:focus-visible { color: var(--dc-foreground); background: var(--dc-surface-hover); }
-.computer-target-preview__stop:disabled { cursor: wait; opacity: .6; }
-.computer-target-preview__stop:focus-visible { outline: none; }
