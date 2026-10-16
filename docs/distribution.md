@@ -4,6 +4,8 @@ DeepCode 提供图形界面、CLI 和 TUI。三种入口共享模型设置、会
 
 ## macOS
 
+主程序支持 macOS 12 及以上；桌面截图与操作要求 macOS 15.2 及以上。macOS 12–15.1 会在启用桌面控制前显示版本要求，聊天、文件工具和浏览器工具继续可用。
+
 打开 `DeepCode-<version>-macos-arm64.pkg` 完成安装。应用位于 `/Applications/DeepCode-GUI.app`；终端可使用 `deepcode`、`deepcode-cli` 和 `deepcode-tui`，命令安装在 `/usr/local/bin`。
 
 解压版可直接打开 `DeepCode-GUI.app`，或使用同目录的 `DeepCode-CLI.command`、`DeepCode-TUI.command`。移动解压版时应保留这些文件的相对位置。用户文件存放在下表所列目录，与应用位置无关。
@@ -24,6 +26,8 @@ GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运�
 
 桌面截图与操作由程序目录中的 `DeepCode-Computer-Use.exe` 执行，共享 Host 在首次调用时启动它，并随 Host 退出回收；关闭某个 GUI 窗口不等于结束其他入口的任务。Windows 不需要单独授予辅助功能或屏幕录制权限；以管理员身份运行的程序窗口不能由普通权限的 DeepCode 观察或操作。替换该文件后，下一次调用前 Host 会结束旧组件并启动新版本，旧观察句柄需重新获取。
 
+Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 → 终端与代码”的字体和代码字号。`/font` 切换四套内置字体或系统等宽字体，`/font follow` 重新读取 GUI 选择；`--font compact` 可指定启动字体。正常退出后关闭专用窗口，失败时保留诊断并等待 Enter。`--in-place`、管道、帮助和 `--smoke` 在当前终端运行并保留其字体。内置字体为当前登录会话加载；自定义字体须已安装、固定字宽且能被 Windows 控制台识别，无法应用时显示原因。
+
 ## Linux
 
 解压后使用包内 `DeepCode-GUI`、`deepcode-cli` 或 `deepcode-tui`。桌面环境需要 GTK 和 WebKitGTK。工作区 Shell 的环境要求见[执行环境](product/execution-environments.md)。
@@ -38,7 +42,7 @@ GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运�
 | 临时文件 | 系统用户临时目录下的 `DeepCode` | `%TEMP%\DeepCode` | 系统临时目录下的 `DeepCode` |
 | 日志 | `~/Library/Logs/DeepCode` | `%LOCALAPPDATA%\DeepCode\Logs` | `${XDG_STATE_HOME:-~/.local/state}/DeepCode/log` |
 
-配置目录中的 `user/local/settings` 保存设置和模型配置，`user/local/secrets` 保存本地凭据。持久数据目录中的 `agent-runtime` 保存会话数据库、附件、工具记录和会话工作目录。会话引用的预览、截图和生成文件随会话保留，不属于可清理缓存。macOS Chrome 文件工具使用当前会话已有的私有工作目录作为根和进程工作目录，相对截图路径也落在这里；不把项目或附件目录自动加入根，上游系统临时目录仍保留。
+配置目录中的 `user/local/settings` 保存设置和模型配置，`user/local/secrets` 保存本地凭据。持久数据目录中的 `agent-runtime` 保存会话数据库、附件、工具记录和会话工作目录。会话引用的预览、截图和生成文件随会话保留，不属于可清理缓存。macOS 和 Windows 的 Chrome 文件工具使用当前会话已有的私有工作目录作为根和进程工作目录，相对截图路径也落在这里；不把项目或附件目录自动加入根，上游系统临时目录仍保留。
 
 缓存用于可重新生成的内容。macOS WebKit 的网站存储由系统管理，使用其标准 Library 目录。每次 Shell 调用拥有独立临时目录，调用及其子进程结束后清理；需要后续使用的文件应保存到会话工作目录或已授权项目目录。GUI 启动诊断位于日志目录的 `host-startup`，CLI 启动的后台服务日志为 `deepcode-kernel.log`。
 
