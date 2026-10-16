@@ -154,16 +154,64 @@ pub(crate) fn ollama_stream_request_body(
     profile: &ResolvedLlmProfile,
     messages: &[LocalProviderMessage],
     tools: &[LlmToolDefinition],
-) -> Value {
+) -> Result<Value, ProviderTransportError> {
+    let mut tool_names = HashMap::new();
+    let mut chat_messages = Vec::with_capacity(messages.len());
+    for message in messages {
+        let mut value = json!({"role": message.role, "content": message.content});
+        if let Some(reasoning) = &message.reasoning_content {
+            value["thinking"] = json!(reasoning);
+        }
+        if !message.image_data.is_empty() {
+            value["images"] = json!(message
+                .image_data
+                .iter()
+                .map(|image| &image.base64)
+                .collect::<Vec<_>>());
+        }
+        let mut calls = Vec::new();
+        for call in message.tool_calls.iter().flatten() {
+            let arguments = match &call.input {
+                Value::String(text) => serde_json::from_str(text).map_err(|error| {
+                    ProviderTransportError::message(
+                        "provider_tool_arguments_unrepresentable",
+                        format!("Ollama tool_calls 要求 arguments 对象，原始参数无法编码：{error}"),
+                    )
+                })?,
+                value => value.clone(),
+            };
+            if !arguments.is_object() {
+                return Err(ProviderTransportError::message(
+                    "provider_tool_arguments_unrepresentable",
+                    "Ollama tool_calls 要求 arguments 对象，原始参数不是对象。",
+                ));
+            }
+            calls.push(
+                json!({"type":"function", "function":{"name":call.name,"arguments":arguments}}),
+            );
+            tool_names.insert(call.call_id.as_str(), call.name.as_str());
+        }
+        if !calls.is_empty() {
+            value["tool_calls"] = json!(calls);
+        }
+        if message.role == "tool" {
+            let name = message
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| tool_names.get(id))
+                .ok_or_else(|| {
+                    ProviderTransportError::message(
+                        "provider_envelope_invalid",
+                        "Ollama 工具结果缺少对应的 assistant 调用。",
+                    )
+                })?;
+            value["tool_name"] = json!(name);
+        }
+        chat_messages.push(value);
+    }
     let mut body = json!({
         "model": profile.model,
-        "messages": messages.iter().map(|message| {
-            let mut value = serde_json::to_value(message).expect("Provider message serializes");
-            value.as_object_mut().unwrap().remove("images");
-            value.as_object_mut().unwrap().remove("toolImages");
-            if !message.image_data.is_empty() { value["images"] = json!(message.image_data.iter().map(|image| &image.base64).collect::<Vec<_>>()); }
-            value
-        }).collect::<Vec<_>>(),
+        "messages": chat_messages,
         "stream": true,
         "think": profile.thinking.as_deref() == Some("enabled"),
     });
@@ -185,5 +233,5 @@ pub(crate) fn ollama_stream_request_body(
             }))
             .collect::<Vec<_>>());
     }
-    body
+    Ok(body)
 }

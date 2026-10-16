@@ -725,7 +725,7 @@ fn prepare_provider_request(
             responses_request_body(profile, messages, &tools, &hosted_tools, true)?
         }
         ProviderStreamKind::Anthropic => anthropic_stream_request_body(profile, messages, &tools)?,
-        ProviderStreamKind::Ollama => ollama_stream_request_body(profile, messages, &tools),
+        ProviderStreamKind::Ollama => ollama_stream_request_body(profile, messages, &tools)?,
     };
     if let Some(format) = &envelope.response_format {
         let schema = &format.schema;
@@ -2542,7 +2542,60 @@ mod tests {
                     "provider_tool_arguments_unrepresentable"
                 );
             }
+            let ollama = ollama_stream_request_body(
+                &test_profile("ollama"),
+                &[serde_json::from_value(message(json!(raw))).unwrap()],
+                &[],
+            );
+            if raw == r#"{"path":"a.txt"}"# {
+                assert_eq!(
+                    ollama.unwrap()["messages"][0]["tool_calls"][0]["function"]["arguments"],
+                    json!({"path":"a.txt"})
+                );
+            } else {
+                assert_eq!(
+                    ollama.unwrap_err().code,
+                    "provider_tool_arguments_unrepresentable"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn ollama_replay_preserves_calls_and_result_ownership() {
+        let envelope = provider_input(json!({
+            "messages": [
+                {"role":"user", "content":"Read both files."},
+                {"role":"assistant", "content":"", "reasoningContent":"Read the files independently.", "toolCalls":[
+                    {"callId":"call:1","providerCallId":"native:1","name":"fs.read","input":"{\"path\":\"项目.txt\"}"},
+                    {"callId":"call:2","providerCallId":"native:2","name":"fs.list","input":{"path":"."}}
+                ]},
+                {"role":"tool","content":"listing","toolCallId":"call:2","providerCallId":"native:2"},
+                {"role":"tool","content":"file content","toolCallId":"call:1","providerCallId":"native:1"}
+            ], "tools":[], "hostedTools":[]
+        }));
+        let prepared = prepare_test_request(&test_profile("ollama"), &envelope).unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages[1]["thinking"], "Read the files independently.");
+        assert_eq!(
+            messages[1]["tool_calls"][0]["function"],
+            json!({"name":"fs.read","arguments":{"path":"项目.txt"}})
+        );
+        assert_eq!(
+            messages[1]["tool_calls"][1]["function"],
+            json!({"name":"fs.list","arguments":{"path":"."}})
+        );
+        assert_eq!(
+            messages[2],
+            json!({"role":"tool","tool_name":"fs.list","content":"listing"})
+        );
+        assert_eq!(
+            messages[3],
+            json!({"role":"tool","tool_name":"fs.read","content":"file content"})
+        );
+        assert!(messages[1].get("toolCalls").is_none());
+        assert!(messages[1].get("reasoningContent").is_none());
     }
 
     #[tokio::test]
@@ -2836,7 +2889,7 @@ mod tests {
             anthropic["messages"][0]["content"][1]["source"]["data"],
             "aW1hZ2U="
         );
-        let ollama = ollama_stream_request_body(&profile, &messages, &[]);
+        let ollama = ollama_stream_request_body(&profile, &messages, &[]).unwrap();
         assert_eq!(ollama["messages"][0]["images"][0], "aW1hZ2U=");
         assert_eq!(ollama["messages"][0]["content"], "Read this image.");
     }

@@ -1837,7 +1837,7 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
     for binding in &body.workspace_bindings {
         if !valid_provider_text(&binding.workspace_id)
             || binding.display_name.trim().is_empty()
-            || binding.display_name.len() > 160
+            || binding.display_name.chars().count() > 120
             || !workspace_ids.insert(binding.workspace_id.as_str())
         {
             return Err("Provider 请求的 workspaceBindings 无效或重复。".to_string());
@@ -2157,6 +2157,35 @@ fn random_service_token() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_workspace_names_follow_catalog_character_limit() {
+        let display_name = crate::conversation_catalog::workspace_display_name(&format!(
+            "/workspace/{}",
+            "文".repeat(54)
+        ));
+        let mut request: LocalProviderRequest = serde_json::from_value(json!({
+            "protocolVersion": "deepcode.local-agent",
+            "requestId": "request:test",
+            "sessionId": "session:test",
+            "runId": "run:test",
+            "providerRuntimeRef": "provider-runtime:test",
+            "profileId": "profile:test",
+            "purpose": "agent",
+            "responseConstraint": "normal",
+            "maxOutputTokens": 512,
+            "workspaceBindings": [{"workspaceId": "workspace:test", "displayName": display_name}],
+            "messages": [{"role": "user", "content": "Read the project."}],
+            "tools": [],
+            "hostedTools": []
+        }))
+        .unwrap();
+        assert!(validate_local_provider_request(&request).is_ok());
+        request.workspace_bindings[0].display_name = "文".repeat(120);
+        assert!(validate_local_provider_request(&request).is_ok());
+        request.workspace_bindings[0].display_name.push('文');
+        assert!(validate_local_provider_request(&request).is_err());
+    }
 
     fn permission_policy(network: &str) -> LocalAgentPermissionPolicy {
         LocalAgentPermissionPolicy::from_settings(&json!({
