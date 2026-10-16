@@ -8,7 +8,7 @@
 
 | 事实 owner | 当前建库合同 | 当前 `user_version` | 负责内容 |
 | --- | --- | ---: | --- |
-| Host Catalog | `catalog.sql` | 2 | Project、Host 私有 workspace、项目目录索引模板、Session 归类与 Session-owned 文件快照 |
+| Host Catalog | `catalog.sql` | 2 | Project、Host 私有 workspace、项目目录索引模板、Session 归类、原文件与目录定位、Session-owned 文本资源和工作目录 |
 | Session | `session.sql` | 7 | Session creation snapshot、journal、命令回放、对话目录索引、跨 Run Plan/Todo、Provider turn 终态、control 拒绝、请求回执、用量与 Run runtime 释放回执 |
 | Kernel | `tool-record.sql` | 1 | Session 保留期间不可变的 ToolRecord |
 
@@ -28,7 +28,7 @@ Session projection 的 `tokenUsage` 保留当前会话自身口径；`totalToken
 
 委派开关变更以 `agent.delegation.changed` 进入已有 Session，保持通知顺序，不启动空闲 Loop。新建与续派任务按最新 Host 设置准入；关闭委派不取消已经运行或等待的子任务，也不删除消息、执行历史或用量。Plan 用于新增或扩大的授权，Todo 仅表达按需进度，两者不替代 Kernel 执行事实。
 
-`message.submit.filesystemReferences` 是文件与目录共用的消息级逻辑引用。Host 将工作区外文件导入 Session 私有快照 workspace；目录保持既有实时 workspace 生命周期。Session 只持久化 `referenceId/workspaceId/logicalPath/displayName/kind` 及文件媒体元数据，并将引用 workspace 与 Session creation snapshot 合并为该消息所启动 run 的不可变 workspace binding 快照。普通文件向 Provider 提供逻辑 workspace handle 与逻辑路径，内容按需通过基础文件工具读取；当前 run 的 PNG、JPEG、WebP、GIF 附件由 Session 纳入视觉输入，在 Provider 边界解析为图片内容，要求模型支持图片输入。journal 保留图片引用，不写入 base64；Host canonical path 不进入消息合同。PDF 仍是 `kind=file`，并由声明 `application/pdf` 激活媒体类型的 Skill 插件处理。
+`message.submit.filesystemReferences` 是文件与目录共用的消息级逻辑引用。Host 登记原文件或原目录的位置，不复制文件到 Session 私有目录。Session 只持久化 `referenceId/workspaceId/logicalPath/displayName/kind` 及文件媒体元数据；这些引用扩充请求的资源查找视图，不增加 run 的工作目录绑定，也不授予工具读写权限。run 的工作目录绑定在启动时由 Session 目录索引冻结。普通文件向 Provider 提供逻辑 workspace handle 与逻辑路径，内容按需通过基础文件工具读取并遵循既有权限规则；当前 run 的 PNG、JPEG、WebP、GIF 附件由 Session 纳入视觉输入，在 Provider 边界读取原文件内容，要求模型支持图片输入。journal 保留图片引用，不写入 base64；Host canonical path 不进入消息合同。粘贴长文本仍保存为 Session-owned 只读快照。PDF 仍是 `kind=file`，并由声明 `application/pdf` 激活媒体类型的 Skill 插件处理。
 
 ## 打开规则
 
@@ -39,7 +39,7 @@ Session projection 的 `tokenUsage` 保留当前会话自身口径；`totalToken
 
 ## 删除与历史边界
 
-删除 Session 是一次 Session aggregate 删除：Catalog 条目、Session archive、Session 私有目录索引关系、Session-owned 文件快照和该 Session 的 ToolRecord 一并删除。ToolRecord 不能被普通工具调用任意修改或删除；只有 Host 协调的 Session aggregate purge 可以删除它。
+删除 Session 是一次 Session aggregate 删除：Catalog 条目、Session archive、Session 私有目录索引关系、Session-owned 文本资源与工作目录和该 Session 的 ToolRecord 一并删除。该 Session 的资源引用随之失效，外部原文件和原目录保留。ToolRecord 不能被普通工具调用任意修改或删除；只有 Host 协调的 Session aggregate purge 可以删除它。
 
 Catalog、Session 与 ToolRecord 三个业务 store 位于 `<data_dir>/agent-runtime/`；同目录还保存 Host 的 Provider 用量报告索引 `provider-usage.sqlite3`，它不替代 Session journal 或 ToolRecord。`root-owner.lock` 仅证明当前 daemon 的配置根所有权。旧目录和旧数据库不属于当前运行合同，不存在只读历史入口。
 
