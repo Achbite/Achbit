@@ -14,6 +14,37 @@ Ordinary turns append messages and tool results. Background process updates appe
 
 Quota is a timestamped response from the provider, not an estimate from local tokens. Its windows retain the supplied reset time and used percentage. A failed refresh displays its error. Subscription fees and subscription usage are not counted as metered API cost.
 
+## DeepSeek
+
+The built-in **DeepSeek V4.1 Flash** preset uses the API model name `deepseek-flash`. Get an API key from the [DeepSeek Platform](https://platform.deepseek.com/) and open **Settings → Models and services → API connections**. Open the existing DeepSeek connection, or choose **Add API connection**, select **DeepSeek**, enter your key, and save the connection. Open its model or choose **Add model**, then save these settings:
+
+| Setting | Value |
+| --- | --- |
+| API address | `https://api.deepseek.com` |
+| Display name | `DeepSeek V4.1 Flash` |
+| Model | `deepseek-flash` |
+| API protocol | Responses API |
+| Context window | `1000000` |
+| Maximum output | `384000` |
+| More options → Thinking | Enabled |
+| More options → Reasoning effort | `max` |
+
+The model's 1M context window and 384K output limit follow the [official model documentation](https://api-docs.deepseek.com/quick_start/pricing/). Context capacity includes the request and generated output; the maximum output is a budget, not a request to generate that many tokens. DeepSeek supports `low`, `high`, and `max` reasoning. Select this model and `max` in the conversation's model selector as well; a conversation's explicit choice takes precedence over its model profile. See [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/) for the service's effort settings.
+
+Select a project and ask: “Read this project's README and explain its purpose, entry points, and how to run it. Cite the files you read.” Continue in the same conversation with a request to inspect one relevant source file. Review any access requests shown by DeepCode. The model editor's **Test** action only sends a short connection probe using saved settings; it does not exercise a full Agent task and counts toward API usage.
+
+CLI and TUI reuse the saved connection. For CLI, list the profiles and copy the ID shown under the DeepSeek connection:
+
+```sh
+deepcode-cli connections
+deepcode-cli --model <profile-id> ask -C /path/to/project "Read the README and explain this project."
+deepcode-cli --model <profile-id> chat -C /path/to/project
+```
+
+`<profile-id>` is the saved DeepCode configuration ID, not the API model name. Portable packages use the platform's CLI launcher instead of the installed `deepcode-cli` command; see [installation](../distribution.md). In TUI, use `/model` to select the saved model, or `/model <profile-id>` to select it directly.
+
+DeepSeek's [Responses API](https://api-docs.deepseek.com/guides/responses_api/) currently ignores the built-in `web_search` tool. Set **Web search** to **Off** in this model's settings; web-search tools have their own availability and configuration. See the [official pricing page](https://api-docs.deepseek.com/quick_start/pricing/) for current API charges.
+
 ## Web search citations
 
 For OpenAI API and Codex subscription Responses connections with hosted web search enabled, requests include the search source list. Native search actions and message annotations remain in the Provider record and Session journal. A search source list alone does not associate an internal citation ID with a particular URL.
@@ -59,6 +90,6 @@ Attach PNG, JPEG, WebP or GIF through the existing Files and folders control, or
 
 Attachment pixels enter one successful Agent request; retries of that logical request retain the same images. Later requests carry archived references instead of repeatedly appending old image bytes. The Agent can explicitly reopen exact images with `session.read` for another look or comparison. Supplemental images wait for a successful request that actually includes them. This lifecycle also applies to GUI observations and does not delete the archived files.
 
-The built-in DeepSeek Flash and GPT-6 Astra presets declare image input. Other/custom models can explicitly enable it under the model's advanced settings when supported by the service. An unsupported model reports an error instead of silently receiving filenames as images. The current local image read limit is 8 MiB per image. The request size limit includes the encoded image data.
+The built-in DeepSeek V4.1 Flash and GPT-6 Astra presets declare image input. Other/custom models can explicitly enable it under the model's advanced settings when supported by the service. An unsupported model reports an error instead of silently receiving filenames as images. The current local image read limit is 8 MiB per image. The request size limit includes the encoded image data.
 
 Available service adapters are listed in Models and services. Display plugins can customize the supported settings panels; they do not add model transport or execution permissions.

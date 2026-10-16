@@ -59,6 +59,8 @@ Build the current package using [Build from source](#build-from-source), or use 
 2. **Connect a model** in **Settings → Models and services**: add an API connection or sign in to a supported Coding Plan.
 3. **Choose your project and describe the task.** Select a model, submit your request, and review proposed changes.
 
+**Use DeepSeek:** choose the DeepSeek API connection, enter your API key, and select **DeepSeek V4.1 Flash** (`deepseek-flash`) with **Responses API**. The preset uses a 1,000,000-token context window and a 384,000-token maximum output. Enable Thinking and choose `max` reasoning effort for the configuration described in the [DeepSeek setup guide](docs/product/model-services.md#deepseek).
+
 Use a project's **Manage workspace** menu to choose its folders and execution environment. Windows projects can select a local shell or WSL.
 
 In the GUI, attach files or folders to a message, open artifacts and diffs, or ask the Agent to open an HTML preview. Browser annotations stay active until you leave with the toolbar button or Esc. New conversations inherit the last model used for a submitted task and its remembered reasoning level. Use **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** elsewhere to reload the interface.

@@ -327,7 +327,7 @@
     "settings.llm.defaultRepairHint": "Choose the default model, then select Save Model on its card to repair the configuration.",
     "settings.llm.defaultSaved": "Default model updated",
     "settings.llm.saveBeforeProbe": "Save this model’s changes before probing.",
-    "settings.llm.preset.deepseekFlash": "DeepSeek Flash",
+    "settings.llm.preset.deepseekFlash": "DeepSeek V4.1 Flash",
     "settings.llm.preset.deepseekPro": "DeepSeek Pro",
     "settings.llm.preset.deepseekAnthropic": "DeepSeek Anthropic",
     "settings.llm.preset.glm": "GLM 5.3",

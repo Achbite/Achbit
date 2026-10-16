@@ -59,6 +59,8 @@ Agent 可以读取数据、提出修改计划、生成页面，再通过浏览�
 2. **连接模型。** 在 **设置 → 模型与服务** 中添加 API 连接，或登录支持的 Coding Plan。
 3. **选择项目并描述任务。** 选择模型、提交需求，审核修改方案并查看结果。
 
+**使用 DeepSeek：** 选择 DeepSeek API 连接，填写 API Key，再选择 **DeepSeek V4.1 Flash**（`deepseek-flash`）和 **Responses API**。预设采用 1,000,000 token 上下文窗口、384,000 token 最大输出；启用 Thinking 并选择 `max` 推理强度，具体步骤见 [DeepSeek 接入说明](docs/product/model-services.md#deepseek)。
+
 项目菜单中的 **管理工作区** 用于配置文件夹和执行环境；Windows 项目可以选择本地 Shell 或 WSL。
 
 GUI 支持向消息附加文件或文件夹、查看产物和 diff，以及让 Agent 打开 HTML 预览。浏览器批注仅通过工具栏按钮或 Esc 退出。新对话继承上次提交任务使用的模型及该模型记住的推理强度。重载界面使用 macOS 的 **Cmd+Shift+R**，其他平台使用 **Ctrl+Shift+R**。
