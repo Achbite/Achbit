@@ -31,16 +31,17 @@
   /* Used by the active code-search match, not by control focus chrome. */
   --dc-focus-ring: color-mix(in srgb, var(--dc-foreground) 45%, transparent);
 
-  --dc-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --dc-font-ui: "DeepCode Quiet Reading SC", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
   --dc-font-reading: var(--dc-font-ui);
+  --dc-font-code: var(--dc-font-reading);
   --dc-font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --dc-font-micro: calc(11px * var(--dc-ui-font-scale, 1));
   --dc-font-caption: calc(12px * var(--dc-ui-font-scale, 1));
   --dc-font-label: calc(13px * var(--dc-ui-font-scale, 1));
   --dc-font-body: calc(14px * var(--dc-ui-font-scale, 1));
   --dc-font-body-large: calc(15px * var(--dc-ui-font-scale, 1));
-  --dc-font-reading-size: calc(16px * var(--dc-ui-font-scale, 1));
-  --dc-font-code-size: calc(13px * var(--dc-ui-font-scale, 1));
+  --dc-font-reading-size: var(--dc-font-body);
+  --dc-font-code-size: 12px;
   --dc-font-title: calc(16px * var(--dc-ui-font-scale, 1));
   --dc-line-tight: 1.35;
   --dc-line-compact: 1.45;

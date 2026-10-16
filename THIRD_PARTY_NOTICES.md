@@ -16,6 +16,18 @@ DeepCode may include or depend on:
 
 Distribution artifacts should preserve third-party license texts where required by the corresponding dependency license.
 
+## Bundled Fonts
+
+The DeepCode Quiet SC families are renamed derivatives distributed under the SIL Open Font License 1.1. Gentle reading and Compact terminal each have WenKai and sans-serif Chinese variants; the macOS TUI includes separate fixed-cell versions. They use these sources:
+
+| Source | Version | Use | Local notice |
+| --- | --- | --- | --- |
+| Libertinus Sans | 7.051 | Gentle reading Latin forms | [OFL](userspace/gui/src/assets/fonts/Libertinus-OFL.txt), [authors](userspace/gui/src/assets/fonts/Libertinus-AUTHORS.txt) |
+| Maple Mono NL CN | 7.9 | Compact Latin forms, rounded sans-serif Chinese and remaining glyphs | [License and source notices](userspace/gui/src/assets/fonts/Maple-LICENSE.txt) |
+| LXGW WenKai | 1.522 | WenKai-style Chinese forms | [OFL](userspace/gui/src/assets/fonts/WenKai-OFL.txt) |
+
+Preserve these notices when redistributing the fonts. The [font guide](userspace/gui/src/assets/fonts/README.md) and [source manifest](userspace/gui/src/assets/fonts/sources.json) record their composition and reproducible build inputs. These bundled fonts are not Claude or Optima font files, and the names of visual references do not identify their license or authorship.
+
 ## Editor and Workspace References
 
 DeepCode uses a Monaco-based editor surface and implements limited VS Code-style workspace interoperability, such as `.code-workspace` subset handling. This does not mean DeepCode derives from VS Code source or has a formal Microsoft / VS Code project relationship.

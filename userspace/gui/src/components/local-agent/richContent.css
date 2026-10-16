@@ -14,7 +14,7 @@
 .conversation-markdown li > :is(p, ul, ol) { margin-block: 0; }
 .conversation-markdown blockquote { margin-inline: 0; padding-left: 1em; border-left: 2px solid var(--dc-border); color: var(--dc-muted); }
 .conversation-markdown hr { height: 1px; margin: 1.6em 0; border: 0; background: var(--dc-border); }
-.conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--dc-code-background); font: .9em/var(--dc-line-code, 1.6) var(--dc-font-mono); overflow-wrap: anywhere; }
+.conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--dc-code-background); font: var(--dc-font-code-size, 12px)/var(--dc-line-code, 1.6) var(--dc-font-code); overflow-wrap: anywhere; }
 .conversation-markdown a { color: var(--dc-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--dc-accent) 35%, transparent); text-underline-offset: 3px; }
 .conversation-markdown a:hover { text-decoration-color: currentColor; }
 .conversation-markdown > :first-child { margin-top: 0; }
@@ -39,7 +39,7 @@
 .local-agent__message-actions button:hover .local-agent__message-action-hint, .local-agent__message-actions button:focus-visible .local-agent__message-action-hint { opacity: 1; }
 .local-agent__message-actions :is(.conversation-copy-hint, .local-agent__message-action-hint) { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; transform: none; }
 .conversation-copy-error { display: block; padding: 0 10px 6px; color: var(--dc-danger); }
-.conversation-code pre { margin: 0; padding: 8px 16px 16px; overflow: auto; white-space: pre; font: var(--dc-font-code-size, calc(13px * var(--dc-ui-font-scale, 1)))/var(--dc-line-code, 1.6) var(--dc-font-mono); }
+.conversation-code pre { margin: 0; padding: 8px 16px 16px; overflow: auto; white-space: pre; font: var(--dc-font-code-size, 12px)/var(--dc-line-code, 1.6) var(--dc-font-code); }
 .conversation-code pre code { padding: 0; background: transparent; font-size: inherit; }
 .conversation-table { min-width: 0; max-width: 100%; }
 .conversation-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding-bottom: 6px; }
@@ -138,4 +138,4 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-diff-binary { padding: 24px; color: var(--dc-muted); font-size: var(--dc-font-body); }
 .conversation-diff-binary small { display: block; margin-top: 10px; }
 .conversation-round > [hidden] { display: none; }
-.conversation-code pre, .conversation-code pre code, .conversation-code pre span { font-family: var(--dc-font-mono); line-height: 1.6; }
+.conversation-code pre, .conversation-code pre code, .conversation-code pre span { font-family: var(--dc-font-code); line-height: 1.6; }

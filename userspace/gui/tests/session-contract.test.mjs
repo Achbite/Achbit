@@ -3561,7 +3561,7 @@ test('named themes validate before import and select light and dark palettes ind
 });
 
 test('theme library and UI fonts persist without changing active colors or appearance mode', async (t) => {
-  const [{ useSettingsStore }, library, fonts] = await loadGuiModules(t, ['/src/state/settingsStore.ts', '/src/theme/themeLibrary.ts', '/src/theme/typography.ts']);
+  const [{ useSettingsStore }, library, fonts, i18n] = await loadGuiModules(t, ['/src/state/settingsStore.ts', '/src/theme/themeLibrary.ts', '/src/theme/typography.ts', '/src/i18n.ts']);
   let persisted = { 'gui.colorTheme': 'system', 'workbench.styleTokenOverrides': '{"--dc-custom-dark-accent":"#ccbbaa"}' };
   installGuiFetch(t, (url, init) => {
     assert.equal(url.pathname, '/api/user-settings');
@@ -3574,7 +3574,7 @@ test('theme library and UI fonts persist without changing active colors or appea
   });
   const saved = [{ id: 'user-theme', name: 'User theme', dark: { background: '#202022' } }];
   await useSettingsStore.getState().patchUserSetting(library.THEME_LIBRARY_SETTING, JSON.stringify(saved));
-  await useSettingsStore.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: 'PingFang SC', [fonts.UI_FONT_SIZE_SETTING]: 16 });
+  await useSettingsStore.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: 'PingFang SC', [fonts.UI_FONT_SIZE_SETTING]: 16, [fonts.CODE_FONT_SIZE_SETTING]: 11 });
   const [{ useSettingsStore: reloaded }] = await loadGuiModules(t, ['/src/state/settingsStore.ts']);
   await reloaded.getState().loadUserSettings();
   const settings = reloaded.getState().effectiveSettings;
@@ -3583,13 +3583,66 @@ test('theme library and UI fonts persist without changing active colors or appea
   assert.equal(settings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
   assert.match(fonts.uiFontFamily(settings[fonts.UI_FONT_FAMILY_SETTING]), /^"PingFang SC",/);
   assert.equal(fonts.uiFontSize(settings[fonts.UI_FONT_SIZE_SETTING]), 16);
+  assert.equal(fonts.codeFontSize(settings[fonts.CODE_FONT_SIZE_SETTING]), 11);
+  await reloaded.getState().patchUserSettingsBatch({
+    [fonts.UI_FONT_FAMILY_SETTING]: 'warm',
+    [fonts.INTERFACE_FONT_FAMILY_SETTING]: 'inherit',
+    [fonts.CONTENT_FONT_FAMILY_SETTING]: 'system',
+    [fonts.TERMINAL_FONT_FAMILY_SETTING]: 'compact',
+    [fonts.CONTENT_FONT_SIZE_SETTING]: 14,
+  });
+  await reloaded.getState().loadUserSettings();
+  const mixed = fonts.typographyStyles(reloaded.getState().effectiveSettings);
+  assert.match(mixed['--dc-font-ui'], /DeepCode Quiet Reading SC/);
+  assert.equal(mixed['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
+  assert.match(mixed['--dc-font-code'], /DeepCode Quiet Mono SC/);
+  assert.equal(mixed['--dc-font-reading-size'], '14px');
+  assert.equal(mixed['--dc-font-code-size'], '11px');
+  assert.equal(mixed['--dc-ui-font-scale'], String(16 / 14));
+  await reloaded.getState().patchUserSettingsBatch({
+    [fonts.CONTENT_FONT_FAMILY_SETTING]: 'warm-sans',
+    [fonts.TERMINAL_FONT_FAMILY_SETTING]: 'compact-kai',
+  });
+  await reloaded.getState().loadUserSettings();
+  const variants = fonts.typographyStyles(reloaded.getState().effectiveSettings);
+  assert.equal(variants['--dc-font-ui'], mixed['--dc-font-ui']);
+  assert.match(variants['--dc-font-reading'], /^"DeepCode Quiet Reading Sans SC",/);
+  assert.match(variants['--dc-font-code'], /^"DeepCode Quiet Mono Kai SC",/);
+  assert.equal(variants['--dc-font-reading-size'], '14px');
+  assert.equal(variants['--dc-font-code-size'], '11px');
+  assert.equal(reloaded.getState().effectiveSettings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
+  for (const [choice, chinese, english] of [
+    ['warm', '温和阅读 · 文楷', 'Gentle reading · Kai'],
+    ['warm-sans', '温和阅读 · 无衬线', 'Gentle reading · Sans'],
+    ['compact-kai', '紧凑终端 · 文楷', 'Compact terminal · Kai'],
+    ['compact', '紧凑终端 · 无衬线', 'Compact terminal · Sans'],
+  ]) {
+    assert.equal(i18n.t('zh-CN', `settings.font.${choice}`), chinese);
+    assert.equal(i18n.t('en-US', `settings.font.${choice}`), english);
+  }
+  await reloaded.getState().patchUserSettingsBatch({
+    [fonts.UI_FONT_FAMILY_SETTING]: 'system',
+    [fonts.INTERFACE_FONT_FAMILY_SETTING]: null,
+    [fonts.CONTENT_FONT_FAMILY_SETTING]: null,
+    [fonts.TERMINAL_FONT_FAMILY_SETTING]: null,
+    [fonts.CONTENT_FONT_SIZE_SETTING]: null,
+  });
+  const unified = fonts.typographyStyles(reloaded.getState().effectiveSettings);
+  assert.equal(unified['--dc-font-ui'], fonts.UI_FONT_PRESETS.system);
+  assert.equal(unified['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
+  assert.match(unified['--dc-font-code'], /^ui-monospace/);
+  assert.equal(fonts.codeFontSize(undefined), 12);
+  assert.throws(() => fonts.codeFontSize(9));
+  assert.throws(() => fonts.codeFontSize(19));
+  assert.throws(() => fonts.codeFontSize(12.5));
   assert.throws(() => fonts.uiFontFamily(''));
   assert.throws(() => fonts.uiFontFamily('bad; family'));
   assert.throws(() => fonts.uiFontSize(0));
   assert.throws(() => fonts.uiFontSize(14.5));
-  await reloaded.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: null, [fonts.UI_FONT_SIZE_SETTING]: null });
-  assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_FAMILY_SETTING], 'system');
+  await reloaded.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: null, [fonts.UI_FONT_SIZE_SETTING]: null, [fonts.CODE_FONT_SIZE_SETTING]: null });
+  assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_FAMILY_SETTING], 'warm');
   assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_SIZE_SETTING], 14);
+  assert.equal(reloaded.getState().effectiveSettings[fonts.CODE_FONT_SIZE_SETTING], 12);
   assert.deepEqual(library.decodeThemeLibrary(reloaded.getState().effectiveSettings[library.THEME_LIBRARY_SETTING]), saved);
 });
 

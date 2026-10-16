@@ -12,10 +12,25 @@
 .appearance-config-box__body input { min-width: 0; width: min(240px,60%); border: 1px solid transparent; border-radius: var(--dc-radius-control); background: transparent; color: var(--dc-foreground); padding: 7px 9px; font: inherit; }
 .appearance-config-box__hint { color: var(--dc-muted); font-size: var(--dc-font-caption); line-height: 1.55; margin: 0; }
 .appearance-config-box__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: auto; }
-.appearance-font-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
-.appearance-font-preview { display: grid; gap: 5px; line-height: 1.6; padding: 12px 0; border: 0; border-radius: 0; background: transparent; overflow-wrap: anywhere; }
-.appearance-font-preview strong { font-weight: 600; }
-.appearance-font-preview span { color: var(--dc-muted); }
+.appearance-font-preview { display: grid; gap: 7px; line-height: 1.7; padding: 12px 0 18px; overflow-wrap: anywhere; }
+.appearance-font-preview__interface { font: calc(12px * var(--dc-ui-font-scale))/1.5 var(--dc-font-ui); color: var(--dc-muted); }
+.appearance-font-preview__content { margin: 0; font: var(--dc-font-reading-size)/1.72 var(--dc-font-reading); }
+.appearance-font-preview__code { font: var(--dc-font-code-size)/1.6 var(--dc-font-code); color: var(--dc-muted); }
+.appearance-font-details > summary { display: flex; align-items: center; gap: 9px; width: fit-content; padding: 8px 0; color: var(--dc-muted); cursor: pointer; list-style: none; font-size: var(--dc-font-caption); }
+.appearance-font-details > summary::-webkit-details-marker { display: none; }
+.appearance-font-details > summary > svg { transition: transform 140ms ease; }
+.appearance-font-details[open] > summary > svg { transform: rotate(90deg); }
+.appearance-font-details > summary:hover { color: var(--dc-foreground); }
+.appearance-font-groups { display: grid; gap: 20px; padding: 12px 0; }
+.appearance-font-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.appearance-font-group legend { padding: 0; margin-bottom: 2px; font-size: var(--dc-font-label); font-weight: 500; }
+.appearance-font-group__controls { display: grid; grid-template-columns: minmax(0,1fr) 140px; column-gap: 32px; }
+.appearance-font-group__controls label { min-height: 42px; gap: 12px; color: var(--dc-muted); }
+.appearance-font-group__controls select { color: var(--dc-foreground); }
+.appearance-font-group__sample { padding: 7px 0 9px; line-height: 1.7; overflow-wrap: anywhere; }
+.appearance-font-group__sample code { font: inherit; }
+@media (max-width: 680px) { .appearance-font-group__controls { grid-template-columns: minmax(0,1fr); } }
+@media (prefers-reduced-motion: reduce) { .appearance-font-details > summary > svg { transition: none; } }
 .theme-picker { position: relative; display: grid; grid-template-columns: minmax(0,1fr) minmax(160px,240px); min-height: var(--dc-settings-row-height,52px); align-items: center; gap: 12px; font-size: var(--dc-font-label); }
 .theme-picker__trigger { display: flex; align-items: center; gap: 9px; min-width: 0; width: 100%; border: 1px solid transparent; border-radius: var(--dc-radius-control); padding: 5px 8px; background: transparent; color: var(--dc-foreground); font: inherit; cursor: pointer; text-align: left; }
 .theme-picker__trigger > span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

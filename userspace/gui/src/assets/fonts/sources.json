@@ -1,0 +1,17 @@
+{
+  "MapleMonoNL-CN-unhinted.zip": "https://github.com/subframe7536/maple-font/releases/download/v7.9/MapleMonoNL-CN-unhinted.zip",
+  "Libertinus-7.051.zip": "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip",
+  "wenkai": {
+    "version": "v1.522",
+    "assets": [
+      {
+        "file": "LXGWWenKai-Regular.ttf",
+        "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Regular.ttf"
+      },
+      {
+        "file": "WenKai-OFL.txt",
+        "url": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/v1.522/OFL.txt"
+      }
+    ]
+  }
+}
