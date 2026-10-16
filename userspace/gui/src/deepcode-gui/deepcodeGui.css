@@ -222,8 +222,7 @@ textarea {
   .deepcode-gui-titlebar .local-agent__header--reading .local-agent__header-preview { grid-column:1; padding-left:var(--dc-navigation-leading); }
 }
 
-.deepcode-gui-brand,
-.deepcode-gui-titlebar__status {
+.deepcode-gui-brand {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -254,56 +253,4 @@ textarea {
 .deepcode-gui-sidebar-brand {
   flex: 0 0 auto;
   padding: 2px 10px 0;
-}
-
-.deepcode-gui-titlebar__status {
-  justify-content: flex-end;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-caption);
-}
-
-.deepcode-gui-status-pill {
-  display: inline-flex;
-  min-height: 22px;
-  align-items: center;
-  padding: 0 8px;
-  border: 1px solid var(--dc-border);
-  border-radius: 999px;
-  background: var(--dc-surface-subtle);
-  color: var(--dc-muted);
-}
-
-.deepcode-gui-status-pill--button {
-  cursor: pointer;
-}
-
-.deepcode-gui-status-pill--button:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.deepcode-gui-status-pill--connected,
-.deepcode-gui-status-pill--ready {
-  border-color: color-mix(in srgb, var(--dc-success) 28%, transparent);
-  background: var(--dc-success-soft);
-  color: var(--dc-success);
-}
-
-.deepcode-gui-status-pill--error,
-.deepcode-gui-status-pill--disconnected {
-  border-color: color-mix(in srgb, var(--dc-danger) 28%, transparent);
-  background: var(--dc-danger-soft);
-  color: var(--dc-danger);
-}
-
-.deepcode-gui-status-pill--cache {
-  border-color: var(--dc-accent-border);
-  background: var(--dc-accent-soft);
-  color: var(--dc-accent);
-}
-
-@media (max-width: 720px) {
-  .deepcode-gui-status-pill:first-child {
-    display: none;
-  }
 }

@@ -120,7 +120,6 @@ const DeepCodeGuiApp: React.FC = () => {
   const [connectedIncarnation, setConnectedIncarnation] = useState<string | null>(null);
   const [kernelStartBusy, setKernelStartBusy] = useState(false);
   const [hostStartup, setHostStartup] = useState<HostStartupStatusV1 | null>(null);
-  const [kernelStartMessage, setKernelStartMessage] = useState<string | null>(null);
   const [workspaceInitializationError, setWorkspaceInitializationError] = useState<string | null>(null);
   const recordRuntimeReady = useCallback((attemptId: string | null) => {
     if (attemptId) {
@@ -134,14 +133,12 @@ const DeepCodeGuiApp: React.FC = () => {
 
   const retryKernelStart = useCallback(async () => {
     setKernelStartBusy(true);
-    setKernelStartMessage(null);
     setApiStatus('checking');
     const start = await startKernelAfterPermission();
     if (!start.ok) {
       setApiStatus('error');
       const message = start.message || t(language, 'deepcodeGui.kernelStart.failed');
       setErrorMessage(message);
-      setKernelStartMessage(message);
       setKernelStartBusy(false);
       return;
     }
@@ -153,7 +150,6 @@ const DeepCodeGuiApp: React.FC = () => {
         ? startupStatusMessage(language, startupStatus)
         : start.data?.message || t(language, 'deepcodeGui.kernelStart.failed');
       setErrorMessage(message);
-      setKernelStartMessage(message);
       setKernelStartBusy(false);
       return;
     }
@@ -164,7 +160,6 @@ const DeepCodeGuiApp: React.FC = () => {
         recordRuntimeReady(hostAttemptId(startupStatus));
         setApiStatus('connected');
         setServerVersion(healthVersion(result.data));
-        setKernelStartMessage(null);
         setKernelStartBusy(false);
         // A new SSH tunnel also replaces file watchers and pending preview reads.
         // The shared reload path preserves this window's view and composer drafts.
@@ -179,7 +174,6 @@ const DeepCodeGuiApp: React.FC = () => {
       : start.data?.message || t(language, 'deepcodeGui.kernelStart.waitingHealth');
     setApiStatus('error');
     setErrorMessage(message);
-    setKernelStartMessage(message);
     setKernelStartBusy(false);
   }, [language, recordRuntimeReady, setApiStatus, setErrorMessage, setServerVersion]);
 
@@ -256,13 +250,11 @@ const DeepCodeGuiApp: React.FC = () => {
         recordRuntimeReady(attemptId);
         setApiStatus('connected');
         setServerVersion(healthVersion(result.data));
-        setKernelStartMessage(null);
         timeout = window.setTimeout(() => void check(), isRemoteHost() ? 5000 : 30000);
       } else {
         healthWasReadyRef.current = false;
         if (startup.ok && startup.data) {
           const message = startupStatusMessage(language, startup.data);
-          setKernelStartMessage(message);
           if (startup.data.phase === 'starting' || startup.data.phase === 'idle') {
             setApiStatus('checking');
             timeout = window.setTimeout(() => void check(), 500);
@@ -288,7 +280,6 @@ const DeepCodeGuiApp: React.FC = () => {
     recordRuntimeReady,
     setApiStatus,
     setErrorMessage,
-    setKernelStartMessage,
     setServerVersion,
   ]);
 
@@ -306,9 +297,6 @@ const DeepCodeGuiApp: React.FC = () => {
       <DeepCodeWorkbenchLayout
         apiStatus={apiStatus}
         serverVersion={serverVersion}
-        kernelStartBusy={kernelStartBusy}
-        kernelStartMessage={kernelStartMessage}
-        onRetryKernelStart={retryKernelStart}
       />
     </Suspense></ConversationDisplayProvider>
   </>);

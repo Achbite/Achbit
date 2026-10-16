@@ -200,9 +200,6 @@
   background: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   color: var(--dc-foreground-strong);
 }
-.ws-open-dialog__entry--code-workspace .ws-open-dialog__entry-name {
-  color: var(--dc-warning);
-}
 .ws-open-dialog__entry-icon {
   width: 34px;
   text-align: center;

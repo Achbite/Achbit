@@ -147,50 +147,7 @@
   font-weight: var(--dc-weight-regular);
 }
 
-.deepcode-gui-context-card__body {
-  padding: 11px 13px;
-}
-
-.deepcode-gui-run-state {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-label);
-}
-
-.deepcode-gui-run-state strong {
-  font-weight: var(--dc-weight-medium);
-}
-
-.deepcode-gui-run-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 999px;
-  background: var(--dc-faint);
-}
-
-.deepcode-gui-run-dot--running {
-  background: var(--dc-accent);
-  box-shadow: 0 0 0 4px var(--dc-accent-soft);
-}
-
-.deepcode-gui-run-dot--waiting {
-  background: var(--dc-warning);
-}
-
-.deepcode-gui-run-dot--completed {
-  background: var(--dc-success);
-}
-
-.deepcode-gui-run-dot--failed,
-.deepcode-gui-run-dot--indeterminate {
-  background: var(--dc-danger);
-}
-
-.deepcode-gui-context-row,
-.deepcode-gui-artifact-row {
+.deepcode-gui-context-row {
   display: grid;
   min-width: 0;
   gap: 3px;
@@ -198,8 +155,7 @@
   border-bottom: 1px solid var(--dc-border);
 }
 
-.deepcode-gui-context-row:last-child,
-.deepcode-gui-artifact-row:last-child {
+.deepcode-gui-context-row:last-child {
   border-bottom: 0;
 }
 
@@ -208,24 +164,20 @@
   align-items: center;
 }
 
-.deepcode-gui-context-row > span,
-.deepcode-gui-artifact-row strong,
-.deepcode-gui-artifact-row span {
+.deepcode-gui-context-row > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.deepcode-gui-context-row > span,
-.deepcode-gui-artifact-row strong {
+.deepcode-gui-context-row > span {
   color: var(--dc-foreground);
   font-size: var(--dc-font-caption);
   font-weight: var(--dc-weight-medium);
 }
 
-.deepcode-gui-context-row small,
-.deepcode-gui-artifact-row span {
+.deepcode-gui-context-row small {
   color: var(--dc-faint);
   font-size: var(--dc-font-micro);
 }

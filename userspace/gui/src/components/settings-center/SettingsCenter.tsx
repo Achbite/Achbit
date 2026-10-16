@@ -95,17 +95,16 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
             category={key === 'gui' ? 'appearance' : key}
             apiStatus={statusText(apiStatus)}
             serverVersion={serverVersion}
-            query=""
           />
         );
       case 'agent':
       case 'environment':
       case 'permissions':
-        return <AgentSettingsSection category={key} query="" />;
+        return <AgentSettingsSection category={key} />;
       case 'llm':
         return <LlmSection active={!searching && activeKey === 'llm'} />;
       case 'plugins':
-        return <PluginsSection query="" />;
+        return <PluginsSection />;
     }
   };
 

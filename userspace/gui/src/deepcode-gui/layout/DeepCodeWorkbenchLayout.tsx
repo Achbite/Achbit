@@ -35,9 +35,6 @@ import '../styles/deepcodeWorkbench.css';
 interface DeepCodeWorkbenchLayoutProps {
   apiStatus: string;
   serverVersion?: string;
-  kernelStartBusy?: boolean;
-  kernelStartMessage?: string | null;
-  onRetryKernelStart?: () => void | Promise<void>;
 }
 
 const SettingsCenter = lazy(
@@ -50,8 +47,6 @@ type FolderAction =
   | {
       kind: 'bind';
       project: ConversationProject;
-      startAfterBinding: boolean;
-      reopenManager: boolean;
     };
 type TextDialog =
   | { kind: 'createProject'; title: string; value: string }
@@ -283,8 +278,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
       return;
     }
     await addProjectWorkspace(action.project.id, folderPath);
-    if (action.reopenManager) await openWorkspaceManager(action.project);
-    if (action.startAfterBinding) startNewSession(action.project.id);
+    await openWorkspaceManager(action.project);
   };
 
   const openWorkspaceManager = async (project: ConversationProject) => {
@@ -710,8 +704,6 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
                   setFolderAction({
                     kind: 'bind',
                     project,
-                    startAfterBinding: false,
-                    reopenManager: true,
                   });
                 }}
               >

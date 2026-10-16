@@ -50,7 +50,7 @@ function sourceList(value: unknown): Source[] {
 const filename = (path: string) => path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path;
 
 /** Inventory reads the existing settings owners and live display registry; saving does not invent runtime state. */
-export default function PluginsSection({ query = '' }: { query?: string }) {
+export default function PluginsSection() {
   const settings = useSettingsStore((state) => state.effectiveSettings);
   const patch = useSettingsStore((state) => state.patchUserSetting);
   const language = normalizeUiLanguage(settings['workbench.language']),
@@ -187,7 +187,7 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
       (filter === 'all' || item.enabled) &&
       `${item.name} ${item.description}`
         .toLowerCase()
-        .includes(`${query} ${search}`.trim().toLowerCase()),
+        .includes(search.trim().toLowerCase()),
   );
   const save = async (item: Item, enabled: boolean, remove = false, replacement?: Source) => {
     setBusy(true);

@@ -216,6 +216,6 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
     </>}
     {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onSaved={refresh} onBack={goBack} />}
     {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} />}
-    {page.kind === 'web' && <AgentSettingsSection category="services" query="" />}
+    {page.kind === 'web' && <AgentSettingsSection category="services" />}
   </section>;
 }

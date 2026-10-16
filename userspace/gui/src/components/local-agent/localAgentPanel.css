@@ -331,33 +331,6 @@
   font-weight: var(--dc-weight-bold);
 }
 
-.local-agent__starter-grid {
-  display: grid;
-  width: min(560px, 100%);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 9px;
-  margin-top: 13px;
-}
-
-.local-agent__starter-grid button {
-  min-height: 58px;
-  padding: 9px 11px;
-  border: 1px solid var(--dc-border);
-  border-radius: 12px;
-  background: var(--dc-surface-subtle);
-  color: var(--dc-muted);
-  cursor: pointer;
-  font-size: var(--dc-font-caption);
-  line-height: var(--dc-line-compact);
-  text-align: left;
-}
-
-.local-agent__starter-grid button:hover {
-  border-color: var(--dc-border-strong);
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground);
-}
-
 .local-agent__message {
   width: 100%;
   margin: 0 0 26px;
@@ -595,18 +568,6 @@
 
 .local-agent__message-attachments small {
   color: var(--dc-faint);
-}
-
-.local-agent__directory-indexes small {
-  color: var(--dc-accent);
-  font-size: var(--dc-font-micro);
-}
-
-.local-agent__directory-index-note {
-  display: block;
-  padding: 0 14px 5px;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
 }
 
 .local-agent__narrative {
@@ -1239,8 +1200,6 @@
   margin-bottom: 12px;
 }
 
-
-
 .local-agent__interaction-panel-heading {
   display: flex;
   min-height: 28px;
@@ -1266,7 +1225,6 @@
   padding-right: 3px;
 }
 .local-agent__interaction-document-scroll::-webkit-scrollbar { display: none; }
-
 
 .conversation-answered-question {
   display: grid;
@@ -1467,8 +1425,7 @@
   box-shadow: none;
 }
 
-.local-agent button,
-.local-agent__button {
+.local-agent button {
   min-height: 30px;
   padding: 5px 10px;
   border: 1px solid var(--dc-border);
@@ -1483,21 +1440,6 @@
 .local-agent button:disabled {
   cursor: default;
   opacity: 0.48;
-}
-
-.local-agent__button--primary {
-  border-color: var(--dc-control-border) !important;
-  background: var(--dc-control-background) !important;
-  color: var(--dc-control-foreground) !important;
-}
-
-.local-agent__button--primary:is(:hover, :focus-visible):not(:disabled) {
-  background: var(--dc-surface-hover) !important;
-}
-
-.local-agent__button--danger {
-  border-color: color-mix(in srgb, var(--dc-danger) 24%, transparent) !important;
-  color: var(--dc-danger) !important;
 }
 
 .local-agent__composer-shell {
@@ -2261,10 +2203,6 @@
 
   .local-agent__transcript {
     width: calc(100% - 24px);
-  }
-
-  .local-agent__starter-grid {
-    grid-template-columns: 1fr;
   }
 
   .local-agent__composer-shell {

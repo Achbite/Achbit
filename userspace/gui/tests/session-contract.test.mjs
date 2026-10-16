@@ -600,8 +600,9 @@ test('sidebar order uses the shared settings store and failed saves retain the s
 });
 
 test('runtime file visibility is a searchable shared GUI preference and failed saves retain its value', async (t) => {
-  const [{ useSettingsStore, shellPreferenceSettingDefinitions }, { GuiSettingsSection, settingsSearchDefinitions }] = await loadGuiModules(t, [
+  const [{ useSettingsStore, shellPreferenceSettingDefinitions }, { GuiSettingsSection, settingsSearchDefinitions }, { matchesSettingsQuery }] = await loadGuiModules(t, [
     '/src/state/settingsStore.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+    '/src/components/settings-center/settingsSearch.tsx',
   ]);
   const key = 'gui.showRuntimeFiles';
   const definition = shellPreferenceSettingDefinitions('gui').find(item => item.key === key);
@@ -629,13 +630,16 @@ test('runtime file visibility is a searchable shared GUI preference and failed s
   const original = initial.effectiveSettings;
   t.after(() => { initial.effectiveSettings = original; });
   initial.effectiveSettings = useSettingsStore.getState().effectiveSettings;
-  const html = renderToStaticMarkup(createElement(GuiSettingsSection, { category: 'general', query: 'runtime', apiStatus: 'ready' }));
+  const html = renderToStaticMarkup(createElement(GuiSettingsSection, { category: 'general', apiStatus: 'ready' }));
   assert.match(html, /aria-label="Show runtime files"[^>]*checked=""/);
-  assert.doesNotMatch(html, /aria-label="Open text files with"/);
+  assert.match(html, /aria-label="Open text files with"/, 'the destination page retains its complete settings');
   for (const [language, label] of [['zh-CN', '显示运行环境文件'], ['en-US', 'Show runtime files']]) {
     const search = settingsSearchDefinitions(language, 'macos').find(item => item.id === key);
     assert.equal(search.category, 'general');
     assert.equal(search.title, label);
+    assert.equal(matchesSettingsQuery('runtime', search.title, search.keywords), true);
+    const fileOpen = settingsSearchDefinitions(language, 'macos').find(item => item.id === 'gui.defaultFileOpen');
+    assert.equal(matchesSettingsQuery('runtime', fileOpen.title, fileOpen.keywords), false);
   }
   const { useSettingsStore: reloaded } = await loadGuiModule(t, '/src/state/settingsStore.ts');
   await reloaded.getState().loadUserSettings();
