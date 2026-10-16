@@ -36,6 +36,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/connection", "tui.command.model", false),
     ("/context", "tui.command.context", false),
     ("/font", "tui.command.font", false),
+    ("/language", "tui.command.language", false),
     ("/tasks", "tui.command.tasks", false),
     ("/agents", "tui.command.agents", false),
     ("/agent", "tui.command.agent", true),
@@ -330,6 +331,17 @@ impl TuiApp {
                             .format("tui.font.changed", &[choice.into()]),
                         Err(error) => self.host.language.format("tui.font.failed", &[error]),
                     };
+            }
+            "/language" => {
+                self.context_open = false;
+                self.tasks_open = false;
+                self.resource_preview = None;
+                self.detail_scroll.set(0);
+                self.detail_preview = Some(self.host.language.text("tui.language.help").into());
+            }
+            value if value.starts_with("/language ") => {
+                self.change_language(value.trim_start_matches("/language ").trim())
+                    .await;
             }
             "/show" => self.status = self.projection_label(),
             "/error" | "/decision" => {
@@ -1345,6 +1357,33 @@ impl TuiApp {
         })
     }
 
+    async fn change_language(&mut self, choice: &str) {
+        if Language::parse(choice).is_none() {
+            self.status = self
+                .host
+                .language
+                .format("tui.languageInvalid", &[choice.into()]);
+            return;
+        }
+        let result = self
+            .client
+            .patch_user_settings(&json!({ "workbench.language": choice }))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|settings| Language::from_settings(&settings));
+        match result {
+            Ok(language) => {
+                self.host.language = language;
+                self.detail_preview = None;
+                self.detail_scroll.set(0);
+                self.status = language.text("tui.language.changed").into();
+            }
+            Err(error) => {
+                self.status = self.host.language.format("tui.language.failed", &[error]);
+            }
+        }
+    }
+
     pub fn language(&self) -> Language {
         self.host.language
     }
@@ -2027,6 +2066,130 @@ mod input_tests {
                 plugin_uris: vec![],
             },
         )
+    }
+
+    #[tokio::test]
+    async fn language_command_saves_through_shared_settings_before_changing_the_view() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut app = test_app();
+        app.projection = Some(waiting_projection("pendingPlan", serde_json::Value::Null));
+        app.push_input_text("Keep this draft 原文");
+        let projection = app.projection.clone();
+        for (choice, accepted, expected) in [
+            ("en-US", true, Language::EnUs),
+            ("zh-CN", true, Language::ZhCn),
+            ("en-US", false, Language::ZhCn),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            app.client = HttpKernelClient::new(
+                deepcode_kernel_client::KernelClientConfig::new(format!(
+                    "http://{}",
+                    listener.local_addr().unwrap()
+                ))
+                .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
+            )
+            .unwrap();
+            app.submit_line("/help").await;
+            let server = async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let (start, length) = loop {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        assert!(headers.starts_with("PATCH /api/user-settings HTTP/1.1"));
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        break (end + 4, length);
+                    }
+                };
+                while request.len() < start + length {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let patch: serde_json::Value =
+                    serde_json::from_slice(&request[start..start + length]).unwrap();
+                assert_eq!(
+                    patch,
+                    json!({ "patches": { "workbench.language": choice } })
+                );
+                let response = if accepted {
+                    json!({ "ok": true, "data": {
+                        "settings": { "workbench.language": choice, "gui.colorTheme": "dark" },
+                        "changedKeys": ["workbench.language"], "activation": "immediate"
+                    } })
+                } else {
+                    json!({ "ok": false, "message": "settings write failed" })
+                }
+                .to_string();
+                socket.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                ).as_bytes()).await.unwrap();
+            };
+            let command = format!("/language {choice}");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(server, app.submit_line(&command))
+            })
+            .await
+            .expect("language setting request finishes");
+            assert_eq!(app.language(), expected);
+            assert_eq!(
+                app.projection, projection,
+                "language changes do not rewrite the conversation"
+            );
+            assert_eq!(app.input(), "Keep this draft 原文");
+            if accepted {
+                assert!(
+                    app.detail_preview.is_none(),
+                    "dismiss stale translated help"
+                );
+                assert_eq!(app.status, expected.text("tui.language.changed"));
+                let screen = screen_rows(&app, 90, 24).join("\n");
+                assert!(
+                    screen.contains(expected.text("tui.language.changed")),
+                    "{screen}"
+                );
+                app.submit_line("/help").await;
+                assert_eq!(
+                    app.detail_preview.as_deref(),
+                    Some(expected.text("tui.commandHelp"))
+                );
+            } else {
+                assert!(app.status.contains("settings write failed"));
+                assert!(app.detail_preview.is_some());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn language_help_and_invalid_choices_do_not_submit_a_conversation() {
+        let mut app = test_app();
+        app.push_input_text("/lang");
+        assert_eq!(app.command_picker_entries(7)[0].command, "/language");
+        app.clear_input();
+        app.submit_line("/language").await;
+        let help = app.detail_preview.as_deref().unwrap();
+        assert!(help.contains("/language en-US"));
+        assert!(help.contains("/language zh-CN"));
+        app.submit_line("/language fr-FR").await;
+        assert_eq!(app.language(), Language::ZhCn);
+        assert_eq!(
+            app.status,
+            Language::ZhCn.format("tui.languageInvalid", &["fr-FR".into()])
+        );
+        assert!(app.projection.is_none());
     }
 
     #[tokio::test]

@@ -81,7 +81,7 @@ deepcode-cli --model <profile-id> chat -C /path/to/project
 deepcode-tui -C /path/to/project
 ```
 
-For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. See [terminal and window behavior](docs/distribution.md).
+For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. Use `/language en-US` or `/language zh-CN` to change and save the interface language; this is separate from the language requested in a message. See [terminal and window behavior](docs/distribution.md).
 
 ## See it in use
 
@@ -89,13 +89,9 @@ For portable packages, replace the command with its launcher. Copy `<profile-id>
 
 *A real GUI task using fictional project data: read a CSV, create an interactive dashboard, and inspect its preview. Try the [sample CSV](examples/delivery-dashboard/delivery-data.csv). This is a general product demonstration.*
 
-![DeepCode TUI running a real DeepSeek project task](assets/readme/tui-task-en.png)
+![English illustration of DeepCode TUI with mathematical notation](assets/readme/tui-localized-en.png)
 
-*DeepSeek V4.1 Flash reading project files in the packaged macOS TUI. Captured from a live PTY displayed with xterm.js; see [capture notes](assets/readme/README.md).*
-
-![DeepCode TUI showing bilingual text, code, and a table](assets/readme/tui-rendering-zh.png)
-
-*Text rendered by the running TUI: Chinese and English, a code block, and a table.*
+*Based on a real TUI conversation; the interface labels were translated into English with image editing. The [original Chinese screenshot](assets/readme/tui-native-zh.png) shows the native capture. See [capture notes](assets/readme/README.md).*
 
 ## Models and DeepSeek
 

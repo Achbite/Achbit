@@ -2,14 +2,12 @@
 
 `workspace-en.jpg` and `workspace-zh.jpg` show real GUI tasks using the fictional delivery data in [`examples/delivery-dashboard`](../../examples/delivery-dashboard). They are general product demonstrations, not proof of a particular model connection. The older review images remain available as supporting assets.
 
-The following screenshots were captured on macOS Apple Silicon on 2026-10-17 using the DeepCode 0.6.50 package:
+`tui-native-zh.png` is the maintainer-provided screenshot of an actual DeepCode terminal window, supplied on 2026-10-17. It shows a completed conversation with Chinese text and mathematical notation. The original pixels are preserved. The screenshot illustrates the current rendering, including any literal notation visible in the response; it is not a claim of complete LaTeX support.
 
-- `tui-task-en.png`: a real DeepSeek task reading this repository's README, with completed file and Bash tools.
-- `tui-rendering-zh.png`: a later message in the same conversation, displaying Chinese, English identifiers, a Rust code block, and a Markdown table.
-- [`docs/product/assets/deepseek-settings-en.png`](../../docs/product/assets/deepseek-settings-en.png): the actual GUI model editor after saving the DeepSeek configuration.
+The TUI header displays the saved profile ID `deepseek-v4-flash-openai` and the highest effort setting. A profile ID is distinct from the API model name. This screenshot does not itself prove the transmitted request parameters. The separately completed integration verification used `deepseek-flash`, the Responses API, `reasoning.effort: "max"`, and `max_output_tokens: 384000` with real file/tool calls and continued conversation.
 
-The TUI images show the native packaged `deepcode-tui` running in a live PTY. Its terminal output was displayed with xterm.js and the packaged DeepCode terminal font, then captured without altering the conversation or tool results. These images demonstrate the TUI output; they do not establish the macOS Terminal app's window or font behavior. The GUI image was captured from the native app.
-
-The TUI header shows the saved profile ID `deepseek-v4-flash-openai`. Actual provider requests used `deepseek-flash`, the Responses API, `reasoning.effort: "max"`, and `max_output_tokens: 384000`. The configuration ID and API model name serve different purposes.
+[`docs/product/assets/deepseek-settings-en.png`](../../docs/product/assets/deepseek-settings-en.png) shows the actual macOS GUI model editor after saving that configuration on 2026-10-17.
 
 No API keys or credentials are included in these images. See the [English](../../docs/product/deepseek.md) or [简体中文](../../docs/product/deepseek.zh-CN.md) guide to reproduce the connection and task workflow.
+
+`tui-localized-en.png` is an English documentation illustration produced with the built-in imagegen tool from the maintainer's second native screenshot (English response, Chinese interface). Only interface-label translation was requested; the image was inspected for the original formulas, response text, model profile, and usage numbers. It is not an unedited capture of the English UI and is not used as runtime acceptance evidence.
