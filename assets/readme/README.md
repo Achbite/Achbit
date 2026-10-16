@@ -9,3 +9,5 @@ The TUI header displays the saved profile ID `deepseek-v4-flash-openai` and the 
 [`docs/product/assets/deepseek-settings-en.png`](../../docs/product/assets/deepseek-settings-en.png) shows the actual macOS GUI model editor after saving that configuration on 2026-10-17.
 
 No API keys or credentials are included in these images. See the [English](../../docs/product/deepseek.md) or [简体中文](../../docs/product/deepseek.zh-CN.md) guide to reproduce the connection and task workflow.
+
+`tui-localized-en.png` is an English documentation illustration produced with the built-in imagegen tool from the maintainer's second native screenshot (English response, Chinese interface). Only interface-label translation was requested; the image was inspected for the original formulas, response text, model profile, and usage numbers. It is not an unedited capture of the English UI and is not used as runtime acceptance evidence.
