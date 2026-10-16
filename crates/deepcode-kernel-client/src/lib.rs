@@ -206,6 +206,19 @@ impl HttpKernelClient {
         api_data(value)
     }
 
+    pub async fn patch_user_settings(&self, patches: &Value) -> KernelClientResult<Value> {
+        let value = self
+            .http
+            .patch(self.url("/api/user-settings"))
+            .json(&json!({ "patches": patches }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        api_data(value)
+    }
+
     pub async fn conversation_catalog(&self) -> KernelClientResult<ConversationCatalog> {
         let value = self
             .http

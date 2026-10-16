@@ -103,6 +103,8 @@ deepcode-tui -C /path/to/project
 
 Use `/model` to choose the saved DeepSeek model, or `/model <profile-id>` to select it directly. Its saved `max` profile setting applies when the conversation has no explicit effort override. Use `/sessions` and `/resume` to reopen an existing conversation, and `/` to see available commands. See [terminal window and font behavior](../distribution.md).
 
+Use `/language en-US` or `/language zh-CN` to change the TUI interface language immediately and save the shared preference. Asking the model to answer in English changes its reply, not the interface. You can also start with `deepcode-tui --language en-US` to override the saved language for that launch.
+
 ## References
 
 - [DeepCode models, connections, and usage](model-services.md)
