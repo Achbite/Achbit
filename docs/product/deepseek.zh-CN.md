@@ -1,4 +1,4 @@
-[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [DeepCode](../../README.zh-CN.md)
+[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [DeepCode](https://github.com/Achbite/DeepCode/blob/main/README.zh-CN.md)
 
 # 在 DeepCode (Achbite) 中使用 DeepSeek
 
@@ -36,7 +36,7 @@ make shell
 | Windows x64 | `bash ./build.sh --stage package-windows` | `bin/win64/` |
 | Linux，与容器架构一致 | `bash ./build.sh --stage package-linux` | `bin/linux-x64/` 或 `bin/linux-arm64/` |
 
-构建成功后运行 `exit`，**回到宿主机**打开输出目录中的 GUI 或终端启动器；例如 macOS 执行 `open bin/macos-arm64/DeepCode-GUI.app`。Windows 产物需从 Windows 打开。各平台完整启动命令见[源码构建说明](../../README.zh-CN.md#从源码构建)。
+构建成功后运行 `exit`，**回到宿主机**打开输出目录中的 GUI 或终端启动器；例如 macOS 执行 `open bin/macos-arm64/DeepCode-GUI.app`。Windows 产物需从 Windows 打开。各平台完整启动命令见[源码构建说明](https://github.com/Achbite/DeepCode/blob/main/README.zh-CN.md#从源码构建)。
 
 ## 2. 保存 DeepSeek 连接与模型
 
@@ -64,7 +64,7 @@ DeepSeek 官方说明支持 **1M token 上下文**和**最高 384K token 输出*
 
 [Responses API](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 对 `deepseek-flash` 忽略内置 `web_search`，因此本指南的 Flash 配置将它关闭。同一 API 文档说明 `deepseek-v4-pro` 支持服务端联网搜索，那是另一条模型路径。单独配置的搜索工具有各自的可用条件。
 
-![DeepCode 模型编辑器保存 DeepSeek V4.1 Flash、Responses API 和 Max](../../assets/readme/deepseek-settings-en.png)
+![DeepCode 模型编辑器保存 DeepSeek V4.1 Flash、Responses API 和 Max](assets/deepseek-settings-en.png)
 
 *macOS GUI 中已保存的配置，画面没有包含 API Key。*
 

@@ -1,4 +1,4 @@
-[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [DeepCode](../../README.md)
+[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [DeepCode](https://github.com/Achbite/DeepCode)
 
 # Use DeepSeek with DeepCode (Achbite)
 
@@ -36,7 +36,7 @@ make shell
 | Windows x64 | `bash ./build.sh --stage package-windows` | `bin/win64/` |
 | Linux, matching the container architecture | `bash ./build.sh --stage package-linux` | `bin/linux-x64/` or `bin/linux-arm64/` |
 
-Run `exit` after a successful build. **Back on the host**, open the GUI or terminal launcher from that output directory; for example, `open bin/macos-arm64/DeepCode-GUI.app` on macOS. Open Windows outputs from Windows, not inside the Linux build container. See [build details](../../README.md#build-from-source) for all launch commands.
+Run `exit` after a successful build. **Back on the host**, open the GUI or terminal launcher from that output directory; for example, `open bin/macos-arm64/DeepCode-GUI.app` on macOS. Open Windows outputs from Windows, not inside the Linux build container. See [build details](https://github.com/Achbite/DeepCode#build-from-source) for all launch commands.
 
 ## 2. Save a DeepSeek connection and model
 
@@ -64,7 +64,7 @@ DeepSeek documents a **1M-token context window** and **up to 384K output tokens*
 
 For `deepseek-flash`, the [Responses API](https://api-docs.deepseek.com/guides/responses_api/) ignores the built-in `web_search` tool, so leave it off in this Flash setup. The same API documents server-side web search for `deepseek-v4-pro`; that is a different model path. Separately configured web-search tools have their own availability.
 
-![DeepCode model editor with DeepSeek V4.1 Flash, Responses API, and Max saved](../../assets/readme/deepseek-settings-en.png)
+![DeepCode model editor with DeepSeek V4.1 Flash, Responses API, and Max saved](assets/deepseek-settings-en.png)
 
 *The saved settings in the macOS GUI. The screenshot contains no API key.*
 
