@@ -469,8 +469,8 @@ fn plugin_catalog(
             public: PublicPluginCatalogItem {
                 uri: uri.into(),
                 display_name: "Computer Use".into(),
-                short_description:
-                    "按任务选择程序接口或 GUI；提供内置浏览器与经授权的桌面操作和截图。".into(),
+                short_description: "前端内容优先使用内置浏览器；按需提供经授权的桌面操作和截图。"
+                    .into(),
                 icon_ref: None,
                 management: Some(json!({"key":"plugins.disabled","id":uri})),
                 activation_media_types: vec![],
