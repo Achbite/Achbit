@@ -57,6 +57,7 @@
     "deepcodeGui.ssh.destination": "SSH host or config alias",
     "deepcodeGui.ssh.port": "Port (blank uses SSH config)",
     "deepcodeGui.ssh.cliPath": "Remote CLI path",
+    "deepcodeGui.ssh.remoteShell": "Remote operating system",
     "deepcodeGui.ssh.advanced": "More options",
     "deepcodeGui.ssh.identityFile": "Local SSH private key path (optional)",
     "deepcodeGui.ssh.configFile": "Local SSH config file (optional)",

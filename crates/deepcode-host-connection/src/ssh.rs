@@ -2,6 +2,7 @@
 use crate::loopback_http::request_loopback_json_until;
 use crate::process::{spawn_owned_host_process, terminate_owned_process_tree, OwnedHostProcess};
 use crate::startup;
+use base64::Engine;
 use deepcode_kernel_abi::{is_valid_host_ui_token, HostProcessIdentity, HOST_UI_TOKEN_HEADER};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -17,6 +18,29 @@ use std::time::{Duration, Instant};
 
 pub const GUI_ATTACH_SCHEMA: &str = "deepcode.gui-attach.v1";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SshRemoteShell {
+    #[default]
+    Posix,
+    Windows,
+}
+
+impl std::str::FromStr for SshRemoteShell {
+    type Err = io::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "posix" => Ok(Self::Posix),
+            "windows" => Ok(Self::Windows),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Remote shell must be posix or windows",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SshTarget {
@@ -26,6 +50,8 @@ pub struct SshTarget {
     pub config_file: Option<PathBuf>,
     pub cli_path: String,
     pub user_root: Option<String>,
+    #[serde(default)]
+    pub remote_shell: SshRemoteShell,
 }
 
 #[derive(Debug, Serialize)]
@@ -171,6 +197,32 @@ impl SshTarget {
     }
 
     fn remote_command(&self) -> String {
+        if self.remote_shell == SshRemoteShell::Windows {
+            // The encoded script is a single safe word through both cmd.exe and
+            // PowerShell, including paths with Unicode, %, $, quotes and spaces.
+            let literal = |value: &str| format!("'{}'", value.replace('\'', "''"));
+            let root = self
+                .user_root
+                .as_ref()
+                .map(|root| format!("$env:DEEPCODE_USER_ROOT={};", literal(root)))
+                .unwrap_or_default();
+            // Inherit the SSH pipes directly. A PowerShell native pipeline can
+            // transcode the JSON handshake or consume the child's stdin.
+            let script = format!(
+                "$ErrorActionPreference='Stop';{root}\
+                 $p=[System.Diagnostics.Process]::new();\
+                 $p.StartInfo.UseShellExecute=$false;\
+                 $p.StartInfo.FileName={};\
+                 $p.StartInfo.Arguments='gui-attach';\
+                 [void]$p.Start();$p.WaitForExit();exit $p.ExitCode",
+                literal(&self.cli_path)
+            );
+            let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            return format!(
+                "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            );
+        }
         let root = self
             .user_root
             .as_ref()
@@ -510,6 +562,7 @@ mod tests {
             config_file: None,
             cli_path: "/opt/Deep Code/it's-cli".into(),
             user_root: Some("/home/dev/user $(touch wrong)".into()),
+            remote_shell: SshRemoteShell::Posix,
         };
         target.validate().unwrap();
         let mut shell = Command::new("sh");
@@ -524,6 +577,115 @@ mod tests {
             String::from_utf8(output.stdout).unwrap(),
             format!("{}\n{}", target.cli_path, target.user_root.unwrap())
         );
+    }
+
+    #[test]
+    fn windows_remote_command_preserves_paths_without_outer_shell_expansion() {
+        let mut target: SshTarget = serde_json::from_value(serde_json::json!({
+            "destination":"dev@host", "cliPath":"deepcode-cli"
+        }))
+        .unwrap();
+        assert_eq!(
+            target.remote_shell,
+            SshRemoteShell::Posix,
+            "existing profiles stay compatible"
+        );
+        target.remote_shell = "windows".parse().unwrap();
+        target.cli_path = "C:\\应用 & data\\it's %PATH% $cli.exe".into();
+        target.user_root = Some("D:\\数据\\it's $(exit 1); %TEMP%".into());
+        target.validate().unwrap();
+        let command = target.remote_command();
+        let encoded = command
+            .strip_prefix("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ")
+            .unwrap();
+        assert!(!encoded
+            .chars()
+            .any(|c| c.is_whitespace() || "%$&;'".contains(c)));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let script = String::from_utf16(
+            &bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(script.contains("$env:DEEPCODE_USER_ROOT='D:\\数据\\it''s $(exit 1); %TEMP%';"));
+        assert!(script.contains("$p.StartInfo.FileName='C:\\应用 & data\\it''s %PATH% $cli.exe';"));
+        assert!(script.contains("UseShellExecute=$false"));
+        assert!(script.ends_with("$p.WaitForExit();exit $p.ExitCode"));
+        assert!("unknown".parse::<SshRemoteShell>().is_err());
+        assert_eq!(
+            serde_json::to_value(target).unwrap()["remoteShell"],
+            "windows"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_remote_command_keeps_native_stdin_and_utf8_stdout() {
+        use std::os::windows::process::CommandExt;
+        let directory = std::env::temp_dir().join(format!(
+            "deepcode ssh 中文 & it's %PATH% $cli-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("cli.exe");
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        // FINDSTR consumes the fixed gui-attach argument as its search pattern,
+        // and copies a matching input line without decoding or re-encoding it.
+        std::fs::copy(system.join("System32/findstr.exe"), &executable).unwrap();
+        let target = SshTarget {
+            destination: "unused".into(),
+            port: None,
+            identity_file: None,
+            config_file: None,
+            cli_path: executable.to_string_lossy().into(),
+            user_root: Some("D:\\用户\\it's $(exit 1); %TEMP%".into()),
+            remote_shell: SshRemoteShell::Windows,
+        };
+        let input = "{\"gui-attach\":\"中文 café 😀\"}\n";
+        for shell in ["cmd.exe", "powershell.exe"] {
+            let mut command = Command::new(shell);
+            if shell == "cmd.exe" {
+                command.args(["/d", "/s", "/c"]);
+            } else {
+                command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+            }
+            let mut child = command
+                .arg(target.remote_command())
+                .creation_flags(0x0800_0000)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap().trim_end(),
+                input.trim_end(),
+                "{shell}"
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::remove_file(executable).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

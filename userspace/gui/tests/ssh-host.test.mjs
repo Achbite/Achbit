@@ -37,4 +37,7 @@ test('SSH GUI uses the remote Host for browsing, defaults and selected-file prev
   assert.equal(await (await host.readLocalFile('/remote/remote.txt')).text(), 'remote file contents');
   assert.deepEqual(calls, ['/api/workspaces/default-path', '/api/fs/browse', '/api/fs/read']);
   assert.deepEqual(nativeCalls, []);
+  const target = { destination: 'dev@windows', cliPath: "C:\\Deep Code\\deepcode-cli.exe", remoteShell: 'windows' };
+  await runtime.connectSsh(target);
+  assert.deepEqual(nativeCalls, [['deepcode_connect_ssh', { target }]]);
 });

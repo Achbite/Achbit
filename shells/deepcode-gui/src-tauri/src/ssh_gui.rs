@@ -43,6 +43,10 @@ pub(super) fn launch_target() -> std::io::Result<Option<SshTarget>> {
         config_file: value("--ssh-config")?.map(PathBuf::from),
         cli_path: value("--remote-cli")?.unwrap_or_else(|| "deepcode-cli".into()),
         user_root: value("--remote-user-root")?,
+        remote_shell: value("--remote-shell")?
+            .map(|value| value.parse())
+            .transpose()?
+            .unwrap_or_default(),
     };
     target.validate()?;
     Ok(Some(target))

@@ -743,6 +743,7 @@ dependencies = [
 name = "deepcode-host-connection"
 version = "0.6.50"
 dependencies = [
+ "base64 0.22.1",
  "deepcode-kernel-abi",
  "libc",
  "serde",

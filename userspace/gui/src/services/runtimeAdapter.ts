@@ -210,6 +210,7 @@ export interface SshTarget {
   configFile?: string;
   cliPath: string;
   userRoot?: string;
+  remoteShell?: 'posix' | 'windows';
 }
 
 export async function connectSsh(target: SshTarget): Promise<void> {

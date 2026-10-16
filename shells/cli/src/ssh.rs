@@ -41,6 +41,7 @@ fn parse(args: &[String]) -> io::Result<Options> {
             config_file: None,
             cli_path: "deepcode-cli".into(),
             user_root: None,
+            remote_shell: Default::default(),
         },
         output: None,
         gui: None,
@@ -67,6 +68,7 @@ fn parse(args: &[String]) -> io::Result<Options> {
             "--config" => options.target.config_file = Some(std::path::absolute(value)?),
             "--remote-cli" => options.target.cli_path = value.clone(),
             "--remote-user-root" => options.target.user_root = Some(value.clone()),
+            "--remote-shell" => options.target.remote_shell = value.parse()?,
             "--output" => options.output = Some(std::path::absolute(value)?),
             "--gui" => options.gui = Some(std::path::absolute(value)?),
             _ => {
@@ -268,7 +270,8 @@ const HELP: &str = r#"Agent SSH onboarding (run on the computer displaying the G
   deepcode-cli ssh check --profile <profile.json>
   deepcode-cli ssh connect --profile <profile.json> [--wait] [--gui <executable>]
 All commands also accept --host instead of --profile and return JSON (except help).
-Options: --identity <local key path>, --config <OpenSSH config>, --remote-cli <path>, --remote-user-root <path>.
+Options: --identity <local key path>, --config <OpenSSH config>, --remote-cli <path>, --remote-user-root <path>, --remote-shell <posix|windows>.
+Remote shell defaults to posix (macOS/Linux). Select windows for Windows OpenSSH using cmd.exe or PowerShell.
 inspect resolves local OpenSSH configuration; check verifies a real remote CLI/Host attachment using keys/ssh-agent, without a prompt.
 connect opens a new remote GUI; --wait returns its actual connected/failed result while the human answers native login prompts.
 configure writes connection metadata only and refuses to overwrite an existing file. There is no password argument or password field.
@@ -297,12 +300,19 @@ mod tests {
             "8008",
             "--user",
             "dev",
+            "--remote-shell",
+            "windows",
             "--wait",
         ])
         .unwrap();
         assert_eq!(args.target.destination, "dev@127.0.0.1");
         assert_eq!(args.target.port, Some(8008));
         assert!(args.wait);
+        assert_eq!(
+            args.target.remote_shell,
+            deepcode_host_connection::ssh::SshRemoteShell::Windows
+        );
+        assert!(parse_args(&["connect", "--host", "server", "--remote-shell", "unknown"]).is_err());
         assert!(parse_args(&["connect", "--host", "server", "--password", "secret"]).is_err());
         assert!(parse_args(&["connect", "--host", "server", "--port", "0"]).is_err());
         assert!(parse_args(&["configure", "--host", "server"]).is_err());

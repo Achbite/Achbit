@@ -1,5 +1,11 @@
 # Execution environments
 
+## SSH remote Hosts
+
+The GUI connection dialog selects the remote operating system. Keep macOS / Linux for POSIX login shells; select Windows (OpenSSH) for a Windows Host using the default cmd.exe or PowerShell shell. Existing connection profiles default to POSIX. Supply the remote `deepcode-cli` executable path and, optionally, a remote user-data root. The local and remote operating systems can differ.
+
+CLI onboarding uses `deepcode-cli ssh configure --host user@host --remote-shell windows --remote-cli 'C:\Program Files\DeepCode\deepcode-cli.exe' --output windows-host.json` (example quoted for PowerShell or a POSIX shell), then `deepcode-cli ssh connect --profile windows-host.json`. JSON profiles store `remoteShell` as `posix` or `windows`. Direct GUI launches accept `--ssh user@host --remote-shell windows --remote-cli <path>` as well. Passwords and key passphrases are entered through the GUI's existing SSH prompts.
+
 ## Native Windows
 
 Settings > Execution environment contains the global Windows Shell preference. Automatic selection prefers PowerShell 7 (`pwsh.exe`), then built-in Windows PowerShell 5.1 when PowerShell 7 is absent. Explicit PowerShell 7, Windows PowerShell and Git Bash choices do not switch to another shell on failure. Git Bash can use a custom executable path. The WSL launcher `System32/bash.exe` is not a Git Bash candidate.

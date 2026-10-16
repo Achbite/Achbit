@@ -14,6 +14,7 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [destination, setDestination] = useState(''), [port, setPort] = useState('');
   const [username, setUsername] = useState('');
+  const [remoteShell, setRemoteShell] = useState<'posix' | 'windows'>('posix');
   const [cliPath, setCliPath] = useState('deepcode-cli'), [userRoot, setUserRoot] = useState('');
   const [identityFile, setIdentityFile] = useState(''), [configFile, setConfigFile] = useState('');
   const text = (key: string) => t(language, `deepcodeGui.ssh.${key}`);
@@ -27,6 +28,7 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
       setDestination(separator >= 0 ? target.destination.slice(separator + 1) : target.destination);
       setPort(target.port?.toString() ?? '');
       setCliPath(target.cliPath); setUserRoot(target.userRoot ?? '');
+      setRemoteShell(target.remoteShell ?? 'posix');
       setIdentityFile(target.identityFile ?? ''); setConfigFile(target.configFile ?? '');
     }).catch(reason => setError(String(reason)));
   };
@@ -39,7 +41,7 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
       <form className="ssh-connection-dialog" onSubmit={event => {
         event.preventDefault(); setBusy(true); setError('');
         void connectSsh({ destination: username.trim() ? `${username.trim()}@${destination.trim()}` : destination.trim(), port: port ? Number(port) : undefined,
-          cliPath: cliPath.trim(), userRoot: userRoot.trim() || undefined,
+          cliPath: cliPath.trim(), userRoot: userRoot.trim() || undefined, remoteShell,
           identityFile: identityFile.trim() || undefined, configFile: configFile.trim() || undefined })
           .then(() => setOpen(false)).catch(reason => setError(String(reason))).finally(() => setBusy(false));
       }}>
@@ -48,6 +50,9 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
         <label>{text('destination')}<input autoFocus required value={destination} onChange={e => setDestination(e.target.value)} placeholder="user@host" /></label>
         <label>{text('port')}<input type="number" min="1" max="65535" value={port} onChange={e => setPort(e.target.value)} placeholder="22" /></label>
         <label>{text('username')}<input value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" /></label>
+        <label>{text('remoteShell')}<select value={remoteShell} onChange={e => setRemoteShell(e.target.value as 'posix' | 'windows')}>
+          <option value="posix">macOS / Linux</option><option value="windows">Windows (OpenSSH)</option>
+        </select></label>
         <label>{text('cliPath')}<input required value={cliPath} onChange={e => setCliPath(e.target.value)} /></label>
         <details><summary>{text('advanced')}</summary>
           <label>{text('identityFile')}<input value={identityFile} onChange={e => setIdentityFile(e.target.value)} /></label>

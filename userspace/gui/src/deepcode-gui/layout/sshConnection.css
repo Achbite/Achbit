@@ -7,7 +7,7 @@
 .ssh-connection-dialog h2 { font-size: 18px; }
 .ssh-connection-dialog p { font-size: 12px; color: var(--dc-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ssh-connection-dialog label { display: grid; gap: 5px; font-size: 13px; }
-.ssh-connection-dialog input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--dc-border); border-radius: 6px; background: var(--dc-background); color: inherit; }
+.ssh-connection-dialog input, .ssh-connection-dialog select { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--dc-border); border-radius: 6px; background: var(--dc-background); color: inherit; }
 .ssh-connection-dialog details label { margin-top: 10px; }
 .ssh-connection-dialog summary { cursor: pointer; }
 .ssh-connection-dialog footer { display: flex; gap: 10px; justify-content: flex-end; }
