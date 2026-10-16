@@ -141,14 +141,13 @@ export function agentDecisionKey(projection: SessionProjection | null): string |
 /** Child history consumes the same canonical rows and activity/Plan components as the main view. */
 export function AgentConversationHistory({ projection, name, language, expanded }: {
   projection: SessionProjection; name: string; language: UiLanguage; expanded: boolean;
-  onExpandedChange?(expanded: boolean): void;
 }) {
   if (!expanded) return null;
   const openResource = (workspaceId: string, path: string) => requestWorkspacePreview(projection.sessionId, workspaceId, path);
   const items = projectionItems(projection);
   return <div className="agent-tasks__conversation">
     {items.map(item => item.type === 'toolGroup'
-      ? <ToolActivityGroup key={item.groupId} activities={item.values} language={language} onExpand={() => {}}
+      ? <ToolActivityGroup key={item.groupId} activities={item.values} artifacts={projection.artifacts} language={language} onExpand={() => {}}
           pendingApproval={projection.pendingApproval} reviewingApproval={projection.run?.status === 'running'} onOpenWorkspaceResource={openResource} />
       : item.type === 'plan' ? <PlanCard key={`plan:${item.sequence}`} plan={item.value} active={false} language={language} workspaceBindings={projection.workspaceBindings} />
       : item.type === 'interaction' ? <InteractionCard key={`interaction:${item.sequence}`} interaction={item.value} language={language} disabled />

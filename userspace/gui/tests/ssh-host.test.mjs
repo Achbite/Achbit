@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { loadGuiModules, installGuiFetch } from './gui-projection-contract.mjs';
 
 test('SSH GUI uses the remote Host for browsing, defaults and selected-file previews', async t => {
@@ -11,11 +13,12 @@ test('SSH GUI uses the remote Host for browsing, defaults and selected-file prev
       uiToken: 'dcui_' + 'a'.repeat(64), windowChrome: 'custom', remote: true, remoteLabel: 'remote-test' },
     __TAURI__: { core: { invoke: async (...args) => { nativeCalls.push(args); } } },
   };
-  globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
   t.after(() => { globalThis.window = originalWindow; globalThis.document = originalDocument; });
-  const [runtime, browser, hostModule] = await loadGuiModules(t, [
+  const [runtime, browser, hostModule, { ResourcePreview }] = await loadGuiModules(t, [
     '/src/services/runtimeAdapter.ts', '/src/services/nativeBrowser.ts', '/src/components/local-agent/ConversationHost.tsx',
+    '/src/components/local-agent/ResourcePreview.tsx',
   ]);
+  globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
   assert.equal(runtime.hasNativePathPicker(), false);
   assert.equal(browser.hasNativeBrowser(), false);
   const calls = [];
@@ -34,6 +37,22 @@ test('SSH GUI uses the remote Host for browsing, defaults and selected-file prev
   const host = hostModule.useConversationHost();
   assert.equal(host.openFile, undefined);
   assert.equal(host.locatePath, undefined);
+  const renderReader = () => renderToStaticMarkup(createElement(ResourcePreview, { language: 'en-US', preview: {
+    sessionId: 'session:remote', tabs: [{ id: 'remote-file', target: { kind: 'file', path: '/remote/remote.txt' } }],
+    activeId: 'remote-file', visible: true, expanded: false, treeVisible: false, width: 55, error: null,
+    selectTab() {}, closeTab() {}, newPage() {}, expand() {}, resize() {}, openTarget() {},
+  } }));
+  assert.doesNotMatch(renderReader(), /Open file with|Open in VS Code|Show in folder/,
+    'remote Reader omits actions absent from the Host capabilities');
+  host.openFile = async () => {};
+  t.after(() => { host.openFile = undefined; host.locatePath = undefined; });
+  assert.match(renderReader(), /Open in VS Code/);
+  assert.doesNotMatch(renderReader(), /Show in folder/);
+  host.openFile = undefined;
+  host.locatePath = async () => {};
+  assert.match(renderReader(), /Show in folder/);
+  assert.doesNotMatch(renderReader(), /Open in VS Code/);
+  host.locatePath = undefined;
   assert.equal(await (await host.readLocalFile('/remote/remote.txt')).text(), 'remote file contents');
   assert.deepEqual(calls, ['/api/workspaces/default-path', '/api/fs/browse', '/api/fs/read']);
   assert.deepEqual(nativeCalls, []);

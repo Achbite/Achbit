@@ -8,10 +8,11 @@ import { createSession, readEvents, workspaceBinding } from '../../session-core/
 import { decodeGuiProjection, installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
 
 test('computer history lists each operation collapsed and reveals only its archived evidence with accurate feedback', async t => {
-  const [{ ComputerActivity, computerInterfaceText, computerActivitySummary }, { readConversationArtifact }, { ToolActivityGroup }, { ConversationVirtualRow }, { projectionItems }] = await loadGuiModules(t, [
+  const [{ ComputerActivity, computerInterfaceText, computerActivitySummary }, { readConversationArtifact }, { ToolActivityGroup }, { ConversationVirtualRow }, { projectionItems }, { AgentConversationHistory }] = await loadGuiModules(t, [
     '/src/components/local-agent/ComputerActivity.tsx', '/src/services/localAgentApi.ts', '/src/components/local-agent/ToolActivityDetails.tsx',
     '/src/components/local-agent/ConversationVirtualRow.tsx',
     '/src/components/local-agent/conversationItems.ts',
+    '/src/components/local-agent/AgentTasksPanel.tsx',
   ]);
   const journal = new InMemoryCommandJournal(), sessionId = 'session:computer-gui';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -79,6 +80,13 @@ test('computer history lists each operation collapsed and reveals only its archi
   assert.match(observed, /Recognized content/);
   assert.match(observed, /button:save  AXButton  Save draft/);
   assert.doesNotMatch(observed, /Input sent|Saved successfully/);
+  const childHistory = render(() => createElement(AgentConversationHistory, {
+    projection: incoming, name: 'Computer reviewer', language: 'en-US', expanded: true,
+  }));
+  assert.match(childHistory, /computer-activity__image/,
+    'the child history passes its own archived artifacts to the shared operation renderer');
+  assert.doesNotMatch(childHistory, /Archived image unavailable/);
+  assert.deepEqual(incoming.artifacts, [artifact], 'rendering child evidence preserves its Session artifacts');
   layout.state.set(`computer:${activity.activityId}:details`, false);
   layout.state.set(`computer:${pressed.activityId}:details`, true);
   const pressedHtml = renderGroup();

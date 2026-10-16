@@ -5,7 +5,6 @@ import { readDocumentText } from './documentResources';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { AgentConversationPage } from './AgentTasksPanel';
 import SshConnection from '../../deepcode-gui/layout/SshConnection';
-import { isRemoteHost } from '../../services/hostTarget';
 import { ResourceTree } from './ResourceTree';
 import { FileChangePreview } from './FileChanges';
 import { resourceKey, type ResourceReference } from '../../services/conversationResources';
@@ -850,19 +849,19 @@ function ReaderFileActions({ sessionId, target, language }: {
   const [error, setError] = useState('');
   const menu = useRef<HTMLDetailsElement>(null);
   const open = async (action: 'code' | 'folder') => {
-    if (!sessionId || !target) return;
+    const callback = action === 'code' ? host.openFile : host.locatePath;
+    if (!sessionId || !target || !callback) return;
     if (menu.current) menu.current.open = false;
     setError('');
     try {
       const reference = targetResource(target);
       const path = target.kind === 'file' ? target.path : reference ? (await host.resources.resolveResourceReference(sessionId, reference)).path : undefined;
       if (!path) throw new Error('resource_has_no_local_file');
-      if (action === 'code') await host.openFile?.(path);
-      else await host.locatePath?.(path);
+      await callback(path);
     } catch (error) { setError(String(error)); }
   };
   useEffect(() => setError(''), [target]);
-  if (!sessionId || !target || target.kind === 'browser' || target.kind === 'artifact' || target.kind === 'agent') return null;
+  if ((!host.openFile && !host.locatePath) || !sessionId || !target || target.kind === 'browser' || target.kind === 'artifact' || target.kind === 'agent') return null;
   return <div className="reader-file-actions">
       <details className="reader-external-open" ref={menu} data-native-overlay onBlur={event => {
         if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
@@ -871,8 +870,8 @@ function ReaderFileActions({ sessionId, target, language }: {
       }}>
         <summary aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <DeepCodeShellIcon name="chevronDown" /></summary>
         <div role="menu">
-          <button role="menuitem" onClick={() => void open('code')}>{language === 'zh-CN' ? '在 VS Code 中打开' : 'Open in VS Code'}</button>
-          <button role="menuitem" onClick={() => void open('folder')}>{language === 'zh-CN' ? '打开所在文件夹' : 'Show in folder'}</button>
+          {host.openFile && <button role="menuitem" onClick={() => void open('code')}>{language === 'zh-CN' ? '在 VS Code 中打开' : 'Open in VS Code'}</button>}
+          {host.locatePath && <button role="menuitem" onClick={() => void open('folder')}>{language === 'zh-CN' ? '打开所在文件夹' : 'Show in folder'}</button>}
         </div>
       </details>
     {error && <p role="alert" className="reader-file-actions__error local-agent__resource-error" data-native-overlay>{error}</p>}
