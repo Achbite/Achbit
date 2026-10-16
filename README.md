@@ -63,6 +63,10 @@ Use a project's **Manage workspace** menu to choose its folders and execution en
 
 In the GUI, attach files or folders to a message, open artifacts and diffs, or ask the Agent to open an HTML preview. Browser annotations stay active until you leave with the toolbar button or Esc. New conversations inherit the last model used for a submitted task and its remembered reasoning level. Use **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** elsewhere to reload the interface.
 
+**Tune the reading experience** in **Settings → Appearance**. Gentle reading is the default; gentle and compact families each offer WenKai-style or sans-serif Chinese, alongside system and custom fonts. Choose one font for the whole interface, or expand font details to combine interface, content, and terminal/code fonts independently. Body text defaults to 14 px and code to 12 px. Color themes change colors only. See [reading and appearance](docs/product/operations.md#reading-and-appearance) for the font choices and terminal limits.
+
+Completed turns collapse their execution process while keeping the final answer visible. Expand it to read the steps, then close it again; the disclosure stays in view. Conversation text remains centered, wider tables and code can use more horizontal room, and long command summaries stay within the reading column. Computer Use history retains action details and archived frames for review; opening that history does not reactivate the controlled page or application.
+
 ## Prefer the terminal?
 
 The same package includes terminal interfaces:
@@ -80,6 +84,10 @@ The same package includes terminal interfaces:
 ```
 
 In both the TUI and CLI chat, use `/sessions` to list conversations, `/resume <number or full ID>` to open one, and `/new` to start one in the startup directory. The TUI picker supports arrow keys, Enter and Esc; numbers refer to the displayed list. Switching does not cancel background work or copy another session's directories or permissions.
+
+Type `/` in the TUI for command suggestions; commands used recently and often move forward in the list for that TUI process. Help and detail views stop scrolling at their content boundaries. Tables have closed borders, supported LaTeX formulas render as terminal text layouts, and a running indicator appears above the input. Unsupported formulas retain their source and diagnostic.
+
+On macOS, the TUI uses a dedicated Terminal window with the GUI's effective terminal/code font. Double-clicking `DeepCode-TUI.command` reuses its launch window; a normal exit closes that dedicated window once its launch shell ends. Ordinary terminal windows and their defaults remain unchanged. Use `/font` for built-in choices and `/font follow` to reread the GUI selection. Use `--in-place` to run with the current terminal's own font instead. Other platforms use the font configured in their terminal application. See [installation and window behavior](docs/distribution.md#macos).
 
 After installation with PKG or Windows Setup, use `deepcode-cli` and `deepcode-tui` directly in a terminal; on Windows, open a new terminal so it receives the updated PATH.
 
@@ -144,7 +152,7 @@ For a frontend-only update to an existing package, run the following from the Ma
 make ui-update UI_PACKAGE=bin/macos-arm64
 ```
 
-Choose `bin/win64` or the Linux package directory for those platforms. This command builds and copies the GUI bundle; run macOS resource updates on the host for signing, then reload the interface. It does not replace the running Session or Kernel. Changes to their source or bundled product guidance require a corresponding service/package build and restart. Plugin update timing is described in [product operations](docs/product/operations.md#updates).
+Choose `bin/win64` or the Linux package directory for those platforms. This command builds and copies the GUI bundle; run macOS resource updates on the host for signing, then reload the interface. It does not replace the running TUI, Session or Kernel. TUI binaries and native launch scripts require a package update and a new TUI process. Changes to services or bundled product guidance require a corresponding service/package build and restart. Plugin update timing is described in [product operations](docs/product/operations.md#updates).
 
 ## Development checks
 

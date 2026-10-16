@@ -8,6 +8,10 @@ DeepCode 提供图形界面、CLI 和 TUI。三种入口共享模型设置、会
 
 解压版可直接打开 `DeepCode-GUI.app`，或使用同目录的 `DeepCode-CLI.command`、`DeepCode-TUI.command`。移动解压版时应保留这些文件的相对位置。用户文件存放在下表所列目录，与应用位置无关。
 
+macOS TUI 默认使用 GUI“外观 → 字体详情 → 终端与代码”的有效选择。双击 `DeepCode-TUI.command` 时复用 Terminal 已打开的窗口；正常退出后，该专用窗口在 Shell 结束时自动关闭。若在普通终端手动执行 `.command`，退出时恢复该标签原来的字体和标题并返回 Shell。在终端执行安装后的 `deepcode-tui` 则新开专用窗口，正常退出后自动关闭。窗口包含其他标签或进程时会保留；启动失败和非零退出保留诊断窗口。其他终端窗口和默认配置不变。
+
+输入 `/font` 查看四套内置字体及系统默认选项，`/font compact` 等命令只切换当前窗口，`/font follow` 重新读取 GUI 选择。内置终端版本保持英文一格、中文两格；自定义终端字体须为固定字宽。首次使用可能需要允许启动器控制 Terminal，拒绝时显示原始错误；启动诊断区分字体准备、窗口创建、字体应用和 TUI 首帧确认。`deepcode-tui --in-place` 保留在当前终端运行，管道、帮助和 `--smoke` 也不打开新窗口，这些方式使用原终端字体。更多命令与阅读规则见[产品指南](product/operations.md#reading-and-appearance)。
+
 macOS 安装包包含 DeepCode-GUI.app 和独立的 DeepCode Computer Use.app。桌面截图与操作由后者执行，需要首次为该辅助 App 授予辅助功能和屏幕录制权限；`computer.control status` 返回实际执行进程。运行 `bash build.sh --stage computer-use` 可单独更新辅助组件，下一次调用前由 GUI、CLI、TUI 共用的 Host 退出旧组件并启动新版，旧观察句柄需重新获取。工具定义和内置指南仍由 Kernel 构建提供。
 
 macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕录制授权。首次安装或从早期 ad-hoc 构建切换签名身份时，系统可能要求授权一次；日常更新不应通过重置权限完成。授权保留与系统的“继续允许”提醒是两件事：当前外部窗口采用直接捕获，macOS 仍可能再次提醒，不能据此断言签名失效或重新申请了首次授权。本机开发的固定签名设置见[运行管理](product/operations.md#macos-signing)。
@@ -54,11 +58,13 @@ GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运�
 
 | 调整内容 | 生效时机 |
 | --- | --- |
+| 已保存的 GUI 字体、字号、配色 | 立即应用于 GUI；已有 macOS TUI 专用窗口用 `/font follow` 重新读取字体，新窗口启动时读取。 |
 | 已启用 UI 插件的编译后入口模块或 manifest | 保存后在当前 GUI 窗口更新；TypeScript 源码需先编译为插件声明的 JavaScript 入口。 |
 | 当前运行已选用的 Skill、CLI 插件内容 | 下一次模型请求前重新准备；已有请求、待审批调用和正在执行的调用保留原内容与绑定。 |
 | 模型、权限、插件注册和执行环境设置 | 下一次运行生效。 |
 | 子智能体委派开关 | 新建或续派任务按最新值准入；关闭不取消已经运行或等待的任务，也不删除历史。 |
 | 更新后的 GUI 资源 | macOS 使用 Cmd+Shift+R，其他平台使用 Ctrl+Shift+R 重载界面。 |
+| TUI 二进制、内置终端字体或原生启动脚本 | 更新对应平台程序包并重新打开 TUI；GUI 重载不替换正在运行的 TUI。 |
 | Session、Kernel、原生程序或内置产品说明 | 安装对应构建产物并重启相关进程，修改源码不会直接更新运行中的程序。 |
 
 Skill、CLI 插件及运行设置的生效边界适用于 GUI、CLI 和 TUI；UI 插件仅影响图形界面。完整程序更新后重新打开 DeepCode。详见[插件说明](product/ui-plugins.md)和[模型服务](product/model-services.md)。
