@@ -69,8 +69,11 @@ export function publishPlan(
   };
 }
 
-export function confirmationFacts(state: SessionState, plan: NonNullable<SessionProjection['pendingPlan']>,
-  commandId: string, source: 'user' | 'agent' | 'parent', nextId: (kind: string) => string,
+type ConfirmablePlan = Pick<NonNullable<SessionProjection['pendingPlan']>,
+  'planId' | 'revision' | 'runId' | 'callId' | 'mutationManifest'>;
+
+export function confirmationFacts(state: SessionState, plan: ConfirmablePlan,
+  commandId: string, source: 'user' | 'agent' | 'parent' | 'sessionWorkdir', nextId: (kind: string) => string,
   inheritedAuthorities?: PlanAuthority[]): NewSessionEvent[] {
   const decisionId = nextId('plan-decision');
   const previous = planToSupersede(state, plan.planId, plan.revision);
@@ -79,13 +82,13 @@ export function confirmationFacts(state: SessionState, plan: NonNullable<Session
     payload: { ...previous, supersededByPlanId: plan.planId, supersededByRevision: plan.revision } });
   events.push({ type: 'plan.confirmed', sessionId: state.sessionId, runId: plan.runId, callId: plan.callId,
     payload: { planId: plan.planId, revision: plan.revision, commandId, source, decisionId,
-      authorities: source === 'parent' ? structuredClone(inheritedAuthorities ?? [])
+      authorities: source === 'sessionWorkdir' ? [] : source === 'parent' ? structuredClone(inheritedAuthorities ?? [])
         : planAuthoritiesForConfirmation(plan, state.sessionId, decisionId, nextId) } });
   return events;
 }
 
 export function planAuthoritiesForConfirmation(
-  plan: NonNullable<SessionProjection['pendingPlan']>,
+  plan: ConfirmablePlan,
   sessionId: string,
   decisionId: string,
   nextId: (kind: string) => string,

@@ -6,6 +6,7 @@ import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js'
 import { reduceSession } from './reducer.js';
 import { admitModelView } from './modelView.js';
 import { controlWait, pendingWakeups } from './sessionWake.js';
+import { requestResourceBindings } from './workspaceBindings.js';
 
 /** New writes are admitted here; replay preserves already-recorded failure facts. */
 export function admitSessionEvents(
@@ -96,10 +97,6 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'message.committed':
       if (event.payload.role === 'user' && event.runId && event.payload.filesystemReferences?.length) {
         if (pendingProvider || pendingToolRequests(events, event.runId).length) throw new Error('input_resources_turn_active');
-        if (event.payload.filesystemReferences.some(reference => reference.kind === 'directory'
-          && !state.run?.workspaceBindings.some(binding => binding.workspaceId === reference.workspaceId))) {
-          throw new Error('input_resources_directory_change');
-        }
       }
     case 'narrative.committed':
       if ('providerRequestId' in event.payload) {
@@ -150,6 +147,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'plan.confirmed':
+      if (event.payload.source === 'sessionWorkdir' && event.payload.authorities.length) throw new Error('workdir_plan_authority_invalid');
       if (event.payload.source === 'parent' && (!state.agentContext || !event.payload.authorities.length
         || event.payload.authorities.some(authority => authority.sessionId === state.sessionId))) throw new Error('parent_plan_reference_missing');
       break;
@@ -207,7 +205,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.payload.purpose === 'approvalReview' && (!state.pendingApproval || event.payload.tools.length)) throw new Error('approval_review_context_invalid');
       if ((event.payload.purpose === 'contextCompaction') !== compaction) throw new Error('context_composition_purpose_mismatch');
       if (JSON.stringify(event.payload.workspaceBindings.map(binding => binding.itemId))
-        !== JSON.stringify(state.run?.workspaceBindings.map(binding => binding.workspaceId))) {
+        !== JSON.stringify(requestResourceBindings(state.run?.workspaceBindings ?? [], events).map(binding => binding.workspaceId))) {
         throw new Error('context_workspace_snapshot_mismatch');
       }
       const runtime = state.runRuntimeSnapshots[event.runId];

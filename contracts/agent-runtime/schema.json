@@ -1480,7 +1480,7 @@
         "createdAt": { "$ref": "#/$defs/Timestamp" },
         "updatedAt": { "$ref": "#/$defs/Timestamp" },
         "confirmationSource": {
-          "enum": ["user", "agent", "parent"]
+          "enum": ["user", "agent", "parent", "sessionWorkdir"]
         }
       }
     },
@@ -1508,7 +1508,7 @@
           "items": { "$ref": "#/$defs/PlanOperation" }
         },
         "status": { "const": "published" },
-        "confirmationSource": { "enum": ["user", "agent", "parent"] },
+        "confirmationSource": { "enum": ["user", "agent", "parent", "sessionWorkdir"] },
         "decisionId": { "$ref": "#/$defs/Id" },
         "responseMode": { "const": "confirmReviseOrCancel" },
         "sequence": { "type": "integer", "minimum": 1 },
@@ -2690,7 +2690,7 @@
                   "revision": {"type": "integer", "minimum": 1},
                   "commandId": {"$ref": "#/$defs/Id"},
                   "decisionId": {"$ref": "#/$defs/Id"},
-                  "source": {"enum": ["user", "agent", "parent"]},
+                  "source": {"enum": ["user", "agent", "parent", "sessionWorkdir"]},
                   "authorities": {"type": "array", "items": {"$ref": "#/$defs/PlanAuthority"}}
                 }
               }
@@ -4244,6 +4244,36 @@
         }
       }
     },
+    "ComputerActivityProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "input"],
+      "properties": {
+        "action": {"type": "string"},
+        "input": {"$ref": "#/$defs/JsonObject"},
+        "app": {"type": "string"},
+        "window": {"$ref": "#/$defs/JsonObject"},
+        "page": {"$ref": "#/$defs/JsonObject"},
+        "dispatched": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/JsonObject"},
+        "observation": {
+          "type": "object", "additionalProperties": false, "required": ["artifactIds"],
+          "properties": {
+            "observationId": {"$ref": "#/$defs/Id"},
+            "artifactIds": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
+            "interface": {"$ref": "#/$defs/JsonObject"}
+          }
+        },
+        "inputObservation": {
+          "type": "object", "additionalProperties": false, "required": ["observationId", "artifactIds"],
+          "properties": {
+            "observationId": {"$ref": "#/$defs/Id"},
+            "artifactIds": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
+            "element": {"$ref": "#/$defs/JsonObject"}
+          }
+        }
+      }
+    },
     "ToolActivityProjection": {
       "type": "object",
       "additionalProperties": false,
@@ -4256,6 +4286,7 @@
         "resources": {"type": "array", "items": {"$ref": "#/$defs/ActivityResourceProjection"}},
         "shell": {"$ref": "#/$defs/ShellActivityProjection"},
         "process": {"$ref": "#/$defs/ProcessActivityProjection"},
+        "computer": {"$ref": "#/$defs/ComputerActivityProjection"},
         "fileChanges": {"type": "array", "items": {"$ref": "#/$defs/FileChangeProjection"}}
       }
     },
@@ -4286,6 +4317,7 @@
         "startedAt": {"$ref": "#/$defs/Timestamp"},
         "liveOutput": {"$ref": "#/$defs/ToolOutputProjection"},
         "tool": {"$ref": "#/$defs/ToolActivityProjection"},
+        "approvalReview": {"$ref": "#/$defs/EffectPreview/properties/review"},
         "inputRejection": {"$ref": "#/$defs/ToolInputError"},
         "interruption": {"$ref": "#/$defs/LocalAgentError"},
         "notExecuted": {"type": "object", "additionalProperties": false, "required": ["reason"],

@@ -285,8 +285,9 @@ export class HttpKernelPort extends LocalAgentHttpPort implements KernelPort {
     const result = await this.json<Awaited<ReturnType<KernelPort['planAdmission']>>>('/api/local-agent/plans/admission', {
       method: 'POST', body: JSON.stringify(request),
     });
-    if (!['agent', 'parent', 'user'].includes(result.source) || !Array.isArray(result.authorities)
-      || result.source === 'parent' && !result.authorities.length) throw new Error('plan_admission_invalid');
+    if (!['agent', 'parent', 'user', 'sessionWorkdir'].includes(result.source) || !Array.isArray(result.authorities)
+      || result.source === 'parent' && !result.authorities.length
+      || result.source === 'sessionWorkdir' && result.authorities.length) throw new Error('plan_admission_invalid');
     return result;
   }
   async readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]> {

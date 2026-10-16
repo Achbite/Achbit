@@ -56,6 +56,7 @@ import {
 } from './providerToolCodec.js';
 import { recoverSession, type SessionState } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { requestResourceBindings } from './workspaceBindings.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { PlanPreviewBuffer } from './planPreview.js';
 import { confirmationFacts } from './planStage.js';
@@ -564,17 +565,23 @@ export async function runAgentLoop(
               snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
               runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
             );
-            await commit([
+            const admission = fact.type === 'plan.published'
+              ? await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
+                runId, mutationManifest: fact.payload.mutationManifest }) : undefined;
+            throwIfAborted(signal);
+            // Publish the Plan and its admission together. Shells must never
+            // observe an automatically accepted Plan as a pending user decision.
+            await commit(current => [
               ...orderedProviderCallFacts(turn.completion, [...providerCallFacts, fact]),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
+              ...(fact.type !== 'plan.published' || !admission ? [] : admission.source !== 'user'
+                ? confirmationFacts(current.state, { ...fact.payload, runId, callId: fact.callId },
+                  deps.nextId('plan-admission'), admission.source, deps.nextId, admission.authorities)
+                : [{ type: 'run.waiting' as const, sessionId: current.state.sessionId, runId,
+                  payload: { reason: 'plan' as const, detail: fact.payload.title } }]),
             ]);
             if (fact.type !== 'plan.published') break;
-            const admission = await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
-              runId, mutationManifest: fact.payload.mutationManifest });
-            await commit(current => admission.source !== 'user'
-              ? confirmationFacts(current.state, current.state.pendingPlan!, deps.nextId('plan-admission'), admission.source, deps.nextId, admission.authorities)
-              : [{ type: 'run.waiting', sessionId: current.state.sessionId, runId, payload: { reason: 'plan', detail: fact.payload.title } }]);
             if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
             break;
           }
@@ -2047,13 +2054,13 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
           if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
             sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
               purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
-          verdict = { decision: 'ask', reason: `自动审查未完成：${fact.code}：${fact.message}` };
+          verdict = { decision: 'ask', reason: `自动审查无法完成，需要你决定是否执行。\n${fact.code}：${fact.message}` };
           const retryFormat = attempt === 0 && error instanceof ApprovalReviewFormatFailure
             && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline
             && snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId);
           if (error instanceof ApprovalReviewFormatFailure) {
             const response = fact.diagnostics?.causes.find(cause => cause.kind === 'response')?.message;
-            verdict = { decision: 'ask', reason: `${retryFormat ? '审批结果格式无效，正在按原请求重试一次。' : '自动审查未完成。'}\n${fact.message}\n原始响应：${response}` };
+            verdict = { decision: 'ask', reason: `${retryFormat ? '审批结果格式无效，正在按原请求重试一次。' : '无法读取有效的审核结果，需要你决定是否执行。'}\n${fact.message}\n原始响应：${response}` };
             // Withhold authority without entering run.waiting during recovery.
             await commit({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId,
               callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } });
@@ -2752,7 +2759,7 @@ function runWorkspaceBindings(
   if (!run || run.runId !== runId) {
     throw new LoopFailure('run_workspace_snapshot_missing', '当前 run 缺少冻结的目录索引快照。');
   }
-  return run.workspaceBindings.map((binding) => ({ ...binding }));
+  return requestResourceBindings(run.workspaceBindings, snapshot.events);
 }
 
 function positiveOrZeroInteger(value: unknown): number | undefined {

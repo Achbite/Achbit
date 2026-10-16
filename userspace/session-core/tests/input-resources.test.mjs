@@ -11,7 +11,7 @@ const readTool = { toolBindingRef: 'binding:read', name: 'fs.read', description:
   possibleEffects: ['workspaceRead'], availability: 'callable', origin: 'coreBuiltin' };
 const history = request => request.messages.filter(message => !message.images?.length && !message.toolImages?.length);
 
-test('queued file snapshots join the next request without changing in-flight or historical bindings', async t => {
+test('queued file and directory references join the next request without changing project or historical bindings', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:queued-files';
   await createSession(journal, sessionId, [workspaceBinding]);
   const image = file('screen.png', 'image/png'), text = file('notes.txt', 'text/plain');
@@ -26,7 +26,7 @@ test('queued file snapshots join the next request without changing in-flight or 
       await gate;
       yield providerEvent(request.requestId, 'tool.call', { callId: 'native:old', name: 'fs_read', input: { workspace: 'primary', path: 'README.md' } });
     } else if (turn === 2) {
-      assert.deepEqual(request.workspaceBindings.map(binding => binding.workspaceId), [workspaceBinding.workspaceId, image.workspaceId, text.workspaceId]);
+      assert.deepEqual(request.workspaceBindings.map(binding => binding.workspaceId), [workspaceBinding.workspaceId, image.workspaceId, text.workspaceId, 'workspace:other']);
       assert.deepEqual(request.messages.slice(0, requests[0].messages.length), requests[0].messages);
       const screenshot = request.messages.find(message => message.images?.length);
       assert.deepEqual(screenshot.images, [{ workspaceId: image.workspaceId, logicalPath: image.logicalPath, mediaType: image.mediaType }]);
@@ -57,18 +57,20 @@ test('queued file snapshots join the next request without changing in-flight or 
   const queued = await actor.snapshot();
   assert.equal(queued.queuedInputs.length, 2);
   assert.deepEqual(queued.run.workspaceBindings, [workspaceBinding]);
-  const directory = await actor.submit({ ...messageCommand(sessionId, 'command:directory', 'Add another project.'), runId,
+  const directory = await actor.submit({ ...messageCommand(sessionId, 'command:directory', 'Use this directory as a reference and modification target.'), runId,
     filesystemReferences: [{ referenceId: 'directory:other', workspaceId: 'workspace:other', logicalPath: '.', displayName: 'Other project', kind: 'directory' }] });
-  assert.equal(directory.status, 'rejected');
-  assert.equal(directory.error.code, 'queued_input_runtime_change');
+  assert.equal(directory.status, 'accepted');
+  assert.deepEqual((await actor.snapshot()).run.workspaceBindings, [workspaceBinding]);
   finishFirst();
   const completed = await waitForProjection(actor, state => state.run?.status === 'completed');
   assert.equal(completed.run.runId, runId);
-  assert.deepEqual(executions.map(request => request.workspaceBindings), [[workspaceBinding.workspaceId], [workspaceBinding.workspaceId, image.workspaceId, text.workspaceId]]);
+  assert.deepEqual(completed.run.workspaceBindings, [workspaceBinding]);
+  assert.deepEqual(completed.workspaceBindings, [workspaceBinding]);
+  assert.deepEqual(executions.map(request => request.workspaceBindings), [[workspaceBinding.workspaceId], [workspaceBinding.workspaceId, image.workspaceId, text.workspaceId, 'workspace:other']]);
   assert.equal(executions[1].input.workspaceId, text.workspaceId);
   const events = await readEvents(journal, sessionId);
   assert.deepEqual(events.find(event => event.type === 'run.started').payload.workspaceBindings, [workspaceBinding]);
-  assert.deepEqual(events.filter(event => event.type === 'context.composed').map(event => event.payload.workspaceBindings.length), [1, 3, 3]);
+  assert.deepEqual(events.filter(event => event.type === 'context.composed').map(event => event.payload.workspaceBindings.length), [1, 4, 4]);
   // Starting another run must not reinterpret the preceding supplemental messages.
   await actor.submit(messageCommand(sessionId, 'command:next', 'Summarize the same inputs.'));
   await waitForProjection(actor, state => state.run?.status === 'completed' && state.run.runId !== runId);

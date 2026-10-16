@@ -465,6 +465,11 @@ for (const decision of ['allow', 'deny', 'ask']) test(`one malformed review reco
   assert.ok(verdicts[0].payload.reason.endsWith(invalid));
   assert.equal(events.filter(event => event.type === 'context.updated' && requests.some(request => request.requestId === event.payload.providerRequestId)).length, 2);
   assert.equal(verdicts.at(-1).payload.providerRequestId, requests[1].requestId);
+  const review = { decision, reason: 'Reviewed the original operation.' };
+  assert.deepEqual(state.activities.find(activity => activity.kind === 'approval').approvalReview, review,
+    'the latest reason remains in history after automatic resolution or user handoff');
+  const replayed = projectSession(loopSnapshot(sessionId, events).state);
+  assert.deepEqual(replayed.activities.find(activity => activity.kind === 'approval').approvalReview, review);
   assert.equal(events.some(event => event.type === 'run.waiting'), decision === 'ask', 'format recovery does not enter a human wait');
   if (decision === 'ask') assert.equal(state.pendingApproval.preview.review.decision, 'ask');
 });

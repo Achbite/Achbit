@@ -1,5 +1,5 @@
 import { advanceTodoList } from './todoState.js';
-import { appendInputFileBindings } from './workspaceBindings.js';
+import { appendResourceBindings, requestResourceBindings } from './workspaceBindings.js';
 import type {
   ContextCompositionMessage,
   ContextCompositionMetadata,
@@ -106,7 +106,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
   const modelViewEvents = input.modelViewEvents ?? input.events;
   const firstRun = input.events.find((event) => event.type === 'run.started');
-  const prefixBindings = firstRun?.type === 'run.started' ? firstRun.payload.workspaceBindings : input.workspaceBindings;
+  const prefixBindings = firstRun?.type === 'run.started'
+    ? requestResourceBindings(firstRun.payload.workspaceBindings, input.events, firstRun.sequence)
+    : input.workspaceBindings;
   const controlNames = {
     interactionRequest: providerWireName(input.runtime, SESSION_CONTROL_INTERACTION_REQUEST),
     planPublish: providerWireName(input.runtime, SESSION_CONTROL_PLAN_PUBLISH),
@@ -183,7 +185,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: `Current Session workspace bindings (logical handles only): ${JSON.stringify(
+      content: `Current Session workspace and resource handles (addresses only, not access grants; primary is the default working directory): ${JSON.stringify(
         providerWorkspaceBindings(prefixBindings),
       )}`,
     },
@@ -330,7 +332,8 @@ export function messagesFromJournal(
   const retainedDelegationId = retainedDelegation ? `agent-delegation:${retainedDelegation.sequence}` : undefined;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
-  const bindingsByRun = new Map(runs.map(event => [event.runId, event.payload.workspaceBindings]));
+  const bindingsByRun = new Map(runs.map(event => [event.runId,
+    requestResourceBindings(event.payload.workspaceBindings, events, event.sequence)]));
   const checkpoint = [...events]
     .reverse()
     .find((event): event is Extract<SessionEvent, { type: 'context.compacted' }> => (
@@ -363,10 +366,9 @@ export function messagesFromJournal(
     if (event.type === 'message.committed') {
       const inputRun = runForInput.get(event.payload.messageId);
       const ownerRunId = inputRun?.runId ?? event.runId;
-      const before = inputRun?.payload.workspaceBindings
-        ?? (ownerRunId ? bindingsByRun.get(ownerRunId) : undefined) ?? workspaceBindings;
+      const before = (ownerRunId ? bindingsByRun.get(ownerRunId) : undefined) ?? workspaceBindings;
       messageBindings = event.payload.role === 'user'
-        ? appendInputFileBindings(before, event.payload.filesystemReferences) : before;
+        ? appendResourceBindings(before, event.payload.filesystemReferences) : before;
       const previousRun = inputRun ? runs[runs.indexOf(inputRun) - 1] : undefined;
       const previous = inputRun
         ? (previousRun ? bindingsByRun.get(previousRun.runId) : undefined) : before;
@@ -395,7 +397,7 @@ export function messagesFromJournal(
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: `Current Session workspace bindings (logical handles only; supersedes earlier binding snapshots): ${JSON.stringify(providerWorkspaceBindings(messageBindings))}` },
+            content: `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(providerWorkspaceBindings(messageBindings))}` },
         });
       }
       messages.push({
@@ -1322,7 +1324,7 @@ function messageContentForModel(
       binding.workspaceId,
       index === 0 ? 'primary' : `workspace${index + 1}`,
     ]));
-    sections.push(`Filesystem references attached to this message. Images are identified by referenceId; consult Current visual inputs for the pixels included in this request. Other file contents require the relevant read tool. Input snapshots are read-only. Use the listed DeepCode-managed session working directory for editable copies and preview drafts; they persist across turns until the session is deleted:\n${JSON.stringify(
+    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the DeepCode-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
       payload.filesystemReferences.map((reference) => ({
         referenceId: reference.referenceId,
         workspace: workspaceHandleById.get(reference.workspaceId) ?? 'unavailable',

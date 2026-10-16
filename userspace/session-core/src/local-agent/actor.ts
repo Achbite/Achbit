@@ -24,7 +24,6 @@ import type {
   RunSettlement,
   SessionEvent,
   SessionProjection,
-  WorkspaceBindingDisplay,
 } from '@deepcode/protocol';
 import {
   COMMAND_REPLY_VERSION,
@@ -476,7 +475,7 @@ export class SessionActor {
         await this.withWrite(async () => {
           const current = await this.loadSnapshot();
           await this.appendEvents(confirmationFacts(current.state, plan, command.commandId,
-            admission.source as 'agent' | 'parent', this.#nextId, admission.authorities), current);
+            admission.source, this.#nextId, admission.authorities), current);
         });
         planConfirmed = true;
       }
@@ -696,12 +695,7 @@ export class SessionActor {
       const runtime = current.state.runRuntimeSnapshots[run.runId];
       if (!runtime) throw new Error('run_runtime_snapshot_missing');
       let incompatible: string | undefined;
-      if (command.filesystemReferences?.some((reference) => (
-        reference.kind === 'directory'
-        && !run.workspaceBindings.some((binding) => binding.workspaceId === reference.workspaceId)
-      ))) {
-        incompatible = '当前运行的项目目录已固定；可追加文件附件，新增项目目录请在下一轮使用。';
-      } else if (
+      if (
         command.profileId !== undefined && command.profileId !== runtime.provider.profileId
         || command.reasoningEffortOverride !== undefined
           && command.reasoningEffortOverride !== (runtime.provider.reasoningEffortOverride ?? null)
@@ -744,14 +738,7 @@ export class SessionActor {
       ? command.reasoningEffortOverride
       : before.state.modelSettings && profileId === before.state.modelSettings.profileId
         ? before.state.modelSettings.reasoningEffortOverride : null;
-    const runWorkspaceBindings = mergeWorkspaceBindings(
-      before.state.workspaceBindings,
-      [...before.state.messages.flatMap((message) => message.filesystemReferences.filter((reference) => reference.kind === 'file')),
-        ...(command.filesystemReferences ?? [])].map((reference) => ({
-        workspaceId: reference.workspaceId,
-        displayName: reference.displayName,
-      })),
-    );
+    const runWorkspaceBindings = before.state.workspaceBindings.map(binding => ({ ...binding }));
     const prepared = await this.#composition.runPreparation.prepare({
       sessionId: this.sessionId,
       runId,
@@ -1764,20 +1751,6 @@ function validLogicalPath(value: string): boolean {
   if (value === '.') return true;
   if (value.startsWith('/') || value.endsWith('/')) return false;
   return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-}
-
-function mergeWorkspaceBindings(
-  base: readonly WorkspaceBindingDisplay[],
-  additions: readonly WorkspaceBindingDisplay[],
-): WorkspaceBindingDisplay[] {
-  const seen = new Set<string>();
-  return [...base, ...additions]
-    .filter((binding) => {
-      if (seen.has(binding.workspaceId)) return false;
-      seen.add(binding.workspaceId);
-      return true;
-    })
-    .map((binding) => ({ ...binding }));
 }
 
 function defaultIdFactory(sessionId: string): (kind: string) => string {

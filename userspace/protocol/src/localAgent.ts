@@ -319,6 +319,8 @@ export interface ConversationCatalogManagement extends ConversationCatalog {
 /**
  * Message-level reference to a Host-resolved filesystem object. Host canonical paths remain
  * private; Provider requests receive the corresponding logical workspace handle and path.
+ * A reference is an address, not a project binding or an access grant. Ordinary paths
+ * retain their original target; source=pastedText identifies an imported read-only snapshot.
  */
 export type FilesystemReference = {
   referenceId: string;
@@ -1037,7 +1039,7 @@ export type SessionEvent =
         revision: number;
         commandId: string;
         decisionId: string;
-        source?: 'user' | 'agent' | 'parent';
+        source?: 'user' | 'agent' | 'parent' | 'sessionWorkdir';
         authorities: PlanAuthority[];
       };
     })
@@ -1391,7 +1393,7 @@ export interface PlanProjection extends ExecutionPlan {
   runId: string;
   callId: string;
   status: PlanProjectionStatus;
-  confirmationSource?: 'user' | 'agent' | 'parent';
+  confirmationSource?: 'user' | 'agent' | 'parent' | 'sessionWorkdir';
   decisionId?: string;
   sequence: number;
   createdAt: string;
@@ -1450,6 +1452,7 @@ export interface ActivityProjection {
   /** Bounded live output, absent after settlement and never persisted in journal. */
   liveOutput?: ToolOutputProjection;
   tool?: ToolActivityProjection;
+  approvalReview?: NonNullable<EffectPreview['review']>;
   inputRejection?: ToolInputRejection['error'];
   interruption?: LocalAgentError;
   notExecuted?: { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
@@ -1493,6 +1496,28 @@ export interface ToolActivityProjection {
   shell?: ShellActivityProjection;
   process?: ProcessActivityProjection;
   fileChanges?: FileChangeProjection[];
+  computer?: ComputerActivityProjection;
+}
+
+/** Historical tool facts. Reading these observations never resumes desktop control. */
+export interface ComputerActivityProjection {
+  action: string;
+  input: JsonObject;
+  app?: string;
+  window?: JsonObject;
+  page?: JsonObject;
+  dispatched?: boolean;
+  observation?: {
+    observationId?: string;
+    artifactIds: string[];
+    interface?: JsonObject;
+  };
+  inputObservation?: {
+    observationId: string;
+    artifactIds: string[];
+    element?: JsonObject;
+  };
+  result?: JsonObject;
 }
 
 export interface FileChangeSide {
@@ -2171,7 +2196,7 @@ export interface FileCallPreparationReply {
 
 export interface KernelPort {
   prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply>;
-  planAdmission(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<{ source: 'agent' | 'parent' | 'user'; authorities: PlanAuthority[] }>;
+  planAdmission(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<{ source: 'agent' | 'parent' | 'user' | 'sessionWorkdir'; authorities: PlanAuthority[] }>;
   readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]>;
   execute(request: ToolExecutionRequest, onProgress?: (progress: ToolExecutionProgress) => Promise<void>): Promise<ToolExecutionReply>;
   cancel(callId: string, attemptId: string): Promise<ToolCancelReply>;

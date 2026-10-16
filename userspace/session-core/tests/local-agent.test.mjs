@@ -2147,7 +2147,7 @@ test('filesystem references retain logical metadata and bindings in Provider con
   const events = await readEvents(journal, sessionId);
   assert.deepEqual(
     singleEvent(events, 'run.started').payload.workspaceBindings,
-    [workspaceBinding, importedWorkspace],
+    [workspaceBinding],
   );
   const committed = events.find((event) => (
     event.type === 'message.committed' && event.payload.role === 'user'

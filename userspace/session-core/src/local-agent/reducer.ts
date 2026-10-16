@@ -2,9 +2,9 @@ import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from '.
 import { isManagedProcessSnapshot, isSessionAuthorizationScope, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { advanceDeliverables, compareDeliverables } from './deliverables.js';
 import { advanceTodoList } from './todoState.js';
-import { appendInputFileBindings } from './workspaceBindings.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { computerRequest, projectComputerActivity } from './computerActivity.js';
 import { projectRunLifecycleEvent, reduceRunLifecycle } from './runLifecycle.js';
 import { projectDraftSourceContent, projectSourceContent } from './sourceReferences.js';
 import type {
@@ -249,11 +249,15 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
     case 'approval.revoked':
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.authorityId !== event.payload.authorityId);
       break;
-    case 'approval.reviewed':
+    case 'approval.reviewed': {
       if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
+      const review = { decision: event.payload.decision, reason: event.payload.reason };
       next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
-        ? { ...item, preview: { ...item.preview, review: { decision: event.payload.decision, reason: event.payload.reason } } } : item);
+        ? { ...item, preview: { ...item.preview, review } } : item);
+      const activityId = approvalActivityId(event.payload.approvalId);
+      next.activities = { ...next.activities, [activityId]: { ...next.activities[activityId], approvalReview: review } };
       break;
+    }
     case 'session.model-settings.updated':
       next.modelSettings = { ...event.payload.settings };
       break;
@@ -384,9 +388,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         } else {
           if (event.payload.role === 'user' && event.runId && event.payload.filesystemReferences?.length) {
             assertRunningRun(next, event.runId, 'input_resources_run_not_active');
-            next.run = { ...next.run!, workspaceBindings: appendInputFileBindings(
-              next.run!.workspaceBindings, event.payload.filesystemReferences,
-            ) };
           }
           next.messages.push({
             ...common,
@@ -609,7 +610,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.todoList = advanceTodoList(next.todoList, event);
       break;
     }
-    case 'tool.requested':
+    case 'tool.requested': {
       next.activities = { ...next.activities };
       recordProviderCallFact(
         next,
@@ -628,7 +629,12 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         callId: event.callId,
         sequence: event.sequence,
       };
+      const computer = computerRequest(event.payload.toolName, event.payload.input);
+      if (computer) next.activities[toolActivityId(event.callId)].tool = {
+        operation: event.payload.toolName, resources: [], computer,
+      };
       break;
+    }
     case 'tool.started': {
       next.activities = { ...next.activities };
       const activity = next.activities[toolActivityId(event.callId)];
@@ -707,7 +713,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         toolActivityId(event.callId),
         event.payload.record.outcome,
       );
-      const { tool, artifacts } = projectToolRecord(event.payload.record);
+      const { tool, artifacts } = projectToolRecord(event.payload.record, next.activities);
       next.activities[toolActivityId(event.callId)] = {
         ...next.activities[toolActivityId(event.callId)],
         tool,
@@ -1971,6 +1977,7 @@ function estimatePartitionTokens(
 function cloneActivity(activity: ActivityProjection): ActivityProjection {
   return {
     ...activity,
+    ...(activity.approvalReview ? { approvalReview: { ...activity.approvalReview } } : {}),
     ...(activity.inputRejection ? { inputRejection: structuredClone(activity.inputRejection) } : {}),
     ...(activity.notExecuted ? { notExecuted: { ...activity.notExecuted } } : {}),
     ...(activity.interruption ? { interruption: { ...activity.interruption } } : {}),
@@ -2067,7 +2074,7 @@ function projectProcess(state: SessionState, job: ManagedProcessSnapshot): void 
 
 class ToolDetailProjectionError extends Error {}
 
-function projectToolRecord(record: ToolExecutionRecord): {
+function projectToolRecord(record: ToolExecutionRecord, activities: SessionState['activities']): {
   tool: NonNullable<ActivityProjection['tool']>; artifacts: ArtifactProjection[];
 } {
   const { preparedEffect } = record;
@@ -2111,6 +2118,8 @@ function projectToolRecord(record: ToolExecutionRecord): {
     if (['bash', 'powershell'].includes(preparedEffect.operation)) tool.shell = projectShellActivity(record);
     Object.assign(tool, projectFileChanges(record));
     artifacts = artifactsFromRecord(record);
+    const computer = projectComputerActivity(record, artifacts, activities);
+    if (computer) tool.computer = computer;
   } catch (error) {
     if (!(error instanceof ToolDetailProjectionError)) throw error;
     tool.projectionError = { code: error.message, message: '工具详情无法显示；原始执行记录已保留。' };
@@ -2277,7 +2286,7 @@ function isCanonicalTerminalInput(value: unknown): value is { stdin: string } {
 }
 
 function artifactsFromRecord(record: ToolExecutionRecord): ArtifactProjection[] {
-  if (record.outcome !== 'completed' || !isRecord(record.output)) return [];
+  if (!('output' in record) || !isRecord(record.output)) return [];
   const artifacts = record.output.artifacts;
   if (artifacts === undefined) return [];
   if (!Array.isArray(artifacts)) throw new ToolDetailProjectionError('tool_artifact_invalid');

@@ -17,7 +17,7 @@ const answer = (request, text) => providerEvent(request.requestId, 'text.delta',
 
 async function serviceFixture(t, ownerId, stream, options = {}) {
   const journal = options.journal ?? new InMemoryCommandJournal();
-  const requests = new Map(), preparations = new Map(), disposed = new Map();
+  const requests = new Map(), preparations = new Map(), disposed = new Map(), releases = new Map();
   let service;
   const settings = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
     maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, ...options.settings };
@@ -26,7 +26,12 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
     return { composition: {
       kernel: options.kernel?.({ sessionId, journal }) ?? emptyKernel(),
       ...(options.capabilities ? { capabilities: options.capabilities } : {}),
-      runPreparation: { ...preparation.port, async prepare(input) {
+      runPreparation: { ...preparation.port, async release(input) {
+        await options.beforeRelease?.(input);
+        const receipt = await preparation.port.release(input);
+        releases.set(sessionId, (releases.get(sessionId) ?? 0) + 1);
+        return receipt;
+      }, async prepare(input) {
         const prepared = await preparation.port.prepare(input);
         prepared.runtimeSnapshot.agentToolsEnabled = true;
         prepared.runtimeSnapshot.agentDelegationEnabled = settings.enabled;
@@ -55,7 +60,7 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
   }, options.configurations, options.loops);
   t.after(() => service.dispose());
   if (!options.reopen) await service.createSession({ sessionId: ownerId, displayTitle: 'Wake owner', workspaceBindings: [workspaceBinding], ...(options.recipe ? { recipe: options.recipe } : {}) });
-  return { journal, service, requests, preparations, disposed, settings };
+  return { journal, service, requests, preparations, disposed, releases, settings };
 }
 
 async function completed(service, sessionId) {
@@ -341,6 +346,83 @@ const writePlan = {
   steps: [{ stepId: 'report', title: 'Write report', details: 'Write report.txt.' }],
   mutationManifest: [{ workspace: 'primary', operation: 'fs.write', target: 'report.txt' }],
 };
+
+test('a child workdir Plan continues without a decision or new authority and both runtimes finish', async t => {
+  const ownerId = 'session:workdir-plan';
+  let admissionStarted = false, releaseAdmission;
+  const admissionGate = new Promise(resolve => { releaseAdmission = resolve; });
+  t.after(() => releaseAdmission());
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
+    if (sessionId === ownerId && turn === 1) yield call(request, 'workdir:spawn', 'agent', {
+      action: 'spawn', name: 'Draft writer', task: 'Write a draft in your working directory.', delivery: 'wait',
+    });
+    else if (sessionId !== ownerId && turn === 1) yield call(request, 'workdir:plan', 'plan_publish', writePlan);
+    else yield answer(request, sessionId === ownerId ? 'Draft delivered.' : 'Draft is ready.');
+    yield done(request);
+  }, { kernel: () => emptyKernel({ async planAdmission() {
+    admissionStarted = true;
+    await admissionGate;
+    return { source: 'sessionWorkdir', authorities: [] };
+  } }) });
+  await fixture.service.submit(messageCommand(ownerId, 'command:workdir', 'Prepare a draft.'));
+  await waitUntil(() => admissionStarted, 'Kernel is deciding existing workdir admission');
+  const inFlight = await fixture.service.snapshot(ownerId);
+  assert.deepEqual(inFlight.pendingAgentDecisions ?? [], [], 'no user decision is exposed before Kernel admission');
+  assert.equal((await fixture.service.snapshot(inFlight.agentTasks[0].agentSessionId)).pendingPlan, null);
+  releaseAdmission();
+  const parent = await completed(fixture.service, ownerId);
+  const childId = parent.agentTasks[0].agentSessionId;
+  const child = await completed(fixture.service, childId);
+  assert.equal(child.plans[0].confirmationSource, 'sessionWorkdir');
+  const childEvents = await readEvents(fixture.journal, childId);
+  assert.deepEqual(childEvents.find(event => event.type === 'plan.confirmed').payload.authorities, []);
+  assert.equal(childEvents.some(event => event.type === 'run.waiting' && event.payload.reason === 'plan'), false);
+  assert.deepEqual(parent.pendingAgentDecisions ?? [], []);
+  for (const sessionId of [ownerId, childId]) {
+    const events = await readEvents(fixture.journal, sessionId);
+    assert.equal(fixture.releases.get(sessionId), 1);
+    assert.ok(events.find(event => event.type === 'run.runtime.released').sequence < events.find(event => event.type === 'run.settled').sequence);
+  }
+});
+
+test('cancelling a parent awaiting a child Plan drains child runtime before parent settlement', async t => {
+  const ownerId = 'session:cancel-child-plan';
+  let releaseChild, childReleasing = false;
+  const cleanupGate = new Promise(resolve => { releaseChild = resolve; });
+  t.after(() => releaseChild());
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
+    if (sessionId === ownerId && turn === 1) yield call(request, 'cleanup:spawn', 'agent', {
+      action: 'spawn', name: 'Writer', task: 'Request a report Plan.', delivery: 'async',
+    });
+    else if (sessionId !== ownerId) yield call(request, 'cleanup:plan', 'plan_publish', writePlan);
+    else yield answer(request, 'The report needs confirmation.');
+    yield done(request);
+  }, { async beforeRelease({ sessionId }) {
+    if (sessionId !== ownerId) { childReleasing = true; await cleanupGate; }
+  } });
+  await fixture.service.submit(messageCommand(ownerId, 'command:cleanup', 'Prepare the report.'));
+  await waitUntil(async () => (await fixture.service.snapshot(ownerId)).pendingAgentDecisions?.some(item => item.plan)
+    && (await readEvents(fixture.journal, ownerId)).some(event => event.type === 'message.committed' && event.payload.role === 'assistant'), 'parent answer and pending child Plan');
+  const before = await fixture.service.snapshot(ownerId), childId = before.agentTasks[0].agentSessionId;
+  assert.equal(terminal.has(before.run.status), false, 'an answer does not fabricate final settlement while a child owns work');
+  const cancellation = fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+    sessionId: ownerId, commandId: 'command:stop-cleanup', runId: before.run.runId });
+  await waitUntil(() => childReleasing, 'child runtime release begins');
+  assert.equal((await fixture.service.snapshot(childId)).pendingPlan, null);
+  for (const sessionId of [ownerId, childId]) assert.equal((await readEvents(fixture.journal, sessionId))
+    .some(event => event.type === 'run.settled'), false, 'runtime release must complete before settlement');
+  releaseChild();
+  assert.equal((await cancellation).status, 'accepted');
+  await waitUntil(async () => (await fixture.service.snapshot(ownerId)).run.status === 'cancelled', 'parent cancelled after release');
+  for (const sessionId of [ownerId, childId]) {
+    const events = await readEvents(fixture.journal, sessionId);
+    assert.equal((await fixture.service.snapshot(sessionId)).run.status, 'cancelled');
+    assert.equal(fixture.releases.get(sessionId), 1);
+    assert.ok(events.find(event => event.type === 'run.runtime.released').sequence < events.find(event => event.type === 'run.settled').sequence);
+  }
+  assert.deepEqual((await fixture.service.snapshot(ownerId)).pendingAgentDecisions ?? [], []);
+  assert.equal((await readEvents(fixture.journal, childId)).filter(event => event.type === 'plan.cancelled').length, 1);
+});
 
 test('parent decisions expose light child identities and route Plan, question and approval replies to their original Session', async t => {
   const ownerId = 'session:child-decisions';
