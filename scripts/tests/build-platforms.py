@@ -72,6 +72,59 @@ def files(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
 
 
+class ProgramCleanupTests(unittest.TestCase):
+    def test_dry_run_reads_program_ownership_without_removing_files(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-clean-dry-run-') as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py'):
+                shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
+            write(root, 'bin/macos-arm64/deepcode-cli', b'program')
+            write(root, 'bin/macos-arm64/config/settings.json', b'user settings')
+            before = files(root)
+
+            result = subprocess.run(
+                ['bash', str(root / 'scripts/clean-caches.sh'), '--dry-run', '--skip-docker', '--skip-local'],
+                cwd=root, text=True, capture_output=True, timeout=10,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(str(root / 'bin/macos-arm64/deepcode-cli'), result.stdout)
+            self.assertNotIn('config/settings.json', result.stdout)
+            self.assertEqual(files(root), before)
+
+
+class SharedResourcesTests(unittest.TestCase):
+    def test_only_public_documentation_enters_runtime_resources(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-shared-resources-') as directory:
+            root = Path(directory) / 'source'
+            destination = Path(directory) / 'resources'
+            for name in ('session-core', 'protocol'):
+                write(root, f'userspace/{name}/package.json', json.dumps({
+                    'name': f'@deepcode/{name}', 'version': '0.0.0', 'license': 'MIT',
+                    'type': 'module', 'main': './dist/index.js',
+                }).encode())
+                write(root, f'userspace/{name}/dist/index.js', b'export {};')
+            write(root, 'userspace/gui/dist-deepcode-gui/index.html', b'GUI')
+            write(root, 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp/index.js', b'upstream')
+            write(root, 'LICENSE', b'license')
+            write(root, 'dependencies.json', b'[]')
+            public = {
+                'distribution.md': b'Installation',
+                'product/operations.md': b'User operations',
+                'product/images/example.svg': b'<svg/>',
+            }
+            for name, content in public.items():
+                write(root, f'docs/{name}', content)
+            for name in ('task-receipts/local/TCR.md', 'architecture/draft.md', 'build.log'):
+                write(root, f'docs/{name}', b'local internal material')
+
+            package.shared(root, destination, root / 'dependencies.json')
+
+            self.assertEqual(files(destination / 'docs'), public)
+            self.assertEqual((destination / 'session-core/dist/index.js').read_bytes(), b'export {};')
+
+
 class BuildTests(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix='deepcode-build-')

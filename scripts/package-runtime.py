@@ -35,7 +35,8 @@ def shared(root, destination, dependency_list):
     copy_js_package(root / 'userspace/session-core', destination / 'session-core')
     copy_js_package(root / 'userspace/protocol', destination / 'node_modules/@deepcode/protocol')
     shutil.copytree(root / 'userspace/gui/dist-deepcode-gui', destination / 'web-deepcode-gui')
-    shutil.copytree(root / 'docs', destination / 'docs')
+    shutil.copytree(root / 'docs/product', destination / 'docs/product')
+    shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
     # The upstream package bundles its runtime dependencies. Keep its public
     # entrypoint and licenses intact; no host npm installation or downloads.
