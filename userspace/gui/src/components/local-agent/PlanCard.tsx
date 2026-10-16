@@ -40,7 +40,8 @@ const PlanCard: React.FC<PlanCardProps> = ({
     }
   }, [plan.status]);
 
-  const status = t(language, plan.status === 'confirmed' && plan.confirmationSource === 'agent' ? 'agent.plan.confirmedByAgent' : `agent.plan.status.${plan.status}`);
+  const status = t(language, plan.status === 'confirmed' && plan.confirmationSource === 'parent' ? 'agent.plan.confirmedByParent'
+    : plan.status === 'confirmed' && plan.confirmationSource === 'agent' ? 'agent.plan.confirmedByAgent' : `agent.plan.status.${plan.status}`);
   const addition = planScopeAddition(previousPlan, plan);
   const stepCount = t(language, 'agent.plan.stepCount', { count: plan.steps.length });
 

@@ -20,7 +20,10 @@ interface ObservedRow {
   node: HTMLElement;
   show(visible: boolean): void;
   nearby: boolean;
+  releaseTimer: ReturnType<typeof setTimeout> | null;
 }
+
+const ROW_RETENTION_MS = 30_000;
 
 /** Keep every anchor in the scroll surface; only its expensive content is virtual. */
 export class ConversationVirtualizer {
@@ -53,7 +56,7 @@ export class ConversationVirtualizer {
     }, { root: body, rootMargin: '800px 0px' });
     this.resize = new ResizeObserver((entries) => {
       if (!this.connected) return;
-      for (const entry of entries) this.measure(entry.target as HTMLElement);
+      for (const entry of entries) this.measure(entry.target as HTMLElement, entry.borderBoxSize?.[0]?.blockSize);
     });
     body.addEventListener('focusout', this.interactionEnded);
     body.ownerDocument.addEventListener('selectionchange', this.interactionEnded);
@@ -61,19 +64,21 @@ export class ConversationVirtualizer {
   }
 
   register(key: string, node: HTMLElement, show: ObservedRow['show']): () => void {
-    this.rows.set(key, { node, show, nearby: true });
+    const row: ObservedRow = { node, show, nearby: true, releaseTimer: null };
+    this.rows.set(key, row);
     this.observe(node);
     return () => {
+      this.cancelRelease(row);
       this.intersection?.unobserve(node);
       this.resize?.unobserve(node);
       if (this.rows.get(key)?.node === node) this.rows.delete(key);
     };
   }
 
-  measure(node: HTMLElement): void {
+  measure(node: HTMLElement, measuredHeight?: number): void {
     if (node.hidden || node.dataset.virtualRendered !== 'true') return;
     const layout = this.layout(node.dataset.conversationAnchor!);
-    const height = node.getBoundingClientRect().height;
+    const height = measuredHeight ?? node.getBoundingClientRect().height;
     if (layout.height === height) return;
     layout.height = height;
     this.onLayout();
@@ -81,6 +86,7 @@ export class ConversationVirtualizer {
 
   disconnect(): void {
     this.connected = false;
+    for (const row of this.rows.values()) this.cancelRelease(row);
     this.body?.removeEventListener('focusout', this.interactionEnded);
     this.body?.ownerDocument.removeEventListener('selectionchange', this.interactionEnded);
     this.body = null;
@@ -98,15 +104,32 @@ export class ConversationVirtualizer {
     });
   };
 
-  private updateVisibility(row: ObservedRow): void {
+  private interacting(row: ObservedRow): boolean {
     const { node } = row;
     const selection = node.ownerDocument.getSelection();
-    const interacting = node.contains(node.ownerDocument.activeElement)
+    return node.contains(node.ownerDocument.activeElement)
       || Boolean(selection && !selection.isCollapsed
         && (node.contains(selection.anchorNode) || node.contains(selection.focusNode)));
-    // Keep keyboard focus and selected text alive, then release offscreen content.
-    if (!row.nearby && interacting) return;
-    row.show(row.nearby);
+  }
+
+  private cancelRelease(row: ObservedRow): void {
+    if (row.releaseTimer !== null) clearTimeout(row.releaseTimer);
+    row.releaseTimer = null;
+  }
+
+  private updateVisibility(row: ObservedRow): void {
+    // Recent content stays mounted while the reader moves back and forth.
+    // Focus and selection extend its lifetime until the interaction ends.
+    if (row.nearby || this.interacting(row)) {
+      this.cancelRelease(row);
+      if (row.nearby) row.show(true);
+      return;
+    }
+    if (row.releaseTimer !== null || row.node.dataset.virtualRendered !== 'true') return;
+    row.releaseTimer = setTimeout(() => {
+      row.releaseTimer = null;
+      if (this.connected && !row.nearby && !this.interacting(row)) row.show(false);
+    }, ROW_RETENTION_MS);
   }
 
   private observe(node: HTMLElement): void {

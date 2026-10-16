@@ -1,9 +1,15 @@
-//! Temporary invocation-specific ACEs. Remove only our SID, never restore a stale
-//! copy of someone else's DACL. Handles retain ownership across file renames.
+//! Capability-scoped ACEs. A grant is written only when the suspended child's
+//! actual token lacks the access; afterwards the ACE stays and later invocations
+//! with the same admitted path reuse it without walking the tree again. Remove
+//! only our SIDs, never restore a stale copy of someone else's DACL.
 use super::os::*;
+use super::profile::sid_string;
+use super::state::{Entry, State};
 use super::windows_policy::{Access, Grant};
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
+use std::sync::Mutex;
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
@@ -13,139 +19,175 @@ use windows_sys::Win32::{
 
 const READ: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 const TRAVERSE: u32 = FILE_TRAVERSE | FILE_READ_ATTRIBUTES;
-// FILE_DELETE_CHILD would allow deletion of a protected .git through its parent.
+// Delete the admitted objects, without extending authority through their parent.
 const WRITE: u32 =
     FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | DELETE;
-const DENY_WRITE: u32 = WRITE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER;
 
-pub(super) struct Grants {
-    sid: Local,
-    paths: Vec<(PathBuf, Handle, bool)>,
-}
+/// Optional paths this process could not grant: not retried or reported again.
+static UNGRANTABLE: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
-impl Grants {
-    pub(super) fn new(identity: &str) -> Result<Self, String> {
-        Ok(Self {
-            sid: sid(identity)?,
-            paths: Vec::new(),
-        })
-    }
-
-    pub(super) fn apply(&mut self, grants: &[Grant], token: HANDLE) -> Result<(), String> {
-        let _lock = AclLock::acquire()?;
-        let runtime = RuntimeAccess::new(token)?;
-        for grant in grants {
-            let metadata = match std::fs::metadata(&grant.path) {
-                Ok(metadata) => metadata,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound
-                        && grant.access == Access::Read =>
-                {
-                    continue
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "Inspect sandbox path {}: {error}",
-                        grant.path.display()
-                    ))
-                }
-            };
-            let mask = match grant.access {
-                Access::Read => READ,
-                Access::Traverse => TRAVERSE,
-                Access::Write => READ | WRITE,
-                Access::DenyWrite => DENY_WRITE,
-            };
-            // A normal user's Everyone/Users/AAP access is not proof of LPAC
-            // access. Query the suspended child, including its package claims.
-            if matches!(grant.access, Access::Read | Access::Traverse)
-                && runtime.can_access(&grant.path, mask)?
+/// Make every grant effective for the suspended child's token. Returns warnings
+/// for skipped optional grants (each reported once per process).
+pub(super) fn ensure(
+    grants: &[(&Grant, PSID)],
+    token: HANDLE,
+    state: &State,
+) -> Result<Vec<String>, String> {
+    let runtime = RuntimeAccess::new(token)?;
+    let mut lock = None;
+    let mut warnings = Vec::new();
+    for (grant, sid) in grants {
+        let skipped = |reason: String, warnings: &mut Vec<String>| {
+            let mut known = UNGRANTABLE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if known
+                .get_or_insert_with(HashSet::new)
+                .insert(grant.path.clone())
+                && grant.access != Access::Traverse
             {
+                warnings.push(format!(
+                    "Skipped optional sandbox read access to {}: {reason}",
+                    crate::file_access::process_visible_path(&grant.path).display()
+                ));
+            }
+        };
+        if grant.optional
+            && UNGRANTABLE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .is_some_and(|known| known.contains(&grant.path))
+        {
+            continue;
+        }
+        let metadata = match std::fs::metadata(&grant.path) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && matches!(grant.access, Access::Read | Access::Traverse) =>
+            {
+                continue
+            }
+            Err(error) if grant.optional => {
+                skipped(error.to_string(), &mut warnings);
                 continue;
             }
-            let handle = unsafe {
-                CreateFileW(
-                    wide(&grant.path).as_ptr(),
-                    READ_CONTROL | WRITE_DAC,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    null(),
-                    OPEN_EXISTING,
-                    FILE_FLAG_BACKUP_SEMANTICS,
-                    null_mut(),
-                )
-            };
-            if handle == INVALID_HANDLE_VALUE {
-                return Err(error(&format!(
-                    "Open sandbox ACL {} (the current user must be able to grant this resource)",
+            Err(error) => {
+                return Err(format!(
+                    "Inspect sandbox path {}: {error}",
                     grant.path.display()
-                )));
+                ))
             }
-            let handle = Handle(handle);
-            // Register before SetSecurityInfo: propagation can partially change
-            // descendants before reporting an error, so cleanup must still run.
-            self.paths
-                .push((grant.path.clone(), handle, grant.access != Access::Traverse));
-            let mode = if grant.access == Access::DenyWrite {
-                DENY_ACCESS
-            } else {
-                GRANT_ACCESS
-            };
-            let inherit = if metadata.is_dir() && grant.access != Access::Traverse {
-                SUB_CONTAINERS_AND_OBJECTS_INHERIT
-            } else {
-                NO_INHERITANCE
-            };
-            edit(
-                self.paths.last().unwrap().1 .0,
-                self.sid.0,
-                mode,
-                mask,
-                inherit,
-                grant.access != Access::Traverse,
-            )
-            .map_err(|error| format!("Grant sandbox path {}: {error}", grant.path.display()))?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn cleanup(&mut self) -> Result<(), String> {
-        if self.paths.is_empty() {
-            return Ok(());
-        }
-        let _lock = AclLock::acquire()?;
-        let mut failures = Vec::new();
-        // Parent first: removal propagates inherited ACEs before child cleanup.
-        self.paths
-            .sort_by_key(|(path, _, _)| path.components().count());
-        self.paths.retain(|(path, handle, propagate)| {
-            match edit(
-                handle.0,
-                self.sid.0,
-                REVOKE_ACCESS,
-                0,
-                NO_INHERITANCE,
-                *propagate,
-            ) {
-                Ok(()) => false,
-                Err(error) => {
-                    failures.push(format!("{}: {error}", path.display()));
-                    true
-                }
+        };
+        let mask = match grant.access {
+            Access::Read => READ,
+            Access::Traverse => TRAVERSE,
+            Access::Write => READ | WRITE,
+        };
+        // A normal user's Everyone/Users/AAP access is not proof of LPAC access.
+        // Query the suspended child, including its package claims and capabilities.
+        let satisfied = runtime.allows(&grant.path, mask);
+        match satisfied {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) if grant.optional => {
+                skipped(error, &mut warnings);
+                continue;
             }
-        });
-        if failures.is_empty() {
-            Ok(())
+            Err(error) => return Err(error),
+        }
+        if lock.is_none() {
+            lock = Some(AclLock::acquire()?);
+        }
+        let handle = match open_for_dacl(&grant.path) {
+            Ok(handle) => handle,
+            Err(error) if grant.optional => {
+                skipped(error, &mut warnings);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let propagate = grant.access != Access::Traverse;
+        if !grant.ephemeral {
+            state.record(Entry {
+                path: grant.path.clone(),
+                sid: sid_string(*sid)?,
+                propagate,
+            })?;
+        }
+        let inherit = if metadata.is_dir() && grant.access != Access::Traverse {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
         } else {
-            Err(format!("Remove invocation ACLs: {}", failures.join("; ")))
+            NO_INHERITANCE
+        };
+        let applied = edit(handle.0, *sid, GRANT_ACCESS, mask, inherit, propagate)
+            .map_err(|error| format!("Grant sandbox path {}: {error}", grant.path.display()));
+        match applied {
+            Ok(()) => {}
+            Err(error) if grant.optional => skipped(error, &mut warnings),
+            Err(error) => return Err(error),
         }
     }
+    Ok(warnings)
 }
-impl Drop for Grants {
-    fn drop(&mut self) {
-        if let Err(error) = self.cleanup() {
-            eprintln!("{error}");
-        }
+
+/// Remove one recorded ACE (allow or deny) for exactly this SID.
+pub(super) fn revoke(entry: &Entry) -> Result<(), String> {
+    if !entry.path.exists() {
+        return Ok(());
     }
+    let sid = sid(&entry.sid)?;
+    let handle = open_for_dacl(&entry.path)?;
+    edit(
+        handle.0,
+        sid.0,
+        REVOKE_ACCESS,
+        0,
+        NO_INHERITANCE,
+        entry.propagate,
+    )
+    .map_err(|error| format!("Revoke sandbox grant {}: {error}", entry.path.display()))
+}
+
+/// Serialize DACL edits with other processes, revoking parents first so their
+/// inherited ACEs leave the subtree before child entries are processed.
+pub(super) fn revoke_all(entries: &mut [Entry]) -> Vec<(Entry, String)> {
+    let _lock = match AclLock::acquire() {
+        Ok(lock) => lock,
+        Err(error) => {
+            return entries
+                .iter()
+                .map(|entry| (entry.clone(), error.clone()))
+                .collect()
+        }
+    };
+    entries.sort_by_key(|entry| entry.path.components().count());
+    entries
+        .iter()
+        .filter_map(|entry| revoke(entry).err().map(|error| (entry.clone(), error)))
+        .collect()
+}
+
+fn open_for_dacl(path: &Path) -> Result<Handle, String> {
+    let handle = unsafe {
+        CreateFileW(
+            wide(path).as_ptr(),
+            READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(error(&format!(
+            "Open sandbox ACL {} (the current user must be able to grant this resource)",
+            path.display()
+        )));
+    }
+    Ok(Handle(handle))
 }
 
 fn trustee(sid: PSID) -> TRUSTEE_W {
@@ -195,14 +237,14 @@ fn edit(
         Trustee: trustee(sid),
     };
     let mut updated = null_mut();
-    code("Build invocation ACL", unsafe {
+    code("Build sandbox ACL", unsafe {
         SetEntriesInAclW(1, &entry, acl, &mut updated)
     })?;
     let _updated = Local(updated.cast());
     if !propagate {
         return set_directory_metadata_dacl(handle, updated);
     }
-    code("Apply invocation ACL", unsafe {
+    code("Apply sandbox ACL", unsafe {
         SetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
@@ -261,12 +303,14 @@ impl RuntimeAccess {
         Ok(Self(Handle(impersonation)))
     }
 
-    fn can_access(&self, path: &std::path::Path, mask: u32) -> Result<bool, String> {
+    /// Whether the child token holds every right in `mask` on this path. Ask for
+    /// exact rights: MAXIMUM_ALLOWED does not reflect the AppContainer check.
+    fn allows(&self, path: &Path, mask: u32) -> Result<bool, String> {
         self.check(path, mask)
-            .map_err(|error| format!("Check LPAC runtime read access {}: {error}", path.display()))
+            .map_err(|error| format!("Check LPAC runtime access {}: {error}", path.display()))
     }
 
-    fn check(&self, path: &std::path::Path, mask: u32) -> Result<bool, String> {
+    fn check(&self, path: &Path, mask: u32) -> Result<bool, String> {
         let (mut descriptor, mut acl) = (null_mut(), null_mut());
         code("Read runtime path DACL", unsafe {
             GetNamedSecurityInfoW(
@@ -306,14 +350,14 @@ impl RuntimeAccess {
             )
         } == 0
         {
-            return Err(error("Evaluate runtime read access"));
+            return Err(error("Evaluate runtime access"));
         }
         Ok(allowed != 0 && rights & mask == mask)
     }
 }
 
 // Kernel tool workers are separate processes. Serialize DACL read/modify/write
-// across them; the mutex is held only during grant/revoke, never shell execution.
+// across them; the mutex is held only while editing, never during execution.
 struct AclLock(Handle);
 impl AclLock {
     fn acquire() -> Result<Self, String> {
@@ -344,69 +388,11 @@ impl Drop for AclLock {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
-    struct Directory(PathBuf);
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            if let Err(error) = std::fs::remove_dir_all(&self.0) {
-                eprintln!(
-                    "Remove owned ACL test directory {}: {error}",
-                    self.0.display()
-                );
-            }
-        }
-    }
-    #[test]
-    fn invocation_aces_are_removed_without_replacing_other_grants() {
-        let root = std::env::temp_dir().join(format!("deepcode-acl-{}", random_text()));
-        std::fs::create_dir(&root).unwrap();
-        let _directory = Directory(root.clone());
-        let first_profile = super::super::profile::Profile::create(false).unwrap();
-        let second_profile = super::super::profile::Profile::create(false).unwrap();
-        let identity = first_profile.sid_string().unwrap();
-        let other = second_profile.sid_string().unwrap();
-        let mut first = Grants::new(&identity).unwrap();
-        let mut second = Grants::new(&other).unwrap();
-        let path = root.canonicalize().unwrap();
-        apply(&mut first, &first_profile, &path, Access::Write);
-        apply(&mut second, &second_profile, &path, Access::Read);
-        assert!(contains_sid(&path, first.sid.0));
-        first.cleanup().unwrap();
-        assert!(!contains_sid(&path, first.sid.0));
-        assert!(contains_sid(&path, second.sid.0));
-        second.cleanup().unwrap();
-        assert!(!contains_sid(&path, second.sid.0));
-    }
-    fn apply(
-        grants: &mut Grants,
-        profile: &super::super::profile::Profile,
-        path: &std::path::Path,
-        access: Access,
-    ) {
-        let system = std::env::var_os("SystemRoot").unwrap();
-        let directory = PathBuf::from(&system).join("System32");
-        let mut command = std::process::Command::new(directory.join("cmd.exe"));
-        command
-            .args(["/d", "/c", "exit", "0"])
-            .current_dir(directory)
-            .env_clear()
-            .env("SystemRoot", system)
-            .env("LOCALAPPDATA", std::env::var_os("LOCALAPPDATA").unwrap());
-        let mut child = super::super::runner::spawn(&command, false, profile, |token| {
-            grants.apply(
-                &[Grant {
-                    path: path.to_path_buf(),
-                    access,
-                }],
-                token,
-            )
-        })
-        .unwrap();
-        child.stop().unwrap();
-    }
 
-    fn contains_sid(path: &std::path::Path, sid: PSID) -> bool {
+    pub(in super::super) fn contains_sid(path: &Path, sid_text: &str) -> bool {
+        let wanted = sid(sid_text).unwrap();
         let (mut descriptor, mut acl) = (null_mut(), null_mut());
         code("Read test DACL", unsafe {
             GetNamedSecurityInfoW(
@@ -428,11 +414,53 @@ mod tests {
             let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
             // These test directories use ordinary allow/deny ACE layouts.
             if matches!(ace.Header.AceType, 0 | 1)
-                && unsafe { EqualSid((&ace.SidStart as *const u32).cast_mut().cast(), sid) } != 0
+                && unsafe { EqualSid((&ace.SidStart as *const u32).cast_mut().cast(), wanted.0) }
+                    != 0
             {
                 return true;
             }
         }
         false
+    }
+
+    #[test]
+    fn revoking_one_capability_keeps_other_grants() {
+        let root = std::env::temp_dir().join(format!("deepcode-acl-{}", random_text()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.canonicalize().unwrap();
+        let capabilities = super::super::profile::Capabilities::derive(&[
+            format!("DeepCode.test.Write.{}", random_text()),
+            format!("DeepCode.test.Read.{}", random_text()),
+        ])
+        .unwrap();
+        let (first, second) = (
+            sid_string(capabilities.sid(0)).unwrap(),
+            sid_string(capabilities.sid(1)).unwrap(),
+        );
+        for (sid, mask) in [
+            (capabilities.sid(0), READ | WRITE),
+            (capabilities.sid(1), READ),
+        ] {
+            let handle = open_for_dacl(&path).unwrap();
+            edit(
+                handle.0,
+                sid,
+                GRANT_ACCESS,
+                mask,
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+                true,
+            )
+            .unwrap();
+        }
+        assert!(contains_sid(&path, &first) && contains_sid(&path, &second));
+        revoke(&Entry {
+            path: path.clone(),
+            sid: first.clone(),
+            propagate: true,
+        })
+        .unwrap();
+        assert!(!contains_sid(&path, &first));
+        assert!(contains_sid(&path, &second));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

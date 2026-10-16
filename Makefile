@@ -77,10 +77,15 @@ endif
 # ---- 容器运行参数 ----
 # - 当前 worktree 挂载到 WORKDIR_IN_CTNR
 # - named volumes 覆盖 node_modules / target，避免 Windows ↔ WSL ↔ 容器 IO 雪崩
+# - 开发容器允许 Bubblewrap 建立内层 namespace / mount；产品沙箱策略保持独立
 RUN_ARGS := \
 	--name $(CONTAINER_NAME) \
 	--hostname $(CONTAINER_HOSTNAME) \
 	--init \
+	--cap-add=SYS_ADMIN \
+	--security-opt=apparmor=unconfined \
+	--security-opt=seccomp=unconfined \
+	--security-opt=systempaths=unconfined \
 	--label "com.deepcode.project.root=$(DEEPCODE_PROJECT_ROOT)" \
 	-w "$(WORKDIR_IN_CTNR)" \
 	-p 127.0.0.1:$(DEEPCODE_HOST_PORT):$(DEEPCODE_CONTAINER_PORT) \
@@ -165,7 +170,7 @@ _ensure_image: _validate_config
 # ---- _ensure_container：容器懒创建 / 刷新启动 ----
 # 状态机：
 #   not exists  -> docker run -d
-#   stale       -> 精确移除该容器后重建（源码挂载、镜像或端口变化）
+#   stale       -> 精确移除该容器后重建（源码挂载、镜像、端口或嵌套沙箱配置变化）
 #   running     -> reuse
 #   exited      -> docker start
 _ensure_container: _ensure_image
@@ -174,13 +179,20 @@ _ensure_container: _ensure_image
 		container_image=$$(docker container inspect -f '{{.Image}}' $(CONTAINER_NAME)); \
 		current_image=$$(docker image inspect -f '{{.Id}}' $(IMAGE)); \
 		actual_host_port=$$(docker container port $(CONTAINER_NAME) $(DEEPCODE_CONTAINER_PORT)/tcp 2>/dev/null | awk -F: 'NR == 1 { print $$NF }'); \
+		container_caps=$$(docker container inspect -f '{{range .HostConfig.CapAdd}}{{println .}}{{end}}' $(CONTAINER_NAME)); \
+		container_security=$$(docker container inspect -f '{{range .HostConfig.SecurityOpt}}{{println .}}{{end}}' $(CONTAINER_NAME)); \
+		container_system_paths=$$(docker container inspect -f '{{len .HostConfig.MaskedPaths}} {{len .HostConfig.ReadonlyPaths}}' $(CONTAINER_NAME)); \
 		reason=""; \
 		if [ "$$mounted_root" != "$(DEEPCODE_PROJECT_ROOT)" ]; then reason="源码挂载已变化"; \
 		elif [ "$$container_image" != "$$current_image" ]; then reason="开发镜像已更新"; \
 		elif [ "$$actual_host_port" != "$(DEEPCODE_HOST_PORT)" ]; then reason="端口配置已变化"; \
+		elif ! printf '%s\n' "$$container_caps" | grep -Eq '^(CAP_)?SYS_ADMIN$$' \
+			|| ! printf '%s\n' "$$container_security" | grep -Fxq 'apparmor=unconfined' \
+			|| ! printf '%s\n' "$$container_security" | grep -Fxq 'seccomp=unconfined' \
+			|| [ "$$container_system_paths" != '0 0' ]; then reason="Bubblewrap 嵌套沙箱配置已变化"; \
 		fi; \
 		if [ -n "$$reason" ]; then \
-			echo "[make] $$reason，重建唯一容器 $(CONTAINER_NAME) 并保留 named volumes..."; \
+			echo "[make] $${reason}，重建唯一容器 $(CONTAINER_NAME) 并保留 named volumes..."; \
 			docker rm -f $(CONTAINER_NAME) >/dev/null; \
 		fi; \
 	fi; \

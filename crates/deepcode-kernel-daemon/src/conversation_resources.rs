@@ -46,6 +46,28 @@ pub(crate) struct ChangeReference {
 
 type ResourceError = Json<ApiResponse>;
 
+fn managed_descendant_workdir(
+    state: &AppState,
+    session_id: &str,
+    workspace: &crate::conversation_catalog::ConversationWorkspaceRecord,
+) -> Result<bool, ResourceError> {
+    if !workspace.session_workdir {
+        return Ok(false);
+    }
+    let Some(owner) = workspace
+        .owner_session_id
+        .as_deref()
+        .filter(|owner| *owner != session_id)
+    else {
+        return Ok(false);
+    };
+    state
+        .local_agent
+        .journal
+        .is_descendant_session(session_id, owner)
+        .map_err(|cause| ApiResponse::error(cause.code, cause.message))
+}
+
 pub(crate) async fn resource_projection(
     state: &AppState,
     session_id: &str,
@@ -125,12 +147,6 @@ pub(crate) fn resolve_resource(
     }
     let root = match (&resource.workspace_id, &resource.file_grant) {
         (Some(id), None) => {
-            if !projection_references_workspace(projection, id) {
-                return Err(ApiResponse::error(
-                    "conversation_resource_workspace_not_bound",
-                    "资源不属于当前对话的有效目录集合。",
-                ));
-            }
             let gui = state.gui.lock().expect("gui state lock");
             if let Some(error) = &gui.conversation_catalog_error {
                 return Err(ApiResponse::error(
@@ -147,6 +163,14 @@ pub(crate) fn resolve_resource(
             let workspace = gui.conversation_catalog.workspace(id).ok_or_else(|| {
                 ApiResponse::error("conversation_workspace_not_found", "工作目录不存在。")
             })?;
+            if !projection_references_workspace(projection, id)
+                && !managed_descendant_workdir(state, session_id, workspace)?
+            {
+                return Err(ApiResponse::error(
+                    "conversation_resource_workspace_not_bound",
+                    "资源不属于当前对话及后代 Agent 的托管目录。",
+                ));
+            }
             PathBuf::from(&workspace.canonical_root)
         }
         (None, Some(reference)) => {
@@ -205,7 +229,7 @@ pub(crate) fn resolve_resource(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ResourceEntry {
+pub(crate) struct ResourceEntry {
     name: String,
     resource: ResourceReference,
     kind: &'static str,
@@ -215,7 +239,7 @@ struct ResourceEntry {
     error: Option<String>,
 }
 
-fn resource_entry(
+pub(crate) fn resource_entry(
     name: String,
     resource: ResourceReference,
     path: &std::path::Path,
@@ -272,7 +296,12 @@ fn resource_roots(
         .and_then(|id| gui.conversation_catalog.project(id));
     let mut roots = Vec::new();
     for workspace in &gui.conversation_catalog.workspaces {
-        if !projection_references_workspace(projection, &workspace.workspace_id) {
+        let descendant = managed_descendant_workdir(
+            state,
+            projection["sessionId"].as_str().unwrap_or(""),
+            workspace,
+        )?;
+        if !descendant && !projection_references_workspace(projection, &workspace.workspace_id) {
             continue;
         }
         let reference = ResourceReference {
@@ -286,7 +315,9 @@ fn resource_roots(
             reference,
             std::path::Path::new(&workspace.canonical_root),
         );
-        entry.category = Some(if workspace.session_workdir {
+        entry.category = Some(if descendant {
+            "agent"
+        } else if workspace.session_workdir {
             "session"
         } else if workspace.owner_session_id.is_some() {
             "attachment"
@@ -297,6 +328,15 @@ fn resource_roots(
         } else {
             "reference"
         });
+        if descendant {
+            if let Some(session) = workspace
+                .owner_session_id
+                .as_deref()
+                .and_then(|id| gui.conversation_catalog.session(id))
+            {
+                entry.name = session.title.clone();
+            }
+        }
         roots.push(entry);
     }
     for grant in projection["shellAuthorizations"]
@@ -360,20 +400,20 @@ pub(crate) async fn conversation_resource_list(
         Ok(value) => value,
         Err(error) => return error,
     };
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) => {
-            return ApiResponse::error("conversation_directory_read_failed", error.to_string())
-        }
-    };
+    match directory_entries(&directory, &resource) {
+        Ok(entries) => ApiResponse::ok(json!(entries)),
+        Err(error) => ApiResponse::error("conversation_directory_read_failed", error.to_string()),
+    }
+}
+
+pub(crate) fn directory_entries(
+    directory: &std::path::Path,
+    resource: &ResourceReference,
+) -> Result<Vec<ResourceEntry>, std::io::Error> {
+    let entries = fs::read_dir(directory)?;
     let mut result = Vec::new();
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                return ApiResponse::error("conversation_directory_read_failed", error.to_string())
-            }
-        };
+        let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let mut child = resource.clone();
         child.logical_path = if resource.logical_path.is_empty() {
@@ -384,7 +424,7 @@ pub(crate) async fn conversation_resource_list(
         result.push(resource_entry(name, child, &entry.path()));
     }
     result.sort_by_key(|entry| (entry.kind != "directory", entry.name.to_lowercase()));
-    ApiResponse::ok(json!(result))
+    Ok(result)
 }
 
 #[derive(Deserialize)]

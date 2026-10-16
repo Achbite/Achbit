@@ -23,9 +23,3 @@ export function shouldSubmitComposerKey(
     && !event.isComposing
     && event.keyCode !== 229;
 }
-
-export function shouldOfferFocusCommand(draft: string): boolean {
-  return draft.startsWith('/')
-    && draft.trim() === draft
-    && '/focus'.startsWith(draft);
-}

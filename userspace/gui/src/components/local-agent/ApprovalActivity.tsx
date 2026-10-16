@@ -2,6 +2,7 @@ import type { ActivityProjection } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { useConversationRowState } from './ConversationVirtualRow';
+import { ApprovalReviewReason } from './ApprovalReviewReason';
 
 /** A view of the recorded request/decision; it never issues an authorization. */
 export function ApprovalActivity({ activity, pending, reviewing, language, onExpand }: {
@@ -19,12 +20,14 @@ export function ApprovalActivity({ activity, pending, reviewing, language, onExp
     <button type="button" className="local-agent__approval-record-heading" aria-expanded={expanded}
       onClick={() => { if (!expanded) onExpand(); setExpanded((value) => !value); }}>
       <DeepCodeShellIcon name="hand" />
-      <span>{t(language, `agent.approval.record.${pending ? status : 'requested'}`)}</span>
+      <span>{t(language, `agent.approval.record.${status}`)}</span>
       <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
     {expanded && <div className="local-agent__approval-record-body">
       <p>{activity.label}</p>
       <span className="local-agent__approval-record-status">{t(language, `agent.approval.record.${status}`)}</span>
     </div>}
+    {activity.approvalReview && (expanded || activity.approvalReview.decision !== 'allow')
+      && <ApprovalReviewReason review={activity.approvalReview} language={language} />}
   </article>;
 }

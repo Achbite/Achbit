@@ -5,6 +5,7 @@
  */
 export const UI_ICON_GLYPHS = {
   sidebar: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></>,
+  link: <><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/></>,
   expand: <><path d="M14 4h6v6M20 4l-7 7M4 14v6h6M4 20l7-7"/></>,
   collapse: <><path d="M20 4l-7 7m0-6v6h6M4 20l7-7m-6 0h6v6"/></>,
   refresh: <><path d="M20 7v5h-5M19 12a7 7 0 1 0-1.5 5M20 12a8 8 0 0 0-2-6"/></>,
@@ -37,6 +38,7 @@ export const UI_ICON_GLYPHS = {
   arrowUp: <><path d="m7 11 5-5 5 5" /><path d="M12 6v12" /></>,
   appearance: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></>,
   agent: <><path d="M10 3c1 5 2 6 7 7-5 1-6 2-7 7-1-5-2-6-7-7 5-1 6-2 7-7Z" /><path d="M19 14v7m-3.5-3.5h7" /></>,
+  subagents: <><circle cx="12" cy="5" r="2.5" /><circle cx="5" cy="18" r="2.5" /><circle cx="19" cy="18" r="2.5" /><path d="M12 7.5V12M5 15.5V12h14v3.5" /></>,
   shield: <><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6Z" /><path d="m8 12 3 3 5-6" /></>,
   hand: <><path d="M8 12V5a1.5 1.5 0 0 1 3 0v6-7a1.5 1.5 0 0 1 3 0v7-5a1.5 1.5 0 0 1 3 0v6-3a1.5 1.5 0 0 1 3 0v7a7 7 0 0 1-7 7h-1a6 6 0 0 1-5-3L3.5 13a1.7 1.7 0 0 1 2.7-2L8 13" /></>,
   server: <><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" /></>,
@@ -75,7 +77,7 @@ export interface UiIconProps {
 
 export default function UiIcon({ name, className, size = 18, title }: UiIconProps) {
   return <svg className={className} data-ui-icon={name} viewBox="0 0 24 24"
-    width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8"
+    width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.65"
     strokeLinecap="round" strokeLinejoin="round" focusable="false"
     aria-hidden={title ? undefined : true} role={title ? 'img' : undefined} aria-label={title}>
     {title && <title>{title}</title>}

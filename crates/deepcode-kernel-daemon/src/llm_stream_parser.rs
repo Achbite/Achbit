@@ -745,6 +745,11 @@ impl ProviderStreamAccumulator {
                     usage.pointer("/input_tokens_details/cached_tokens"),
                     "缓存读取输入 token",
                 )?;
+                set_token_count(
+                    &mut self.cache_creation_input_tokens,
+                    usage.pointer("/input_tokens_details/cache_write_tokens"),
+                    "缓存写入输入 token",
+                )?;
                 self.finish_reason = Some(if self.tool_calls.is_empty() {
                     "stop".to_string()
                 } else {
@@ -1255,6 +1260,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn responses_preserves_cache_write_usage_without_inventing_missing_values() {
+        for writes in [None, Some(0), Some(12)] {
+            let mut details = json!({"cached_tokens":18});
+            if let Some(writes) = writes {
+                details["cache_write_tokens"] = json!(writes);
+            }
+            let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Responses);
+            parser
+                .ingest_payload(
+                    json!({"type":"response.completed","response":{"usage":{
+                        "input_tokens":30,"output_tokens":6,"input_tokens_details":details,
+                    }}})
+                    .to_string()
+                    .as_bytes(),
+                )
+                .unwrap();
+            assert_eq!(parser.observed_usage().unwrap().cache_write_tokens, writes);
+            let completed = parser.finalize().unwrap();
+            assert_eq!(completed.completion.usage.unwrap().input_tokens, 30);
+        }
+    }
+
+    #[test]
     fn upstream_stream_failures_preserve_details_without_becoming_protocol_errors() {
         let reported = json!({
             "code":"server_is_overloaded", "type":"service_unavailable_error",
@@ -1608,6 +1636,11 @@ mod tests {
             "status": "failed",
             "action": { "type": "open_page", "url": "https://example.com/unavailable" },
         });
+        let item_without_action = json!({
+            "type": "web_search_call",
+            "id": "ws_3",
+            "status": "completed",
+        });
         parser
             .ingest_payload(
                 json!({
@@ -1641,6 +1674,21 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap();
+        let emissions = parser
+            .ingest_payload(
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 3,
+                    "item": item_without_action.clone(),
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .unwrap();
+        assert!(emissions.iter().any(|emission| {
+            emission.event["type"] == "output_item_completed"
+                && emission.event["item"] == item_without_action
+        }));
         parser
             .ingest_payload(
                 br#"{"type":"response.completed","response":{"usage":{"input_tokens":30,"output_tokens":6,"input_tokens_details":{"cached_tokens":18}}}}"#,
@@ -1659,7 +1707,7 @@ mod tests {
         assert_eq!(result.output.content, "Current result.");
         assert_eq!(
             result.output.hosted_web_search_calls,
-            vec![item.clone(), failed_item.clone()]
+            vec![item.clone(), failed_item.clone(), item_without_action]
         );
         assert_eq!(
             result.completion.usage,

@@ -16,12 +16,10 @@ import WorkspaceSandboxSettings from './WorkspaceSandboxSettings';
 import DocumentEnvironmentSettings from './DocumentEnvironmentSettings';
 import FileOpeningSettings, { FILE_READING_KEYS } from './FileOpeningSettings';
 import CommandDenylistSettings from './CommandDenylistSettings';
-import { matchesSettingsQuery } from '../settingsSearch';
 
 interface RuntimeProps {
   apiStatus: string;
   serverVersion?: string;
-  query?: string;
   category?: 'general' | 'appearance' | 'about';
 }
 
@@ -60,21 +58,12 @@ function definitionsFor(
   keys: readonly string[],
   available: readonly SettingDefinition[],
   language: ReturnType<typeof normalizeUiLanguage>,
-  query: string,
 ): SettingDefinition[] {
   const byKey = new Map(available.map((definition) => [definition.key, definition]));
-  const normalizedQuery = query.trim().toLowerCase();
   return keys.flatMap((key) => {
     const original = byKey.get(key);
     if (!original) return [];
-    const definition = localizeSettingDefinition(original, language);
-    if (!normalizedQuery) return [definition];
-    return [definition.key, definition.label, definition.description]
-      .join(' ')
-      .toLowerCase()
-      .includes(normalizedQuery)
-      ? [definition]
-      : [];
+    return [localizeSettingDefinition(original, language)];
   });
 }
 
@@ -88,13 +77,12 @@ export function settingsSearchDefinitions(language: ReturnType<typeof normalizeU
     permissions: AGENT_PERMISSION_KEYS,
     llm: AGENT_WEB_KEYS,
   };
-  return Object.entries(groups).flatMap(([category, keys]) => definitionsFor(keys, available, language, '').map((definition) => ({ id: definition.key, title: definition.label, keywords: `${definition.key} ${definition.description}`, category })));
+  return Object.entries(groups).flatMap(([category, keys]) => definitionsFor(keys, available, language).map((definition) => ({ id: definition.key, title: definition.label, keywords: `${definition.key} ${definition.description}`, category })));
 }
 
 export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   apiStatus,
   serverVersion,
-  query = '',
   category = 'appearance',
 }) => {
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
@@ -106,12 +94,12 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   const resetUserSetting = useSettingsStore((state) => state.resetUserSetting);
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const appearance = useMemo(
-    () => definitionsFor(APPEARANCE_KEYS, guiDefinitions(), language, query),
-    [language, query],
+    () => definitionsFor(APPEARANCE_KEYS, guiDefinitions(), language),
+    [language],
   );
   const preferences = useMemo(
-    () => definitionsFor(category === 'general' ? ['workbench.language'] : category === 'appearance' ? INTERFACE_KEYS.filter((key) => key !== 'workbench.language') : [], guiDefinitions(), language, query),
-    [category, language, query],
+    () => definitionsFor(category === 'general' ? ['workbench.language'] : category === 'appearance' ? INTERFACE_KEYS.filter((key) => key !== 'workbench.language') : [], guiDefinitions(), language),
+    [category, language],
   );
   const onChange = (key: string, value: UserSettingValue) => {
     return patchUserSetting(key, value);
@@ -120,7 +108,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   return (
     <div>
       <h2 className="settings-title">{category === 'general' ? (language === 'zh-CN' ? '通用' : 'General') : category === 'about' ? (language === 'zh-CN' ? '关于 DeepCode' : 'About DeepCode') : t(language, 'settings.gui.title')}</h2>
-      {category === 'general' && <FileOpeningSettings language={language} query={query} />}
+      {category === 'general' && <FileOpeningSettings language={language} />}
       {category === 'appearance' && <GuiAppearanceSettings definitions={appearance} language={language} />}
       {preferences.length > 0 && (
         <div className="settings-card">
@@ -142,7 +130,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
           </div>
         </div>
       )}
-      {category === 'about' && !query.trim() && (
+      {category === 'about' && (
         <div className="settings-card settings-runtime-card">
           <h3 className="settings-card__title">{t(language, 'settings.runtime.title')}</h3>
           <table className="settings-kv">
@@ -171,11 +159,10 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
 };
 
 interface AgentSettingsSectionProps {
-  query?: string;
   category?: 'agent' | 'environment' | 'permissions' | 'services';
 }
 
-export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ query = '', category = 'agent' }) => {
+export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ category = 'agent' }) => {
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
   const sources = useSettingsStore((state) => state.sources);
   const loading = useSettingsStore((state) => state.loading);
@@ -185,34 +172,26 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ quer
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const available = useMemo(() => agentSettingDefinitions(), []);
   const environment = useSettingsStore((state) => state.environment);
-  const shellSettings = useMemo(() => definitionsFor(AGENT_SHELL_KEYS, available, language, query), [available, language, query]);
+  const shellSettings = useMemo(() => definitionsFor(AGENT_SHELL_KEYS, available, language), [available, language]);
   const shell = environment?.shell as { executable?: string; dialect?: string } | undefined;
   const commands = Array.isArray(environment?.developerCommands) ? environment.developerCommands.filter((item): item is string => typeof item === 'string') : [];
   const chinese = language === 'zh-CN';
   const response = useMemo(
-    () => definitionsFor(AGENT_RESPONSE_KEYS, available, language, query),
-    [available, language, query],
+    () => definitionsFor(AGENT_RESPONSE_KEYS, available, language),
+    [available, language],
   );
   const instructions = useMemo(
-    () => definitionsFor(AGENT_INSTRUCTION_KEYS, available, language, query),
-    [available, language, query],
+    () => definitionsFor(AGENT_INSTRUCTION_KEYS, available, language),
+    [available, language],
   );
   const permissions = useMemo(
-    () => definitionsFor(AGENT_PERMISSION_KEYS, available, language, query),
-    [available, language, query],
+    () => definitionsFor(AGENT_PERMISSION_KEYS, available, language),
+    [available, language],
   );
   const web = useMemo(
-    () => definitionsFor(AGENT_WEB_KEYS, available, language, query),
-    [available, language, query],
+    () => definitionsFor(AGENT_WEB_KEYS, available, language),
+    [available, language],
   );
-  const groups = category === 'agent' ? [response, instructions]
-    : category === 'environment' ? [shellSettings]
-      : category === 'permissions' ? [permissions] : [web];
-  const commandDenylistMatches = category === 'permissions' && matchesSettingsQuery(query,
-    t(language, 'settings.commandDenylist.title'), t(language, 'settings.commandDenylist.description'));
-  const runtimeRootsMatch = category === 'permissions' && matchesSettingsQuery(query, t(language, 'settings.runtimeReadRoots.title'), t(language, 'settings.runtimeReadRoots.description'));
-  const commandRulesMatch = category === 'permissions' && matchesSettingsQuery(query,
-    t(language, 'settings.commandRules.title'));
   const onChange = (key: string, value: UserSettingValue) => {
     return patchUserSetting(key, value);
   };
@@ -246,9 +225,9 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ quer
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
       {category === 'agent' && renderCard(null, response)}
       {category === 'environment' && environment?.os === 'windows' && renderCard('Windows Shell', shellSettings)}
-      {category === 'environment' && <DocumentEnvironmentSettings language={language} query={query} />}
-      {category === 'environment' && !query && <WorkspaceSandboxSettings chinese={chinese} />}
-      {category === 'environment' && !query && <div className="settings-card">
+      {category === 'environment' && <DocumentEnvironmentSettings language={language} />}
+      {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
+      {category === 'environment' && <div className="settings-card">
         <h3 className="settings-card__title">{chinese ? '环境上下文' : 'Environment context'}</h3>
         <div className="settings-card__body">
           <div className="settings-field settings-field--compact">
@@ -266,18 +245,13 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ quer
       </div>}
 
       {category === 'agent' && renderCard(t(language, 'settings.agent.instructions'), instructions)}
-      {category === 'permissions' && renderCard(null, permissions, commandDenylistMatches || commandRulesMatch || runtimeRootsMatch ? <>
-        {commandDenylistMatches && <CommandDenylistSettings language={language} />}
-        {commandRulesMatch && <CommandRuleSettings language={language} />}
-        {runtimeRootsMatch && <CommandDenylistSettings language={language} setting="runtimeReadRoots" />}
-      </> : null)}
+      {category === 'permissions' && renderCard(null, permissions, <>
+        <CommandDenylistSettings language={language} />
+        <CommandRuleSettings language={language} />
+        <CommandDenylistSettings language={language} setting="runtimeReadRoots" />
+      </>)}
       {category === 'services' && renderCard(null, web)}
       {errorMessage && <div className="settings-error">{errorMessage}</div>}
-      {category !== 'environment' && !commandDenylistMatches && !commandRulesMatch && !runtimeRootsMatch && groups.every((group) => group.length === 0) && (
-        <div className="settings-card">
-          <div className="settings-card__body">{t(language, 'settings.noSearchMatch')}</div>
-        </div>
-      )}
     </div>
   );
 };

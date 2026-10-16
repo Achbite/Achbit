@@ -75,12 +75,49 @@ const AGENT_SHELL_ENV_ALLOWLIST: &[&str] = &[
     "USER",
     "VIRTUAL_ENV",
     "VOLTA_HOME",
+    "PYTHONUTF8",
+    // Proxy and certificate configuration, used when the Shell has network access.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE",
+    // Windows system locations and machine facts that ordinary tools read.
+    "windir",
+    "SystemDrive",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "ProgramData",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+    "PSModulePath",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
 ];
 
 pub(super) struct ConfiguredShellExecutor {
     pub program: Option<ShellProgram>,
     pub execution_path: Option<String>,
     pub temporary_root: Option<PathBuf>,
+    pub sandbox_backends: std::sync::Arc<crate::workspace_sandbox::SandboxBackendRegistry>,
 }
 
 impl KernelToolExecutor for ConfiguredShellExecutor {
@@ -89,6 +126,31 @@ impl KernelToolExecutor for ConfiguredShellExecutor {
         invocation: KernelToolInvocation,
         context: KernelToolExecutionContext,
     ) -> KernelResult<KernelToolExecutionResult> {
+        let workspace = match &invocation.input {
+            KernelCanonicalInvocation::ProcessShell {
+                execution_scope, ..
+            }
+            | KernelCanonicalInvocation::ProcessPowerShell {
+                execution_scope, ..
+            } => execution_scope.as_str() == "workspace",
+            _ => false,
+        };
+        if workspace {
+            let backend = self.sandbox_backends.resolve(
+                context
+                    .file_access
+                    .sandbox_backend
+                    .as_deref()
+                    .unwrap_or("platform-default"),
+            )?;
+            return backend.execute(crate::workspace_sandbox::SandboxProcessRequest {
+                invocation,
+                context,
+                shell: self.program.as_ref(),
+                execution_path: self.execution_path.as_deref(),
+                temporary_root: self.temporary_root.as_deref(),
+            });
+        }
         invoke_shell(
             invocation,
             context,
@@ -97,6 +159,34 @@ impl KernelToolExecutor for ConfiguredShellExecutor {
             self.temporary_root.as_deref(),
         )
     }
+}
+
+pub(crate) fn invoke_workspace_shell(
+    request: crate::workspace_sandbox::SandboxProcessRequest<'_>,
+) -> KernelResult<KernelToolExecutionResult> {
+    match &request.invocation.input {
+        KernelCanonicalInvocation::ProcessShell {
+            execution_scope, ..
+        }
+        | KernelCanonicalInvocation::ProcessPowerShell {
+            execution_scope, ..
+        } if execution_scope.as_str() == "workspace" => {}
+        _ => {
+            return Err(KernelError::InvalidCommand(
+                "Sandbox backend requires an admitted workspace Shell".into(),
+            ))
+        }
+    }
+    let mut result = invoke_shell(
+        request.invocation,
+        request.context,
+        request.shell,
+        request.execution_path,
+        request.temporary_root,
+    )?;
+    result.output["sandboxBackend"] =
+        serde_json::json!(crate::workspace_sandbox::native_backend_id());
+    Ok(result)
 }
 
 fn invoke_shell(
@@ -228,43 +318,19 @@ fn invoke_shell_in_temp(
         process.args(&prepared_command.arguments);
         #[cfg(unix)]
         process.process_group(0);
-        apply_agent_shell_environment(
-            &mut process,
+        let environment = agent_shell_environment(
             &bash_program,
             &execution_scope,
             terminal,
             execution_path,
-        );
-        process
-            .current_dir(&cwd)
-            .env("DEEPCODE_AGENT_SHELL", "1")
-            .env("DEEPCODE_WORKSPACE_ROOT", &workspace_root);
-        process
-            .env("TMPDIR", temporary)
-            .env("TMP", temporary)
-            .env("TEMP", temporary);
-        if execution_scope == "workspace" {
-            let home = context.file_access.home.as_deref().unwrap_or(temporary);
-            fs::create_dir_all(home)
-                .map_err(|error| KernelError::Other(format!("Create Agent home: {error}")))?;
-            process
-                .env("HOME", home)
-                .env("XDG_CONFIG_HOME", home.join("config"))
-                .env("XDG_CACHE_HOME", home.join("cache"))
-                .env("GIT_OPTIONAL_LOCKS", "0");
-            #[cfg(windows)]
-            {
-                for directory in [home.join("AppData/Roaming"), home.join("AppData/Local")] {
-                    fs::create_dir_all(directory).map_err(|error| {
-                        KernelError::Other(format!("Create Agent application data: {error}"))
-                    })?;
-                }
-                process
-                    .env("USERPROFILE", home)
-                    .env("APPDATA", home.join("AppData/Roaming"))
-                    .env("LOCALAPPDATA", home.join("AppData/Local"));
-            }
+            &workspace_root,
+            temporary,
+            &context.file_access,
+        )?;
+        if environment.clear {
+            process.env_clear();
         }
+        process.envs(environment.values).current_dir(&cwd);
         #[cfg(windows)]
         let mut result = if execution_scope == "workspace" {
             windows_workspace::execute(
@@ -301,11 +367,7 @@ fn invoke_shell_in_temp(
             "workspaceId": workspace_id,
             "command": command_text,
             "cwd": ".",
-            "paths": {
-                "workspace": workspace_root,
-                "home": if execution_scope == "workspace" { context.file_access.home.clone().or_else(|| Some(temporary.to_path_buf())) } else { std::env::var_os("HOME").map(PathBuf::from) },
-                "scratch": temporary,
-            },
+            "paths": shell_paths(&workspace_root, &execution_scope, &context, temporary),
             "workspaceMode": workspace_mode,
             "executionScope": execution_scope,
             "terminal": terminal,
@@ -416,27 +478,22 @@ fn invoke_terminal_shell(
     (|| {
         let mut command = CommandBuilder::new(&prepared_command.program);
         command.args(&prepared_command.arguments);
-        apply_agent_terminal_environment(
-            &mut command,
+        let environment = agent_shell_environment(
             &bash_program,
             &execution_scope,
+            true,
             execution_path,
-        );
-        command.cwd(&cwd);
-        command.env("DEEPCODE_AGENT_SHELL", "1");
-        command.env("DEEPCODE_WORKSPACE_ROOT", &workspace_root);
-        command.env("TMPDIR", temporary);
-        command.env("TMP", temporary);
-        command.env("TEMP", temporary);
-        if execution_scope == "workspace" {
-            let home = context.file_access.home.as_deref().unwrap_or(temporary);
-            fs::create_dir_all(home)
-                .map_err(|error| KernelError::Other(format!("Create Agent home: {error}")))?;
-            command.env("HOME", home);
-            command.env("XDG_CONFIG_HOME", home.join("config"));
-            command.env("XDG_CACHE_HOME", home.join("cache"));
-            command.env("GIT_OPTIONAL_LOCKS", "0");
+            &workspace_root,
+            temporary,
+            &context.file_access,
+        )?;
+        if environment.clear {
+            command.env_clear();
         }
+        for (key, value) in environment.values {
+            command.env(key, value);
+        }
+        command.cwd(&cwd);
 
         let archive = ShellOutputArchive::create(&context)?;
         let stdout_file = archive.open("stdout")?;
@@ -546,17 +603,15 @@ fn invoke_terminal_shell(
         trim_utf8_prefix(&mut stdout.bytes);
 
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let exit_code = i32::try_from(status.exit_code()).ok();
+        let exit_code = i32::try_from(status.exit_code())
+            .ok()
+            .filter(|_| !timed_out && !cancelled);
         let success = !timed_out && !cancelled && status.success();
         let mut output = serde_json::json!({
             "workspaceId": workspace_id,
             "command": command_text,
             "cwd": ".",
-            "paths": {
-                "workspace": workspace_root,
-                "home": if execution_scope == "workspace" { context.file_access.home.clone().or_else(|| Some(temporary.to_path_buf())) } else { std::env::var_os("HOME").map(PathBuf::from) },
-                "scratch": temporary,
-            },
+            "paths": shell_paths(&workspace_root, &execution_scope, &context, temporary),
             "workspaceMode": workspace_mode,
             "executionScope": execution_scope,
             "terminal": true,
@@ -621,54 +676,174 @@ fn invoke_terminal_shell(
     })()
 }
 
-fn apply_agent_shell_environment(
-    command: &mut Command,
+fn shell_paths(
+    workspace_root: &Path,
+    execution_scope: &str,
+    context: &KernelToolExecutionContext,
+    temporary: &Path,
+) -> serde_json::Value {
+    use crate::file_access::process_visible_path as visible;
+    let home = if execution_scope == "workspace" {
+        Some(
+            context
+                .file_access
+                .home
+                .as_deref()
+                .unwrap_or(temporary)
+                .to_path_buf(),
+        )
+    } else {
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+    };
+    serde_json::json!({
+        "workspace": visible(workspace_root),
+        "home": home.as_deref().map(visible),
+        "scratch": visible(temporary),
+        "cache": (execution_scope == "workspace").then_some(context.file_access.cache.as_deref()).flatten().map(visible),
+    })
+}
+
+struct AgentShellEnvironment {
+    /// Workspace Shells start from the allowlist instead of the Host environment.
+    clear: bool,
+    values: Vec<(OsString, OsString)>,
+}
+
+/// The single environment of every Shell launch path (pipes, PTY and Windows
+/// LPAC) on every platform. Paths use the spelling programs understand.
+fn agent_shell_environment(
     bash_program: &Path,
     execution_scope: &str,
     terminal: bool,
     execution_path: &str,
-) {
-    if execution_scope == "workspace" {
-        command.env_clear();
-        for key in AGENT_SHELL_ENV_ALLOWLIST {
-            if *key == "PATH" {
-                continue;
+    workspace_root: &Path,
+    temporary: &Path,
+    files: &crate::file_access::FileAccessScope,
+) -> KernelResult<AgentShellEnvironment> {
+    use crate::file_access::process_visible_path as visible;
+    let workspace = execution_scope == "workspace";
+    let mut values: Vec<(OsString, OsString)> = Vec::new();
+    let mut set = |key: &str, value: OsString| {
+        // Windows environment names are case-insensitive; Unix names are not.
+        values.retain(|(existing, _)| {
+            if cfg!(windows) {
+                !existing.eq_ignore_ascii_case(key)
+            } else {
+                existing != key
             }
+        });
+        values.push((key.into(), value));
+    };
+    if workspace {
+        for key in AGENT_SHELL_ENV_ALLOWLIST
+            .iter()
+            .filter(|key| **key != "PATH")
+        {
             if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
+                set(key, value);
             }
         }
     }
-    command
-        .env("PATH", execution_path)
-        .env("TERM", if terminal { "xterm-256color" } else { "dumb" })
-        .env("SHELL", bash_program)
-        .env("NO_COLOR", "1")
-        .env("CLICOLOR", "0");
+    set("PATH", execution_path.into());
+    set(
+        "TERM",
+        if terminal { "xterm-256color" } else { "dumb" }.into(),
+    );
+    set("SHELL", bash_program.into());
+    set("NO_COLOR", "1".into());
+    set("CLICOLOR", "0".into());
+    set("DEEPCODE_AGENT_SHELL", "1".into());
+    set("DEEPCODE_WORKSPACE_ROOT", visible(workspace_root).into());
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        set(key, visible(temporary).into());
+    }
+    // A tool command has no person at a prompt: fail instead of waiting for one.
+    set("GIT_TERMINAL_PROMPT", "0".into());
+    set("GCM_INTERACTIVE", "never".into());
+    // UTF-8 output on every platform, including Windows ANSI code pages.
+    if std::env::var_os("PYTHONUTF8").is_none() {
+        set("PYTHONUTF8", "1".into());
+    }
+    if workspace {
+        let home = files.home.as_deref().unwrap_or(temporary);
+        fs::create_dir_all(home)
+            .map_err(|error| KernelError::Other(format!("Create Agent home: {error}")))?;
+        set("HOME", visible(home).into());
+        set("XDG_CONFIG_HOME", visible(&home.join("config")).into());
+        set("GIT_OPTIONAL_LOCKS", "0".into());
+        #[cfg(windows)]
+        {
+            for (key, directory) in [
+                ("APPDATA", home.join("AppData").join("Roaming")),
+                ("LOCALAPPDATA", home.join("AppData").join("Local")),
+            ] {
+                fs::create_dir_all(&directory).map_err(|error| {
+                    KernelError::Other(format!("Create Agent application data: {error}"))
+                })?;
+                set(key, visible(&directory).into());
+            }
+            set("USERPROFILE", visible(home).into());
+        }
+        match files.cache.as_deref() {
+            Some(cache) => {
+                for (key, value) in shared_cache_environment(cache)? {
+                    set(key, visible(&value).into());
+                }
+            }
+            None => set("XDG_CACHE_HOME", visible(&home.join("cache")).into()),
+        }
+        for (key, path) in crate::shell_environment::toolchain_homes() {
+            set(key, visible(&path).into());
+        }
+    }
+    Ok(AgentShellEnvironment {
+        clear: workspace,
+        values,
+    })
 }
 
-fn apply_agent_terminal_environment(
-    command: &mut CommandBuilder,
-    bash_program: &Path,
-    execution_scope: &str,
-    execution_path: &str,
-) {
-    if execution_scope == "workspace" {
-        command.env_clear();
-        for key in AGENT_SHELL_ENV_ALLOWLIST {
-            if *key == "PATH" {
-                continue;
-            }
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
+/// Package caches shared by workspace Shells of every Session. Cargo receives
+/// the user's registry configuration (mirrors), never credentials.
+fn shared_cache_environment(cache: &Path) -> KernelResult<Vec<(&'static str, PathBuf)>> {
+    let entries = [
+        ("XDG_CACHE_HOME", cache.join("xdg")),
+        ("NPM_CONFIG_CACHE", cache.join("npm")),
+        ("YARN_CACHE_FOLDER", cache.join("yarn")),
+        ("PIP_CACHE_DIR", cache.join("pip")),
+        ("GOMODCACHE", cache.join("go").join("mod")),
+        ("GOCACHE", cache.join("go").join("build")),
+        ("NUGET_PACKAGES", cache.join("nuget")),
+        ("CARGO_HOME", cache.join("cargo")),
+    ];
+    for (_, directory) in &entries {
+        fs::create_dir_all(directory).map_err(|error| {
+            KernelError::Other(format!(
+                "Create shared Shell cache {}: {error}",
+                directory.display()
+            ))
+        })?;
+    }
+    let user_cargo = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(|home| PathBuf::from(home).join(".cargo"))
+        });
+    if let Some(user_cargo) = user_cargo {
+        for name in ["config.toml", "config"] {
+            let (source, target) = (user_cargo.join(name), cache.join("cargo").join(name));
+            let newer = |path: &Path| {
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+            };
+            if source.is_file() && newer(&source) > newer(&target) {
+                // Best effort: an unreadable user configuration leaves cargo defaults.
+                let _ = fs::copy(&source, &target);
             }
         }
     }
-    command.env("PATH", execution_path);
-    command.env("TERM", "xterm-256color");
-    command.env("SHELL", bash_program);
-    command.env("NO_COLOR", "1");
-    command.env("CLICOLOR", "0");
+    Ok(entries.into_iter().collect())
 }
 
 fn shell_write_scope(execution_scope: &str) -> &'static str {
@@ -999,6 +1174,13 @@ fn macos_workspace_profile(
     files: &crate::file_access::FileAccessScope,
     system_temporary: Option<&Path>,
 ) -> KernelResult<String> {
+    crate::workspace_sandbox::validate_write_scope(
+        workspace_root,
+        workspace_mode,
+        writable_targets,
+        temporary_root,
+        files,
+    )?;
     let escaped_workspace = macos_sandbox_path(workspace_root, "workspace")?;
     let escaped_temporary = macos_sandbox_path(temporary_root, "temporary directory")?;
     if process_scope_id.is_empty()
@@ -1179,6 +1361,144 @@ fn macos_sandbox_path(path: &Path, label: &str) -> KernelResult<String> {
 #[cfg(test)]
 mod plan_scope_tests {
     use super::*;
+
+    #[test]
+    fn workspace_shell_environment_is_shared_and_uses_program_visible_paths() {
+        let root = std::env::temp_dir().join(new_process_scope_id());
+        let (workspace, scratch, home, cache) = (
+            root.join("workspace"),
+            root.join("scratch"),
+            root.join("home"),
+            root.join("cache"),
+        );
+        for path in [&workspace, &scratch] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let canonical = |path: &Path| path.canonicalize().unwrap();
+        let files = crate::file_access::FileAccessScope {
+            home: Some(home.clone()),
+            cache: Some(cache.clone()),
+            ..Default::default()
+        };
+        let environment = agent_shell_environment(
+            Path::new("shell"),
+            "workspace",
+            false,
+            "bin",
+            &canonical(&workspace),
+            &canonical(&scratch),
+            &files,
+        )
+        .unwrap();
+        assert!(environment.clear);
+        let value = |key: &str| {
+            environment
+                .values
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.to_string_lossy().into_owned())
+        };
+        for key in ["TEMP", "DEEPCODE_WORKSPACE_ROOT", "HOME"] {
+            let path = value(key).unwrap();
+            assert!(!path.starts_with(r"\\?\"), "{key}={path}");
+        }
+        assert_eq!(value("GIT_TERMINAL_PROMPT").as_deref(), Some("0"));
+        assert_eq!(
+            value("NPM_CONFIG_CACHE"),
+            Some(cache.join("npm").to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            value("CARGO_HOME"),
+            Some(cache.join("cargo").to_string_lossy().into_owned())
+        );
+        assert!(cache.join("pip").is_dir() && home.is_dir());
+        let names: Vec<_> = environment
+            .values
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().to_lowercase())
+            .collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert!(
+            cfg!(not(windows)) || unique.len() == names.len(),
+            "duplicate Windows names: {names:?}"
+        );
+        let host = agent_shell_environment(
+            Path::new("shell"),
+            "host",
+            false,
+            "bin",
+            &canonical(&workspace),
+            &canonical(&scratch),
+            &files,
+        )
+        .unwrap();
+        assert!(!host.clear);
+        assert!(!host
+            .values
+            .iter()
+            .any(|(name, _)| name == "HOME" || name == "NPM_CONFIG_CACHE"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminated_processes_report_no_exit_code() {
+        let root = std::env::temp_dir().join(new_process_scope_id());
+        let context = KernelToolExecutionContext {
+            output_directory: Some(root.clone()),
+            workspace_root: None,
+            workspace_id: None,
+            private_resolved_targets: Vec::new(),
+            workspace_write_targets: None,
+            file_access: Default::default(),
+            cancellation: Default::default(),
+            progress: Default::default(),
+        };
+        let archive = || {
+            let mut context = context.clone();
+            context.output_directory = Some(root.join(new_process_scope_id()));
+            let archive = ShellOutputArchive::create(&context).unwrap();
+            archive.open("stdout").unwrap();
+            archive.open("stderr").unwrap();
+            archive
+        };
+        let empty = || CapturedOutput {
+            bytes: Vec::new(),
+            truncated: false,
+        };
+        for (timed_out, cancelled) in [(true, false), (false, true)] {
+            let result = complete_shell_output(
+                "call".into(),
+                "bash",
+                Some(1),
+                Instant::now(),
+                Some(1),
+                timed_out,
+                cancelled,
+                archive(),
+                empty(),
+                empty(),
+            )
+            .unwrap();
+            assert!(result.output["exitCode"].is_null());
+        }
+        let exited = complete_shell_output(
+            "call".into(),
+            "bash",
+            None,
+            Instant::now(),
+            Some(7),
+            false,
+            false,
+            archive(),
+            empty(),
+            empty(),
+        )
+        .unwrap();
+        assert_eq!(exited.output["exitCode"], 7);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn shell_cleanup_preserves_primary_error_and_execution_result() {
@@ -1970,21 +2290,31 @@ pub fn execute_cli_command(
     let archive = ShellOutputArchive::create(&context)?;
     let stdout_file = archive.open("stdout")?;
     let stderr_file = archive.open("stderr")?;
+    // No instruction runs before the Job owns the process, so no descendant can
+    // start outside it (the workspace LPAC runner follows the same order).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+    }
     let mut child = process.spawn().map_err(|error| {
         KernelError::Other(format!(
             "spawn {tool_name} in {}: {error}",
             process.get_program().to_string_lossy()
         ))
     })?;
-    context.progress.started();
     #[cfg(windows)]
-    let process_job = match windows_job::ProcessJob::attach(child.id()) {
+    let process_job = match windows_job::ProcessJob::attach(child.id()).and_then(|job| {
+        windows_job::resume_suspended(child.id())?;
+        Ok(job)
+    }) {
         Ok(job) => job,
         Err(error) => {
             return combine_shell_results(Err(error), terminate_child(&mut child))
                 .map(|(result, _)| result);
         }
     };
+    context.progress.started();
     #[cfg(unix)]
     let child_id = child.id();
     #[cfg(target_os = "macos")]
@@ -2093,6 +2423,9 @@ fn complete_shell_output(
 ) -> KernelResult<KernelToolExecutionResult> {
     bound_combined_output(&mut stdout, &mut stderr, BASH_OUTPUT_LIMIT_BYTES);
     bound_output_lines(&mut stdout, &mut stderr);
+    // A process the Kernel terminated has no program exit status on any platform
+    // (Windows would otherwise report the termination code 1).
+    let exit_code = exit_code.filter(|_| !timed_out && !cancelled);
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let captured_bytes = stdout.bytes.len().saturating_add(stderr.bytes.len());
     let truncated = stdout.truncated || stderr.truncated;

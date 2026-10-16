@@ -2,6 +2,7 @@ import { registerInterfaceReloadView, restoredInterfaceView } from '../../servic
 import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { SessionProjection } from '@deepcode/protocol';
+import { ConversationAnchors, firstReadingAnchor } from './conversationAnchors';
 
 const LATEST_TOLERANCE = 2;
 
@@ -43,6 +44,8 @@ export function useConversationViewport({
   const scrollFrameRef = useRef<number | null>(null);
   const viewportRestoreFrameRef = useRef<number | null>(null);
   const touchYRef = useRef<number | null>(null);
+  const anchors = useRef(new ConversationAnchors()).current;
+  useLayoutEffect(() => { anchors.invalidate(); });
   const updateContentBelow = useCallback(() => {
     const body = bodyRef.current;
     setHasContentBelow(Boolean(body && body.scrollHeight - body.clientHeight - Math.max(0, body.scrollTop) > LATEST_TOLERANCE));
@@ -51,10 +54,9 @@ export function useConversationViewport({
     const body = bodyRef.current;
     if (!body) return { scrollTop: observedScrollTopRef.current };
     const top = body.getBoundingClientRect().top;
-    const node = [...body.querySelectorAll<HTMLElement>('[data-conversation-anchor]')]
-      .find((node) => node.getClientRects().length > 0 && node.getBoundingClientRect().bottom > top);
+    const node = firstReadingAnchor(anchors.read(body).nodes, top);
     return { scrollTop: body.scrollTop, ...(node ? { anchor: { key: node.dataset.conversationAnchor!, offset: node.getBoundingClientRect().top - top } } : {}) };
-  }, []);
+  }, [anchors]);
   useEffect(() => registerInterfaceReloadView('conversationViewports', () => {
     const id = activeViewRef.current;
     if (id) sessionViewportsRef.current.set(id, { mode: followingLatestRef.current ? 'following' : 'detached', ...capturePosition() });
@@ -72,12 +74,11 @@ export function useConversationViewport({
     const body = bodyRef.current;
     if (!body) return;
     const anchor = saved.anchor;
-    const node = anchor ? [...body.querySelectorAll<HTMLElement>('[data-conversation-anchor]')]
-      .find((node) => node.dataset.conversationAnchor === anchor.key && node.getClientRects().length > 0) : undefined;
-    writeScrollTop(node && anchor
+    const node = anchor ? anchors.read(body).byKey.get(anchor.key) : undefined;
+    writeScrollTop(node && !node.hidden && anchor
       ? body.scrollTop + node.getBoundingClientRect().top - body.getBoundingClientRect().top - anchor.offset
       : saved.scrollTop);
-  }, [writeScrollTop]);
+  }, [anchors, writeScrollTop]);
   const applyLatestFollowMode = useCallback((following: boolean) => {
     followingLatestRef.current = following;
     setFollowingLatest(following);
@@ -95,6 +96,21 @@ export function useConversationViewport({
       });
     }
   }, [applyLatestFollowMode, capturePosition]);
+
+  const anchorDisclosure = useCallback((node: HTMLElement) => {
+    const body = bodyRef.current;
+    const id = activeViewRef.current;
+    const key = node.dataset.conversationAnchor;
+    if (!body || !id || !key) return;
+    applyLatestFollowMode(false);
+    observedScrollTopRef.current = body.scrollTop;
+    // The clicked disclosure owns this layout change, not the answer below it.
+    // Retain the anchor through virtual-row measurements until the reader moves.
+    sessionViewportsRef.current.set(id, {
+      mode: 'detached', scrollTop: body.scrollTop,
+      anchor: { key, offset: node.getBoundingClientRect().top - body.getBoundingClientRect().top },
+    });
+  }, [applyLatestFollowMode]);
 
   // Only a reader action can leave follow mode. Layout can clamp scrollTop more
   // than once before an observer runs (composer replacement, then text growth).
@@ -115,28 +131,25 @@ export function useConversationViewport({
     return true;
   }, [setLatestFollowMode]);
 
-  const scheduleScrollToLatest = useCallback(() => {
-    if (!followingLatestRef.current || pendingViewportRestoreRef.current !== null) return;
-    if (scrollFrameRef.current !== null) return;
-    scrollFrameRef.current = window.requestAnimationFrame(() => {
-      scrollFrameRef.current = null;
-      sampleReaderPosition();
-      if (followingLatestRef.current && pendingViewportRestoreRef.current === null) {
-        const body = bodyRef.current;
-        if (body) writeScrollTop(body.scrollHeight);
-      }
-    });
-  }, [sampleReaderPosition, writeScrollTop]);
-
   // Layout observers, including virtual rows, share this one position owner.
   // Ordinary React renders do not restore a previously saved reading position.
   const preserveReadingPosition = useCallback(() => {
-    updateContentBelow();
-    if (activeViewRef.current !== sessionId || pendingViewportRestoreRef.current !== null || sampleReaderPosition()) return;
-    if (followingLatestRef.current) { scheduleScrollToLatest(); return; }
-    const saved = activeViewRef.current ? sessionViewportsRef.current.get(activeViewRef.current) : undefined;
-    if (saved?.mode === 'detached') restorePosition(saved);
-  }, [restorePosition, sampleReaderPosition, scheduleScrollToLatest, sessionId, updateContentBelow]);
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      updateContentBelow();
+      if (activeViewRef.current !== sessionId || pendingViewportRestoreRef.current !== null || sampleReaderPosition()) return;
+      if (followingLatestRef.current) {
+        if (bodyRef.current) writeScrollTop(bodyRef.current.scrollHeight);
+        return;
+      }
+      const saved = activeViewRef.current ? sessionViewportsRef.current.get(activeViewRef.current) : undefined;
+      if (saved?.mode === 'detached') restorePosition(saved);
+    });
+  }, [restorePosition, sampleReaderPosition, sessionId, updateContentBelow, writeScrollTop]);
+  const scheduleScrollToLatest = useCallback(() => {
+    if (followingLatestRef.current && pendingViewportRestoreRef.current === null) preserveReadingPosition();
+  }, [preserveReadingPosition]);
 
   useLayoutEffect(() => {
     if (activeViewRef.current !== sessionId) {
@@ -232,8 +245,7 @@ export function useConversationViewport({
 
   const scrollToAnchor = useCallback((key: string) => {
     const body = bodyRef.current;
-    const node = body && [...body.querySelectorAll<HTMLElement>('[data-conversation-anchor]')]
-      .find((item) => item.dataset.conversationAnchor === key);
+    const node = body && anchors.read(body).byKey.get(key);
     if (!body || !node) return;
     applyLatestFollowMode(false);
     const target = node.getClientRects().length ? node : node.closest('.conversation-round')!;
@@ -241,7 +253,7 @@ export function useConversationViewport({
     if (activeViewRef.current) sessionViewportsRef.current.set(activeViewRef.current, {
       mode: 'detached', ...capturePosition(),
     });
-  }, [applyLatestFollowMode, capturePosition, writeScrollTop]);
+  }, [anchors, applyLatestFollowMode, capturePosition, writeScrollTop]);
 
   const beginReading = (target: EventTarget | null) => {
     const body = bodyRef.current;
@@ -288,8 +300,8 @@ export function useConversationViewport({
     },
   };
 
-  return { bodyRef, transcriptRef, messageEndRef, bodyHandlers, followingLatest, showJumpToLatest: !followingLatest && hasContentBelow,
-    setLatestFollowMode, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
+  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, showJumpToLatest: !followingLatest && hasContentBelow,
+    setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
 }
 
 export type ConversationViewport = ReturnType<typeof useConversationViewport>;

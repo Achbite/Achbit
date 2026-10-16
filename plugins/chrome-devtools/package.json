@@ -1,0 +1,9 @@
+{
+  "name": "@deepcode/chrome-devtools-runtime",
+  "version": "0.6.50",
+  "private": true,
+  "license": "MIT",
+  "dependencies": {
+    "chrome-devtools-mcp": "1.10.1"
+  }
+}

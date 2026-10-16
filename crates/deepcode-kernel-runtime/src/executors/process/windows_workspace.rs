@@ -123,7 +123,7 @@ fn run(
             Err(error) => return shell_cleanup_failure(wait, error),
         };
     let status = wait?;
-    complete_shell_output(
+    let mut result = complete_shell_output(
         invocation_id,
         tool_name,
         timeout_seconds,
@@ -134,7 +134,13 @@ fn run(
         archive,
         stdout,
         stderr,
-    )
+    )?;
+    if !sandbox.warnings().is_empty() {
+        if let Some(output) = result.output.as_object_mut() {
+            output.insert("sandboxWarnings".into(), sandbox.warnings().into());
+        }
+    }
+    Ok(result)
 }
 
 fn wait(
@@ -195,6 +201,17 @@ mod tests {
             timeout: Option<u64>,
             context: &KernelToolExecutionContext,
         ) -> KernelToolExecutionResult {
+            self.try_run(script, mode, timeout, context).unwrap()
+        }
+        fn try_run(
+            &self,
+            script: &str,
+            mode: &str,
+            timeout: Option<u64>,
+            context: &KernelToolExecutionContext,
+        ) -> KernelResult<KernelToolExecutionResult> {
+            let mut context = context.clone();
+            context.output_directory = Some(self.0.join(new_process_scope_id()));
             let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
             let mut command = Command::new(system.join("System32/cmd.exe"));
             command
@@ -210,13 +227,12 @@ mod tests {
                 command,
                 timeout,
                 "powershell",
-                context,
+                &context,
                 &self.0.join("workspace"),
                 mode,
                 &self.0.join("scratch"),
                 None,
             )
-            .unwrap()
         }
     }
     impl Drop for Fixture {
@@ -226,10 +242,154 @@ mod tests {
     }
 
     #[test]
+    fn windows_powershell_uses_and_cleans_the_kernel_scratch_directory() {
+        let fixture = Fixture::new();
+        let program = crate::shell_environment::discover("powershell").unwrap();
+        let path = crate::shell_environment::resolved_agent_shell_path()
+            .unwrap()
+            .into_string()
+            .unwrap();
+        let command = r#"$ErrorActionPreference = 'Stop'
+if ($env:TEMP -ne $env:TMPDIR -or $env:TMP -ne $env:TMPDIR) { throw 'TEMP scope changed during startup' }
+$file = Join-Path $env:TEMP 'scratch-中文.txt'
+[IO.File]::WriteAllText($file, 'scratch-中文')
+Write-Output $env:TEMP
+Get-Content -LiteralPath $file -Encoding UTF8
+try {
+    [IO.File]::WriteAllText((Join-Path $PWD 'blocked.txt'), 'unexpected')
+    throw 'Project write was allowed'
+} catch [UnauthorizedAccessException] { Write-Output 'project-write-denied' }
+"#;
+        let invocation = crate::executors::tests::invocation(
+            "native-powershell-scratch-test",
+            "powershell",
+            serde_json::json!({"command": command, "workspaceMode": "read", "executionScope": "workspace", "timeout": 30}),
+        );
+        let mut context = fixture.context();
+        context.private_resolved_targets = vec![context.workspace_root.clone().unwrap()];
+        context
+            .file_access
+            .read
+            .push(program.executable.parent().unwrap().to_path_buf());
+        let result = invoke_shell(
+            invocation,
+            context,
+            Some(&program),
+            Some(&path),
+            Some(&fixture.0.join("scratch")),
+        )
+        .unwrap();
+        assert_eq!(result.output["success"], true, "{}", result.output);
+        let stdout = result.output["stdout"].as_str().unwrap();
+        let scratch = result.output["paths"]["scratch"].as_str().unwrap();
+        assert!(stdout.contains(scratch), "{stdout}");
+        assert!(stdout.contains("scratch-中文"), "{stdout}");
+        assert!(stdout.contains("project-write-denied"), "{stdout}");
+        assert!(
+            !Path::new(scratch).exists(),
+            "invocation scratch must be removed"
+        );
+        assert!(!fixture.0.join("workspace/blocked.txt").exists());
+    }
+
+    #[test]
+    fn persistent_grants_serve_only_shells_admitted_to_that_path() {
+        let fixture = Fixture::new();
+        let shared = fixture.0.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("data.txt"), "shared-data").unwrap();
+        let admitted = || {
+            let mut context = fixture.context();
+            context.file_access.read.push(shared.clone());
+            context
+        };
+        let visible = crate::file_access::process_visible_path(&shared.join("data.txt"));
+        // The runner escapes inner quotes for argv, which cmd does not parse;
+        // the fixture path contains no spaces.
+        let script = format!("type {}", visible.display());
+        for _ in 0..2 {
+            // The second invocation reuses the ACE written by the first.
+            let read = fixture.run(&script, "read", Some(10), &admitted());
+            assert_eq!(read.output["success"], true, "{}", read.output);
+            assert!(read.output["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("shared-data"));
+        }
+        let denied = fixture.run(&script, "read", Some(10), &fixture.context());
+        assert_eq!(
+            denied.output["success"], false,
+            "a persistent ACE must not leak"
+        );
+        assert!(!denied.output["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("shared-data"));
+        let mut writer = fixture.context();
+        writer.file_access.write.push(WorkspaceWriteTarget {
+            path: shared.clone(),
+            directory: true,
+        });
+        let write = format!("echo changed>{}", visible.display());
+        assert_eq!(
+            fixture.run(&write, "read", Some(10), &writer).output["success"],
+            true
+        );
+        // Read access to the same path does not include its write capability.
+        let reader = fixture.run(
+            &write.replace("changed", "again"),
+            "read",
+            Some(10),
+            &admitted(),
+        );
+        assert_eq!(reader.output["success"], false);
+        assert!(fs::read_to_string(shared.join("data.txt"))
+            .unwrap()
+            .contains("changed"));
+    }
+
+    #[test]
+    fn an_ungrantable_startup_root_is_skipped_but_a_required_one_fails() {
+        let fixture = Fixture::new();
+        let locked = fixture.0.join("locked-tools");
+        fs::create_dir_all(&locked).unwrap();
+        // Explicit volume grants may survive /inheritance:r. Deny WRITE_DAC to
+        // Everyone so even an elevated owner cannot add an ACE.
+        let status = Command::new("icacls")
+            .arg(&locked)
+            .args([
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-3-4:(OI)(CI)(RX)",
+                "/deny",
+                "*S-1-1-0:(WDAC)",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "{}",
+            String::from_utf8_lossy(&status.stdout)
+        );
+        let mut context = fixture.context();
+        context.file_access.read.push(locked.clone());
+        context.file_access.best_effort_read.push(locked.clone());
+        let skipped = fixture.run("echo started", "read", Some(10), &context);
+        assert_eq!(skipped.output["success"], true, "{}", skipped.output);
+        let warnings = skipped.output["sandboxWarnings"].to_string();
+        assert!(warnings.contains("locked-tools"), "{warnings}");
+        context.file_access.best_effort_read.clear();
+        let failed = fixture.try_run("echo started", "read", Some(10), &context);
+        assert!(failed.is_err(), "a required grant must not be skipped");
+    }
+
+    #[test]
     fn windows_lpac_enforces_admitted_files_and_preserves_exit_status() {
         let fixture = Fixture::new();
+        // The fixture names cmd.exe with a forward slash ("System32/cmd.exe"),
+        // which cmd itself would parse as switches unless the runner normalizes it.
         let read = fixture.run("type README.txt", "read", Some(10), &fixture.context());
-        assert_eq!(read.output["success"], true);
+        assert_eq!(read.output["success"], true, "{}", read.output);
         assert!(read.output["stdout"]
             .as_str()
             .unwrap()
@@ -272,14 +432,19 @@ mod tests {
                 .unwrap()
                 .contains("generated")
         );
+        // A scope that would write the ancestor of .git is refused before launch.
+        let rejected = fixture
+            .try_run(
+                "echo unexpected>.git\\config",
+                "write",
+                Some(10),
+                &fixture.context(),
+            )
+            .unwrap_err();
+        assert!(rejected.to_string().contains("protected"), "{rejected}");
         assert_eq!(
             fixture
-                .run(
-                    "echo unexpected>.git\\config",
-                    "write",
-                    Some(10),
-                    &fixture.context()
-                )
+                .run("echo unexpected>.git\\config", "write", Some(10), &context)
                 .output["success"],
             false
         );
@@ -287,6 +452,9 @@ mod tests {
             fs::read_to_string(fixture.0.join("workspace/.git/config")).unwrap(),
             "protected"
         );
+        // Prior output grants must not allow a later read-only Shell to write project files.
+        let reader = fixture.run("echo late>README.txt", "read", Some(10), &fixture.context());
+        assert_eq!(reader.output["success"], false, "{}", reader.output);
         let mut context = fixture.context();
         context.file_access.write.push(WorkspaceWriteTarget {
             path: fixture.0.join("workspace/.git/config"),
@@ -298,6 +466,30 @@ mod tests {
                 .output["success"],
             true
         );
+        // The persistent exception ACE serves only Shells that carry its approval.
+        let unapproved = fixture.run(
+            "echo again>.git\\config",
+            "read",
+            Some(10),
+            &fixture.context(),
+        );
+        assert_eq!(unapproved.output["success"], false, "{}", unapproved.output);
+        // An explicit directory resource capability serves only the admitted Shell.
+        let mut context = fixture.context();
+        context.file_access.write.push(WorkspaceWriteTarget {
+            path: fixture.0.join("workspace/.git"),
+            directory: true,
+        });
+        let approved = fixture.run("echo hook>.git\\hook.txt", "read", Some(10), &context);
+        assert_eq!(approved.output["success"], true, "{}", approved.output);
+        let again = fixture.run(
+            "echo hook>.git\\other.txt",
+            "read",
+            Some(10),
+            &fixture.context(),
+        );
+        assert_eq!(again.output["success"], false, "{}", again.output);
+        assert!(!fixture.0.join("workspace/.git/other.txt").exists());
         let nonzero = fixture.run("exit /b 7", "read", Some(10), &fixture.context());
         assert_eq!(nonzero.output["exitCode"], 7);
         assert_eq!(nonzero.error.unwrap().code, "powershell_exit_nonzero");

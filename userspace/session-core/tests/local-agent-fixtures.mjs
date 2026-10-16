@@ -37,13 +37,18 @@ export function actorWith(
 
 export function fakeRunPreparation(options = {}) {
   const prepared = [];
+  const retired = [];
   const released = [];
   const snapshots = [];
   return {
     prepared,
+    retired,
     released,
     snapshots,
     port: {
+      async retireToolViews(request) {
+        retired.push(structuredClone(request));
+      },
       async prepare(request) {
         prepared.push(structuredClone(request));
         const snapshot = runtimeSnapshot(request.runId, {
@@ -106,6 +111,7 @@ export function runtimeSnapshot(runId, options = {}) {
       wireName: canonicalName.replace(/[.-]/gu, '_'),
     }));
   return {
+    agentCapabilities: structuredClone(options.agentCapabilities ?? { messaging: true, continuation: true, delegation: true }),
     runRuntimeSnapshotRef: `runtime-snapshot:${runId}`,
     permissions: { ...PERMISSION_DEFAULTS, ...options.permissions },
     extensionGenerationRef: 'extension-generation:g1',
@@ -131,6 +137,12 @@ export function runtimeSnapshot(runId, options = {}) {
 
 export function emptyKernel(overrides = {}) {
   return {
+    async prepareFileCalls({ requests }) {
+      return { calls: requests.map((request, index) => ({ callId: request.callId,
+        conflictsWith: requests.slice(0, index).filter(previous => previous.input.workspaceId === request.input.workspaceId
+          && previous.input.path === request.input.path).map(previous => previous.callId) })) };
+    },
+    async planAdmission() { return { source: 'user', authorities: [] }; },
     async prepareCatalog() { throw new Error('unexpected_prepare_catalog'); },
     async releaseCatalog() { throw new Error('unexpected_release_catalog'); },
     async execute() { throw new Error('unexpected_tool_execution'); },
@@ -233,13 +245,11 @@ export function cancelNotFound(callId, attemptId) {
   };
 }
 
-export function* todoUpdateEvents(request, status = 'completed', native = false) {
+export function* todoUpdateEvents(request, items, status = 'completed', native = false) {
   const tool = request.tools.find((candidate) => candidate.name === 'todo_update');
-  const payloads = request.messages.map(jsonMessagePayload);
-  const todo = payloads.findLast((payload) => payload?.type === 'todo.current');
-  assert.ok(tool && todo, 'progress uses the control and current Todo without execution evidence');
+  assert.ok(tool && items.length, 'the model explicitly chooses its progress items');
   const callId = `provider-call:progress:${request.requestId}`;
-  const input = { items: todo.items.map((item) => ({ text: item.text, status })) };
+  const input = { items: items.map((text) => ({ text, status })) };
   yield native
     ? providerEvent(request.requestId, 'output.item.completed', { outputIndex: 0,
       item: { type: 'function_call', call_id: callId, name: tool.name, arguments: JSON.stringify(input), status: 'completed' } })
@@ -278,11 +288,15 @@ export function jsonMessagePayload(message) {
 
 export function forwardingJournal(delegate, read) {
   return {
+    subscribePermissions: (...args) => delegate.subscribePermissions(...args),
     createSession: (input) => delegate.createSession(input),
     deleteSession: (sessionId) => delegate.deleteSession(sessionId),
     append: (event) => delegate.append(event),
     appendBatch: (events) => delegate.appendBatch(events),
     read,
+    readAgentLifecycle: sessionId => delegate.readAgentLifecycle(sessionId),
+    readRunLifecycle: (sessionId, afterSequence) => delegate.readRunLifecycle(sessionId, afterSequence),
+    readProviderUsage: sessionId => delegate.readProviderUsage(sessionId),
     readCommand: (sessionId, commandId) => delegate.readCommand(sessionId, commandId),
     commitCommand: (command, events, reply) => delegate.commitCommand(command, events, reply),
   };

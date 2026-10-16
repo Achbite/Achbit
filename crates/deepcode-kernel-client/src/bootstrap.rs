@@ -1,28 +1,17 @@
 use super::*;
 use deepcode_kernel_abi::{
     HostProcessIdentity, HOST_INSTANCE_ID_ENV, HOST_INSTANCE_ID_PREFIX, HOST_SHELL_TOKEN_PREFIX,
-    HOST_SHUTDOWN_RECEIPT_TIMEOUT_MILLIS, HOST_TOKEN_ENTROPY_BYTES, KERNEL_DAEMON_SERVICE,
+    HOST_TOKEN_ENTROPY_BYTES, KERNEL_DAEMON_SERVICE,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const KERNEL_LISTENER_STARTUP_WAIT: Duration = Duration::from_secs(6);
-const KERNEL_STARTUP_PROBE_INTERVAL: Duration = Duration::from_millis(75);
-const KERNEL_OWNED_SHUTDOWN_CONNECT_WAIT: Duration = Duration::from_millis(500);
-const KERNEL_OWNED_SHUTDOWN_IO_WAIT: Duration =
-    Duration::from_millis(HOST_SHUTDOWN_RECEIPT_TIMEOUT_MILLIS);
-const KERNEL_OWNED_SHUTDOWN_EXIT_ATTEMPTS: usize = 200;
-
-use deepcode_host_connection::process::{
-    spawn_owned_host_process, terminate_owned_process_tree, wait_for_child_exit, OwnedHostProcess,
-};
-use deepcode_host_connection::{HostClientLease, HOST_LIFETIME_ENV};
+use deepcode_host_connection::process::{terminate_owned_process_tree_until, OwnedHostProcess};
+use deepcode_host_connection::{startup, HostClientLease, HOST_LIFETIME_ENV};
 #[cfg(all(test, unix))]
 use std::os::unix::process::CommandExt;
 
@@ -86,21 +75,29 @@ impl KernelBootstrap {
         mut guard: KernelBootstrapGuard,
         connection: &KernelClientConfig,
         persistent: bool,
+        deadline: Instant,
     ) -> KernelClientResult<Self> {
         let token = connection
             .host_shell_token
             .as_ref()
             .ok_or(KernelClientError::HostConnectionTokenMissing)?;
-        let lease = HostClientLease::connect(
+        let lease = HostClientLease::connect_until(
             &client.config.base_url,
             token.expose_to_transport(),
             persistent,
+            deadline,
         )
         .map_err(|error| {
-            if let Some(process) = guard.process.as_mut() {
-                terminate_owned_kernel_process(process);
-            }
-            KernelClientError::Bootstrap(format!("Host client registration failed: {error}"))
+            let cleanup = guard
+                .process
+                .as_mut()
+                .and_then(|process| terminate_owned_process_tree_until(process, deadline).err());
+            KernelClientError::Bootstrap(format!(
+                "Host client registration failed: {error}{}",
+                cleanup
+                    .map(|error| format!("; owned tree cleanup failed: {error}"))
+                    .unwrap_or_default()
+            ))
         })?;
         Ok(Self {
             client,
@@ -110,6 +107,7 @@ impl KernelBootstrap {
     }
 
     pub async fn connect(options: KernelBootstrapOptions) -> KernelClientResult<Self> {
+        let deadline = Instant::now() + startup::STARTUP_BUDGET;
         let implicit_endpoint = options.api.is_none()
             && std::env::var_os("DEEPCODE_API_URL").is_none()
             && std::env::var_os("DEEPCODE_PORT").is_none();
@@ -119,10 +117,10 @@ impl KernelBootstrap {
                 .map_err(|error| KernelClientError::Bootstrap(error.to_string()))?;
             let root = directories.data_dir;
             _shared_start_guard = Some(
-                deepcode_host_connection::HostStartGuard::acquire(&root)
+                deepcode_host_connection::HostStartGuard::acquire_until(&root, deadline)
                     .map_err(|error| KernelClientError::Bootstrap(error.to_string()))?,
             );
-            deepcode_host_connection::LocalHostConnection::discover(&root)
+            deepcode_host_connection::LocalHostConnection::discover_until(&root, deadline)
                 .map_err(|error| KernelClientError::Bootstrap(error.to_string()))?
         } else {
             _shared_start_guard = None;
@@ -161,12 +159,13 @@ impl KernelBootstrap {
                 reason: "Host connection is restricted to a local Kernel URL".to_string(),
             });
         }
-        if let Some(client) = probe_existing_kernel(&config).await? {
+        if let Some(client) = probe_existing_kernel(&config, deadline).await? {
             return Self::attached(
                 client,
                 KernelBootstrapGuard::external(),
                 &config,
                 options.persistent,
+                deadline,
             );
         }
 
@@ -190,32 +189,33 @@ impl KernelBootstrap {
             if !config.has_host_shell_token() {
                 return Err(KernelClientError::HostConnectionTokenMissing);
             }
-            let listener_deadline = Instant::now() + KERNEL_LISTENER_STARTUP_WAIT;
             loop {
-                if let Some(client) = probe_existing_kernel(&config).await? {
+                if let Some(client) = probe_existing_kernel(&config, deadline).await? {
                     return Self::attached(
                         client,
                         KernelBootstrapGuard::external(),
                         &config,
                         options.persistent,
+                        deadline,
                     );
                 }
-                if Instant::now() >= listener_deadline {
+                if Instant::now() >= deadline {
                     break;
                 }
-                std::thread::sleep(KERNEL_STARTUP_PROBE_INTERVAL);
+                startup::pause(deadline);
             }
             return Err(KernelClientError::DaemonUnavailable {
                 base_url: config.base_url.clone(),
                 reason: "another owner is starting the Kernel, but its authenticated health endpoint did not become ready".to_string(),
             });
         };
-        if let Some(client) = probe_existing_kernel(&config).await? {
+        if let Some(client) = probe_existing_kernel(&config, deadline).await? {
             return Self::attached(
                 client,
                 KernelBootstrapGuard::external(),
                 &config,
                 options.persistent,
+                deadline,
             );
         }
         let kernel_bin = find_kernel_binary()?.ok_or_else(|| {
@@ -226,72 +226,34 @@ impl KernelBootstrap {
         })?;
         let owned_token = generate_local_token(HOST_SHELL_TOKEN_PREFIX)?;
         let owned_instance_id = generate_local_token(HOST_INSTANCE_ID_PREFIX)?;
-        let mut process =
-            spawn_kernel_binary(&kernel_bin, &host, &port, &owned_token, &owned_instance_id)?;
-        let owned_config = config.with_host_shell_token(owned_token);
-        drop(owned_instance_id);
-
-        let listener_deadline = Instant::now() + KERNEL_LISTENER_STARTUP_WAIT;
-        loop {
-            match probe_existing_kernel(&owned_config).await {
-                Ok(Some(client)) => {
-                    if !bind_owned_kernel_shutdown_identity(&mut process.shutdown_target) {
-                        terminate_owned_kernel_process(&mut process);
-                        return Err(KernelClientError::Bootstrap(
-                            "owned Kernel public identity did not match its startup target"
-                                .to_string(),
-                        ));
-                    }
-                    // Startup owns failure cleanup. A ready service is shared by all shells.
-                    #[cfg(windows)]
-                    if let Err(error) = process.job.release_on_close() {
-                        terminate_owned_kernel_process(&mut process);
-                        return Err(KernelClientError::Bootstrap(error.to_string()));
-                    }
-                    return Self::attached(
-                        client,
-                        KernelBootstrapGuard::owned(process),
-                        &owned_config,
-                        options.persistent,
-                    );
-                }
-                Ok(None) => {}
-                Err(mut error) => {
-                    terminate_owned_kernel_process(&mut process);
-                    if let KernelClientError::DaemonUnavailable { reason, .. } = &mut error {
-                        reason.push_str(&format!("; log: {}", process.log_path.display()));
-                    }
-                    return Err(error);
-                }
-            }
-            match process.child.try_wait() {
-                Ok(Some(status)) => {
-                    return Err(KernelClientError::Bootstrap(format!(
-                        "owned Kernel process exited before authenticated health became ready: {status}; log: {}",
-                        process.log_path.display()
-                    )));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    terminate_owned_kernel_process(&mut process);
-                    return Err(KernelClientError::Bootstrap(format!(
-                        "failed to observe the owned Kernel process: {error}; log: {}",
-                        process.log_path.display()
-                    )));
-                }
-            }
-            if Instant::now() >= listener_deadline {
-                break;
-            }
-            std::thread::sleep(KERNEL_STARTUP_PROBE_INTERVAL);
+        let (mut command, log_path) =
+            kernel_command(&kernel_bin, &host, &port, &owned_token, &owned_instance_id)?;
+        let owned_config = config.with_host_shell_token(owned_token.clone());
+        let client = HttpKernelClient::new(owned_config.clone())?;
+        let (process, _) = startup::start_owned_ready(&mut command, deadline, |process, probe_deadline| {
+            let target = owned_kernel_startup_target(&host, port.parse().expect("validated port"), &owned_instance_id, process.child.id());
+            let identity = startup_kernel_identity(&target, probe_deadline)?;
+            let request = format!("GET /api/health HTTP/1.1\r\nHost: {host}:{port}\r\n{HOST_SHELL_TOKEN_HEADER}: {owned_token}\r\nConnection: close\r\n\r\n");
+            let value = deepcode_host_connection::loopback_http::request_loopback_json_until(&host, &port, &request, probe_deadline)?;
+            let health = decode_health(value).map_err(std::io::Error::other)?;
+            if !health.ok { return Err(std::io::Error::other("Kernel health endpoint reported an unhealthy state")); }
+            Ok(identity)
+        }).map_err(|error| KernelClientError::Bootstrap(format!("{error}; log: {}", log_path.display())))?;
+        #[cfg(windows)]
+        if let Err(error) = process.job.release_on_close() {
+            let mut process = process;
+            let cleanup = terminate_owned_process_tree_until(&mut process, deadline).err();
+            return Err(KernelClientError::Bootstrap(format!(
+                "{error}; cleanup: {cleanup:?}"
+            )));
         }
-
-        terminate_owned_kernel_process(&mut process);
-        Err(KernelClientError::Bootstrap(format!(
-            "kernel did not become healthy at {}; log: {}",
-            owned_config.base_url,
-            process.log_path.display()
-        )))
+        Self::attached(
+            client,
+            KernelBootstrapGuard::owned(process),
+            &owned_config,
+            options.persistent,
+            deadline,
+        )
     }
 
     pub fn client(&self) -> &HttpKernelClient {
@@ -300,7 +262,7 @@ impl KernelBootstrap {
 }
 
 pub struct KernelBootstrapGuard {
-    process: Option<OwnedKernelProcess>,
+    process: Option<OwnedHostProcess>,
 }
 
 impl KernelBootstrapGuard {
@@ -308,7 +270,7 @@ impl KernelBootstrapGuard {
         Self { process: None }
     }
 
-    fn owned(process: OwnedKernelProcess) -> Self {
+    fn owned(process: OwnedHostProcess) -> Self {
         Self {
             process: Some(process),
         }
@@ -322,30 +284,11 @@ impl Drop for KernelBootstrapGuard {
     }
 }
 
-struct OwnedKernelProcess {
-    process: OwnedHostProcess,
-    log_path: PathBuf,
-    shutdown_target: OwnedKernelShutdownTarget,
-}
-impl std::ops::Deref for OwnedKernelProcess {
-    type Target = OwnedHostProcess;
-    fn deref(&self) -> &Self::Target {
-        &self.process
-    }
-}
-impl std::ops::DerefMut for OwnedKernelProcess {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.process
-    }
-}
-
-struct OwnedKernelShutdownTarget {
+struct OwnedKernelStartupTarget {
     host: String,
     port: u16,
-    host_shell_token: String,
     expected_instance_id: String,
     expected_pid: u32,
-    expected_identity: Option<HostProcessIdentity>,
 }
 
 #[derive(Deserialize)]
@@ -364,15 +307,31 @@ pub struct DaemonStatus {
 /// Absence permits startup; a listener's authentication and health failures do not.
 async fn probe_existing_kernel(
     config: &KernelClientConfig,
+    deadline: Instant,
 ) -> KernelClientResult<Option<HttpKernelClient>> {
-    if !probe_kernel_tcp(&config.base_url)? {
+    if !probe_kernel_tcp(&config.base_url, deadline)? {
         return Ok(None);
     }
     if !config.has_host_shell_token() {
         return Err(KernelClientError::HostConnectionTokenMissing);
     }
     let client = HttpKernelClient::new(config.clone())?;
-    let reason = match client.health().await {
+    let timeout = startup::remaining(deadline)
+        .map_err(|error| KernelClientError::Bootstrap(error.to_string()))?;
+    let health = async {
+        let value = client
+            .http
+            .get(client.url("/api/health"))
+            .timeout(timeout)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        decode_health(value)
+    }
+    .await;
+    let reason = match health {
         Ok(status) if status.ok => return Ok(Some(client)),
         Ok(_) => "Kernel health endpoint reported an unhealthy state".to_string(),
         Err(KernelClientError::Http(error))
@@ -408,12 +367,25 @@ fn generate_local_token(prefix: &str) -> KernelClientResult<String> {
     Ok(encoded)
 }
 
-fn probe_kernel_tcp(base_url: &str) -> KernelClientResult<bool> {
+fn probe_kernel_tcp(base_url: &str, deadline: Instant) -> KernelClientResult<bool> {
     let (host, port) = parse_kernel_host_port(base_url).ok_or_else(|| {
         KernelClientError::Bootstrap(format!("Cannot resolve Host address from {base_url}"))
     })?;
-    deepcode_host_connection::loopback_http::probe_loopback_listener(&host, &port)
-        .map_err(|error| KernelClientError::Bootstrap(error.to_string()))
+    let timeout = startup::remaining(deadline)
+        .map_err(|error| KernelClientError::Bootstrap(error.to_string()))?
+        .min(Duration::from_millis(180));
+    match deepcode_host_connection::loopback_http::connect_loopback(&host, &port, timeout) {
+        Ok(_) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(KernelClientError::Bootstrap(error.to_string())),
+    }
 }
 
 fn kernel_auto_start_enabled(default_enabled: bool) -> bool {
@@ -495,14 +467,14 @@ fn find_kernel_binary() -> KernelClientResult<Option<PathBuf>> {
     Ok(candidate.is_file().then_some(candidate))
 }
 
-fn spawn_kernel_binary(
+fn kernel_command(
     kernel_bin: &Path,
     host: &str,
     port: &str,
     host_shell_token: &str,
     host_instance_id: &str,
-) -> KernelClientResult<OwnedKernelProcess> {
-    let port_number = port.parse::<u16>().map_err(|_| {
+) -> KernelClientResult<(Command, PathBuf)> {
+    port.parse::<u16>().map_err(|_| {
         KernelClientError::Bootstrap("Kernel port is not a valid TCP port".to_string())
     })?;
     let kernel_dir = kernel_bin
@@ -532,44 +504,44 @@ fn spawn_kernel_binary(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr));
 
-    let process = spawn_owned_host_process(&mut command).map_err(|error| {
-        KernelClientError::Bootstrap(format!("failed to start {}: {error}", kernel_bin.display()))
-    })?;
-    let shutdown_target = owned_kernel_shutdown_target(
-        host,
-        port_number,
-        host_shell_token,
-        host_instance_id,
-        process.child.id(),
-    );
-    Ok(OwnedKernelProcess {
-        process,
-        log_path,
-        shutdown_target,
-    })
+    Ok((command, log_path))
 }
 
-fn owned_kernel_shutdown_target(
+fn owned_kernel_startup_target(
     host: &str,
     port: u16,
-    host_shell_token: &str,
     host_instance_id: &str,
     pid: u32,
-) -> OwnedKernelShutdownTarget {
-    OwnedKernelShutdownTarget {
+) -> OwnedKernelStartupTarget {
+    OwnedKernelStartupTarget {
         host: host.to_string(),
         port,
-        host_shell_token: host_shell_token.to_string(),
         expected_instance_id: host_instance_id.to_string(),
         expected_pid: pid,
-        expected_identity: None,
     }
 }
 
-fn bind_owned_kernel_shutdown_identity(target: &mut OwnedKernelShutdownTarget) -> bool {
-    let Some(identity) = request_owned_kernel_public_identity(target) else {
-        return false;
-    };
+fn startup_kernel_identity(
+    target: &OwnedKernelStartupTarget,
+    deadline: Instant,
+) -> std::io::Result<HostProcessIdentity> {
+    let request = format!(
+        "GET /api/host/identity HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        target.host, target.port
+    );
+    let envelope: HostApiEnvelope<HostProcessIdentity> =
+        deepcode_host_connection::loopback_http::request_loopback_json_until(
+            &target.host,
+            &target.port.to_string(),
+            &request,
+            deadline,
+        )?;
+    let identity = envelope.data.filter(|_| envelope.ok).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "owned Kernel identity response is missing data",
+        )
+    })?;
     if identity.service != KERNEL_DAEMON_SERVICE
         || identity.instance_id != target.expected_instance_id
         || identity.pid != target.expected_pid
@@ -577,78 +549,12 @@ fn bind_owned_kernel_shutdown_identity(target: &mut OwnedKernelShutdownTarget) -
         || parse_kernel_host_port(&identity.address).and_then(|(_, port)| port.parse::<u16>().ok())
             != Some(target.port)
     {
-        return false;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "owned Kernel public identity did not match its startup target",
+        ));
     }
-    target.expected_identity = Some(identity);
-    true
-}
-
-fn terminate_owned_kernel_process(process: &mut OwnedKernelProcess) {
-    if process.child.try_wait().ok().flatten().is_some() {
-        return;
-    }
-    if request_owned_kernel_graceful_shutdown(&process.shutdown_target)
-        && wait_for_child_exit(process, KERNEL_OWNED_SHUTDOWN_EXIT_ATTEMPTS)
-    {
-        let _ = process.child.wait();
-        return;
-    }
-    terminate_owned_process_tree(&mut process.process);
-}
-
-fn request_owned_kernel_graceful_shutdown(target: &OwnedKernelShutdownTarget) -> bool {
-    let Some(identity) = target.expected_identity.as_ref() else {
-        return false;
-    };
-    deepcode_host_connection::shell_lifecycle::request_daemon_shutdown(
-        &target.host,
-        &target.port.to_string(),
-        &target.host_shell_token,
-        identity,
-    )
-}
-
-fn request_owned_kernel_public_identity(
-    target: &OwnedKernelShutdownTarget,
-) -> Option<HostProcessIdentity> {
-    let host_header = if target.host.contains(':') {
-        format!("[{}]:{}", target.host, target.port)
-    } else {
-        format!("{}:{}", target.host, target.port)
-    };
-    let request = format!(
-        "GET /api/host/identity HTTP/1.1\r\nHost: {host_header}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-    let envelope = request_owned_kernel_api::<HostProcessIdentity>(target, request.as_bytes())?;
-    envelope.ok.then_some(envelope.data).flatten()
-}
-
-fn request_owned_kernel_api<T: for<'de> Deserialize<'de>>(
-    target: &OwnedKernelShutdownTarget,
-    request: &[u8],
-) -> Option<HostApiEnvelope<T>> {
-    let mut addresses = (target.host.as_str(), target.port).to_socket_addrs().ok()?;
-    let mut stream = addresses.find_map(|address| {
-        TcpStream::connect_timeout(&address, KERNEL_OWNED_SHUTDOWN_CONNECT_WAIT).ok()
-    })?;
-    stream
-        .set_read_timeout(Some(KERNEL_OWNED_SHUTDOWN_IO_WAIT))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(KERNEL_OWNED_SHUTDOWN_IO_WAIT))
-        .ok()?;
-    stream.write_all(request).ok()?;
-    stream.flush().ok()?;
-    let mut response = Vec::with_capacity(4096);
-    stream.take(64 * 1024).read_to_end(&mut response).ok()?;
-    if !(response.starts_with(b"HTTP/1.1 200 ") || response.starts_with(b"HTTP/1.0 200 ")) {
-        return None;
-    }
-    let body_offset = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")?
-        + 4;
-    serde_json::from_slice(&response[body_offset..]).ok()
+    Ok(identity)
 }
 
 fn acquire_kernel_start_lock(
@@ -682,6 +588,33 @@ fn open_log_in_dir(log_dir: &Path) -> std::io::Result<(File, PathBuf)> {
 mod ownership_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn startup_external_health_obeys_remaining_deadline_without_terminating_host() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let _probe = listener.accept().unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            stream.read(&mut request).unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+            listener
+        });
+        let token = generate_local_token(HOST_SHELL_TOKEN_PREFIX).unwrap();
+        let config =
+            KernelClientConfig::new(format!("http://{address}")).with_host_shell_token(token);
+        let start = Instant::now();
+        let result = probe_existing_kernel(&config, start + Duration::from_millis(100)).await;
+        assert!(matches!(
+            result,
+            Err(KernelClientError::DaemonUnavailable { .. })
+        ));
+        assert!(start.elapsed() < Duration::from_millis(250));
+        let listener = server.join().unwrap();
+        assert_eq!(listener.local_addr().unwrap(), address);
+    }
+
     #[test]
     fn closing_a_client_leaves_the_ready_host_running() {
         let child = Command::new("sleep")
@@ -693,20 +626,9 @@ mod ownership_tests {
             .spawn()
             .unwrap();
         let pid = child.id() as libc::pid_t;
-        let guard = KernelBootstrapGuard::owned(OwnedKernelProcess {
-            process: OwnedHostProcess {
-                child,
-                process_group_id: pid,
-            },
-            log_path: PathBuf::from("unused-test-log"),
-            shutdown_target: OwnedKernelShutdownTarget {
-                host: "127.0.0.1".into(),
-                port: 0,
-                host_shell_token: String::new(),
-                expected_instance_id: "fixture".into(),
-                expected_pid: pid as u32,
-                expected_identity: None,
-            },
+        let guard = KernelBootstrapGuard::owned(OwnedHostProcess {
+            child,
+            process_group_id: pid,
         });
         drop(guard);
         let mut status = 0;

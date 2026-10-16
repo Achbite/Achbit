@@ -6,7 +6,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { PlanResponse, PluginSelectionInput, ProjectionMessage } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
-import { shouldOfferFocusCommand, shouldSubmitComposerKey } from './composerKeyboard';
+import { shouldSubmitComposerKey } from './composerKeyboard';
+import { composerCommands, parseComposerCommand, suggestComposerCommands, type ComposerCommand } from './composerCommands';
+import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
 import { isLongPastedText } from '../../services/pastedText';
 import { cloneComposerState, composerStateIsEmpty, emptyComposerState, submitComposerState, type ComposerState } from './composerSubmission';
@@ -87,6 +89,9 @@ export function useAgentComposer(
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [attachmentDialogOpen, setAttachmentDialogOpen] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+  const [commandActiveIndex, setCommandActiveIndex] = useState(0);
+  const [commandDismissed, setCommandDismissed] = useState(false);
+  const [modelPanelRequest, setModelPanelRequest] = useState<{ kind: 'model' | 'context'; sequence: number } | null>(null);
   const attachmentControlRef = useRef<HTMLDivElement | null>(null);
   const pluginPickerRef = useRef<HTMLDivElement | null>(null);
   const permissionControlRef = useRef<HTMLDivElement | null>(null);
@@ -183,6 +188,9 @@ export function useAgentComposer(
     setAttachmentMenuOpen(false);
     setAttachmentDialogOpen(false);
     setPermissionMenuOpen(false);
+    setModelPanelRequest(null);
+    setCommandDismissed(false);
+    setCommandActiveIndex(0);
     setAttachmentError(null);
   }, [composerStateKey]);
 
@@ -239,11 +247,18 @@ export function useAgentComposer(
 
   const submitDraft = async () => {
     const submittedText = draft;
-    if (
-      !canSend
-      || compositionActiveRef.current
-      || compositionCommitPendingRef.current
-    ) return;
+    if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
+    if (!textDecision && !editingMessage && !pendingApproval) {
+      const command = parseComposerCommand(submittedText);
+      if (command && !(command.name === 'focus' && command.argument)) {
+        const known = composerCommands.find(item => item.id === command.name);
+        if (!known || command.argument) {
+          setAttachmentError(t(language, 'agent.commands.invalid'));
+        } else await selectCommand(known.id);
+        return;
+      }
+    }
+    if (!canSend) return;
     const submittedComposerKey = activeComposerStateKeyRef.current;
     const submission = { key: submittedComposerKey };
     const onSessionCreated = (createdSessionId: string) => {
@@ -290,7 +305,7 @@ export function useAgentComposer(
           return;
         }
         if (pendingInteraction) {
-          await respondInteraction(submittedText);
+          await respondInteraction(submittedText, pendingInteraction.interactionId);
           return;
         }
         const focusMatch = submittedText.match(/^\/focus(?:\s+)([\s\S]+)$/u);
@@ -335,10 +350,6 @@ export function useAgentComposer(
     focusComposerDraft(nextDraft);
   };
 
-  const selectFocusCommand = () => {
-    focusComposerDraft('/focus ');
-  };
-
   const focusComposerDraft = (nextDraft: string) => {
     setDraft(nextDraft);
     setAttachmentMenuOpen(false);
@@ -374,6 +385,8 @@ export function useAgentComposer(
 
   const updateDraft = (value: string, cursor: number) => {
     pendingComposerRestoreRef.current = null;
+    setCommandDismissed(false);
+    setCommandActiveIndex(0);
     setDraft(value);
     if (textDecision || editingMessage) return;
     setPluginSelections((current) => current.filter((selection) => (
@@ -432,7 +445,52 @@ export function useAgentComposer(
     });
   };
 
-  const focusCommandSuggestionVisible = !textDecision && shouldOfferFocusCommand(draft);
+  const canCancel = Boolean(projection?.run && ['running', 'waiting'].includes(projection.run.status));
+  const commandEnabled = (id: ComposerCommand): boolean => {
+    if (loading || submitting) return false;
+    if (id === 'cancel') return canCancel;
+    if (id === 'agents') return Boolean(sessionId);
+    if (id === 'context') return Boolean(projection?.contextUsage);
+    if (id === 'model') return !modelSettingsBusy;
+    if (id === 'attach' || id === 'plugins') return !catalogBusy;
+    return true;
+  };
+  const commandSuggestions = !textDecision && !editingMessage && !pendingApproval && !commandDismissed
+    ? suggestComposerCommands(draft).map(command => ({ ...command, enabled: commandEnabled(command.id) })) : [];
+  const selectedCommandIndex = commandSuggestions[commandActiveIndex]?.enabled ? commandActiveIndex
+    : nextEnabledIndex(commandSuggestions.map(command => command.enabled), -1, 'Home');
+  const selectCommand = async (id: ComposerCommand) => {
+    if (!commandEnabled(id)) return;
+    setAttachmentError(null);
+    if (id === 'focus' || id === 'help') {
+      setCommandDismissed(false);
+      focusComposerDraft(id === 'focus' ? '/focus ' : '/');
+      setCommandActiveIndex(0);
+      return;
+    }
+    // Clear this command in its original draft before /new switches views.
+    setComposerStateForKey(activeComposerStateKeyRef.current, {
+      ...currentComposerStateRef.current, draft: '', selectionStart: 0, selectionEnd: 0, focused: false,
+    });
+    setAttachmentMenuOpen(false); setPermissionMenuOpen(false); setPluginPickerOpen(false);
+    try {
+      switch (id) {
+        case 'new': {
+          const store = useLocalAgentStore.getState();
+          const projectId = store.catalog.sessions.find(item => item.id === sessionId)?.projectId ?? draftProjectId;
+          store.startNewSession(projectId);
+          break;
+        }
+        case 'model': case 'context':
+          setModelPanelRequest(current => ({ kind: id, sequence: (current?.sequence ?? 0) + 1 })); break;
+        case 'permissions': setPermissionMenuOpen(true); break;
+        case 'attach': setAttachmentDialogOpen(true); break;
+        case 'plugins': openPluginPicker(); break;
+        case 'agents': requestAgentOverview(sessionId!); break;
+        case 'cancel': await cancelRun(); break;
+      }
+    } catch (reason) { setAttachmentError(reason instanceof Error ? reason.message : String(reason)); }
+  };
 
   const handlePluginPickerKey = (event: React.KeyboardEvent<HTMLElement>, allowTab = false): boolean => {
     if (!pluginPickerOpen || event.nativeEvent.isComposing || compositionActiveRef.current || compositionCommitPendingRef.current) return false;
@@ -454,6 +512,23 @@ export function useAgentComposer(
   };
   const submitOnComposerEnter = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (handlePluginPickerKey(event, true)) return;
+    if (commandSuggestions.length && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229
+      && !compositionActiveRef.current && !compositionCommitPendingRef.current) {
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation(); setCommandDismissed(true); return;
+      }
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        setCommandActiveIndex(nextEnabledIndex(commandSuggestions.map(command => command.enabled), selectedCommandIndex, event.key));
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey && !event.repeat) {
+        event.preventDefault();
+        const command = commandSuggestions[selectedCommandIndex];
+        if (command?.enabled) void selectCommand(command.id);
+        return;
+      }
+    }
     if (pendingPlan && event.key === 'Escape' && !event.repeat
       && !event.nativeEvent.isComposing && !compositionActiveRef.current
       && !compositionCommitPendingRef.current) {
@@ -472,10 +547,6 @@ export function useAgentComposer(
       commitPending: compositionCommitPendingRef.current,
     })) return;
     event.preventDefault();
-    if (focusCommandSuggestionVisible) {
-      selectFocusCommand();
-      return;
-    }
     void submitDraft();
   };
 
@@ -540,9 +611,6 @@ export function useAgentComposer(
     }
   };
 
-  const canCancel = Boolean(
-    projection?.run && ['running', 'waiting'].includes(projection.run.status),
-  );
   const appendBrowserReview = (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => {
     if (!sessionId) throw new Error('请先打开对话再添加批注。');
     // An annotation belongs to the normal message draft, including during a pending decision.
@@ -595,7 +663,9 @@ export function useAgentComposer(
   const selectModel = async (profileId: string, effort: import('@deepcode/protocol').LlmReasoningEffort | null) => {
     await saveModelChoice(profileId, effort);
   };
-  const canSend = !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
+  const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
+  const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
+  const canSend = guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
     ? Boolean(draft.trim()) && (!pendingInteraction || pendingInteraction.allowFreeform)
     : Boolean(draft.trim() || pastedTexts.length || pendingFilesystemPaths.length || editingMessage?.message.filesystemReferences.length)
       && !modelSettingsBusy && !catalogBusy
@@ -674,8 +744,11 @@ export function useAgentComposer(
     pluginQuery,
     setPluginQuery,
     selectPlugin,
-    focusCommandSuggestionVisible,
-    selectFocusCommand,
+    commandSuggestions,
+    commandActiveIndex: selectedCommandIndex,
+    setCommandActiveIndex,
+    selectCommand,
+    modelPanelRequest,
     updateDraft,
     openPluginPicker,
     insertFocusCommand,

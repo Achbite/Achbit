@@ -155,7 +155,8 @@ export function renderActiveToolGuidance(
         `工具指导缺少 Provider alias：${contribution.canonicalToolName}`,
       );
     }
-    if (contribution.promptSnippet) {
+    // The tool definition already carries its description in the same request.
+    if (contribution.promptSnippet && contribution.promptSnippet !== tool.description) {
       snippets.push(`- ${wireName}: ${contribution.promptSnippet}`);
     }
     for (const guideline of contribution.usageGuidelines) {

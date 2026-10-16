@@ -1,6 +1,8 @@
 use crate::prelude::*;
 use crate::*;
 use axum::routing::delete;
+#[path = "computer_preview.rs"]
+mod computer_preview;
 
 pub(crate) fn build_app(state: AppState) -> Router {
     let host_connection = state.host_connection.clone();
@@ -9,6 +11,14 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api/host/client", get(host_client))
         .route("/api/health", get(health))
         .route("/api/host/shutdown", post(host_shutdown))
+        .route(
+            "/api/host/computer-preview",
+            post(computer_preview::preview),
+        )
+        .route(
+            "/api/host/computer-preview/activate",
+            post(computer_preview::activate),
+        )
         .route(
             "/api/host/native-browser",
             post(crate::browser_tools::register),
@@ -19,6 +29,7 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api/workspaces/save-file", post(workspace_save_file))
         .route("/api/fs/initial-locations", get(fs_initial_locations))
         .route("/api/fs/browse", get(fs_browse))
+        .route("/api/fs/read", post(fs_read))
         .route(
             "/api/user-settings",
             get(user_settings_get).patch(user_settings_patch),
@@ -50,6 +61,18 @@ pub(crate) fn build_app(state: AppState) -> Router {
             post(local_agent_session_create),
         )
         .route(
+            "/api/local-agent/agents/settings",
+            get(local_agent_settings_get),
+        )
+        .route(
+            "/api/local-agent/agents/models",
+            get(local_agent_models_get),
+        )
+        .route(
+            "/api/local-agent/agents/sessions",
+            post(local_agent_child_session_create),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id",
             delete(local_agent_session_delete),
         )
@@ -70,6 +93,18 @@ pub(crate) fn build_app(state: AppState) -> Router {
             get(local_agent_events_read),
         )
         .route(
+            "/api/local-agent/journal/sessions/:session_id/run-lifecycle",
+            get(local_agent_run_lifecycle_read),
+        )
+        .route(
+            "/api/local-agent/journal/sessions/:session_id/agent-lifecycle",
+            get(local_agent_agent_lifecycle_read),
+        )
+        .route(
+            "/api/local-agent/journal/sessions/:session_id/provider-usage",
+            get(local_agent_provider_usage_read),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id/commands/:command_id",
             get(local_agent_command_read),
         )
@@ -82,8 +117,20 @@ pub(crate) fn build_app(state: AppState) -> Router {
             post(local_agent_run_runtime_release),
         )
         .route(
+            "/api/local-agent/runtime/retire-tool-views",
+            post(local_agent_tool_views_retire),
+        )
+        .route(
             "/api/local-agent/kernel/processes",
             post(local_agent_processes),
+        )
+        .route(
+            "/api/local-agent/plans/admission",
+            post(local_agent_plan_admission),
+        )
+        .route(
+            "/api/local-agent/kernel/prepare",
+            post(local_agent_kernel_prepare),
         )
         .route(
             "/api/local-agent/kernel/execute",

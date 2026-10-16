@@ -1,12 +1,19 @@
-import { isLlmReasoningEffort } from '@deepcode/protocol';
+import { permissionSettings, decodeAgentCapabilities, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
 import type {
   JsonObject,
+  AgentHostPort,
+  AgentModel,
+  AgentSettings,
+  AgentContext,
+  SessionProjection,
   CommandJournalPort,
+  RunLifecycleRead,
   CommandReply,
   ConversationCommand,
   KernelPort,
+  PlanAuthority,
   PrepareRunRuntimeRequest,
   PreparedRunRuntime,
   PreparedToolDescriptor,
@@ -18,6 +25,7 @@ import type {
   ProviderRequest,
   ReleaseRunRuntimeRequest,
   ReleaseRunRuntimeResult,
+  RetireToolViewsRequest,
   RunPreparationPort,
   RunRuntimeSnapshot,
   SelectedPluginSnapshot,
@@ -25,6 +33,8 @@ import type {
   SessionEvent,
   StoredCommand,
   ToolCancelReply,
+  FileCallPreparationRequest,
+  FileCallPreparationReply,
   ToolExecutionRecord,
   ToolExecutionReply,
   ToolExecutionRequest,
@@ -129,6 +139,29 @@ function transportErrorMessage(error: unknown): string {
 }
 
 export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJournalPort {
+  readonly #permissions = new Map<string, { revision: number; settings: RunRuntimeSnapshot['permissions'] }>();
+  readonly #permissionListeners = new Map<string, Set<(settings: RunRuntimeSnapshot['permissions']) => void>>();
+
+  subscribePermissions(sessionId: string, publish: (settings: RunRuntimeSnapshot['permissions']) => void): () => void {
+    const listeners = this.#permissionListeners.get(sessionId) ?? new Set();
+    this.#permissionListeners.set(sessionId, listeners);
+    listeners.add(publish);
+    const current = this.#permissions.get(sessionId);
+    if (current) publish(current.settings);
+    return () => { listeners.delete(publish); if (!listeners.size) this.#permissionListeners.delete(sessionId); };
+  }
+
+  private async publication<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const result = await this.json<{ value: T; permissions: Record<string, { revision: number; settings: RunRuntimeSnapshot['permissions'] }> }>(path, init);
+    for (const [id, view] of Object.entries(result.permissions)) {
+      if ((this.#permissions.get(id)?.revision ?? -1) >= view.revision) continue;
+      const settings = permissionSettings(view.settings);
+      this.#permissions.set(id, { revision: view.revision, settings });
+      for (const publish of this.#permissionListeners.get(id) ?? []) publish(settings);
+    }
+    return result.value;
+  }
+
   async createSession(input: SessionCreationInput): Promise<SessionEvent> {
     return await this.json('/api/local-agent/journal/sessions', {
       method: 'POST',
@@ -137,30 +170,45 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    await this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}`, {
+    await this.publication(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
     });
+    this.#permissions.delete(sessionId);
   }
 
   async append(event: NewSessionEvent): Promise<SessionEvent> {
-    return await this.json('/api/local-agent/journal/events', {
+    return await this.publication('/api/local-agent/journal/events', {
       method: 'POST',
       body: JSON.stringify(event),
     });
   }
 
   async appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]> {
-    return await this.json('/api/local-agent/journal/events/batch', {
+    return await this.publication('/api/local-agent/journal/events/batch', {
       method: 'POST',
       body: JSON.stringify({ events }),
     });
   }
 
   async *read(sessionId: string, afterSequence = 0): AsyncIterable<SessionEvent> {
-    const events = await this.json<SessionEvent[]>(
+    const events = await this.publication<SessionEvent[]>(
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`,
     );
     for (const event of events) yield event;
+  }
+
+  async readRunLifecycle(sessionId: string, afterSequence = 0): Promise<RunLifecycleRead> {
+    return await this.json(
+      `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/run-lifecycle?after=${afterSequence}`,
+    );
+  }
+
+  async readAgentLifecycle(sessionId: string): Promise<import('@deepcode/protocol').AgentLifecycleRead> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/agent-lifecycle`);
+  }
+
+  async readProviderUsage(sessionId: string): Promise<import('@deepcode/protocol').ProviderUsageRead> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/provider-usage`);
   }
 
   async readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null> {
@@ -173,15 +221,75 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     command: ConversationCommand,
     events: readonly NewSessionEvent[],
     reply: Omit<CommandReply, 'revision'>,
-  ): Promise<CommandReply> {
-    return await this.json('/api/local-agent/journal/commands', {
+  ): Promise<{ reply: CommandReply; events: SessionEvent[] }> {
+    return await this.publication('/api/local-agent/journal/commands', {
       method: 'POST',
       body: JSON.stringify({ command, events, reply }),
     });
   }
 }
 
+export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPort {
+  async models(): Promise<readonly AgentModel[]> {
+    const value: unknown = await this.json('/api/local-agent/agents/models');
+    if (!Array.isArray(value)) throw new Error('agent_models_invalid');
+    return value.map(model => {
+      if (!isExactRecord(model, ['profileId', 'name', 'model', 'reasoningEfforts', 'parameters'], ['reasoningEffort', 'thinking'])
+        || ![model.profileId, model.name, model.model].every(isNonEmptyText)
+        || !Array.isArray(model.reasoningEfforts) || !model.reasoningEfforts.every(isLlmReasoningEffort)
+        || model.reasoningEffort !== undefined && !isLlmReasoningEffort(model.reasoningEffort)
+        || model.thinking !== undefined && model.thinking !== 'enabled' && model.thinking !== 'disabled') {
+        throw new Error('agent_models_invalid');
+      }
+      return { profileId: model.profileId as string, name: model.name as string, model: model.model as string,
+        parameters: decodeAgentModelParameters(model.parameters),
+        reasoningEfforts: [...model.reasoningEfforts],
+        ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
+        ...(model.thinking !== undefined ? { thinking: model.thinking } : {}) };
+    });
+  }
+
+  async settings(): Promise<AgentSettings> {
+    const value = await this.json('/api/local-agent/agents/settings');
+    if (!isRecord(value) || typeof value.enabled !== 'boolean' || typeof value.profileId !== 'string'
+      || typeof value.allowMemberAnalysis !== 'boolean'
+      || typeof value.allowFullConfiguration !== 'boolean' || typeof value.presets !== 'string'
+      || value.reasoningEffort !== '' && !isLlmReasoningEffort(value.reasoningEffort)
+      || ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) {
+      throw new Error('agent_settings_invalid');
+    }
+    return value as unknown as AgentSettings;
+  }
+
+  async createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection> {
+    const value = await this.json<SessionProjection>('/api/local-agent/agents/sessions', { method: 'POST', body: JSON.stringify(input) });
+    if (value.sessionId !== input.sessionId || value.agentContext?.parentCallId !== input.agentContext.parentCallId) throw new Error('agent_session_identity_mismatch');
+    return value;
+  }
+}
+
 export class HttpKernelPort extends LocalAgentHttpPort implements KernelPort {
+  async prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply> {
+    const value = await this.json<FileCallPreparationReply>('/api/local-agent/kernel/prepare', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    if (!Array.isArray(value.calls) || value.calls.length !== request.requests.length
+      || value.calls.some((call, index) => call.callId !== request.requests[index]?.callId
+        || !Array.isArray(call.conflictsWith) || call.conflictsWith.some(id => typeof id !== 'string'))) {
+      throw new Error('kernel_file_preparation_reply_invalid');
+    }
+    return value;
+  }
+
+  async planAdmission(request: Parameters<KernelPort['planAdmission']>[0]): ReturnType<KernelPort['planAdmission']> {
+    const result = await this.json<Awaited<ReturnType<KernelPort['planAdmission']>>>('/api/local-agent/plans/admission', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    if (!['agent', 'parent', 'user', 'sessionWorkdir'].includes(result.source) || !Array.isArray(result.authorities)
+      || result.source === 'parent' && !result.authorities.length
+      || result.source === 'sessionWorkdir' && result.authorities.length) throw new Error('plan_admission_invalid');
+    return result;
+  }
   async readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]> {
     const value: unknown = await this.json('/api/local-agent/kernel/processes', {
       method: 'POST', body: JSON.stringify(request), signal,
@@ -271,6 +379,8 @@ function decodePreparedToolDescriptors(value: unknown): readonly PreparedToolDes
       'origin',
     ];
     if (isRecord(candidate) && Object.hasOwn(candidate, 'pluginUri')) fields.push('pluginUri');
+    if (isRecord(candidate) && Object.hasOwn(candidate, 'availabilityReason')) fields.push('availabilityReason');
+    if (isRecord(candidate) && Object.hasOwn(candidate, 'runtimeStatus')) fields.push('runtimeStatus');
     if (
       !isExactRecord(candidate, fields)
       || !isNonEmptyText(candidate.toolBindingRef)
@@ -289,6 +399,10 @@ function decodePreparedToolDescriptors(value: unknown): readonly PreparedToolDes
       ].includes(String(effect)))
       || new Set(candidate.possibleEffects.map(String)).size !== candidate.possibleEffects.length
       || candidate.availability !== 'callable' && candidate.availability !== 'blocked'
+      || candidate.availabilityReason !== undefined && (candidate.availability !== 'blocked'
+        || !isExactRecord(candidate.availabilityReason, ['code', 'message'])
+        || !isNonEmptyText(candidate.availabilityReason.code) || !isNonEmptyText(candidate.availabilityReason.message))
+      || candidate.runtimeStatus !== undefined && !isRecord(candidate.runtimeStatus)
       || candidate.origin !== 'coreBuiltin' && candidate.origin !== 'extension'
       || (candidate.origin === 'coreBuiltin' && candidate.pluginUri !== undefined)
       || (candidate.origin === 'extension'
@@ -306,6 +420,8 @@ function decodePreparedToolDescriptors(value: unknown): readonly PreparedToolDes
       inputSchema: structuredClone(candidate.inputSchema),
       possibleEffects: [...candidate.possibleEffects] as PreparedToolDescriptor['possibleEffects'],
       availability: candidate.availability,
+      ...(candidate.availabilityReason ? { availabilityReason: structuredClone(candidate.availabilityReason) as PreparedToolDescriptor['availabilityReason'] } : {}),
+      ...(candidate.runtimeStatus ? { runtimeStatus: structuredClone(candidate.runtimeStatus) } : {}),
       origin: candidate.origin,
       ...(candidate.origin === 'extension'
         ? { pluginUri: candidate.pluginUri as PreparedToolDescriptor['pluginUri'] }
@@ -377,7 +493,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'pluginConfig',
       'selectedPlugins',
       'environment',
-    ], ['approvalReviewer', 'approvalReviewerError'])) throw new Error('run_runtime_prepared_invalid');
+      'agentCapabilities',
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'agentDelegationEnabled'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -392,6 +509,9 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,
     };
     try {
+      const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
+      if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
+      if (value.agentDelegationEnabled !== undefined && typeof value.agentDelegationEnabled !== 'boolean') throw new Error('agent_delegation_status_invalid');
       const provider = decodeProviderRuntime(value.provider);
       const approvalReviewer = value.approvalReviewer === undefined
         ? undefined : decodeProviderRuntime(value.approvalReviewer);
@@ -438,6 +558,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       };
       return {
         runtimeSnapshot: Object.freeze({
+          agentCapabilities,
+          ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true, agentDelegationEnabled: value.agentDelegationEnabled === true } : {}),
           runRuntimeSnapshotRef: `run-runtime:${request.sessionId}:${request.runId}`,
           extensionGenerationRef: value.extensionGenerationRef,
           kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,
@@ -470,6 +592,17 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         throw new AggregateError([error, releaseError], 'run_runtime_prepare_rollback_failed');
       }
       throw error;
+    }
+  }
+
+  async retireToolViews(request: RetireToolViewsRequest): Promise<void> {
+    const value = await this.json('/api/local-agent/runtime/retire-tool-views', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    if (!isExactRecord(value, ['sessionId', 'runId', 'keepKernelCatalogSnapshotRef'])
+      || value.sessionId !== request.sessionId || value.runId !== request.runId
+      || value.keepKernelCatalogSnapshotRef !== request.keepKernelCatalogSnapshotRef) {
+      throw new Error('tool_views_retired_invalid');
     }
   }
 
@@ -770,7 +903,7 @@ function decodeProviderFrame(frame: string): ProviderEvent {
         || !isNonEmptyText(value.data.item.id)
         || value.data.item.status !== 'completed'
           && value.data.item.status !== 'failed'
-        || !isRecord(value.data.item.action)
+        || value.data.item.action !== undefined && !isRecord(value.data.item.action)
       ) throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');
       break;
     case 'completed':

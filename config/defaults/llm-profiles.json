@@ -2,7 +2,7 @@
   "profiles": [
     {
       "id": "deepseek-v4-flash-openai",
-      "name": "DeepSeek Flash",
+      "name": "DeepSeek V4.1 Flash",
       "kind": "responses",
       "hostedWebSearch": "web_search",
       "providerFlavor": "deepseek",

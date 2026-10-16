@@ -303,8 +303,18 @@ export function UiPluginSlotView({
   );
 }
 
+function observeDisplayTheme(listener: () => void) {
+  const observer = new MutationObserver(listener);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  return () => observer.disconnect();
+}
+function displayTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+/** Consume the shell's resolved appearance, including changes while following the system. */
 export function useDisplayTheme(): string {
-  return String(useSettingsStore((state) => state.effectiveSettings['gui.colorTheme']) ?? 'light');
+  return useSyncExternalStore(observeDisplayTheme, displayTheme, () => 'light');
 }
 
 /** Settings contributions compose in installation order instead of replacing built-in controls. */

@@ -1,3 +1,4 @@
+import type { AgentRecipe } from './agentRecipe.js';
 import type { UserSettings } from './userSettings.js';
 import type { ShellAuthorizationScope } from './permissions.js';
 import type { LlmReasoningEffort, LlmThinkingMode } from './llm.js';
@@ -15,8 +16,213 @@ export const SESSION_CONTROL_PLAN_PUBLISH = 'plan.publish' as const;
 export const SESSION_CONTROL_TODO_UPDATE = 'todo.update' as const;
 export const SESSION_CONTROL_PLUGIN_ACTIVATE = 'plugin.activate' as const;
 export const SESSION_CONTROL_ARTIFACT_PRESENT = 'artifact.present' as const;
+export const SESSION_CONTROL_AGENT = 'agent' as const;
+export const SESSION_CONTROL_SESSION = 'session' as const;
 
 export type JsonObject = Record<string, unknown>;
+
+export interface AgentCapabilities {
+  /** true permits team messages; parent limits communication to the parent. */
+  messaging: boolean | 'parent';
+  continuation: boolean;
+  delegation: boolean;
+}
+
+export function decodeAgentCapabilities(value: unknown): AgentCapabilities {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_capabilities_invalid');
+  const item = value as Record<string, unknown>;
+  const fields = ['messaging', 'continuation', 'delegation'] as const;
+  if (Object.keys(item).length !== fields.length || fields.some(key =>
+    typeof item[key] !== 'boolean' && !(key === 'messaging' && item[key] === 'parent'))) {
+    throw new Error('agent_capabilities_invalid');
+  }
+  return { messaging: item.messaging as AgentCapabilities['messaging'], continuation: item.continuation as boolean, delegation: item.delegation as boolean };
+}
+
+export type SessionOperation =
+  | { action: 'describe' }
+  | { action: 'schedule'; afterSeconds: number; text: string }
+  | { action: 'cancelSchedule'; scheduleId: string }
+  | { action: 'wait'; timeoutSeconds?: number };
+
+export interface AgentContext {
+  capabilities: AgentCapabilities;
+  configuration?: AgentConfiguration;
+  model?: AgentModelConfiguration;
+  ownerSessionId: string;
+  parentSessionId: string;
+  parentRunId: string;
+  parentCallId: string;
+}
+
+export interface AgentContributionSelection {
+  id: string;
+  parameters?: JsonObject;
+}
+
+export interface AgentModelConfiguration {
+  profileId: string;
+  model: string;
+  reasoningEffort: LlmReasoningEffort | null;
+  thinking: LlmThinkingMode | null;
+  parameters: AgentModelParameters;
+}
+
+export interface AgentModelParameters {
+  adapterId: string;
+  kind: string;
+  providerFlavor: string | null;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  imageInput: boolean;
+  temperature: number | null;
+  hostedWebSearch: string | null;
+}
+
+export function decodeAgentModelParameters(value: unknown): AgentModelParameters {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_model_parameters_invalid');
+  const item = value as AgentModelParameters;
+  if (Object.keys(item).length !== 8 || typeof item.adapterId !== 'string' || !item.adapterId
+    || !['responses', 'openaiCompatible', 'anthropic', 'ollama'].includes(item.kind)
+    || item.providerFlavor !== null && typeof item.providerFlavor !== 'string'
+    || !Number.isSafeInteger(item.contextWindowTokens) || !Number.isSafeInteger(item.maxOutputTokens)
+    || item.maxOutputTokens <= 0 || item.contextWindowTokens <= item.maxOutputTokens
+    || typeof item.imageInput !== 'boolean' || item.temperature !== null && (typeof item.temperature !== 'number' || !Number.isFinite(item.temperature))
+    || item.hostedWebSearch !== null && item.hostedWebSearch !== 'web_search') throw new Error('agent_model_parameters_invalid');
+  return structuredClone(item);
+}
+
+/** Instance choices, resolved by the trusted Session contribution registry. */
+export interface AgentConfiguration {
+  context: AgentContributionSelection;
+  compaction: AgentContributionSelection;
+  controls: AgentContributionSelection;
+}
+
+export function decodeAgentContribution(value: unknown): AgentContributionSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_contribution_invalid');
+  const item = value as Record<string, unknown>;
+  if (typeof item.id !== 'string' || !item.id.trim() || item.id !== item.id.trim()
+    || Object.keys(item).some(key => key !== 'id' && key !== 'parameters')
+    || item.parameters !== undefined && (!item.parameters || typeof item.parameters !== 'object' || Array.isArray(item.parameters))) {
+    throw new Error('agent_contribution_invalid');
+  }
+  return { id: item.id, ...(item.parameters ? { parameters: structuredClone(item.parameters) as JsonObject } : {}) };
+}
+
+export function decodeAgentConfiguration(value: unknown): AgentConfiguration {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 3) throw new Error('agent_configuration_invalid');
+  const item = value as Record<string, unknown>;
+  return { context: decodeAgentContribution(item.context), compaction: decodeAgentContribution(item.compaction),
+    controls: decodeAgentContribution(item.controls) };
+}
+
+export function decodeAgentContext(value: unknown): AgentContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_context_invalid');
+  const item = value as Record<string, unknown>;
+  const fields = ['ownerSessionId', 'parentSessionId', 'parentRunId', 'parentCallId'];
+  if (Object.keys(item).some(key => ![...fields, 'capabilities', 'configuration', 'model'].includes(key))
+    || fields.some(key => typeof item[key] !== 'string' || !item[key])) {
+    throw new Error('agent_context_invalid');
+  }
+  if (item.model !== undefined) {
+    const model = item.model as AgentModelConfiguration;
+    if (!model || typeof model !== 'object' || Object.keys(model).length !== 5
+      || typeof model.profileId !== 'string' || !model.profileId || typeof model.model !== 'string' || !model.model
+      || model.reasoningEffort !== null && !['low', 'medium', 'high', 'xhigh', 'max'].includes(model.reasoningEffort)
+      || model.thinking !== null && model.thinking !== 'enabled' && model.thinking !== 'disabled') throw new Error('agent_model_configuration_invalid');
+    decodeAgentModelParameters(model.parameters);
+  }
+  return { capabilities: decodeAgentCapabilities(item.capabilities), ownerSessionId: item.ownerSessionId as string,
+    parentSessionId: item.parentSessionId as string, parentRunId: item.parentRunId as string, parentCallId: item.parentCallId as string,
+    ...(item.configuration !== undefined ? { configuration: decodeAgentConfiguration(item.configuration) } : {}),
+    ...(item.model !== undefined ? { model: structuredClone(item.model) as AgentModelConfiguration } : {}) };
+}
+
+export interface AgentSettings {
+  enabled: boolean;
+  /** Empty follows the owner Session's actual current Run model. */
+  profileId: string;
+  /** Empty follows the owner Run effort when following its model, otherwise the profile preset. */
+  reasoningEffort: LlmReasoningEffort | '';
+  maxConcurrent: number;
+  maxCallsPerRun: number;
+  maxMembersPerSession: number;
+  allowMemberAnalysis: boolean;
+  allowFullConfiguration?: boolean;
+  /** User presets are stored with the shared settings, not in an Agent-owned catalog. */
+  presets?: string;
+}
+
+export type AgentOperation =
+  | { action: 'models' }
+  | { action: 'spawn'; preset?: string; capabilities?: Partial<AgentCapabilities>;
+      task: string; name: string; delivery: 'wait' | 'async';
+      profileId?: string; reasoningEffort?: LlmReasoningEffort;
+      loop?: Partial<Pick<AgentConfiguration, 'controls' | 'compaction'>>;
+      runner?: AgentContributionSelection;
+      permissionPolicy?: AgentContributionSelection;
+      workspaceSandbox?: AgentRecipe['workspaceSandbox'];
+      context?: AgentContributionSelection; permissions?: UserSettings }
+  | { action: 'send'; agentId: string; text: string }
+  | { action: 'wait'; taskIds?: string[] }
+  | { action: 'cancel'; taskId: string }
+  | { action: 'close'; agentId: string };
+
+export interface AgentTaskResult {
+  outcome: 'completed' | 'failed' | 'cancelled' | 'indeterminate';
+  content?: string;
+  error?: LocalAgentError;
+  finalMessageId?: string;
+}
+
+export interface AgentTaskProjection {
+  taskId: string;
+  agentSessionId: string;
+  capabilities: AgentCapabilities;
+  displayName: string;
+  text: string;
+  delivery: 'wait' | 'async';
+  parentRunId: string;
+  childRunId?: string;
+  status: 'running' | AgentTaskResult['outcome'];
+  result?: AgentTaskResult;
+}
+
+export interface AgentChildProjection {
+  agentSessionId: string;
+  displayName: string;
+  capabilities: AgentCapabilities;
+  closed: boolean;
+}
+
+/** Read-only routing identities. Full decision content is loaded from the child Session. */
+export interface PendingAgentDecision {
+  agentSessionId: string;
+  displayName: string;
+  runId: string;
+  plan?: { planId: string; revision: number };
+  interactionIds: string[];
+  approval?: { approvalId: string; callId: string };
+}
+
+export interface AgentModel {
+  profileId: string;
+  name: string;
+  model: string;
+  reasoningEfforts: readonly LlmReasoningEffort[];
+  reasoningEffort?: LlmReasoningEffort;
+  thinking?: LlmThinkingMode;
+  parameters: AgentModelParameters;
+}
+
+/** Host assembly only. All delegation policy and task facts belong to Session. */
+export interface AgentHostPort {
+  settings(): Promise<AgentSettings>;
+  models(): Promise<readonly AgentModel[]>;
+  createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection>;
+}
 
 export interface ErrorDiagnostics {
   source: string;
@@ -113,6 +319,8 @@ export interface ConversationCatalogManagement extends ConversationCatalog {
 /**
  * Message-level reference to a Host-resolved filesystem object. Host canonical paths remain
  * private; Provider requests receive the corresponding logical workspace handle and path.
+ * A reference is an address, not a project binding or an access grant. Ordinary paths
+ * retain their original target; source=pastedText identifies an imported read-only snapshot.
  */
 export type FilesystemReference = {
   referenceId: string;
@@ -562,7 +770,17 @@ export interface ContextCompositionPartitionProjection
 
 export type ProviderResponseConstraint = 'normal' | 'answerOnly';
 
-export interface ContextCompositionReceipt {
+/** A derived Provider view of an existing journal fact, fixed when first prepared. */
+export interface ContextModelViewContribution {
+  contributionId: string;
+  contributionKind: ContextCompositionMessageKind;
+  label: string;
+  sourceSequence: number;
+  /** Already encoded with the original request's tool and workspace bindings. */
+  message: ModelMessage;
+}
+
+export interface ContextCompositionMetadata {
   kernelCatalogSnapshotRef?: string;
   providerRequestId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
@@ -573,6 +791,18 @@ export interface ContextCompositionReceipt {
   tools: ContextCompositionTool[];
   partitions: ContextCompositionPartitionReceipt[];
 }
+
+export type ContextCompositionReceipt = ContextCompositionMetadata & (
+  | {
+    purpose: 'agent' | 'contextCompaction';
+    /** Only newly selected history fragments; excludes transient image selections. */
+    modelView: {
+      throughSequence: number;
+      additions: ContextModelViewContribution[];
+    };
+  }
+  | { purpose: 'approvalReview'; modelView?: never }
+);
 
 interface ContextCompositionProjectionBase {
   providerRequestId: string;
@@ -657,6 +887,18 @@ export type SessionEvent =
       providerCallId: string;
       items: Array<{ artifactId: string; label: string; deliveryId: string }>;
     } })
+  | (SessionEventBase & { type: 'agent.task.created'; runId: string; callId: string; payload: {
+      taskId: string; agentSessionId: string; capabilities: AgentCapabilities; createsAgent: boolean; displayName: string; text: string; delivery: 'wait' | 'async';
+    } })
+  | (SessionEventBase & { type: 'agent.task.started'; runId: string; payload: { taskId: string; childRunId: string } })
+  | (SessionEventBase & { type: 'agent.task.completed'; runId: string; payload: { taskId: string; result: AgentTaskResult } })
+  | (SessionEventBase & { type: 'agent.closed'; payload: { agentSessionId: string } })
+  | (SessionEventBase & { type: 'agent.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
+  | (SessionEventBase & { type: 'agent.message.received'; runId: string; payload: { sourceSessionId: string; text: string } })
+  | (SessionEventBase & { type: 'session.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
+  | (SessionEventBase & { type: 'wake.scheduled'; runId: string; payload: { scheduleId: string; dueAt: number; text: string } })
+  | (SessionEventBase & { type: 'wake.cancelled'; runId: string; payload: { scheduleId: string } })
+  | (SessionEventBase & { type: 'wake.triggered'; runId: string; payload: { scheduleId: string; text: string } })
   | (SessionEventBase & { type: 'session.permissions.updated'; payload: { commandId: string; patches: UserSettings } })
   | (SessionEventBase & { type: 'approval.revoked'; runId: string; payload: { commandId: string; authorityId: string } })
   | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string } })
@@ -673,6 +915,8 @@ export type SessionEvent =
   | (SessionEventBase & {
       type: 'session.created';
       payload: {
+        recipe?: AgentRecipe;
+        agentContext?: AgentContext;
         displayTitle: string;
         workspaceBindings: WorkspaceBindingDisplay[];
         profileId?: string;
@@ -795,7 +1039,7 @@ export type SessionEvent =
         revision: number;
         commandId: string;
         decisionId: string;
-        source?: 'user' | 'agent';
+        source?: 'user' | 'agent' | 'parent' | 'sessionWorkdir';
         authorities: PlanAuthority[];
       };
     })
@@ -880,6 +1124,17 @@ export type SessionEvent =
       payload: { rejection: ToolInputRejection };
     })
   | (SessionEventBase & {
+      type: 'tool.not-executed';
+      runId: string;
+      callId: string;
+      /** Session knows that this call never entered effect execution. */
+      payload: { attemptId: string; reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
+    })
+  | (SessionEventBase & {
+      type: 'agent.delegation.changed';
+      payload: { enabled: boolean };
+    })
+  | (SessionEventBase & {
       type: 'tool.interrupted';
       runId: string;
       callId: string;
@@ -902,7 +1157,7 @@ export type SessionEvent =
       type: 'session.plugins.activated';
       runId: string;
       callId: string;
-      payload: { providerCallId: string; pluginUris: string[] };
+      payload: { providerCallId: string; pluginUris: string[]; kernelCatalogSnapshotRef: string };
     })
   | (SessionEventBase & {
       type: 'session.control.rejected';
@@ -1054,7 +1309,7 @@ export type SessionTimelineItem =
       kind: 'toolGroup';
       timelineId: string;
       sequence: number;
-      providerRequestId: string;
+      providerRequestId?: string;
       activityIds: string[];
     };
 
@@ -1094,7 +1349,8 @@ export type AssistantDraftBlockProjection =
       providerCallId: string;
       providerToolType: 'web_search';
       status: 'completed' | 'failed';
-      action: JsonObject;
+      /** Present only when supplied by the Provider. */
+      action?: JsonObject;
     };
 
 /** Session-owned, non-durable presentation for the one Provider turn currently streaming. */
@@ -1137,7 +1393,7 @@ export interface PlanProjection extends ExecutionPlan {
   runId: string;
   callId: string;
   status: PlanProjectionStatus;
-  confirmationSource?: 'user' | 'agent';
+  confirmationSource?: 'user' | 'agent' | 'parent' | 'sessionWorkdir';
   decisionId?: string;
   sequence: number;
   createdAt: string;
@@ -1177,7 +1433,7 @@ export interface RunProjection {
 
 export interface ActivityProjection {
   activityId: string;
-  kind: 'run' | 'tool' | 'providerHosted' | 'approval' | 'plan' | 'interaction';
+  kind: 'run' | 'tool' | 'providerHosted' | 'approval' | 'plan' | 'interaction' | 'agent';
   status:
     | 'active'
     | 'requested'
@@ -1196,9 +1452,15 @@ export interface ActivityProjection {
   /** Bounded live output, absent after settlement and never persisted in journal. */
   liveOutput?: ToolOutputProjection;
   tool?: ToolActivityProjection;
+  approvalReview?: NonNullable<EffectPreview['review']>;
   inputRejection?: ToolInputRejection['error'];
   interruption?: LocalAgentError;
+  notExecuted?: { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
   providerHosted?: ProviderHostedActivityProjection;
+  agent?: { agentSessionId: string } & (
+    { taskId: string; phase: 'started' | 'completed' }
+    | { taskId?: never; phase: 'updated' }
+  );
 }
 
 export interface ToolOutputProjection {
@@ -1212,7 +1474,8 @@ export interface ToolOutputProjection {
 export interface ProviderHostedActivityProjection {
   providerToolType: 'web_search';
   providerCallId: string;
-  action: JsonObject;
+  /** Present only when supplied by the Provider. */
+  action?: JsonObject;
 }
 
 export interface ActivityResourceProjection {
@@ -1233,6 +1496,28 @@ export interface ToolActivityProjection {
   shell?: ShellActivityProjection;
   process?: ProcessActivityProjection;
   fileChanges?: FileChangeProjection[];
+  computer?: ComputerActivityProjection;
+}
+
+/** Historical tool facts. Reading these observations never resumes desktop control. */
+export interface ComputerActivityProjection {
+  action: string;
+  input: JsonObject;
+  app?: string;
+  window?: JsonObject;
+  page?: JsonObject;
+  dispatched?: boolean;
+  observation?: {
+    observationId?: string;
+    artifactIds: string[];
+    interface?: JsonObject;
+  };
+  inputObservation?: {
+    observationId: string;
+    artifactIds: string[];
+    element?: JsonObject;
+  };
+  result?: JsonObject;
 }
 
 export interface FileChangeSide {
@@ -1335,6 +1620,11 @@ export interface QueuedInputProjection {
 }
 
 export interface SessionProjection {
+  recipe?: AgentRecipe;
+  agentContext?: AgentContext;
+  agentTasks?: AgentTaskProjection[];
+  agentChildren?: AgentChildProjection[];
+  pendingAgentDecisions?: PendingAgentDecision[];
   permissionOverrides: UserSettings;
   effectivePermissions: UserSettings | null;
   shellAuthorizations: ShellAuthorizationProjection[];
@@ -1358,6 +1648,8 @@ export interface SessionProjection {
   interactions: InteractionProjection[];
   /** Current reply target, derived from interactions. Only run.status indicates whether the Loop waits. */
   pendingInteraction: InteractionProjection | null;
+  /** All open decisions; pendingApproval is the first item for sequential presentation. */
+  pendingApprovals?: ApprovalProjection[];
   pendingApproval: ApprovalProjection | null;
   plans: PlanProjection[];
   activePlanRef: { planId: string; revision: number } | null;
@@ -1366,7 +1658,10 @@ export interface SessionProjection {
   contextUsage: ContextUsageProjection | null;
   /** Composition for the displayed Agent usage plus the latest composition; history is read on demand. */
   contextCompositions: ContextCompositionProjection[];
+  /** Usage incurred by this Session alone; run history and current context keep this scope. */
   tokenUsage: TokenUsageProjection;
+  /** Usage incurred by this Session and every descendant Agent Session, including closed history. */
+  totalTokenUsage: TokenUsageProjection;
   tokenUsageHistory: TokenUsageRoundProjection[];
   run: RunProjection | null;
   activities: ActivityProjection[];
@@ -1468,6 +1763,7 @@ export interface ProviderRequest {
   profileId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
   responseConstraint: ProviderResponseConstraint;
+  responseFormat?: { name: string; schema: JsonObject };
   maxOutputTokens: number;
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   messages: readonly ModelMessage[];
@@ -1554,6 +1850,9 @@ export interface ToolDescriptor {
   inputSchema: JsonObject;
   possibleEffects: EffectKind[];
   availability: 'callable' | 'blocked';
+  availabilityReason?: { code: string; message: string };
+  /** Native executor facts observed while preparing this tool view. */
+  runtimeStatus?: JsonObject;
 }
 
 export interface PreparedToolDescriptor extends ToolDescriptor {
@@ -1602,6 +1901,9 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  agentCapabilities: AgentCapabilities;
+  agentToolsEnabled?: boolean;
+  agentDelegationEnabled?: boolean;
   permissions: UserSettings;
   environment: JsonObject;
   runRuntimeSnapshotRef: string;
@@ -1661,9 +1963,17 @@ export interface ReleaseRunRuntimeResult {
   alreadyReleased: boolean;
 }
 
+export interface RetireToolViewsRequest {
+  sessionId: string;
+  runId: string;
+  keepKernelCatalogSnapshotRef: string;
+}
+
 /** Host composition root owns atomic run preparation across Provider and Kernel generations. */
 export interface RunPreparationPort {
   prepare(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime>;
+  /** Old logical requests/approvals are settled; physical jobs retain their original lease. */
+  retireToolViews(request: RetireToolViewsRequest): Promise<void>;
   release(request: ReleaseRunRuntimeRequest): Promise<ReleaseRunRuntimeResult>;
 }
 
@@ -1779,7 +2089,7 @@ export type ToolExecutionRecord =
   | (ToolExecutionRecordBase & { outcome: 'completed'; output: unknown })
   | (ToolExecutionRecordBase & { outcome: 'denied'; error?: LocalAgentError })
   | (ToolExecutionRecordBase & { outcome: 'failed'; output?: unknown; error: LocalAgentError })
-  | (ToolExecutionRecordBase & { outcome: 'cancelled' })
+  | (ToolExecutionRecordBase & { outcome: 'cancelled'; output?: unknown })
   | (ToolExecutionRecordBase & { outcome: 'indeterminate'; output?: unknown; error: LocalAgentError });
 
 export interface ToolInputIssue {
@@ -1879,17 +2189,89 @@ export interface ProcessReadRequest {
   cancel?: boolean;
 }
 
+export interface FileCallPreparationRequest { requests: ToolExecutionRequest[] }
+export interface FileCallPreparationReply {
+  calls: Array<{ callId: string; conflictsWith: string[]; rejection?: ToolInputRejection }>;
+}
+
 export interface KernelPort {
+  prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply>;
+  planAdmission(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<{ source: 'agent' | 'parent' | 'user' | 'sessionWorkdir'; authorities: PlanAuthority[] }>;
   readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]>;
   execute(request: ToolExecutionRequest, onProgress?: (progress: ToolExecutionProgress) => Promise<void>): Promise<ToolExecutionReply>;
   cancel(callId: string, attemptId: string): Promise<ToolCancelReply>;
   readRecord(callId: string): Promise<ToolExecutionRecord | null>;
 }
 
+type RunLifecycleEventFields<Event extends SessionEvent, Field extends keyof Event['payload'] = never> =
+  Omit<Event, 'schemaVersion' | 'eventId' | 'occurredAt' | 'payload'>
+  & { payload: Pick<Event['payload'], Field> };
+
+/** Read-only field projection of journal facts, never a separately stored status. */
+export type RunLifecycleEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.started' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.waiting' }>, 'reason'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.finishing' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.runtime.release_failed' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.runtime.released' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.settled' }>, 'outcome'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'interaction.requested' }>, 'interactionId' | 'mode'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'interaction.resolved' }>, 'interactionId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.published' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.confirmed' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.revision.requested' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.cancelled' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.invalidated' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.requested' }>, 'approvalId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.resolved' }>, 'approvalId' | 'decision' | 'authorizationScope' | 'authorityId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.revoked' }>, 'authorityId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.completed' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.input-rejected' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.not-executed' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.permissions.updated' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'conversation.revised' }>, 'fromSequence' | 'throughSequence'>;
+
+export interface RunLifecycleRead {
+  sessionId: string;
+  /** Latest journal sequence, including events omitted from the field projection. */
+  revision: number;
+  events: RunLifecycleEvent[];
+}
+
+/** Field projection only: child ownership survives conversation edits. */
+export type AgentLifecycleEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.created' }>, 'agentContext'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.created' }>,
+      'taskId' | 'agentSessionId' | 'capabilities' | 'createsAgent' | 'displayName' | 'delivery'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.started' }>, 'taskId' | 'childRunId'>
+  | (RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.completed' }>, 'taskId'>
+      & { payload: { result: Pick<AgentTaskResult, 'outcome'> } })
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.closed' }>, 'agentSessionId'>;
+
+export interface AgentLifecycleRead {
+  sessionId: string;
+  revision: number;
+  events: AgentLifecycleEvent[];
+}
+
+/** Compact persisted receipts; aggregation remains owned by Session. */
+export type ProviderUsageEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'provider.turn.settled' }>, 'providerRequestId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'context.updated' }>, keyof Extract<SessionEvent, { type: 'context.updated' }>['payload']>;
+
+export interface ProviderUsageRead {
+  sessionId: string;
+  revision: number;
+  events: ProviderUsageEvent[];
+}
+
 export interface JournalPort {
   append(event: NewSessionEvent): Promise<SessionEvent>;
   appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]>;
   read(sessionId: string, afterSequence?: number): AsyncIterable<SessionEvent>;
+  readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
+  readAgentLifecycle(sessionId: string): Promise<AgentLifecycleRead>;
+  readProviderUsage(sessionId: string): Promise<ProviderUsageRead>;
 }
 
 export interface StoredCommand {
@@ -1898,6 +2280,8 @@ export interface StoredCommand {
 }
 
 export interface SessionCreationInput {
+  recipe?: AgentRecipe;
+  agentContext?: AgentContext;
   sessionId: string;
   displayTitle: string;
   workspaceBindings: WorkspaceBindingDisplay[];
@@ -1906,6 +2290,8 @@ export interface SessionCreationInput {
 
 /** Session journal owns atomic command admission; it is not a second state machine. */
 export interface CommandJournalPort extends JournalPort {
+  /** Kernel policy publications; callback is synchronous and never writes facts. */
+  subscribePermissions(sessionId: string, publish: (settings: RunRuntimeSnapshot['permissions']) => void): () => void;
   createSession(input: SessionCreationInput): Promise<SessionEvent>;
   deleteSession(sessionId: string): Promise<void>;
   readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null>;
@@ -1913,5 +2299,5 @@ export interface CommandJournalPort extends JournalPort {
     command: ConversationCommand,
     events: readonly NewSessionEvent[],
     reply: Omit<CommandReply, 'revision'>,
-  ): Promise<CommandReply>;
+  ): Promise<{ reply: CommandReply; events: SessionEvent[] }>;
 }

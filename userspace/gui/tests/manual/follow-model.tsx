@@ -2,7 +2,7 @@
 // Unrelated UI is deliberately blank. No daemon, Provider or user settings are accessed.
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { LlmProviderProfile, SessionProjection } from '@deepcode/protocol';
+import { COMMAND_REPLY_VERSION, type CommandReply, type LlmProviderProfile, type SessionProjection } from '@deepcode/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
 import { useConversationViewport } from '../../src/components/local-agent/useConversationViewport';
@@ -24,6 +24,8 @@ let profiles = [
 ] as LlmProviderProfile[];
 const emptyProjection = () => ({ sessionId, revision: 1, contextCompositions: [], queuedInputs: [], plans: [], pendingPlan: null } as unknown as SessionProjection);
 let currentProjection = emptyProjection();
+const reply = (commandId: string): CommandReply => ({ schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted',
+  commandId, sessionId, revision: currentProjection.revision });
 window.fetch = async (input, init) => {
   const url = new URL(String(input));
   if (url.pathname === '/api/llm/profiles') {
@@ -37,7 +39,7 @@ window.fetch = async (input, init) => {
     const command = JSON.parse(String(init?.body));
     if (command.type !== 'session.model-settings.set') throw new Error(`Unexpected fixture command: ${command.type}`);
     currentProjection = { ...currentProjection, revision: currentProjection.revision + 1, modelSettings: command.settings };
-    return Response.json({ ok: true, data: { status: 'accepted', revision: currentProjection.revision } });
+    return Response.json({ ok: true, data: reply(command.commandId) });
   }
   if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: currentProjection });
   throw new Error(`Unexpected fixture request: ${url.pathname}`);
@@ -58,10 +60,11 @@ function Preview() {
       respondPlan: async response => {
         useLocalAgentStore.setState({ submitting: true });
         await new Promise(resolve => setTimeout(resolve, 900));
-        currentProjection = { ...currentProjection, pendingPlan: null };
+        currentProjection = { ...currentProjection, revision: currentProjection.revision + 1, pendingPlan: null };
         useLocalAgentStore.setState({ projection: currentProjection, submitting: false });
         setText(response.kind === 'confirm' ? '计划已确认，正在执行。' : '计划已取消。');
         setStreaming(response.kind === 'confirm');
+        return reply(`command:preview:plan:${currentProjection.revision}`);
       },
       sendMessage: async text => {
         const state = useLocalAgentStore.getState();
@@ -71,6 +74,7 @@ function Preview() {
         useLocalAgentStore.setState({ sessionId, projection: currentProjection, defaultProfileId: state.selectedProfileId });
         setText(`已接收：${text}`);
         setNotice(`已使用 ${state.profiles.find(item => item.id === state.selectedProfileId)?.name}；可新建对话检查继承`);
+        return reply('command:preview:message');
       },
     });
   }, []);

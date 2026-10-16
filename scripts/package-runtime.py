@@ -12,6 +12,12 @@ import tarfile
 import tempfile
 import zipfile
 
+from macos_signing import sign_app, signing_identity
+from computer_use_package import assemble as assemble_computer_use, APP_NAME as COMPUTER_USE_APP
+
+# The GUI Host resolves this name next to DeepCode-GUI.exe.
+WINDOWS_COMPUTER_USE = 'DeepCode-Computer-Use.exe'
+
 
 def copy_js_package(source, target):
     target.mkdir(parents=True)
@@ -29,8 +35,13 @@ def shared(root, destination, dependency_list):
     copy_js_package(root / 'userspace/session-core', destination / 'session-core')
     copy_js_package(root / 'userspace/protocol', destination / 'node_modules/@deepcode/protocol')
     shutil.copytree(root / 'userspace/gui/dist-deepcode-gui', destination / 'web-deepcode-gui')
-    shutil.copytree(root / 'docs', destination / 'docs')
+    shutil.copytree(root / 'docs/product', destination / 'docs/product')
+    shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
+    # The upstream package bundles its runtime dependencies. Keep its public
+    # entrypoint and licenses intact; no host npm installation or downloads.
+    chrome = (root / 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp').resolve()
+    shutil.copytree(chrome, destination / 'chrome-devtools')
     dependencies = {}
 
     def collect(items):
@@ -55,11 +66,39 @@ def shared(root, destination, dependency_list):
     (destination / 'THIRD-PARTY.json').write_text(json.dumps(notices, ensure_ascii=False, indent=2) + '\n')
 
 
+def macos_tui_resources(root, resources):
+    """Ship the macOS terminal window adapter and native-loadable fonts."""
+    target = resources / 'tui'
+    shutil.copytree(root / 'shells/tui/macos', target)
+    tui_fonts(root, target)
+
+
+def windows_tui_resources(root, resources):
+    target = resources / 'tui'
+    (target / 'macos').mkdir(parents=True)
+    shutil.copy2(root / 'shells/tui/font-config.mjs', target / 'font-config.mjs')
+    shutil.copy2(root / 'shells/tui/macos/font-preferences.mjs', target / 'macos/font-preferences.mjs')
+    tui_fonts(root, target)
+
+
+def tui_fonts(root, target):
+    fonts = root / 'userspace/gui/src/assets/fonts'
+    with zipfile.ZipFile(fonts / 'DeepCode-Quiet-Terminal-SC.zip') as archive:
+        for name in ('DeepCodeQuietTerminalReadingSC-Regular.ttf', 'DeepCodeQuietTerminalReadingSansSC-Regular.ttf',
+                     'DeepCodeQuietTerminalMonoKaiSC-Regular.ttf', 'DeepCodeQuietTerminalMonoSC-Regular.ttf',
+                     'README.md', 'Maple-LICENSE.txt', 'Libertinus-OFL.txt',
+                     'Libertinus-AUTHORS.txt', 'WenKai-OFL.txt'):
+            destination = target / 'fonts' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.read(name))
+
+
 def assemble(args):
     root, stage = args.root, args.stage
     version = json.loads((root / 'package.json').read_text())['version']
     macos = args.platform == 'macos-arm64'
     windows = args.platform == 'win64'
+    identity = signing_identity() if macos else None
     app = stage / 'DeepCode-GUI.app'
     binaries = app / 'Contents/MacOS' if macos else stage
     resources = app / 'Contents/Resources' if macos else stage
@@ -67,6 +106,9 @@ def assemble(args):
     shutil.copytree(args.shared, resources, dirs_exist_ok=True)
     suffix = '.exe' if windows else ''
     names = {'deepcode-kernel-daemon': 'deepcode-kernel', 'deepcode-first-party-provider': 'deepcode-first-party-provider', 'deepcode-host-web': 'deepcode-host-web', 'deepcode-cli': 'deepcode-cli', 'deepcode-tui': 'deepcode-tui', 'DeepCode-GUI': 'DeepCode-GUI'}
+    if windows:
+        # macOS ships the executor as a separately signed App; Windows uses a sibling program.
+        names['DeepCode-Computer-Use'] = WINDOWS_COMPUTER_USE.removesuffix('.exe')
     for source, target in names.items():
         destination = binaries / (target + suffix)
         if windows:
@@ -82,6 +124,7 @@ def assemble(args):
     if args.platform.startswith('linux-'):
         shutil.copy2(shutil.which('bwrap'), binaries / 'bwrap')
     if windows:
+        windows_tui_resources(root, resources)
         (stage / 'libexec').mkdir()
         shutil.copy2(root / 'scripts/installers/windows-environment.ps1', stage / 'libexec/windows-environment.ps1')
         (stage / 'deepcode.cmd').write_text('@echo off\ncall "%~dp0deepcode-cli.bat" %*\nexit /b %errorlevel%\n')
@@ -92,21 +135,23 @@ def assemble(args):
     metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME']}
     (resources / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
     if macos:
+        macos_tui_resources(root, resources)
         info = {'CFBundleDevelopmentRegion': 'en', 'CFBundleDisplayName': 'DeepCode-GUI', 'CFBundleExecutable': 'DeepCode-GUI', 'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': 'DeepCode-GUI', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version, 'LSMinimumSystemVersion': '12.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication'}
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for shell in ('CLI', 'TUI'):
             launcher = stage / f'DeepCode-{shell}.command'
+            command = ('exec "$APP_DIR/Resources/node/bin/node" "$APP_DIR/Resources/tui/window.mjs" --command-window "$@"'
+                       if shell == 'TUI' else 'exec "$APP_DIR/MacOS/deepcode-cli" "$@"')
             launcher.write_text('''#!/usr/bin/env bash
 set -euo pipefail
 PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 APP_DIR="$PACKAGE_DIR/DeepCode-GUI.app/Contents"
 export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"
 export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"
-exec "$APP_DIR/MacOS/deepcode-''' + shell.lower() + '''" "$@"
-''')
+''' + command + '\n')
             launcher.chmod(0o755)
-        subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
-        subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+        sign_app(app, identity, native_components=True)
+        assemble_computer_use(root, args.native, stage, identity)
     documentation = 'DeepCode-GUI.app/Contents/Resources/docs/' if macos else 'docs/'
     (stage / 'README.md').write_text((root / 'docs/distribution.md').read_text().replace('(product/', '(' + documentation + 'product/'))
 
@@ -114,6 +159,7 @@ exec "$APP_DIR/MacOS/deepcode-''' + shell.lower() + '''" "$@"
 # Only program entries belong to the publisher. config/runtime/logs/sessions and
 # other user-created entries are never copied, removed or put into the archive.
 PROGRAM_ENTRIES = {
+    COMPUTER_USE_APP, WINDOWS_COMPUTER_USE,
     'DeepCode.app', 'DeepCode-GUI.app', 'DeepCode', 'DeepCode.exe', 'DeepCode-GUI', 'DeepCode-GUI.exe',
     'DeepCode-CLI.command', 'DeepCode-TUI.command', 'deepcode', 'libexec',
     'deepcode-cli.bat', 'deepcode-tui.bat', 'deepcode.cmd',

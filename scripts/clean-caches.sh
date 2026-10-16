@@ -115,7 +115,9 @@ clean_portable_package_outputs() {
   local entries entry
   entries="$(python3 -B - "$ROOT_DIR/scripts/package-runtime.py" <<'PYTHON'
 import importlib.util
+from pathlib import Path
 import sys
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
 spec = importlib.util.spec_from_file_location('package_runtime', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)

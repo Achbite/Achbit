@@ -49,7 +49,16 @@ pub(crate) struct LlmToolDefinition {
     pub(crate) input_schema: Value,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StructuredResponseFormat {
+    pub(crate) name: String,
+    pub(crate) schema: Value,
+}
+
 pub(crate) struct ProviderRequestInput {
+    pub(crate) answer_only: bool,
+    pub(crate) response_format: Option<StructuredResponseFormat>,
     pub(crate) messages: Vec<LocalProviderMessage>,
     pub(crate) tools: Vec<LlmToolDefinition>,
     pub(crate) hosted_tools: Vec<LocalProviderHostedTool>,
@@ -341,6 +350,13 @@ fn responses_request_body(
             .count();
         input.drain(..prefix_len);
         for item in input {
+            // Codex accepts reasoning content, but not its output-only status.
+            // Encode a request copy; the original Provider item stays in the journal.
+            if item["type"] == "reasoning" {
+                item.as_object_mut()
+                    .expect("validated reasoning item")
+                    .remove("status");
+            }
             if item["role"] == "system" {
                 item["role"] = json!("developer");
             }
@@ -475,7 +491,8 @@ pub(crate) fn valid_responses_hosted_search_item(item: &Value) -> bool {
             item.get("status").and_then(Value::as_str),
             Some("completed" | "failed")
         )
-        && item.get("action").is_some_and(Value::is_object)
+        // Responses may complete a search without exposing its action details.
+        && item.get("action").is_none_or(Value::is_object)
 }
 
 fn valid_responses_replay_item(item: &Value) -> bool {
@@ -682,11 +699,13 @@ struct PreparedProviderRequest {
     kind: ProviderStreamKind,
     body: Vec<u8>,
     hosted_web_search_enabled: bool,
+    codex: Option<crate::provider_transport::CodexRequestContext>,
 }
 
 fn prepare_provider_request(
     profile: &ResolvedLlmProfile,
     envelope: &ProviderRequestInput,
+    codex: Option<&crate::provider_transport::CodexRequestContext>,
 ) -> Result<PreparedProviderRequest, ProviderTransportError> {
     let kind = ProviderStreamKind::from_profile_kind(&profile.kind)
         .ok_or_else(|| ProviderTransportError::new("provider_kind_unsupported"))?;
@@ -698,7 +717,7 @@ fn prepare_provider_request(
             "provider_hosted_tool_unsupported",
         ));
     }
-    let provider_body = match kind {
+    let mut provider_body = match kind {
         ProviderStreamKind::OpenAiCompatible => {
             openai_compatible_request_body(profile, messages, &tools, true)
         }
@@ -706,7 +725,57 @@ fn prepare_provider_request(
             responses_request_body(profile, messages, &tools, &hosted_tools, true)?
         }
         ProviderStreamKind::Anthropic => anthropic_stream_request_body(profile, messages, &tools)?,
-        ProviderStreamKind::Ollama => ollama_stream_request_body(profile, messages, &tools),
+        ProviderStreamKind::Ollama => ollama_stream_request_body(profile, messages, &tools)?,
+    };
+    if let Some(format) = &envelope.response_format {
+        let schema = &format.schema;
+        match kind {
+            ProviderStreamKind::Responses => {
+                provider_body["text"]["format"] = json!({"type": "json_schema", "name": format.name, "schema": schema, "strict": true});
+            }
+            ProviderStreamKind::OpenAiCompatible => {
+                provider_body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": format.name, "schema": schema, "strict": true}});
+            }
+            ProviderStreamKind::Anthropic => {
+                provider_body["output_config"]["format"] =
+                    json!({"type": "json_schema", "schema": schema});
+            }
+            ProviderStreamKind::Ollama => {
+                provider_body["format"] = schema.clone();
+            }
+        }
+    }
+    if envelope.answer_only && (!tools.is_empty() || !hosted_tools.is_empty()) {
+        // Admission permits definitions in answer-only requests only for compaction.
+        // DeepSeek Responses changes input rendering with tool_choice:none.
+        // Keep function-only summaries aligned with normal turns; Session's text
+        // consumer rejects any emitted call without executing it. Hosted tools
+        // still require provider-side prohibition to prevent remote execution.
+        let deepseek_summary = profile.connection.adapter_id == "deepseek"
+            && kind == ProviderStreamKind::Responses
+            && hosted_tools.is_empty();
+        if !deepseek_summary {
+            provider_body["tool_choice"] = match kind {
+                ProviderStreamKind::OpenAiCompatible | ProviderStreamKind::Responses => {
+                    json!("none")
+                }
+                ProviderStreamKind::Anthropic => json!({"type": "none"}),
+                ProviderStreamKind::Ollama => {
+                    return Err(ProviderTransportError::message(
+                        "provider_tool_choice_unsupported",
+                        "Ollama 无法在保留工具定义时强制禁止工具调用。",
+                    ))
+                }
+            };
+        }
+    }
+    let codex = if profile.connection.adapter_id == "openai-codex" {
+        let context =
+            codex.ok_or_else(|| ProviderTransportError::new("provider_codex_context_missing"))?;
+        provider_body["prompt_cache_key"] = json!(context.session_id);
+        Some(context.clone())
+    } else {
+        None
     };
     let body = serde_json::to_vec(&provider_body).map_err(|error| {
         ProviderTransportError::message(
@@ -720,7 +789,8 @@ fn prepare_provider_request(
     Ok(PreparedProviderRequest {
         kind,
         body,
-        hosted_web_search_enabled: !hosted_tools.is_empty(),
+        hosted_web_search_enabled: !envelope.answer_only && !hosted_tools.is_empty(),
+        codex,
     })
 }
 
@@ -784,6 +854,13 @@ fn build_provider_request(
             )
             .header("OpenAI-Beta", "responses=experimental")
             .header("Accept", "text/event-stream");
+    }
+    if let Some(context) = &prepared.codex {
+        // ChatGPT uses session-id for affinity; the body key alone is insufficient.
+        request = request.header("session-id", &context.session_id);
+        if let Some(token) = context.turn_state.get() {
+            request = request.header("x-codex-turn-state", token.clone());
+        }
     }
     Ok(request)
 }
@@ -916,9 +993,15 @@ async fn probe_profile(
     profile: &ResolvedLlmProfile,
     usage_call: &mut crate::model_usage::UsageCall,
 ) -> Result<LlmStreamProbeResult, ProviderTransportError> {
+    let codex = crate::provider_transport::CodexRequestContext {
+        session_id: format!("probe:{}:{}", profile.connection.id, profile.model),
+        turn_state: Default::default(),
+    };
     let prepared = prepare_provider_request(
         profile,
         &ProviderRequestInput {
+            answer_only: true,
+            response_format: None,
             messages: vec![LocalProviderMessage {
                 role: "user".into(),
                 content: "Reply with OK.".into(),
@@ -936,6 +1019,7 @@ async fn probe_profile(
             tools: vec![],
             hosted_tools: vec![],
         },
+        Some(&codex),
     )?;
     let kind = prepared.kind;
     let mut response = build_provider_request(client, profile, &prepared)?
@@ -1002,6 +1086,7 @@ pub(crate) fn local_agent_provider_stream_response(
     client: reqwest::Client,
     provider_attempt_id: Option<String>,
     profile: ResolvedLlmProfile,
+    codex: crate::provider_transport::CodexRequestContext,
     request_envelope: ProviderRequestInput,
     request_id: String,
     archive_directory: std::path::PathBuf,
@@ -1025,7 +1110,7 @@ pub(crate) fn local_agent_provider_stream_response(
                 return;
             }
         };
-        let prepared = match prepare_provider_request(&profile, &request_envelope) {
+        let prepared = match prepare_provider_request(&profile, &request_envelope, Some(&codex)) {
             Ok(prepared) => prepared,
             Err(error) => {
                 let (packet, _) = archived_provider_event(
@@ -1046,6 +1131,7 @@ pub(crate) fn local_agent_provider_stream_response(
                 json!({
                     "method": "POST", "url": provider_request_url(&profile, kind),
                     "model": profile.model, "apiSurface": profile.kind,
+                    "codexTurnStateSent": prepared.codex.as_ref().map(|context| context.turn_state.get().is_some()),
                 }),
             )
             .and_then(|()| archive.bytes("request.body", &prepared.body))
@@ -1095,6 +1181,7 @@ pub(crate) fn local_agent_provider_stream_response(
                 "statusCode": response.status().as_u16(),
                 "url": crate::provider_transport::safe_detail(response.url().as_str(), profile.api_key.as_deref()),
                 "contentType": response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+                "codexTurnStateReceived": prepared.codex.as_ref().map(|_| response.headers().contains_key("x-codex-turn-state")),
             })) {
                 yield Ok::<Bytes, Infallible>(Bytes::from(provider_event(&request_id, provider_attempt_id.as_deref(), "failed",
                     json!({"code": "execution_archive_failed", "message": error.to_string()}))));
@@ -1123,6 +1210,12 @@ pub(crate) fn local_agent_provider_stream_response(
             );
             yield Ok::<Bytes, Infallible>(Bytes::from(packet));
             return;
+        }
+        if let Some(context) = &prepared.codex {
+            if let Some(token) = response.headers().get("x-codex-turn-state") {
+                // Codex retains the first token for the turn, including across retries.
+                let _ = context.turn_state.set(token.clone());
+            }
         }
         let mut framer = ProviderEnvelopeFramer::new(kind);
         let mut accumulator = ProviderStreamAccumulator::new(kind);
@@ -1684,6 +1777,123 @@ pub(crate) fn split_system_messages(
 mod tests {
     use super::*;
 
+    fn test_codex_context(session_id: &str) -> crate::provider_transport::CodexRequestContext {
+        crate::provider_transport::CodexRequestContext {
+            session_id: session_id.into(),
+            turn_state: Default::default(),
+        }
+    }
+
+    fn prepare_test_request(
+        profile: &ResolvedLlmProfile,
+        envelope: &ProviderRequestInput,
+    ) -> Result<PreparedProviderRequest, ProviderTransportError> {
+        prepare_provider_request(
+            profile,
+            envelope,
+            Some(&test_codex_context("session:wire-test")),
+        )
+    }
+
+    #[tokio::test]
+    async fn codex_affinity_uses_session_identity_and_first_turn_token() {
+        use axum::{http::HeaderMap, routing::post, Json, Router};
+        use std::sync::Mutex;
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let captured = received.clone();
+        let server = Router::new().route("/responses", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                let mut received = captured.lock().unwrap();
+                received.push((headers, body));
+                let token = if received.len() == 1 { "first-route" } else { "later-route" };
+                ([("content-type", "text/event-stream"), ("x-codex-turn-state", token)],
+                 "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":0,\"input_tokens_details\":{\"cached_tokens\":8,\"cache_write_tokens\":4}}}}\n\n")
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        let directory = std::env::temp_dir().join(format!(
+            "deepcode-codex-{}",
+            crate::utils::new_runtime_ref("test")
+                .unwrap()
+                .replace(':', "-")
+        ));
+        let usage = Arc::new(
+            crate::model_usage::UsageStore::open(&directory.join("usage.sqlite3")).unwrap(),
+        );
+        let mut profile = test_profile("responses");
+        profile.connection.adapter_id = "openai-codex".into();
+        profile.connection.base_url = format!("http://{address}");
+        profile.api_key = Some("test-provider-key".into());
+        profile.account_id = Some("test-account".into());
+        let context = test_codex_context("session:conversation");
+        let client = crate::provider_transport::ProviderTransport::new()
+            .unwrap()
+            .client;
+        for n in 0..3 {
+            let response = local_agent_provider_stream_response(
+                client.clone(),
+                None,
+                profile.clone(),
+                context.clone(),
+                provider_input(
+                    json!({"messages":[{"role":"user","content":"Continue."}],"tools":[],"hostedTools":[]}),
+                ),
+                format!("request:{n}"),
+                directory.join(n.to_string()),
+                json!({"sessionId":"session:conversation","runId":"run:one","requestId":format!("request:{n}")}),
+                usage.clone(),
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            let output = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(output.contains("\"type\":\"completed\""), "{output}");
+        }
+        task.abort();
+        let _ = task.await;
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 3);
+        for (i, (headers, body)) in received.iter().enumerate() {
+            assert_eq!(headers["session-id"], "session:conversation");
+            assert_eq!(body["prompt_cache_key"], "session:conversation");
+            assert_eq!(
+                headers
+                    .get("x-codex-turn-state")
+                    .map(|v| v.to_str().unwrap()),
+                if i == 0 { None } else { Some("first-route") }
+            );
+            assert_eq!(
+                body, &received[0].1,
+                "routing state must not rewrite context"
+            );
+        }
+        drop(received);
+        let mut public_profile = test_profile("responses");
+        public_profile.api_key = Some("public-api-test-key".into());
+        let public = prepare_provider_request(
+            &public_profile,
+            &provider_input(json!({"messages":[],"tools":[],"hostedTools":[]})),
+            Some(&context),
+        )
+        .unwrap();
+        let public_request = build_provider_request(&client, &public_profile, &public)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(public_request.headers().get("session-id").is_none());
+        assert!(public_request.headers().get("x-codex-turn-state").is_none());
+        assert!(serde_json::from_slice::<Value>(&public.body)
+            .unwrap()
+            .get("prompt_cache_key")
+            .is_none());
+        drop(usage);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn upstream_http_errors_keep_details_and_header_directives_without_retrying() {
         let body = br#"{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Try again later.","headers":{"x-retry-metadata":"BODY_DIRECTIVE"}}}"#;
@@ -1809,9 +2019,34 @@ mod tests {
 
     fn provider_input(value: Value) -> ProviderRequestInput {
         ProviderRequestInput {
+            answer_only: value["responseConstraint"] == "answerOnly",
+            response_format: value
+                .get("responseFormat")
+                .map(|format| serde_json::from_value(format.clone()).unwrap()),
             messages: serde_json::from_value(value["messages"].clone()).unwrap(),
             tools: serde_json::from_value(value["tools"].clone()).unwrap(),
             hosted_tools: serde_json::from_value(value["hostedTools"].clone()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn structured_decision_schema_reaches_each_native_provider_request() {
+        let schema = json!({"type":"object","additionalProperties":false,"required":["decision","reason"],
+            "properties":{"decision":{"type":"string","enum":["allow","deny","ask"]},"reason":{"type":"string"}}});
+        let envelope = provider_input(
+            json!({"responseConstraint":"answerOnly", "messages":[{"role":"user","content":"Review this operation."}],
+            "tools":[],"hostedTools":[],"responseFormat":{"name":"permission_decision","schema":schema}}),
+        );
+        for kind in ["responses", "openaiCompatible", "anthropic", "ollama"] {
+            let prepared = prepare_test_request(&test_profile(kind), &envelope).unwrap();
+            let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+            let sent = match kind {
+                "responses" => &body["text"]["format"]["schema"],
+                "openaiCompatible" => &body["response_format"]["json_schema"]["schema"],
+                "anthropic" => &body["output_config"]["format"]["schema"],
+                _ => &body["format"],
+            };
+            assert_eq!(sent, &schema, "{kind}");
         }
     }
 
@@ -1827,7 +2062,7 @@ mod tests {
             "hostedTools": []
         }));
         for kind in ["openaiCompatible", "responses", "anthropic", "ollama"] {
-            let prepared = prepare_provider_request(&test_profile(kind), &envelope)
+            let prepared = prepare_test_request(&test_profile(kind), &envelope)
                 .expect("normal tool request must prepare");
             let body: Value =
                 serde_json::from_slice(&prepared.body).expect("provider request body must decode");
@@ -1845,11 +2080,88 @@ mod tests {
     }
 
     #[test]
+    fn answer_only_retains_definitions_but_disables_tool_execution() {
+        let envelope = provider_input(json!({
+            "responseConstraint": "answerOnly",
+            "messages": [{"role": "user", "content": "Summarize the preceding work."}],
+            "tools": [{"name": "fixture_tool", "description": "Inspect a fixture.",
+                "inputSchema": {"type": "object"}}],
+            "hostedTools": []
+        }));
+        for kind in ["openaiCompatible", "responses", "anthropic"] {
+            let prepared = prepare_test_request(&test_profile(kind), &envelope).unwrap();
+            let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+            assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                body["tool_choice"],
+                if kind == "anthropic" {
+                    json!({"type": "none"})
+                } else {
+                    json!("none")
+                }
+            );
+        }
+        assert_eq!(
+            prepare_test_request(&test_profile("ollama"), &envelope)
+                .unwrap_err()
+                .code,
+            "provider_tool_choice_unsupported"
+        );
+
+        let mut codex = test_profile("responses");
+        codex.connection.adapter_id = "openai-codex".into();
+        let mut hosted = envelope;
+        hosted.hosted_tools.push(LocalProviderHostedTool {
+            tool_type: "webSearch".into(),
+            provider_tool_type: "web_search".into(),
+        });
+        let prepared = prepare_test_request(&codex, &hosted).unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(body["tool_choice"], "none");
+        assert!(!prepared.hosted_web_search_enabled);
+    }
+
+    #[test]
+    fn deepseek_function_summary_preserves_normal_request_rendering() {
+        let mut profile = test_profile("responses");
+        profile.connection.adapter_id = "deepseek".into();
+        let mut envelope = provider_input(json!({
+            "messages": [{"role": "user", "content": "Summarize without calling tools."}],
+            "tools": [{"name": "fixture_tool", "description": "Inspect a fixture.",
+                "inputSchema": {"type": "object"}}],
+            "hostedTools": []
+        }));
+        let normal = prepare_test_request(&profile, &envelope).unwrap();
+        envelope.answer_only = true;
+        let summary = prepare_test_request(&profile, &envelope).unwrap();
+        assert_eq!(summary.body, normal.body);
+        assert!(!summary.hosted_web_search_enabled);
+
+        envelope.hosted_tools.push(LocalProviderHostedTool {
+            tool_type: "webSearch".into(),
+            provider_tool_type: "web_search".into(),
+        });
+        let hosted = prepare_test_request(&profile, &envelope).unwrap();
+        let body: Value = serde_json::from_slice(&hosted.body).unwrap();
+        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(body["tool_choice"], "none");
+        assert!(!hosted.hosted_web_search_enabled);
+
+        // Approval review retains an empty catalog, not the conversation tools.
+        envelope.tools.clear();
+        envelope.hosted_tools.clear();
+        let review = prepare_test_request(&profile, &envelope).unwrap();
+        let body: Value = serde_json::from_slice(&review.body).unwrap();
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
     fn deepseek_thinking_execution_omits_unsupported_tool_choice() {
         let mut profile = test_profile("openaiCompatible");
         profile.provider_flavor = Some("deepseek".to_string());
         profile.thinking = Some("enabled".to_string());
-        let prepared = prepare_provider_request(
+        let prepared = prepare_test_request(
             &profile,
             &provider_input(json!({
                 "messages": [{ "role": "user", "content": "Execute the confirmed step." }],
@@ -1888,7 +2200,12 @@ mod tests {
             "status": "failed",
             "action": { "type": "open_page", "url": "https://example.com/unavailable" },
         });
-        let prepared = prepare_provider_request(
+        let item_without_action = json!({
+            "type": "web_search_call",
+            "id": "ws_3",
+            "status": "completed",
+        });
+        let prepared = prepare_test_request(
             &profile,
             &provider_input(json!({
                 "messages": [
@@ -1896,7 +2213,7 @@ mod tests {
                     {
                         "role": "assistant",
                         "content": "The current release is available.",
-                        "providerItems": [item.clone(), failed_item.clone()]
+                        "providerItems": [item.clone(), failed_item.clone(), item_without_action.clone()]
                     }
                 ],
                 "tools": [],
@@ -1915,7 +2232,8 @@ mod tests {
         assert_eq!(body["tools"], json!([{ "type": "web_search" }]));
         assert_eq!(body["input"][1], item);
         assert_eq!(body["input"][2], failed_item);
-        assert_eq!(body["input"][3]["role"], "assistant");
+        assert_eq!(body["input"][3], item_without_action);
+        assert_eq!(body["input"][4]["role"], "assistant");
         assert_eq!(
             normalize_responses_base_url(&profile),
             "https://api.deepseek.com/responses"
@@ -1978,7 +2296,7 @@ mod tests {
                 },
             )
             .collect::<Vec<_>>();
-        let prepared = prepare_provider_request(
+        let prepared = prepare_test_request(
             &test_profile("responses"),
             &provider_input(json!({
                 "messages": [
@@ -2015,10 +2333,39 @@ mod tests {
     }
 
     #[test]
+    fn codex_reasoning_replay_omits_status_without_mutating_native_facts() {
+        let item = json!({"type":"reasoning", "id":"rs_history", "status":"completed",
+            "summary":[{"type":"summary_text", "text":"Inspect the project."}],
+            "content":[{"type":"reasoning_text", "text":"Retained content."}],
+            "encrypted_content":"opaque-reasoning"});
+        let messages: Vec<LocalProviderMessage> = serde_json::from_value(json!([
+            {"role":"system", "content":"Summarize the conversation."},
+            {"role":"user", "content":"Continue."},
+            {"role":"assistant", "content":"", "providerOutputBlocks":[{
+                "outputIndex":0, "kind":"reasoning", "item":item
+            }]}
+        ]))
+        .unwrap();
+        let mut profile = test_profile("responses");
+        let generic = responses_request_body(&profile, &messages, &[], &[], true).unwrap();
+        assert_eq!(generic["input"][2], item);
+        profile.connection.adapter_id = "openai-codex".into();
+        let codex = responses_request_body(&profile, &messages, &[], &[], true).unwrap();
+        let mut expected = item.clone();
+        expected.as_object_mut().unwrap().remove("status");
+        assert_eq!(codex["input"][1], expected);
+        assert_eq!(
+            messages[2].provider_output_blocks.as_ref().unwrap()[0]["item"],
+            item
+        );
+        assert_eq!(codex["instructions"], "Summarize the conversation.");
+    }
+
+    #[test]
     fn responses_replays_rejected_raw_arguments_and_result_without_repair() {
         let item = json!({"type":"function_call","call_id":"native:bad","name":"fs_read","arguments":"{\"path\":","status":"completed"});
         let rejection = json!({"status":"inputRejected","executed":false,"error":{"code":"provider_tool_call_arguments_invalid","message":"Invalid JSON object."}}).to_string();
-        let prepared = prepare_provider_request(&test_profile("responses"), &provider_input(json!({
+        let prepared = prepare_test_request(&test_profile("responses"), &provider_input(json!({
             "messages":[
                 {"role":"user","content":"Read source."},
                 {"role":"assistant","content":"","providerOutputBlocks":[{
@@ -2045,7 +2392,7 @@ mod tests {
                 "inputSchema": bash.input_schema }],
             "hostedTools": [{ "type": "webSearch", "providerToolType": "web_search" }]
         }));
-        let prepared = prepare_provider_request(&test_profile("responses"), &input).unwrap();
+        let prepared = prepare_test_request(&test_profile("responses"), &input).unwrap();
         let body: Value = serde_json::from_slice(&prepared.body).unwrap();
         let function = body["tools"]
             .as_array()
@@ -2080,7 +2427,7 @@ mod tests {
 
     #[test]
     fn responses_request_rejects_invalid_hosted_tool_instead_of_rewriting_it() {
-        let error = prepare_provider_request(
+        let error = prepare_test_request(
             &test_profile("responses"),
             &provider_input(json!({
                 "messages": [{ "role": "user", "content": "Search." }],
@@ -2195,7 +2542,60 @@ mod tests {
                     "provider_tool_arguments_unrepresentable"
                 );
             }
+            let ollama = ollama_stream_request_body(
+                &test_profile("ollama"),
+                &[serde_json::from_value(message(json!(raw))).unwrap()],
+                &[],
+            );
+            if raw == r#"{"path":"a.txt"}"# {
+                assert_eq!(
+                    ollama.unwrap()["messages"][0]["tool_calls"][0]["function"]["arguments"],
+                    json!({"path":"a.txt"})
+                );
+            } else {
+                assert_eq!(
+                    ollama.unwrap_err().code,
+                    "provider_tool_arguments_unrepresentable"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn ollama_replay_preserves_calls_and_result_ownership() {
+        let envelope = provider_input(json!({
+            "messages": [
+                {"role":"user", "content":"Read both files."},
+                {"role":"assistant", "content":"", "reasoningContent":"Read the files independently.", "toolCalls":[
+                    {"callId":"call:1","providerCallId":"native:1","name":"fs.read","input":"{\"path\":\"项目.txt\"}"},
+                    {"callId":"call:2","providerCallId":"native:2","name":"fs.list","input":{"path":"."}}
+                ]},
+                {"role":"tool","content":"listing","toolCallId":"call:2","providerCallId":"native:2"},
+                {"role":"tool","content":"file content","toolCallId":"call:1","providerCallId":"native:1"}
+            ], "tools":[], "hostedTools":[]
+        }));
+        let prepared = prepare_test_request(&test_profile("ollama"), &envelope).unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages[1]["thinking"], "Read the files independently.");
+        assert_eq!(
+            messages[1]["tool_calls"][0]["function"],
+            json!({"name":"fs.read","arguments":{"path":"项目.txt"}})
+        );
+        assert_eq!(
+            messages[1]["tool_calls"][1]["function"],
+            json!({"name":"fs.list","arguments":{"path":"."}})
+        );
+        assert_eq!(
+            messages[2],
+            json!({"role":"tool","tool_name":"fs.list","content":"listing"})
+        );
+        assert_eq!(
+            messages[3],
+            json!({"role":"tool","tool_name":"fs.read","content":"file content"})
+        );
+        assert!(messages[1].get("toolCalls").is_none());
+        assert!(messages[1].get("reasoningContent").is_none());
     }
 
     #[tokio::test]
@@ -2267,6 +2667,7 @@ mod tests {
                     .client,
                 None,
                 profile,
+                test_codex_context("session:archive"),
                 provider_input(json!({
                     "messages":[{"role":"user","content":"归档检查"}], "tools":[], "hostedTools":[],
                 })),
@@ -2366,7 +2767,7 @@ mod tests {
         let input = provider_input(
             json!({"messages":[{"role":"system","content":"Use the project instructions."},{"role":"user","content":"Explain the module."}],"tools":[],"hostedTools":[]}),
         );
-        let prepared = prepare_provider_request(&profile, &input).unwrap();
+        let prepared = prepare_test_request(&profile, &input).unwrap();
         let body: Value = serde_json::from_slice(&prepared.body).unwrap();
         assert_eq!(body["store"], false);
         assert_eq!(body["instructions"], "Use the project instructions.");
@@ -2488,7 +2889,7 @@ mod tests {
             anthropic["messages"][0]["content"][1]["source"]["data"],
             "aW1hZ2U="
         );
-        let ollama = ollama_stream_request_body(&profile, &messages, &[]);
+        let ollama = ollama_stream_request_body(&profile, &messages, &[]).unwrap();
         assert_eq!(ollama["messages"][0]["images"][0], "aW1hZ2U=");
         assert_eq!(ollama["messages"][0]["content"], "Read this image.");
     }

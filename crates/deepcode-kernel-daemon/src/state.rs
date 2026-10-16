@@ -60,7 +60,9 @@ impl GuiState {
         let user_settings = match read_optional_json_file(&paths.settings_path)? {
             Some(value @ Value::Object(_)) => {
                 validate_agent_runtime_settings(&value)?;
-                value
+                let mut effective = default_user_settings();
+                merge_object(&mut effective, &value);
+                effective
             }
             Some(_) => return Err("本地用户设置文件必须是 JSON 对象。".to_string()),
             None => default_user_settings(),

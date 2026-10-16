@@ -150,6 +150,42 @@ mod tests {
     }
 
     #[test]
+    fn startup_applies_omitted_defaults_and_preserves_explicit_settings() {
+        let root = TestRoot::new();
+        let paths = HostPaths::at(&root.0);
+        let settings = json!({"agent.subagents.enabled":true,"agent.subagents.maxConcurrent":2});
+        atomic_write_json(&paths.settings_path, &settings).unwrap();
+        let original = fs::read(&paths.settings_path).unwrap();
+        {
+            let gui = crate::GuiState::open_at(&root.0).unwrap();
+            assert_eq!(
+                gui.user_settings["agent.subagents.allowFullConfiguration"],
+                true
+            );
+            assert_eq!(gui.user_settings["agent.subagents.presets"], "[]");
+            assert_eq!(gui.user_settings["agent.subagents.enabled"], true);
+            assert_eq!(gui.user_settings["agent.subagents.maxConcurrent"], 2);
+        }
+        assert_eq!(fs::read(&paths.settings_path).unwrap(), original);
+        atomic_write_json(
+            &paths.settings_path,
+            &json!({"agent.subagents.allowFullConfiguration":false}),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::GuiState::open_at(&root.0).unwrap().user_settings
+                ["agent.subagents.allowFullConfiguration"],
+            false
+        );
+        atomic_write_json(
+            &paths.settings_path,
+            &json!({"agent.subagents.allowFullConfiguration":"invalid"}),
+        )
+        .unwrap();
+        assert!(crate::GuiState::open_at(&root.0).is_err());
+    }
+
+    #[test]
     fn normal_startup_cleans_conflicts_once_and_preserves_user_data() {
         let root = TestRoot::new();
         let paths = HostPaths::at(&root.0);

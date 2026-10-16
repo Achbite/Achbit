@@ -8,6 +8,10 @@ import { StreamingTextBuffer } from './streamingText';
 import type { ElementContent, Root, RootContent } from 'hast';
 import './richContent.css';
 import { readableResourceLinks } from './resourceLinks';
+import { ConversationSessionScope } from './ConversationSessionScope';
+import { useConversationHost } from './ConversationHost';
+import { workspaceResourceLink } from './documentResources';
+import { requestWorkspacePreview } from './readerState';
 import 'katex/dist/katex.min.css';
 
 const StreamingContext = createContext(false);
@@ -23,7 +27,24 @@ const COMPONENTS = {
   },
   table: MarkdownTable,
   img: function MarkdownImage({ src, alt }: { src?: string; alt?: string }) { return <ImageContent source={src ?? ''} alt={alt ?? ''} />; },
+  a: ScopedMarkdownLink,
 };
+
+function ScopedMarkdownLink({ href, children, ...attributes }: React.ComponentPropsWithoutRef<'a'>) {
+  const childSession = useContext(ConversationSessionScope);
+  const host = useConversationHost();
+  const [error, setError] = useState<string | null>(null);
+  if (!childSession) return <a {...attributes} href={href}>{children}</a>;
+  const resource = workspaceResourceLink(href ?? '');
+  if (!href || !resource && !/^https?:\/\//i.test(href)) return <span title={href}>{children}</span>;
+  const open = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    setError(null);
+    void (resource ? requestWorkspacePreview(childSession, resource.workspaceId, resource.logicalPath) : host.openExternalLink(href))
+      .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)));
+  };
+  return <><a {...attributes} href={href} onClick={open} onAuxClick={open}>{children}</a>{error && <span role="alert">{error}</span>}</>;
+}
 
 const RenderedBlock = memo(function RenderedBlock({ block }: { block: MarkdownBlock }) {
   return <StreamingContext.Provider value={block.streaming}>{toJsxRuntime(readableResourceLinks(block.tree), { Fragment, jsx, jsxs, components: COMPONENTS })}</StreamingContext.Provider>;

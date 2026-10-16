@@ -13,7 +13,6 @@ use deepcode_kernel_tools::{
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -54,6 +53,8 @@ enum ToolExecutorBinding {
     Artifact,
     Process,
     Browser(Value),
+    Desktop(crate::desktop_tools::DesktopRun),
+    Unavailable,
     Container(Arc<crate::container_tools::Containers>),
     Document {
         python: Option<std::path::PathBuf>,
@@ -72,6 +73,8 @@ struct PendingToolContribution {
     effect_class: Option<ToolEffectClass>,
     effect_scope: CatalogEffectScope,
     availability: ToolAvailability,
+    availability_reason: Option<Value>,
+    runtime_status: Option<Value>,
     logical_target: Option<String>,
     binding: ToolExecutorBinding,
 }
@@ -160,7 +163,7 @@ impl ToolProvider for DocumentToolProvider {
                 effect_class: None,
                 effect_scope: CatalogEffectScope::WorkspaceMutation,
                 availability: ToolAvailability::Callable,
-                logical_target: None,
+                availability_reason: None, runtime_status: None, logical_target: None,
                 binding: ToolExecutorBinding::Document { python: self.python },
             }],
             dispose: Box::new(|| Ok(())),
@@ -185,6 +188,8 @@ impl ToolProvider for ProductToolProvider {
                     effect_class: Some(ToolEffectClass::Read),
                     effect_scope: CatalogEffectScope::LocalRead,
                     availability: ToolAvailability::Callable,
+                    availability_reason: None,
+                    runtime_status: None,
                     logical_target: None,
                     binding: ToolExecutorBinding::Product(Arc::clone(&self.0)),
                 },
@@ -199,44 +204,74 @@ impl ToolProvider for ProductToolProvider {
                 contribution_ref: format!("deepcode:resources/{name}"), name: name.into(),
                 description: format!("{description} This does not add it to user outputs. Use artifact.present for requested results or review materials. Temporary scripts, logs and observation images stay intermediate unless explicitly presented."),
                 input_schema: crate::artifact_resources::schema(field), effect_class: Some(ToolEffectClass::Read),
-                effect_scope: scope, availability: ToolAvailability::Callable, logical_target: None, binding: ToolExecutorBinding::Artifact,
+                effect_scope: scope, availability: ToolAvailability::Callable, availability_reason: None, runtime_status: None, logical_target: None, binding: ToolExecutorBinding::Artifact,
             });
         }
-        if let (Some(binding), Some(instance)) = (
-            self.0.browser_binding.as_ref(),
-            self.0.computer_use_instance.as_ref(),
-        ) {
-            let status = crate::browser_tools::host_status(binding);
+        if let Some(instance) = self.0.computer_use_instance.as_ref() {
+            let browser_status = self
+                .0
+                .browser_binding
+                .as_ref()
+                .map(crate::browser_tools::host_status);
+            let desktop_status = self.0.desktop.as_ref().map(|run| run.status());
             for (name, description, input_schema) in crate::browser_tools::definitions() {
-                let available = status
-                    .as_ref()
-                    .map_err(String::as_str)
-                    .and_then(|status| status.check_tool(name));
+                let (available, runtime_status, binding) = if name == "computer.control" {
+                    let available = desktop_status
+                        .as_ref()
+                        .ok_or("No desktop executor is attached to this Host.")
+                        .and_then(|status| {
+                            status
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(|error| error.message.as_str())
+                        });
+                    (
+                        available,
+                        desktop_status
+                            .as_ref()
+                            .and_then(|status| status.as_ref().ok())
+                            .cloned(),
+                        self.0
+                            .desktop
+                            .clone()
+                            .map(ToolExecutorBinding::Desktop)
+                            .unwrap_or(ToolExecutorBinding::Unavailable),
+                    )
+                } else {
+                    let available = browser_status
+                        .as_ref()
+                        .ok_or("This run has no GUI window for embedded browser tools.")
+                        .and_then(|status| status.as_ref().map_err(String::as_str))
+                        .and_then(|status| status.check_tool(name));
+                    (
+                        available,
+                        None,
+                        self.0
+                            .browser_binding
+                            .clone()
+                            .map(ToolExecutorBinding::Browser)
+                            .unwrap_or(ToolExecutorBinding::Unavailable),
+                    )
+                };
                 tools.push(PendingToolContribution {
                     origin: "extension",
                     provider_ref: "deepcode:computer-use".into(),
                     plugin_uri: Some("plugin://computer-use@builtin".into()),
                     plugin_instance_ref: Some(instance.clone()),
-                    contribution_ref: format!("deepcode:browser/{name}"),
-                    name: name.into(),
-                    description: match available {
-                        Ok(_) => description.into(),
-                        Err(reason) => format!("{description} Currently unavailable: {reason}"),
-                    },
-                    input_schema,
+                    contribution_ref: format!("deepcode:computer-use/{name}"),
+                    name: name.into(), description: description.into(), input_schema,
                     effect_class: None,
                     effect_scope: match name {
                         "browser.open" => CatalogEffectScope::WorkspaceRead,
                         "browser.capture" => CatalogEffectScope::WorkspaceMutation,
                         _ => CatalogEffectScope::External,
                     },
-                    availability: if available.is_ok() {
-                        ToolAvailability::Callable
-                    } else {
-                        ToolAvailability::Blocked
-                    },
-                    logical_target: None,
-                    binding: ToolExecutorBinding::Browser(binding.clone()),
+                    availability: if available.is_ok() { ToolAvailability::Callable } else { ToolAvailability::Blocked },
+                    availability_reason: available.err().map(|message| json!({
+                        "code": if name == "computer.control" { "desktop_executor_unavailable" } else { "gui_browser_unavailable" },
+                        "message": message,
+                    })),
+                    runtime_status, logical_target: None, binding,
                 });
             }
         }
@@ -246,7 +281,7 @@ impl ToolProvider for ProductToolProvider {
                 plugin_instance_ref: Some(instance.clone()), contribution_ref: format!("{instance}/process"),
                 name: "process".into(), description: "Manage long-running commands in this run. start returns a jobId after normal Kernel approval; use wait when later work depends on the result, status for inspection, or cancel to stop that job. Status changes arrive automatically. Container jobs require the containers plugin. Existing permissions and explicit timeouts still apply.".into(),
                 input_schema: crate::managed_processes::schema(), effect_class: None, effect_scope: CatalogEffectScope::Process,
-                availability: ToolAvailability::Callable, logical_target: None, binding: ToolExecutorBinding::Process,
+                availability: ToolAvailability::Callable, availability_reason: None, runtime_status: None, logical_target: None, binding: ToolExecutorBinding::Process,
             });
         }
         Ok(InstalledToolProvider {
@@ -279,7 +314,7 @@ impl ToolProvider for ContainerToolProvider {
             plugin_instance_ref:Some(self.instance.clone()), contribution_ref:format!("{}/container",self.instance),
             name:"container".into(), description:"Run Shell commands in an approved Docker container, inspect it, or create an independent temporary test container. Creation mounts the selected project read-only at /project and writable session test files at /work. Approval can cover this task or conversation; temporary containers are cleaned at task end. Existing containers keep their mounts and network. Linux images need sh and setsid.".into(),
             input_schema:crate::container_tools::input_schema(), effect_class:None,effect_scope:CatalogEffectScope::Process,
-            availability:ToolAvailability::Callable,logical_target:None,binding:ToolExecutorBinding::Container(self.adapter),
+            availability:ToolAvailability::Callable,availability_reason:None,runtime_status:None,logical_target:None,binding:ToolExecutorBinding::Container(self.adapter),
         }], dispose:Box::new(move || adapter.dispose().map_err(|e| ToolCatalogError::new("container_cleanup_failed",e))) })
     }
 }
@@ -352,6 +387,8 @@ impl ToolProvider for BuiltinToolProvider {
                 } else {
                     descriptor.availability
                 },
+                availability_reason: None,
+                runtime_status: None,
                 logical_target: None,
                 binding: ToolExecutorBinding::Builtin {
                     registry: Arc::clone(&self.registry),
@@ -397,6 +434,8 @@ impl ToolProvider for McpToolProvider {
                     McpToolEffectScope::External => CatalogEffectScope::External,
                 },
                 availability: ToolAvailability::Callable,
+                availability_reason: None,
+                runtime_status: None,
                 logical_target: Some(tool.target.clone()),
                 binding: ToolExecutorBinding::Mcp(Box::new(tool.clone())),
             })
@@ -414,35 +453,94 @@ impl ToolProvider for McpToolProvider {
 }
 
 struct CatalogResources {
-    disposers: Mutex<Option<Vec<ExactDisposer>>>,
+    state: Mutex<CatalogResourceState>,
+}
+
+struct CatalogResourceState {
+    disposers: Vec<ExactDisposer>,
+    active_attempts: usize,
+    retired: bool,
+    disposal: Option<Result<(), ToolCatalogError>>,
 }
 
 impl CatalogResources {
     fn new(disposers: Vec<ExactDisposer>) -> Self {
         Self {
-            disposers: Mutex::new(Some(disposers)),
+            state: Mutex::new(CatalogResourceState {
+                disposers,
+                active_attempts: 0,
+                retired: false,
+                disposal: None,
+            }),
         }
     }
 
-    fn dispose(&self) -> Result<(), ToolCatalogError> {
-        let mut guard = self.disposers.lock().map_err(|_| {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, CatalogResourceState>, ToolCatalogError> {
+        self.state.lock().map_err(|_| {
             ToolCatalogError::new(
                 "tool_provider_disposer_lock_failed",
                 "ToolProvider disposer 状态锁已损坏。",
             )
-        })?;
-        let Some(disposers) = guard.take() else {
-            return Ok(());
-        };
-        drop(guard);
+        })
+    }
 
+    fn acquire(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        if state.retired {
+            return Err(ToolCatalogError::new(
+                "tool_catalog_retired",
+                "旧工具视图已退役，不能接纳新的物理调用。",
+            ));
+        }
+        state.active_attempts += 1;
+        Ok(())
+    }
+
+    fn release(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        debug_assert!(
+            state.active_attempts > 0,
+            "physical attempt lease underflow"
+        );
+        state.active_attempts -= 1;
+        if state.retired && state.active_attempts == 0 {
+            return Self::dispose_locked(&mut state);
+        }
+        Ok(())
+    }
+
+    fn retire(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        state.retired = true;
+        if state.active_attempts == 0 {
+            return Self::dispose_locked(&mut state);
+        }
+        Ok(())
+    }
+
+    fn dispose(&self) -> Result<(), ToolCatalogError> {
+        let mut state = self.lock()?;
+        if state.active_attempts != 0 {
+            return Err(ToolCatalogError::new(
+                "tool_catalog_generation_busy",
+                "Kernel catalog generation 仍有物理 attempt lease。",
+            ));
+        }
+        state.retired = true;
+        Self::dispose_locked(&mut state)
+    }
+
+    fn dispose_locked(state: &mut CatalogResourceState) -> Result<(), ToolCatalogError> {
+        if let Some(result) = &state.disposal {
+            return result.clone();
+        }
         let mut errors = Vec::new();
-        for dispose in disposers.into_iter().rev() {
+        for dispose in std::mem::take(&mut state.disposers).into_iter().rev() {
             if let Err(error) = dispose() {
                 errors.push(error);
             }
         }
-        if errors.is_empty() {
+        let result = if errors.is_empty() {
             Ok(())
         } else {
             let message = errors
@@ -454,7 +552,23 @@ impl CatalogResources {
                 "tool_provider_dispose_failed",
                 message,
             ))
-        }
+        };
+        state.disposal = Some(result.clone());
+        result
+    }
+}
+
+/** Retains only physical cleanup ownership/results, not the old catalog or execution bindings. */
+#[derive(Clone)]
+pub(crate) struct CatalogRetirement(Arc<CatalogResources>);
+
+impl CatalogRetirement {
+    pub(crate) fn retire(&self) -> Result<(), ToolCatalogError> {
+        self.0.retire()
+    }
+
+    pub(crate) fn finish(&self) -> Result<(), ToolCatalogError> {
+        self.0.dispose()
     }
 }
 
@@ -477,6 +591,8 @@ struct CatalogToolEntry {
     effect_class: Option<ToolEffectClass>,
     effect_scope: CatalogEffectScope,
     availability: ToolAvailability,
+    availability_reason: Option<Value>,
+    runtime_status: Option<Value>,
     logical_target: Option<String>,
     binding: ToolExecutorBinding,
 }
@@ -486,8 +602,7 @@ pub(crate) struct ToolCatalogSnapshot {
     snapshot_ref: String,
     tools: BTreeMap<String, CatalogToolEntry>,
     bindings: BTreeMap<String, String>,
-    resources: CatalogResources,
-    active_attempts: AtomicUsize,
+    resources: Arc<CatalogResources>,
 }
 
 impl ToolCatalogSnapshot {
@@ -538,33 +653,32 @@ impl ToolCatalogSnapshot {
             let installed = match provider.install() {
                 Ok(installed) => installed,
                 Err(error) => {
-                    dispose_all(disposers);
-                    return Err(error);
+                    return Err(rollback_installation(error, disposers));
                 }
             };
+            disposers.push(installed.dispose);
             for contribution in installed.tools {
                 if contributions
                     .insert(contribution.name.clone(), contribution)
                     .is_some()
                 {
-                    dispose_all(disposers);
-                    let _ = (installed.dispose)();
-                    return Err(ToolCatalogError::new(
-                        "tool_catalog_name_conflict",
-                        "多个 ToolProvider 注册了相同 canonical tool name。",
+                    return Err(rollback_installation(
+                        ToolCatalogError::new(
+                            "tool_catalog_name_conflict",
+                            "多个 ToolProvider 注册了相同 canonical tool name。",
+                        ),
+                        disposers,
                     ));
                 }
             }
-            disposers.push(installed.dispose);
         }
 
         let snapshot_ref = match crate::utils::new_runtime_ref("kernel-catalog") {
             Ok(reference) => reference,
             Err(message) => {
-                dispose_all(disposers);
-                return Err(ToolCatalogError::new(
-                    "tool_catalog_identity_failed",
-                    message,
+                return Err(rollback_installation(
+                    ToolCatalogError::new("tool_catalog_identity_failed", message),
+                    disposers,
                 ));
             }
         };
@@ -589,6 +703,8 @@ impl ToolCatalogSnapshot {
                     effect_class: contribution.effect_class,
                     effect_scope: contribution.effect_scope,
                     availability: contribution.availability,
+                    availability_reason: contribution.availability_reason,
+                    runtime_status: contribution.runtime_status,
                     logical_target: contribution.logical_target,
                     binding: contribution.binding,
                 },
@@ -600,8 +716,7 @@ impl ToolCatalogSnapshot {
             snapshot_ref,
             tools,
             bindings,
-            resources: CatalogResources::new(disposers),
-            active_attempts: AtomicUsize::new(0),
+            resources: Arc::new(CatalogResources::new(disposers)),
         }))
     }
 
@@ -627,6 +742,12 @@ impl ToolCatalogSnapshot {
                         "availability": availability_name(tool.availability),
                         "origin": tool.origin,
                     });
+                    if let Some(reason) = &tool.availability_reason {
+                        view["availabilityReason"] = reason.clone();
+                    }
+                    if let Some(status) = &tool.runtime_status {
+                        view["runtimeStatus"] = status.clone();
+                    }
                     if let Some(plugin_uri) = &tool.plugin_uri {
                         view["pluginUri"] = json!(plugin_uri);
                     }
@@ -672,17 +793,11 @@ impl ToolCatalogSnapshot {
         })
     }
 
-    pub(crate) fn active_attempts(&self) -> usize {
-        self.active_attempts.load(Ordering::Acquire)
+    pub(crate) fn retirement(&self) -> CatalogRetirement {
+        CatalogRetirement(Arc::clone(&self.resources))
     }
 
     pub(crate) fn dispose(&self) -> Result<(), ToolCatalogError> {
-        if self.active_attempts() != 0 {
-            return Err(ToolCatalogError::new(
-                "tool_catalog_generation_busy",
-                "Kernel catalog generation 仍有物理 attempt lease。",
-            ));
-        }
         self.resources.dispose()
     }
 }
@@ -740,6 +855,10 @@ impl PreparedCatalogBinding {
 
     pub(crate) fn is_process(&self) -> bool {
         matches!(&self.entry().binding, ToolExecutorBinding::Process)
+    }
+
+    pub(crate) fn uses_external_runtime(&self) -> bool {
+        matches!(&self.entry().binding, ToolExecutorBinding::Mcp(_))
     }
 
     pub(crate) fn container_adapter(&self) -> Option<&crate::container_tools::Containers> {
@@ -888,13 +1007,17 @@ impl PreparedCatalogBinding {
                     targets,
                 })
             }
-            ToolExecutorBinding::Browser(_) => {
+            ToolExecutorBinding::Browser(_) | ToolExecutorBinding::Desktop(_) => {
                 let targets = browser_targets(self.tool_name(), &raw_arguments)?;
                 Ok(PreparedToolInput::Dynamic {
                     arguments: raw_arguments,
                     targets,
                 })
             }
+            ToolExecutorBinding::Unavailable => Err(ToolCatalogError::new(
+                "tool_blocked",
+                "Execution dependency is unavailable.",
+            )),
             ToolExecutorBinding::Container(_) => crate::container_tools::parse(raw_arguments)
                 .map(|input| PreparedToolInput::Container {
                     input,
@@ -974,6 +1097,12 @@ impl PreparedCatalogBinding {
                 Ok(crate::browser_tools::execution_result(
                     invocation_id,
                     result,
+                ))
+            }
+            (ToolExecutorBinding::Desktop(run), PreparedToolInput::Dynamic { arguments, .. }) => {
+                Ok(crate::browser_tools::execution_result(
+                    invocation_id,
+                    run.execute(arguments, &context, invocation_id),
                 ))
             }
             (ToolExecutorBinding::Document { python }, PreparedToolInput::Document(input)) => {
@@ -1152,11 +1281,11 @@ impl PreparedCatalogBinding {
         }
     }
 
-    pub(crate) fn begin_attempt(&self) -> PhysicalAttemptLease {
-        self.snapshot.active_attempts.fetch_add(1, Ordering::AcqRel);
-        PhysicalAttemptLease {
+    pub(crate) fn begin_attempt(&self) -> Result<PhysicalAttemptLease, ToolCatalogError> {
+        self.snapshot.resources.acquire()?;
+        Ok(PhysicalAttemptLease {
             snapshot: Arc::clone(&self.snapshot),
-        }
+        })
     }
 }
 
@@ -1166,8 +1295,9 @@ pub(crate) struct PhysicalAttemptLease {
 
 impl Drop for PhysicalAttemptLease {
     fn drop(&mut self) {
-        let previous = self.snapshot.active_attempts.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "physical attempt lease underflow");
+        // release caches the original disposal result. The next retire or final run release
+        // reports it without changing this attempt's canonical effect outcome.
+        let _ = self.snapshot.resources.release();
     }
 }
 
@@ -1402,10 +1532,19 @@ fn availability_name(availability: ToolAvailability) -> &'static str {
     }
 }
 
-fn dispose_all(disposers: Vec<ExactDisposer>) {
+fn rollback_installation(
+    mut failure: ToolCatalogError,
+    disposers: Vec<ExactDisposer>,
+) -> ToolCatalogError {
     for dispose in disposers.into_iter().rev() {
-        let _ = dispose();
+        if let Err(error) = dispose() {
+            failure.message.push_str(&format!(
+                "；初始化回滚清理失败 {}: {}",
+                error.code, error.message
+            ));
+        }
     }
+    failure
 }
 
 fn validate_ref(field: &str, value: &str) -> Result<(), ToolCatalogError> {
@@ -1423,13 +1562,38 @@ mod tests {
     use super::*;
     use deepcode_kernel_runtime::executors::EmptySecretProvider;
 
+    struct DesktopStatus(bool);
+    impl crate::desktop_tools::DesktopExecutor for DesktopStatus {
+        fn call(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+            assert_eq!(
+                binding,
+                &json!({"hostInstanceId":"desktop:test","sessionId":"session:test","runId":"run:test"})
+            );
+            assert_eq!(input, &json!({"action":"computer:status"}));
+            if !self.0 {
+                return Err("native helper unavailable".into());
+            }
+            Ok(
+                json!({"ok":true,"data":{"platform":"native-test","permissions":{"accessibility":true}}}),
+            )
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn desktop_status(ready: bool) -> crate::desktop_tools::DesktopRun {
+        crate::desktop_tools::DesktopHost::for_test("desktop:test", Arc::new(DesktopStatus(ready)))
+            .run("session:test", "run:test")
+    }
+
     #[tokio::test]
-    async fn browser_catalog_respects_each_reported_host_capability() {
+    async fn native_catalog_uses_independent_desktop_and_gui_capabilities() {
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
         use std::time::{Duration, Instant};
 
-        for (case, capture, computer) in [(1, false, false), (2, true, true), (3, true, false)] {
+        for (case, capture, computer) in [(1, false, true), (2, true, true), (3, true, false)] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let address = listener.local_addr().unwrap();
@@ -1469,7 +1633,7 @@ mod tests {
                         "{}",
                         json!({"ok":true,"data":{
                             "binding":request["binding"], "ready":true,
-                            "captureAvailable":capture, "computerControlAvailable":computer,
+                            "captureAvailable":capture,
                         }})
                     )
                     .unwrap();
@@ -1483,6 +1647,7 @@ mod tests {
             let config = Arc::get_mut(&mut product).unwrap();
             config.browser_binding = Some(json!({"hostInstanceId":host_id,"windowLabel":"main"}));
             config.computer_use_instance = Some(format!("plugin-instance:computer-use-{case}"));
+            config.desktop = Some(desktop_status(computer));
             let catalog = ToolCatalogSnapshot::from_providers(
                 "extension-generation:browser-capabilities",
                 vec![Box::new(ProductToolProvider(product))],
@@ -1518,16 +1683,58 @@ mod tests {
                     "{name}"
                 );
                 assert_eq!(
-                    tool["description"]
-                        .as_str()
-                        .unwrap()
-                        .contains("Currently unavailable:"),
+                    tool.get("availabilityReason").is_some(),
                     !expected,
                     "{name}"
                 );
+                if !expected {
+                    assert!(!tool["availabilityReason"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .is_empty());
+                }
+                if name == "computer.control" && expected {
+                    assert_eq!(tool["runtimeStatus"]["permissions"]["accessibility"], true);
+                }
             }
             catalog.dispose().unwrap();
         }
+    }
+
+    #[test]
+    fn desktop_without_gui_is_callable_and_embedded_browser_is_explicitly_blocked() {
+        let mut product = crate::local_agent_product_tools::test_product_tools();
+        let config = Arc::get_mut(&mut product).unwrap();
+        config.computer_use_instance = Some("plugin-instance:computer-use".into());
+        config.desktop = Some(desktop_status(true));
+        let catalog = ToolCatalogSnapshot::from_providers(
+            "extension-generation:desktop",
+            vec![Box::new(ProductToolProvider(product))],
+        )
+        .unwrap();
+        let view = catalog.provider_view();
+        for tool in view
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tool| tool["pluginUri"] == "plugin://computer-use@builtin")
+        {
+            if tool["name"] == "computer.control" {
+                assert_eq!(tool["availability"], "callable");
+                assert_eq!(tool["runtimeStatus"]["platform"], "native-test");
+            } else {
+                assert_eq!(tool["availability"], "blocked");
+                assert_eq!(
+                    tool["availabilityReason"]["code"],
+                    "gui_browser_unavailable"
+                );
+                assert_eq!(
+                    tool["availabilityReason"]["message"],
+                    "This run has no GUI window for embedded browser tools."
+                );
+            }
+        }
+        catalog.dispose().unwrap();
     }
 
     #[test]

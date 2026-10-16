@@ -17,4 +17,5 @@ _agent_tmp_*
 Thumbs.db
 .logs
 .task-artifacts
+docs/architecture
 docs/task-receipts

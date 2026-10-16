@@ -3,6 +3,8 @@ import { usePaneWidth } from '../shared/usePaneWidth';
 import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
 import { readDocumentText } from './documentResources';
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { AgentConversationPage } from './AgentTasksPanel';
+import SshConnection from '../../deepcode-gui/layout/SshConnection';
 import { ResourceTree } from './ResourceTree';
 import { FileChangePreview } from './FileChanges';
 import { resourceKey, type ResourceReference } from '../../services/conversationResources';
@@ -69,6 +71,7 @@ export function readerPageName(url: string): string {
 }
 function tabName(tab: ReaderTab, language: UiLanguage): string {
   if (tab.page) return readerPageName(tab.page.url);
+  if (tab.target.kind === 'agent') return t(language, 'agent.page.title');
   if (tab.target.kind === 'diff') return readerFilename(tab.target.file.path) + ' · diff';
   if (tab.target.kind === 'resource') return tab.target.name;
   if (tab.target.kind === 'file') return readerFilename(tab.target.path);
@@ -114,7 +117,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
         );
         return {
           sessionId,
-          tabs: existing ? tabs.map((tab) => tab === existing && target.kind === 'workspace' ? { ...tab, target } : tab) : [...tabs, { id: key, target }],
+          tabs: existing ? tabs.map((tab) => tab === existing && (target.kind === 'workspace' || target.kind === 'agent') ? { ...tab, target } : tab) : [...tabs, { id: key, target }],
           activeId: existing?.id ?? key,
           visible: true,
           expanded: old.sessionId === sessionId && old.expanded,
@@ -158,6 +161,8 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId: string; target: ReaderTarget }>).detail;
       if (detail.sessionId === sessionId) openTarget(detail.target);
+      // A child result opens in the main view, retaining its own file/archive identity.
+      else if (detail.target.kind !== 'browser') openTarget({ ...detail.target, sourceSessionId: detail.sessionId });
     };
     window.addEventListener(READER_OPEN_EVENT, listener);
     return () => window.removeEventListener(READER_OPEN_EVENT, listener);
@@ -318,6 +323,13 @@ export function ResourcePreview({
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
 }) {
   const chinese = language === 'zh-CN';
+  const activeTarget = preview.tabs.find(tab => tab.id === preview.activeId)?.target;
+  const sourceSessionId = (target?: ReaderTarget) =>
+    target && target.kind !== 'browser' ? target.sourceSessionId ?? preview.sessionId : preview.sessionId;
+  const activeSessionId = sourceSessionId(activeTarget);
+  const openFileTarget = (sessionId: string | null, target: ReaderTarget) => preview.openTarget(
+    sessionId && sessionId !== preview.sessionId && target.kind !== 'browser' ? { ...target, sourceSessionId: sessionId } : target,
+  );
   const readerData = { kind: 'reader' as const, tabs: preview.tabs.map(tab => ({ id: tab.id, title: tabName(tab, language) })),
     activeId: preview.activeId, visible: preview.visible, expanded: preview.expanded, treeVisible: preview.treeVisible };
   const readerActions = { toggleTree: preview.toggleTree, toggleReaderExpanded: preview.expand,
@@ -356,7 +368,7 @@ export function ResourcePreview({
                   onClick={() => preview.selectTab(tab.id)}
                   title={tabName(tab, language)}
                 >
-                  <DeepCodeShellIcon name="artifact" />
+                  <DeepCodeShellIcon name={tab.target.kind === 'agent' ? 'subagents' : 'artifact'} />
                   <span>{tab.target.kind === 'diff' ? readerFilename(tab.target.file.path) : tabName(tab, language)}</span>
                   {tab.target.kind === 'diff' && <small className="reader-tab__kind">· diff</small>}
                 </button>
@@ -381,7 +393,7 @@ export function ResourcePreview({
           </button>
           <div className="reader-tabs__actions">
             <UiRegion slot="reader.toolbar" data={readerData} actions={readerActions}>
-              <ReaderFileActions sessionId={preview.sessionId} target={preview.tabs.find(tab => tab.id === preview.activeId)?.target} language={language} />
+              <ReaderFileActions sessionId={activeSessionId} target={activeTarget} language={language} />
             </UiRegion>
           </div>
         </header>
@@ -423,16 +435,19 @@ export function ResourcePreview({
                   onReview={onReview}
                   reviewEdit={preview.reviewEdit?.previewId === (tab.page?.previewId ?? tab.target.previewId) ? preview.reviewEdit : null}
                 />
+              ) : tab.target.kind === 'agent' ? (
+                <AgentConversationPage key={tab.target.parentSessionId} target={tab.target} language={language}
+                  active={preview.visible && preview.activeId === tab.id} />
               ) : tab.target.kind === 'diff' && preview.sessionId ? (
-                <FileChangePreview sessionId={preview.sessionId} file={tab.target.file} />
+                <FileChangePreview sessionId={sourceSessionId(tab.target)!} file={tab.target.file} />
               ) : (
                 preview.sessionId && (
                   <ReaderDocument
                     key={tab.target.kind === 'workspace' ? `${tab.id}:${tab.target.line ?? ''}:${tab.target.column ?? ''}` : tab.id}
-                    sessionId={preview.sessionId}
-                    target={tab.target as Exclude<ReaderTarget, { kind: 'browser' | 'diff' }>}
+                    sessionId={sourceSessionId(tab.target)!}
+                    target={tab.target as Exclude<ReaderTarget, { kind: 'browser' | 'diff' | 'agent' }>}
                     language={language}
-                    openTarget={preview.openTarget}
+                    openTarget={target => openFileTarget(sourceSessionId(tab.target), target)}
                   />
                 )
               )}
@@ -446,11 +461,11 @@ export function ResourcePreview({
             />
           )}
         </div>
-        {preview.sessionId && <div className="reader-tree-panel" hidden={!preview.visible || !preview.treeVisible} style={{ width: treeWidth.width }}>
+        {activeSessionId && activeTarget?.kind !== 'agent' && <div className="reader-tree-panel" hidden={!preview.visible || !preview.treeVisible} style={{ width: treeWidth.width }}>
           {preview.visible && preview.treeVisible && <ResizeHandle className="reader-tree-resize" label={chinese ? '调整文件树宽度' : 'Resize file tree'}
             value={treeWidth.width} min={treeWidth.min} max={treeWidth.max} step={PANE_GEOMETRY.fileTree.step}
             direction={-1} onResize={treeWidth.setWidth} />}
-          <ResourceTree key={preview.sessionId} sessionId={preview.sessionId} visible={preview.visible && preview.treeVisible} activeTarget={preview.tabs.find(tab => tab.id === preview.activeId)?.target} language={language} openTarget={preview.openTarget} /></div>}
+          <ResourceTree key={activeSessionId} sessionId={activeSessionId} visible={preview.visible && preview.treeVisible} activeTarget={activeTarget} language={language} openTarget={target => openFileTarget(activeSessionId, target)} /></div>}
         </UiRegion></div>
       </aside>
     </>
@@ -467,10 +482,11 @@ export function ReaderControls({ language, preview, disabled }: {
   const expandLabel = preview.expanded ? (chinese ? '返回并排' : 'Restore split view') : (chinese ? '铺满工作区' : 'Expand preview');
   const sidebarLabel = chinese ? '浏览器与预览' : 'Browser and preview';
   return <>
-    {preview.visible && <button type="button" className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><DeepCodeShellIcon name="folder" /></button>}
+    {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><DeepCodeShellIcon name="folder" /></button>}
     {preview.visible && <button type="button" className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
       <DeepCodeShellIcon name={preview.expanded ? 'collapse' : 'expand'} />
     </button>}
+    <SshConnection language={language} />
     <button type="button" className="reader-icon-button" disabled={disabled} aria-label={sidebarLabel} title={sidebarLabel} aria-pressed={preview.visible} onClick={preview.toggle}>
       <DeepCodeShellIcon name="sidebar" />
     </button>
@@ -494,14 +510,14 @@ function ReaderStart({
     [choosing, setChoosing] = useState<'file' | 'browser' | null>(null);
   return (
     <div className="reader-start">
+      <button type="button" className="reader-start__entry" onClick={() => setChoosing('file')}>
+        <DeepCodeShellIcon name="folder" />
+        <span>{language === 'zh-CN' ? '打开文件' : 'Open file'}</span>
+        <DeepCodeShellIcon name="chevronRight" />
+      </button>
       {hasNativeBrowser() ? (
         <>
           <div className="reader-start__entries">
-            <button type="button" className="reader-start__entry" onClick={() => setChoosing('file')}>
-              <DeepCodeShellIcon name="folder" />
-              <span>{language === 'zh-CN' ? '打开文件' : 'Open file'}</span>
-              <DeepCodeShellIcon name="chevronRight" />
-            </button>
             <button
               ref={browserButton}
               type="button"
@@ -565,11 +581,7 @@ function ReaderStart({
             </section>
           )}
         </>
-      ) : (
-        <p>
-          {language === 'zh-CN' ? '文件按原始内容阅读；网页和本地 HTML 可在浏览器中运行。' : 'Read original file contents, or run a web page or local HTML in the browser.'}
-        </p>
-      )}
+      ) : null}
       {error && (
         <p role="alert" className="local-agent__resource-error">
           {error}
@@ -600,7 +612,7 @@ function ReaderDocument({
   openTarget,
 }: {
   sessionId: string;
-  target: Exclude<ReaderTarget, { kind: 'browser' | 'diff' }>;
+  target: Exclude<ReaderTarget, { kind: 'browser' | 'diff' | 'agent' }>;
   language: UiLanguage;
   openTarget(target: ReaderTarget): void;
 }) {
@@ -837,19 +849,19 @@ function ReaderFileActions({ sessionId, target, language }: {
   const [error, setError] = useState('');
   const menu = useRef<HTMLDetailsElement>(null);
   const open = async (action: 'code' | 'folder') => {
-    if (!sessionId || !target) return;
+    const callback = action === 'code' ? host.openFile : host.locatePath;
+    if (!sessionId || !target || !callback) return;
     if (menu.current) menu.current.open = false;
     setError('');
     try {
       const reference = targetResource(target);
       const path = target.kind === 'file' ? target.path : reference ? (await host.resources.resolveResourceReference(sessionId, reference)).path : undefined;
       if (!path) throw new Error('resource_has_no_local_file');
-      if (action === 'code') await host.openFile?.(path);
-      else await host.locatePath?.(path);
+      await callback(path);
     } catch (error) { setError(String(error)); }
   };
   useEffect(() => setError(''), [target]);
-  if (!sessionId || !target || target.kind === 'browser' || target.kind === 'artifact') return null;
+  if ((!host.openFile && !host.locatePath) || !sessionId || !target || target.kind === 'browser' || target.kind === 'artifact' || target.kind === 'agent') return null;
   return <div className="reader-file-actions">
       <details className="reader-external-open" ref={menu} data-native-overlay onBlur={event => {
         if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
@@ -858,8 +870,8 @@ function ReaderFileActions({ sessionId, target, language }: {
       }}>
         <summary aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <DeepCodeShellIcon name="chevronDown" /></summary>
         <div role="menu">
-          <button role="menuitem" onClick={() => void open('code')}>{language === 'zh-CN' ? '在 VS Code 中打开' : 'Open in VS Code'}</button>
-          <button role="menuitem" onClick={() => void open('folder')}>{language === 'zh-CN' ? '打开所在文件夹' : 'Show in folder'}</button>
+          {host.openFile && <button role="menuitem" onClick={() => void open('code')}>{language === 'zh-CN' ? '在 VS Code 中打开' : 'Open in VS Code'}</button>}
+          {host.locatePath && <button role="menuitem" onClick={() => void open('folder')}>{language === 'zh-CN' ? '打开所在文件夹' : 'Show in folder'}</button>}
         </div>
       </details>
     {error && <p role="alert" className="reader-file-actions__error local-agent__resource-error" data-native-overlay>{error}</p>}

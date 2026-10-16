@@ -1,3 +1,4 @@
+import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import NativeSelect from '../../shared/NativeSelect';
 import { modelReasoningEfforts, type UserSettings } from '@deepcode/protocol';
 import { t } from '../../../i18n';
@@ -12,6 +13,7 @@ import { AgentSettingsSection } from './CategorizedSettingsSections';
 import ModelEditor from '../model-services/ModelEditor';
 import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
+import SubagentSettings from '../model-services/SubagentSettings';
 import { Cost, data, Hint, message, periodQuery, useModelLanguage } from '../model-services/shared';
 import { UiSettingsContributions, useDisplayTheme } from '../../../ui-plugins/UiPlugins';
 import '../model-services/modelServices.css';
@@ -96,6 +98,7 @@ function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onSave
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  useAutoDismiss(saved, () => setSaved(false));
   const models = profiles.filter(p => p.connectionId === draft.id);
   const baseline = useRef(JSON.stringify(draft));
   useInterfaceReloadGuard(!!apiKey || JSON.stringify(draft) !== (current ? JSON.stringify(connectionSettings(current)) : baseline.current), draft.name, busy);
@@ -174,7 +177,7 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
     void queryModelUsage(periodQuery(30), controller.signal).then(result => { if (controller.signal.aborted) return; try { setUsage(data(result)); } catch (e) { setUsageError(message(e)); } });
     return () => controller.abort();
   }, [revision]);
-  useSettingsSearchEntries('llm', [{ id: 'llm-connections', category: 'llm', title: text('模型与服务', 'Models & services'), keywords: 'API Coding Plan OpenAI Codex 连接 模型 用量 订阅' }]);
+  useSettingsSearchEntries('llm', [{ id: 'llm-connections', category: 'llm', title: text('模型与服务', 'Models & services'), keywords: 'API Coding Plan OpenAI Codex subagent delegation 子代理 协作成员 并发 连接 模型 用量 订阅' }]);
   const current = page.kind === 'connection' ? catalog?.connections.find(c => c.id === page.id) : undefined;
   const goBack = () => setPage({ kind: 'list' });
   const reorder = async (id: string, delta: number) => {
@@ -191,6 +194,7 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
       <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-add"><button ref={addButton} className="model-primary" aria-expanded={showAdd} onClick={() => setShowAdd(v => !v)}>{text('添加连接', 'Add connection')} +</button>{showAdd && <div className="model-add-menu"><button onClick={() => { setPage({ kind: 'new', mode: 'metered' }); setShowAdd(false); }}>{text('API 连接', 'API connection')}</button><button onClick={() => { setPage({ kind: 'new', mode: 'subscription' }); setShowAdd(false); }}>Coding Plan</button></div>}</div></div>
       <div className="model-actions model-subheading"><span>{text('最近使用', 'Last used')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
       {profiles && <ApprovalReviewerModel profiles={profiles.profiles} connections={profiles.connections} />}
+      {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}
       {catalog && (['metered', 'subscription'] as const).map(mode => {
         const list = catalog.connections.filter(c => c.billingMode === mode);
         return <section className="model-connection-group" key={mode}><div className="model-heading"><h3>{mode === 'metered' ? text('API 连接', 'API connections') : 'Coding Plan'}</h3><span>{text('近 30 天', 'Last 30 days')}{mode === 'metered' && <Hint>{text('显示已记录请求的 API 费用估算，非服务方账单。', 'Estimated cost of recorded requests; not a provider invoice.')}</Hint>}</span></div>
@@ -212,6 +216,6 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
     </>}
     {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onSaved={refresh} onBack={goBack} />}
     {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} />}
-    {page.kind === 'web' && <AgentSettingsSection category="services" query="" />}
+    {page.kind === 'web' && <AgentSettingsSection category="services" />}
   </section>;
 }

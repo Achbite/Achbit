@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tarfile
@@ -13,8 +14,12 @@ import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'scripts'))
+import macos_signing
+
 spec = importlib.util.spec_from_file_location('package_runtime', ROOT / 'scripts/package-runtime.py')
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
@@ -65,6 +70,59 @@ def write(root, name, data):
 
 def files(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+class ProgramCleanupTests(unittest.TestCase):
+    def test_dry_run_reads_program_ownership_without_removing_files(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-clean-dry-run-') as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py'):
+                shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
+            write(root, 'bin/macos-arm64/deepcode-cli', b'program')
+            write(root, 'bin/macos-arm64/config/settings.json', b'user settings')
+            before = files(root)
+
+            result = subprocess.run(
+                ['bash', str(root / 'scripts/clean-caches.sh'), '--dry-run', '--skip-docker', '--skip-local'],
+                cwd=root, text=True, capture_output=True, timeout=10,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(str(root / 'bin/macos-arm64/deepcode-cli'), result.stdout)
+            self.assertNotIn('config/settings.json', result.stdout)
+            self.assertEqual(files(root), before)
+
+
+class SharedResourcesTests(unittest.TestCase):
+    def test_only_public_documentation_enters_runtime_resources(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-shared-resources-') as directory:
+            root = Path(directory) / 'source'
+            destination = Path(directory) / 'resources'
+            for name in ('session-core', 'protocol'):
+                write(root, f'userspace/{name}/package.json', json.dumps({
+                    'name': f'@deepcode/{name}', 'version': '0.0.0', 'license': 'MIT',
+                    'type': 'module', 'main': './dist/index.js',
+                }).encode())
+                write(root, f'userspace/{name}/dist/index.js', b'export {};')
+            write(root, 'userspace/gui/dist-deepcode-gui/index.html', b'GUI')
+            write(root, 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp/index.js', b'upstream')
+            write(root, 'LICENSE', b'license')
+            write(root, 'dependencies.json', b'[]')
+            public = {
+                'distribution.md': b'Installation',
+                'product/operations.md': b'User operations',
+                'product/images/example.svg': b'<svg/>',
+            }
+            for name, content in public.items():
+                write(root, f'docs/{name}', content)
+            for name in ('task-receipts/local/TCR.md', 'architecture/draft.md', 'build.log'):
+                write(root, f'docs/{name}', b'local internal material')
+
+            package.shared(root, destination, root / 'dependencies.json')
+
+            self.assertEqual(files(destination / 'docs'), public)
+            self.assertEqual((destination / 'session-core/dist/index.js').read_bytes(), b'export {};')
 
 
 class BuildTests(unittest.TestCase):
@@ -124,6 +182,26 @@ class BuildTests(unittest.TestCase):
 
 
 class BridgeCleanupTests(unittest.TestCase):
+    def test_request_forwards_explicit_signing_selection(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-signing-request-') as directory:
+            root = Path(directory)
+            worker = root / 'worker.json'
+            worker.write_text(json.dumps({'workerId': 'owned-worker'}))
+            captured = []
+            write_json = bridge.write_json
+
+            def record_request(path, value):
+                captured.append(value)
+                write_json(path, value)
+                write_json(path.parent / 'result.json', {'exitCode': 0, 'message': ''})
+
+            with patch.object(bridge, 'BRIDGE', root), patch.object(bridge, 'WORKER', worker), \
+                    patch.object(bridge, 'write_json', side_effect=record_request), \
+                    patch.dict(os.environ, {'DEEPCODE_MACOS_SIGN_IDENTITY': 'selected-certificate'}):
+                self.assertEqual(bridge.request_host('check'), 0)
+            self.assertEqual(captured, [{'workerId': 'owned-worker', 'operation': 'check',
+                                         'signingIdentity': 'selected-certificate'}])
+
     def test_worker_publication_failure_releases_watcher(self):
         with tempfile.TemporaryDirectory(prefix='deepcode-worker-') as directory:
             root = Path(directory)
@@ -202,6 +280,118 @@ class BridgeCleanupTests(unittest.TestCase):
             self.assertEqual(result['exitCode'], 7)
             self.assertIn('owned group permission denied', result['message'])
             log.close.assert_called_once()
+
+
+class MacosSigningTests(unittest.TestCase):
+    def test_command_launcher_reuses_its_terminal_and_preserves_arguments_and_exit(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-command-') as directory:
+            root = Path(directory) / 'package with spaces'
+            native, shared, stage = root / 'native', root / 'shared', root / 'stage'
+            shared.mkdir(parents=True)
+            stub = b"""#!/bin/sh
+exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])); sys.exit(23)' "$@"
+"""
+            for name in ['deepcode-kernel-daemon', 'deepcode-first-party-provider', 'deepcode-host-web',
+                         'deepcode-cli', 'deepcode-tui', 'DeepCode-GUI']:
+                write(native, name, stub)
+                (native / name).chmod(0o755)
+            write(root, 'node', stub)
+            (root / 'node').chmod(0o755)
+            write(root, 'LICENSE', b'fixture')
+            args = SimpleNamespace(root=ROOT, stage=stage, platform='macos-arm64', native=native,
+                                   shared=shared, node=root / 'node', node_license=root / 'LICENSE')
+            with patch.object(package, 'subprocess'), patch.object(package, 'signing_identity', return_value='fixture'), \
+                    patch.object(package, 'sign_app'), patch.object(package, 'assemble_computer_use'), \
+                    patch.object(package, 'macos_tui_resources'), patch.dict(os.environ, {'DEEPCODE_BUILD_TIME': 'fixture'}):
+                package.assemble(args)
+            arguments = ['--session', 'session:test', 'argument with spaces', 'literal "$HOME"', '']
+            for shell in ('CLI', 'TUI'):
+                result = subprocess.run(['bash', str(stage / f'DeepCode-{shell}.command'), *arguments],
+                                        env={**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 23, result.stderr)
+                expected = ([str(stage / 'DeepCode-GUI.app/Contents/Resources/tui/window.mjs'), '--command-window']
+                            if shell == 'TUI' else []) + arguments
+                self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_macos_tui_resources_include_four_native_fonts_and_licenses(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-tui-resources-') as directory:
+            resources = Path(directory)
+            package.macos_tui_resources(ROOT, resources)
+            for family in ('Reading', 'ReadingSans', 'MonoKai', 'Mono'):
+                font = resources / 'tui/fonts' / f'DeepCodeQuietTerminal{family}SC-Regular.ttf'
+                self.assertGreater(font.stat().st_size, 1_000_000)
+                data = font.read_bytes()
+                self.assertEqual(data[:4], b'\x00\x01\x00\x00')
+                tables = {tag: offset for tag, _, offset, _ in struct.iter_unpack(
+                    '>4sIII', data[12:12 + struct.unpack_from('>H', data, 4)[0] * 16])}
+                self.assertEqual(struct.unpack_from('>I', data, tables[b'post'] + 12)[0], 1)
+                self.assertEqual(struct.unpack_from('>h', data, tables[b'OS/2'] + 2)[0], 500)
+                self.assertEqual(struct.unpack_from('>H', data, tables[b'head'] + 18)[0], 1000)
+            for name in ('window.mjs', 'font-preferences.mjs', 'font-bridge.js'):
+                self.assertTrue((resources / 'tui' / name).is_file())
+            self.assertTrue((resources / 'tui/fonts/WenKai-OFL.txt').is_file())
+
+    def test_windows_tui_fonts_fit_console_family_names_and_keep_all_four_faces(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-windows-tui-') as directory:
+            resources = Path(directory)
+            package.windows_tui_resources(ROOT, resources)
+            self.assertTrue((resources / 'tui/font-config.mjs').is_file())
+            self.assertTrue((resources / 'tui/macos/font-preferences.mjs').is_file())
+            self.assertTrue((resources / 'tui/fonts/WenKai-OFL.txt').is_file())
+            families = set()
+            for font in (resources / 'tui/fonts').glob('*.ttf'):
+                data = font.read_bytes()
+                tables = {tag: (offset, length) for tag, _, offset, length in struct.iter_unpack(
+                    '>4sIII', data[12:12 + struct.unpack_from('>H', data, 4)[0] * 16])}
+                offset, length = tables[b'name']
+                names = data[offset:offset + length]
+                _, count, strings = struct.unpack_from('>HHH', names)
+                for platform, _, _, name_id, size, position in struct.iter_unpack('>HHHHHH', names[6:6 + count * 12]):
+                    if platform == 3 and name_id == 1:
+                        family = names[strings + position:strings + position + size].decode('utf-16-be')
+                        self.assertLess(len(family.encode('utf-16-le')), 64)
+                        families.add(family)
+            self.assertEqual(families, {'DeepCode TUI Reading SC', 'DeepCode TUI Reading Sans SC',
+                                       'DeepCode TUI Mono Kai SC', 'DeepCode TUI Mono SC'})
+
+    def test_identity_is_explicit_and_never_falls_back_to_ad_hoc(self):
+        fingerprint = 'A' * 40
+        listing = f'  1) {fingerprint} "DeepCode Local Development"\n  1 valid identities found\n'
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(macos_signing.subprocess, 'run', return_value=Mock(stdout=listing)) as command:
+            self.assertEqual(macos_signing.signing_identity(), fingerprint)
+            command.return_value.stdout = '0 valid identities found\n'
+            with self.assertRaisesRegex(ValueError, 'found 0'):
+                macos_signing.signing_identity()
+            command.return_value.stdout = listing + f'  2) {"B" * 40} "DeepCode Local Development"\n'
+            with self.assertRaisesRegex(ValueError, 'found 2'):
+                macos_signing.signing_identity()
+        with patch.dict(os.environ, {'DEEPCODE_MACOS_SIGN_IDENTITY': '-'}), \
+                patch.object(macos_signing.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'ad-hoc'):
+                macos_signing.signing_identity()
+            command.assert_not_called()
+
+    def test_native_components_have_stable_identifiers_and_vendor_node_is_preserved(self):
+        import plistlib
+        with tempfile.TemporaryDirectory(prefix='deepcode-native-sign-') as directory:
+            app = Path(directory) / 'DeepCode-GUI.app'
+            write(app, 'Contents/Info.plist', plistlib.dumps({
+                'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleExecutable': 'DeepCode-GUI'}))
+            for name in ('DeepCode-GUI', 'deepcode-kernel', 'deepcode-host-web'):
+                write(app, 'Contents/MacOS/' + name, b'owned native binary')
+            write(app, 'Contents/Resources/node/bin/node', b'vendor signed node')
+            with patch.object(macos_signing.subprocess, 'run') as command:
+                macos_signing.sign_app(app, 'certificate', native_components=True)
+            commands = [call.args[0] for call in command.call_args_list]
+            self.assertEqual([call[-1] for call in commands], [
+                str(app / 'Contents/MacOS/deepcode-host-web'),
+                str(app / 'Contents/MacOS/deepcode-kernel'), str(app), str(app)])
+            self.assertIn('com.achbite.deepcode.gui.deepcode-host-web', commands[0])
+            self.assertIn('com.achbite.deepcode.gui.deepcode-kernel', commands[1])
+            self.assertTrue(all('--deep' not in call for call in commands[:-1]))
+            self.assertIn('--verify', commands[-1])
 
 
 class PublicationTests(unittest.TestCase):
@@ -303,33 +493,40 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
 """
             write(stage, 'DeepCode-GUI.app/Contents/MacOS/deepcode-cli', stub)
             (stage / 'DeepCode-GUI.app/Contents/MacOS/deepcode-cli').chmod(0o755)
+            write(stage, 'DeepCode-GUI.app/Contents/Resources/node/bin/node', stub)
+            (stage / 'DeepCode-GUI.app/Contents/Resources/node/bin/node').chmod(0o755)
             write(stage, 'DeepCode-GUI.app/Contents/Resources/session-core/dist/index.js', b'Session')
+            write(stage, 'DeepCode Computer Use.app/Contents/MacOS/DeepCode-Computer-Use', b'Computer Use')
             def inspect(command, **kwargs):
                 self.assertEqual(command[0], 'pkgbuild')
                 payload = Path(command[command.index('--root') + 1])
                 app = payload / 'Applications/DeepCode-GUI.app'
                 self.assertEqual((app / 'Contents/MacOS/deepcode-cli').read_bytes(), stub)
-                launcher = (payload / 'usr/local/bin/deepcode').read_text()
-                # Only relocate the declared installation root; execute the remaining launcher unchanged.
-                install_root = '/Applications/DeepCode-GUI.app'
-                self.assertIn(install_root, launcher, 'Cannot safely relocate the installer fixture')
-                relocated = root / 'deepcode'
-                relocated.write_text(launcher.replace(install_root, str(app)))
+                self.assertEqual((payload / 'Applications/DeepCode Computer Use.app/Contents/MacOS/DeepCode-Computer-Use').read_bytes(), b'Computer Use')
                 arguments = ['--session', 'session:launcher', 'argument with spaces', 'literal "$HOME"', '']
-                for user_root in (None, str(root / 'independent user data')):
-                    environment = {**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable,
-                                   'DEEPCODE_RUNTIME_DIR': 'stale-runtime', 'DEEPCODE_KERNEL_BIN': 'stale-kernel'}
-                    environment.pop('DEEPCODE_USER_ROOT', None)
-                    if user_root is not None:
-                        environment['DEEPCODE_USER_ROOT'] = user_root
-                    launched = subprocess.run(['sh', str(relocated), *arguments], env=environment,
-                                              capture_output=True, text=True, timeout=10)
-                    self.assertEqual(launched.returncode, 23, launched.stdout + launched.stderr)
-                    observed = json.loads(launched.stdout)
-                    self.assertEqual(observed['argv'], arguments)
-                    self.assertEqual(observed['runtime'], str(app / 'Contents/Resources'))
-                    self.assertEqual(observed['kernel'], str(app / 'Contents/MacOS/deepcode-kernel'))
-                    self.assertEqual(observed['user'], user_root)
+                for name in ('deepcode', 'deepcode-tui'):
+                    launcher = (payload / 'usr/local/bin' / name).read_text()
+                    # Relocate only the installation root; execute the remaining launcher unchanged.
+                    install_root = '/Applications/DeepCode-GUI.app'
+                    self.assertIn(install_root, launcher, 'Cannot safely relocate the installer fixture')
+                    relocated = root / name
+                    relocated.write_text(launcher.replace(install_root, str(app)))
+                    expected_args = ([str(app / 'Contents/Resources/tui/window.mjs')]
+                                     if name == 'deepcode-tui' else []) + arguments
+                    for user_root in (None, str(root / 'independent user data')):
+                        environment = {**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable,
+                                       'DEEPCODE_RUNTIME_DIR': 'stale-runtime', 'DEEPCODE_KERNEL_BIN': 'stale-kernel'}
+                        environment.pop('DEEPCODE_USER_ROOT', None)
+                        if user_root is not None:
+                            environment['DEEPCODE_USER_ROOT'] = user_root
+                        launched = subprocess.run(['sh', str(relocated), *arguments], env=environment,
+                                                  capture_output=True, text=True, timeout=10)
+                        self.assertEqual(launched.returncode, 23, launched.stdout + launched.stderr)
+                        observed = json.loads(launched.stdout)
+                        self.assertEqual(observed['argv'], expected_args)
+                        self.assertEqual(observed['runtime'], str(app / 'Contents/Resources'))
+                        self.assertEqual(observed['kernel'], str(app / 'Contents/MacOS/deepcode-kernel'))
+                        self.assertEqual(observed['user'], user_root)
                 self.assertFalse((payload / 'Users').exists())
                 return subprocess.CompletedProcess(command, 0)
             # Patch only the packager's module reference, so the launcher uses real subprocess.run.
@@ -337,6 +534,23 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
                 packager.run.side_effect = inspect
                 installers.macos(stage, root / 'DeepCode.pkg', '0.6.2')
                 packager.run.assert_called_once()
+
+    def test_windows_computer_use_update_renames_the_running_image_aside(self):
+        import computer_use_package
+        with tempfile.TemporaryDirectory(prefix='deepcode-cu-update-') as directory:
+            root = Path(directory)
+            native = root / 'native.exe'
+            native.write_bytes(b'new executor')
+            destination = root / 'win64'
+            write(destination, computer_use_package.WINDOWS_EXECUTABLE, b'old executor')
+            stale = destination / (computer_use_package.WINDOWS_RETIRED + '1')
+            stale.write_bytes(b'no longer mapped')
+            computer_use_package.update_windows(native, destination, strip=None)
+            self.assertEqual((destination / computer_use_package.WINDOWS_EXECUTABLE).read_bytes(), b'new executor')
+            retired = list(destination.glob(computer_use_package.WINDOWS_RETIRED + '*'))
+            self.assertEqual([path.read_bytes() for path in retired], [b'old executor'])
+            self.assertFalse(stale.exists())
+            self.assertFalse(any(path.name.endswith('.new') for path in destination.iterdir()))
 
     def test_windows_setup_compiles_from_current_runtime(self):
         with tempfile.TemporaryDirectory(prefix='deepcode-nsis-') as directory:

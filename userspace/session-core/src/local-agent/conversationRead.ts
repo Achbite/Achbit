@@ -2,7 +2,7 @@ import type {
   CommandJournalPort, ConversationReadQuery, ConversationReadResult, JsonObject, SessionEvent,
 } from '@deepcode/protocol';
 import { reasoningReadItem } from './reasoningRead.js';
-import { recoverSession } from './reducer.js';
+import { projectSession, recoverSession } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { imageCatalog, readImageReferences } from './visualContext.js';
 
@@ -61,7 +61,8 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   if (view === 'summary') {
     const state = recoverSession(query.sessionId, journalEvents);
     const lastUser = state.messages.findLast((message) => message.role === 'user');
-    const lastAssistant = state.messages.findLast((message) => message.role === 'assistant');
+    const lastMessageId = projectSession(state).timeline.findLast(item => item.kind === 'message' && state.messages.some(message => message.messageId === item.messageId && message.role === 'assistant'));
+    const lastAssistant = lastMessageId?.kind === 'message' ? state.messages.find(message => message.messageId === lastMessageId.messageId) : undefined;
     result.summary = {
       title: state.display.creationTitle,
       // These are persisted facts, including running/indeterminate. Do not infer
@@ -81,10 +82,11 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   const candidates = events.filter((event) => {
     if (event.sequence >= (query.before ?? Infinity)) return false;
     switch (view) {
-      case 'summary': return event.type === 'tool.completed';
+      case 'summary': return event.type === 'tool.completed' || event.type === 'tool.not-executed';
       case 'messages': return event.type === 'message.committed' || event.type === 'narrative.committed';
       case 'tools': return event.type === 'tool.completed'
-        && (!query.recordId || event.payload.record.recordId === query.recordId);
+        ? !query.recordId || event.payload.record.recordId === query.recordId
+        : event.type === 'tool.not-executed' && !query.recordId;
       case 'plans': return event.type.startsWith('plan.') || event.type.startsWith('todo.');
       case 'reasoning': return event.type === 'provider.turn.settled' && event.payload.outcome === 'completed'
         && (!query.providerRequestId || event.payload.providerRequestId === query.providerRequestId);
@@ -118,6 +120,7 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
   if (event.type === 'message.committed' || event.type === 'narrative.committed') {
     return { ...base, role: event.type === 'message.committed' ? event.payload.role : 'assistant', ...textExcerpt(event.payload.content, 12 * 1024) };
   }
+  if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
   if (event.type === 'tool.completed') {
     const record = event.payload.record;
     return {
@@ -130,7 +133,7 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
   if (event.type === 'context.composed') {
     // Keep context structure and usage; native reasoning and instruction bodies
     // are not part of this product transcript view.
-    const receipt = event.payload;
+    const { modelView: _modelView, ...receipt } = event.payload;
     const usage = events.find((candidate) => candidate.type === 'context.updated'
       && candidate.payload.providerRequestId === receipt.providerRequestId);
     return { ...base, providerRequestId: receipt.providerRequestId,

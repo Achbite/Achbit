@@ -1,3 +1,4 @@
+import ToggleSwitch from '../../shared/ToggleSwitch';
 import { localizePlugin } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
 import { useSettingsSearchEntries } from '../settingsSearch';
@@ -15,6 +16,7 @@ import { UiPluginShowcase } from '../../../ui-plugins/UiPluginShowcase';
 import { errorText } from '../../../ui-plugins/runtime';
 import DeepCodeShellIcon from '../../shared/DeepCodeShellIcon';
 import ProjectFolderDialog from '../../workspace-open-dialog/ProjectFolderDialog';
+import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../shared/interactionFocus';
 
 type Source = {
   id?: string;
@@ -48,7 +50,7 @@ function sourceList(value: unknown): Source[] {
 const filename = (path: string) => path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path;
 
 /** Inventory reads the existing settings owners and live display registry; saving does not invent runtime state. */
-export default function PluginsSection({ query = '' }: { query?: string }) {
+export default function PluginsSection() {
   const settings = useSettingsStore((state) => state.effectiveSettings);
   const patch = useSettingsStore((state) => state.patchUserSetting);
   const language = normalizeUiLanguage(settings['workbench.language']),
@@ -68,10 +70,12 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
   const [candidate, setCandidate] = useState<LocalPluginInspection | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const readButton = useRef<HTMLButtonElement>(null);
-  const inspectionTrigger = useRef<HTMLButtonElement | null>(null);
+  const interaction = useInteractionFocus();
+  const inspectionTrigger = useRef<FocusReturn | null>(null);
   useEffect(() => {
     if (!candidate && !busy && inspectionTrigger.current) {
-      inspectionTrigger.current.focus({ preventScroll: true });
+      if (interaction) interaction.restore(inspectionTrigger.current);
+      else returnInteractionFocus(inspectionTrigger.current, true);
       inspectionTrigger.current = null;
     }
   }, [candidate, busy]);
@@ -183,7 +187,7 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
       (filter === 'all' || item.enabled) &&
       `${item.name} ${item.description}`
         .toLowerCase()
-        .includes(`${query} ${search}`.trim().toLowerCase()),
+        .includes(search.trim().toLowerCase()),
   );
   const save = async (item: Item, enabled: boolean, remove = false, replacement?: Source) => {
     setBusy(true);
@@ -224,7 +228,8 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
     }
   };
   const inspect = async (path: string) => {
-    inspectionTrigger.current = choosing ? addButton.current : readButton.current;
+    const trigger = choosing ? addButton.current : readButton.current;
+    inspectionTrigger.current = interaction ? interaction.capture(trigger) : captureFocusReturn(trigger);
     setChoosing(false);
     setBusy(true);
     setError(null);
@@ -386,17 +391,12 @@ export default function PluginsSection({ query = '' }: { query?: string }) {
                 title={item.error ?? item.status}
                 aria-label={item.error ? t(language, 'settings.plugins.failed') : item.status}
               />
-              <label className="plugin-switch">
-                <input
-                  type="checkbox"
-                  role="switch"
+              <ToggleSwitch
                   aria-label={`${chinese ? '启用' : 'Enable'} ${item.name}`}
                   checked={item.enabled}
                   disabled={busy}
                   onChange={(event) => void save(item, event.target.checked)}
-                />
-                <span />
-              </label>
+              />
               <button
                 className="reader-icon-button"
                 aria-label={t(language, 'settings.plugins.details', { name: item.name })}

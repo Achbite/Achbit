@@ -11,7 +11,9 @@ use ratatui::{
     prelude::Frame,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, Wrap,
+    },
 };
 use std::{
     cell::RefCell,
@@ -38,7 +40,8 @@ struct TranscriptKey {
 #[derive(Clone)]
 struct TranscriptCache {
     key: TranscriptKey,
-    text: Text<'static>,
+    paragraph: Paragraph<'static>,
+    line_count: usize,
 }
 
 impl Default for Renderer {
@@ -212,7 +215,22 @@ fn decision_lines(
             plan.title.clone(),
         )
     } else {
-        return vec![];
+        return projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .map(|decision| {
+                Line::from(Span::styled(
+                    format!(
+                        "{} · {} · /agent {}",
+                        decision.display_name,
+                        language.text("agent.team.needsInput"),
+                        decision.agent_session_id
+                    ),
+                    Style::default().fg(Color::Yellow),
+                ))
+            })
+            .collect();
     };
     let mut lines = vec![Line::from(Span::styled(
         title,
@@ -310,6 +328,28 @@ pub(crate) fn decision_details(
         }
         return text;
     }
+    if projection
+        .pending_agent_decisions
+        .iter()
+        .flatten()
+        .next()
+        .is_some()
+    {
+        return projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .map(|decision| {
+                format!(
+                    "{} · {}\n/agent {}",
+                    decision.display_name,
+                    language.text("agent.team.needsInput"),
+                    decision.agent_session_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
     language.text("tui.noPendingDecision").into()
 }
 
@@ -380,22 +420,78 @@ pub(crate) fn failure_details(
     text
 }
 
-fn push_tool_summary(language: Language, lines: &mut Vec<Line<'_>>, activity: &ActivityProjection) {
-    let operation = activity
-        .tool
-        .as_ref()
-        .map(|tool| tool.operation.as_str())
-        .unwrap_or(&activity.label);
-    lines.push(Line::from(Span::styled(
+fn activity_summary(language: Language, activity: &ActivityProjection) -> String {
+    if let Some(agent) = &activity.agent {
+        return format!(
+            "{} · {} · /agent {}",
+            activity.label,
+            if agent.phase == "started" {
+                language.text("agent.team.started")
+            } else if agent.phase == "updated" {
+                language.text("agent.team.status.updated")
+            } else {
+                status_label(language, &activity.status)
+            },
+            agent.agent_session_id
+        );
+    }
+    if activity.kind == "tool" {
+        let operation = activity
+            .tool
+            .as_ref()
+            .map(|tool| tool.operation.as_str())
+            .unwrap_or(&activity.label);
         language.format(
             "tui.toolSummary",
             &[
-                format!("{}", operation),
-                status_label(language, &activity.status).to_string(),
+                operation.to_owned(),
+                activity
+                    .not_executed
+                    .as_ref()
+                    .map_or_else(
+                        || status_label(language, &activity.status),
+                        |result| {
+                            language.text(if result.reason == "dependencyFailed" {
+                                "tui.status.notExecutedDependencyFailed"
+                            } else {
+                                "tui.status.notExecutedCancelled"
+                            })
+                        },
+                    )
+                    .to_owned(),
             ],
+        )
+    } else {
+        format!(
+            "{} {} [{}]",
+            kind_label(language, &activity.kind),
+            activity.label,
+            status_label(language, &activity.status),
+        )
+    }
+}
+
+fn push_activity_summary(
+    language: Language,
+    lines: &mut Vec<Line<'_>>,
+    activity: &ActivityProjection,
+) {
+    let marker = match activity.status.as_str() {
+        "completed" => "✓",
+        "active" => "●",
+        "failed" | "denied" | "indeterminate" => "!",
+        _ => "○",
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{marker} "),
+            Style::default().fg(activity_color(&activity.status)),
         ),
-        Style::default().fg(activity_color(&activity.status)),
-    )));
+        Span::styled(
+            activity_summary(language, activity),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
     for error in tool_error_lines(activity) {
         lines.push(Line::from(Span::styled(
             error,
@@ -448,7 +544,7 @@ pub(crate) fn tool_details(
         return language.format("tui.toolMissing", &[format!("{}", activity_id)]);
     };
     let mut text = String::new();
-    render_tool_plain(language, &mut text, activity);
+    render_activity_plain(language, &mut text, activity);
     text
 }
 
@@ -476,7 +572,7 @@ fn multiline_text(lines: Vec<Line<'_>>) -> Text<'static> {
 fn input_lines(input: &str, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
     let mut lines = Vec::new();
-    let text = format!("{input} ");
+    let text = format!("{} ", input.replace('\t', "    "));
     for part in text.split('\n') {
         let source = Line::from(part);
         let mut current = String::new();
@@ -504,6 +600,28 @@ mod layout_tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn unexecuted_tools_report_the_explicit_reason() {
+        for (status, disposition, expected) in [
+            (
+                "cancelled",
+                serde_json::json!({"reason":"cancelled"}),
+                "未执行：已取消",
+            ),
+            (
+                "rejected",
+                serde_json::json!({"reason":"dependencyFailed","predecessorCallId":"call:earlier"}),
+                "未执行：前序调用未成功",
+            ),
+        ] {
+            let activity = serde_json::from_value(serde_json::json!({"activityId":"tool:pending", "kind":"tool", "status":status,
+                "label":"fs.write", "runId":"run:test", "callId":"call:pending", "sequence":1, "notExecuted":disposition})).unwrap();
+            let mut output = String::new();
+            render_activity_plain(Language::ZhCn, &mut output, &activity);
+            assert!(output.contains(expected));
+        }
+    }
+
+    #[test]
     fn tool_progress_is_visible_before_the_terminal_snapshot() {
         let mut activity: ActivityProjection = serde_json::from_value(serde_json::json!({
             "activityId":"tool:live", "kind":"tool", "status":"active", "label":"bash",
@@ -511,9 +629,9 @@ mod layout_tests {
             "liveOutput":{"stdout":"执行中\n", "stderr":"诊断\n", "stdoutBytes":10, "stderrBytes":7, "truncated":true}
         })).unwrap();
         let mut plain = String::new();
-        render_tool_plain(Language::ZhCn, &mut plain, &activity);
+        render_activity_plain(Language::ZhCn, &mut plain, &activity);
         let mut lines = Vec::new();
-        push_tool_summary(Language::ZhCn, &mut lines, &activity);
+        push_activity_summary(Language::ZhCn, &mut lines, &activity);
         let styled = lines
             .iter()
             .map(|line| line.to_string())
@@ -531,7 +649,7 @@ mod layout_tests {
         activity.status = "completed".into();
         activity.live_output = None;
         let mut terminal = String::new();
-        render_tool_plain(Language::ZhCn, &mut terminal, &activity);
+        render_activity_plain(Language::ZhCn, &mut terminal, &activity);
         assert!(terminal.contains("[已完成]"));
         assert!(!terminal.contains("执行中"));
         assert!(!terminal.contains("实时输出"));
@@ -572,9 +690,9 @@ mod layout_tests {
                 .extend(fields.as_object().unwrap().clone());
             let activity: ActivityProjection = serde_json::from_value(value).unwrap();
             let mut plain = String::new();
-            render_tool_plain(Language::ZhCn, &mut plain, &activity);
+            render_activity_plain(Language::ZhCn, &mut plain, &activity);
             let mut lines = Vec::new();
-            push_tool_summary(Language::ZhCn, &mut lines, &activity);
+            push_activity_summary(Language::ZhCn, &mut lines, &activity);
             assert!(plain.contains(expected));
             assert!(lines.iter().any(|line| line.to_string().contains(expected)));
         }
@@ -701,11 +819,20 @@ impl Renderer {
             );
         }
         self.draw_input(frame, rows[4], app);
+        if app.command_picker_open() {
+            self.draw_command_picker(frame, rows[1], app);
+        }
         if app.plugin_picker_open() {
             self.draw_plugin_picker(frame, rows[1], app);
         }
         if app.model_picker_open() {
             self.draw_model_picker(frame, rows[1], app);
+        }
+        if app.agent_picker_open() {
+            self.draw_agent_picker(frame, rows[1], app);
+        }
+        if app.session_picker_open() {
+            self.draw_session_picker(frame, rows[1], app);
         }
         self.draw_footer(frame, rows[5], app);
     }
@@ -782,7 +909,7 @@ impl Renderer {
                     }
                     TimelineItem::ToolGroup { activities, .. } => {
                         for activity in activities {
-                            render_tool_plain(language, &mut output, activity);
+                            render_activity_plain(language, &mut output, activity);
                         }
                     }
                 }
@@ -834,17 +961,21 @@ impl Renderer {
                 output.push_str(&decision_details(language, Some(projection)));
                 output.push('\n');
             }
-            for activity in projection
-                .activities
+            if projection
+                .pending_agent_decisions
                 .iter()
-                .filter(|activity| activity.kind != "tool")
+                .flatten()
+                .next()
+                .is_some()
             {
-                output.push_str(&format!(
-                    "{} [{}]: {}\n",
-                    kind_label(language, &activity.kind),
-                    status_label(language, &activity.status),
-                    activity.label
-                ));
+                output.push_str(language.text("tui.agentDecisionHint"));
+                output.push('\n');
+                for decision in projection.pending_agent_decisions.iter().flatten() {
+                    output.push_str(&format!(
+                        "{} · /agent {}\n",
+                        decision.display_name, decision.agent_session_id
+                    ));
+                }
             }
             render_todo_plain(language, &mut output, projection);
             if !app.context_open() {
@@ -859,7 +990,8 @@ impl Renderer {
                 output.push('\n');
             }
         } else {
-            output.push_str(language.text("tui.sessionNotInitializedPlain"));
+            output.push_str(language.text("agent.session.newTitle"));
+            output.push('\n');
         }
         let selected_plugins = app.selected_plugin_labels();
         if !selected_plugins.is_empty() {
@@ -867,6 +999,32 @@ impl Renderer {
                 "tui.nextPlugins",
                 &[format!("{}", selected_plugins.join(", "))],
             ));
+        }
+        let agent_status = app.agent_status();
+        if !agent_status.is_empty() {
+            output.push_str(&format!("{agent_status}\n"));
+        }
+        if app.agent_picker_open() {
+            output.push_str(&format!("{}\n", language.text("agent.team.title")));
+            for (_, label, _) in app.agent_entries() {
+                output.push_str(&format!("{label}\n"));
+            }
+            output.push_str(language.text("tui.agentsHint"));
+            output.push('\n');
+        }
+        if app.session_picker_open() {
+            output.push_str(&format!("{}\n", app.language().text("tui.sessionsTitle")));
+            let entries = app.session_picker_entries();
+            if entries.is_empty() {
+                output.push_str(app.language().text("tui.sessionsEmpty"));
+                output.push('\n');
+            }
+            for (label, _) in entries {
+                output.push_str(&label);
+                output.push('\n');
+            }
+            output.push_str(app.language().text("tui.sessionsHint"));
+            output.push('\n');
         }
         if app.model_picker_open() {
             output.push_str(&format!("{}：\n", app.model_picker_title()));
@@ -946,7 +1104,11 @@ impl Renderer {
                 .map(|value| format!(" · {}", reasoning_effort_label(language, value)))
                 .unwrap_or_default()
         );
-        let status = run_label(language, projection);
+        let status = if projection.is_none() && app.initialized() {
+            language.text("tui.ready").to_string()
+        } else {
+            run_label(language, projection)
+        };
         let left = format!("DeepCode  ·  {status}");
         let available = area
             .width
@@ -966,14 +1128,13 @@ impl Renderer {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
+                    Span::styled("DeepCode", Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        left,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
+                        format!("  ·  {status}"),
+                        Style::default().fg(Color::DarkGray),
                     ),
                     Span::raw(" ".repeat(gap)),
-                    Span::raw(right),
+                    Span::styled(right, Style::default().fg(Color::DarkGray)),
                 ]),
                 Line::from(Span::styled(
                     clipped(&workspace, area.width),
@@ -1014,6 +1175,10 @@ impl Renderer {
                 ));
             }
         }
+        let agents = app.agent_status();
+        if !agents.is_empty() {
+            metrics.insert(0, agents);
+        }
         let metrics = metrics.join(" · ");
         let hint = if area.width >= 84 {
             language.text("tui.footerHint")
@@ -1044,25 +1209,31 @@ impl Renderer {
                     Style::default().fg(Color::DarkGray),
                 )));
             } else {
+                let ended = app.projection().is_some_and(todo_run_ended);
                 for item in &todo.items {
                     let (marker, color) = match item.status.as_str() {
                         "completed" => ("✓", Color::Green),
+                        "inProgress" if ended => ("○", Color::DarkGray),
                         "inProgress" => ("●", Color::Cyan),
                         "blocked" => ("!", Color::Yellow),
                         _ => ("○", Color::DarkGray),
                     };
                     lines.push(Line::from(vec![
                         Span::styled(format!("{marker} "), Style::default().fg(color)),
-                        Span::raw(format!(
-                            "{} · {}",
-                            item.text,
-                            language.text(match item.status.as_str() {
-                                "completed" => "deepcodeGui.tasks.status.completed",
-                                "inProgress" => "deepcodeGui.tasks.status.inProgress",
-                                "blocked" => "deepcodeGui.tasks.status.blocked",
-                                _ => "deepcodeGui.tasks.status.pending",
-                            })
-                        )),
+                        Span::raw(item.text.clone()),
+                        Span::styled(
+                            format!(
+                                " · {}",
+                                language.text(match item.status.as_str() {
+                                    "completed" => "deepcodeGui.tasks.status.completed",
+                                    "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
+                                    "inProgress" => "deepcodeGui.tasks.status.inProgress",
+                                    "blocked" => "deepcodeGui.tasks.status.blocked",
+                                    _ => "deepcodeGui.tasks.status.pending",
+                                })
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]));
                 }
             }
@@ -1077,62 +1248,82 @@ impl Renderer {
                 lines.push(Line::from(note));
             }
         }
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .scroll((app.detail_scroll(), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .title(language.text("tui.tasksTitle")),
-                ),
+        self.draw_detail(
+            frame,
             area,
+            app,
+            Text::from(lines),
+            language.text("tui.tasksTitle").into(),
         );
+    }
+
+    // All document views measure the same wrapped body that they render. Borders
+    // and padding are outside the viewport, and resizing clamps its local offset.
+    fn draw_detail(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        app: &TuiApp,
+        text: Text<'_>,
+        title: String,
+    ) {
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .padding(Padding::new(1, 1, 0, 0))
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title_style(Style::default())
+            .title(title);
+        let body = block.inner(area);
+        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+        let maximum = paragraph
+            .line_count(body.width)
+            .saturating_sub(usize::from(body.height));
+        let offset = app.detail_offset(maximum, body.height);
+        frame.render_widget(block, area);
+        frame.render_widget(paragraph.scroll((offset, 0)), body);
+        if maximum > 0 && body.height > 0 && area.width > 0 {
+            draw_scrollbar(
+                frame,
+                Rect::new(area.right() - 1, body.y, 1, body.height),
+                maximum,
+                usize::from(offset),
+            );
+        }
     }
 
     fn draw_resource(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         let language = app.language();
         if let Some(detail) = app.detail_preview() {
-            frame.render_widget(
-                Paragraph::new(detail)
-                    .scroll((app.detail_scroll(), 0))
-                    .wrap(Wrap { trim: false })
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(language.text("tui.detailsTitle")),
-                    ),
+            self.draw_detail(
+                frame,
                 area,
+                app,
+                Text::raw(detail),
+                language.text("tui.detailsTitle").into(),
             );
-            return;
+        } else if let Some(resource) = app.resource_preview() {
+            let mut content = resource.content.clone();
+            if resource.truncated {
+                content.push_str(language.text("tui.partialResource"));
+            }
+            self.draw_detail(
+                frame,
+                area,
+                app,
+                Text::raw(content),
+                language.format("tui.readOnlyTitle", &[resource.logical_path.clone()]),
+            );
         }
-        let Some(resource) = app.resource_preview() else {
-            return;
-        };
-        frame.render_widget(
-            Paragraph::new(resource.content.as_str())
-                .scroll((app.detail_scroll(), 0))
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title(
-                    language.format("tui.readOnlyTitle", &[format!("{}", resource.logical_path)]),
-                )),
-            area,
-        );
     }
 
     fn draw_context(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-        let language = app.language();
-        let width = usize::from(area.width.saturating_sub(4)).max(1);
-        frame.render_widget(
-            Paragraph::new(context_lines(language, app.projection(), width))
-                .wrap(Wrap { trim: false })
-                .scroll((app.detail_scroll(), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(language.text("tui.contextTitle")),
-                ),
+        let width = usize::from(area.width.saturating_sub(2)).max(1);
+        self.draw_detail(
+            frame,
             area,
+            app,
+            Text::from(context_lines(app.language(), app.projection(), width)),
+            app.language().text("tui.contextTitle").into(),
         );
     }
 
@@ -1167,32 +1358,24 @@ impl Renderer {
         };
         let mut cache = self.transcript.borrow_mut();
         if cache.as_ref().is_none_or(|cache| cache.key != key) {
+            let paragraph =
+                Paragraph::new(self.transcript_text(body, app)).wrap(Wrap { trim: false });
+            let line_count = paragraph.line_count(body.width);
             *cache = Some(TranscriptCache {
                 key,
-                text: self.transcript_text(body, app),
+                paragraph,
+                line_count,
             });
         }
-        let paragraph =
-            Paragraph::new(cache.as_ref().unwrap().text.clone()).wrap(Wrap { trim: false });
-        let height = paragraph.line_count(body.width);
-        let maximum = height.saturating_sub(usize::from(body.height));
+        let cache = cache.as_mut().unwrap();
+        let maximum = cache.line_count.saturating_sub(usize::from(body.height));
+        app.set_viewport_height(body.height);
         let offset = app.transcript_offset(maximum);
-        frame.render_widget(
-            paragraph.scroll((offset.min(u16::MAX as usize) as u16, 0)),
-            body,
-        );
+        cache.paragraph =
+            std::mem::take(&mut cache.paragraph).scroll((offset.min(u16::MAX as usize) as u16, 0));
+        frame.render_widget(&cache.paragraph, body);
         if maximum > 0 {
-            frame.render_stateful_widget(
-                Scrollbar::default()
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(Some("│"))
-                    .thumb_symbol("┃")
-                    .track_style(Style::default().fg(Color::DarkGray))
-                    .thumb_style(Style::default().fg(Color::Gray)),
-                area,
-                &mut ScrollbarState::new(maximum + 1).position(offset),
-            );
+            draw_scrollbar(frame, area, maximum, offset);
         }
     }
 
@@ -1213,18 +1396,13 @@ impl Renderer {
                     .map(str::to_string);
                 match item {
                     TimelineItem::Message { value: message, .. } => {
-                        let color = if message.role == "user" {
-                            Color::Blue
-                        } else if message.role == "assistant" {
-                            Color::Reset
+                        let role_style = if message.role == "user" {
+                            Style::default().add_modifier(Modifier::BOLD)
                         } else {
-                            Color::DarkGray
+                            Style::default().fg(Color::DarkGray)
                         };
                         let role = kind_label(language, &message.role);
-                        lines.push(Line::from(Span::styled(
-                            role.to_string(),
-                            Style::default().fg(color).add_modifier(Modifier::BOLD),
-                        )));
+                        lines.push(Line::from(Span::styled(role.to_string(), role_style)));
                         if message.role == "assistant" {
                             lines.extend(crate::markdown::render(
                                 message.display_text(),
@@ -1237,7 +1415,7 @@ impl Renderer {
                         lines.extend(crate::markdown::render(
                             &source_references(language, message.source_references.as_ref()),
                             area.width,
-                            Style::default(),
+                            Style::default().fg(Color::DarkGray),
                         ));
                         if !message.filesystem_references.is_empty() {
                             lines.push(Line::from(Span::styled(
@@ -1263,12 +1441,12 @@ impl Renderer {
                         lines.extend(crate::markdown::render(
                             narrative.display_text(),
                             area.width,
-                            Style::default().fg(Color::Gray),
+                            Style::default(),
                         ));
                         lines.extend(crate::markdown::render(
                             &source_references(language, narrative.source_references.as_ref()),
                             area.width,
-                            Style::default(),
+                            Style::default().fg(Color::DarkGray),
                         ));
                     }
                     TimelineItem::Plan { value: plan, .. } => {
@@ -1276,7 +1454,7 @@ impl Renderer {
                     }
                     TimelineItem::ToolGroup { activities, .. } => {
                         for activity in activities {
-                            push_tool_summary(language, &mut lines, activity);
+                            push_activity_summary(language, &mut lines, activity);
                         }
                     }
                 }
@@ -1330,30 +1508,6 @@ impl Renderer {
                     }
                 }
             }
-            for activity in projection.activities.iter().filter(|activity| {
-                activity.kind != "tool"
-                    && !(activity.kind == "run"
-                        && matches!(
-                            activity.status.as_str(),
-                            "requested" | "active" | "completed"
-                        ))
-            }) {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "{} [{}] · {}",
-                        kind_label(language, &activity.kind),
-                        status_label(language, &activity.status),
-                        activity.label
-                    ),
-                    Style::default().fg(if activity.status == "completed" {
-                        Color::Green
-                    } else if matches!(activity.status.as_str(), "failed" | "indeterminate") {
-                        Color::Red
-                    } else {
-                        Color::Yellow
-                    }),
-                )));
-            }
         }
         if let Some(error) = app.projection().and_then(|p| p.terminal_error.as_ref()) {
             lines.push(Line::from(Span::styled(
@@ -1378,10 +1532,12 @@ impl Renderer {
             } else {
                 vec!["", "  DeepCode", ""]
             };
-            lines.extend(
-                logo.into_iter()
-                    .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))),
-            );
+            lines.extend(logo.into_iter().map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ))
+            }));
             lines.push(Line::from(""));
             lines.push(Line::from(language.text("tui.welcome")));
             lines.push(Line::from(Span::styled(
@@ -1409,15 +1565,21 @@ impl Renderer {
         }
         let title = clipped(&title, area.width.saturating_sub(2));
         let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .borders(Borders::TOP)
+            // Preserve the editor's wrap width and cursor geometry without an enclosing box.
+            .padding(Padding::new(2, 2, 0, 1))
             .title(title)
+            .title_style(Style::default().fg(Color::DarkGray))
             .border_style(Style::default().fg(Color::DarkGray));
-        let inner = block.inner(area).inner(Margin::new(1, 0));
+        let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
+        frame.render_widget(
+            Paragraph::new("›").style(Style::default().fg(Color::Cyan)),
+            Rect::new(area.x, inner.y, 1, 1),
+        );
         let lines = input_lines(app.input(), inner.width);
         let column = lines
             .last()
@@ -1432,6 +1594,130 @@ impl Renderer {
         frame.set_cursor_position((inner.x + column.min(inner.width - 1), inner.y + row));
     }
 
+    fn draw_command_picker(&self, frame: &mut Frame<'_>, anchor: Rect, app: &TuiApp) {
+        if anchor.height == 0 || anchor.width == 0 {
+            return;
+        }
+        let show_hint = anchor.height > 1;
+        let visible = usize::from(anchor.height.saturating_sub(u16::from(show_hint))).min(7);
+        let entries = app.command_picker_entries(visible);
+        let height = entries.len() as u16 + u16::from(show_hint);
+        let area = Rect::new(
+            anchor.x,
+            anchor.bottom().saturating_sub(height),
+            anchor.width,
+            height,
+        );
+        let mut lines = Vec::new();
+        let command_width = entries
+            .iter()
+            .map(|entry| entry.command.len())
+            .max()
+            .unwrap_or(0);
+        for entry in entries {
+            let marker = if entry.highlighted { ">" } else { " " };
+            let label = format!("{marker} {:command_width$} ", entry.command);
+            let description_width = area.width.saturating_sub(label.len() as u16);
+            lines.push(Line::from(vec![
+                Span::styled(clipped(&label, area.width), picker_style(entry.highlighted)),
+                Span::styled(
+                    clipped(entry.description, description_width),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+        if show_hint {
+            lines.push(Line::from(Span::styled(
+                clipped(app.language().text("tui.commandPickerHint"), area.width),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        frame.render_widget(Clear, area);
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn draw_agent_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
+        let entries = app
+            .agent_entries()
+            .into_iter()
+            .map(|(_, label, selected)| (label, selected))
+            .collect::<Vec<_>>();
+        let visible = usize::from(area.height.saturating_sub(2)).max(1);
+        let selected = entries
+            .iter()
+            .position(|(_, selected)| *selected)
+            .unwrap_or(0);
+        let start = selected.saturating_sub(visible - 1);
+        let mut lines: Vec<Line<'_>> = entries
+            .iter()
+            .skip(start)
+            .take(visible)
+            .map(|(label, selected)| {
+                Line::from(Span::styled(
+                    format!("{} {label}", if *selected { ">" } else { " " }),
+                    picker_style(*selected),
+                ))
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(app.language().text("tui.agentsEmpty")));
+        }
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(format!(
+                        " {} · ↑/↓ · Enter · Esc ",
+                        app.language().text("agent.team.title")
+                    )),
+            ),
+            area,
+        );
+    }
+
+    fn draw_session_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
+        let entries = app.session_picker_entries();
+        let visible = usize::from(area.height.saturating_sub(2)).max(1);
+        let selected = entries
+            .iter()
+            .position(|(_, selected)| *selected)
+            .unwrap_or(0);
+        let start = selected.saturating_sub(visible - 1);
+        let mut lines: Vec<Line<'_>> = entries
+            .iter()
+            .skip(start)
+            .take(visible)
+            .map(|(label, selected)| {
+                Line::from(Span::styled(
+                    format!("{} {label}", if *selected { ">" } else { " " }),
+                    picker_style(*selected),
+                ))
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(app.language().text("tui.sessionsEmpty")));
+        }
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(format!(
+                        " {} · ↑/↓ · Enter · Esc ",
+                        app.language().text("tui.sessionsTitle")
+                    )),
+            ),
+            area,
+        );
+    }
+
     fn draw_model_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         let language = app.language();
         let entries = app.model_picker_entries();
@@ -1440,7 +1726,7 @@ impl Renderer {
             .map(|(_, label, selected)| {
                 Line::from(Span::styled(
                     format!("{} {label}", if *selected { ">" } else { " " }),
-                    Style::default().fg(if *selected { Color::Cyan } else { Color::Reset }),
+                    picker_style(*selected),
                 ))
             })
             .collect();
@@ -1455,10 +1741,15 @@ impl Renderer {
         frame.render_widget(Clear, area);
         frame.render_widget(
             Paragraph::new(lines).scroll((scroll as u16, 0)).block(
-                Block::default().borders(Borders::ALL).title(format!(
-                    " {} · ↑/↓ · Enter · Esc ",
-                    app.model_picker_title()
-                )),
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(format!(
+                        " {} · ↑/↓ · Enter · Esc ",
+                        app.model_picker_title()
+                    )),
             ),
             area,
         );
@@ -1509,13 +1800,7 @@ impl Renderer {
                 } else {
                     ""
                 };
-                let style = if entry.highlighted {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Reset)
-                };
+                let style = picker_style(entry.highlighted);
                 let width = area
                     .width
                     .saturating_sub(if borders == Borders::ALL { 2 } else { 0 });
@@ -1541,10 +1826,31 @@ impl Renderer {
             .unwrap_or_else(|| language.text("tui.pluginPickerTitle").to_string());
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(lines).block(Block::default().borders(borders).title(title)),
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(borders)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .title(title),
+            ),
             area,
         );
     }
+}
+
+fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, maximum: usize, offset: usize) {
+    frame.render_stateful_widget(
+        Scrollbar::default()
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("┃")
+            .track_style(Style::default().fg(Color::DarkGray))
+            .thumb_style(Style::default().fg(Color::Gray)),
+        area,
+        &mut ScrollbarState::new(maximum + 1).position(offset),
+    );
 }
 
 const CONTEXT_PARTITIONS: [(&str, &str); 7] = [
@@ -1574,9 +1880,7 @@ fn context_lines(
         lines.push(Line::from(vec![
             Span::styled(
                 language.text("tui.contextPrefix"),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
                 "{} / {} Token · {}",
@@ -1607,7 +1911,7 @@ fn context_lines(
     lines.push(Line::from(vec![
         Span::styled(
             language.text("tui.lastRequestCacheTitle"),
-            Style::default().fg(Color::Cyan),
+            Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw(detail),
     ]));
@@ -1616,9 +1920,7 @@ fn context_lines(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         language.text("tui.requestTitle"),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        Style::default().add_modifier(Modifier::BOLD),
     )));
     let Some(receipt) = current_context_receipt(projection) else {
         lines.push(Line::from(Span::styled(
@@ -1916,41 +2218,57 @@ fn round_change_lines(
 }
 
 fn timeline_items(projection: &SessionProjection) -> Vec<TimelineItem<'_>> {
+    let messages: std::collections::HashMap<_, _> = projection
+        .messages
+        .iter()
+        .map(|message| (message.message_id.as_str(), message))
+        .collect();
+    let narratives: std::collections::HashMap<_, _> = projection
+        .narratives
+        .iter()
+        .map(|narrative| (narrative.narrative_id.as_str(), narrative))
+        .collect();
+    let plans: std::collections::HashMap<_, _> = projection
+        .plans
+        .iter()
+        .map(|plan| ((plan.plan_id.as_str(), plan.revision), plan))
+        .collect();
+    let activities: std::collections::HashMap<_, _> = projection
+        .activities
+        .iter()
+        .map(|activity| (activity.activity_id.as_str(), activity))
+        .collect();
     projection
         .timeline
         .iter()
         .map(|item| match item {
             SessionTimelineItem::Message { message_id, .. } => TimelineItem::Message {
-                value: projection
-                    .messages
-                    .iter()
-                    .find(|message| message.message_id == *message_id)
+                value: messages
+                    .get(message_id.as_str())
+                    .copied()
                     .expect("validated Session timeline message reference"),
             },
             SessionTimelineItem::Narrative { narrative_id, .. } => TimelineItem::Narrative {
-                value: projection
-                    .narratives
-                    .iter()
-                    .find(|narrative| narrative.narrative_id == *narrative_id)
+                value: narratives
+                    .get(narrative_id.as_str())
+                    .copied()
                     .expect("validated Session timeline narrative reference"),
             },
             SessionTimelineItem::Plan {
                 plan_id, revision, ..
             } => TimelineItem::Plan {
-                value: projection
-                    .plans
-                    .iter()
-                    .find(|plan| plan.plan_id == *plan_id && plan.revision == *revision)
+                value: plans
+                    .get(&(plan_id.as_str(), *revision))
+                    .copied()
                     .expect("validated Session timeline plan reference"),
             },
             SessionTimelineItem::ToolGroup { activity_ids, .. } => TimelineItem::ToolGroup {
                 activities: activity_ids
                     .iter()
                     .map(|activity_id| {
-                        projection
-                            .activities
-                            .iter()
-                            .find(|activity| activity.activity_id == *activity_id)
+                        activities
+                            .get(activity_id.as_str())
+                            .copied()
                             .expect("validated Session timeline activity reference")
                     })
                     .collect(),
@@ -2011,7 +2329,7 @@ fn push_timeline_plan_lines(language: Language, lines: &mut Vec<Line<'_>>, plan:
                 status_label(language, &plan.status).to_string(),
             ],
         ),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(Color::DarkGray),
     )));
     lines.push(Line::from(Span::styled(
         plan.title.clone(),
@@ -2024,19 +2342,9 @@ fn push_timeline_plan_lines(language: Language, lines: &mut Vec<Line<'_>>, plan:
     }
 }
 
-fn render_tool_plain(language: Language, output: &mut String, activity: &ActivityProjection) {
-    let operation = activity
-        .tool
-        .as_ref()
-        .map(|tool| tool.operation.as_str())
-        .unwrap_or(activity.label.as_str());
-    output.push_str(&language.format(
-        "tui.toolSummaryPlain",
-        &[
-            format!("{}", operation),
-            status_label(language, &activity.status).to_string(),
-        ],
-    ));
+fn render_activity_plain(language: Language, output: &mut String, activity: &ActivityProjection) {
+    output.push_str(&activity_summary(language, activity));
+    output.push('\n');
     for error in tool_error_lines(activity) {
         output.push_str(&error);
         output.push('\n');
@@ -2188,6 +2496,16 @@ fn tool_progress_details(language: Language, activity: &ActivityProjection) -> V
     lines
 }
 
+fn todo_run_ended(projection: &SessionProjection) -> bool {
+    let Some(todo) = projection.todo_list.as_ref() else {
+        return false;
+    };
+    projection
+        .token_usage_history
+        .iter()
+        .any(|run| run.run_id == todo.run_id && run.outcome.is_some())
+}
+
 fn todo_note(language: Language, projection: &SessionProjection) -> Option<String> {
     let todo = projection.todo_list.as_ref()?;
     if todo.items.is_empty() {
@@ -2198,10 +2516,7 @@ fn todo_note(language: Language, projection: &SessionProjection) -> Option<Strin
         .iter()
         .filter(|item| item.status != "completed")
         .count();
-    let ended = projection
-        .token_usage_history
-        .iter()
-        .any(|run| run.run_id == todo.run_id && run.outcome.is_some());
+    let ended = todo_run_ended(projection);
     (ended && remaining > 0)
         .then(|| language.format("tui.todoEndedRemaining", &[remaining.to_string()]))
 }
@@ -2218,9 +2533,11 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
         output.push_str(language.text("tui.empty"));
         return;
     }
+    let ended = todo_run_ended(projection);
     for item in &todo.items {
         let marker = match item.status.as_str() {
             "completed" => "[x]",
+            "inProgress" if ended => "[ ]",
             "inProgress" => "[>]",
             "blocked" => "[!]",
             _ => "[ ]",
@@ -2230,6 +2547,7 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
             item.text,
             language.text(match item.status.as_str() {
                 "completed" => "deepcodeGui.tasks.status.completed",
+                "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
                 "inProgress" => "deepcodeGui.tasks.status.inProgress",
                 "blocked" => "deepcodeGui.tasks.status.blocked",
                 _ => "deepcodeGui.tasks.status.pending",
@@ -2238,9 +2556,21 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
     }
 }
 
+fn picker_style(selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Reset)
+    }
+}
+
 fn activity_color(status: &str) -> Color {
     if status == "completed" {
         Color::Green
+    } else if status == "active" {
+        Color::Cyan
     } else if matches!(status, "failed" | "denied" | "indeterminate") {
         Color::Red
     } else {
@@ -2474,6 +2804,7 @@ mod approval_presentation_tests {
             "narratives":[],"timeline":[],"plans":[],"interactions":[],"contextCompositions":[],"tokenUsageHistory":[],"activities":[],"artifacts":[],"deliverables":[],
             "permissionOverrides":{},"effectivePermissions":null,"shellAuthorizations":[],
             "tokenUsage":{"providerCallCount":0,"reportedCallCount":0,"inputTokens":0,"outputTokens":0,"cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
+            "totalTokenUsage": {"providerCallCount":0,"reportedCallCount":0,"inputTokens":0,"outputTokens":0,"cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
             "run":{"runId":"run:test","profileId":"profile:test","workspaceBindings":[],"status":"running"},
             "pendingApproval":{"approvalId":"approval:test","runId":"run:test","callId":"call:test","sequence":2,"createdAt":"now",
                 "preview":{"summary":"Inspect","effects":["process"],"logicalTargets":["."],"approvalReviewer":"agent",

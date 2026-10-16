@@ -78,6 +78,7 @@ pub(crate) fn command(
     temp: &Path,
     files: &crate::file_access::FileAccessScope,
 ) -> KernelResult<(PathBuf, Vec<OsString>)> {
+    validate_write_scope(root, mode, targets, temp, files)?;
     let helper = executable().ok_or_else(|| unavailable(&shell.tool, "Install bubblewrap in the selected Linux/WSL2 environment and refresh its environment snapshot."))?;
     let filter = temp.join("network-filter.bpf");
     // No external sockets, including WSL's native-process bridge. Local anonymous
@@ -169,6 +170,9 @@ pub(crate) fn command(
             target.path.clone().into(),
         ]);
     }
+    // Synthetic ancestors must not accept writes that disappear with the
+    // sandbox. This non-recursive remount preserves the explicit writable binds.
+    command.extend(["--remount-ro", "/"].into_iter().map(OsString::from));
     command.extend(["--seccomp", "3", "--"].into_iter().map(OsString::from));
     command.push(shell.executable.as_os_str().into());
     command.extend(args.iter().map(OsString::from));

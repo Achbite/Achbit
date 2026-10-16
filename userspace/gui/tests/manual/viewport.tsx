@@ -3,6 +3,7 @@
 // Passing this partial UI check does not constitute system acceptance.
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { COMMAND_REPLY_VERSION, type CommandReply } from '@deepcode/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { BufferedMarkdown } from '../../src/components/local-agent/BufferedMarkdown';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
@@ -23,7 +24,7 @@ const question = { interactionId: 'question:preview', prompt: '本次测试采�
 const approval = { approvalId: 'approval:preview', preview: { summary: '执行编译与测试命令', effects: ['external'], logicalTargets: ['host:container'] } };
 useLocalAgentStore.setState({ sessionId: initialSessionId, loading: false, catalogBusy: false, submitting: false,
   profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto' }] as never, selectedProfileId: 'profile:preview',
-  projection: { sessionId: initialSessionId, contextCompositions: [], queuedInputs: [], plans: [] } as never,
+  projection: { sessionId: initialSessionId, revision: 0, contextCompositions: [], queuedInputs: [], plans: [] } as never,
 });
 
 function Preview() {
@@ -47,9 +48,13 @@ function Preview() {
     } as never });
   };
   useEffect(() => {
-    const finish = (value: string) => {
+    const finish = (value: string): CommandReply => {
       setDecision('message'); setCompleted(false); setDisplayed(false);
       setText((current) => `${current}\n\n${value}。继续执行后续检查。`);
+      const projection = useLocalAgentStore.getState().projection!;
+      const revision = projection.revision + 1;
+      useLocalAgentStore.setState({ projection: { ...projection, revision } });
+      return { schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted', commandId: `command:viewport:${revision}`, sessionId, revision };
     };
     useLocalAgentStore.setState({ respondApproval: async (decision) => finish(`权限已${decision === 'allow' ? '允许' : '拒绝'}`),
       respondPlan: async () => finish('计划已确认'), respondInteraction: async () => finish('问题已回答'),
@@ -91,7 +96,8 @@ function Preview() {
         </div>
         {viewport.showJumpToLatest && <button className="local-agent__jump-latest" aria-label="前往最新消息" onClick={viewport.scrollToLatest}>↓</button>}
       </div>
-      <ConversationComposer composer={composer} language="zh-CN" uiActionError={null} />
+      <ConversationComposer composer={composer} language="zh-CN" uiActionError={null}
+        onDismissUiActionError={() => {}} onEditBrowserReview={() => setText('已选择浏览器批注。')} />
     </main>
   </>;
 }

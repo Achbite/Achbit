@@ -107,6 +107,33 @@ pub(crate) async fn fs_browse(Query(query): Query<FileQuery>) -> Json<ApiRespons
     }
 }
 
+// Manual preview neither attaches the file nor changes conversation authority.
+pub(crate) async fn fs_read(Json(body): Json<OpenWorkspaceRequest>) -> Response {
+    match tokio::task::spawn_blocking(move || {
+        deepcode_host_connection::selected_file::read(std::path::Path::new(&body.path))
+    })
+    .await
+    {
+        Ok(Ok(bytes)) => (
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        result => {
+            let message = match result {
+                Ok(Err(error)) => error,
+                Err(error) => error.to_string(),
+                _ => unreachable!(),
+            };
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                ApiResponse::error("file_read_failed", message),
+            )
+                .into_response()
+        }
+    }
+}
+
 fn host_workspace_payload(output: HostWorkspaceOutput) -> Result<Value, KernelErrorEnvelope> {
     match output {
         HostWorkspaceOutput::BindingResolved(value) => encode_host_payload(value),

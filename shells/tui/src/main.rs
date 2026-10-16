@@ -1,17 +1,23 @@
 mod app;
 #[path = "../../shared/conversation_input.rs"]
 mod conversation_input;
+mod fonts;
 #[path = "../../shared/i18n.rs"]
 mod i18n;
+#[cfg(windows)]
+mod windows_terminal;
 use i18n::Language;
 mod markdown;
+mod math;
 mod renderer;
+#[path = "../../shared/session_navigation.rs"]
+mod session_navigation;
 
 use app::{TuiApp, TuiHostOptions};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode,
-        KeyEventKind, KeyModifiers, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -32,17 +38,35 @@ async fn main() {
     let values: Vec<String> = env::args().skip(1).collect();
     // Language used before connecting only affects startup diagnostics.
     let mut language = startup_language(&values);
-    let args = match Args::parse(values) {
+    let args = match Args::parse(values.clone()) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("{error}");
             print_help(language);
-            std::process::exit(2);
+            exit(2);
         }
     };
     if args.help {
         print_help(language);
         return;
+    }
+    let interactive = !args.smoke
+        && !args.font_settings
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal();
+    #[cfg(windows)]
+    if interactive && !args.in_place && !windows_terminal::is_owned() {
+        match windows_terminal::launch(&values) {
+            Ok(status) => exit(status.code().unwrap_or(1)),
+            Err(error) => {
+                eprintln!("DeepCode TUI window: {error}");
+                exit(1);
+            }
+        }
+    }
+    if args.font != "follow" && (!interactive || args.in_place || !cfg!(windows)) {
+        eprintln!("{}", language.text("tui.font.requiresWindow"));
+        exit(2);
     }
     let bootstrap = match KernelBootstrap::connect(
         KernelBootstrapOptions::new(args.api).auto_start(!args.no_auto_start_kernel),
@@ -55,16 +79,40 @@ async fn main() {
                 "{}",
                 language.format("tui.connectionFailed", &[error.to_string()])
             );
-            std::process::exit(1);
+            exit(1);
         }
     };
+    if args.font_settings {
+        match bootstrap
+            .client()
+            .user_settings()
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|settings| fonts::settings_for_window(&settings))
+        {
+            Ok(settings) => println!("{settings}"),
+            Err(error) => {
+                eprintln!("{}", language.format("tui.settingsReadFailed", &[error]));
+                drop(bootstrap);
+                exit(1);
+            }
+        }
+        return;
+    }
     language = match language_for_app(bootstrap.client(), args.language).await {
         Ok(language) => language,
         Err(error) => {
             eprintln!("{}", language.format("tui.settingsReadFailed", &[error]));
-            std::process::exit(1);
+            exit(1);
         }
     };
+    #[cfg(windows)]
+    if interactive && windows_terminal::is_owned() {
+        if let Err(error) = fonts::apply(&args.font, language, bootstrap.client()).await {
+            eprintln!("{}", language.format("tui.font.failed", &[error]));
+            exit(1);
+        }
+    }
     let mut app = TuiApp::new(
         bootstrap.client().clone(),
         Renderer::default(),
@@ -75,9 +123,11 @@ async fn main() {
             plugin_uris: args.plugins,
         },
     );
-    if let Err(error) = app.bootstrap().await {
-        eprintln!("{}", language.format("tui.initializationFailed", &[error]));
-        std::process::exit(1);
+    if !interactive {
+        if let Err(error) = app.bootstrap().await {
+            eprintln!("{}", language.format("tui.initializationFailed", &[error]));
+            exit(1);
+        }
     }
 
     if args.smoke {
@@ -85,7 +135,7 @@ async fn main() {
         return;
     }
 
-    let result = if io::stdin().is_terminal() && io::stdout().is_terminal() {
+    let result = if interactive {
         run_terminal(app).await.map(|_| None)
     } else {
         run_plain(app).await
@@ -93,14 +143,22 @@ async fn main() {
     match result {
         Ok(Some(message)) => {
             eprintln!("{message}");
-            std::process::exit(EXIT_ACTION_REQUIRED);
+            exit(EXIT_ACTION_REQUIRED);
         }
         Ok(None) => {}
         Err(error) => {
             eprintln!("{}", language.format("tui.failed", &[error.to_string()]));
-            std::process::exit(1);
+            exit(1);
         }
     }
+    #[cfg(windows)]
+    windows_terminal::finish(0);
+}
+
+fn exit(code: i32) -> ! {
+    #[cfg(windows)]
+    windows_terminal::finish(code);
+    std::process::exit(code)
 }
 
 fn startup_language(values: &[String]) -> Language {
@@ -131,6 +189,9 @@ struct Args {
     api: Option<String>,
     help: bool,
     smoke: bool,
+    font_settings: bool,
+    font: String,
+    in_place: bool,
     workspace: Option<PathBuf>,
     session_id: Option<String>,
     plugins: Vec<String>,
@@ -145,6 +206,9 @@ impl Args {
             api: None,
             help: false,
             smoke: false,
+            font_settings: false,
+            font: "follow".into(),
+            in_place: false,
             workspace: None,
             session_id: None,
             plugins: Vec::new(),
@@ -155,6 +219,13 @@ impl Args {
             match values[index].as_str() {
                 "--help" | "-h" => parsed.help = true,
                 "--smoke" => parsed.smoke = true,
+                "--font-settings" => parsed.font_settings = true,
+                "--in-place" => parsed.in_place = true,
+                "--font" => {
+                    index += 1;
+                    parsed.font = required_arg(language, &values, index, "--font")?.to_string();
+                    fonts::validate_choice(&parsed.font, language)?;
+                }
                 "--language" => {
                     index += 1;
                     let value = required_arg(language, &values, index, "--language")?;
@@ -204,7 +275,45 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = ratatui::Terminal::new(backend)?;
     terminal.clear()?;
+    // The existing initialization view is visible before selected history is read.
+    terminal.draw(|frame| app.renderer().draw(frame, &app))?;
     let mut input_task = spawn_terminal_event_task();
+    let initialization = {
+        let initialize = app.bootstrap();
+        tokio::pin!(initialize);
+        loop {
+            tokio::select! {
+                result = &mut initialize => break result.map(|_| true).map_err(|error| {
+                    io::Error::other(language.format("tui.initializationFailed", &[error]))
+                }),
+                result = &mut input_task => {
+                    input_task = spawn_terminal_event_task();
+                    match terminal_event_result(language, result) {
+                        Ok(Some(CrosstermEvent::Key(key))) if key.kind == KeyEventKind::Press
+                            && key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(false),
+                        Err(error) => break Err(error),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+    if !matches!(initialization, Ok(true)) {
+        let pump = terminal_event_result(language, input_task.await).map(|_| ());
+        return initialization.map(|_| ()).and(pump);
+    }
+    terminal.draw(|frame| app.renderer().draw(frame, &app))?;
+    if let Some(path) = env::var_os("DEEPCODE_TUI_READY_FILE") {
+        // Acknowledge only a bootstrapped, drawn TUI, not merely a spawned process.
+        let path = PathBuf::from(path);
+        let temporary = path.with_extension("tmp");
+        std::fs::write(
+            &temporary,
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )?;
+        std::fs::rename(temporary, path)?;
+    }
     let mut refresh = tokio::time::interval(Duration::from_millis(150));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let loop_result = async {
@@ -227,13 +336,25 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                 continue;
             };
             let keep_running = match next_event {
+                CrosstermEvent::Key(key)
+                    if key.kind == KeyEventKind::Press && app.command_completion_key(key.code) =>
+                {
+                    true
+                }
                 CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.interrupt().await;
                         false
                     }
                     KeyCode::Esc => {
-                        if app.model_picker_open() {
+                        if app.agent_picker_open() {
+                            app.close_agent_picker();
+                        } else if app.viewing_agent() {
+                            app.back_from_agent();
+                            app.poll().await;
+                        } else if app.session_picker_open() {
+                            app.close_session_picker();
+                        } else if app.model_picker_open() {
                             app.model_picker_back();
                         } else if app.plugin_picker_open() {
                             app.dismiss_plugin_picker();
@@ -246,8 +367,18 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         app.backspace_input();
                         true
                     }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.push_input('\n');
+                        true
+                    }
                     KeyCode::Enter => {
-                        if app.model_picker_open() {
+                        if app.agent_picker_open() {
+                            app.select_agent().await;
+                            true
+                        } else if app.session_picker_open() {
+                            app.session_picker_select().await;
+                            true
+                        } else if app.model_picker_open() {
                             app.model_picker_select();
                             true
                         } else if app.plugin_picker_open() && app.plugin_picker_select() {
@@ -258,13 +389,31 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                         }
                     }
                     KeyCode::Tab => {
-                        if app.model_picker_open() {
+                        if app.session_picker_open() {
+                            app.session_picker_move(1);
+                        } else if app.model_picker_open() {
                             app.model_picker_select();
                         } else if app.plugin_picker_open() {
                             app.plugin_picker_select();
                         } else {
                             app.push_input('\t');
                         }
+                        true
+                    }
+                    KeyCode::Up if app.agent_picker_open() => {
+                        app.agent_picker_move(-1);
+                        true
+                    }
+                    KeyCode::Down if app.agent_picker_open() => {
+                        app.agent_picker_move(1);
+                        true
+                    }
+                    KeyCode::Up if app.session_picker_open() => {
+                        app.session_picker_move(-1);
+                        true
+                    }
+                    KeyCode::Down if app.session_picker_open() => {
+                        app.session_picker_move(1);
                         true
                     }
                     KeyCode::Up if app.model_picker_open() => {
@@ -298,7 +447,7 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
                     _ => true,
                 },
                 CrosstermEvent::Paste(text) => {
-                    app.push_input_text(&text);
+                    app.push_input_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
                     true
                 }
                 CrosstermEvent::Mouse(mouse) => {
@@ -408,8 +557,18 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        if let Err(error) = execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        ) {
+            let _ = execute!(
+                io::stdout(),
+                DisableBracketedPaste,
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            );
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -419,7 +578,12 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
     }
 }
@@ -460,6 +624,19 @@ mod tests {
                 "plugin://pdf@builtin".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn font_settings_is_a_read_only_launcher_request() {
+        let args = Args::parse(vec![
+            "--font-settings".into(),
+            "--api".into(),
+            "http://127.0.0.1:3000".into(),
+        ])
+        .unwrap();
+        assert!(args.font_settings);
+        assert_eq!(args.api.as_deref(), Some("http://127.0.0.1:3000"));
+        assert!(!Args::parse(vec![]).unwrap().font_settings);
     }
 
     #[test]

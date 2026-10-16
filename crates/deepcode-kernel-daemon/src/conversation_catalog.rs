@@ -568,14 +568,14 @@ pub(crate) fn clean_title(value: &str) -> Result<String, String> {
 }
 
 pub(crate) fn automatic_conversation_title(value: &str) -> String {
-    value
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .chars()
-        .take(48)
-        .collect()
+    let line = value.lines().next().unwrap_or_default().trim();
+    let mut chars = line.chars();
+    let mut title: String = chars.by_ref().take(48).collect();
+    // 超出上限时留一个可见标记，避免标题在末尾无声断开。
+    if chars.next().is_some() {
+        title.push('…');
+    }
+    title
 }
 
 fn verify_version(connection: &Connection) -> Result<(), String> {
@@ -831,5 +831,21 @@ mod tests {
         assert!(ConversationCatalog::load(&path)
             .unwrap_err()
             .contains("schema"));
+    }
+
+    #[test]
+    fn automatic_conversation_title_marks_clipped_first_lines() {
+        assert_eq!(automatic_conversation_title("简短标题"), "简短标题");
+        let exact_limit = "长".repeat(48);
+        assert_eq!(automatic_conversation_title(&exact_limit), exact_limit);
+        let over_limit = "长".repeat(49);
+        assert_eq!(
+            automatic_conversation_title(&over_limit),
+            format!("{}…", "长".repeat(48))
+        );
+        assert_eq!(
+            automatic_conversation_title("第一行标题\n第二行内容"),
+            "第一行标题"
+        );
     }
 }

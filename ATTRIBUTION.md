@@ -10,7 +10,7 @@ Project-specific contributions include:
 - A minimal cross-layer protocol, append-only Session journal, and shared projection reducer.
 - A controlled Kernel tool catalog with one user-decision boundary immediately before uncovered effects.
 - Durable Kernel tool-result records used for exact replay and restart recovery.
-- Editor, DeepCode-GUI, CLI, and TUI shells that consume one shared Session projection.
+- DeepCode-GUI, CLI, and TUI shells that consume one shared Session projection.
 - Plugin-shaped Skill and MCP contributions composed without introducing another Agent Loop.
 
 ## Design References
@@ -20,7 +20,7 @@ Some architecture, workflow, and UX ideas are informed by public coding-agent to
 Preferred wording:
 
 - "architecture / workflow / UX reference; not an upstream project"
-- "Monaco-based editor surface; limited VS Code-style workspace interoperability"
+- "CodeMirror-based code and diff views; limited VS Code-style workspace interoperability"
 - "best-effort support and optimization profiles for DeepSeek V4-compatible deployments"
 - "independent engineering adaptation and respectful acknowledgement of the DeepSeek team's contributions to open AI research, frontier model development, and the broader pursuit of AGI"
 

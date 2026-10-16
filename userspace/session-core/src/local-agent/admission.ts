@@ -1,10 +1,12 @@
-import { isManagedProcessSnapshot } from '@deepcode/protocol';
+import { decodeAgentCapabilities, isManagedProcessSnapshot } from '@deepcode/protocol';
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import { permissionSettings } from '@deepcode/protocol';
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
+import { admitModelView } from './modelView.js';
+import { controlWait, pendingWakeups } from './sessionWake.js';
+import { requestResourceBindings } from './workspaceBindings.js';
 
 /** New writes are admitted here; replay preserves already-recorded failure facts. */
 export function admitSessionEvents(
@@ -53,7 +55,7 @@ function admitCommandBatch(current: LoopSnapshot, command: ConversationCommand, 
   const todos = events.filter(event => event.type === 'todo.updated');
   const expected = { confirm: 'plan.confirmed', requestRevision: 'plan.revision.requested', cancel: 'plan.cancelled' } as const;
   if (decisions.length !== 1 || decisions[0].type !== expected[command.response.kind]
-    || todos.length !== (command.response.kind === 'confirm' && current.state.todoList?.runId !== command.runId ? 1 : 0)) throw new Error('plan_command_event_batch_invalid');
+    || todos.length !== 0) throw new Error('plan_command_event_batch_invalid');
 }
 
 function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
@@ -72,10 +74,14 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     throw new Error('session_event_run_not_active');
   }
   switch (event.type) {
+    case 'agent.delegation.changed':
+      if (typeof event.payload.enabled !== 'boolean' || state.agentDelegationEnabled === event.payload.enabled) throw new Error('agent_delegation_change_invalid');
+      break;
     case 'session.created':
       if (state.revision !== 0) throw new Error('session_creation_duplicate');
       break;
     case 'run.started':
+      decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
       if (state.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(state.run.status)) {
         throw new Error('session_run_already_active');
       }
@@ -91,10 +97,6 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'message.committed':
       if (event.payload.role === 'user' && event.runId && event.payload.filesystemReferences?.length) {
         if (pendingProvider || pendingToolRequests(events, event.runId).length) throw new Error('input_resources_turn_active');
-        if (event.payload.filesystemReferences.some(reference => reference.kind === 'directory'
-          && !state.run?.workspaceBindings.some(binding => binding.workspaceId === reference.workspaceId))) {
-          throw new Error('input_resources_directory_change');
-        }
       }
     case 'narrative.committed':
       if ('providerRequestId' in event.payload) {
@@ -109,6 +111,22 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'tool.requested':
     case 'plan.published':
     case 'session.control.rejected':
+    case 'agent.control.completed':
+    case 'session.control.completed':
+      if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
+        const wait = controlWait(event.payload.result);
+        if (wait) {
+          const operation = event.payload.operation;
+          const composition = events.findLast(item => item.type === 'context.composed' && item.runId === event.runId
+            && item.payload.purpose === 'agent');
+          if (composition?.type !== 'context.composed' || wait.afterSequence !== composition.payload.modelView?.throughSequence
+            || operation.action !== 'wait' && !(event.type === 'agent.control.completed' && operation.action === 'spawn'
+              && operation.delivery === 'wait' && typeof event.payload.result.taskId === 'string')
+            || wait.deadline !== undefined && (event.type !== 'session.control.completed' || typeof operation.timeoutSeconds !== 'number')) {
+            throw new Error('control_wait_identity_invalid');
+          }
+        }
+      }
     case 'session.plugins.activated':
     case 'artifacts.presented':
       if (!pendingProvider) throw new Error('provider_turn_composition_missing');
@@ -129,15 +147,24 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'plan.confirmed':
-      if (event.payload.source === 'agent' && permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions,
-        ...state.permissionOverrides })['agent.permissions.workspaceMutation'] !== 'allow') throw new Error('plan_delegation_missing');
+      if (event.payload.source === 'sessionWorkdir' && event.payload.authorities.length) throw new Error('workdir_plan_authority_invalid');
+      if (event.payload.source === 'parent' && (!state.agentContext || !event.payload.authorities.length
+        || event.payload.authorities.some(authority => authority.sessionId === state.sessionId))) throw new Error('parent_plan_reference_missing');
       break;
+    case 'wake.scheduled':
+      if (events.some(item => item.type === 'wake.scheduled' && item.payload.scheduleId === event.payload.scheduleId)
+        || !Number.isSafeInteger(event.payload.dueAt) || event.payload.dueAt < 0 || !event.payload.text.trim()) throw new Error('schedule_invalid');
+      break;
+    case 'wake.cancelled':
+    case 'wake.triggered': {
+      const pending = pendingWakeups(events, event.runId).get(event.payload.scheduleId);
+      if (!pending || event.type === 'wake.triggered' && event.payload.text !== pending.payload.text) throw new Error('schedule_not_pending');
+      break;
+    }
     case 'approval.resolved':
       if (event.payload.source === 'agent') {
-        const permissions = permissionSettings({ ...state.runRuntimeSnapshots[event.runId]?.permissions, ...state.permissionOverrides });
-        if (permissions['agent.permissions.shell'] !== 'review'
-          || state.pendingApproval?.preview.approvalReviewer !== 'agent'
-          || state.pendingApproval?.preview.review?.decision !== event.payload.decision
+        if (state.pendingApprovals.find(item => item.callId === event.callId)?.preview.approvalReviewer !== 'agent'
+          || state.pendingApprovals.find(item => item.callId === event.callId)?.preview.review?.decision !== event.payload.decision
           || event.payload.authorizationScope !== undefined) throw new Error('approval_delegation_missing');
       }
       break;
@@ -172,12 +199,13 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     case 'context.composed': {
       if (pendingProvider) throw new Error('provider_turn_still_active');
+      admitModelView(event.payload, events);
       const compaction = events.some((item) => item.type === 'context.compaction.requested'
         && item.runId === runId && item.payload.providerRequestId === event.payload.providerRequestId);
       if (event.payload.purpose === 'approvalReview' && (!state.pendingApproval || event.payload.tools.length)) throw new Error('approval_review_context_invalid');
       if ((event.payload.purpose === 'contextCompaction') !== compaction) throw new Error('context_composition_purpose_mismatch');
       if (JSON.stringify(event.payload.workspaceBindings.map(binding => binding.itemId))
-        !== JSON.stringify(state.run?.workspaceBindings.map(binding => binding.workspaceId))) {
+        !== JSON.stringify(requestResourceBindings(state.run?.workspaceBindings ?? [], events).map(binding => binding.workspaceId))) {
         throw new Error('context_workspace_snapshot_mismatch');
       }
       const runtime = state.runRuntimeSnapshots[event.runId];
@@ -186,7 +214,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         throw new Error('tool_request_binding_missing');
       }
       const hosted = event.payload.tools.filter((tool) => tool.origin === 'providerHosted').length;
-      if (hosted !== Number(event.payload.purpose === 'agent' && runtime.webSearch.owner === 'providerHosted')) {
+      if (hosted !== Number(event.payload.purpose !== 'approvalReview' && runtime.webSearch.owner === 'providerHosted')) {
         throw new Error('context_composition_search_owner_mismatch');
       }
       break;
@@ -220,10 +248,19 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'tool.started':
+    case 'tool.not-executed':
     case 'tool.interrupted': {
       const request = pendingToolRequests(events, event.runId).find((item) => item.callId === event.callId);
       if (!request || request.payload.attemptId !== event.payload.attemptId
         || event.type === 'tool.started' && state.runRuntimeReleases[event.runId]) throw new Error('tool_attempt_state_invalid');
+      if (event.type === 'tool.not-executed') {
+        if (state.activities[`tool:${event.callId}`]?.status !== 'requested') throw new Error('tool_not_executed_started');
+        const predecessor = event.payload.predecessorCallId;
+        if ((event.payload.reason === 'dependencyFailed') !== Boolean(predecessor)
+          || predecessor && (!state.activities[`tool:${predecessor}`] || ['requested', 'active', 'completed'].includes(state.activities[`tool:${predecessor}`]!.status))) {
+          throw new Error('tool_not_executed_dependency_invalid');
+        }
+      }
       break;
     }
     case 'run.settled':

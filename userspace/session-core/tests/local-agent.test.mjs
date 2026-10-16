@@ -12,21 +12,168 @@ import {
   prepareToolPromptContributions,
   renderActiveToolGuidance,
   SessionService,
+  SessionActor,
   emptySessionState,
   reduceSession,
+  recoverSession,
   projectSession,
   loopSnapshot,
   runtimeInstructions,
   sessionControlToolDefinitions,
 } from '../dist/index.js';
-import { messagesFromJournal } from '../dist/local-agent/contextComposer.js';
-import { decodeSessionControlCall } from '../dist/local-agent/sessionControls.js';
+import { buildAgentProviderRequest, messagesFromJournal } from '../dist/local-agent/contextComposer.js';
+import { agentOperationDefinitions, decodeSessionControlCall } from '../dist/local-agent/sessionControls.js';
 import { publishPlan } from '../dist/local-agent/planStage.js';
-import { HttpProviderPort } from '../dist/local-agent/httpPorts.js';
+import { HttpProviderPort, HttpCommandJournal } from '../dist/local-agent/httpPorts.js';
 import { responseFrames } from '../dist/responseFrames.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
 import { LoopFailure } from '../dist/local-agent/loopFailure.js';
+import { AgentManager } from '../dist/local-agent/agentManager.js';
+
+class TestAgentManager extends AgentManager {
+  constructor(host, lookup) {
+    super(host, {
+      async withActor(id, operation) {
+        const actor = await lookup(id);
+        return operation({ ...actor, agentSnapshot: () => actor.snapshot(),
+          async submit(command, beforeRunStart) {
+            const reply = await actor.submit(command);
+            if (reply.status !== 'rejected' && command.type === 'message.submit' && beforeRunStart) {
+              await beforeRunStart((await actor.snapshot()).run.runId);
+            }
+            return reply;
+          },
+          async waitForInput(_runId, signal) { await waitForAbort(signal); signal.throwIfAborted(); },
+        });
+      },
+      async read(id) {
+        const value = await (await lookup(id)).snapshot();
+        return { ...value, agentTasks: value.agentTasks ?? [], agentChildren: value.agentChildren ?? [] };
+      },
+    });
+  }
+}
+
+const ALL_AGENT_CAPS = { messaging: true, continuation: true, delegation: true };
+const NO_AGENT_CAPS = { messaging: false, continuation: false, delegation: false };
+
+test('compact statuses share canonical lifecycle transitions without full journal reads', async (t) => {
+  const sessionId = 'session:compact-lifecycle', runId = 'run:compact-lifecycle';
+  const journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  const reads = [];
+  const narrow = forwardingJournal(journal, async function* () { throw new Error('status_read_loaded_full_payloads'); });
+  narrow.readRunLifecycle = async (id, after = 0) => {
+    reads.push(after);
+    const result = await journal.readRunLifecycle(id, after);
+    assert.equal(/runtimeSnapshot|Stored body|Stored result|Stored prompt/u.test(JSON.stringify(result)), false);
+    return result;
+  };
+  const service = new SessionService(narrow, { async create() { throw new Error('status_read_opened_actor'); } });
+  t.after(() => service.dispose());
+  const events = await readEvents(journal, sessionId);
+  let canonical = recoverSession(sessionId, events);
+  const check = async expected => {
+    const actual = (await service.statuses([sessionId]))[0];
+    const run = canonical.run ? { runId: canonical.run.runId, status: canonical.run.status,
+      ...(canonical.run.waitingReason ? { waitingReason: canonical.run.waitingReason } : {}) } : null;
+    assert.deepEqual(actual, { sessionId, revision: canonical.revision, run });
+    if (expected !== undefined) assert.equal(actual.run?.status ?? null, expected);
+  };
+  const append = async (type, payload, meta = {}, expected) => {
+    const event = await journal.append({ type, sessionId, payload, ...meta });
+    events.push(event);
+    canonical = event.type === 'conversation.revised' ? recoverSession(sessionId, events) : reduceSession(canonical, event);
+    await check(expected);
+  };
+  await check(null);
+  const runtime = runtimeSnapshot(runId);
+  await append('message.committed', { messageId: 'message:compact', role: 'user', content: 'Stored body' });
+  await append('run.started', { inputMessageId: 'message:compact', workspaceBindings: [], runtimeSnapshot: runtime }, { runId }, 'running');
+  for (const [id, mode] of [['first', 'wait'], ['second', 'wait'], ['continued', 'continue']]) {
+    await append('interaction.requested', { interactionId: `interaction:${id}`, providerCallId: `provider:${id}`,
+      kind: 'question', prompt: 'Stored prompt', allowFreeform: true, mode }, { runId, callId: `call:${id}` });
+  }
+  await append('run.waiting', { reason: 'userInput', detail: 'Stored prompt' }, { runId }, 'waiting');
+  for (const id of ['first', 'second']) {
+    await append('input.accepted', { commandId: `command:${id}`, messageId: `message:${id}`, text: 'Stored body' });
+    await append('interaction.resolved', { interactionId: `interaction:${id}`, commandId: `command:${id}`, response: 'Stored body' },
+      { runId }, id === 'first' ? 'waiting' : 'running');
+  }
+  for (const operation of ['confirmed', 'revision.requested', 'cancelled', 'invalidated']) {
+    const planId = `plan:${operation}`, callId = `call:plan:${operation}`;
+    await append('plan.published', { planId, revision: 1, providerCallId: `provider:plan:${operation}`, title: 'Plan', summary: 'Stored body',
+      steps: [{ stepId: 'step:one', title: 'Step', details: 'Stored body' }], mutationManifest: [] }, { runId, callId });
+    await append('run.waiting', { reason: 'plan' }, { runId }, 'waiting');
+    const decision = operation === 'confirmed' ? { decisionId: 'decision:plan', authorities: [] }
+      : operation === 'revision.requested' ? { text: 'Stored body' }
+        : operation === 'invalidated' ? { reason: 'Changed', sourceFactRef: 'fact:changed' } : {};
+    await append(`plan.${operation}`, { planId, revision: 1, ...(operation === 'invalidated' ? {} : { commandId: `command:${operation}` }), ...decision },
+      { runId, ...(operation === 'invalidated' ? {} : { callId }) }, 'running');
+  }
+  const approval = async id => {
+    await append('approval.requested', { approvalId: `approval:${id}`, preview: { summary: 'Stored prompt', effects: ['external'], logicalTargets: ['.'] } },
+      { runId, callId: `call:approval:${id}` });
+    await append('run.waiting', { reason: 'approval' }, { runId }, 'waiting');
+  };
+  await approval('permission');
+  await append('session.permissions.updated', { commandId: 'command:permission', patches: { 'agent.permissions.external': 'allow' } }, {}, 'running');
+  await append('approval.resolved', { approvalId: 'approval:permission', commandId: 'command:deny', decision: 'deny', authorityId: 'authority:denied' },
+    { runId, callId: 'call:approval:permission' }, 'running');
+  await approval('grant');
+  await append('approval.resolved', { approvalId: 'approval:grant', commandId: 'command:grant', decision: 'allow', authorityId: 'authority:grant', authorizationScope: 'sessionFiles' },
+    { runId, callId: 'call:approval:grant' }, 'running');
+  const callId = 'call:approval:tool', attemptId = 'attempt:compact';
+  await append('tool.requested', { providerCallId: 'provider:tool', attemptId, toolName: 'fs.read', input: { workspaceId: workspaceBinding.workspaceId, path: 'fixture.txt' } }, { runId, callId });
+  await approval('tool');
+  const record = completedExecutionReply({ sessionId, runId, callId, attemptId, requestId: 'request:tool', toolName: 'fs.read',
+    toolBindingRef: 'binding:read', extensionGenerationRef: runtime.extensionGenerationRef, kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+    input: { workspaceId: workspaceBinding.workspaceId, path: 'fixture.txt' } }, { content: 'Stored result' }).record;
+  await append('tool.completed', { record }, { runId, callId }, 'running');
+  await append('run.finishing', { outcome: 'cancelled' }, { runId }, 'releasing');
+  const release = { runRuntimeSnapshotRef: runtime.runRuntimeSnapshotRef, extensionGenerationRef: runtime.extensionGenerationRef,
+    kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef, providerRuntimeRef: runtime.provider.providerRuntimeRef };
+  await append('run.runtime.release_failed', { ...release, error: { code: 'fixture_release_failure', message: 'Release failed' } }, { runId }, 'releaseFailed');
+  await append('run.runtime.released', { ...release, pluginInstanceRefs: [], alreadyReleased: false }, { runId }, 'releasing');
+  await append('run.settled', { outcome: 'cancelled' }, { runId }, 'cancelled');
+  await append('message.committed', { messageId: 'message:unselected', role: 'user', content: 'Stored body' });
+  const beforeEdit = events.at(-1).sequence;
+  await append('conversation.revised', { commandId: 'command:edit', messageId: 'message:compact', fromSequence: 2, throughSequence: beforeEdit }, {}, null);
+  assert.ok(reads.slice(1, -1).every(after => after > 0), 'ordinary updates use the journal revision cursor');
+  assert.equal(reads.at(-1), 0, 'an edit replays only the compact stream');
+  assert.equal(canonical.pendingApproval, null, 'retained session grants do not revive an edited-away run');
+  const fresh = new SessionService(narrow, { async create() { throw new Error('cold_read_opened_actor'); } });
+  t.after(() => fresh.dispose());
+  assert.deepEqual(await fresh.statuses([sessionId]), await service.statuses([sessionId]), 'cold and incremental edit reads agree');
+});
+
+test('compact status cache cannot be replaced by an older concurrent read', async (t) => {
+  const sessionId = 'session:compact-concurrent', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  let releaseOld;
+  const gate = new Promise(resolve => { releaseOld = resolve; });
+  t.after(() => releaseOld());
+  let count = 0;
+  const cursors = [];
+  const port = forwardingJournal(journal, async function* () { throw new Error('unexpected_full_read'); });
+  port.readRunLifecycle = async (id, after = 0) => {
+    cursors.push(after);
+    const result = await journal.readRunLifecycle(id, after);
+    if (++count === 1) await gate;
+    return result;
+  };
+  const service = new SessionService(port, { async create() { throw new Error('unexpected_actor'); } });
+  t.after(() => service.dispose());
+  const old = service.statuses([sessionId]);
+  await waitUntil(() => count === 1, 'first compact read');
+  await journal.append({ type: 'message.committed', sessionId, payload: { messageId: 'message:later', role: 'user', content: 'Later' } });
+  assert.equal((await service.statuses([sessionId]))[0].revision, 2);
+  releaseOld();
+  assert.equal((await old)[0].revision, 1);
+  await service.statuses([sessionId]);
+  assert.deepEqual(cursors, [0, 0, 2]);
+});
 
 test('editing a settled message replaces active history while retaining journal facts and attachments', async (t) => {
   const journal = new InMemoryCommandJournal();
@@ -101,6 +248,464 @@ test('editing a settled message replaces active history while retaining journal 
   const second = await waitForProjection(restored, (value) => value.run?.status === 'completed' && requests.length === 5);
   assert.deepEqual(second.messages.map((message) => message.content), ['Keep this first question.', 'Answer 1.', 'Second revision.', 'Answer 5.']);
   assert.equal(second.tokenUsage.inputTokens, 500);
+});
+
+for (const control of ['session', 'plugin_activate']) test(`editing settled controls removes their run-owned call facts (${control})`, async t => {
+  const sessionId = `session:edit-control-${control}`, journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const preparation = fakeRunPreparation({ contextWindowTokens: 16000, tools: [{
+    toolBindingRef: 'binding:plugin-search', name: 'plugin.search', description: 'Discover plugins.',
+    inputSchema: { type: 'object', properties: {} }, possibleEffects: ['localRead'], availability: 'callable', origin: 'coreBuiltin',
+  }] });
+  const requests = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) yield providerEvent(request.requestId, 'tool.call', {
+      callId: 'provider:edited-control', name: control,
+      input: control === 'session' ? { action: 'describe' } : { pluginUris: ['plugin://notes@local'] },
+    });
+    else yield providerEvent(request.requestId, 'text.delta', { text: requests.length === 2 ? 'Original answer.' : 'Revised answer.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), preparation.port, `edit-control-${control}`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:original', 'Original request.'));
+  const original = await waitForProjection(actor, value => value.run?.status === 'completed');
+  const saved = await readEvents(journal, sessionId);
+  assert.equal(saved.filter(event => event.type === (control === 'session' ? 'session.control.completed' : 'session.plugins.activated')).length, 1);
+  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+    commandId: 'command:edit-control', messageId: original.messages[0].messageId,
+    expectedRevision: original.revision, text: 'Revised request.' });
+  assert.equal(reply.status, 'accepted');
+  const edited = await waitForProjection(actor, value => value.run?.status === 'completed' && value.run.runId !== original.run.runId);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(edited.messages.map(message => message.content), ['Revised request.', 'Revised answer.']);
+  assert.equal(requests[2].messages.some(message => message.role === 'tool' || message.toolCalls?.length), false);
+  const events = await readEvents(journal, sessionId);
+  assert.deepEqual(events.slice(0, saved.length), saved, 'editing retains the original journal facts');
+  assert.deepEqual(projectSession(loopSnapshot(sessionId, events).state), edited);
+});
+
+test('editing conversation history preserves member lineage without replaying superseded results', async (t) => {
+  const sessionId = 'session:member-edit', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  const requests = [];
+  let actor;
+  const provider = { async *stream(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) {
+      await actor.recordAgentEvents([
+        { type: 'agent.task.created', sessionId, runId: request.runId, callId: 'call:member',
+          payload: { taskId: 'task:member', agentSessionId: 'session:member-child', capabilities: ALL_AGENT_CAPS, createsAgent: true,
+            displayName: 'Researcher', text: 'Inspect the original request.', delivery: 'async' } },
+        { type: 'agent.task.started', sessionId, runId: request.runId,
+          payload: { taskId: 'task:member', childRunId: 'run:member-child' } },
+        { type: 'agent.task.completed', sessionId, runId: request.runId,
+          payload: { taskId: 'task:member', result: { outcome: 'completed', content: 'Superseded member evidence.', finalMessageId: 'message:member-result' } } },
+      ]);
+    }
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Task completed.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  actor = actorWith(journal, sessionId, provider, emptyKernel(), fakeRunPreparation().port, 'member-edit');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:original', 'Original member request.'));
+  const original = await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.equal(requests.length, 2, 'new child evidence fences the first premature answer');
+  const agentActivities = original.activities.filter(activity => activity.kind === 'agent');
+  assert.deepEqual(agentActivities.map(activity => activity.agent.phase), ['started', 'completed']);
+  assert.ok(agentActivities.every(activity => activity.agent.agentSessionId === 'session:member-child'));
+  const timelineAgents = original.timeline.filter(item => item.kind === 'toolGroup').flatMap(item => item.activityIds);
+  assert.deepEqual(timelineAgents, agentActivities.map(activity => activity.activityId));
+  assert.ok(agentActivities[0].sequence < agentActivities[1].sequence);
+
+  let replay = emptySessionState(sessionId);
+  for (const event of await readEvents(journal, sessionId)) {
+    const previous = replay;
+    const activities = structuredClone(previous.activities);
+    replay = reduceSession(previous, event);
+    if (event.type === 'agent.task.created' || event.type === 'agent.task.completed') {
+      assert.deepEqual(previous.activities, activities, 'agent history must not mutate a previous projection');
+    }
+  }
+
+  assert.ok(JSON.stringify(requests[1].messages).includes('Superseded member evidence.'));
+  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+    commandId: 'command:member-edit', messageId: original.messages[0].messageId,
+    expectedRevision: original.revision, text: 'Revised request.' });
+  assert.equal(reply.status, 'accepted');
+  const edited = await waitForProjection(actor, value => value.run?.status === 'completed' && requests.length === 3);
+  assert.deepEqual(edited.agentTasks, original.agentTasks);
+  assert.deepEqual(edited.agentChildren, original.agentChildren);
+  assert.equal(/Original member request|Superseded member evidence/u.test(JSON.stringify(requests[2].messages)), false);
+  await actor.recordAgentEvents([{ type: 'agent.closed', sessionId, payload: { agentSessionId: 'session:member-child' } }]);
+  const closed = await actor.snapshot();
+  assert.equal(closed.agentChildren[0].closed, true);
+  const rebuilt = projectSession(loopSnapshot(sessionId, await readEvents(journal, sessionId)).state);
+  assert.deepEqual(rebuilt.agentTasks, original.agentTasks);
+  assert.deepEqual(rebuilt.agentChildren, closed.agentChildren);
+  assert.deepEqual(rebuilt.messages.map(message => message.content), ['Revised request.', 'Task completed.']);
+});
+
+test('cancellation during delegation admission is observed without starting a child', async () => {
+  const controller = new AbortController();
+  const reason = new Error('parent_cancelled_during_admission');
+  let hostCalls = 0;
+  const manager = new TestAgentManager({
+    async settings() { hostCalls += 1; throw new Error('cancelled_admission_reached_host'); },
+    async createSession() { hostCalls += 1; throw new Error('cancelled_admission_created_child'); },
+  }, async sessionId => ({
+    async agentCapabilities() { return ALL_AGENT_CAPS; },
+    async snapshot() {
+      controller.abort(reason);
+      return { sessionId, run: { runId: 'run:cancel-admission', status: 'running' } };
+    },
+  }));
+  try {
+    await assert.rejects(manager.execute('session:cancel-admission', 'run:cancel-admission', 'call:cancel-admission',
+      { action: 'spawn', task: 'Must not start.', name: 'Cancelled analysis', delivery: 'async' }, controller.signal),
+    error => error === reason);
+  } finally { await manager.dispose(); }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hostCalls, 0);
+});
+
+test('subagent model command overrides agree with the public schema', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { default: Ajv } = await import('ajv/dist/2020.js');
+  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
+  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/AgentOperation' });
+  const definition = agentOperationDefinitions(ALL_AGENT_CAPS, { fullConfiguration: true }).find(operation => operation.action === 'spawn');
+  assert.equal(agentOperationDefinitions(ALL_AGENT_CAPS).find(operation => operation.action === 'spawn').inputSchema.properties.reasoningEffort, undefined);
+  assert.equal(validate({ action: 'models' }), true);
+  assert.deepEqual(decodeSessionControlCall('call:models', 'agent', { action: 'models' }).operation, { action: 'models' });
+  assert.equal(definition.inputSchema.properties.profileId.type, 'string');
+  assert.deepEqual(definition.inputSchema.properties.reasoningEffort.enum, ['low', 'medium', 'high', 'xhigh', 'max']);
+  for (const preset of ['analysis', 'collaboration']) {
+    const operation = { action: 'spawn', preset, capabilities: { messaging: false, continuation: true },
+      task: 'Inspect the task evidence.', name: 'Researcher', delivery: 'async',
+      profileId: 'profile:selected', reasoningEffort: 'high' };
+    assert.equal(validate(operation), true, JSON.stringify(validate.errors));
+    assert.deepEqual(decodeSessionControlCall('call:model-selection', 'agent', operation).operation, operation);
+    for (const invalid of [{ ...operation, profileId: '' }, { ...operation, reasoningEffort: '' },
+      { ...operation, action: 'analyze' }, { ...operation, capabilities: { messaging: 'yes' } },
+      { ...operation, capabilities: { computerUse: true } }]) {
+      assert.equal(validate(invalid), false);
+      assert.throws(() => decodeSessionControlCall('call:model-selection', 'agent', invalid));
+    }
+  }
+  assert.equal(validate({ action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }), false);
+  assert.throws(() => decodeSessionControlCall('call:send-model', 'agent',
+    { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
+});
+
+test('subagent model defaults and per-call overrides use the owner Run binding', async (t) => {
+  const cases = [
+    { name: 'main follows its bound Run, not the next GUI selection', expected: ['profile:owner-bound', 'medium'] },
+    { name: 'member follows the owner Run, not its own model', member: true, expected: ['profile:owner-bound', 'medium'] },
+    { name: 'following model permits an independent configured effort', settings: { reasoningEffort: 'high' }, expected: ['profile:owner-bound', 'high'] },
+    { name: 'independent model uses its preset without owner effort', settings: { profileId: 'profile:default' }, expected: ['profile:default', null] },
+    { name: 'independent model uses its configured effort', settings: { profileId: 'profile:default', reasoningEffort: 'high' }, expected: ['profile:default', 'high'] },
+    { name: 'explicit model does not inherit another model effort', action: 'spawn', settings: { profileId: 'profile:default', reasoningEffort: 'high' },
+      operation: { profileId: 'profile:override' }, expected: ['profile:override', null] },
+    { name: 'explicit model and effort reach the child together', action: 'spawn', operation: { profileId: 'profile:override', reasoningEffort: 'max' }, expected: ['profile:override', 'max'] },
+    { name: 'effort alone overrides the default', settings: { reasoningEffort: 'high' }, operation: { reasoningEffort: 'low' }, expected: ['profile:owner-bound', 'low'] },
+    { name: 'missing owner Run rejects instead of using GUI selection', member: true, missingOwnerRun: true },
+  ];
+  for (const item of cases) await t.test(item.name, async () => {
+    const ownerId = 'session:model-owner', memberId = 'session:model-member';
+    const callerId = item.member ? memberId : ownerId;
+    const ownerRuntime = runtimeSnapshot('run:owner-bound', { profileId: 'profile:owner-bound', reasoningEffort: 'medium' });
+    const memberRuntime = { ...runtimeSnapshot('run:member-bound', { profileId: 'profile:member-bound', reasoningEffort: 'low' }),
+      agentCapabilities: ALL_AGENT_CAPS, agentToolsEnabled: true };
+    const states = new Map();
+    states.set(ownerId, { ...emptySessionState(ownerId),
+      run: item.missingOwnerRun ? undefined : { runId: 'run:owner-bound', status: 'running', workspaceBindings: [],
+        profileId: 'profile:owner-bound', reasoningEffort: 'medium' },
+      runRuntimeSnapshots: item.missingOwnerRun ? {} : { 'run:owner-bound': ownerRuntime },
+      modelSettings: { profileId: 'profile:gui-next', reasoningEffortOverride: 'xhigh' },
+      agentChildren: item.member ? [{ agentSessionId: memberId, displayName: 'Member', capabilities: ALL_AGENT_CAPS, closed: false }] : [] });
+    if (item.member) states.set(memberId, { ...emptySessionState(memberId),
+      agentContext: { capabilities: ALL_AGENT_CAPS, ownerSessionId: ownerId, parentSessionId: ownerId,
+        parentRunId: 'run:owner-bound', parentCallId: 'call:member' },
+      runRuntimeSnapshots: { 'run:member-bound': memberRuntime },
+      run: { runId: 'run:member-bound', status: 'running', workspaceBindings: [], profileId: 'profile:member-bound', reasoningEffort: 'low' } });
+    const actors = new Map([...states.keys()].map(sessionId => [sessionId, { sessionId,
+      async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
+      async snapshot() { return projectSession(states.get(sessionId)); },
+      async recordAgentEvents(events) {
+        for (const event of events) {
+          const state = states.get(sessionId);
+          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+            sequence: state.revision + 1, eventId: `event:${sessionId}:${state.revision + 1}`, occurredAt: '2026-10-12T00:00:00.000Z' }));
+        }
+      } }]));
+    const created = [], submitted = [];
+    const manager = new TestAgentManager({
+      async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
+        maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true,
+        allowFullConfiguration: Boolean(item.operation), ...item.settings }; },
+      async models() { return ['profile:owner-bound', 'profile:default', 'profile:override'].map(profileId => ({
+        profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      })); },
+      async createSession(input) {
+        created.push(structuredClone(input));
+        let run;
+        actors.set(input.sessionId, { sessionId: input.sessionId,
+          async agentCapabilities() { return input.agentContext.capabilities; },
+          async snapshot() { return { sessionId: input.sessionId, agentContext: input.agentContext, run }; },
+          async submit(command) {
+            if (command.type === 'message.submit') {
+              submitted.push(structuredClone(command));
+              run = { runId: 'run:new-child', status: 'completed' };
+            }
+            return { status: 'accepted' };
+          },
+          async waitForRunResult() { return { outcome: 'completed', content: 'Task evidence.', finalMessageId: 'message:child-final' }; } });
+      },
+    }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
+    try {
+      const runId = states.get(callerId).run.runId;
+      const operation = { action: item.action ?? 'spawn', task: 'Inspect the evidence.', name: 'Researcher', delivery: 'async', ...item.operation };
+      const execution = manager.execute(callerId, runId, 'call:delegate', operation, new AbortController().signal);
+      if (item.missingOwnerRun) {
+        await assert.rejects(execution, /agent_owner_run_model_missing/);
+        assert.deepEqual(created, []);
+        assert.deepEqual(submitted, []);
+        assert.equal(states.get(callerId).agentTasks.length, 0);
+      } else {
+        await execution;
+        await manager.forSession(callerId).wait(runId, new AbortController().signal);
+        assert.equal(created.length, 1);
+        assert.equal(submitted.length, 1);
+        assert.equal(created[0].profileId, item.expected[0]);
+        assert.deepEqual([submitted[0].profileId, submitted[0].reasoningEffortOverride], item.expected);
+        assert.equal(states.get(callerId).agentTasks[0].result.outcome, 'completed');
+      }
+    } finally { await manager.dispose(); }
+  });
+});
+
+test('subagent models discovery uses the Host port without starting children', async () => {
+  const { HttpAgentHostPort } = await import('../dist/local-agent/httpPorts.js');
+  const models = [{ profileId: 'profile:configured', name: 'Configured model', model: 'model-id',
+    parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'high', 'max'], reasoningEffort: 'high' }];
+  let requests = 0, capabilities = ALL_AGENT_CAPS;
+  const host = new HttpAgentHostPort({ apiBase: 'http://fixture', serviceToken: 'fixture', fetchImpl: async (url, init) => {
+    requests += 1;
+    assert.equal(url, 'http://fixture/api/local-agent/agents/models');
+    assert.equal(new Headers(init.headers).get('x-deepcode-session-service-token'), 'fixture');
+    return new Response(JSON.stringify({ ok: true, data: models }), { status: 200 });
+  } });
+  host.settings = async () => ({ enabled: true, profileId: 'profile:configured', reasoningEffort: '',
+    maxConcurrent: 4, maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true });
+  host.createSession = async () => { throw new Error('discovery_must_not_create_child'); };
+  const manager = new TestAgentManager(host, async sessionId => ({
+    async agentCapabilities() { return capabilities; },
+    async snapshot() { return { sessionId, agentContext: { capabilities, ownerSessionId: 'session:owner',
+      parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
+      run: { runId: 'run:models', status: 'running' } }; },
+  }));
+  try {
+    const discovered = await manager.execute('session:member', 'run:models', 'call:models',
+      { action: 'models' }, new AbortController().signal);
+    assert.deepEqual(discovered.models, models);
+    assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
+      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false,
+    }));
+    assert.equal(discovered.parentAgentId, 'session:owner');
+    assert.deepEqual(discovered.agents, []);
+    assert.equal(discovered.fullConfiguration, false);
+    assert.equal(discovered.configuration.context, undefined);
+    assert.equal(requests, 1);
+    capabilities = NO_AGENT_CAPS;
+    await assert.rejects(manager.execute('session:analysis', 'run:models', 'call:models-analysis',
+      { action: 'models' }, new AbortController().signal), /agent_capability_unavailable/);
+    assert.equal(requests, 1);
+  } finally { await manager.dispose(); }
+});
+
+test('an idle member preparation failure cannot reuse its previous successful run', async (t) => {
+  const sessionId = 'session:member-reuse', runId = 'run:parent-current', childId = 'session:existing-member';
+  const runtime = runtimeSnapshot(runId);
+  let state = { ...emptySessionState(sessionId),
+    run: { runId, status: 'running', workspaceBindings: [], profileId: runtime.provider.profileId },
+    runRuntimeSnapshots: { [runId]: runtime },
+    agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }] };
+  const facts = [], resultReads = [];
+  const parent = { sessionId,
+    async agentCapabilities() { return runtime.agentCapabilities; },
+    async snapshot() { return projectSession(state); },
+    async recordAgentEvents(events) {
+      for (const event of events) {
+        facts.push(structuredClone(event));
+        state = reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+          sequence: state.revision + 1, eventId: `event:${state.revision + 1}`, occurredAt: '2026-10-11T00:00:00.000Z' });
+      }
+    } };
+  const prepareError = { code: 'model_prepare_failed', message: 'The selected member model cannot be prepared.' };
+  let submissions = 0, childRunId = 'run:previous-success';
+  const child = { sessionId: childId,
+    async agentCapabilities() { return ALL_AGENT_CAPS; },
+    async snapshot() { return { sessionId: childId, agentContext: { capabilities: ALL_AGENT_CAPS, ownerSessionId: sessionId, parentSessionId: sessionId, parentRunId: runId, parentCallId: 'call:create' }, run: { runId: childRunId, status: 'completed' } }; },
+    async submit(command) {
+      if (command.type === 'session.permissions.set') return { status: 'accepted' };
+      assert.equal(command.type, 'message.submit');
+      if (++submissions === 1) return { status: 'rejected', error: prepareError };
+      childRunId = 'run:new-success';
+      return { status: 'accepted' };
+    },
+    async waitForRunResult(requestedRunId) {
+      resultReads.push(requestedRunId);
+      return { outcome: 'completed', content: requestedRunId === 'run:previous-success' ? 'Stale prior evidence.' : 'New task evidence.',
+        finalMessageId: `message:${requestedRunId}` };
+    } };
+  const manager = new TestAgentManager({
+    async settings() { return { enabled: true, profileId: 'profile:member', reasoningEffort: '',
+      maxConcurrent: 4, maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true }; },
+    async createSession() { throw new Error('existing_member_must_be_reused'); },
+  }, async id => { assert.ok(id === sessionId || id === childId); return id === sessionId ? parent : child; });
+  t.after(() => manager.dispose());
+  const signal = new AbortController().signal;
+  const first = await manager.execute(sessionId, runId, 'call:prepare-failure', { action: 'send', agentId: childId, text: 'First follow-up.' }, signal);
+  const failed = state.agentTasks.find(task => task.taskId === first.taskId);
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.result, { outcome: 'failed', error: prepareError });
+  assert.equal(failed.childRunId, undefined);
+  assert.deepEqual(resultReads, [], 'a rejected prepare must not read the previous run result');
+  assert.equal(state.agentChildren[0].closed, false);
+  assert.equal(facts.some(event => event.type === 'agent.closed'), false);
+
+  const second = await manager.execute(sessionId, runId, 'call:prepare-success', { action: 'send', agentId: childId, text: 'Next follow-up.' }, signal);
+  await manager.forSession(sessionId).wait(runId, signal);
+  const completed = state.agentTasks.find(task => task.taskId === second.taskId);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.childRunId, 'run:new-success');
+  assert.equal(completed.result.content, 'New task evidence.');
+  assert.deepEqual(resultReads, ['run:new-success']);
+  assert.equal(state.agentChildren[0].closed, false);
+  assert.equal(JSON.stringify(state.agentTasks).includes('Stale prior evidence.'), false);
+});
+
+test('unified agents preserve nested ownership, custom capabilities, continuation and cancellation', async (t) => {
+  const ownerId = 'session:unified-owner';
+  const states = new Map(), actors = new Map(), facts = [], submissions = [], results = new Map();
+  let sequence = 0, allowChildDelegation = true, configuredProfile = '';
+  const initialize = (sessionId, agentContext) => {
+    states.set(sessionId, { ...emptySessionState(sessionId), ...(agentContext ? { agentContext } : {}) });
+    const actor = { sessionId,
+      async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
+      async snapshot() { return projectSession(states.get(sessionId)); },
+      async recordAgentEvents(events) {
+        for (const event of events) {
+          facts.push(structuredClone(event));
+          const state = states.get(sessionId);
+          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+            sequence: state.revision + 1, eventId: `event:${++sequence}`, occurredAt: '2026-10-12T00:00:00.000Z' }));
+        }
+      },
+      async submit(command) {
+        if (command.type === 'message.submit') {
+          submissions.push(structuredClone(command));
+          const settings = states.get(sessionId).modelSettings;
+          startRun(sessionId, command.profileId ?? settings?.profileId,
+            command.reasoningEffortOverride !== undefined ? command.reasoningEffortOverride : settings?.reasoningEffortOverride);
+        }
+        if (command.type === 'run.cancel') finish(sessionId, { outcome: 'cancelled' });
+        return { status: 'accepted' };
+      },
+      async waitForRunResult(runId) { return results.get(runId).promise; },
+    };
+    actors.set(sessionId, actor);
+    return actor;
+  };
+  const startRun = (sessionId, profileId = 'profile:owner', reasoningEffortOverride = null) => {
+    const state = states.get(sessionId), runId = `run:unified:${++sequence}`;
+    const runtime = runtimeSnapshot(runId, { profileId, reasoningEffort: reasoningEffortOverride,
+      agentCapabilities: state.agentContext?.capabilities ?? ALL_AGENT_CAPS });
+    states.set(sessionId, { ...state, run: { runId, status: 'running', workspaceBindings: [], profileId },
+      modelSettings: { profileId, reasoningEffortOverride },
+      runRuntimeSnapshots: { ...state.runRuntimeSnapshots, [runId]: runtime } });
+    let resolve;
+    results.set(runId, { promise: new Promise(done => { resolve = done; }), resolve });
+    return runId;
+  };
+  const finish = (sessionId, result = { outcome: 'completed', content: 'Task evidence.', finalMessageId: `message:${++sequence}` }) => {
+    const state = states.get(sessionId);
+    states.set(sessionId, { ...state, run: { ...state.run, status: result.outcome } });
+    results.get(state.run.runId).resolve(result);
+  };
+  initialize(ownerId);
+  const ownerRunId = startRun(ownerId);
+  const manager = new TestAgentManager({
+    async settings() { return { enabled: true, profileId: configuredProfile, reasoningEffort: '', maxConcurrent: 4,
+      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: allowChildDelegation, allowFullConfiguration: true }; },
+    async models() { return ['profile:owner', 'profile:selected-child', 'profile:new-global-default'].map(profileId => ({
+      profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    })); },
+    async createSession(input) { return await initialize(input.sessionId, input.agentContext).snapshot(); },
+  }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
+  t.after(() => manager.dispose());
+  const signal = new AbortController().signal;
+  const execute = (sessionId, operation) => manager.execute(sessionId, states.get(sessionId).run.runId,
+    `call:${++sequence}`, operation, signal);
+  const spawn = (sessionId, extra = {}) => execute(sessionId,
+    { action: 'spawn', name: 'Researcher', task: 'Inspect the evidence.', delivery: 'async', ...extra });
+  const first = await spawn(ownerId, { preset: 'collaboration' });
+  const firstId = first.agentId;
+  const firstRunId = states.get(firstId).run.runId;
+  assert.deepEqual(states.get(firstId).agentContext.capabilities, ALL_AGENT_CAPS);
+  const mixedCaps = { messaging: false, continuation: true, delegation: false };
+  const nested = await spawn(firstId, { capabilities: mixedCaps, profileId: 'profile:selected-child', reasoningEffort: 'max' });
+  const nestedId = nested.agentId;
+  const lineage = structuredClone(states.get(nestedId).agentContext);
+  assert.equal(lineage.ownerSessionId, ownerId);
+  assert.equal(lineage.parentSessionId, firstId);
+  assert.deepEqual(lineage.capabilities, mixedCaps);
+  await assert.rejects(spawn(nestedId), /agent_capability_unavailable/);
+  assert.deepEqual(await execute(firstId, { action: 'send', agentId: nestedId, text: 'Live message.' }),
+    { agentId: nestedId, delivered: true });
+  const oneShot = await spawn(firstId);
+  assert.deepEqual(states.get(oneShot.agentId).agentContext.capabilities, { messaging: 'parent', continuation: true, delegation: false });
+  finish(nestedId);
+  finish(oneShot.agentId);
+  await manager.forSession(firstId).wait(firstRunId, signal);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, false);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, false);
+  finish(firstId);
+  await manager.forSession(ownerId).wait(ownerRunId, signal);
+
+  configuredProfile = 'profile:new-global-default';
+  const continued = await execute(ownerId, { action: 'send', agentId: nestedId, text: 'Continue the shared task.' });
+  assert.equal(submissions.at(-1).profileId, undefined);
+  assert.equal(submissions.at(-1).reasoningEffortOverride, undefined);
+  assert.deepEqual(states.get(nestedId).modelSettings, { profileId: 'profile:selected-child', reasoningEffortOverride: 'max' });
+  assert.deepEqual(states.get(nestedId).agentContext, lineage);
+  assert.deepEqual(states.get(ownerId).agentChildren.map(child => child.agentSessionId), [firstId]);
+  assert.equal(states.get(firstId).agentChildren.filter(child => child.agentSessionId === nestedId).length, 1);
+  assert.equal(facts.find(event => event.type === 'agent.task.created' && event.payload.taskId === continued.taskId).payload.createsAgent, false);
+  await execute(ownerId, { action: 'cancel', taskId: continued.taskId });
+  assert.equal(states.get(ownerId).agentTasks.find(task => task.taskId === continued.taskId).result.outcome, 'cancelled');
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, false);
+  await execute(ownerId, { action: 'close', agentId: firstId });
+  assert.equal(states.get(ownerId).agentChildren[0].closed, true);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, true);
+  assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, true);
+  assert.equal(facts.some(event => event.type === 'agent.closed' && event.sessionId === ownerId && event.payload.agentSessionId === nestedId), false);
+  allowChildDelegation = false;
+  await assert.rejects(spawn(ownerId, { capabilities: { delegation: true } }), /agent_capability_not_grantable/);
+  const limited = await spawn(ownerId, { preset: 'collaboration' });
+  assert.deepEqual(states.get(limited.agentId).agentContext.capabilities, { ...ALL_AGENT_CAPS, delegation: false });
+  finish(limited.agentId);
+  await manager.forSession(ownerId).wait(ownerRunId, signal);
+  allowChildDelegation = true;
+  const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
+  await assert.rejects(execute(restricted.agentId, { action: 'send', agentId: limited.agentId, text: 'Peer message is unavailable.' }), /agent_messaging_disabled/);
+  await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_capability_not_grantable/);
+  const permitted = await spawn(restricted.agentId, { capabilities: { messaging: false } });
+  finish(permitted.agentId);
+  await manager.forSession(restricted.agentId).wait(states.get(restricted.agentId).run.runId, signal);
+  finish(restricted.agentId);
+  await manager.forSession(ownerId).wait(ownerRunId, signal);
 });
 
 test('browser authorization scope survives reducer snapshots and projection copies', () => {
@@ -376,6 +981,108 @@ import {
   waitForAbort,
 } from './local-agent-fixtures.mjs';
 
+test('agent discovery appends contracts while preserving tool definitions and the ordinary model prefix', async () => {
+  const runtime = runtimeSnapshot('run:agent-directory');
+  const input = { sessionId: 'session:agent-directory', runId: 'run:agent-directory', runtime,
+    events: [], workspaceBindings: [], providerRequestId: 'request:directory', responseConstraint: 'normal' };
+  const disabled = await buildAgentProviderRequest(input);
+  const analysis = await buildAgentProviderRequest({ ...input, runtime: { ...runtime, agentToolsEnabled: true, agentCapabilities: NO_AGENT_CAPS } });
+  assert.equal(disabled.request.tools.some(tool => tool.name === 'agent'), false);
+  assert.deepEqual(analysis.request.messages, disabled.request.messages);
+  assert.deepEqual(analysis.request.tools, disabled.request.tools);
+  const memberRuntime = { ...runtime, agentToolsEnabled: true, agentCapabilities: ALL_AGENT_CAPS };
+  const member = await buildAgentProviderRequest({ ...input, runtime: memberRuntime });
+  const control = member.request.tools.find(tool => tool.name === 'agent');
+  assert.equal(control.inputSchema.properties.action.type, 'string');
+  assert.equal(control.inputSchema.additionalProperties, true);
+  assert.deepEqual(member.request.messages, disabled.request.messages);
+  const header = { schemaVersion: 'deepcode.session-event.v5', sessionId: input.sessionId,
+    runId: input.runId, occurredAt: '2026-10-12T00:00:00.000Z' };
+  const preparedEvents = [
+    { ...header, eventId: 'event:models-run', sequence: 1, type: 'run.started',
+      payload: { inputMessageId: 'message:models-input', workspaceBindings: [], runtimeSnapshot: memberRuntime } },
+    { ...header, eventId: 'event:models-context', sequence: 2, type: 'context.composed', payload: member.receipt },
+  ];
+  const event = { schemaVersion: 'deepcode.session-event.v5', eventId: 'event:models', sessionId: input.sessionId,
+    runId: input.runId, callId: 'call:models', sequence: 3, occurredAt: '2026-10-12T00:00:00.000Z' };
+  const completed = { ...event, type: 'agent.control.completed', payload: { providerCallId: 'provider:models',
+    operation: { action: 'models' }, result: { models: [] } } };
+  const settled = { schemaVersion: event.schemaVersion, eventId: 'event:models-settled', sessionId: input.sessionId,
+    runId: input.runId, sequence: 4, occurredAt: event.occurredAt, type: 'provider.turn.settled',
+    payload: { providerRequestId: member.request.requestId, providerRuntimeRef: runtime.provider.providerRuntimeRef,
+      purpose: 'agent', outcome: 'completed', orderedCallIds: [event.callId] } };
+  const discovered = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled], runtime: memberRuntime });
+  assert.deepEqual(discovered.request.tools, member.request.tools);
+  assert.deepEqual(discovered.request.messages.slice(0, member.request.messages.length), member.request.messages);
+  assert.deepEqual(discovered.request.messages.filter(message => message.role === 'system'), disabled.request.messages);
+  const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
+    runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
+  assert.deepEqual(limitedMember.request.tools.filter(tool => tool.name !== 'agent'), member.request.tools.filter(tool => tool.name !== 'agent'));
+  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /permitted contacts/u);
+  assert.doesNotMatch(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /spawns|presets|configuration/u);
+  assert.deepEqual(agentOperationDefinitions({ ...ALL_AGENT_CAPS, delegation: false }).map(operation => operation.action), ['models', 'send']);
+  assert.deepEqual(limitedMember.request.messages, discovered.request.messages);
+  const rejected = { ...event, type: 'session.control.rejected', payload: { providerCallId: 'provider:models',
+    toolName: 'agent', input: { action: 'models' }, error: { code: 'model_catalog_failed', message: 'Original catalog failure.' } } };
+  const failed = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, rejected, settled], runtime: memberRuntime });
+  assert.deepEqual(failed.request.tools, member.request.tools);
+  assert.match(JSON.stringify(failed.request.messages), /Original catalog failure\./u);
+});
+
+test('requests without workspaces omit workspace tools and unavailable-capability reminders', async () => {
+  const tools = ['fs.read', 'bash'].map((name, index) => ({ name, toolBindingRef: `binding:${name}`,
+    description: name, inputSchema: { type: 'object', properties: {} },
+    possibleEffects: [index === 0 ? 'workspaceRead' : 'process'], availability: 'callable', origin: 'coreBuiltin' }));
+  const prepared = await buildAgentProviderRequest({ sessionId: 'session:no-workspace', runId: 'run:no-workspace',
+    runtime: runtimeSnapshot('run:no-workspace', { tools }), events: [], workspaceBindings: [],
+    providerRequestId: 'request:no-workspace', responseConstraint: 'normal' });
+  assert.deepEqual(prepared.request.tools.map(tool => tool.name).sort(), ['artifact_present', 'interaction_request', 'session']);
+  assert.equal(prepared.receipt.messages.some(message => message.contributionId === 'session:workspace-bindings'), false);
+  assert.doesNotMatch(JSON.stringify(prepared.request.messages), /unavailable|No workspace is bound/u);
+});
+
+test('delegation evidence is delivered once, keeps call pairs intact and reuses frozen history', () => {
+  const sessionId = 'session:agent-evidence', runId = 'run:agent-evidence';
+  const events = [];
+  const add = (type, payload, callId) => {
+    const sequence = events.length + 1;
+    events.push({ schemaVersion: 'deepcode.session-event.v5', eventId: `event:${sequence}`, sessionId, runId,
+      sequence, occurredAt: '2026-10-11T00:00:00.000Z', type, payload, ...(callId ? { callId } : {}) });
+  };
+  for (const delivery of ['async', 'wait']) {
+    const taskId = `task:${delivery}`, callId = `call:${delivery}`, agentSessionId = `session:${delivery}`;
+    const capabilities = delivery === 'async' ? ALL_AGENT_CAPS : NO_AGENT_CAPS;
+    const operation = { action: 'spawn', preset: delivery === 'async' ? 'collaboration' : 'analysis', task: 'Check the evidence.', name: delivery, delivery };
+    add('agent.task.created', { taskId, agentSessionId, capabilities, createsAgent: true, displayName: delivery, text: operation.task, delivery }, callId);
+    add('agent.task.started', { taskId, childRunId: `run:${delivery}` });
+    const result = { outcome: 'completed', content: `Evidence from ${delivery}.`, finalMessageId: `message:${delivery}` };
+    add('agent.task.completed', { taskId, result });
+    add('agent.control.completed', { providerCallId: `provider:${delivery}`, operation,
+      result: { taskId, agentId: agentSessionId, ...(delivery === 'wait' ? result : {}) } }, callId);
+    add('provider.turn.settled', { providerRequestId: `request:${delivery}`, purpose: 'agent',
+      providerRuntimeRef: 'provider-runtime:test', outcome: 'completed', orderedCallIds: [callId] });
+  }
+  add('agent.closed', { agentSessionId: 'session:async' });
+  add('agent.message.received', { sourceSessionId: 'session:member', text: 'A related business finding.' });
+  const contributions = messagesFromJournal(events, runId, []);
+  const messages = contributions.map(value => value.message);
+  const text = JSON.stringify(messages);
+  for (const delivery of ['async', 'wait']) {
+    assert.equal(text.split(`Evidence from ${delivery}.`).length - 1, 1);
+    const callIndex = messages.findIndex(value => value.toolCalls?.some(call => call.callId === `call:${delivery}`));
+    assert.equal(messages[callIndex + 1].toolCallId, `call:${delivery}`);
+  }
+  assert.equal(/agent\.task\.(created|started)|agent\.member\.closed|childRunId|displayName|"status"/u.test(text), false);
+  assert.deepEqual(JSON.parse(messages.at(-1).content), { type: 'agent.message', agentId: 'session:member', text: 'A related business finding.' });
+  const priorBoundary = events.length;
+  add('context.composed', { purpose: 'agent', modelView: { throughSequence: priorBoundary, additions: structuredClone(contributions) } });
+  events.find(event => event.type === 'agent.task.completed').payload.result.content = 'A newer renderer must not replace frozen evidence.';
+  add('agent.message.received', { sourceSessionId: 'session:member', text: 'New evidence.' });
+  const replayed = messagesFromJournal(events, runId, []);
+  assert.deepEqual(replayed.slice(0, contributions.length), contributions);
+  assert.equal(replayed.length, contributions.length + 1);
+});
+
 test('local Provider streams resume after silence, cancel immediately and close their connection', async (t) => {
   let response;
   let connectionClosed = false;
@@ -543,7 +1250,7 @@ for (const lateRecord of [false, true]) test(`lost Kernel reply closes tool hist
   assert.equal(requests.length, 2);
 });
 
-test('snapshot reads only new journal events and matches full replay', async (t) => {
+test('snapshot consumes the write publication without journal reads and matches full replay', async (t) => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:incremental';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -555,13 +1262,92 @@ test('snapshot reads only new journal events and matches full replay', async (t)
   const first = await actor.snapshot();
   const second = await actor.snapshot();
   assert.deepEqual(second, first);
-  assert.deepEqual(reads, [0, first.revision]);
-  await journal.append({ type: 'session.model-settings.updated', sessionId,
-    payload: { commandId: 'command:settings', settings: { profileId: 'profile:new', reasoningEffortOverride: null } } });
+  assert.deepEqual(reads, [0]);
+  await actor.recordAgentEvents([{ type: 'session.model-settings.updated', sessionId,
+    payload: { commandId: 'command:settings', settings: { profileId: 'profile:new', reasoningEffortOverride: null } } }]);
+  assert.deepEqual(reads, [0]);
   const updated = await actor.snapshot();
   const { projectSession } = await import('../dist/local-agent/reducer.js');
   assert.deepEqual(updated, projectSession(loopSnapshot(sessionId, await readEvents(journal, sessionId)).state, null));
   assert.equal(updated.modelSettings.profileId, 'profile:new');
+});
+
+test('Actor recovers a lost write acknowledgement once and publishes before subsequent reads', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:lost-ack';
+  await createSession(journal, sessionId);
+  const read = journal.read.bind(journal), reads = [];
+  journal.read = async function* (id, after = 0) { reads.push(after); yield* read(id, after); };
+  const actor = actorWith(journal, sessionId, { async *stream() {} }, emptyKernel(), fakeRunPreparation().port, 'lost-ack');
+  t.after(() => actor.dispose());
+  await actor.snapshot();
+  const append = journal.append.bind(journal);
+  journal.append = async event => { await append(event); throw Error('lost_ack_after_commit'); };
+  await assert.rejects(actor.recordAgentEvents([{ type: 'session.model-settings.updated', sessionId,
+    payload: { commandId: 'command:committed', settings: { profileId: 'profile:committed', reasoningEffortOverride: null } } }]), /lost_ack_after_commit/);
+  assert.equal((await actor.snapshot()).modelSettings.profileId, 'profile:committed');
+  await actor.snapshot();
+  assert.deepEqual(reads, [0, 0]);
+  const before = await actor.snapshot();
+  journal.append = async () => { throw Error('write_not_committed'); };
+  await assert.rejects(actor.recordAgentEvents([{ type: 'session.model-settings.updated', sessionId,
+    payload: { commandId: 'command:failed', settings: { profileId: 'profile:failed', reasoningEffortOverride: null } } }]), /write_not_committed/);
+  assert.deepEqual(await actor.snapshot(), before);
+  assert.deepEqual(reads, [0, 0, 0]);
+});
+
+test('HTTP journal publishes inherited policy before acknowledging writes and orders delayed delivery', async () => {
+  const requests = [], seen = [];
+  const journal = new HttpCommandJournal({ apiBase: 'http://fixture', serviceToken: 'fixture',
+    fetchImpl: () => new Promise(resolve => requests.push(resolve)) });
+  const unsubscribe = journal.subscribePermissions('child', settings => seen.push(settings['agent.permissions.workspaceMutation']));
+  const older = journal.append({ type: 'session.permissions.updated', sessionId: 'parent', payload: { commandId: 'older', patches: {} } });
+  const newer = journal.append({ type: 'session.permissions.updated', sessionId: 'parent', payload: { commandId: 'newer', patches: {} } });
+  const response = (revision, mode) => new Response(JSON.stringify({ ok: true, data: { value: {}, permissions: {
+    child: { revision, settings: { 'agent.permissions.workspaceMutation': mode } },
+  } } }));
+  requests[1](response(2, 'plan'));
+  await newer;
+  assert.deepEqual(seen, ['plan']);
+  requests[0](response(1, 'allow'));
+  await older;
+  assert.deepEqual(seen, ['plan']);
+  const restored = [];
+  const dispose = journal.subscribePermissions('child', settings => restored.push(settings['agent.permissions.workspaceMutation']));
+  assert.deepEqual(restored, ['plan']);
+  unsubscribe(); dispose();
+});
+
+test('inherited permission publications wake a Loop even when the journal revision is unchanged', { timeout: 3000 }, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:permission-wake';
+  await createSession(journal, sessionId);
+  let publish;
+  journal.subscribePermissions = (_id, listener) => { publish = listener; return () => {}; };
+  const completed = [];
+  const actor = new SessionActor(sessionId, journal, {
+    provider: { async *stream() { throw Error('unexpected_provider'); } }, kernel: emptyKernel(),
+    runPreparation: fakeRunPreparation().port, async dispose() {},
+    runner: { async run(_initial, command, deps, signal) {
+      publish({ 'agent.permissions.workspaceMutation': 'allow' });
+      const before = await deps.readSnapshot();
+      publish({ 'agent.permissions.workspaceMutation': 'plan' });
+      // Delivery happened before subscribing; the publication identity closes the gap.
+      await deps.waitForChange(before.state.revision, signal, before.state.publishedPermissions);
+      const after = await deps.readSnapshot();
+      assert.equal(after.state.revision, before.state.revision);
+      assert.equal(after.state.publishedPermissions['agent.permissions.workspaceMutation'], 'plan');
+      const waiting = deps.waitForChange(after.state.revision, signal, after.state.publishedPermissions);
+      publish({ 'agent.permissions.workspaceMutation': 'allow' });
+      await waiting;
+      completed.push(true);
+      await deps.commit({ type: 'run.finishing', sessionId, runId: command.runId, payload: { outcome: 'cancelled' } });
+      return { status: 'finishing', runId: command.runId, settlement: { outcome: 'cancelled' } };
+    } },
+  });
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:permission-wake', 'Observe policy changes.'));
+  const result = await waitForProjection(actor, value => ['cancelled', 'failed'].includes(value.run?.status));
+  assert.equal(result.run.status, 'cancelled', JSON.stringify(result.terminalError));
+  assert.deepEqual(completed, [true]);
 });
 
 test('transport: oversized Unicode replies preserve content within bounded frames', () => {
@@ -696,9 +1482,21 @@ test('new runs refresh execution facts while restart and compaction retain each 
   await createSession(journal, sessionId);
   let observed = { ...runtimeSnapshot('environment:fixture').environment,
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
+    workspaceShellSupported: false,
+    workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
     runtimeExecutables: { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' } };
   const saved = environmentInstruction(observed);
-  assert.deepEqual(JSON.parse(saved.text.split('\n')[1]).runtimeExecutables, observed.runtimeExecutables);
+  const modelEnvironment = JSON.parse(saved.text.split('\n')[1]);
+  for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox']) {
+    assert.equal(modelEnvironment[field], undefined);
+  }
+  for (const field of ['os', 'arch', 'executionTarget', 'shell', 'executionPath', 'developerCommands']) {
+    assert.deepEqual(modelEnvironment[field], observed[field]);
+  }
+  assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
+  assert.deepEqual(observed.workspaceSandbox, { available: false, reason: 'fixture sandbox probe diagnostic' });
+  assert.deepEqual(observed.runtimeExecutables,
+    { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' });
   const preparation = fakeRunPreparation();
   const port = {
     ...preparation.port,
@@ -763,6 +1561,9 @@ test('new runs refresh execution facts while restart and compaction retain each 
   for (const [index, run] of runs.entries()) {
     assert.deepEqual(run.payload.runtimeSnapshot.instructions.find((item) => item.id === saved.id),
       index === 0 ? saved : environmentInstruction(observed));
+    assert.deepEqual(run.payload.runtimeSnapshot.environment.runtimeExecutables, observed.runtimeExecutables);
+    assert.deepEqual(run.payload.runtimeSnapshot.environment.workspaceSandbox, observed.workspaceSandbox);
+    assert.equal(run.payload.runtimeSnapshot.environment.workspaceShellSupported, false);
   }
   const compacting = requests.find(request => request.purpose === 'contextCompaction');
   assert.equal(compacting.providerRuntimeRef, agentRequests[3].providerRuntimeRef);
@@ -791,6 +1592,10 @@ test('run binding exposes hosted search once and replays its Provider item uncha
     id: 'ws_2',
     status: 'failed',
     action: { type: 'open_page', url: 'https://example.com/unavailable' },
+  }, {
+    type: 'web_search_call',
+    id: 'ws_3',
+    status: 'completed',
   }];
   const preparation = fakeRunPreparation({
     apiSurface: 'responses',
@@ -926,7 +1731,6 @@ test('Responses output items preserve narrative, hosted activity, and final-mess
     type: 'web_search_call',
     id: 'provider-search:first',
     status: 'completed',
-    action: { type: 'search', queries: ['current compiler release'] },
   }, {
     type: 'message',
     id: 'provider-message:search-follow-up',
@@ -1033,6 +1837,8 @@ test('Responses output items preserve narrative, hosted activity, and final-mess
     streamingProjection.assistantDraft.blocks.map((block) => block.outputIndex),
     [0, 1, 2, 3, 4],
   );
+  assert.equal(Object.hasOwn(streamingProjection.assistantDraft.blocks[1], 'action'), false);
+  assert.deepEqual(streamingProjection.assistantDraft.blocks[3].action, nativeItems[3].action);
   completeFirstTurn();
   const firstProjection = await waitForProjection(
     actor,
@@ -1108,6 +1914,10 @@ test('Responses output items preserve narrative, hosted activity, and final-mess
     ))?.kind),
     ['providerHosted', 'providerHosted'],
   );
+  const hostedActivities = [...activityIds].map(activityId => firstProjection.activities
+    .find(activity => activity.activityId === activityId).providerHosted);
+  assert.equal(Object.hasOwn(hostedActivities[0], 'action'), false);
+  assert.deepEqual(hostedActivities[1].action, nativeItems[3].action);
   assert.equal(
     firstProjection.messages.find((message) => message.messageId === finalMessageId)?.content,
     finalText,
@@ -1372,7 +2182,7 @@ test('filesystem references retain logical metadata and bindings in Provider con
   const events = await readEvents(journal, sessionId);
   assert.deepEqual(
     singleEvent(events, 'run.started').payload.workspaceBindings,
-    [workspaceBinding, importedWorkspace],
+    [workspaceBinding],
   );
   const committed = events.find((event) => (
     event.type === 'message.committed' && event.payload.role === 'user'
@@ -1408,6 +2218,87 @@ for (const [field, label, identity, error] of [
     assert.throws(() => loopSnapshot(sessionId, events), error);
   });
 }
+
+test('archived completed runs stay readable without synthesizing execution capabilities', async (t) => {
+  const sessionId = 'session:archived-capabilities', base = new InMemoryCommandJournal();
+  await createSession(base, sessionId);
+  const provider = { async *stream(request) {
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Recorded answer.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  const seed = actorWith(base, sessionId, provider, emptyKernel(), fakeRunPreparation().port, 'archived-capabilities');
+  t.after(() => seed.dispose());
+  await seed.submit(messageCommand(sessionId, 'command:archived-run', 'Recorded question.'));
+  const completed = await waitForProjection(seed, value => value.run?.status === 'completed');
+  await seed.dispose();
+  const journal = forwardingJournal(base, async function* (id, afterSequence) {
+    for await (const event of base.read(id, afterSequence)) {
+      if (event.type === 'run.started' && event.runId === completed.run.runId) delete event.payload.runtimeSnapshot.agentCapabilities;
+      yield event;
+    }
+  });
+  const archived = await readEvents(journal, sessionId);
+  const preparation = fakeRunPreparation();
+  const service = new SessionService(journal, { async create() { return { composition: {
+    provider, kernel: emptyKernel(), runPreparation: preparation.port, async dispose() {},
+  } }; } });
+  t.after(() => service.dispose());
+  assert.deepEqual((await service.statuses([sessionId]))[0].run, { runId: completed.run.runId, status: 'completed' });
+  assert.deepEqual((await service.snapshot(sessionId)).messages, completed.messages);
+  const archivedRuntime = loopSnapshot(sessionId, archived).state.runRuntimeSnapshots[completed.run.runId];
+  assert.equal(Object.hasOwn(archivedRuntime, 'agentCapabilities'), false);
+  assert.equal(preparation.prepared.length, 0, 'reading history must not prepare an execution runtime');
+  const reply = await service.submit(messageCommand(sessionId, 'command:fresh-after-archive', 'A fresh task.'));
+  assert.equal(reply.status, 'accepted');
+  const fresh = await waitForProjection({ snapshot: () => service.snapshot(sessionId) },
+    value => value.run?.status === 'completed' && value.run.runId !== completed.run.runId);
+  assert.equal(preparation.prepared.length, 1);
+  const after = await readEvents(journal, sessionId);
+  assert.deepEqual(after.slice(0, archived.length), archived, 'reading and starting a fresh run must not rewrite archived facts');
+  assert.deepEqual(after.find(event => event.type === 'run.started' && event.runId === fresh.run.runId).payload.runtimeSnapshot.agentCapabilities, ALL_AGENT_CAPS);
+});
+
+test('fresh runtime admission rejects missing execution capabilities and releases preparation', async (t) => {
+  const sessionId = 'session:fresh-capabilities-missing', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  const preparation = fakeRunPreparation(), originalPrepare = preparation.port.prepare;
+  preparation.port.prepare = async request => {
+    const result = await originalPrepare(request);
+    delete result.runtimeSnapshot.agentCapabilities;
+    return result;
+  };
+  const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('invalid_runtime_reached_provider'); } },
+    emptyKernel(), preparation.port, 'fresh-capabilities');
+  t.after(() => actor.dispose());
+  await assert.rejects(actor.submit(messageCommand(sessionId, 'command:fresh-invalid-capabilities', 'Start explicitly.')), /agent_capabilities_invalid/);
+  assert.equal(preparation.released.length, 1);
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'run.started'), false);
+});
+
+test('archived active runs without execution capabilities cannot restore or delegate', async (t) => {
+  const sessionId = 'session:active-capabilities-missing', runId = 'run:active-capabilities-missing';
+  const base = new InMemoryCommandJournal();
+  await createSession(base, sessionId);
+  await base.append({ type: 'message.committed', sessionId, payload: { messageId: 'message:active-capabilities', role: 'user', content: 'Recorded task.' } });
+  await base.append({ type: 'run.started', sessionId, runId, payload: {
+    inputMessageId: 'message:active-capabilities', workspaceBindings: [], runtimeSnapshot: runtimeSnapshot(runId),
+  } });
+  const journal = forwardingJournal(base, async function* (id, afterSequence) {
+    for await (const event of base.read(id, afterSequence)) {
+      if (event.type === 'run.started') delete event.payload.runtimeSnapshot.agentCapabilities;
+      yield event;
+    }
+  });
+  const before = await readEvents(journal, sessionId), preparation = fakeRunPreparation();
+  const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('archived_runtime_reached_provider'); } },
+    emptyKernel(), preparation.port, 'active-capabilities');
+  t.after(() => actor.dispose());
+  assert.equal((await actor.snapshot()).run.status, 'running');
+  await assert.rejects(actor.agentCapabilities(runId), /agent_capabilities_invalid/);
+  await assert.rejects(actor.recover(), /agent_capabilities_invalid/);
+  assert.equal(preparation.prepared.length, 0);
+  assert.deepEqual(await readEvents(journal, sessionId), before);
+});
 
 test('tool prompt preparation binds exact callable tools and rejects invalid ownership', () => {
   const readTool = {
@@ -1909,13 +2800,15 @@ test('read-only bash result projects its real write scope and continues the Loop
       const toolResult = request.messages
         .map(jsonMessagePayload)
         .find((payload) => payload?.outcome === 'completed');
-      assert.equal(toolResult?.output?.workspaceMode, 'read');
+      assert.equal(toolResult?.output?.workspaceMode, undefined);
       assert.equal(toolResult?.output?.executionScope, 'workspace');
       assert.equal(toolResult?.output?.terminal, false);
       assert.equal(toolResult?.output?.workspaceId, undefined);
-      assert.equal(toolResult?.output?.environment?.writeScope, 'authorizedResources');
-      assert.equal(toolResult?.output?.environment?.homeWritable, true);
-      assert.equal(toolResult?.output?.environment?.networkAccess, false);
+      assert.equal(toolResult?.output?.environment, undefined);
+      assert.equal(toolResult?.output?.paths, undefined);
+      assert.equal(toolResult?.output?.capturedBytes, undefined);
+      assert.equal(toolResult?.output?.stdout, 'probe-ok');
+      assert.equal(toolResult?.output?.exitCode, 0);
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:bash-read-answer',
         content: 'Read-only shell continuation completed.',
@@ -2179,21 +3072,21 @@ test('a run without workspace bindings never exposes workspace-scoped tools', as
     'web_search',
     'artifact_present',
     'interaction_request',
+    'session',
     'mcp_echo',
   ]);
-  const guidance = capturedRequest.messages.find((message) => (
-    message.role === 'system' && message.content.includes(tools.find(tool => tool.name === 'web.search').description)
-  ));
-  assert.ok(guidance);
-  assert.match(guidance.content, /\bweb_search\b/u);
-  assert.doesNotMatch(guidance.content, /\bfs_read\b|\bbash\b/u);
+  const searchDescription = tools.find(tool => tool.name === 'web.search').description;
+  assert.equal(capturedRequest.tools.find(tool => tool.name === 'web_search').description, searchDescription);
+  assert.equal(capturedRequest.messages.some(message => (
+    message.role === 'system' && message.content.includes(searchDescription)
+  )), false, 'the tool description is not duplicated in system guidance');
   assert.deepEqual(capturedRequest.hostedTools, []);
   assert.equal(capturedRequest.tools.some((tool) => (
     tool.inputSchema?.properties?.workspaceId !== undefined || tool.inputSchema?.properties?.workspace !== undefined
   )), false);
   assert.deepEqual(
     projection.contextCompositions.at(-1).tools.map((tool) => tool.itemId),
-    ['web.search', 'artifact.present', 'interaction.request', 'mcp.echo'],
+    ['web.search', 'artifact.present', 'interaction.request', 'session', 'mcp.echo'],
   );
   await actor.dispose();
 });
@@ -2203,14 +3096,21 @@ test('explicit /focus and same-runtime pressure compact only after a successful 
   await verifyPressureCompaction();
 });
 
-test('completed compaction rejects invalid output as a known failure without retrying', async (t) => {
-  for (const [name, output, completion, code] of [
+test('compaction rejects invalid output without executing tools or retrying and preserves completion state', async (t) => {
+  for (const [name, output, completion, code, outcome = 'failed'] of [
     ['empty', [], {}, 'context_compaction_empty'],
     ['mismatch', [
       ['text.delta', { text: 'Streamed summary.' }],
       ['assistant.message', { messageId: 'summary:mismatch', content: 'Different summary.' }],
     ], {}, 'provider_message_mismatch'],
     ['usage', [], { usage: { inputTokens: -1 } }, 'provider_usage_invalid'],
+    ['tool-call', [
+      ['tool.call', { callId: 'provider:summary-tool', name: 'fs_read', input: { path: 'fixture.txt' } }],
+    ], {}, 'context_compaction_tool_call_invalid', 'indeterminate'],
+    ['native-tool-call', [
+      ['output.item.completed', { outputIndex: 0, item: { type: 'function_call',
+        id: 'fc_summary', call_id: 'summary-tool', name: 'fs_read', arguments: '{"path":"fixture.txt"}' } }],
+    ], {}, 'context_compaction_tool_call_invalid', 'indeterminate'],
   ]) await t.test(name, async (t) => {
     const journal = new InMemoryCommandJournal(), sessionId = `session:completed-compaction-${name}`;
     await createSession(journal, sessionId);
@@ -2226,13 +3126,20 @@ test('completed compaction rejects invalid output as a known failure without ret
     await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'context.focus',
       sessionId, commandId: 'command:focus', task: 'Summarize the known facts.' });
     const result = await waitForProjection(actor, value => ['failed', 'indeterminate'].includes(value.run?.status));
-    assert.equal(result.run.status, 'failed');
-    assert.equal(result.terminalError.code, code);
+    assert.equal(result.run.status, outcome);
+    if (outcome === 'failed') assert.equal(result.terminalError.code, code);
+    else {
+      assert.equal(result.terminalError.code, 'provider_turn_outcome_unknown');
+      assert.match(result.terminalError.message, new RegExp(code));
+    }
     assert.equal(sends, 1);
     assert.equal(preparation.released.length, 1);
     const events = await readEvents(journal, sessionId);
-    assert.equal(singleEvent(events, 'provider.turn.settled').payload.outcome, 'failed');
+    assert.equal(singleEvent(events, 'provider.turn.settled').payload.outcome, outcome);
+    const attempt = events.find(event => event.type === 'provider.attempt.updated' && event.payload.phase === 'failed');
+    assert.equal(attempt.payload.error.code, code);
     assert.equal(events.some(event => event.type === 'context.compacted'), false);
+    assert.equal(events.some(event => event.type === 'tool.requested' || event.type === 'tool.completed'), false);
   });
 });
 
@@ -2404,25 +3311,16 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
   const baseJournal = new InMemoryCommandJournal();
   const sessionId = 'session:delete-unloadable';
   await createSession(baseJournal, sessionId);
-  let readCount = 0;
   let recoveryStartedResolve;
   let releaseRecoveryResolve;
   const recoveryStarted = new Promise((resolve) => { recoveryStartedResolve = resolve; });
   const releaseRecovery = new Promise((resolve) => { releaseRecoveryResolve = resolve; });
-  const journal = forwardingJournal(baseJournal, async function* (targetSessionId, afterSequence) {
-    readCount += 1;
-    if (readCount === 1) {
-      for await (const event of baseJournal.read(targetSessionId, afterSequence)) yield event;
-      return;
-    }
-    recoveryStartedResolve();
-    await releaseRecovery;
-    throw new Error('fixture_recovery_failed');
-  });
+  const journal = baseJournal;
   let disposeCount = 0;
   const preparation = fakeRunPreparation();
   const service = new SessionService(journal, {
     async create() {
+      recoveryStartedResolve();
       return {
         composition: {
               provider: { async *stream() { throw new Error('unexpected_provider_turn'); } },
@@ -2432,7 +3330,7 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
         },
       };
     },
-  });
+  }, { async settings() { await releaseRecovery; throw Error('fixture_recovery_failed'); } });
 
   const snapshot = service.submit(messageCommand(sessionId, 'command:open-for-delete', 'Start explicitly.'));
   await recoveryStarted;
@@ -2449,11 +3347,80 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
   await service.dispose();
 });
 
+test('family deletion rejects an unreadable journal and preserves its data', async () => {
+  const baseJournal = new InMemoryCommandJournal();
+  const sessionId = 'session:delete-unreadable';
+  await createSession(baseJournal, sessionId);
+  const before = [];
+  for await (const event of baseJournal.read(sessionId)) before.push(event);
+  const journal = forwardingJournal(baseJournal, async function* () {
+    throw new Error('fixture_journal_unreadable');
+  });
+  const service = new SessionService(journal, {
+    async create() { throw new Error('unexpected_composition_create'); },
+  });
+  try {
+    await assert.rejects(service.deleteSession(sessionId), /fixture_journal_unreadable/u);
+    const after = [];
+    for await (const event of baseJournal.read(sessionId)) after.push(event);
+    assert.deepEqual(after, before);
+  } finally {
+    await service.dispose();
+  }
+});
+
+test('partial family deletion preserves the original error and exact deleted IDs', async (t) => {
+  const { SessionDeletionError } = await import('../dist/local-agent/service.js');
+  const base = new InMemoryCommandJournal(), ownerId = 'session:partial-owner', childId = 'session:partial-child';
+  await createSession(base, ownerId);
+  let initialized = false, actor;
+  const provider = { async *stream(request) {
+    if (!initialized) {
+      initialized = true;
+      await base.createSession({ sessionId: childId, displayTitle: 'Child', workspaceBindings: [], agentContext: {
+        capabilities: NO_AGENT_CAPS, ownerSessionId: ownerId, parentSessionId: ownerId,
+        parentRunId: request.runId, parentCallId: 'call:create-child',
+      } });
+      await actor.recordAgentEvents([
+        { type: 'agent.task.created', sessionId: ownerId, runId: request.runId, callId: 'call:create-child', payload: {
+          taskId: 'task:partial-child', agentSessionId: childId, capabilities: NO_AGENT_CAPS, createsAgent: true,
+          displayName: 'Child', text: 'A recorded task.', delivery: 'async',
+        } },
+        { type: 'agent.task.completed', sessionId: ownerId, runId: request.runId, payload: {
+          taskId: 'task:partial-child', result: { outcome: 'failed', error: { code: 'fixture_start_failed', message: 'Start failed.' } },
+        } },
+      ]);
+    }
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Task failure recorded.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  actor = actorWith(base, ownerId, provider, emptyKernel(), fakeRunPreparation().port, 'partial-delete');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(ownerId, 'command:partial-owner', 'Run the task.'));
+  await waitForProjection(actor, value => value.run?.status === 'completed');
+  await actor.dispose();
+  const original = new Error('fixture_owner_delete_failed');
+  const journal = forwardingJournal(base, (...args) => base.read(...args));
+  journal.deleteSession = async id => { if (id === ownerId) throw original; await base.deleteSession(id); };
+  const service = new SessionService(journal, { async create() { throw new Error('unexpected_composition_create'); } });
+  try {
+    await assert.rejects(service.deleteSession(ownerId), error => {
+      assert.ok(error instanceof SessionDeletionError);
+      assert.equal(error.errors[0], original);
+      assert.deepEqual(error.details, { deletedSessionIds: [childId], remainingSessionIds: [ownerId] });
+      return true;
+    });
+    await assert.rejects(readEvents(base, childId), /session_not_found/);
+    assert.ok((await readEvents(base, ownerId)).length > 0);
+  } finally { await service.dispose(); }
+});
+
 test('an escaped Loop fault remains Session-local and releases its runtime', async () => {
   const baseJournal = new InMemoryCommandJournal();
   const failingSessionId = 'session:contained-loop-failure';
   const healthySessionId = 'session:healthy-after-loop-failure';
   const journal = {
+    subscribePermissions: (...args) => baseJournal.subscribePermissions(...args),
     createSession: (input) => baseJournal.createSession(input),
     deleteSession: (sessionId) => baseJournal.deleteSession(sessionId),
     append: (event) => baseJournal.append(event),
@@ -2526,7 +3493,7 @@ test('an escaped Loop fault remains Session-local and releases its runtime', asy
   await healthyActor.dispose();
 });
 
-test('one Plan confirmation resumes the same run into Todo-backed execution', async () => {
+test('one Plan confirmation resumes the same run while progress remains an explicit model choice', async () => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:confirmed-plan-execution';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -2616,10 +3583,9 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
           .map(jsonMessagePayload)
           .find((payload) => payload?.type === 'todo.current');
         assert.ok(confirmation, 'confirmed Plan must be projected as the plan call result');
-        assert.equal(confirmation.todoSeeded, true);
+        assert.equal('todoSeeded' in confirmation, false);
         assert.ok(typeof confirmation.nextAction === 'string' && confirmation.nextAction.trim());
-        assert.ok(todo, 'confirmation must atomically seed Provider-visible Todo');
-        assert.equal('executionDirective' in todo, false);
+        assert.equal(todo, undefined, 'Plan confirmation does not generate Todo');
         assert.ok(writeDefinition, 'confirmed execution tool must remain available');
         assert.equal(
           request.tools.some((candidate) => candidate.name.includes('todo')),
@@ -2641,7 +3607,7 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
       }
 
       if (providerRequests.length === 3) {
-        yield* todoUpdateEvents(request, 'completed', true);
+        yield* todoUpdateEvents(request, ['Write README'], 'completed', true);
         return;
       }
       assert.equal(providerRequests.length, 4);
@@ -2649,9 +3615,9 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
       const todoStates = request.messages
         .map(jsonMessagePayload)
         .filter((payload) => payload?.type?.startsWith('todo.'));
-      assert.equal(todoStates.length, 2);
-      assert.equal(todoStates[0].items[0].status, 'pending');
-      assert.equal(todoStates.at(-1).items[0].status, 'completed');
+      assert.equal(todoStates.length, 0, 'explicit progress retains the tool-call fact without a duplicate Todo snapshot');
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
       for (let index = 1; index < providerRequests.length; index += 1) {
         assert.deepEqual(providerRequests[index].messages.slice(0, providerRequests[index - 1].messages.length), providerRequests[index - 1].messages);
       }
@@ -2723,6 +3689,8 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
   const seeded = events.find(event => event.type === 'todo.updated' && !event.callId);
   const requested = singleEvent(events, 'tool.requested');
   const progressed = events.find(event => event.type === 'todo.updated' && event.callId);
+  assert.equal(seeded, undefined, 'only model-authored progress is committed');
+  assert.equal(progressed.payload.items[0].status, 'completed');
   const toolCompleted = singleEvent(events, 'tool.completed');
   const finalMessage = events.find((event) => (
     event.type === 'message.committed' && event.payload.role === 'assistant'
@@ -2734,7 +3702,6 @@ test('one Plan confirmation resumes the same run into Todo-backed execution', as
   assertEventOrder(
     published,
     confirmed,
-    seeded,
     requested,
     toolCompleted,
     progressed,
@@ -2903,8 +3870,8 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
         const todo = request.messages
           .map(jsonMessagePayload)
           .find((payload) => payload?.type === 'todo.current');
-        assert.equal(todo?.items[0].status, 'pending');
-        yield* todoUpdateEvents(request, 'inProgress');
+        assert.equal(todo, undefined);
+        yield* todoUpdateEvents(request, ['Run the confirmed command'], 'inProgress');
         return;
       }
       if (providerRequests.length === 4) {
@@ -2922,7 +3889,7 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
       }
 
       if (providerRequests.length === 5) {
-        yield* todoUpdateEvents(request);
+        yield* todoUpdateEvents(request, ['Run the confirmed command']);
         return;
       }
       assert.equal(providerRequests.length, 6);
@@ -2930,7 +3897,9 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
       const todo = request.messages
         .map(jsonMessagePayload)
         .findLast((payload) => payload?.type === 'todo.current');
-      assert.equal(todo?.items[0].status, 'completed');
+      assert.equal(todo, undefined, 'explicit progress stays in the original tool calls without an injected snapshot');
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:bash-plan-complete',
         content: 'Confirmed Bash plan executed.',
@@ -2982,7 +3951,8 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
     .filter((event) => event.type === 'tool.completed')
     .map((event) => event.payload.record);
   assert.deepEqual(toolRecords.map((record) => record.outcome), ['failed', 'completed']);
-  assert.equal(events.filter((event) => event.type === 'todo.updated' && event.callId).length, 2);
+  assert.deepEqual(events.filter(event => event.type === 'todo.updated' && event.callId)
+    .map(event => event.payload.items[0].status), ['inProgress', 'completed']);
 
   await actor.dispose();
 });
@@ -3071,14 +4041,16 @@ test('confirmed fs.delete reads targetKind from canonical arguments and complete
         return;
       }
       if (providerRequests.length === 3) {
-        yield* todoUpdateEvents(request);
+        yield* todoUpdateEvents(request, ['Delete generated directory']);
         return;
       }
       assert.equal(providerRequests.length, 4);
       const todo = request.messages
         .map(jsonMessagePayload)
         .findLast((payload) => payload?.type === 'todo.current');
-      assert.equal(todo?.items[0].status, 'completed');
+      assert.equal(todo, undefined, 'explicit progress stays in the original tool calls without an injected snapshot');
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:delete-plan-complete',
         content: 'Confirmed delete plan executed.',
@@ -3157,14 +4129,14 @@ test('unfinished Todo preserves final explanation and progress while the run end
         return;
       }
 
-      assert.equal(providerRequests.length, 2);
+      if (providerRequests.length === 2) {
+        assert.equal(request.messages.some(message => jsonMessagePayload(message)?.type === 'todo.current'), false);
+        yield* todoUpdateEvents(request, ['Execute the step'], 'pending');
+        return;
+      }
+      assert.equal(providerRequests.length, 3);
       assert.equal(request.responseConstraint, 'normal');
-      assert.ok(request.messages
-        .map(jsonMessagePayload)
-        .some((payload) => payload?.response?.kind === 'confirm'));
-      assert.ok(request.messages
-        .map(jsonMessagePayload)
-        .some((payload) => payload?.type === 'todo.current'));
+      assert.ok(request.messages.map(jsonMessagePayload).some(payload => payload?.response?.kind === 'confirm'));
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:invalid-execution-answer',
         content: 'Execution is blocked. The confirmed work has not been completed.',
@@ -3204,7 +4176,7 @@ test('unfinished Todo preserves final explanation and progress while the run end
 
   const failed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   await waitUntil(() => preparation.released.length === 1, 'completed run runtime release');
-  assert.equal(providerRequests.length, 2);
+  assert.equal(providerRequests.length, 3);
   assert.equal(failed.plans[0].status, 'confirmed');
   assert.equal(failed.todoList.items[0].status, 'pending');
   assert.equal(failed.terminalError, null);
@@ -3212,16 +4184,17 @@ test('unfinished Todo preserves final explanation and progress while the run end
 
   const events = await readEvents(journal, sessionId);
   const confirmed = singleEvent(events, 'plan.confirmed');
-  const seeded = events.find(event => event.type === 'todo.updated' && !event.callId);
+  const progressed = singleEvent(events, 'todo.updated');
+  assert.ok(progressed.callId, 'unfinished progress came from the model');
   const completions = events.filter((event) => event.type === 'provider.turn.settled');
   const settlement = singleEvent(events, 'run.settled');
-  assert.equal(completions.length, 2);
+  assert.equal(completions.length, 3);
   assert.equal(settlement.payload.outcome, 'completed');
   const finalMessage = events.find((event) => event.type === 'message.committed' && event.payload.role === 'assistant');
   assert.equal(finalMessage?.payload.content, 'Execution is blocked. The confirmed work has not been completed.');
   assert.equal(events.some((event) => event.type === 'plan.completed'), false);
   assert.equal(events.some((event) => event.type === 'tool.requested'), false);
-  assertEventOrder(confirmed, seeded, completions[1], finalMessage, singleEvent(events, 'run.finishing'), singleEvent(events, 'run.runtime.released'), settlement);
+  assertEventOrder(confirmed, progressed, completions[2], finalMessage, singleEvent(events, 'run.finishing'), singleEvent(events, 'run.runtime.released'), settlement);
 
   await actor.dispose();
 });
@@ -3274,7 +4247,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   const cleanup = { stepId: 'cleanup', title: 'Clean up', details: 'Ignore generated files.' };
   const revised = {
     ...initial, title: 'Implement, verify and clean up',
-    steps: [initial.steps[0], { ...initial.steps[1], details: 'Check the result and generated files.' }, cleanup],
+    steps: [{ ...cleanup, title: 'Finish and verify cleanup' }],
     mutationManifest: [...initial.mutationManifest, { workspace: 'primary', operation: 'fs.write', target: '.gitignore' }],
   };
   const requests = [];
@@ -3290,7 +4263,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   const provider = { async *stream(request) {
     requests.push(structuredClone(request));
     const turn = requests.length;
-    assert.ok(turn <= 10);
+    assert.ok(turn <= 9);
     if (turn > 1) {
       const previous = requests.at(-2);
       assert.deepEqual(request.tools, previous.tools, 'Plan phases preserve tool definitions and ordering');
@@ -3298,7 +4271,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     }
     assert.equal(request.responseConstraint, 'normal');
     const payloads = request.messages.map(jsonMessagePayload);
-    const todo = payloads.findLast((payload) => payload?.type === 'todo.current');
+    const todo = (await actor.snapshot()).todoList;
     const record = payloads.find((payload) => payload?.recordId);
     const planTool = request.tools.find((tool) => tool.inputSchema.properties?.mutationManifest);
     const progressTool = request.tools.find((tool) => tool.name === 'todo_update');
@@ -3306,33 +4279,31 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     let name, input;
     if (turn === 1) { name = planTool.name; input = initial; }
     else if (turn === 2) {
-      originalTodo = structuredClone(todo);
+      assert.equal(todo, null);
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:initial-progress', name: progressTool.name,
+        input: { items: initial.steps.map(step => ({ text: step.title, status: 'pending' })) } });
       name = writeTool.name; input = { workspace: 'primary', path: 'README.md', content: 'Implemented.' };
     } else if (turn === 3) {
+      originalTodo = structuredClone(todo);
       name = progressTool.name; input = { items: todo.items.map((item, index) => ({ text: item.text, status: index === 0 ? 'completed' : 'inProgress' })) };
     } else if (turn === 4) {
-      name = planTool.name; input = { ...revised, steps: [cleanup] };
-    } else if (turn === 5) {
-      const error = payloads.findLast((payload) => payload?.accepted === false).error;
-      assert.equal(error.code, 'plan_revision_steps_missing');
-      assert.match(error.message, /implement.*verify/);
       name = planTool.name; input = revised;
-    } else if (turn === 6) {
+    } else if (turn === 5) {
       assert.equal(todo.runId, originalTodo.runId);
       assert.equal(todo.revision, 2);
       assert.deepEqual(todo.items.map(item => item.text), originalTodo.items.map(item => item.text));
       assert.deepEqual(todo.items.map(item => item.status), ['completed', 'inProgress']);
       name = writeTool.name; input = { workspace: 'primary', path: '.gitignore', content: 'core\n' };
-    } else if (turn === 7) {
+    } else if (turn === 6) {
       name = progressTool.name; input = { items: [
         { text: todo.items[0].text, status: 'completed' }, { text: 'Clean up', status: 'invented' },
       ] };
-    } else if (turn === 8) {
+    } else if (turn === 7) {
       const error = payloads.findLast(payload => payload?.accepted === false).error;
       assert.equal(error.code, 'todo_update_invalid');
       assert.equal(todo.items[1].status, 'inProgress', 'invalid progress applies no partial update');
       name = progressTool.name; input = { items: [...todo.items.map(item => ({ text: item.text, status: 'completed' })), { text: 'Clean up', status: 'completed' }] };
-    } else if (turn === 9) {
+    } else if (turn === 8) {
       assert.ok(todo.items.every(item => item.status === 'completed'));
       name = writeTool.name; input = { workspace: 'primary', path: '.gitignore', content: 'core\nbuild\n' };
     } else {
@@ -3352,10 +4323,11 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     if (revision === 2) {
       waiting = await waitForProjection(actor, (value) => value.pendingPlan?.revision === 2);
       assert.equal(waiting.pendingPlan.planId, firstId);
+      assert.deepEqual(waiting.pendingPlan.steps.map(step => step.stepId), ['cleanup'], 'execution phases can be merged without preserving obsolete step IDs');
       assert.equal(waiting.todoList.items.length, 2, 'the proposed revision cannot replace Todo before confirmation');
       assert.deepEqual(waiting.todoList.items.map((item) => ({ text: item.text, status: item.status })),
         originalTodo.items.map((item, index) => ({ text: item.text, status: index === 0 ? 'completed' : 'inProgress' })),
-        'proposal and rejected calls preserve phase identities, labels and observed progress until the user decides');
+        'Plan proposals preserve the independent Todo labels and observed progress until the user decides');
       assert.equal(executions.length, 1, 'new scope must wait for user confirmation');
     }
     await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: `command:revision-confirm-${revision}`, sessionId,
@@ -3364,13 +4336,13 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   const completed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.deepEqual(completed.plans.map((plan) => plan.status), ['superseded', 'confirmed']);
   assert.ok(completed.todoList.items.every((item) => item.status === 'completed'));
-  assert.equal(requests.length, 10);
+  assert.equal(requests.length, 9);
   assert.equal(executions.length, 3);
   const events = await readEvents(journal, sessionId);
   assert.equal(events.filter(event => event.type === 'todo.updated').length, 3);
   assert.equal(completed.activePlanRef, null);
   assert.deepEqual(events.filter((event) => event.type === 'session.control.rejected').map((event) => event.payload.error.code),
-    ['plan_revision_steps_missing', 'todo_update_invalid']);
+    ['todo_update_invalid']);
   const final = events.find((event) => event.type === 'message.committed' && event.payload.role === 'assistant');
   assertEventOrder(events.findLast(event => event.type === 'todo.updated'), final, singleEvent(events, 'run.finishing'), singleEvent(events, 'run.runtime.released'), singleEvent(events, 'run.settled'));
   assert.equal(preparation.released.length, 1);
@@ -3825,6 +4797,9 @@ async function verifyExplicitFocusCompaction() {
   const preparation = fakeRunPreparation({
     contextWindowTokens: 2_000,
     maxOutputTokens: 120,
+    apiSurface: 'responses',
+    hostedWebSearch: 'web_search',
+    webSearch: { owner: 'providerHosted', providerToolType: 'web_search' },
   });
   const requests = [];
   let agentTurn = 0;
@@ -3834,15 +4809,14 @@ async function verifyExplicitFocusCompaction() {
       if (request.purpose === 'contextCompaction') {
         assert.equal(request.responseConstraint, 'answerOnly');
         assert.equal(request.maxOutputTokens, 120);
-        assert.deepEqual(request.tools, []);
-        assert.ok(request.messages.some((message) => (
-          message.role === 'system'
-          && message.content?.startsWith('Summarize the supplied Session history into a factual handoff')
-        )));
-        assert.ok(request.messages.some((message) => (
-          message.role === 'system'
-          && message.content === 'Prioritize existing facts relevant to the following future-work focus, but do not answer it:\nPreserve the selected facts.'
-        )));
+        assert.deepEqual(request.tools, requests[0].tools);
+        assert.deepEqual(request.hostedTools, requests[0].hostedTools);
+        assert.equal(request.hostedTools.length, 1, 'focus retains the supplied hosted definition under answerOnly');
+        assert.deepEqual(request.messages.slice(0, requests[0].messages.length), requests[0].messages,
+          'summary must preserve the preceding conversation prefix');
+        assert.equal(request.messages.at(-1).role, 'user');
+        assert.match(request.messages.at(-1).content, /^Summarize the supplied conversation into a factual handoff/);
+        assert.match(request.messages.at(-1).content, /future-work focus, but do not answer it:\nPreserve the selected facts\.$/);
         yield providerEvent(request.requestId, 'assistant.message', {
           messageId: 'provider-message:focus-summary',
           content: 'Durable focus summary.',
@@ -4280,12 +5254,15 @@ test('the real Session bridge persists model commands and passes effort through 
       for await (const chunk of request) body += chunk;
       const input = body ? JSON.parse(body) : null;
       let data;
-      if (url.pathname === '/api/local-agent/journal/sessions') data = await journal.createSession(input);
+      if (url.pathname === '/api/local-agent/agents/settings') data = { enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 4, maxCallsPerRun: 10, maxMembersPerSession: 10, allowMemberAnalysis: false, allowFullConfiguration: true, presets: '[]' };
+      else if (url.pathname === '/api/local-agent/journal/events') data = { value: await journal.append(input), permissions: {} };
+      else if (url.pathname === '/api/local-agent/journal/sessions') data = await journal.createSession(input);
       else if (parts[6] === 'events') {
         data = [];
         for await (const event of journal.read(parts[5], Number(url.searchParams.get('after')))) data.push(event);
+        data = { value: data, permissions: {} };
       } else if (parts[6] === 'commands') data = await journal.readCommand(parts[5], parts[7]);
-      else if (url.pathname === '/api/local-agent/journal/commands') data = await journal.commitCommand(input.command, input.events, input.reply);
+      else if (url.pathname === '/api/local-agent/journal/commands') data = { value: await journal.commitCommand(input.command, input.events, input.reply), permissions: {} };
       else if (url.pathname === '/api/local-agent/runtime/prepare-run') {
         prepared.push(input);
         if (input.sessionId === 'session:bridge-held') await heldPreparation;
@@ -4977,8 +5954,9 @@ test('Todo can start before tools without a Plan, preserve a failed record and e
         input: { items: [{ text: 'Process input', status: 'blocked' }, { text: 'Investigate input', status: 'completed' }] } });
     } else {
       assert.equal(turn, 3);
-      const todo = request.messages.map(jsonMessagePayload).findLast(payload => payload?.type === 'todo.current');
-      assert.deepEqual(todo.items.map(item => item.status), ['blocked', 'completed']);
+      assert.deepEqual(jsonMessagePayload(request.messages.findLast(message => message.role === 'tool')),
+        { accepted: true });
+      assert.equal(request.messages.map(jsonMessagePayload).some(payload => payload?.type === 'todo.current'), false);
       yield providerEvent(request.requestId, 'text.delta', { text: 'Input is missing; processing remains blocked.' });
     }
     yield providerEvent(request.requestId, 'completed', {});
@@ -5069,12 +6047,17 @@ test('explicit GUI rebind preserves waiting and uses the new catalog only for su
   const resumed = requests[1].messages;
   const callIndex = resumed.findIndex(m => m.providerOutputBlocks?.some(b => b.providerCallId === 'native:question'));
   const resultIndex = resumed.findIndex(m => m.role === 'tool' && m.providerCallId === 'native:question');
-  const noticeIndex = resumed.findIndex(m => m.content.includes('gui:new') && m.content.includes('observationId'));
+  const noticeIndex = resumed.findIndex(m => m.content.includes('The user selected a new GUI target.')
+    && m.content.includes('observationId') && m.content.includes('previewId'));
   assert.ok(callIndex >= 0 && resultIndex > callIndex && noticeIndex > resultIndex,
     'the GUI rebind notice must follow the pending native tool result, not split the call/result pair');
+  assert.doesNotMatch(resumed[noticeIndex].content, /gui:new|hostInstanceId|windowLabel/u);
   assert.deepEqual(requests[2].messages.slice(0, resumed.length), resumed,
     'later requests retain the same binding-notice position in the completed history');
   assert.equal(requests[1].providerRuntimeRef, requests[0].providerRuntimeRef);
-  assert.equal((await readEvents(journal, sessionId)).filter(e => e.type === 'run.host.rebound').length, 1);
+  const rebindEvents = (await readEvents(journal, sessionId)).filter(e => e.type === 'run.host.rebound');
+  assert.equal(rebindEvents.length, 1);
+  assert.deepEqual(rebindEvents[0].payload.hostBinding, newBinding);
+  assert.equal(rebindEvents[0].payload.toolView.kernelCatalogSnapshotRef, 'catalog:new-gui');
   assert.equal((await actor.submit({ ...command, commandId: 'command:finished' })).error.code, 'host_rebind_not_waiting');
 });

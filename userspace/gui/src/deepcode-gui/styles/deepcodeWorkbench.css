@@ -18,6 +18,18 @@
 .deepcode-gui-workbench:has([data-navigation-density='compact']) { --dc-navigation-row: 31px; }
 .deepcode-gui-workbench:has(.deepcode-gui-shell--no-context) { --dc-header-context-width: auto; }
 
+/* Navigation and window chrome are controls; conversation and reader text stay selectable. */
+.deepcode-gui-navigation-box,
+.deepcode-gui-titlebar {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.deepcode-gui-navigation-box :is(input, textarea, [contenteditable='true']) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .deepcode-gui-navigation-box {
   position: relative;
   grid-column: 1;
@@ -109,7 +121,6 @@
 .deepcode-gui-navigation-controls > button { display:inline-flex; align-items:center; justify-content:center; width:var(--dc-control-size); height:var(--dc-control-size); flex:none; padding:6px; border:0; border-radius:var(--dc-radius-control); background:transparent; color:var(--dc-muted); cursor:pointer; }
 .deepcode-gui-navigation-controls > button:hover:not(:disabled) { background:var(--dc-surface-hover); color:var(--dc-foreground); }
 .deepcode-gui-navigation-controls > button:disabled { opacity:.3; cursor:default; }
-.deepcode-gui-navigation-controls > button:focus-visible { outline:2px solid var(--dc-focus-ring); outline-offset:1px; }
 .deepcode-gui-navigation-controls svg { width:17px; height:17px; }
 .deepcode-gui-navigation-toggle svg { transform:scaleX(-1); }
 .deepcode-gui-navigation-error { position:absolute; top:44px; left:12px; width:240px; padding:12px; background:var(--dc-surface-raised); box-shadow:var(--dc-shadow-panel); border-radius:var(--dc-radius-control); overflow-wrap:anywhere; }

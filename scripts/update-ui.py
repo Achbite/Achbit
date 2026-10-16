@@ -7,11 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-
-def sign(app):
-    if app:
-        subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
-        subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+from macos_signing import require_same_identity, sign_app, signing_identity
 
 
 def replace_ui(source, target, app=None):
@@ -20,6 +16,9 @@ def replace_ui(source, target, app=None):
         raise ValueError(f'GUI index.html is missing: {source}')
     if source == target or source in target.parents or target in source.parents:
         raise ValueError('UI source and destination must be separate directories.')
+    identity = signing_identity() if app else None
+    if app:
+        require_same_identity(app, identity)
     target.parent.mkdir(parents=True, exist_ok=True)
     # Keep staging outside the App resource seal.
     scratch = Path(tempfile.mkdtemp(prefix='.ui-update-', dir=app.parent if app else target.parent))
@@ -31,13 +30,15 @@ def replace_ui(source, target, app=None):
             target.rename(previous)
         next_ui.rename(target)
         installed = True
-        sign(app)
+        if app:
+            sign_app(app, identity)
     except BaseException:
         if installed:
             shutil.rmtree(target)
         if previous.exists():
             previous.rename(target)
-            sign(app)
+            if app:
+                sign_app(app, identity)
         raise
     else:
         if previous.exists():

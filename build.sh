@@ -21,9 +21,12 @@ Usage: bash build.sh [--stage STAGE]...
   ui                  Build shared TypeScript + GUI once, publish bin/ui.
   daemon | cli | tui  Build only the selected Linux native executable.
   native-gui          Build only the Linux native GUI shell.
+  computer-use        Update only the independently signed macOS Computer Use App.
+  computer-use-windows  Update only DeepCode-Computer-Use.exe in bin/win64 (GUI may keep running).
 Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, DEEPCODE_OUTPUT_DIR,
   CARGO_TARGET_DIR, RUSTC_WRAPPER, SCCACHE_DIR,
-  DEEPCODE_MACOS_CARGO, DEEPCODE_MACOS_NODE_BIN, DEEPCODE_MACOS_CARGO_TARGET_DIR.
+  DEEPCODE_MACOS_CARGO, DEEPCODE_MACOS_NODE_BIN, DEEPCODE_MACOS_CARGO_TARGET_DIR,
+  DEEPCODE_MACOS_SIGN_IDENTITY (default: DeepCode Local Development).
 Tools must already be installed. Package stages use a fresh staging directory;
 Cargo/pnpm caches are retained. User data in existing output directories is retained.
 On Mac, make shell prepares the host bridge before entering Docker.
@@ -90,6 +93,8 @@ macos_step() {
     printf 'No macOS build host is registered for this worktree.\n'; return 3
   elif [ "$1" = check ]; then
     bash "$ROOT_DIR/scripts/package-macos.sh" --check
+  elif [ "$1" = computer-use ]; then
+    bash "$ROOT_DIR/scripts/package-macos.sh" --computer-use "$OUTPUT_DIR"
   else
     bash "$ROOT_DIR/scripts/package-macos.sh" "$TRANSACTION/shared" "$OUTPUT_DIR"
   fi
@@ -116,6 +121,8 @@ fi
 platforms=()
 native_stages=()
 ui=0
+computer_use=0
+computer_use_windows=0
 all=0
 add_platform() { local existing; for existing in "${platforms[@]:-}"; do [ "$existing" != "$1" ] || return 0; done; platforms+=("$1"); }
 for stage in "${STAGES[@]}"; do
@@ -123,6 +130,8 @@ for stage in "${STAGES[@]}"; do
     package) all=1; add_platform linux; add_platform windows; add_platform macos ;;
     package-linux|package-windows|package-macos) add_platform "${stage#package-}" ;;
     ui) ui=1 ;;
+    computer-use) computer_use=1 ;;
+    computer-use-windows) computer_use_windows=1 ;;
     daemon|cli|tui|native-gui) native_stages+=("$stage") ;;
     *) printf 'Unknown stage: %s\n' "$stage" >&2; usage >&2; exit 2 ;;
   esac
@@ -163,6 +172,16 @@ for stage in "${native_stages[@]:-}"; do
   [ -z "$stage" ] || container_step --native "$stage"
 done
 built=0
+if [ "$computer_use" -eq 1 ]; then
+  current_stage=computer-use
+  macos_step computer-use --shared "$TRANSACTION/shared" --output "$OUTPUT_DIR"
+  built_platforms+=(computer-use)
+fi
+if [ "$computer_use_windows" -eq 1 ]; then
+  current_stage=computer-use-windows
+  container_step --computer-use-windows "$CONTAINER_OUTPUT"
+  built_platforms+=(computer-use-windows)
+fi
 for platform in "${available[@]:-}"; do
   [ -n "$platform" ] || continue
   phase_start=$SECONDS

@@ -1,4 +1,4 @@
-import { isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentContext, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
 import type { ConversationCommand } from '@deepcode/protocol';
@@ -10,11 +10,15 @@ import {
 } from '@deepcode/protocol';
 import {
   HttpCommandJournal,
+  HttpAgentHostPort,
   HttpKernelPort,
   HttpProviderPort,
   HttpRunPreparationPort,
 } from './local-agent/httpPorts.js';
-import { SessionService } from './local-agent/service.js';
+import { decodeAgentRecipe } from '@deepcode/protocol';
+import { isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createSessionService, SessionDeletionError, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
 
 declare const process: {
   env: Record<string, string | undefined>;
@@ -31,7 +35,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 type BridgeRequest = {
   protocolVersion: typeof LOCAL_AGENT_PROTOCOL_VERSION;
   requestId: string;
-  operation: 'health' | 'activity' | 'createSession' | 'deleteSession' | 'submit' | 'snapshot' | 'statuses' | 'contextComposition' | 'read' | 'shutdown';
+  operation: 'health' | 'delegationChanged' | 'activity' | 'createSession' | 'deleteSession' | 'submit' | 'snapshot' | 'statuses' | 'contextComposition' | 'read' | 'shutdown';
   data: Record<string, unknown>;
 };
 
@@ -46,11 +50,30 @@ async function main(): Promise<void> {
     serviceToken,
     stableCoreInstructions,
   });
-  const service = new SessionService(journal, {
-    create: async () => ({
-      composition: { provider, kernel, runPreparation, async dispose() {} },
-    }),
+  const factory = await loadSessionServiceFactory();
+  const candidate: unknown = await factory({
+    journal,
+    agentHost: new HttpAgentHostPort({ apiBase, serviceToken }),
+    compositions: {
+      create: async () => ({
+        composition: { provider, kernel, runPreparation, async dispose() {} },
+      }),
+    },
   });
+  let service: SessionServicePort;
+  try {
+    assertSessionServicePort(candidate);
+    service = candidate;
+  } catch (error) {
+    if (isRecord(candidate) && typeof candidate.dispose === 'function') {
+      try {
+        await candidate.dispose();
+      } catch (disposeError) {
+        throw new AggregateError([error, disposeError], 'session_service_port_initialization_failed');
+      }
+    }
+    throw error;
+  }
 
   let shutdownRequest: BridgeRequest | undefined;
   const pending = new Set<Promise<void>>();
@@ -91,10 +114,14 @@ async function main(): Promise<void> {
 }
 
 async function dispatch(
-  service: SessionService,
+  service: SessionServicePort,
   request: BridgeRequest,
 ): Promise<unknown> {
   switch (request.operation) {
+    case 'delegationChanged':
+      if (typeof request.data.enabled !== 'boolean') throw new Error('agent_delegation_status_invalid');
+      await service.delegationChanged(request.data.enabled);
+      return { recorded: true };
     case 'activity':
       return await service.activity();
     case 'health':
@@ -104,13 +131,18 @@ async function dispatch(
         sessionId: requiredString(request.data, 'sessionId'),
         displayTitle: requiredString(request.data, 'displayTitle'),
         workspaceBindings: decodeWorkspaceBindings(request.data.workspaceBindings),
+        ...(request.data.recipe !== undefined ? { recipe: decodeAgentRecipe(request.data.recipe) } : {}),
+        ...(request.data.agentContext ? { agentContext: decodeAgentContext(request.data.agentContext) } : {}),
         ...(optionalString(request.data, 'profileId')
           ? { profileId: optionalString(request.data, 'profileId') }
           : {}),
       });
-    case 'deleteSession':
-      await service.deleteSession(requiredString(request.data, 'sessionId'));
-      return { deleted: true };
+    case 'deleteSession': {
+      const { unstartedOnly } = request.data;
+      if (unstartedOnly !== undefined && typeof unstartedOnly !== 'boolean') throw new Error('session_delete_options_invalid');
+      return { deleted: true, ...await service.deleteSession(requiredString(request.data, 'sessionId'),
+        unstartedOnly === undefined ? undefined : { unstartedOnly }) };
+    }
     case 'submit': {
       return await service.submit(decodeCommand(request.data.command));
     }
@@ -131,6 +163,29 @@ async function dispatch(
       );
     case 'shutdown':
       return { stopped: true };
+  }
+}
+
+async function loadSessionServiceFactory(): Promise<SessionServiceFactory> {
+  const modulePath = process.env.DEEPCODE_SESSION_SERVICE_MODULE;
+  if (modulePath === undefined) return createSessionService;
+  if (!isAbsolute(modulePath)) throw new Error('session_service_module_path_invalid');
+  const module: unknown = await import(pathToFileURL(modulePath).href);
+  if (!isRecord(module) || typeof module.createSessionService !== 'function') {
+    throw new Error('session_service_factory_missing');
+  }
+  return module.createSessionService as SessionServiceFactory;
+}
+
+/** Validate the loaded implementation once, before announcing readiness. */
+function assertSessionServicePort(value: unknown): asserts value is SessionServicePort {
+  if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
+  const methods = [
+    'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'activity',
+    'contextComposition', 'read', 'replaceCapabilities', 'delegationChanged', 'dispose',
+  ] as const satisfies readonly (keyof SessionServicePort)[];
+  for (const method of methods) {
+    if (typeof value[method] !== 'function') throw new Error(`session_service_port_invalid:${method}`);
   }
 }
 
@@ -420,7 +475,7 @@ function decodeRequest(encoded: string): BridgeRequest {
     || value.protocolVersion !== LOCAL_AGENT_PROTOCOL_VERSION
     || typeof value.requestId !== 'string'
     || !value.requestId
-    || !['health', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown'].includes(String(value.operation))
+    || !['health', 'delegationChanged', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown'].includes(String(value.operation))
     || !isRecord(value.data)
   ) {
     throw new Error('session_service_request_invalid');
@@ -477,13 +532,13 @@ function writeLine(encoded: string): Promise<void> {
   });
 }
 
-function bridgeError(error: unknown): { code: string; message: string } {
+function bridgeError(error: unknown): { code: string; message: string; details?: SessionDeletionError['details'] } {
   const message = error instanceof Error ? error.message : String(error);
   const [candidate] = message.split(':', 1);
   const code = candidate && /^[a-z][a-z0-9_.-]{0,127}$/u.test(candidate)
     ? candidate
     : 'session_service_failed';
-  return { code, message };
+  return { code, message, ...(error instanceof SessionDeletionError ? { details: error.details } : {}) };
 }
 
 function requiredEnvironment(name: string): string {
@@ -553,5 +608,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 void main().catch((error) => {
   process.exitCode = 1;
-  process.stderr.write(`[session-service] ${bridgeError(error).code}\n`);
+  const diagnostic = {
+    ...bridgeError(error),
+    ...(error instanceof AggregateError ? { causes: error.errors.map(bridgeError) } : {}),
+  };
+  process.stderr.write(`[session-service] ${JSON.stringify(diagnostic)}\n`);
 });

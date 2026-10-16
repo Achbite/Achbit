@@ -1,10 +1,12 @@
 // Isolated visual fixture. Uses production composer state and components, with no backend calls.
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { COMMAND_REPLY_VERSION, type CommandReply } from '@deepcode/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
+import { installTextSelectionBoundary } from '../../src/components/shared/textSelection';
 import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/local-agent/localAgentPanel.css';
@@ -19,11 +21,12 @@ const question = { interactionId: 'question:preview', prompt: '测试页使用�
 const review = { approvalId: 'approval:review', preview: { summary: 'docker ps --format json', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'], fileAccess: { read: ['/Applications/DeepCode.app'], write: [] }, operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps --format json' } } } };
 const approval = { approvalId: 'approval:preview', preview: { summary: '点击测试页中的“点我 +1”按钮', effects: ['external'], logicalTargets: ['browser:preview-1'], authorizationScope: 'sessionBrowser' } };
 useLocalAgentStore.setState({ sessionId: 'session:composer-preview', loading: false, catalogBusy: false, submitting: false,
-  profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto' }] as never, selectedProfileId: 'profile:preview',
-  projection: { sessionId: 'session:composer-preview', contextCompositions: [], queuedInputs: [], plans: [], pendingApproval: approval } as never,
+  profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto', reasoningEffort: 'medium' }] as never, selectedProfileId: 'profile:preview',
+  projection: { sessionId: 'session:composer-preview', revision: 0, contextCompositions: [], queuedInputs: [], plans: [], pendingApproval: approval } as never,
 });
 
 function Preview() {
+  useEffect(() => installTextSelectionBoundary(document), []);
   const [mode, setMode] = useState('approval');
   const [result, setResult] = useState('');
   const initialized = useRef(false);
@@ -38,9 +41,15 @@ function Preview() {
   };
   if (!initialized.current) {
     initialized.current = true;
-    const finish = (value: string) => { setDecision('message'); setResult(value); };
+    const accepted = (): CommandReply => {
+      const projection = useLocalAgentStore.getState().projection!;
+      const revision = projection.revision + 1;
+      useLocalAgentStore.setState({ projection: { ...projection, revision } });
+      return { schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted', commandId: `command:preview:${revision}`, sessionId: projection.sessionId, revision };
+    };
+    const finish = (value: string) => { setDecision('message'); setResult(value); return accepted(); };
     useLocalAgentStore.setState({
-      setPermissions: async () => { useLocalAgentStore.setState({ projection: { ...useLocalAgentStore.getState().projection, run: null, pendingApproval: { ...review, preview: { ...review.preview, approvalReviewer: 'user' } } } as never }); },
+      setPermissions: async () => { useLocalAgentStore.setState({ projection: { ...useLocalAgentStore.getState().projection, run: null, pendingApproval: { ...review, preview: { ...review.preview, approvalReviewer: 'user' } } } as never }); return accepted(); },
       respondApproval: async (decision) => finish(`权限：${decision}`),
       respondPlan: async (response) => finish(`Plan：${JSON.stringify(response)}`),
       respondInteraction: async (text) => finish(`方案：${text}`),
@@ -54,7 +63,8 @@ function Preview() {
       <option value="message">普通输入</option><option value="approval">权限确认</option><option value="review">自动审核</option><option value="plan">Plan 确认</option><option value="interaction">方案选择</option>
     </select><select aria-label="配色模式" defaultValue="light" onChange={(e) => { document.documentElement.dataset.theme = e.target.value; }}><option value="light">浅色</option><option value="dark">深色</option></select></nav>
     <main className="local-agent fixture-main"><div className="fixture-context"><strong>内置浏览器交互渲染测试</strong>创建页面并核对按钮、开关和文本输入。</div>
-      <ConversationComposer language="zh-CN" composer={composer} uiActionError={null} />
+      <ConversationComposer language="zh-CN" composer={composer} uiActionError={null}
+        onDismissUiActionError={() => {}} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} />
     </main><p className="fixture-result" role="status">{result}</p>
   </>;
 }

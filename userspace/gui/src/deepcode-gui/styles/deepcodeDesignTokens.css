@@ -28,25 +28,33 @@
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-blue-light-contrast));
-  /* Interaction focus stays neutral when the content accent changes. */
+  /* Used by the active code-search match, not by control focus chrome. */
   --dc-focus-ring: color-mix(in srgb, var(--dc-foreground) 45%, transparent);
 
-  --dc-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --dc-font-ui: "DeepCode Quiet Reading Sans SC", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --dc-font-reading: var(--dc-font-ui);
+  --dc-font-code: var(--dc-font-reading);
   --dc-font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --dc-font-micro: calc(11px * var(--dc-ui-font-scale, 1));
   --dc-font-caption: calc(12px * var(--dc-ui-font-scale, 1));
   --dc-font-label: calc(13px * var(--dc-ui-font-scale, 1));
   --dc-font-body: calc(14px * var(--dc-ui-font-scale, 1));
   --dc-font-body-large: calc(15px * var(--dc-ui-font-scale, 1));
+  --dc-font-reading-size: var(--dc-font-body);
+  --dc-font-code-size: 12px;
   --dc-font-title: calc(16px * var(--dc-ui-font-scale, 1));
   --dc-line-tight: 1.35;
   --dc-line-compact: 1.45;
   --dc-line-body: 1.6;
-  --dc-line-reading: 1.7;
+  --dc-line-reading: 1.72;
+  --dc-line-code: 1.6;
   --dc-weight-regular: 400;
-  --dc-weight-medium: 560;
-  --dc-weight-semibold: 650;
+  --dc-weight-medium: 500;
+  --dc-weight-semibold: 600;
   --dc-weight-bold: 700;
+  --dc-motion-feedback: 140ms;
+  --dc-motion-reveal: 200ms;
+  --dc-ease-out: cubic-bezier(.2, .8, .2, 1);
   --dc-titlebar-height: 52px;
   --dc-navigation-inset: 14px;
   --dc-navigation-controls-height: var(--dc-titlebar-height);
@@ -157,5 +165,9 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  :root[data-product='deepcode-gui'] .local-agent__composer::before {
+    transform: none !important;
+    scale: none !important;
   }
 }

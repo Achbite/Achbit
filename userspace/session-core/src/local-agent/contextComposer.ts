@@ -1,11 +1,14 @@
 import { advanceTodoList } from './todoState.js';
-import { appendInputFileBindings } from './workspaceBindings.js';
+import { appendResourceBindings, requestResourceBindings } from './workspaceBindings.js';
 import type {
   ContextCompositionMessage,
+  ContextCompositionMetadata,
   ContextCompositionReceipt,
   ContextCompositionTool,
+  JsonObject,
   ModelMessage,
   ProviderRequest,
+  PreparedToolDescriptor,
   ProviderToolDefinition,
   RunRuntimeSnapshot,
   SessionEvent,
@@ -20,8 +23,11 @@ import {
   SESSION_CONTROL_TODO_UPDATE,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
+  SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_SESSION,
 } from '@deepcode/protocol';
 import { LoopFailure } from './loopFailure.js';
+import { journalModelViews } from './modelView.js';
 import type {
   ContextMessageContribution,
 } from './plugins.js';
@@ -40,10 +46,18 @@ import {
 } from './sessionControls.js';
 import { renderActiveToolGuidance } from './toolPromptContributions.js';
 import { visualContextInstruction, visualContextMessages } from './visualContext.js';
+import { controlWait, type WaitingControl } from './sessionWake.js';
+
+function toolAvailability(tools: readonly PreparedToolDescriptor[]): JsonObject[] {
+  return tools.map(tool => ({ name: tool.name, availability: tool.availability,
+    ...(tool.availabilityReason ? { reason: tool.availabilityReason } : {}),
+    ...(tool.runtimeStatus ? { runtimeStatus: tool.runtimeStatus } : {}),
+  }));
+}
 
 export interface PreparedProviderRequest {
   request: ProviderRequest;
-  receipt: ContextCompositionReceipt;
+  receipt: Extract<ContextCompositionReceipt, { purpose: 'agent' | 'contextCompaction' }>;
   toolCodec: ProviderToolCodec;
 }
 
@@ -52,17 +66,34 @@ type CompletedProviderTurnEvent = ProviderTurnSettledEvent & {
   payload: Extract<ProviderTurnSettledEvent['payload'], { outcome: 'completed' }>;
 };
 
-export async function buildAgentProviderRequest(input: {
+type ConversationRequestInput = {
   sessionId: string;
   runId: string;
   runtime: RunRuntimeSnapshot;
   events: readonly SessionEvent[];
-  responseConstraint: 'normal';
+  /** Compaction selects a prefix but reuses views already recorded by later receipts. */
+  modelViewEvents?: readonly SessionEvent[];
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   providerRequestId: string;
-}): Promise<PreparedProviderRequest> {
+  optionalControlTools?: readonly string[];
+};
+
+export async function buildAgentProviderRequest(input: ConversationRequestInput & {
+  responseConstraint: 'normal';
+}, signal?: AbortSignal): Promise<PreparedProviderRequest> {
+  signal?.throwIfAborted();
+  const prepared = buildConversationProviderRequest({ ...input, purpose: 'agent' });
+  signal?.throwIfAborted();
+  return prepared;
+}
+
+/** Agent and summary requests share one conversation prefix and tool codec. */
+export function buildConversationProviderRequest(input: ConversationRequestInput & (
+  | { purpose: 'agent'; responseConstraint: 'normal' }
+  | { purpose: 'contextCompaction'; responseConstraint: 'answerOnly'; summaryInstruction: string }
+)): PreparedProviderRequest {
   const toolTerminals = new Set(input.events.flatMap((event) => (
-    event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted'
+    event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted' || event.type === 'tool.not-executed'
       ? [event.callId] : []
   )));
   const openCall = input.events.find((event) => event.type === 'tool.requested' && !toolTerminals.has(event.callId));
@@ -71,8 +102,13 @@ export async function buildAgentProviderRequest(input: {
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
   const hasPluginDiscovery = input.runtime.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable');
+  const hasAgentTools = input.runtime.agentToolsEnabled === true
+    && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
+  const modelViewEvents = input.modelViewEvents ?? input.events;
   const firstRun = input.events.find((event) => event.type === 'run.started');
-  const prefixBindings = firstRun?.type === 'run.started' ? firstRun.payload.workspaceBindings : input.workspaceBindings;
+  const prefixBindings = firstRun?.type === 'run.started'
+    ? requestResourceBindings(firstRun.payload.workspaceBindings, input.events, firstRun.sequence)
+    : input.workspaceBindings;
   const controlNames = {
     interactionRequest: providerWireName(input.runtime, SESSION_CONTROL_INTERACTION_REQUEST),
     planPublish: providerWireName(input.runtime, SESSION_CONTROL_PLAN_PUBLISH),
@@ -90,15 +126,19 @@ export async function buildAgentProviderRequest(input: {
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions().filter(tool => tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
-    ? hasPluginDiscovery : hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT);
+  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities).filter(tool => tool.name === SESSION_CONTROL_AGENT
+    ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
+      ? hasPluginDiscovery : (hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
+    .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
+      || input.optionalControlTools.includes(tool.name));
   const toolCodec = createProviderToolCodec(
     runtimeTools,
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
   );
-  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings);
+  const fixedViews = journalModelViews(modelViewEvents).contributions;
+  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
   const instructions = [...input.runtime.instructions]
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
@@ -136,37 +176,43 @@ export async function buildAgentProviderRequest(input: {
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery),
+      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools),
     },
   });
-  instructions.push({
+  if (hasWorkspaceBindings) instructions.push({
     contributionId: 'session:workspace-bindings',
     contributionKind: 'workspaceBindings',
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: hasWorkspaceBindings
-        ? `Current Session workspace bindings (logical handles only): ${JSON.stringify(
-          providerWorkspaceBindings(prefixBindings),
-        )}`
-        : 'Current Session workspace bindings: []. Workspace-scoped filesystem and Bash tools are unavailable for this run.',
+      content: `Current Session workspace and resource handles (addresses only, not access grants; primary is the default working directory): ${JSON.stringify(
+        providerWorkspaceBindings(prefixBindings),
+      )}`,
     },
   });
   const imageReader = toolCodec.wireByCanonical.get('session.read');
   if (imageReader) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
     label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
-  const selected = [...instructions, ...journalMessages, ...visualContextMessages(input.events, input.runId)];
-  const resolvedQuestions = new Set(input.events.flatMap(event => event.type === 'interaction.resolved' ? [event.payload.interactionId] : []));
-  const pendingQuestions = input.events.flatMap(event => event.type === 'interaction.requested' && event.runId === input.runId
-    && event.payload.mode === 'continue' && !resolvedQuestions.has(event.payload.interactionId)
-    ? [{ interactionId: event.payload.interactionId, prompt: event.payload.prompt, options: event.payload.options }] : []);
-  if (pendingQuestions.length) selected.push({ contributionId: 'session:unanswered-questions', contributionKind: 'sessionControls',
-    label: 'Unanswered questions', message: { role: 'system', content: `These questions remain unanswered. Continue independent work only; do not choose an answer for the user. When independent work is complete, explain what is ready and what awaits the user; Session will wait. ${JSON.stringify(pendingQuestions)}` } });
+  const pluginAvailability = runtimeTools.filter(tool => tool.origin === 'extension');
+  if (pluginAvailability.length) instructions.push({
+    contributionId: `tool-availability:${input.runtime.kernelCatalogSnapshotRef}`,
+    contributionKind: 'sessionControls', label: 'Execution capabilities',
+    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nUse only the callable tools in this request. Blocked tools are unavailable for the reported reason; do not probe for them or recreate their effects through shell commands. These facts describe execution capability, not permission approval. Native runtimeStatus reports the executor's last preparation observation; action results provide later facts.` },
+  });
+  const selected = [...instructions, ...journalMessages,
+    ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
+  if (input.purpose === 'contextCompaction') selected.push({
+    contributionId: `context-compaction:${input.providerRequestId}:instructions`,
+    contributionKind: 'sessionControls', label: '上下文压缩指令',
+    message: { role: 'user', content: input.summaryInstruction },
+  });
   assertContextContributions(selected);
   const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
   const providerSelected = selected.map<ContextMessageContribution>((contribution) => ({
     ...contribution,
-    message: encodeProviderMessage(contribution.message, toolCodec, journalCodecsByCallId),
+    message: fixedViews.has(contribution.contributionId)
+      ? cloneModelMessage(fixedViews.get(contribution.contributionId)!.message)
+      : encodeProviderMessage(contribution.message, toolCodec, journalCodecsByCallId),
   }));
   const request: ProviderRequest = {
     protocolVersion: LOCAL_AGENT_PROTOCOL_VERSION,
@@ -175,7 +221,7 @@ export async function buildAgentProviderRequest(input: {
     runId: input.runId,
     providerRuntimeRef: input.runtime.provider.providerRuntimeRef,
     profileId: input.runtime.provider.profileId,
-    purpose: 'agent',
+    purpose: input.purpose,
     responseConstraint: input.responseConstraint,
     maxOutputTokens: input.runtime.provider.maxOutputTokens,
     workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
@@ -194,9 +240,9 @@ export async function buildAgentProviderRequest(input: {
   return {
     request,
     toolCodec,
-    receipt: buildContextCompositionReceipt(
+    receipt: { ...buildContextCompositionReceipt(
       request.requestId,
-      'agent',
+      input.purpose,
       input.responseConstraint,
       providerSelected,
       toolCodec.kernelDefinitions,
@@ -207,7 +253,13 @@ export async function buildAgentProviderRequest(input: {
       input.runtime,
       input.workspaceBindings,
       input.events,
-    ),
+    ), modelView: {
+      throughSequence: input.events.at(-1)?.sequence ?? 0,
+      additions: providerSelected.flatMap(contribution => contribution.sourceSequence !== undefined
+        && !fixedViews.has(contribution.contributionId)
+        ? [{ ...contribution, sourceSequence: contribution.sourceSequence, message: cloneModelMessage(contribution.message) }]
+        : []),
+    } },
   };
 }
 
@@ -215,12 +267,20 @@ export function messagesFromJournal(
   events: readonly SessionEvent[],
   runId: string,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
+  modelViewEvents: readonly SessionEvent[] = events,
 ): ContextMessageContribution[] {
   const messages: ContextMessageContribution[] = [];
+  const fixed = journalModelViews(modelViewEvents);
+  const throughSequence = events.at(-1)?.sequence ?? 0;
+  const retained: ContextMessageContribution[] = [];
   const pendingHostRebinds: ContextMessageContribution[] = [];
+  const pendingAgentEvidence: ContextMessageContribution[] = [];
+  const pendingProcessUpdates = new Map<string, ContextMessageContribution>();
+  const flushProcessUpdates = () => {
+    messages.push(...pendingProcessUpdates.values());
+    pendingProcessUpdates.clear();
+  };
   const completionResults = new Map<string, ContextMessageContribution>();
-  const processes = new Map(events.flatMap(event => event.type === 'process.updated'
-    ? [[event.callId, event.payload.job] as const] : []));
   const approvalsByCallId = new Map(events.flatMap((event) => (
     event.type === 'approval.resolved' ? [[event.callId, event.payload] as const] : []
   )));
@@ -250,26 +310,53 @@ export function messagesFromJournal(
   )));
   const interactions = new Map(events.flatMap(event => event.type === 'interaction.requested'
     ? [[event.payload.interactionId, event] as const] : []));
+  const agentTasks = new Map(modelViewEvents.flatMap(event => event.type === 'agent.task.created'
+    ? [[event.payload.taskId, event.payload] as const] : []));
+  const controlResults = new Map(modelViewEvents.flatMap(event => {
+    if (event.type !== 'agent.control.completed' && event.type !== 'session.control.completed') return [];
+    const firstView = fixed.contributions.get(`agent-control:${event.callId}`);
+    return [[event.callId, firstView
+      ? { result: JSON.parse(firstView.message.content) as JsonObject, sourceSequence: firstView.sourceSequence }
+      : controlResultForModel(event, events)] as const];
+  }));
+  const returnedAgentResults = new Set(modelViewEvents.flatMap(event => event.type === 'agent.control.completed'
+    && event.payload.operation.action === 'spawn' && event.payload.operation.delivery === 'wait'
+    && typeof event.payload.result.taskId === 'string' && typeof controlResults.get(event.callId)?.result.outcome === 'string'
+    ? [event.payload.result.taskId] : []));
   const responses = new Map(events.flatMap(event => event.type === 'interaction.resolved'
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
+  const retainedDelegation = events.findLast(event => event.type === 'agent.delegation.changed');
+  const retainedDelegationId = retainedDelegation ? `agent-delegation:${retainedDelegation.sequence}` : undefined;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
-  const bindingsByRun = new Map(runs.map(event => [event.runId, event.payload.workspaceBindings]));
+  const bindingsByRun = new Map(runs.map(event => [event.runId,
+    requestResourceBindings(event.payload.workspaceBindings, events, event.sequence)]));
   const checkpoint = [...events]
     .reverse()
     .find((event): event is Extract<SessionEvent, { type: 'context.compacted' }> => (
       event.type === 'context.compacted'
     ));
   if (checkpoint) {
-    messages.push({
-      contributionId: `context-checkpoint:${checkpoint.payload.compactionId}`,
+    const contributionId = `context-checkpoint:${checkpoint.payload.compactionId}`;
+    retained.push(fixed.contributions.get(contributionId) ?? {
+      contributionId,
       contributionKind: 'journalMessages',
       label: '上下文压缩摘要',
+      sourceSequence: checkpoint.sequence,
       message: { role: 'system', content: checkpoint.payload.summary },
     });
+  }
+  for (const contribution of fixed.contributions.values()) {
+    if (contribution.contributionId.startsWith('context-checkpoint:')
+      || contribution.sourceSequence > throughSequence) continue;
+    if (checkpoint && contribution.sourceSequence <= checkpoint.payload.coveredThroughSequence
+      && contribution.contributionId !== `message:${retainedRunInputId}`
+      && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`
+      && contribution.contributionId !== retainedDelegationId) continue;
+    retained.push({ ...contribution, message: cloneModelMessage(contribution.message) });
   }
   let todoList: TodoListProjection | null = null;
   for (const event of events) {
@@ -279,10 +366,9 @@ export function messagesFromJournal(
     if (event.type === 'message.committed') {
       const inputRun = runForInput.get(event.payload.messageId);
       const ownerRunId = inputRun?.runId ?? event.runId;
-      const before = inputRun?.payload.workspaceBindings
-        ?? (ownerRunId ? bindingsByRun.get(ownerRunId) : undefined) ?? workspaceBindings;
+      const before = (ownerRunId ? bindingsByRun.get(ownerRunId) : undefined) ?? workspaceBindings;
       messageBindings = event.payload.role === 'user'
-        ? appendInputFileBindings(before, event.payload.filesystemReferences) : before;
+        ? appendResourceBindings(before, event.payload.filesystemReferences) : before;
       const previousRun = inputRun ? runs[runs.indexOf(inputRun) - 1] : undefined;
       const previous = inputRun
         ? (previousRun ? bindingsByRun.get(previousRun.runId) : undefined) : before;
@@ -293,7 +379,12 @@ export function messagesFromJournal(
       checkpoint
       && event.sequence <= checkpoint.payload.coveredThroughSequence
       && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId)
+      && event !== retainedDelegation
     ) continue;
+    if (event.sequence <= fixed.throughSequence
+      && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId
+        && !fixed.contributions.has(`message:${retainedRunInputId}`))) continue;
+    const firstNewMessage = messages.length;
     if (event.type === 'message.committed') {
       if (
         event.payload.role === 'assistant'
@@ -306,7 +397,7 @@ export function messagesFromJournal(
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: `Current Session workspace bindings (logical handles only; supersedes earlier binding snapshots): ${JSON.stringify(providerWorkspaceBindings(messageBindings))}` },
+            content: `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(providerWorkspaceBindings(messageBindings))}` },
         });
       }
       messages.push({
@@ -354,9 +445,10 @@ export function messagesFromJournal(
       });
       if (event.payload.mode === 'continue') completionResults.set(event.callId, {
         contributionId: `interaction-pending:${event.payload.interactionId}`, contributionKind: 'journalMessages',
+        sourceSequence: event.sequence,
         label: 'Question awaiting user', message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ interactionId: event.payload.interactionId, status: 'pending',
-            nextAction: 'Continue independent work. The answer will arrive as user input; do not assume an answer or repeat this question.' }) },
+            nextAction: 'Continue independent work without assuming an answer or repeating the question. When that work is complete, explain what awaits the user.' }) },
       });
     } else if (event.type === 'interaction.resolved') {
       if (interactions.get(event.payload.interactionId)?.payload.mode === 'continue') continue;
@@ -401,7 +493,6 @@ export function messagesFromJournal(
             response: { kind: 'confirm' },
             planId: event.payload.planId,
             revision: event.payload.revision,
-            todoSeeded: true,
             nextAction: confirmedPlanExecutionInstruction(),
           }),
         },
@@ -465,12 +556,16 @@ export function messagesFromJournal(
         });
         completionResults.set(event.callId, {
           contributionId: `todo-update:${event.callId}`,
+          sourceSequence: event.sequence,
           contributionKind: 'journalMessages', label: 'Todo update result',
           message: {
             role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-            content: JSON.stringify({ accepted: true, type: 'todo.current', ...todoList }),
+            content: JSON.stringify({ accepted: true }),
           },
         });
+        for (let index = firstNewMessage; index < messages.length; index += 1) {
+          messages[index]!.sourceSequence ??= event.sequence;
+        }
         continue;
       }
       if (todoList) messages.push({
@@ -481,8 +576,6 @@ export function messagesFromJournal(
           role: 'user',
           content: JSON.stringify({
             type: 'todo.current',
-            runId: todoList.runId,
-            revision: todoList.revision,
             items: todoList.items,
           }),
         },
@@ -494,19 +587,65 @@ export function messagesFromJournal(
       });
       completionResults.set(event.callId, {
         contributionId: `artifact-presentation:${event.callId}`, contributionKind: 'journalMessages', label: 'Artifacts presented',
+        sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ accepted: true, items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
     } else if (event.type === 'session.plugins.activated') {
+      const prepared = events.find(candidate => candidate.type === 'run.tools.prepared'
+        && candidate.runId === event.runId
+        && candidate.payload.toolView.kernelCatalogSnapshotRef === event.payload.kernelCatalogSnapshotRef);
+      if (prepared?.type !== 'run.tools.prepared') throw new LoopFailure('plugin_activation_tool_view_missing', 'Plugin activation has no matching execution tool view.');
+      const activatedTools = prepared.payload.toolView.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
+
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
           name: SESSION_CONTROL_PLUGIN_ACTIVATE, input: { pluginUris: event.payload.pluginUris } });
       }
       completionResults.set(event.callId, {
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
+        sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ activated: event.payload.pluginUris, scope: 'run', runId: event.runId }) },
+          content: JSON.stringify({ activated: event.payload.pluginUris, tools: toolAvailability(activatedTools) }) },
       });
+    } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
+      const view = controlResults.get(event.callId)!;
+      if (!orderedProviderCallIds.has(event.callId)) {
+        attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
+          name: event.type === 'agent.control.completed' ? SESSION_CONTROL_AGENT : SESSION_CONTROL_SESSION, input: event.payload.operation });
+      }
+      completionResults.set(event.callId, {
+        contributionId: `agent-control:${event.callId}`, contributionKind: 'journalMessages', label: 'Control result',
+        sourceSequence: view.sourceSequence,
+        message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          content: JSON.stringify(view.result) },
+      });
+    } else if (event.type === 'agent.task.completed') {
+      const task = agentTasks.get(event.payload.taskId);
+      if (!task) throw new LoopFailure('agent_task_source_missing', '子任务结果缺少已登记任务来源。');
+      if (!returnedAgentResults.has(event.payload.taskId)) pendingAgentEvidence.push({
+        contributionId: `agent-result:${event.payload.taskId}`, contributionKind: 'journalMessages', label: 'Subtask result',
+        sourceSequence: event.sequence,
+        message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
+          agentId: task.agentSessionId, result: event.payload.result }) },
+      });
+    } else if (event.type === 'wake.triggered') {
+      pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
+        sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
+    } else if (event.type === 'agent.delegation.changed') {
+      // Settings can change while tools run. Deliver the ordered notice at the
+      // next request boundary without splitting a provider call/result group.
+      pendingAgentEvidence.push({
+        contributionId: `agent-delegation:${event.sequence}`, contributionKind: 'journalMessages',
+        label: 'Delegation status', sourceSequence: event.sequence,
+        message: { role: 'user', content: event.payload.enabled
+          ? 'Runtime setting changed: new agent delegation is enabled. Delegate only when useful.'
+          : 'Runtime setting changed: stop delegating new tasks. Existing tasks may continue; you may message running agents, wait for results, cancel or close them. New spawns and new tasks for idle agents are rejected locally.' },
+      });
+    } else if (event.type === 'agent.message.received') {
+      pendingAgentEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
+        sourceSequence: event.sequence,
+        message: { role: 'user', content: JSON.stringify({ type: 'agent.message', agentId: event.payload.sourceSessionId, text: event.payload.text }) } });
     } else if (event.type === 'session.control.rejected') {
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, {
@@ -518,6 +657,7 @@ export function messagesFromJournal(
       }
       completionResults.set(event.callId, {
         contributionId: `session-control-rejection:${event.callId}`,
+        sourceSequence: event.sequence,
         contributionKind: 'journalMessages',
         label: 'Session control 拒绝结果',
         message: {
@@ -547,6 +687,14 @@ export function messagesFromJournal(
           content: JSON.stringify({ status: 'inputRejected', executed: false, error: event.payload.rejection.error }),
         },
       });
+    } else if (event.type === 'tool.not-executed') {
+      messages.push({
+        contributionId: `tool-result:${event.callId}`, contributionKind: 'journalMessages', label: 'Tool not executed',
+        message: { role: 'tool', toolCallId: event.callId,
+          providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason,
+            ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) }) },
+      });
     } else if (event.type === 'tool.interrupted') {
       messages.push({
         contributionId: `tool-result:${event.callId}`,
@@ -571,19 +719,30 @@ export function messagesFromJournal(
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
           content: JSON.stringify({
             ...toolResultForModel(event.payload.record),
-            ...(processes.has(event.callId) ? { process: processContext(processes.get(event.callId)!) } : {}),
             ...(approval ? { approval: { decision: approval.decision, scope: approval.authorizationScope ?? 'call',
               ...(approval.reason ? { reason: approval.reason } : {}) } } : {}),
           }),
         },
       });
+    } else if (event.type === 'process.updated') {
+      // Coalesce the feed only until the next request. Once observed, its
+      // snapshot stays in history; a later status must not rewrite a tool result.
+      pendingProcessUpdates.set(event.payload.job.jobId, {
+        contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
+        sourceSequence: event.sequence,
+        label: 'Managed process update', message: { role: 'user',
+          content: JSON.stringify({ type: 'process.updated', process: processContext(event.payload.job) }) },
+      });
     } else if (event.type === 'run.host.rebound') {
       // Rebinding happens while a tool is waiting. Its notice belongs to the next
       // Agent request, after the pending result, not inside the call/result pair.
       pendingHostRebinds.push({ contributionId: `host-rebind:${event.sequence}`, contributionKind: 'journalMessages', label: 'GUI target changed',
-        message: { role: 'user', content: `The user explicitly selected a new GUI window for subsequent calls: ${JSON.stringify(event.payload.hostBinding)}. All earlier observationId and previewId handles belong to the previous GUI and are invalid here. Observe again or open a new preview before interacting; do not replay previous actions.` } });
+        sourceSequence: event.sequence,
+        message: { role: 'user', content: 'The user selected a new GUI target. Earlier observationId and previewId handles are invalid. Observe again or open a new preview before interacting; do not replay previous actions.' } });
     } else if (event.type === 'context.composed' && event.payload.purpose === 'agent') {
+      flushProcessUpdates();
       messages.push(...pendingHostRebinds.splice(0));
+      messages.push(...pendingAgentEvidence.splice(0));
     } else if (event.type === 'provider.turn.settled' && event.payload.outcome === 'completed') {
       if (event.payload.toolCallInputs) {
         messages.push({
@@ -654,8 +813,13 @@ export function messagesFromJournal(
         completionResults.delete(callId);
       }
     }
+    for (let index = firstNewMessage; index < messages.length; index += 1) {
+      messages[index]!.sourceSequence ??= event.sequence;
+    }
   }
+  flushProcessUpdates();
   messages.push(...pendingHostRebinds);
+  messages.push(...pendingAgentEvidence);
   if (completionResults.size > 0) {
     throw new LoopFailure(
       'provider_call_result_completion_missing',
@@ -663,12 +827,34 @@ export function messagesFromJournal(
     );
   }
   applyProviderTurnCompletions(messages, events);
-  return messages;
+  return [...retained, ...messages];
 }
 
-export function buildContextCompositionReceipt(
+/** Form one normal result at its first request boundary, then journal modelView freezes it. */
+function controlResultForModel(event: WaitingControl, events: readonly SessionEvent[]): { result: JsonObject; sourceSequence: number } {
+  if (!controlWait(event.payload.result)) return { result: event.payload.result, sourceSequence: event.sequence };
+  const { wait: _wait, ...result } = event.payload.result;
+  if (event.type === 'agent.control.completed') {
+    if (event.payload.operation.action === 'spawn') {
+      const completed = events.findLast(item => item.type === 'agent.task.completed' && item.runId === event.runId
+        && item.payload.taskId === result.taskId);
+      if (completed?.type === 'agent.task.completed') return {
+        result: { ...result, ...completed.payload.result }, sourceSequence: Math.max(event.sequence, completed.sequence),
+      };
+    } else if (event.payload.operation.action === 'wait') {
+      const taskIds = event.payload.operation.taskIds as string[] | undefined;
+      const completed = events.filter((item): item is Extract<SessionEvent, { type: 'agent.task.completed' }> =>
+        item.type === 'agent.task.completed' && item.runId === event.runId && (!taskIds || taskIds.includes(item.payload.taskId)));
+      return { result: { completedTaskIds: completed.map(item => item.payload.taskId) },
+        sourceSequence: Math.max(event.sequence, ...completed.map(item => item.sequence)) };
+    }
+  }
+  return { result, sourceSequence: event.sequence };
+}
+
+export function buildContextCompositionReceipt<Purpose extends ContextCompositionReceipt['purpose']>(
   providerRequestId: string,
-  purpose: ContextCompositionReceipt['purpose'],
+  purpose: Purpose,
   responseConstraint: ContextCompositionReceipt['responseConstraint'],
   selected: readonly ContextMessageContribution[],
   kernelTools: readonly ProviderToolDefinition[],
@@ -679,7 +865,7 @@ export function buildContextCompositionReceipt(
   runtime: RunRuntimeSnapshot,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   events: readonly SessionEvent[],
-): ContextCompositionReceipt {
+): Omit<ContextCompositionMetadata, 'purpose'> & { purpose: Purpose } {
   const filesystemReferenceFactsByContributionId = new Map<string, Array<{
     referenceId: string;
     displayName: string;
@@ -827,6 +1013,8 @@ function providerCallIdsFromEvents(events: readonly SessionEvent[]): Map<string,
       && event.type !== 'session.control.rejected'
       && event.type !== 'session.plugins.activated'
       && event.type !== 'artifacts.presented'
+      && event.type !== 'agent.control.completed'
+      && event.type !== 'session.control.completed'
     ) continue;
     const providerCallId = event.payload.providerCallId;
     const existing = byLogicalCallId.get(event.callId);
@@ -920,6 +1108,7 @@ function mergeNarrativeIntoProviderCall(
   targets[0]!.contributionId = `narrative:${narrative.payload.narrativeId}`;
   targets[0]!.label = '运行叙述';
   targets[0]!.message.content = narrative.payload.content;
+  targets[0]!.sourceSequence = narrative.sequence;
   return true;
 }
 
@@ -1135,7 +1324,7 @@ function messageContentForModel(
       binding.workspaceId,
       index === 0 ? 'primary' : `workspace${index + 1}`,
     ]));
-    sections.push(`Filesystem references attached to this message. Images are identified by referenceId; consult Current visual inputs for the pixels included in this request. Other file contents require the relevant read tool. Input snapshots are read-only. Use the listed DeepCode-managed session working directory for editable copies and preview drafts; they persist across turns until the session is deleted:\n${JSON.stringify(
+    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the DeepCode-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
       payload.filesystemReferences.map((reference) => ({
         referenceId: reference.referenceId,
         workspace: workspaceHandleById.get(reference.workspaceId) ?? 'unavailable',
@@ -1153,13 +1342,15 @@ function messageContentForModel(
 
 function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown> {
   if (record.outcome === 'completed') {
-    const output = structuredClone(record.output);
-    if (isRecord(output)) { delete output.fileChanges; }
+    const output = toolOutputForModel(record, record.output);
     return { recordId: record.recordId, outcome: record.outcome, output };
   }
+  if (record.outcome === 'cancelled') {
+    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
+    return { recordId: record.recordId, outcome: record.outcome, ...(output === undefined ? {} : { output }) };
+  }
   if (record.outcome === 'failed') {
-    const output = record.output === undefined ? undefined : structuredClone(record.output);
-    if (isRecord(output)) { delete output.fileChanges; }
+    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
     return {
       recordId: record.recordId,
       outcome: record.outcome,
@@ -1176,16 +1367,60 @@ function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown
   };
 }
 
+/** Project only known first-party storage fields; extension business output is opaque. */
+function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknown {
+  const output = structuredClone(value);
+  if (!isRecord(output)) return output;
+  if (['fs.write', 'fs.edit', 'fs.delete', 'bash', 'powershell', 'container', 'document.render', 'browser.capture'].includes(record.toolName)) {
+    delete output.fileChanges;
+  }
+  if (['artifact.prepare', 'artifact.preview', 'document.render', 'browser.capture', 'browser.observe', 'computer.control'].includes(record.toolName)
+    && Array.isArray(output.artifacts)) {
+    const archivedPaths = new Set<string>();
+    for (const artifact of output.artifacts) {
+      if (!isRecord(artifact) || typeof artifact.artifactId !== 'string'
+        || artifact.uri !== `artifact://${artifact.artifactId}` || typeof artifact.contentRef !== 'string') continue;
+      archivedPaths.add(artifact.contentRef);
+      delete artifact.contentRef;
+    }
+    if (typeof output.contentRef === 'string' && archivedPaths.has(output.contentRef)) delete output.contentRef;
+  }
+  if ((record.toolName === 'web.search' || record.toolName === 'web.fetch') && isRecord(output.archive)) {
+    delete output.archive.timelinePath;
+    if (Object.keys(output.archive).length === 0) delete output.archive;
+  }
+  if (record.toolName === 'bash' || record.toolName === 'powershell') {
+    stripShellDiagnostics(output);
+  }
+  if (record.toolName === 'computer.control' && record.input.action !== 'status'
+    && isRecord(output.diagnostics) && isRecord(output.diagnostics.native)) {
+    delete output.diagnostics.native.executor;
+  }
+  return output;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function stripShellDiagnostics(output: Record<string, unknown>): void {
+  delete output.environment;
+  delete output.paths;
+  delete output.workspaceMode;
+  delete output.capturedBytes;
+}
+
 function processContext(job: import('@deepcode/protocol').ManagedProcessSnapshot): unknown {
-  // Keep one latest snapshot per job. Its output remains tool data in the original call/result pair.
-  const { result, output, ...status } = job;
+  // Bound each appended snapshot; the complete output remains in Kernel storage.
+  const { result, output } = job;
   const details = isRecord(result) ? { ...result } : result;
-  if (isRecord(details)) { delete details.stdout; delete details.stderr; }
-  return { ...status, output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
+  if (isRecord(details)) {
+    delete details.stdout; delete details.stderr;
+    if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details);
+  }
+  return { jobId: job.jobId, command: job.command, status: job.status,
+    ...(job.error ? { error: job.error } : {}),
+    output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
     truncated: output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000 },
     ...(details !== undefined ? { result: details } : {}) };
 }

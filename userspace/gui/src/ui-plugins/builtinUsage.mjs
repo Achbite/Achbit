@@ -1,5 +1,6 @@
 const css = `
 .dc-usage {position:absolute;pointer-events:auto;width:max-content;font:12px var(--dc-font-ui,system-ui);color:var(--dc-foreground);max-width:min(320px,calc(100% - 32px))}
+.dc-usage [hidden] {display:none!important}
 .dc-usage button {font:inherit;color:inherit;cursor:pointer;border:0;background:transparent;border-radius:8px;padding:9px;text-align:left}
 .dc-usage button:hover {background:var(--dc-surface-hover)}
 .dc-usage__summary {display:flex;align-items:center;min-width:182px;max-width:100%;background:var(--dc-surface-raised);border:1px solid var(--dc-border);border-radius:12px;box-shadow:0 3px 14px #0000000c}
@@ -16,11 +17,23 @@ const css = `
 .dc-usage[data-dock='left'] .dc-usage__handle {border-radius:0 var(--dc-radius-control) var(--dc-radius-control) 0!important}
 .dc-usage[data-dragging] .dc-usage__handle {border-radius:var(--dc-radius-control)!important}
 `;
+const positionKey = 'deepcode:usage-widget:position';
 export default { apply(context) {
   context.addStyle(css);
   context.register('usage.widget', (container, initial, scope) => {
-    let input = initial, request, requestKey = '', data = null, error = '', loading = false, menu = false, timer;
+    let input = initial, request, requestKey = '', queryKey = '', data = null, error = '', loading = false, menu = false, timer;
     let position = null, drag = null, suppressClick = false, dock = 'right';
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(positionKey) ?? 'null');
+      if (saved && (saved.x === null || Number.isFinite(saved.x)) && Number.isFinite(saved.centerY)
+        && (saved.dock === 'left' || saved.dock === 'right')) {
+        position = { x: saved.x, centerY: saved.centerY }; dock = saved.dock;
+      }
+    } catch (reason) { console.error('Cannot restore usage widget position', reason); }
+    const savePosition = () => {
+      try { window.localStorage.setItem(positionKey, JSON.stringify({ ...position, dock })); }
+      catch (reason) { console.error('Cannot save usage widget position', reason); }
+    };
     const root = document.createElement('section'); root.className = 'dc-usage'; container.append(root);
     const text = key => input.labels[key];
     const node = (tag, content, cls) => { const el = document.createElement(tag); if (content != null) el.textContent = content; if(cls) el.className = cls; return el; };
@@ -29,17 +42,39 @@ export default { apply(context) {
     const remaining = window => `${Math.max(0, Math.min(100, 100-window.usedPercent)).toFixed(0)}%`;
     const line = (parent,label,value) => { const row=node('div',null,'dc-usage__line'); row.append(node('span',label),node('strong',value));parent.append(row); };
     const clamp = (value, min, max) => Math.min(Math.max(value, min), Math.max(min, max));
+    // Keep the controls mounted while usage changes so a response cannot swallow a pointer click.
+    const summary = node('div', null, 'dc-usage__summary');
+    const body = button('', () => scope.actions.setExpanded(!input.expanded), 'dc-usage__body');
+    body.dataset.usageDrag = '';
+    const caption = node('small'), amountLabel = node('strong'); body.append(caption, amountLabel);
+    const collapse = button('›', () => scope.actions.setUsageVisibility('collapsed'));
+    summary.append(body, collapse);
+    const handle = button('‹', () => scope.actions.setUsageVisibility('summary'), 'dc-usage__handle');
+    handle.dataset.usageDrag = '';
+    const detail = node('div', null, 'dc-usage__details'); detail.dataset.nativeOverlay = '';
+    const menuBox = node('div', null, 'dc-usage__menu'); menuBox.setAttribute('role', 'menu'); menuBox.dataset.nativeOverlay = '';
+    const settings = button('', () => { menu = false; render(); scope.actions.openUsageSettings(); });
+    const hide = button('', () => { menu = false; scope.actions.setUsageVisibility('hidden'); });
+    menuBox.append(settings, hide);
+    const attach = (element, visible) => {
+      if (visible && !root.contains(element)) root.append(element);
+      else if (!visible && root.contains(element)) element.remove();
+    };
+    const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+    let detailState = [];
     function place() {
       if (root.hidden || !container.clientWidth || !container.clientHeight) return;
       const width = container.clientWidth, height = container.clientHeight;
       root.style.setProperty('--dc-usage-boundary-width', `${width}px`);
       const box = root.getBoundingClientRect();
       // The compact handle docks at an edge; the summary opens into the panel.
-      position ??= { x: width - box.width - 16, centerY: height - 16 - box.height / 2 };
+      // Layout changes constrain rendering, not the user's remembered position.
+      // Until moved, the summary follows the current right edge.
+      position ??= { x: null, centerY: height - 16 - box.height / 2 };
       const docked = input.visibility === 'collapsed' && !drag?.started;
-      const x = docked ? dock === 'left' ? 0 : width - box.width : clamp(position.x, 8, width - box.width - 8);
+      const x = docked ? dock === 'left' ? 0 : width - box.width
+        : clamp(position.x ?? width - box.width - 16, 8, width - box.width - 8);
       const y = clamp(position.centerY - box.height / 2, 8, height - box.height - 8);
-      if (docked) position.x = x;
       root.dataset.dock = dock;
       const handle = root.querySelectorAll('.dc-usage__handle')[0];
       if (handle) handle.textContent = dock === 'left' ? '›' : '‹';
@@ -79,8 +114,10 @@ export default { apply(context) {
       if (moved && input.visibility === 'collapsed') {
         const box = root.getBoundingClientRect();
         dock = position.x + box.width / 2 < container.clientWidth / 2 ? 'left' : 'right';
+        position.x = dock === 'left' ? 0 : container.clientWidth - box.width;
         place();
       }
+      if (moved) savePosition();
     };
     const cancelDrag = () => { if (drag) endDrag({ pointerId: drag.id }); };
     root.addEventListener('lostpointercapture', endDrag);
@@ -96,7 +133,9 @@ export default { apply(context) {
       const box = root.getBoundingClientRect(), bounds = container.getBoundingClientRect();
       position = { x: clamp(box.left - bounds.left + offset[0] * step, 8, container.clientWidth - box.width - 8),
         centerY: clamp(box.top - bounds.top + box.height / 2 + offset[1] * step, box.height / 2 + 8, container.clientHeight - box.height / 2 - 8) };
+      if (input.visibility === 'collapsed') position.x = dock === 'left' ? 0 : container.clientWidth - box.width;
       place();
+      savePosition();
     });
     const sizeObserver = new ResizeObserver(place);
     sizeObserver.observe(container); sizeObserver.observe(root);
@@ -105,20 +144,29 @@ export default { apply(context) {
     document.addEventListener('pointercancel', endDrag);
     window.addEventListener('blur', cancelDrag);
     function render() {
-      root.replaceChildren(); root.hidden = input.visibility === 'hidden' || !input.connection;
+      root.hidden = input.visibility === 'hidden' || !input.connection;
       if (root.hidden) { cancelDrag(); return; }
       root.oncontextmenu = event => {event.preventDefault();menu=true;render();};
-      if(menu) { const box=node('div',null,'dc-usage__menu');box.setAttribute('role','menu');box.dataset.nativeOverlay='';
-        box.append(button(text('settings'),()=>{menu=false;render();scope.actions.openUsageSettings();}),button(text('hide'),()=>{menu=false;scope.actions.setUsageVisibility('hidden');}));root.append(box); }
-      if(input.visibility === 'collapsed') { const el=button('‹',()=>scope.actions.setUsageVisibility('summary'),'dc-usage__handle');el.dataset.usageDrag='';el.setAttribute('aria-label',text('show'));root.append(el);place();return; }
+      setText(settings, text('settings')); setText(hide, text('hide'));
+      attach(menuBox, menu);
+      const collapsed = input.visibility === 'collapsed';
+      attach(handle, collapsed); attach(summary, !collapsed);
+      handle.setAttribute('aria-label', text('show'));
+      attach(detail, !collapsed && input.expanded && !menu);
+      if (collapsed) { place(); return; }
       const plan = input.connection.billingMode === 'subscription';
       const windows = plan && data?.windows ? [...data.windows].sort((a,b)=>b.windowDurationSeconds-a.windowDurationSeconds) : [];
       const totals = !plan && data?.totals;
-      const amount = loading ? '…' : error ? text('unavailable') : plan ? windows.length ? remaining(windows[0]) : '—' : totals?.estimatedCost != null ? money(totals.estimatedCost) : totals?.calls === 0 ? text('noCalls') : text('unpriced');
-      if(input.expanded && !menu) {
-        const detail=node('div',null,'dc-usage__details');detail.dataset.nativeOverlay='';
+      const amount = error ? text('unavailable') : loading && !data ? '…' : plan ? windows.length ? remaining(windows[0]) : '—' : totals?.estimatedCost != null ? money(totals.estimatedCost) : totals?.calls === 0 ? text('noCalls') : text('unpriced');
+      const nextDetailState = [data, error, loading && !data, plan, input.locale, input.costDisplay.currency, input.costDisplay.usdRate];
+      detail.setAttribute('aria-busy', String(loading));
+      if (nextDetailState.some((value, index) => value !== detailState[index])) {
+        detailState = nextDetailState;
+        const scrollTop = detail.scrollTop;
+        detail.replaceChildren();
         detail.append(node('strong',plan ? text('remaining') : text('today')));
         if(error) detail.append(node('p',error,'dc-usage__error'));
+        else if(loading && !data) detail.append(node('small','…'));
         else if(plan) { for(const window of windows) { line(detail,window.label,remaining(window)); if(window.resetsAt) detail.append(node('small',text('resets')+new Date(window.resetsAt).toLocaleString(input.locale))); } }
         else if(totals) { line(detail,text('estimate'),amount);line(detail,text('tokens'),`${totals.inputTokens.toLocaleString()} / ${totals.outputTokens.toLocaleString()}`);line(detail,text('cached'),totals.cacheReadTokens.toLocaleString());line(detail,text('calls'),String(totals.calls));
           if(totals.pricedCalls < totals.calls) detail.append(node('small',text('priced')+`${totals.pricedCalls}/${totals.calls}`));
@@ -126,30 +174,39 @@ export default { apply(context) {
           const chart=node('div',null,'dc-usage__chart'), max=Math.max(1,...data.buckets.map(bucket=>bucket.inputTokens+bucket.outputTokens));chart.setAttribute('aria-label',text('hourly'));
           for(const bucket of data.buckets) { const bar=node('i');bar.style.height=`${(bucket.inputTokens+bucket.outputTokens)/max*100}%`;bar.title=`${bucket.label}: ${bucket.inputTokens+bucket.outputTokens}`;chart.append(bar); }detail.append(chart);
         }
-        detail.append(button(text('refresh'),()=>void refresh(true)));root.append(detail);
+        detail.scrollTop = scrollTop;
       }
-      const summary=node('div',null,'dc-usage__summary');
-      const body=button('',()=>scope.actions.setExpanded(!input.expanded),'dc-usage__body');body.setAttribute('aria-expanded',String(input.expanded));
-      body.dataset.usageDrag='';
+      body.setAttribute('aria-expanded',String(input.expanded));
+      caption.hidden = plan;
       if (plan) {
         summary.dataset.subscription = '';
-        body.append(node('strong', input.connection.adapterId === 'openai-codex' ? 'Codex' : input.connection.name));
-      } else body.append(node('small',(input.modelId ?? input.connection.name)+' · '+text('todayEstimate')),node('strong',amount));
-      const collapse=button('›',()=>scope.actions.setUsageVisibility('collapsed'));collapse.setAttribute('aria-label',text('collapse'));summary.append(body,collapse);root.append(summary);
+        setText(amountLabel, input.connection.adapterId === 'openai-codex' ? 'Codex' : input.connection.name);
+      } else {
+        delete summary.dataset.subscription;
+        setText(caption, (input.modelId ?? input.connection.name)+' · '+text('todayEstimate'));
+        setText(amountLabel, amount);
+      }
+      collapse.setAttribute('aria-label',text('collapse'));
       place();
     }
     async function refresh(force=false) {
       const day=new Date();day.setHours(0,0,0,0);
-      const key=JSON.stringify([input.connection?.id,input.connection?.billingMode,input.modelId,day.getTime(),input.revision]);
-      if(input.visibility==='hidden'||!input.connection) {clearTimeout(timer);request?.abort();requestKey='';data=null;render();return;}
+      const query=JSON.stringify([input.connection?.id,input.connection?.billingMode,input.modelId,day.getTime()]);
+      const key=JSON.stringify([query,input.revision]);
+      if(input.visibility==='hidden'||!input.connection) {clearTimeout(timer);request?.abort();request=null;requestKey='';render();return;}
+      // Only a different query invalidates the displayed successful snapshot.
+      if(query!==queryKey) {request?.abort();request=null;queryKey=query;data=null;error='';}
+      // Let an in-flight read finish; a newer revision is read once afterward, without starvation.
+      if(request) {render();return;}
       if(!force&&key===requestKey) {render();return;}
-      clearTimeout(timer);requestKey=key;request?.abort();request=new AbortController();const current=request;
-      loading=true;data=null;error='';render();
+      clearTimeout(timer);requestKey=key;request=new AbortController();const current=request;
+      loading=true;render();
       try { const value=input.connection.billingMode==='subscription' ? await scope.quota.read(current.signal) : await scope.usage.query({from:day.getTime(),to:Math.max(day.getTime()+1,Date.now()),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,granularity:'hour',connectionId:input.connection.id,modelId:input.modelId},current.signal);
-        if(current.signal.aborted||scope.signal.aborted)return;data=value;
-      } catch(reason) {if(current.signal.aborted||scope.signal.aborted)return;error=reason instanceof Error?reason.message:String(reason);}
+        if(current.signal.aborted||scope.signal.aborted)return;data=value;error='';
+      } catch(reason) {if(current.signal.aborted||scope.signal.aborted)return;data=null;error=reason instanceof Error?reason.message:String(reason);}
       if(current.signal.aborted||scope.signal.aborted)return;
-      loading=false;render();const tomorrow=new Date(day);tomorrow.setDate(tomorrow.getDate()+1);timer=setTimeout(()=>void refresh(true),Math.max(1,tomorrow.getTime()-Date.now()));
+      request=null;loading=false;render();const tomorrow=new Date(day);tomorrow.setDate(tomorrow.getDate()+1);timer=setTimeout(()=>void refresh(true),Math.max(1,tomorrow.getTime()-Date.now()));
+      if(key!==JSON.stringify([queryKey,input.revision])) void refresh();
     }
     const dismiss = event => {
       if (root.contains(event.target) || (!menu && !input.expanded)) return;
@@ -161,7 +218,13 @@ export default { apply(context) {
     document.addEventListener('pointerdown',dismiss,true);document.addEventListener('keydown',escape);
     void refresh();
     return {
-      update(next) { if (next.visibility !== input.visibility) { menu = false; cancelDrag(); } input = next; void refresh(); },
+      update(next) {
+        if (next.visibility !== input.visibility) { menu = false; cancelDrag(); }
+        const opened = next.expanded && !input.expanded;
+        input = next;
+        // Provider responses advance the revision; opening the details also reads current usage.
+        void refresh(opened);
+      },
       dispose() {
         request?.abort(); clearTimeout(timer); cancelDrag(); sizeObserver.disconnect();
         document.removeEventListener('pointerdown',dismiss,true); document.removeEventListener('keydown',escape);

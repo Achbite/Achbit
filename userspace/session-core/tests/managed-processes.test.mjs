@@ -73,7 +73,8 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   while (calls < 2) await delay(5);
   await delay(50);
   assert.equal(calls, 2, 'waiting for a process does not keep requesting the model');
-  assert.equal((await actor.snapshot()).messages.some(m => m.content === 'Premature answer.'), false);
+  assert.equal((await actor.snapshot()).messages.some(m => m.content === 'Premature answer.'), true, 'valid generated text persists while the process still prevents settlement');
+  assert.equal((await actor.snapshot()).run.status, 'running');
   if (watchFailure) failWatch();
   else if (stop) await actor.submit({schemaVersion:'deepcode.command.v3', type:'run.cancel', commandId:'command:stop', sessionId, runId:active.run.runId});
   else finish('completed');
@@ -86,7 +87,11 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   assert.equal(closed, true);
   if (!stop) {
     assert.equal(calls, 3);
-    assert.ok(requests[2].messages.some(m => m.role === 'tool' && JSON.parse(m.content).process?.status === 'completed'));
+    assert.deepEqual(requests[2].messages.slice(0, requests[1].messages.length), requests[1].messages,
+      'a process update must append facts without rewriting the previous request');
+    const updates = requests[2].messages.slice(requests[1].messages.length)
+      .filter(m => m.role === 'user').map(m => JSON.parse(m.content));
+    assert.ok(updates.some(m => m.type === 'process.updated' && m.process.status === 'completed'));
   }
   const updates = (await readEvents(journal,sessionId)).filter(e => e.type === 'process.updated');
   assert.equal(updates.filter(e => e.payload.job.status !== 'active').length,1);

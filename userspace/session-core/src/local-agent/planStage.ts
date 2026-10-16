@@ -1,4 +1,3 @@
-import { todoUpdateFact } from './todoState.js';
 import type {
   NewSessionEvent, PlanAuthority, SessionProjection,
 } from '@deepcode/protocol';
@@ -61,13 +60,6 @@ export function publishPlan(
       'plan_revision_unchanged',
       'The proposed Plan is unchanged. Continue within the confirmed scope, or explain the result. Publish a revision only for a material scope change.',
     );
-    // An execution-time supplement is a complete revision, not a replacement task list.
-    // A user-requested rewrite can remove steps; its resulting scope still needs confirmation.
-    const missing = previous.steps.filter((step) => !draft.steps.some((candidate) => candidate.stepId === step.stepId));
-    if (previous.status !== 'revisionRequested' && missing.length > 0) return reject(
-      'plan_revision_steps_missing',
-      `Publish the complete revised Plan, retaining existing steps (including completed ones) and their stepId values. Add the new steps and declare the complete effective mutationManifest; nothing is merged automatically. Missing steps: ${JSON.stringify(missing)}.`,
-    );
   }
   return {
     type: 'plan.published', sessionId: state.sessionId, runId, callId,
@@ -77,8 +69,12 @@ export function publishPlan(
   };
 }
 
-export function confirmationFacts(state: SessionState, plan: NonNullable<SessionProjection['pendingPlan']>,
-  commandId: string, source: 'user' | 'agent', nextId: (kind: string) => string): NewSessionEvent[] {
+type ConfirmablePlan = Pick<NonNullable<SessionProjection['pendingPlan']>,
+  'planId' | 'revision' | 'runId' | 'callId' | 'mutationManifest'>;
+
+export function confirmationFacts(state: SessionState, plan: ConfirmablePlan,
+  commandId: string, source: 'user' | 'agent' | 'parent' | 'sessionWorkdir', nextId: (kind: string) => string,
+  inheritedAuthorities?: PlanAuthority[]): NewSessionEvent[] {
   const decisionId = nextId('plan-decision');
   const previous = planToSupersede(state, plan.planId, plan.revision);
   const events: NewSessionEvent[] = [];
@@ -86,14 +82,13 @@ export function confirmationFacts(state: SessionState, plan: NonNullable<Session
     payload: { ...previous, supersededByPlanId: plan.planId, supersededByRevision: plan.revision } });
   events.push({ type: 'plan.confirmed', sessionId: state.sessionId, runId: plan.runId, callId: plan.callId,
     payload: { planId: plan.planId, revision: plan.revision, commandId, source, decisionId,
-      authorities: planAuthoritiesForConfirmation(plan, state.sessionId, decisionId, nextId) } });
-  if (state.todoList?.runId !== plan.runId) events.push(todoUpdateFact(state.sessionId, plan.runId, state.todoList,
-    plan.steps.map(step => ({ text: step.title, status: 'pending' }))));
+      authorities: source === 'sessionWorkdir' ? [] : source === 'parent' ? structuredClone(inheritedAuthorities ?? [])
+        : planAuthoritiesForConfirmation(plan, state.sessionId, decisionId, nextId) } });
   return events;
 }
 
 export function planAuthoritiesForConfirmation(
-  plan: NonNullable<SessionProjection['pendingPlan']>,
+  plan: ConfirmablePlan,
   sessionId: string,
   decisionId: string,
   nextId: (kind: string) => string,

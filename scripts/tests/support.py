@@ -9,6 +9,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -150,33 +151,49 @@ class OwnedDaemon:
         require(code == 0, f"Daemon shutdown 后退出码为 {code}\n{self.log_tail()}")
 
     def terminate_group(self) -> None:
-        if self.process is None or self.process.poll() is not None:
+        if self.process is None:
             return
         if os.name == "nt":
+            if self.process.poll() is not None:
+                return
             subprocess.run(
                 ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
                 capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self.process.wait(timeout=5)
             return
-        try:
-            os.killpg(self.process.pid, signal.SIGTERM)
-            self.process.wait(timeout=3)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            if self.process.poll() is None:
+
+        # start_new_session gives this fixture its own group. Its leader can
+        # already be reaped while a child still holds files or listening ports.
+        group = self.process.pid
+        for stop_signal in (signal.SIGTERM, signal.SIGKILL):
+            self.process.poll()
+            try:
+                os.killpg(group, stop_signal)
+            except ProcessLookupError:
+                return
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                self.process.poll()
                 try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    os.killpg(group, 0)
                 except ProcessLookupError:
-                    pass
-                self.process.wait(timeout=3)
+                    return
+                time.sleep(0.05)
+        raise TimeoutError(f"Owned Daemon process group {group} did not exit")
 
     def close(self) -> None:
         try:
             if self.identity is not None and self.process is not None and self.process.poll() is None:
                 self.shutdown()
         finally:
+            primary_error = sys.exc_info()[1]
             try:
                 self.terminate_group()
+            except Exception as cleanup_error:
+                if primary_error is None:
+                    raise
+                print(f"Owned Daemon cleanup also failed: {cleanup_error}", file=sys.stderr)
             finally:
                 self.log_file.close()
 
@@ -433,7 +450,7 @@ def cli(daemon: Any, session_id: str, text: str, expected: int = 0, *, run_timeo
     result = subprocess.run([
         str(CLI_BINARY), "--api", daemon.base_url, "--no-auto-start-kernel",
         "--session", session_id, "--plain", "ask", text,
-    ], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=run_timeout_seconds + 30)
+    ], cwd=ROOT, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=run_timeout_seconds + 30)
     require(result.returncode == expected, f"CLI 退出 {result.returncode}，预期 {expected}\n{result.stdout}\n{result.stderr}")
     return result
 

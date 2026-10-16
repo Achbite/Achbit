@@ -39,6 +39,10 @@ class Provider(fixture.MockProviderHandler):
             self.send_header('content-type', 'text/event-stream')
             self.send_header('connection', 'close')
             self.end_headers()
+            if getattr(state, 'reference_mode', False):
+                state.reference_requests.append(body)
+                self.reference_turn(len(state.reference_requests), names, results)
+                return
             if ordinal == 1:
                 self._send_tool_calls([('read-external', names['read'], {'path': str(state.external)})])
             elif ordinal == 2:
@@ -79,6 +83,95 @@ class Provider(fixture.MockProviderHandler):
         except BaseException as error:
             state.record_failure(error)
             self.close_connection = True
+
+    def reference_turn(self, ordinal, names, results):
+        state = self.provider_state
+        if ordinal == 1:
+            state.reference_started.set()
+            require(state.reference_release.wait(30), 'Reference input did not release the held request')
+            self._send_tool_calls([('project-before-references', names['read'], {'path': '.git/HEAD'})])
+            return
+        if ordinal == 2:
+            first = state.reference_requests[0]['messages']
+            require(state.reference_requests[1]['messages'][:len(first)] == first, 'Queued references changed the in-flight prefix')
+            refs = []
+            for message in state.reference_requests[-1]['messages']:
+                content = message.get('content', '')
+                if message['role'] == 'user' and isinstance(content, str) and '[{"referenceId"' in content:
+                    refs.extend(json.loads(content[content.index('[{"referenceId"'):]))
+            state.external_reference = next(ref for ref in refs if ref['kind'] == 'file')
+            state.project_reference = next(ref for ref in refs if ref['displayName'] == 'referenced-src')
+            directory = next(ref for ref in refs if ref['displayName'] == 'reference-folder')
+            require(directory['workspace'] == state.external_reference['workspace'], 'File and parent directory lost their shared address identity')
+            self._send_tool_calls([('reference-denied', names['read'], {'workspace': directory['workspace'], 'path': 'target.txt'})])
+        elif ordinal == 3:
+            require(results['reference-denied']['outcome'] == 'denied', results)
+            ref = state.external_reference
+            self._send_tool_calls([('reference-read', names['read'], {'workspace': ref['workspace'], 'path': ref['path']})])
+        elif ordinal == 4:
+            require(results['reference-read']['outcome'] == 'completed' and results['reference-read']['output']['content'] == 'original-reference', results)
+            ref, inside = state.external_reference, state.project_reference
+            self._send_tool_calls([
+                ('reference-write', names['write'], {'workspace': ref['workspace'], 'path': ref['path'], 'content': 'modified-original'}),
+                ('project-reference-write', names['write'], {'workspace': inside['workspace'], 'path': 'result.txt', 'content': 'project-write'}),
+            ])
+        elif ordinal == 5:
+            require(results['reference-write']['outcome'] == 'completed', results)
+            require(results['project-reference-write']['outcome'] == 'completed', results)
+            self._send_text('reference-targets-complete')
+        else:
+            raise AssertionError(f'Unexpected reference request {ordinal}')
+
+
+def check_queued_reference_targets(daemon, state, root, workspace):
+    outside = root / 'reference-folder'
+    outside.mkdir()
+    target = outside / 'target.txt'
+    target.write_text('original-reference')
+    inside = workspace / 'referenced-src'
+    inside.mkdir()
+    state.reference_mode = True
+    state.reference_requests = []
+    state.reference_started = threading.Event()
+    state.reference_release = threading.Event()
+    session = fixture.create_session(daemon, workspace)['sessionId']
+    endpoint = f'/api/conversation/sessions/{session}'
+    def submit(command_id, text, **extra):
+        reply = fixture.api_json(daemon.base_url, endpoint + '/commands', token=daemon.token, method='POST', body={
+            'schemaVersion': fixture.COMMAND_VERSION, 'type': 'message.submit', 'sessionId': session,
+            'commandId': command_id, 'text': text, **extra,
+        })
+        require(reply['status'] == 'accepted', reply)
+    try:
+        submit('command:reference-start', 'Inspect the project and use the references I supply.')
+        require(state.reference_started.wait(20), 'Initial reference request did not start')
+        before = fixture.projection(daemon, session)
+        run_id = before['run']['runId']
+        references = fixture.api_json(daemon.base_url, endpoint + '/filesystem-references/resolve', token=daemon.token, method='POST', body={
+            'references': [{'path': str(outside), 'kind': 'directory'}, {'path': str(target), 'kind': 'file'}, {'path': str(inside), 'kind': 'directory'}],
+        })
+        submit('command:reference-targets', 'Read and modify these targets.', runId=run_id, filesystemReferences=references)
+        queued = fixture.projection(daemon, session)
+        require(len(queued['queuedInputs']) == 1 and queued['run']['workspaceBindings'] == before['run']['workspaceBindings'], 'References changed the project working directories')
+        state.reference_release.set()
+        fixture.wait_until(lambda: fixture.projection(daemon, session).get('pendingApproval'), 20, 'Referenced external directory was read without approval')
+        pending = fixture.projection(daemon, session)['pendingApproval']
+        require(pending['preview']['fileAccess']['read'] == [str(target.resolve())], pending)
+        require(target.read_text() == 'original-reference', 'Unapproved reference changed')
+        fixture.cli(daemon, session, '/reply 2', expected=5)
+        fixture.cli(daemon, session, '/reply 5', expected=5)
+        require(target.read_text() == 'original-reference', 'Read approval allowed a write to the reference')
+        pending = fixture.projection(daemon, session)['pendingApproval']
+        require(pending['preview']['fileAccess']['write'] == [str(target.resolve())], pending)
+        fixture.cli(daemon, session, '/reply 1')
+        completed = fixture.wait_completed(daemon, state, session, 'reference-targets-complete')
+        require(completed['run']['runId'] == run_id and completed['run']['workspaceBindings'] == before['run']['workspaceBindings'], 'References replaced the Run or its working directories')
+        require(target.read_text() == 'modified-original', 'Approved write did not modify the original file')
+        require((inside / 'result.txt').read_text() == 'project-write', 'Project subdirectory did not use project write policy')
+        state.assert_healthy()
+        print('[file-access-cli] PASS: same-run directory/file references, fixed project roots, denied read, separate read/write approval and original-target modification')
+    finally:
+        state.reference_release.set()
 
 
 def check_resource_tree(daemon, session, workspace):
@@ -184,6 +277,9 @@ def main():
             fixture.cli(daemon, session, 'Try the removed resource again.', expected=5)
             fixture.cli(daemon, session, '/reply 2')
             state.assert_healthy()
+            state = fixture.ProviderState(workspace)
+            server.provider_state = state
+            check_queued_reference_targets(daemon, state, root, workspace)
             daemon.shutdown()
             print('[file-access-cli] PASS: exact external file, shared fs/Shell grant, child-process isolation, external/Git write approval, private temp, turn expiry, session reuse and revocation')
         except BaseException:

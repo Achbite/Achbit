@@ -3,6 +3,7 @@ import UiIcon from '../../icons/registry';
 import type { GuiAccentColor, GuiResolvedTheme } from '../../theme/deepcodeGuiTheme';
 import { paletteColor, type PaletteOverrides } from '../../theme/palette';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
+import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../shared/interactionFocus';
 
 export interface ThemeChoice { id: string; name: string; colors: PaletteOverrides }
 export function ThemeBadge({ colors, mode, accent }: { colors: PaletteOverrides; mode: GuiResolvedTheme; accent: GuiAccentColor }) {
@@ -22,7 +23,10 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const options = useRef<Array<HTMLButtonElement | null>>([]);
-  const restoreFocus = useRef(false);
+  const interaction = useInteractionFocus();
+  const origin = useRef<FocusReturn | null>(null);
+  const keyboardOpen = useRef(false);
+  const restoreFocus = useRef<boolean | null>(null);
   const id = useId();
   const current = choices.find((choice) => choice.id === selected)!;
   useLayoutEffect(() => {
@@ -58,22 +62,25 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
   }, [open]);
   useEffect(() => {
     if (!open) return;
-    options.current[choices.findIndex((choice) => choice.id === selected)]?.focus();
+    if (keyboardOpen.current) options.current[choices.findIndex((choice) => choice.id === selected)]?.focus();
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
   useEffect(() => {
-    if (!open && !disabled && restoreFocus.current) {
-      restoreFocus.current = false;
-      if (document.activeElement === document.body || root.current?.contains(document.activeElement)) trigger.current?.focus();
+    if (!open && !disabled && restoreFocus.current !== null && origin.current) {
+      returnInteractionFocus(origin.current, restoreFocus.current);
+      restoreFocus.current = null;
     }
   }, [open, disabled]);
+  const expand = (keyboard: boolean) => {
+    origin.current = interaction ? interaction.capture(trigger.current) : captureFocusReturn(trigger.current);
+    keyboardOpen.current = keyboard;
+    setOpen(true);
+  };
   const close = (keyboard = true) => {
     restoreFocus.current = keyboard;
     setOpen(false);
-    if (keyboard) trigger.current?.focus();
-    else if (root.current?.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
   };
   return <div className="theme-picker" ref={root} onBlur={(event) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);
@@ -83,8 +90,8 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
     <span id={`${id}-label`}>{label}</span>
     <button type="button" className="theme-picker__trigger" ref={trigger} disabled={disabled}
       aria-labelledby={`${id}-label ${id}-value`} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? id : undefined}
-      onClick={event => { if (open) close(event.detail === 0); else setOpen(true); }} onKeyDown={(event) => {
-        if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setOpen(true); }
+      onClick={event => { if (open) close(event.detail === 0); else expand(event.detail === 0); }} onKeyDown={(event) => {
+        if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); expand(true); }
       }}>
       <ThemeBadge colors={current.colors} mode={mode} accent={accent} /><span id={`${id}-value`}>{current.name}</span><UiIcon name="chevronDown" size={14} />
     </button>

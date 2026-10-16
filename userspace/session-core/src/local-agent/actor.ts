@@ -1,4 +1,6 @@
-import { isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
+import type { SessionOperation, JsonObject } from '@deepcode/protocol';
+import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
 import { validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { confirmationFacts } from './planStage.js';
@@ -7,10 +9,11 @@ import { failureSnapshotEvent } from './failureSnapshot.js';
 import { errorFact } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
-import { todoUpdateFact } from './todoState.js';
+import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
 import type {
   AssistantDraftProjection,
+  AgentTaskResult,
   CommandJournalPort,
   CommandReply,
   ConversationCommand,
@@ -20,13 +23,13 @@ import type {
   RunSettlement,
   SessionEvent,
   SessionProjection,
-  WorkspaceBindingDisplay,
 } from '@deepcode/protocol';
 import {
   COMMAND_REPLY_VERSION,
   SESSION_EVENT_VERSION,
 } from '@deepcode/protocol';
-import type { AgentComposition } from './plugins.js';
+import type { AgentComposition, SessionCapabilities } from './plugins.js';
+import { SessionCapabilityManager } from './sessionCapabilities.js';
 import {
   loopSnapshot,
   runAgentLoop,
@@ -39,6 +42,7 @@ import {
 import { projectSession, reduceSession } from './reducer.js';
 
 export interface SessionActorOptions {
+  agents?: AgentSessionRuntime;
   profileId?: string;
   initialEvents?: readonly SessionEvent[];
   nextId?(kind: string): string;
@@ -55,17 +59,24 @@ const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
 export class SessionActor {
   readonly #journal: CommandJournalPort;
   readonly #composition: AgentComposition;
+  readonly #capabilities: SessionCapabilityManager;
   readonly #profileId?: string;
+  readonly #agents?: AgentSessionRuntime;
+  readonly #changes = new Set<() => void>();
   readonly #nextId: (kind: string) => string;
   #mailbox = Promise.resolve();
   #writes = Promise.resolve();
   #active?: ActiveRun;
   #disposed = false;
+  readonly #wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  #disposeTask?: Promise<void>;
   #processes?: ManagedProcesses;
   #loopFailure?: Error;
   #snapshot?: LoopSnapshot;
   #initialEvents?: readonly SessionEvent[];
-  #snapshotReads: Promise<void> = Promise.resolve();
+  #initialSnapshot?: Promise<LoopSnapshot>;
+  #publishedPermissions?: NonNullable<SessionProjection['effectivePermissions']>;
+  readonly #unsubscribePermissions: () => void;
   #assistantDraft: AssistantDraftProjection | null = null;
   readonly liveReasoning = new LiveReasoning();
   readonly #liveToolOutput = new LiveToolOutput();
@@ -78,14 +89,23 @@ export class SessionActor {
   ) {
     this.#journal = journal;
     this.#composition = composition;
+    this.#capabilities = new SessionCapabilityManager(composition.capabilities);
     this.#profileId = options.profileId;
+    this.#agents = options.agents;
     this.#nextId = options.nextId ?? defaultIdFactory(sessionId);
     this.#initialEvents = options.initialEvents;
+    this.#unsubscribePermissions = journal.subscribePermissions(sessionId, settings => {
+      this.#publishedPermissions = settings;
+      if (this.#snapshot) this.#snapshot = { ...this.#snapshot, state: { ...this.#snapshot.state, publishedPermissions: settings } };
+      for (const wake of this.#changes) wake();
+    });
   }
 
-  async recover(): Promise<void> {
+  async recover(signal?: AbortSignal): Promise<void> {
     await this.enqueue(async () => {
+      signal?.throwIfAborted();
       const snapshot = await this.loadSnapshot();
+      signal?.throwIfAborted();
       const run = snapshot.state.run;
       if (!run) return;
       if (isTerminal(run.status)) return;
@@ -96,17 +116,25 @@ export class SessionActor {
         return;
       }
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
+      signal?.throwIfAborted();
+      this.restoreWakeTimers(snapshot);
       if (restored && run.status === 'running') {
         this.startLoop({ type: 'recover', runId: run.runId });
       }
     });
   }
 
-  async submit(command: ConversationCommand): Promise<CommandReply> {
+  async submit(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
     return await this.enqueue(async () => {
       this.assertOperational();
-      return await this.handleCommand(command);
+      return await this.handleCommand(command, beforeRunStart);
     });
+  }
+
+  async agentCapabilities(runId: string): Promise<import('@deepcode/protocol').AgentCapabilities> {
+    const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
+    if (!runtime) throw new Error('run_runtime_snapshot_missing');
+    return decodeAgentCapabilities(runtime.agentCapabilities);
   }
 
   async snapshot(): Promise<SessionProjection> {
@@ -120,8 +148,148 @@ export class SessionActor {
     return projection;
   }
 
+  /** Coordination reads never construct transcript, activity or file-change projections. */
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
+    const state = (await this.loadSnapshot()).state;
+    return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, agentContext: state.agentContext,
+      agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
+      environment: state.run ? state.runRuntimeSnapshots[state.run.runId]?.environment : undefined });
+  }
+
+  /** Called only after the service's last external Actor lease has been released. */
+  async retireIfSettledChild(): Promise<boolean> {
+    const state = (await this.loadSnapshot()).state;
+    if (!state.agentContext || state.run && !isTerminal(state.run.status)) return false;
+    // run.settled can wake a result consumer just before the Loop's finally completes.
+    await this.#active?.task;
+    await this.dispose();
+    return true;
+  }
+
   hasLoopFailure(): boolean {
     return this.#loopFailure !== undefined;
+  }
+
+  /** Trusted Session coordination writes; the same journal admission/reducer owns these facts. */
+  async recordAgentEvents(events: readonly NewSessionEvent[]): Promise<void> {
+    await this.withWrite(async () => this.appendEvents(events, await this.loadSnapshot()));
+  }
+
+  async waitForInput(runId: string, signal?: AbortSignal, timeoutSeconds?: number,
+    done?: (snapshot: LoopSnapshot) => boolean, acceptedWait?: ControlWait): Promise<JsonObject> {
+    const initial = await this.loadSnapshot();
+    const composition = initial.events.findLast(event => event.type === 'context.composed'
+      && event.runId === runId && event.payload.purpose === 'agent');
+    const boundary = acceptedWait?.afterSequence ?? (composition?.type === 'context.composed'
+      ? composition.payload.modelView?.throughSequence ?? composition.sequence : initial.state.revision);
+    const deadline = acceptedWait?.deadline ?? (timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000);
+    for (;;) {
+      signal?.throwIfAborted();
+      // Subscribe before reading the published snapshot to avoid losing an arriving input.
+      let wake!: () => void;
+      const changed = new Promise<void>(resolve => { wake = resolve; });
+      this.#changes.add(wake);
+      signal?.addEventListener('abort', wake, { once: true });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const snapshot = await this.loadSnapshot();
+        if (this.#disposed) throw new Error('session_actor_disposed');
+        if (this.#loopFailure) throw this.#loopFailure;
+        if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
+        if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
+        if (Date.now() >= deadline) return { timedOut: true };
+        if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
+        await changed;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        this.#changes.delete(wake);
+        signal?.removeEventListener('abort', wake);
+      }
+    }
+  }
+
+  private async sessionOperation(runId: string, operation: SessionOperation, signal: AbortSignal): Promise<JsonObject> {
+    if (operation.action === 'describe') return { operations: [
+      { action: 'schedule', arguments: { afterSeconds: 'positive number', text: 'review or follow-up task' }, description: 'Schedule one follow-up in this task. Earlier messages do not cancel it. Task completion cancels remaining schedules.' },
+      { action: 'cancelSchedule', arguments: { scheduleId: 'schedule reference' } },
+      { action: 'wait', arguments: { timeoutSeconds: 'optional positive number' }, description: 'Pause until a message, child result, scheduled follow-up or user input arrives. Optional timeout only bounds this wait.' },
+    ] };
+    // The Loop commits this known response before subscribing to future input.
+    if (operation.action === 'wait') return {};
+    return this.withWrite(async () => {
+      signal.throwIfAborted();
+      const snapshot = await this.loadSnapshot();
+      if (snapshot.state.run?.runId !== runId || snapshot.state.run.status !== 'running') throw new Error('session_run_not_active');
+      if (operation.action === 'schedule') {
+        const scheduleId = this.#nextId('schedule');
+        await this.appendEvents([{ type: 'wake.scheduled', sessionId: this.sessionId, runId,
+          payload: { scheduleId, dueAt: Date.now() + Math.ceil(operation.afterSeconds * 1000), text: operation.text } }], snapshot);
+        return { scheduleId };
+      }
+      if (!pendingWakeups(snapshot.events, runId).has(operation.scheduleId)) throw new Error('schedule_not_pending');
+      await this.appendEvents([{ type: 'wake.cancelled', sessionId: this.sessionId, runId, payload: { scheduleId: operation.scheduleId } }], snapshot);
+      return { scheduleId: operation.scheduleId, cancelled: true };
+    });
+  }
+
+  private restoreWakeTimers(snapshot: LoopSnapshot): void {
+    const runId = snapshot.state.run?.runId;
+    const pending = runId ? pendingWakeups(snapshot.events, runId) : new Map();
+    for (const [id, timer] of this.#wakeTimers) if (!pending.has(id) || this.#disposed) {
+      clearTimeout(timer); this.#wakeTimers.delete(id);
+    }
+    if (this.#disposed || !runId) return;
+    for (const [id, event] of pending) {
+      if (this.#wakeTimers.has(id)) continue;
+      this.#wakeTimers.set(id, setTimeout(() => {
+        this.#wakeTimers.delete(id);
+        void this.withWrite(async () => {
+          if (this.#disposed) return;
+          const current = await this.loadSnapshot();
+          if (!pendingWakeups(current.events, runId).has(id)) return;
+          if (Date.now() < event.payload.dueAt) {
+            this.restoreWakeTimers(current);
+            return;
+          }
+          await this.appendEvents([{ type: 'wake.triggered', sessionId: this.sessionId, runId,
+            payload: { scheduleId: id, text: event.payload.text } }], current);
+        }).catch(error => { this.#loopFailure = error; for (const wake of this.#changes) wake(); });
+      }, Math.max(0, event.payload.dueAt - Date.now())));
+    }
+  }
+
+  async waitForRunResult(runId: string): Promise<AgentTaskResult> {
+    for (;;) {
+      const snapshot = await this.loadSnapshot();
+      const settled = snapshot.events.find(event => event.type === 'run.settled' && event.runId === runId);
+      if (settled?.type === 'run.settled') {
+        if (settled.payload.outcome !== 'completed') return structuredClone(settled.payload);
+        const finalMessageId = settled.payload.finalMessageId;
+        const message = snapshot.state.messages.find(item => item.messageId === finalMessageId);
+        if (!message) throw new Error('agent_final_message_missing');
+        return { ...settled.payload, content: message.content };
+      }
+      this.assertOperational();
+      if (snapshot.state.run?.status === 'releaseFailed') throw new Error(`agent_child_release_failed:${snapshot.state.terminalError?.message ?? runId}`);
+      if (this.#disposed) throw new Error('agent_child_disposed_before_settlement');
+      await this.waitForChange(snapshot.state.revision);
+    }
+  }
+
+  private async waitForChange(revision: number, signal?: AbortSignal, permissions?: NonNullable<SessionProjection['effectivePermissions']>): Promise<void> {
+    signal?.throwIfAborted();
+    let wake!: () => void;
+    const changed = new Promise<void>(resolve => { wake = resolve; });
+    this.#changes.add(wake);
+    signal?.addEventListener('abort', wake, { once: true });
+    try {
+      // Subscribe before the read so a settlement between the two cannot be missed.
+      const current = await this.loadSnapshot();
+      if (current.state.revision !== revision || permissions && current.state.publishedPermissions !== permissions
+        || this.#loopFailure || this.#disposed) return;
+      await changed;
+      signal?.throwIfAborted();
+    } finally { this.#changes.delete(wake); signal?.removeEventListener('abort', wake); }
   }
 
   async hasActiveWork(): Promise<boolean> {
@@ -132,8 +300,21 @@ export class SessionActor {
       || (run != null && !isTerminal(run.status));
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.#disposeTask) return this.#disposeTask;
     this.#disposed = true;
+    for (const timer of this.#wakeTimers.values()) clearTimeout(timer);
+    this.#wakeTimers.clear();
+    for (const wake of this.#changes) wake();
+    this.#active?.controller.abort('session_service_stopped');
+    this.#disposeTask = this.disposeResources();
+    return this.#disposeTask;
+  }
+
+  private async disposeResources(): Promise<void> {
+    // Commands already admitted to the mailbox may still be preparing a run.
+    // Drain them, then also stop any Loop they started before releasing ports.
+    await this.#mailbox;
     this.#active?.controller.abort('session_service_stopped');
     const errors: unknown[] = [];
     try {
@@ -147,14 +328,41 @@ export class SessionActor {
       errors.push(error);
     }
     try {
+      await this.#composition.runner?.dispose?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await this.#capabilities.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await this.#composition.dispose();
     } catch (error) {
       errors.push(error);
     }
+    this.#unsubscribePermissions();
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
   }
 
-  private async handleCommand(command: ConversationCommand): Promise<CommandReply> {
+  async delegationChanged(enabled: boolean): Promise<void> {
+    if (!this.#agents) return;
+    await this.enqueue(() => this.withWrite(async () => {
+      const current = await this.loadSnapshot();
+      if (current.state.agentDelegationEnabled === enabled) return;
+      await this.appendEvents([{ type: 'agent.delegation.changed', sessionId: this.sessionId, payload: { enabled } }], current);
+    }));
+  }
+
+  /** Trusted operator entry; never exposed through the model's callable catalog. */
+  async replaceCapabilities(implementation: SessionCapabilities): Promise<void> {
+    if (this.#disposed) throw new Error('session_actor_disposed');
+    this.assertOperational();
+    await this.#capabilities.replace(implementation);
+  }
+
+  private async handleCommand(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
     if (this.#disposed) throw new Error('session_actor_disposed');
     if (command.sessionId !== this.sessionId) {
       return this.reject(command, 'session_identity_mismatch', '命令不属于当前会话。');
@@ -188,7 +396,7 @@ export class SessionActor {
       case 'session.directory-index.detach':
         return await this.handleDirectoryIndexDetach(command);
       case 'message.submit':
-        return await this.handleMessage(command);
+        return await this.handleMessage(command, beforeRunStart);
       case 'message.edit':
         return await this.handleMessageEdit(command);
       case 'context.focus':
@@ -256,13 +464,24 @@ export class SessionActor {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }
-    if (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow') {
-      events.push(...confirmationFacts(snapshot.state, snapshot.state.pendingPlan, command.commandId, 'agent', this.#nextId));
-    }
     const reply = await this.commitCommand(command, events, acceptedReply(command));
+    let planConfirmed = false;
+    if (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow') {
+      const plan = snapshot.state.pendingPlan;
+      const admission = await this.#composition.kernel.planAdmission({ sessionId: this.sessionId,
+        runId: plan.runId, mutationManifest: plan.mutationManifest });
+      if (admission.source !== 'user') {
+        await this.withWrite(async () => {
+          const current = await this.loadSnapshot();
+          await this.appendEvents(confirmationFacts(current.state, plan, command.commandId,
+            admission.source, this.#nextId, admission.authorities), current);
+        });
+        planConfirmed = true;
+      }
+    }
     if (!this.#active && snapshot.state.run?.status === 'waiting'
       && (snapshot.state.run.waitingReason === 'approval'
-        || (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow'))) {
+        || planConfirmed)) {
       this.startLoop({ type: 'resume', runId: snapshot.state.run.runId });
     }
     return reply;
@@ -381,8 +600,9 @@ export class SessionActor {
 
   private async handleMessage(
     command: Extract<ConversationCommand, { type: 'message.submit' }>,
+    beforeRunStart?: (runId: string) => Promise<void>,
   ): Promise<CommandReply> {
-    return await this.handleRunInput(command, command.text, null);
+    return await this.handleRunInput(command, command.text, null, undefined, beforeRunStart);
   }
 
   private async handleFocus(
@@ -427,6 +647,7 @@ export class SessionActor {
     submittedText: string,
     focusTask: string | null,
     edit?: { command: Extract<ConversationCommand, { type: 'message.edit' }>; revised: Extract<NewSessionEvent, { type: 'conversation.revised' }> },
+    beforeRunStart?: (runId: string) => Promise<void>,
   ): Promise<CommandReply> {
     const journalCommand = edit?.command ?? command;
     if (!submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
@@ -473,12 +694,7 @@ export class SessionActor {
       const runtime = current.state.runRuntimeSnapshots[run.runId];
       if (!runtime) throw new Error('run_runtime_snapshot_missing');
       let incompatible: string | undefined;
-      if (command.filesystemReferences?.some((reference) => (
-        reference.kind === 'directory'
-        && !run.workspaceBindings.some((binding) => binding.workspaceId === reference.workspaceId)
-      ))) {
-        incompatible = '当前运行的项目目录已固定；可追加文件附件，新增项目目录请在下一轮使用。';
-      } else if (
+      if (
         command.profileId !== undefined && command.profileId !== runtime.provider.profileId
         || command.reasoningEffortOverride !== undefined
           && command.reasoningEffortOverride !== (runtime.provider.reasoningEffortOverride ?? null)
@@ -521,14 +737,7 @@ export class SessionActor {
       ? command.reasoningEffortOverride
       : before.state.modelSettings && profileId === before.state.modelSettings.profileId
         ? before.state.modelSettings.reasoningEffortOverride : null;
-    const runWorkspaceBindings = mergeWorkspaceBindings(
-      before.state.workspaceBindings,
-      [...before.state.messages.flatMap((message) => message.filesystemReferences.filter((reference) => reference.kind === 'file')),
-        ...(command.filesystemReferences ?? [])].map((reference) => ({
-        workspaceId: reference.workspaceId,
-        displayName: reference.displayName,
-      })),
-    );
+    const runWorkspaceBindings = before.state.workspaceBindings.map(binding => ({ ...binding }));
     const prepared = await this.#composition.runPreparation.prepare({
       sessionId: this.sessionId,
       runId,
@@ -543,13 +752,19 @@ export class SessionActor {
         ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) }
         : {}),
     });
-    const runtimeSnapshot = prepared.runtimeSnapshot;
+    const runtimeSnapshot = !this.#agents && prepared.runtimeSnapshot.agentToolsEnabled
+      ? { ...prepared.runtimeSnapshot, agentToolsEnabled: false }
+      : prepared.runtimeSnapshot;
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
+      ...(this.#agents && typeof runtimeSnapshot.agentDelegationEnabled === 'boolean'
+        && before.state.agentDelegationEnabled !== runtimeSnapshot.agentDelegationEnabled
+        ? [{ type: 'agent.delegation.changed' as const, sessionId: this.sessionId, payload: { enabled: runtimeSnapshot.agentDelegationEnabled } }] : []),
       {
         type: 'session.model-settings.updated',
         sessionId: this.sessionId,
-        payload: { commandId: command.commandId, settings: { profileId: runtimeSnapshot.provider.profileId, reasoningEffortOverride } },
+        payload: { commandId: command.commandId, settings: { profileId: runtimeSnapshot.provider.profileId,
+          reasoningEffortOverride: before.state.agentContext ? runtimeSnapshot.provider.reasoningEffort ?? null : reasoningEffortOverride } },
       },
       {
         type: 'input.accepted',
@@ -629,6 +844,7 @@ export class SessionActor {
       }
       throw error;
     }
+    await beforeRunStart?.(runId);
     this.startLoop({ type: 'start', runId });
     return reply;
   }
@@ -722,15 +938,14 @@ export class SessionActor {
     command: Extract<ConversationCommand, { type: 'approval.respond' }>,
   ): Promise<CommandReply> {
     const snapshot = await this.loadSnapshot();
-    const approval = snapshot.state.pendingApproval;
+    const approval = snapshot.state.pendingApprovals.find(item => item.approvalId === command.approvalId);
     if (
       !approval
       || approval.approvalId !== command.approvalId
       || approval.callId !== command.callId
       || approval.runId !== command.runId
       || snapshot.state.run?.runId !== command.runId
-      || snapshot.state.run.status !== 'waiting'
-      || snapshot.state.run.waitingReason !== 'approval'
+      || !['running', 'waiting'].includes(snapshot.state.run.status)
     ) {
       return await this.recordRejection(
         command,
@@ -759,7 +974,7 @@ export class SessionActor {
       }],
       acceptedReply(command),
     );
-    this.startLoop({ type: 'resume', runId: command.runId });
+    if (!this.#active) this.startLoop({ type: 'resume', runId: command.runId });
     return reply;
   }
 
@@ -841,6 +1056,7 @@ export class SessionActor {
         await this.runLoop({ type: 'cancel', runId: command.runId });
       }
     } else {
+      if (this.#active) await this.#active.task;
       this.startLoop({ type: 'resume', runId: command.runId });
     }
     return reply;
@@ -895,6 +1111,7 @@ export class SessionActor {
       })
       .finally(() => {
         if (this.#active === active) this.#active = undefined;
+        for (const wake of this.#changes) wake();
       });
     this.#active = active;
   }
@@ -905,13 +1122,19 @@ export class SessionActor {
   ): Promise<void> {
     const snapshot = await this.loadSnapshot();
     await this.ensureProcesses(command.runId);
-    const result = await runAgentLoop(
+    const runner = this.#composition.runner ?? { run: runAgentLoop };
+    const result = await runner.run(
       snapshot,
       command,
       {
         composition: this.#composition,
+        capabilities: this.#capabilities,
+        ...(this.#agents ? { agents: this.#agents } : {}),
+        sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
+        waitForInput: (runId, wait, signal) => this.waitForInput(runId, signal, undefined, undefined, wait),
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
         waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
+        waitForChange: (revision, signal, permissions) => this.waitForChange(revision, signal, permissions),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
         commit: (events) => this.withWrite(async () => {
           const current = await this.loadSnapshot();
@@ -1004,26 +1227,22 @@ export class SessionActor {
       });
     } catch (snapshotError) { failure = new AggregateError([failure, asError(snapshotError)], failure.message); }
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
-    if (!runtime || snapshot.state.runRuntimeReleases[runId]) return failure;
-    try {
-      await this.closeProcesses();
-      await this.#composition.runPreparation.release({
-        sessionId: this.sessionId,
-        runId,
-        kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
-      });
-    } catch (releaseError) {
-      return new AggregateError(
-        [failure, asError(releaseError)],
-        failure.message,
-      );
-    }
+    const cleanup = await Promise.allSettled([
+      this.closeProcesses(),
+      this.#agents?.cancel(runId) ?? Promise.resolve(),
+      runtime && !snapshot.state.runRuntimeReleases[runId] ? this.#composition.runPreparation.release({
+        sessionId: this.sessionId, runId, kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+      }) : Promise.resolve(),
+    ]);
+    const errors = cleanup.flatMap(result => result.status === 'rejected' ? [asError(result.reason)] : []);
+    if (errors.length) failure = new AggregateError([failure, ...errors], failure.message);
     return failure;
   }
 
   private async restoreRunRuntime(snapshot: LoopSnapshot, runId: string): Promise<boolean> {
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
+    decodeAgentCapabilities(runtime.agentCapabilities);
     let prepared;
     try {
       prepared = await this.#composition.runPreparation.prepare({
@@ -1136,13 +1355,17 @@ export class SessionActor {
     }
     let released;
     try {
-      released = await this.#composition.runPreparation.release({
-        sessionId: this.sessionId,
-        runId,
-        kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
-      });
+      const cleanup = await Promise.allSettled([
+        this.#agents?.cancel(runId) ?? Promise.resolve(),
+        this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
+          kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef }),
+      ]);
+      const errors = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, 'run_runtime_cleanup_failed');
+      const ownRelease = cleanup[1]!;
+      if (ownRelease.status !== 'fulfilled') throw new Error('run_runtime_release_missing');
+      released = ownRelease.value;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       await this.appendLifecycleEvents([{
         type: 'run.runtime.release_failed',
         sessionId: this.sessionId,
@@ -1152,7 +1375,7 @@ export class SessionActor {
           extensionGenerationRef: runtime.extensionGenerationRef,
           kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
           providerRuntimeRef: runtime.provider.providerRuntimeRef,
-          error: { code: errorCode(message), message },
+          error: errorFact(error),
         },
       }]);
       return false;
@@ -1200,9 +1423,11 @@ export class SessionActor {
       const committed = events.length === 1
         ? [await this.#journal.append(events[0]!)]
         : await this.#journal.appendBatch(events);
+      this.publishEvents(committed);
       for (const event of committed) await this.observe(event);
     } catch (error) {
       if (closesDraft) this.#assistantDraft = previousDraft;
+      await this.recoverFailedWrite(error);
       throw error;
     }
   }
@@ -1222,10 +1447,15 @@ export class SessionActor {
   ): Promise<CommandReply> {
     const current = await this.loadSnapshot();
     admitSessionEvents(current, events, { input: command, reply });
-    const committed = await this.#journal.commitCommand(command, events, reply);
-    const next = await this.loadSnapshot();
-    for (const event of next.journalEvents.slice(current.journalEvents.length)) await this.observe(event);
-    return committed;
+    try {
+      const committed = await this.#journal.commitCommand(command, events, reply);
+      this.publishEvents(committed.events);
+      for (const event of committed.events) await this.observe(event);
+      return committed.reply;
+    } catch (error) {
+      await this.recoverFailedWrite(error);
+      throw error;
+    }
   }
 
   private async withWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -1234,25 +1464,52 @@ export class SessionActor {
     return await result;
   }
 
+  private publishEvents(added: readonly SessionEvent[]): void {
+    const current = this.#snapshot!;
+    if (added.some((event, index) => event.sessionId !== this.sessionId
+      || event.sequence !== current.state.revision + index + 1)) throw new Error('journal_publication_sequence_invalid');
+    this.#snapshot = !added.length ? current : added.some(event => event.type === 'conversation.revised')
+      ? loopSnapshot(this.sessionId, [...current.journalEvents, ...added])
+      : { journalEvents: [...current.journalEvents, ...added], events: [...current.events, ...added],
+        state: added.reduce(reduceSession, current.state) };
+    this.#snapshot = { ...this.#snapshot, state: { ...this.#snapshot.state, publishedPermissions: this.#publishedPermissions } };
+  }
+
   private async loadSnapshot(): Promise<LoopSnapshot> {
-    const read = this.#snapshotReads.then(async () => {
-      const current = this.#snapshot ?? loopSnapshot(this.sessionId, this.#initialEvents ?? []);
-      const added: SessionEvent[] = [];
-      for await (const event of this.#journal.read(this.sessionId, current.state.revision)) added.push(event);
-      const snapshot = !added.length ? current : added.some((event) => event.type === 'conversation.revised')
-        ? loopSnapshot(this.sessionId, [...current.journalEvents, ...added])
-        : { journalEvents: [...current.journalEvents, ...added], events: [...current.events, ...added],
-          state: added.reduce(reduceSession, current.state) };
-      this.#snapshot = snapshot;
+    if (this.#snapshot) return this.#snapshot;
+    this.#initialSnapshot ??= (async () => {
+      const events: SessionEvent[] = [...this.#initialEvents ?? []];
+      if (!this.#initialEvents) for await (const event of this.#journal.read(this.sessionId)) events.push(event);
       this.#initialEvents = undefined;
-      return snapshot;
-    });
-    this.#snapshotReads = read.then(() => undefined, () => undefined);
-    return await read;
+      const snapshot = loopSnapshot(this.sessionId, events);
+      snapshot.state.publishedPermissions = this.#publishedPermissions;
+      return this.#snapshot = snapshot;
+    })();
+    return this.#initialSnapshot;
+  }
+
+  /** A failed transport can hide a successful durable commit. Recover at the
+   * failed write boundary, before admitting another command, never on reads. */
+  private async recoverFailedWrite(original: unknown): Promise<void> {
+    const revision = this.#snapshot?.state.revision ?? 0;
+    this.#snapshot = undefined;
+    this.#initialEvents = undefined;
+    this.#initialSnapshot = undefined;
+    try {
+      const recovered = await this.loadSnapshot();
+      for (const event of recovered.journalEvents) if (event.sequence > revision) await this.observe(event);
+    } catch (error) {
+      this.#loopFailure = new AggregateError([original, error], 'session_commit_recovery_failed');
+      throw this.#loopFailure;
+    }
   }
 
   private async observe(event: SessionEvent): Promise<void> {
-    if (event.type === 'tool.completed' || event.type === 'tool.interrupted' || event.type === 'tool.input-rejected') {
+    if (event.type.startsWith('wake.') || event.type === 'run.finishing' || event.type === 'run.settled') {
+      this.restoreWakeTimers(await this.loadSnapshot());
+    }
+    for (const wake of this.#changes) wake();
+    if (event.type === 'tool.completed' || event.type === 'tool.interrupted' || event.type === 'tool.input-rejected' || event.type === 'tool.not-executed') {
       this.#liveToolOutput.delete(event.callId);
     }
     if (event.type === 'run.settled') this.#liveToolOutput.clear();
@@ -1492,20 +1749,6 @@ function validLogicalPath(value: string): boolean {
   if (value === '.') return true;
   if (value.startsWith('/') || value.endsWith('/')) return false;
   return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-}
-
-function mergeWorkspaceBindings(
-  base: readonly WorkspaceBindingDisplay[],
-  additions: readonly WorkspaceBindingDisplay[],
-): WorkspaceBindingDisplay[] {
-  const seen = new Set<string>();
-  return [...base, ...additions]
-    .filter((binding) => {
-      if (seen.has(binding.workspaceId)) return false;
-      seen.add(binding.workspaceId);
-      return true;
-    })
-    .map((binding) => ({ ...binding }));
 }
 
 function defaultIdFactory(sessionId: string): (kind: string) => string {

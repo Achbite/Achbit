@@ -80,7 +80,7 @@ export function ResourceTree({ sessionId, language, openTarget, visible, activeT
           };
           if (id === 'root') {
             children.filter(child => child.category === 'project').forEach(add);
-            for (const [category, label] of [['reference', chinese ? '引用目录' : 'Referenced folders'], ['attachment', chinese ? '会话附件' : 'Attachments'], ['resource', chinese ? '已授权资源' : 'Granted resources']] as const) {
+            for (const [category, label] of [['reference', chinese ? '引用目录' : 'Referenced folders'], ['attachment', chinese ? '会话附件' : 'Attachments'], ['resource', chinese ? '已授权资源' : 'Granted resources'], ['agent', chinese ? '子代理文件' : 'Agent files']] as const) {
               const entries = children.filter(child => child.category === category);
               if (!entries.length) continue;
               const groupId = 'group:' + category;

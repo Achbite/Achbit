@@ -23,22 +23,24 @@ pub use conversation::{
     directory_index_attach_command, directory_index_detach_command, focus_command,
     interaction_response_command, is_terminal_run_status, message_command,
     message_command_with_profile, message_command_with_profile_and_plugins, plan_cancel_command,
-    plan_confirm_command, plan_revision_command, ActivityProjection, ApprovalProjection,
-    ArtifactProjection, AssistantDraftBlockProjection, AssistantDraftProjection,
-    AttachConversationDirectoryIndexRequest, CommandReply, ContextCompositionItem,
-    ContextCompositionMessage, ContextCompositionMessageBlock,
+    plan_confirm_command, plan_revision_command, ActivityProjection, AgentTaskStatus,
+    ApprovalProjection, ArtifactProjection, AssistantDraftBlockProjection,
+    AssistantDraftProjection, AttachConversationDirectoryIndexRequest, CommandReply,
+    ContextCompositionItem, ContextCompositionMessage, ContextCompositionMessageBlock,
     ContextCompositionPartitionProjection, ContextCompositionProjection, ContextCompositionTool,
-    ContextUsageProjection, ConversationError, ConversationResourceReadRequest,
-    ConversationResourceReadResult, CreateConversationSessionRequest, DeliverableProjection,
-    EffectOperation, EffectPreview, ExecutionPlanStep, FileChangeContent, FilesystemReference,
-    FilesystemReferencePathInput, InteractionOption, InteractionProjection, NarrativeProjection,
-    PendingPlanProjection, PlanOperation, PlanPreviewProjection, PlanProjection, PlanRef,
-    PlanWritePath, PluginCatalogItem, PluginCatalogProjection, PluginSelectionInput,
-    ProjectionMessage, QueuedInputProjection, ResolveConversationFilesystemReferencesRequest,
-    RunProjection, SessionDisplayProjection, SessionProjection, SessionTimelineItem,
-    SourceCitation, SourceReferences, TodoItem, TodoListProjection, TokenUsageProjection,
-    TokenUsageRoundProjection, ToolOutputProjection, WorkspaceBindingDisplay,
-    AUTHORIZATION_OPTIONS, CONVERSATION_COMMAND_VERSION, SESSION_PROJECTION_VERSION,
+    ContextUsageProjection, ConversationCatalog, ConversationError, ConversationProject,
+    ConversationResourceReadRequest, ConversationResourceReadResult, ConversationSessionSummary,
+    CreateConversationSessionRequest, DeliverableProjection, EffectOperation, EffectPreview,
+    ExecutionPlanStep, FileChangeContent, FilesystemReference, FilesystemReferencePathInput,
+    InteractionOption, InteractionProjection, NarrativeProjection, PendingAgentApproval,
+    PendingAgentDecision, PendingPlanProjection, PlanOperation, PlanPreviewProjection,
+    PlanProjection, PlanRef, PlanWritePath, PluginCatalogItem, PluginCatalogProjection,
+    PluginSelectionInput, ProjectionMessage, QueuedInputProjection,
+    ResolveConversationFilesystemReferencesRequest, RunProjection, SessionDisplayProjection,
+    SessionProjection, SessionTimelineItem, SourceCitation, SourceReferences, TodoItem,
+    TodoListProjection, TokenUsageProjection, TokenUsageRoundProjection, ToolOutputProjection,
+    WorkspaceBindingDisplay, AUTHORIZATION_OPTIONS, CONVERSATION_COMMAND_VERSION,
+    SESSION_PROJECTION_VERSION,
 };
 
 #[derive(Debug, Error)]
@@ -202,6 +204,20 @@ impl HttpKernelClient {
             .json::<Value>()
             .await?;
         api_data(value)
+    }
+
+    pub async fn conversation_catalog(&self) -> KernelClientResult<ConversationCatalog> {
+        let value = self
+            .http
+            .get(self.url("/api/conversation/catalog"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let catalog: ConversationCatalog = decode_api_data(value)?;
+        catalog.validate().map_err(KernelClientError::Api)?;
+        Ok(catalog)
     }
 
     pub async fn create_conversation_session(

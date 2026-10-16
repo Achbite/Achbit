@@ -112,6 +112,7 @@ mod tests {
             include_str!("../tui/src/main.rs"),
             include_str!("../tui/src/app.rs"),
             include_str!("../tui/src/renderer.rs"),
+            include_str!("../tui/src/fonts.rs"),
             include_str!("conversation_input.rs"),
         ] {
             for part in source.split("\"tui.").skip(1) {

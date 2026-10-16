@@ -1,4 +1,5 @@
 import type { RunRuntimeSnapshot, SessionEvent } from '@deepcode/protocol';
+import { decodeAgentRecipe, permissionPolicyConstraints } from '@deepcode/protocol';
 
 const ENVIRONMENT_ID = 'deepcode.session-environment';
 
@@ -19,7 +20,19 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
       throw new Error('session_environment_invalid');
     }
   }
-  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding'];
+  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition'];
+  if (data.agentComposition !== undefined) {
+    const composition = data.agentComposition as Record<string, unknown>;
+    if (!composition || typeof composition !== 'object' || Array.isArray(composition)
+      || Object.keys(composition).some(key => !['permissionPolicy', 'policyConstraints', 'workspaceSandbox', 'sandboxCoverage'].includes(key))
+      || composition.sandboxCoverage !== 'workspaceShell') throw new Error('agent_composition_invalid');
+    const recipe = decodeAgentRecipe({ permissionPolicy: composition.permissionPolicy, workspaceSandbox: composition.workspaceSandbox });
+    const expected = recipe.workspaceSandbox?.requireIsolatedProcesses
+      ? { allowHostExecution: false, allowExternalTools: false } : permissionPolicyConstraints(recipe.permissionPolicy);
+    const constraints = composition.policyConstraints as Record<string, unknown>;
+    if (!constraints || Object.keys(constraints).length !== 2
+      || Object.entries(expected).some(([key, value]) => constraints[key] !== value)) throw new Error('agent_composition_invalid');
+  }
   if (data.executionPath !== undefined && typeof data.executionPath !== 'string') throw new Error('session_environment_invalid');
   if (data.commandPaths !== undefined && (!data.commandPaths || typeof data.commandPaths !== 'object'
     || Array.isArray(data.commandPaths) || Object.values(data.commandPaths).some((path) => typeof path !== 'string'))) {
@@ -48,11 +61,10 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
       arch: data.arch,
       locale: data.locale,
       userShell: data.userShell,
+      ...(data.agentComposition ? { agentComposition: data.agentComposition } : {}),
       ...(data.executionPath !== undefined ? { executionPath: data.executionPath } : {}),
-      ...(data.hostBinding ? { hostBinding: data.hostBinding } : {}),
-      ...(data.runtimeExecutables ? { runtimeExecutables: data.runtimeExecutables } : {}),
-      ...(data.executionTarget ? { executionTarget: data.executionTarget, shell: data.shell, shellAvailable: data.shellAvailable, ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }), workspaceShellSupported: data.workspaceShellSupported, ...(data.workspaceSandbox ? { workspaceSandbox: data.workspaceSandbox } : {}) } : {}),
-    })}\nThese tool-execution facts are fixed for this run except a GUI binding explicitly changed by the user. Project build requirements come from project files. commandPaths lists commands found on executionPath, not all installed software. Workspace scope is sandboxed; authorized host calls use the same target, shell and prepared PATH outside that sandbox. Command-not-found describes this PATH; denied access or an unreachable socket does not prove a service is stopped. Check the needed scope and report the actual result. Service readiness is unprobed.\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
+      ...(data.executionTarget ? { executionTarget: data.executionTarget, shell: data.shell, ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }) } : {}),
+    })}\nProject build requirements come from project files. commandPaths lists commands found on executionPath, not all installed software. Workspace scope is sandboxed; authorized host calls use the same target, shell and prepared PATH outside that sandbox. Command-not-found describes this PATH; denied access or an unreachable socket does not prove a service is stopped. Check the needed scope and report the actual result.\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
   };
 }
 

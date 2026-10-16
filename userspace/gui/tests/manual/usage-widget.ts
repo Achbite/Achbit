@@ -14,7 +14,7 @@ import '../../src/theme/paletteBase.css';
 
 installPaletteDefaults();
 const style = document.createElement('style');
-style.textContent = `*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}body{display:grid;grid-template-rows:60px minmax(0,1fr)}body>header{display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--dc-border);font-size:13px}main{position:relative;min-height:0}#usage{position:absolute;inset:0;pointer-events:none}`;
+style.textContent = `*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}body{display:grid;grid-template-rows:60px minmax(0,1fr)}body>header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 24px;border-bottom:1px solid var(--dc-border);font-size:13px}main{position:relative;min-height:0}#usage{position:absolute;inset:0;pointer-events:none}#reader{position:absolute;inset:0 0 0 45%;padding:24px;background:var(--dc-surface-subtle);border-left:1px solid var(--dc-border)}main[data-reading] #usage{right:55%}`;
 document.head.append(style);
 // The browser driver uses HTMLElement.click(), which emits no pointer events.
 // Explicitly exercise the real outside pointerdown path on the blank DOM node.
@@ -49,6 +49,18 @@ costRoot.render(React.createElement(Cost, { totals: totals as never }));
 let input = { kind: 'usage.widget', connection: { id: 'connection:preview', name: 'OpenAI · Codex', billingMode: 'subscription', adapterId: 'openai-codex' },
   modelId: 'codex', visibility: 'summary', expanded: false, revision: 0, locale: 'zh-CN', theme: 'light', costDisplay: usageCostDisplay('USD'), labels: usageWidgetLabels('zh-CN') };
 let view: { update(next: typeof input): void; dispose(): void };
+let readerOpen = false, savedVisibility = 'summary';
+document.getElementById('reader-toggle')!.onclick = event => {
+  readerOpen = !readerOpen;
+  if (readerOpen) savedVisibility = input.visibility;
+  document.getElementById('blank')!.toggleAttribute('data-reading', readerOpen);
+  document.getElementById('reader')!.hidden = !readerOpen;
+  const button = event.currentTarget as HTMLButtonElement;
+  button.textContent = readerOpen ? '收起侧栏' : '打开侧栏';
+  button.setAttribute('aria-expanded', String(readerOpen));
+  input = { ...input, visibility: readerOpen ? 'collapsed' : savedVisibility, expanded: false };
+  view.update(input); describe();
+};
 const describe = () => { status.textContent = `${input.expanded ? '详情展开' : '摘要卡片'} · 刷新次数 ${reads}`; };
 plugin.apply({
   addStyle(css: string) { const element = document.createElement('style'); element.textContent = css; document.head.append(element); },

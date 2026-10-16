@@ -9,13 +9,29 @@ pub(super) enum Access {
     Read,
     Traverse,
     Write,
-    DenyWrite,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Grant {
     pub path: PathBuf,
     pub access: Access,
+    /// Startup-only access (traversal, PATH, toolchains): skipped with a warning
+    /// when the current user cannot grant it, instead of refusing the Shell.
+    pub optional: bool,
+    /// The invocation's own scratch directory: removed with the invocation, so
+    /// its grant is not recorded for reset.
+    pub ephemeral: bool,
+}
+
+impl Grant {
+    fn new(path: &Path, access: Access) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            access,
+            optional: access == Access::Traverse,
+            ephemeral: false,
+        }
+    }
 }
 
 pub(super) fn grants(
@@ -29,14 +45,14 @@ pub(super) fn grants(
     if !matches!(mode, "read" | "write") {
         return Err(KernelError::InvalidCommand("Invalid workspace mode".into()));
     }
-    let mut grants = Vec::new();
+    super::validate_write_scope(root, mode, targets, temporary, files)?;
+    let mut grants: Vec<Grant> = Vec::new();
     let mut add = |path: &Path, access| {
-        let grant = Grant {
-            path: path.to_path_buf(),
-            access,
-        };
-        if !grants.contains(&grant) {
-            grants.push(grant);
+        if !grants
+            .iter()
+            .any(|grant| grant.path == path && grant.access == access)
+        {
+            grants.push(Grant::new(path, access));
         }
     };
     add(root, Access::Read);
@@ -54,13 +70,12 @@ pub(super) fn grants(
     if let Some(home) = &files.home {
         add(home, Access::Write);
     }
-    for path in &files.read_only {
-        // An exact approved resource overrides its protection. Descendant
-        // exceptions use explicit allow ACEs, which precede inherited denies.
-        if !files.write.iter().any(|grant| grant.path == *path) {
-            add(path, Access::DenyWrite);
-        }
+    for grant in &mut grants {
+        grant.optional |=
+            grant.access == Access::Read && files.best_effort_read.contains(&grant.path);
+        grant.ephemeral = grant.path == temporary;
     }
+    drop_covered(&mut grants);
     // PowerShell resolves the casing/attributes of path ancestors. Grant only
     // traversal and metadata on those directories, with no inheritance/listing.
     let ancestors: Vec<_> = grants
@@ -73,15 +88,38 @@ pub(super) fn grants(
         .map(Path::to_path_buf)
         .collect();
     for path in ancestors {
-        let grant = Grant {
-            path,
-            access: Access::Traverse,
-        };
-        if !grants.contains(&grant) {
-            grants.push(grant);
+        if !grants
+            .iter()
+            .any(|grant| grant.path == path && grant.access == Access::Traverse)
+        {
+            grants.push(Grant::new(&path, Access::Traverse));
         }
     }
     Ok(grants)
+}
+
+/// A directory grant is inherited by its whole subtree, and a write grant
+/// includes reading. Grants it already implies only add capability SIDs and ACL
+/// work. An optional grant may be skipped,
+/// so it never stands in for a required one.
+fn drop_covered(grants: &mut Vec<Grant>) {
+    let covering: Vec<(PathBuf, Access, bool)> = grants
+        .iter()
+        .filter(|grant| matches!(grant.access, Access::Read | Access::Write) && !grant.optional)
+        .map(|grant| (grant.path.clone(), grant.access, grant.path.is_dir()))
+        .collect();
+    grants.retain(|grant| {
+        if !matches!(grant.access, Access::Read | Access::Write) {
+            return true;
+        }
+        !covering.iter().any(|(path, access, directory)| {
+            let implies = *access == Access::Write || grant.access == Access::Read;
+            let same =
+                grant.path == *path && *access == Access::Write && grant.access == Access::Read;
+            let inside = *directory && grant.path != *path && grant.path.starts_with(path);
+            same || (implies && inside)
+        })
+    });
 }
 
 pub(super) fn capabilities(network: bool) -> Vec<&'static str> {
@@ -108,6 +146,22 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn has(result: &[Grant], path: &Path, access: Access) -> bool {
+        result
+            .iter()
+            .any(|grant| grant.path == path && grant.access == access)
+    }
+
+    fn fixture() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "deepcode-policy-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap()
+    }
 
     #[test]
     fn read_scope_does_not_grant_workspace_writes_or_read_ancestors() {
@@ -141,38 +195,30 @@ mod tests {
             (&home, Access::Write),
             (&scratch, Access::Write),
         ] {
-            assert!(result.contains(&Grant {
-                path: path.clone(),
-                access
-            }));
+            assert!(has(&result, path, access), "{path:?} {access:?}");
         }
-        assert!(!result.contains(&Grant {
-            path: workspace,
-            access: Access::Write
-        }));
+        assert!(!has(&result, &workspace, Access::Write));
         assert!(!result.iter().any(|grant| (grant.path == root
             || grant.path == root.join("outside"))
             && grant.access != Access::Traverse));
-        assert!(result.contains(&Grant {
-            path: root,
-            access: Access::Traverse
-        }));
-        assert!(result.iter().any(|grant| grant.access == Access::DenyWrite));
+        assert!(has(&result, &root, Access::Traverse));
+        assert!(!has(&result, &workspace.join(".git"), Access::Write));
+        assert!(result
+            .iter()
+            .all(|grant| grant.optional == (grant.access == Access::Traverse)));
+        assert!(result
+            .iter()
+            .all(|grant| grant.ephemeral == (grant.path == scratch)));
         assert!(!capabilities(false).contains(&"internetClient"));
         assert!(capabilities(true).contains(&"internetClient"));
     }
 
     #[test]
     fn plan_outputs_and_explicit_git_file_grant_preserve_other_protection() {
-        let root = std::env::temp_dir().join(format!(
-            "deepcode-policy-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = fixture();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         let config = root.join(".git/config");
         std::fs::write(&config, "").unwrap();
-        let root = root.canonicalize().unwrap();
         let config = config.canonicalize().unwrap();
         let output = root.join("output");
         let files = FileAccessScope {
@@ -196,22 +242,73 @@ mod tests {
             &files,
         )
         .unwrap();
-        assert!(result.contains(&Grant {
-            path: output.canonicalize().unwrap(),
-            access: Access::Write
-        }));
-        assert!(result.contains(&Grant {
-            path: config,
-            access: Access::Write
-        }));
-        assert!(result.contains(&Grant {
-            path: root.join(".git"),
-            access: Access::DenyWrite
-        }));
-        assert!(!result.contains(&Grant {
-            path: root.clone(),
-            access: Access::Write
-        }));
+        assert!(has(&result, &output.canonicalize().unwrap(), Access::Write));
+        assert!(has(&result, &config, Access::Write));
+        assert!(!has(&result, &root.join(".git"), Access::Write));
+        assert!(!has(&result, &root, Access::Write));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn implied_grants_are_dropped_but_protected_exceptions_and_optional_roots_stay() {
+        let root = fixture();
+        let workdir = root.join("session");
+        let home = workdir.join("home");
+        let tools = root.join("tools");
+        let tool_bin = tools.join("bin");
+        for path in [&home, &tool_bin, &root.join("workspace/.git")] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let workspace = root.join("workspace");
+        let config = workspace.join(".git/config");
+        std::fs::write(&config, "").unwrap();
+        let files = FileAccessScope {
+            read: vec![
+                workspace.join("src"),
+                tools.clone(),
+                tool_bin.clone(),
+                workdir.clone(),
+            ],
+            best_effort_read: vec![tools.clone(), tool_bin.clone()],
+            write: vec![
+                WorkspaceWriteTarget {
+                    path: workdir.clone(),
+                    directory: true,
+                },
+                WorkspaceWriteTarget {
+                    path: config.clone(),
+                    directory: false,
+                },
+            ],
+            home: Some(home.clone()),
+            read_only: vec![workspace.join(".git")],
+            ..Default::default()
+        };
+        let result = grants(
+            &workspace,
+            "read",
+            None,
+            &root.join("scratch"),
+            Path::new("shell.exe"),
+            &files,
+        )
+        .unwrap();
+        // Inherited from the workspace and Session working-directory grants.
+        assert!(!has(&result, &workspace.join("src"), Access::Read));
+        assert!(!has(&result, &home, Access::Write));
+        assert!(!has(&result, &workdir, Access::Read));
+        assert!(has(&result, &workdir, Access::Write));
+        // The exact resource grant does not grant its protected parent.
+        assert!(has(&result, &config, Access::Write));
+        assert!(!has(&result, &workspace.join(".git"), Access::Write));
+        // A skippable root cannot stand in for anything: both best-effort grants stay.
+        for path in [&tools, &tool_bin] {
+            let grant = result
+                .iter()
+                .find(|grant| grant.path == *path && grant.access == Access::Read)
+                .unwrap();
+            assert!(grant.optional);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }
