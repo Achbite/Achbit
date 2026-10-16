@@ -89,13 +89,9 @@ For portable packages, replace the command with its launcher. Copy `<profile-id>
 
 *A real GUI task using fictional project data: read a CSV, create an interactive dashboard, and inspect its preview. Try the [sample CSV](examples/delivery-dashboard/delivery-data.csv). This is a general product demonstration.*
 
-![DeepCode TUI running a real DeepSeek project task](assets/readme/tui-task-en.png)
+![DeepCode running in a native terminal with Chinese text and mathematical notation](assets/readme/tui-native-zh.png)
 
-*DeepSeek V4.1 Flash reading project files in the packaged macOS TUI. Captured from a live PTY displayed with xterm.js; see [capture notes](assets/readme/README.md).*
-
-![DeepCode TUI showing bilingual text, code, and a table](assets/readme/tui-rendering-zh.png)
-
-*Text rendered by the running TUI: Chinese and English, a code block, and a table.*
+*An actual TUI window showing Chinese text and mathematical notation from a completed conversation. See [capture notes](assets/readme/README.md).*
 
 ## Models and DeepSeek
 

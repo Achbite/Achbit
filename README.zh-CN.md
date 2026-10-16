@@ -89,13 +89,9 @@ deepcode-tui -C /path/to/project
 
 *使用虚构项目数据的真实 GUI 任务：读取 CSV、生成交互式看板并检查预览。可使用[示例 CSV](examples/delivery-dashboard/delivery-data.csv)尝试。这张图片用于通用产品展示。*
 
-![DeepCode TUI 使用 DeepSeek 执行真实项目任务](assets/readme/tui-task-en.png)
+![DeepCode 在真实终端窗口中展示中文与数学公式](assets/readme/tui-native-zh.png)
 
-*DeepSeek V4.1 Flash 在 macOS 程序包的 TUI 中读取项目文件。画面来自实时 PTY，使用 xterm.js 显示；详见[截图说明](assets/readme/README.md)。*
-
-![DeepCode TUI 展示中英文、代码块和表格](assets/readme/tui-rendering-zh.png)
-
-*运行中的 TUI 实际渲染效果：中英文、代码块和表格。*
+*真实 TUI 窗口中的已完成对话，展示当前中文与数学公式排版效果。详见[截图说明](assets/readme/README.md)。*
 
 ## 模型与 DeepSeek
 
