@@ -7,7 +7,7 @@ export interface ResourceEntry {
   name: string;
   resource: ResourceReference;
   kind: 'directory' | 'file' | 'unavailable';
-  category?: 'project' | 'reference' | 'attachment' | 'session' | 'resource';
+  category?: 'project' | 'reference' | 'attachment' | 'session' | 'resource' | 'agent';
   error?: string;
 }
 const endpoint = (sessionId: string, action: string) => `${getKernelApiBase()}/conversation/sessions/${encodeURIComponent(sessionId)}/resources/${action}`;

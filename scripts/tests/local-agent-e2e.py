@@ -629,6 +629,7 @@ def assert_received_tool_guidance(body: dict[str, Any], receipt: dict[str, Any],
     required = REQUIRED_CORE_TOOLS | {"bash"} | set(FIRST_PARTY_TOOL_OWNERS)
     fixture.require(required.issubset(contributions), "必要工具缺少生产端 tool prompt contribution")
     aliases = {item["canonicalName"]: item["wireName"] for item in receipt["tools"]}
+    definitions = {item["function"]["name"]: item["function"] for item in body["tools"]}
     system_messages = [fixture.message_text(message.get("content")) for message in body["messages"]
                        if isinstance(message, dict) and message.get("role") == "system"]
     for name in required:
@@ -638,9 +639,14 @@ def assert_received_tool_guidance(body: dict[str, Any], receipt: dict[str, Any],
         fixture.require(parts and all(isinstance(part, str) and part.strip() for part in parts),
                         f"必要工具的生产提示为空：{name}")
         fixture.require(name in aliases, f"必要工具没有当前 Provider alias：{name}")
-        fixture.require(any(aliases[name] in message and all(part in message for part in parts)
-                            for message in system_messages),
-                        f"生产端工具提示未完整进入当前 Provider system 消息：{name}")
+        wire_name = aliases[name]
+        fixture.require(wire_name in definitions, f"当前 Provider 请求缺少对应工具定义：{name}")
+        # Descriptions already travel with tool definitions; system guidance
+        # carries additional instructions without having to duplicate them.
+        received_guidance = [definitions[wire_name].get("description", "")]
+        received_guidance.extend(message for message in system_messages if wire_name in message)
+        fixture.require(all(any(part in text for text in received_guidance) for part in parts),
+                        f"生产端工具提示未完整进入当前 Provider 请求：{name}")
 
 
 def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: str, provider: ProviderState) -> None:
@@ -684,6 +690,7 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
         payload = json.loads(encoded)
         runtime = payload.get("runtimeSnapshot")
         fixture.require(isinstance(runtime, dict), "run.started 缺少 runtimeSnapshot")
+        initial_catalog_ref = runtime["kernelCatalogSnapshotRef"]
         lifecycle = lifecycle_by_run.get(run_id, [])
         views = {runtime["kernelCatalogSnapshotRef"]: runtime}
         active_view = runtime
@@ -818,7 +825,11 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
             event_payload for event_type, _, event_payload in lifecycle
             if event_type == "run.runtime.released"
         )
-        fixture.require(released_payload.get("alreadyReleased") is False, "首次 release 被错误标为重放")
+        # The initial catalog can retire at a request boundary after a tool-view
+        # refresh. Final run cleanup still drains its jobs and releases the run.
+        fixture.require(isinstance(released_payload.get("alreadyReleased"), bool), "release 缺少 catalog 释放状态")
+        fixture.require(released_payload.get("kernelCatalogSnapshotRef") == initial_catalog_ref,
+                        "release receipt 没有对应当前 run 的初始 catalog binding")
         fixture.require(
             sorted(released_payload.get("pluginInstanceRefs", [])) == sorted(plugin["pluginInstanceRef"] for plugin in active_view["selectedPlugins"]["plugins"]),
             "release receipt 必须恰好结束本次选中的插件实例",
@@ -1054,11 +1065,36 @@ def main() -> None:
                 {**old_plugins, "agent.permissions.networkRead": "allow"},
                 {**new_plugins, "agent.permissions.networkRead": "deny"})
             provider.release_first_request.set()
-            first = fixture.wait_completed(daemon_one, provider, session_id, "first run completed")
+
+            def first_file_read_waiting() -> dict[str, Any] | None:
+                provider.assert_healthy()
+                current = fixture.projection(daemon_one, session_id)
+                run = current.get("run") or {}
+                fixture.require(run.get("status") not in {"failed", "cancelled", "indeterminate", "releaseFailed"},
+                                f"首个附件读取在批准前终止：{current.get('terminalError')}")
+                return current if run.get("status") == "waiting" and current.get("pendingApproval") else None
+
+            waiting = fixture.wait_until(first_file_read_waiting, 20, "首个外部附件读取没有等待明确批准")
+            approval = waiting["pendingApproval"]
+            preview = approval["preview"]
+            operation = preview.get("operation") or {}
+            arguments = operation.get("arguments") or {}
+            fixture.require(waiting.get("pendingApprovals") == [approval], "出现未登记的其他待审批请求")
+            fixture.require(operation.get("toolName") == "fs.read" and arguments.get("path") == attachment_file.name,
+                            "首个审批不是预期的附件读取")
+            fixture.require((Path(operation.get("workspaceRoot", "")) / arguments["path"]).resolve() == attachment_file.resolve(),
+                            "附件读取审批没有指向原始文件")
+            fixture.require(preview.get("fileAccess") == {"read": [str(attachment_file.resolve())], "write": []},
+                            "附件审批超出精确的原文件读取范围")
+            first_tool = next(activity for activity in waiting["activities"] if activity.get("kind") == "tool")
+            fixture.require(first_tool["callId"] == approval["callId"] and provider.count() == 1,
+                            "附件读取审批没有对应首个 Provider 请求的第一个工具")
             cli_stdout, cli_stderr = cli_ask.communicate(timeout=18)
-            fixture.require(cli_ask.returncode == 0, f"CLI ask --file 失败：{cli_stderr}")
-            fixture.require("round-one-complete" in cli_stdout, "CLI ask 未显示第一轮回答")
+            fixture.require(cli_ask.returncode == 5, f"CLI ask --file 未返回待审批状态：{cli_stdout}\n{cli_stderr}")
             cli_ask = None
+            approved = fixture.cli(daemon_one, session_id, "/reply 1")
+            first = fixture.wait_completed(daemon_one, provider, session_id, "first run completed")
+            fixture.require("round-one-complete" in approved.stdout, "CLI 批准附件读取后未显示第一轮回答")
             fixture.require(first.get("messages", [])[-1].get("content") == "round-one-complete", "第一轮回答未贯通")
             first_input = first.get("messages", [])[0]
             filesystem_references = first_input.get("filesystemReferences")
@@ -1130,9 +1166,28 @@ def main() -> None:
             fixture.require(len(segments) > 1 and "".join(segments) == LONG_INPUT, "分页读取未完整保留 Unicode 原文")
             assert_provider_count_stable(provider, 4)
             assert_shells_read_projection(daemon_two, session_id, final_revision)
-            attachment_root = config_root / "data" / "agent-runtime" / "attachments"
-            fixture.require(any(attachment_root.rglob("e2e-note.txt")), "Host 文件快照未持有到 Session 生命周期")
             path_id = urllib.parse.quote(session_id, safe="")
+            original_references = recovered["messages"][0]["filesystemReferences"]
+            fixture.require(original_references == filesystem_references, "重启后原文件引用身份漂移")
+            original_reference = original_references[0]
+            resource_endpoint = f"/api/conversation/sessions/{path_id}/resources/read"
+            original_query = {"workspaceId": original_reference["workspaceId"],
+                              "logicalPath": original_reference["logicalPath"]}
+            located = fixture.api_json(daemon_two.base_url, resource_endpoint, token=daemon_two.token,
+                                       method="POST", body={**original_query, "format": "path"})
+            fixture.require(located.get("kind") == "file" and Path(located["path"]).samefile(attachment_file),
+                            "Session 文件引用没有定位到外部原文件")
+            original_read = fixture.api_json(daemon_two.base_url, resource_endpoint, token=daemon_two.token,
+                                            method="POST", body=original_query)
+            fixture.require(original_read["content"] == ATTACHMENT_CONTENT, "重启后无法通过原引用读取附件原文")
+            catalog_database = config_root / "data" / "agent-runtime" / "catalog.sqlite3"
+            with closing(fixture.sqlite_read_only(catalog_database)) as connection:
+                owned_roots = [Path(row[0]) for row in connection.execute(
+                    "SELECT canonical_root FROM workspaces WHERE owner_session_id=?", (session_id,))]
+            fixture.require(owned_roots and all(root.is_dir() for root in owned_roots),
+                            "删除前没有完整保留 Session 托管的文本资源和工作目录")
+            fixture.require(all(root.resolve() not in attachment_file.resolve().parents for root in owned_roots),
+                            "外部原文件被错误归入 Session 托管目录")
             fixture.api_json(
                 daemon_two.base_url,
                 f"/api/conversation/sessions/{path_id}",
@@ -1140,10 +1195,13 @@ def main() -> None:
                 method="DELETE",
                 timeout=12,
             )
-            fixture.require(
-                not attachment_root.exists() or not any(attachment_root.iterdir()),
-                "Session 删除后 Host 文件快照仍然存在",
-            )
+            revoked = fixture.api_envelope(daemon_two.base_url, resource_endpoint, token=daemon_two.token,
+                                          method="POST", body=original_query)
+            fixture.require(revoked.get("ok") is False and revoked.get("error") == "session_not_found",
+                            f"Session 删除后原引用仍可读取或错误事实不正确：{revoked}")
+            fixture.require(all(not root.exists() for root in owned_roots), "Session 删除后仍保留托管资源目录")
+            fixture.require(attachment_file.read_text(encoding="utf-8") == ATTACHMENT_CONTENT,
+                            "Session 删除修改或移除了外部原文件")
             daemon_two.shutdown()
 
             print(

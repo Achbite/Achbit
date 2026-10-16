@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ComponentProps } from 'react';
+import { finishPointerFocus } from './interactionFocus';
 
 /** Keep the native picker, but end pointer selection instead of leaving editing focus behind. */
 export default function NativeSelect({ onChange, onPointerDown, onKeyDown, onClick, onBlur, ...props }: ComponentProps<'select'>) {
@@ -10,7 +11,7 @@ export default function NativeSelect({ onChange, onPointerDown, onKeyDown, onCli
   };
   useEffect(() => stop, []);
   const finish = (select: HTMLSelectElement) => {
-    if (pointerSelection.current && select.ownerDocument.activeElement === select) select.blur();
+    finishPointerFocus(select, pointerSelection.current);
   };
   return <select {...props}
     onPointerDown={event => {

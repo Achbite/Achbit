@@ -1,0 +1,8 @@
+.settings-switch { position:relative; display:inline-block; width:30px; height:18px; flex:0 0 30px; vertical-align:middle; }
+.settings-switch > input { position:absolute; inset:0; opacity:0; cursor:pointer; z-index:1; margin:0; width:100%; height:100%; }
+.settings-switch > span { position:absolute; inset:0; border-radius:12px; background:var(--dc-border-strong); pointer-events:none; transition:background 120ms; }
+.settings-switch > span::after { content:''; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:var(--dc-muted); transition:transform 120ms; }
+.settings-switch > input:checked + span { background:var(--dc-foreground); }
+.settings-switch > input:checked + span::after { transform:translateX(12px); background:var(--dc-surface); }
+.settings-switch > input:disabled { cursor:default; }
+.settings-switch > input:disabled + span { opacity:.45; }

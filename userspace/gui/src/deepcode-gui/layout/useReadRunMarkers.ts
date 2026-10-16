@@ -4,7 +4,7 @@ import type { ConversationSessionStatus, SessionProjection } from '@deepcode/pro
 const STORAGE_KEY = 'deepcode.gui.read-run-markers';
 
 export function runReadMarker(run: ConversationSessionStatus['run']): string | null {
-  return run && ['completed', 'failed', 'releaseFailed', 'indeterminate'].includes(run.status)
+  return run && ['completed', 'cancelled', 'failed', 'releaseFailed', 'indeterminate'].includes(run.status)
     ? `${run.runId}:${run.status}`
     : null;
 }

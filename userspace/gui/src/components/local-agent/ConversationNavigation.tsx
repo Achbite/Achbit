@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ConversationNavigationEntry } from './conversationWindow';
 import type { ConversationViewport } from './useConversationViewport';
 import type { UiLanguage } from '../../i18n';
+import { activeConversationAnchor } from './conversationNavigationPosition';
 
 export function ConversationNavigation({ entries, viewport, onNavigate, language }: {
   entries: ConversationNavigationEntry[];
@@ -15,26 +16,38 @@ export function ConversationNavigation({ entries, viewport, onNavigate, language
     const body = viewport.bodyRef.current;
     if (!body) return;
     let frame: number | null = null;
-    const keys = new Set(entries.map((entry) => entry.key));
     const update = () => {
       frame = null;
       const top = body.getBoundingClientRect().top + 40;
-      let selected: string | undefined = entries[0]?.key;
-      for (const node of body.querySelectorAll<HTMLElement>('[data-conversation-anchor]')) {
-        if (!keys.has(node.dataset.conversationAnchor!)) continue;
-        if (node.getBoundingClientRect().top > top && selected) break;
-        selected = node.dataset.conversationAnchor;
-      }
-      setActive(selected);
+      const index = viewport.anchors.read(body);
+      const anchors = entries.flatMap(entry => {
+        const node = index.byKey.get(entry.key);
+        return node && !node.hidden ? [{ key: entry.key, get top() { return node.getBoundingClientRect().top; } }] : [];
+      });
+      setActive(activeConversationAnchor(anchors, top, {
+        scrollTop: body.scrollTop,
+        scrollHeight: body.scrollHeight,
+        clientHeight: body.clientHeight,
+        latestKey: entries.at(-1)?.key,
+      }));
     };
     const schedule = () => { if (frame === null) frame = requestAnimationFrame(update); };
     schedule();
     body.addEventListener('scroll', schedule, { passive: true });
+    // Virtual rows and streamed content can move an anchor without a scroll event.
+    // This observer derives the marker only; the viewport still owns all scrolling.
+    const resize = new ResizeObserver(schedule);
+    resize.observe(body);
+    if (viewport.transcriptRef.current) resize.observe(viewport.transcriptRef.current);
+    const mutations = new MutationObserver(schedule);
+    mutations.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'style'] });
     return () => {
       body.removeEventListener('scroll', schedule);
+      resize.disconnect();
+      mutations.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
     };
-  }, [entries, viewport.bodyRef]);
+  }, [entries, viewport.anchors, viewport.bodyRef, viewport.transcriptRef]);
   if (entries.length < 2) return null;
   const zh = language === 'zh-CN';
   return <nav className="conversation-navigation" aria-label={zh ? '对话导航' : 'Conversation navigation'}>
@@ -44,7 +57,7 @@ export function ConversationNavigation({ entries, viewport, onNavigate, language
         aria-current={active === entry.key ? 'location' : undefined}
         aria-label={`${zh ? '跳至消息' : 'Go to message'} ${index + 1}: ${entry.label}`}
         onMouseEnter={() => setPreview(entry)} onMouseLeave={() => setPreview(null)}
-        onFocus={() => setPreview(entry)} onBlur={() => setPreview(null)}
+        onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setPreview(entry); }} onBlur={() => setPreview(null)}
         onClick={() => onNavigate(entry)}
       ><span /></button>)}
     </div>

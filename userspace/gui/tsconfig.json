@@ -7,7 +7,6 @@
     "declarationMap": false,
     "jsx": "react-jsx",
     "types": ["node", "vite/client"],
-    "baseUrl": ".",
     "paths": {
       "@deepcode/presentation-core": ["../presentation-core/dist/index.d.ts"],
       "@deepcode/presentation-core/*": ["../presentation-core/dist/*"],

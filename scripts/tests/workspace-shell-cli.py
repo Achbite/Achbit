@@ -102,11 +102,11 @@ class Provider(fixture.MockProviderHandler):
                 require(results['network']['outcome'] == 'completed', results['network'])
                 require('offline-workspace' in results['network']['output']['stdout'], results['network'])
                 require(results['timeout']['output']['timedOut'] is True, results['timeout'])
-                todo = next(value for value in reversed(fixture.json_payloads(body)) if value.get('type') == 'todo.current')
                 self._send_tool_calls([('complete-stage', names['progress'], {
-                    'items': [{'text': item['text'], 'status': 'completed'} for item in todo['items']],
+                    'items': [{'text': 'Generate and verify', 'status': 'completed'}],
                 })])
             elif ordinal == 7:
+                require(results['complete-stage'] == {'accepted': True}, 'Progress update was not accepted')
                 self._send_text('workspace-shell-cli-complete')
             else:
                 raise AssertionError(f'Unexpected Provider request {ordinal}')
@@ -164,7 +164,7 @@ def check_active_shutdown():
         client = subprocess.Popen([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
             '--session', session, '--plain', 'ask', 'Run the long workspace Shell to verify owned Host shutdown.'],
             cwd=fixture.ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+            text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
 
         def close_client():
             try:
@@ -184,7 +184,7 @@ def check_active_shutdown():
             return None
         fixture.wait_until(running_output, 60 if WINDOWS else 15, 'Workspace Shell did not actually start')
         stop = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel', 'stop-host'],
-            cwd=fixture.ROOT, env=environment, capture_output=True, text=True, timeout=100,
+            cwd=fixture.ROOT, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=100,
             creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
         require(stop.returncode == 0, stop.stdout + stop.stderr + daemon.log_tail())
         require(daemon.process.wait(timeout=10) == 0, daemon.log_tail())
@@ -267,6 +267,8 @@ def main():
             require(not (workspace / 'readonly.txt').exists(), 'Plan sandbox allowed an undeclared workspace file')
             projection = fixture.projection(daemon, session)
             require(projection['run']['status'] == 'completed', projection['run'])
+            require(projection['todoList']['items'] == [{'text': 'Generate and verify', 'status': 'completed'}],
+                    'Projection did not preserve the submitted progress')
             with closing(sqlite3.connect(f'{(daemon.config_root / "data/agent-runtime/session.sqlite3").as_uri()}?mode=ro', uri=True)) as database:
                 require(database.execute("select count(*) from session_events where event_type='approval.requested'").fetchone()[0] == 0, 'Sandboxed reads and Plan-authorized writes must not request Host approval')
                 runtime = json.loads(database.execute("select payload_json from session_events where event_type='run.started' order by sequence limit 1").fetchone()[0])['runtimeSnapshot']

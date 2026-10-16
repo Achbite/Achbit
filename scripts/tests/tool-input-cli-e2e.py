@@ -115,9 +115,8 @@ class ProviderHandler(fixture.MockProviderHandler):
                 require((self.provider_state.workspace / "probe.txt").read_text() == "ALPHA\nbeta\n", "修改内容不正确")
                 preview = results["edit-corrected"]["output"]["editPreview"]
                 require(preview["hunks"][0]["before"] == "alpha\n" and preview["hunks"][0]["after"] == "ALPHA\n" and not preview["truncated"], "实际编辑摘要未到达模型")
-                todo = next(value for value in reversed(fixture.json_payloads(body)) if value.get("type") == "todo.current")
                 self._send_tool_calls([("progress", names["progress"], {
-                    "items": [{"text": item["text"], "status": "completed" if index == 0 else "inProgress"} for index, item in enumerate(todo["items"])],
+                    "items": [{"text": phase["title"], "status": "completed" if index == 0 else "inProgress"} for index, phase in enumerate(PHASES)],
                 })])
             elif ordinal == 6:
                 self._send_tool_calls([("extend-scope", names["plan"], {
@@ -125,8 +124,7 @@ class ProviderHandler(fixture.MockProviderHandler):
                     "mutationManifest": [{"workspace": "primary", "operation": "fs.write", "target": "extra", "targetKind": "directoryTree"}],
                 })])
             elif ordinal == 7:
-                todo = next(value for value in reversed(fixture.json_payloads(body)) if value.get("type") == "todo.current")
-                require(todo["revision"] == 2 and [item["status"] for item in todo["items"]] == ["completed"] + ["inProgress"] * 12, "确认范围补充丢失阶段进度")
+                require(results["progress"] == {"accepted": True}, "模型提交的进度缺少已接受回执")
                 self._send_tool_calls([
                     ("expanded-create", names["write"], {"path": "extra/new.txt", "content": "expanded scope\n"}),
                     ("pipeline-status", names["bash"], {"requestHostPermission": "Verify the original Host pipeline exit status.", "command": "set -o pipefail\n(printf 'expected failure\\n'; exit 7) | tail -1"}),
@@ -139,11 +137,11 @@ class ProviderHandler(fixture.MockProviderHandler):
                         "管道原始失败退出码丢失: " + json.dumps(results["pipeline-status"], ensure_ascii=False))
                 require(results["expected-nonzero"]["outcome"] == "completed",
                         "预期非零处理失败: " + json.dumps(results["expected-nonzero"], ensure_ascii=False))
-                todo = next(value for value in reversed(fixture.json_payloads(body)) if value.get("type") == "todo.current")
                 self._send_tool_calls([("progress-final", names["progress"], {
-                    "items": [{"text": item["text"], "status": "completed"} for item in todo["items"]],
+                    "items": [{"text": phase["title"], "status": "completed"} for phase in PHASES],
                 })])
             elif ordinal == 9:
+                require(results["progress-final"] == {"accepted": True}, "最终进度没有被接受")
                 self._send_text("tool-input-cli-complete")
             elif ordinal == 10:
                 message = next(message for message in reversed(body["messages"]) if message["role"] == "user")
@@ -190,7 +188,7 @@ class ProviderHandler(fixture.MockProviderHandler):
                 self._send_tool_calls([("queued-file-read", read_name, {"workspace": reference["workspace"], "path": reference["path"]})])
             elif ordinal == 3:
                 result = next(json.loads(message["content"]) for message in body["messages"] if message.get("tool_call_id") == "queued-file-read")
-                require(result["outcome"] == "completed" and result["output"]["content"] == "queued notes\n", "Kernel 未读取本轮新接纳的文件快照")
+                require(result["outcome"] == "completed" and result["output"]["content"] == "queued notes\n", "Kernel 未读取本轮新接纳的原文件")
                 self._send_text("queued-attachments-complete")
             else:
                 raise AssertionError(f"多余附件请求：{ordinal}")
@@ -296,10 +294,14 @@ def verify_queued_attachments(daemon, state, root, workspace) -> None:
         queued = fixture.projection(daemon, session_id)
         require(len(queued["queuedInputs"]) == 2, "附件未留在同一任务队列")
         state.attachment_release.set()
+        fixture.wait_until(lambda: fixture.projection(daemon, session_id).get("pendingApproval"), 20, "外部原文件读取未请求批准")
+        pending = fixture.projection(daemon, session_id)["pendingApproval"]
+        require(pending["preview"]["fileAccess"]["read"] == [str((root / "notes.txt").resolve())], "外部读取批准目标不符")
+        fixture.cli(daemon, session_id, "/reply 1")
         completed = fixture.wait_completed(daemon, state, session_id, "queued-attachments-complete")
         require(completed["run"]["runId"] == run_id and not completed["queuedInputs"], "附件另起任务或未消费")
         require(len(state.attachment_requests) == 3, "附件链路请求次数不符")
-        print("[attachment-e2e] PASS: same-run image-only and file-only input, real PNG Provider encoding, immutable old prefix and Kernel snapshot read")
+        print("[attachment-e2e] PASS: same-run image-only and file-only input, real PNG Provider encoding, immutable old prefix and approved original-file read")
     finally:
         state.attachment_release.set()
 
@@ -354,6 +356,7 @@ def main() -> None:
             require(len(extension["pendingPlan"]["mutationManifest"]) == 130, "范围补充未保留完整原清单")
             expected_statuses = ["completed"] + ["inProgress"] * 12
             require([item["status"] for item in extension["todoList"]["items"]] == expected_statuses, "待确认修订重置进度")
+            require([item["text"] for item in extension["todoList"]["items"]] == [phase["title"] for phase in PHASES], "进度投影没有保留模型提交的内容")
             require(not (workspace / "extra/new.txt").exists(), "范围补充确认前发生写入")
             fixture.cli(daemon, session_id, "/reply 确认", expected=5)
             state.assert_healthy()

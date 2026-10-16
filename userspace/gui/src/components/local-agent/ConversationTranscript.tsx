@@ -26,10 +26,11 @@ import { ConversationLayoutCache, ConversationVirtualizer } from './conversation
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
 import { RunFailureDetails, ProviderRetryStatus } from './RunFailureDetails';
-import { ApprovalActivity } from './ApprovalActivity';
 import { InteractionCard } from './InteractionCard';
+import { messageDisplayText } from './interactionPresentation';
 
 interface ConversationTranscriptProps {
+  layoutCache: ConversationLayoutCache;
   language: UiLanguage;
   loading: boolean;
   showReasoning?: boolean;
@@ -46,9 +47,11 @@ interface ConversationTranscriptProps {
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   canEditMessage?: boolean;
   onEditMessage?: (message: SessionProjection['messages'][number]) => void;
+  composerInteractionId?: string;
 }
 
 export function ConversationTranscript({
+  layoutCache,
   language,
   showReasoning = false,
   displaySettledRunIds,
@@ -65,6 +68,7 @@ export function ConversationTranscript({
   setUiActionError,
   canEditMessage = false,
   onEditMessage,
+  composerInteractionId,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
@@ -84,7 +88,6 @@ export function ConversationTranscript({
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const linkRequest = useRef(0);
   const [linkChoices, setLinkChoices] = useState<{ sessionId: string; request: number; targets: ResolvedLocalTarget[] } | null>(null);
-  const layouts = useRef(new ConversationLayoutCache());
   const currentSessionRef = useRef({ sessionId: projection?.sessionId });
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   if (currentSessionRef.current.sessionId !== projection?.sessionId) currentSessionRef.current = { sessionId: projection?.sessionId };
@@ -225,7 +228,7 @@ export function ConversationTranscript({
                       item.value.displayContent ?? item.value.content,
                       presentation.content(`message:${item.value.messageId}:content`),
                     )
-                  : item.value.replyToInteraction ? <MarkdownContent>{item.value.content}</MarkdownContent>
+                  : item.value.replyToInteraction ? <MarkdownContent>{messageDisplayText(item.value, projection?.interactions ?? [])}</MarkdownContent>
                   : presentation.content(`message:${item.value.messageId}:content`)}
               </div>
             )}
@@ -254,7 +257,7 @@ export function ConversationTranscript({
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
             <MessageActions message={item.value} language={language} copied={copiedMessageId === item.value.messageId}
-              busy={submitting} canEdit={canEditMessage} onCopy={() => void copyMessage(item.value.messageId, item.value.displayContent ?? item.value.content)}
+              busy={submitting} canEdit={canEditMessage} onCopy={() => void copyMessage(item.value.messageId, messageDisplayText(item.value, projection?.interactions ?? []))}
               onFeedback={(feedback) => void updateMessageFeedback(item.value.messageId, feedback)}
               onEdit={() => onEditMessage?.(item.value)} />
           )}
@@ -281,15 +284,13 @@ export function ConversationTranscript({
           onToggle={onPlanToggle}
         />
       ) : item.type === 'interaction' ? (
-        <InteractionCard interaction={item.value} language={language} />
-      ) : item.type === 'approval' ? (
-        <ApprovalActivity activity={item.value} language={language}
-          pending={projection?.pendingApproval?.callId === item.value.callId}
-          reviewing={projection?.pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running'}
-          onExpand={() => setLatestFollowMode(false)} />
+        <InteractionCard interaction={item.value} language={language} answerInComposer={item.value.interactionId === composerInteractionId} />
       ) : (
         <ToolActivityGroup
           activities={item.values}
+          artifacts={projection?.artifacts}
+          pendingApproval={projection?.pendingApproval}
+          reviewingApproval={projection?.pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running'}
           key={item.groupId}
           language={language}
           onExpand={() => setLatestFollowMode(false)}
@@ -334,10 +335,12 @@ export function ConversationTranscript({
 </>;
   const rounds = useMemo(() => conversationRounds(conversationItems, draftItems, projection?.run?.runId), [conversationItems, draftItems, projection?.run?.runId]);
   const sessionKey = projection?.sessionId ?? '';
-  const virtualizer = useMemo(() => new ConversationVirtualizer(layouts.current.session(sessionKey), viewport.preserveReadingPosition), [sessionKey, viewport.preserveReadingPosition]);
-  const navigation = useMemo(() => conversationNavigation(rounds), [rounds]);
+  const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), viewport.preserveReadingPosition), [layoutCache, sessionKey, viewport.preserveReadingPosition]);
+  const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
   const eagerRows = useMemo(() => new Set(rounds.flatMap((round) => round.rows).slice(-12).map((row) => row.key)), [rounds]);
-  useLayoutEffect(() => {
+  // The scroll body belongs to a parent host node; its ref is attached after
+  // child layout effects on a fresh mount (including cached session switches).
+  useEffect(() => {
     if (viewport.bodyRef.current) virtualizer.connect(viewport.bodyRef.current);
     return () => virtualizer.disconnect();
   }, [virtualizer, viewport.bodyRef]);
@@ -395,15 +398,18 @@ export function ConversationTranscript({
         const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
         const rows = round.rows.map((row) => ({
           key: row.key,
-          process: row.item ? !['message', 'approval'].includes(row.item.type) : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
-          required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value),
+          process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
+          required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
+            || row.item?.type === 'interaction' && row.item.value.status === 'pending',
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
           content: () => row.item ? renderItem(row.item) : renderDraft(row.draft!),
         }));
         if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
         if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
-        return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows} displaySettled={displaySettled} followingLatest={viewport.followingLatest} rows={rows}>
-          {(displaySettled || terminal) && <FileChanges activities={roundChangeActivities(projection, round.runId)} />}
+        const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
+        return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
+          displaySettled={displaySettled} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
+          {changeActivities.some(activity => activity.tool?.fileChanges?.length) && <FileChanges activities={changeActivities} />}
         </ConversationRoundView>;
       })}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
@@ -420,27 +426,35 @@ function samePlanReference(
   return reference?.planId === plan.planId && reference.revision === plan.revision;
 }
 
-function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, followingLatest, rows, children }: {
+function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, onToggleProcess, rows, children }: {
   language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
-  displaySettled: boolean; followingLatest: boolean;
+  displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
   rows: Array<{ key: string; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
   const state = virtualizer.layout(`${roundKey}:disclosure`).state;
   const [disclosure, updateDisclosure] = useState(() => (state.get('process') as { displaySettled: boolean; open: boolean } | undefined) ?? { displaySettled, open: false });
   const setDisclosure = (value: typeof disclosure) => { state.set('process', value); updateDisclosure(value); };
-  if (disclosure.displaySettled !== displaySettled) setDisclosure({ displaySettled, open: displaySettled && !followingLatest });
+  // Wait for the existing display acknowledgement; never collapse while final text is still arriving.
+  if (disclosure.displaySettled !== displaySettled) setDisclosure({ displaySettled, open: false });
   const expanded = !displaySettled || disclosure.open;
-  const firstProcess = rows.find((row) => row.process)?.key;
+  const firstProcess = rows.find(row => row.process)?.key;
   return <section className="conversation-round">
-    {rows.map((row) => <React.Fragment key={row.key}>
-      {displaySettled && row.key === firstProcess && <button className="conversation-process-toggle" type="button" aria-expanded={expanded} onClick={() => setDisclosure({ displaySettled, open: !expanded })}>
-        <DeepCodeShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span><DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
+    {rows.map(row => <React.Fragment key={row.key}>
+      {displaySettled && row.key === firstProcess && <button className="conversation-process-toggle" type="button"
+        data-conversation-anchor={`${roundKey}:disclosure`} aria-expanded={expanded} onClick={(event) => {
+        onToggleProcess(event.currentTarget);
+        setDisclosure({ displaySettled, open: !expanded });
+      }}>
+        <DeepCodeShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
+        <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
       </button>}
-      <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} eager={eagerRows.has(row.key)} live={row.live || row.required}
-        hidden={row.process && !expanded && !row.required}>{row.content}</ConversationVirtualRow>
+      <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} hidden={row.process && !expanded && !row.required}
+        eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
     </React.Fragment>)}
-    {children}
+    {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} virtualizer={virtualizer}>
+      {() => children}
+    </ConversationVirtualRow>}
   </section>;
 }
 

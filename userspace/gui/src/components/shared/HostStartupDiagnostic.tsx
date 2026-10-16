@@ -5,10 +5,12 @@ import './hostStartupDiagnostic.css';
 
 export function HostStartupDiagnostic({ status, workspaceError, language, onRetry, busy = false }: { status: HostStartupStatusV1 | null; workspaceError?: string | null; language: UiLanguage; onRetry?: () => void; busy?: boolean }) {
   const failedStatus = status && ['failed', 'blocked'].includes(status.phase) ? status : null;
+  const ssh = failedStatus?.stage === 'ssh';
+  const disconnected = failedStatus?.code === 'host_ssh_disconnected';
   if (!failedStatus && !workspaceError) return null;
   return <section className="host-startup-diagnostic" role="alert">
-    <h3>{t(language, failedStatus ? 'host.startup.failed' : 'workspace.error.load')}</h3>
-    {failedStatus && <p>{failedStatus.code}</p>}
+    <h3>{t(language, ssh ? (disconnected ? 'deepcodeGui.ssh.disconnectTitle' : 'deepcodeGui.ssh.failed') : failedStatus ? 'host.startup.failed' : 'workspace.error.load')}</h3>
+    {failedStatus && <p>{disconnected ? t(language, 'deepcodeGui.ssh.disconnected') : failedStatus.code}</p>}
     <details open>
       <summary>{t(language, 'agent.tool.detail.error')}<UiIcon name="chevronDown" size={14} /></summary>
       {failedStatus && <pre tabIndex={0}>{failedStatus.message}</pre>}

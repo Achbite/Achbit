@@ -252,11 +252,16 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
     Ok(json!({"revision":revision,"plugins":plugins}))
 }
 
+pub(crate) fn plugin_allowed_for_session(uri: &str, is_child_agent: bool) -> bool {
+    !is_child_agent || uri != "plugin://computer-use@builtin"
+}
+
 pub(crate) fn search_plugins(
     settings: &Value,
     query: &str,
     limit: usize,
     offset: usize,
+    is_child_agent: bool,
 ) -> Result<Value, String> {
     let (revision, sources, _) = plugin_catalog(settings)?;
     let words = query.to_lowercase();
@@ -267,6 +272,12 @@ pub(crate) fn search_plugins(
             _ => String::new(),
         };
         let item = source.into_public();
+        if !item.enabled
+            || !item.available
+            || !plugin_allowed_for_session(&item.uri, is_child_agent)
+        {
+            continue;
+        }
         let searchable = format!(
             "{} {} {} {capabilities}",
             item.uri, item.display_name, item.short_description
@@ -276,8 +287,7 @@ pub(crate) fn search_plugins(
             .split_whitespace()
             .all(|word| searchable.contains(word))
         {
-            matches.push(json!({"uri":item.uri,"displayName":item.display_name,"shortDescription":item.short_description,
-                "enabled":item.enabled,"available":item.available,"error":item.error}));
+            matches.push(json!({"uri":item.uri,"displayName":item.display_name,"shortDescription":item.short_description}));
         }
     }
     let total = matches.len();
@@ -444,15 +454,23 @@ fn plugin_catalog(
         serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
             .map_err(|error| format!("plugin_config_invalid: {error}"))?;
     let disabled = disabled_plugins.iter().any(|value| value == uri);
-    let guide = include_str!("../../../plugins/computer-use/README.md");
+    // Shared guidance plus this Kernel platform's desktop identifiers and actions.
+    #[cfg(windows)]
+    let desktop = include_str!("../../../plugins/computer-use/AGENT_GUIDE.windows.md");
+    #[cfg(not(windows))]
+    let desktop = include_str!("../../../plugins/computer-use/AGENT_GUIDE.macos.md");
+    let guide = format!(
+        "{}\n{desktop}",
+        include_str!("../../../plugins/computer-use/AGENT_GUIDE.md")
+    );
     insert_plugin_source(
         &mut sources,
         PluginCatalogEntry::Loaded(PluginSource {
             public: PublicPluginCatalogItem {
                 uri: uri.into(),
                 display_name: "Computer Use".into(),
-                short_description:
-                    "按任务选择程序接口或 GUI；提供内置浏览器与经授权的桌面操作和截图。".into(),
+                short_description: "前端内容优先使用内置浏览器；按需提供经授权的桌面操作和截图。"
+                    .into(),
                 icon_ref: None,
                 management: Some(json!({"key":"plugins.disabled","id":uri})),
                 activation_media_types: vec![],
@@ -463,7 +481,7 @@ fn plugin_catalog(
             plugin_artifact_ref: crate::utils::new_runtime_ref("plugin-artifact")?,
             plugin_instance_ref: String::new(),
             capability_refs: vec!["host:computer-use".into()],
-            capability_summary: guide.into(),
+            capability_summary: guide.clone(),
             tool_prompt_provider: None,
             contribution: PluginContribution::Host,
             implementation: json!({"host":"native","plugin":"computer-use"}),
@@ -896,12 +914,14 @@ mod tests {
             ("stock counts", "plugin://warehouse@cli"),
             ("ambient temperature", "plugin://lab@mcp"),
         ] {
-            let found = search_plugins(&settings, query, 20, 0).unwrap();
+            let found = search_plugins(&settings, query, 20, 0, false).unwrap();
             assert_eq!(found["total"], 1, "{query}");
             assert_eq!(found["plugins"][0]["uri"], uri);
-            assert_eq!(found["plugins"][0]["available"], true);
+            assert_eq!(found["plugins"][0].as_object().unwrap().len(), 3);
+            assert!(found["plugins"][0]["displayName"].is_string());
+            assert!(found["plugins"][0]["shortDescription"].is_string());
         }
-        let missing = search_plugins(&settings, "stock ambient", 20, 0).unwrap();
+        let missing = search_plugins(&settings, "stock ambient", 20, 0, false).unwrap();
         assert_eq!(
             missing["total"], 0,
             "all keywords must match the same plugin"
@@ -917,13 +937,13 @@ mod tests {
     #[test]
     fn catalog_browsing_can_continue_until_all_results_are_read() {
         let settings = json!({});
-        let all = search_plugins(&settings, "", usize::MAX, 0).unwrap();
+        let all = search_plugins(&settings, "", usize::MAX, 0, false).unwrap();
         let expected = all["plugins"].as_array().unwrap();
         assert!(expected.len() > 2);
         let mut seen = Vec::new();
         let mut offset = 0;
         loop {
-            let page = search_plugins(&settings, "", 2, offset).unwrap();
+            let page = search_plugins(&settings, "", 2, offset, false).unwrap();
             assert_eq!(page["total"], all["total"]);
             let plugins = page["plugins"].as_array().unwrap();
             assert!(!plugins.is_empty());
@@ -935,7 +955,7 @@ mod tests {
             offset = next as usize;
         }
         assert_eq!(&seen, expected);
-        let exhausted = search_plugins(&settings, "", 2, expected.len()).unwrap();
+        let exhausted = search_plugins(&settings, "", 2, expected.len(), false).unwrap();
         assert_eq!(exhausted["plugins"], json!([]));
         assert!(exhausted["nextOffset"].is_null());
     }
@@ -974,6 +994,20 @@ mod tests {
             false
         )
         .is_err());
+        let disabled = json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"});
+        let found =
+            search_plugins(&disabled, "plugin://computer-use@builtin", 20, 0, false).unwrap();
+        assert_eq!(found["total"], 0);
+        assert_eq!(found["plugins"], json!([]));
+        assert!(found["nextOffset"].is_null());
+        let catalog = plugin_catalog_projection(&disabled).unwrap();
+        let item = catalog["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["uri"] == "plugin://computer-use@builtin")
+            .unwrap();
+        assert_eq!(item["enabled"], false);
         assert!(resolve_plugin_selection(&json!({}), &mut vec![], false)
             .unwrap()
             .computer_use_instance()
@@ -1035,17 +1069,13 @@ mod tests {
             .find(|plugin| plugin["displayName"] == "Good Skill")
             .unwrap();
         assert_eq!(good["available"], true);
-        let found = search_plugins(&settings, "Good Skill selected document", 10, 0).unwrap();
+        let found =
+            search_plugins(&settings, "Good Skill selected document", 10, 0, false).unwrap();
         assert_eq!(found["total"], 1);
-        for key in [
-            "uri",
-            "displayName",
-            "shortDescription",
-            "enabled",
-            "available",
-        ] {
+        for key in ["uri", "displayName", "shortDescription"] {
             assert_eq!(found["plugins"][0][key], good[key]);
         }
+        assert_eq!(found["plugins"][0].as_object().unwrap().len(), 3);
         let selection = |plugin: &Value| PluginSelectionInput {
             selection_id: "selection:test".into(),
             uri: plugin["uri"].as_str().unwrap().into(),
@@ -1065,10 +1095,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(&original_error));
-        let found = search_plugins(&settings, bad["uri"].as_str().unwrap(), 10, 0).unwrap();
-        assert_eq!(found["total"], 1);
-        assert_eq!(found["plugins"][0]["available"], false);
-        assert_eq!(found["plugins"][0]["error"], bad["error"]);
+        let found = search_plugins(&settings, bad["uri"].as_str().unwrap(), 10, 0, false).unwrap();
+        assert_eq!(found["total"], 0);
+        assert_eq!(found["plugins"], json!([]));
+        assert!(found["nextOffset"].is_null());
         let rejected =
             resolve_plugin_selection(&settings, &mut vec![selection(bad)], false).unwrap_err();
         assert!(rejected.contains(&original_error));
@@ -1118,6 +1148,7 @@ mod tests {
         match crate::local_agent_mcp::McpRuntime::from_selected_sources(
             &crate::local_agent_mcp::available_server_sources(&settings).unwrap(),
             &selected_mcp,
+            None,
         ) {
             Err(error) => assert_eq!(error.code, "mcp_server_command_missing"),
             Ok(_) => panic!("selected invalid MCP server must fail before process startup"),

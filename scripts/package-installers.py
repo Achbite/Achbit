@@ -15,6 +15,7 @@ def macos(stage, output, version):
         payload = work / 'payload'
         app = payload / 'Applications/DeepCode-GUI.app'
         shutil.copytree(stage / 'DeepCode-GUI.app', app, symlinks=True)
+        shutil.copytree(stage / 'DeepCode Computer Use.app', payload / 'Applications/DeepCode Computer Use.app', symlinks=True)
         commands = payload / 'usr/local/bin'
         commands.mkdir(parents=True)
         for name, shell in [('deepcode', 'cli'), ('deepcode-cli', 'cli'), ('deepcode-tui', 'tui')]:
@@ -23,15 +24,16 @@ def macos(stage, output, version):
                 'APP_DIR="/Applications/DeepCode-GUI.app/Contents"\n'
                 'export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"\n'
                 'export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"\n'
-                f'exec "$APP_DIR/MacOS/deepcode-{shell}" "$@"\n')
+                + ('exec "$APP_DIR/Resources/node/bin/node" "$APP_DIR/Resources/tui/window.mjs" "$@"\n'
+                   if shell == 'tui' else f'exec "$APP_DIR/MacOS/deepcode-{shell}" "$@"\n'))
             launcher.chmod(0o755)
         components = work / 'components.plist'
         components.write_bytes(plistlib.dumps([{
-            'RootRelativeBundlePath': 'Applications/DeepCode-GUI.app',
+            'RootRelativeBundlePath': f'Applications/{name}',
             'BundleIsRelocatable': False,
             'BundleHasStrictIdentifier': True,
             'BundleOverwriteAction': 'upgrade',
-        }]))
+        } for name in ['DeepCode-GUI.app', 'DeepCode Computer Use.app']]))
         subprocess.run(['pkgbuild', '--root', str(payload), '--component-plist', str(components),
             '--identifier', 'com.achbite.deepcode', '--version', version,
             '--install-location', '/', '--ownership', 'recommended', str(output)], check=True)

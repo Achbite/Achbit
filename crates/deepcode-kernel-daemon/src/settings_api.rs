@@ -8,6 +8,7 @@ pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Js
             deepcode_kernel_runtime::workspace_sandbox::windows::request_setup,
         )
         .await;
+        deepcode_kernel_runtime::workspace_sandbox::invalidate_probe();
         match result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => return ApiResponse::error("workspace_sandbox_setup_failed", error),
@@ -37,6 +38,10 @@ pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Js
 }
 
 fn setting_activates_at_next_run(key: &str) -> bool {
+    // Delegation admission reads the current settings; existing children keep their binding.
+    if key.starts_with("agent.subagents.") {
+        return false;
+    }
     key.starts_with("skills.")
         || key.starts_with("mcp.")
         || key.starts_with("plugins.")
@@ -51,6 +56,10 @@ fn setting_activates_at_next_run(key: &str) -> bool {
 }
 
 pub(crate) async fn user_settings_get(State(state): State<AppState>) -> Json<ApiResponse> {
+    let _transition = match state.local_agent.runtime_transition() {
+        Ok(guard) => guard,
+        Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
+    };
     let runtime_settings = match state.local_agent.active_runtime_settings() {
         Ok(settings) => settings,
         Err(error) => {
@@ -75,6 +84,24 @@ pub(crate) async fn user_settings_patch(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
+    match tokio::task::spawn_blocking(move || apply_user_settings_patch(state, body)).await {
+        Ok(response) => response,
+        Err(error) => ApiResponse::error("user_settings_update_failed", error.to_string()),
+    }
+}
+
+fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> {
+    // Serialize the complete publication, including its acknowledgement. This
+    // lock is independent of run preparation, so IPC can commit Actor facts.
+    let _publication = match state.local_agent.settings_publication.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return ApiResponse::error(
+                "settings_publication_lock_failed",
+                "Settings publication lock is poisoned.",
+            )
+        }
+    };
     let _runtime_transition = match state.local_agent.runtime_transition() {
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
@@ -92,6 +119,35 @@ pub(crate) async fn user_settings_patch(
     if let Err(message) = validate_agent_runtime_settings(&next_settings) {
         return ApiResponse::error("invalid_agent_runtime_settings", message);
     }
+    if next_settings["agent.subagents.enabled"].as_bool() == Some(true)
+        && [
+            "agent.subagents.enabled",
+            "agent.subagents.profileId",
+            "agent.subagents.reasoningEffort",
+        ]
+        .iter()
+        .any(|key| patch_object.contains_key(*key))
+    {
+        let profile_id = next_settings["agent.subagents.profileId"]
+            .as_str()
+            .unwrap_or("");
+        let effort = next_settings["agent.subagents.reasoningEffort"]
+            .as_str()
+            .filter(|value| !value.is_empty());
+        // An empty profile follows the owning Session's bound Run at delegation time.
+        if !profile_id.is_empty() {
+            let gui = state.gui.lock().expect("gui state lock");
+            if let Err(message) =
+                crate::local_agent_provider_runtime::ProviderRuntimeRegistry::prepare(
+                    &gui,
+                    Some(profile_id),
+                    effort,
+                )
+            {
+                return ApiResponse::error("subagent_profile_unavailable", message);
+            }
+        }
+    }
     let changed_keys = patch_object.keys().cloned().collect::<Vec<_>>();
     let has_next_run_activation = changed_keys
         .iter()
@@ -103,23 +159,41 @@ pub(crate) async fn user_settings_patch(
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
     );
-    if let Err(error) = atomic_write_json(&settings_path, &next_settings) {
-        return ApiResponse::error("write_settings_failed", error);
-    }
-    if !immediate_patch
-        .as_object()
-        .is_some_and(serde_json::Map::is_empty)
     {
+        let mut gui = match state.gui.lock() {
+            Ok(gui) => gui,
+            Err(_) => {
+                return ApiResponse::error(
+                    "settings_publication_lock_failed",
+                    "Settings state lock is poisoned.",
+                )
+            }
+        };
         if let Err(error) = state
             .local_agent
-            .apply_immediate_runtime_settings(&immediate_patch)
+            .publish_runtime_settings(&immediate_patch, || {
+                atomic_write_json(&settings_path, &next_settings)
+            })
         {
-            return ApiResponse::error("active_runtime_settings_update_failed", error);
+            return ApiResponse::error("write_settings_failed", error);
         }
-    }
-    {
-        let mut gui = state.gui.lock().expect("gui state lock");
         gui.user_settings = next_settings.clone();
+    }
+    // The persisted setting is the durable desired state. Every publication
+    // delivers it, including retries of an identical value after a lost/failed
+    // acknowledgement. New Session processes bootstrap it before opening Actors.
+    // Do not infer delivery from equality with the already-persisted value.
+    drop(_runtime_transition);
+    let delivery = state
+        .session_service
+        .enqueue(
+            "delegationChanged",
+            json!({"enabled": next_settings["agent.subagents.enabled"] == true}),
+        )
+        .and_then(|pending| state.session_service.receive(pending));
+    if let Err(error) = delivery {
+        return ApiResponse::error("settings_publication_pending",
+            format!("Settings were saved; Session publication is pending. Retry the settings update to deliver it: {}", error.message));
     }
     ApiResponse::ok(json!({
         "settings": next_settings,
@@ -249,6 +323,15 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.systemPrompt": "",
         "agent.approvalReview.profileId": "",
         "agent.approvalReview.reasoningEffort": "",
+        "agent.subagents.enabled": false,
+        "agent.subagents.profileId": "",
+        "agent.subagents.reasoningEffort": "",
+        "agent.subagents.maxConcurrent": 4,
+        "agent.subagents.maxCallsPerRun": 16,
+        "agent.subagents.maxMembersPerSession": 4,
+        "agent.subagents.allowMemberAnalysis": true,
+        "agent.subagents.allowFullConfiguration": true,
+        "agent.subagents.presets": "[]",
         "agent.responseLanguage": "auto",
         "agent.windows.shell": "auto",
         "agent.windows.gitBashPath": "",
@@ -285,6 +368,57 @@ pub(crate) fn default_user_settings() -> Value {
 }
 
 pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), String> {
+    if let Some(presets) = settings.get("agent.subagents.presets") {
+        let valid = presets
+            .as_str()
+            .and_then(|encoded| serde_json::from_str::<Value>(encoded).ok());
+        if valid.as_ref().is_none_or(|value| !value.is_array()) {
+            return Err("子代理预设必须是 JSON 数组。".into());
+        }
+    }
+    for key in [
+        "agent.subagents.enabled",
+        "agent.subagents.allowMemberAnalysis",
+        "agent.subagents.allowFullConfiguration",
+    ] {
+        if settings.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(format!("{key} 必须是布尔值。"));
+        }
+    }
+    for key in [
+        "agent.subagents.maxConcurrent",
+        "agent.subagents.maxCallsPerRun",
+        "agent.subagents.maxMembersPerSession",
+    ] {
+        if settings.get(key).is_some_and(|value| {
+            value
+                .as_u64()
+                .is_none_or(|number| number == 0 || number > 9_007_199_254_740_991)
+        }) {
+            return Err(format!("{key} 必须是可精确表示的正整数。"));
+        }
+    }
+    if settings
+        .get("agent.subagents.profileId")
+        .is_some_and(|value| {
+            value.as_str().is_none_or(|id| {
+                id.trim() != id || id.len() > 128 || id.chars().any(char::is_control)
+            })
+        })
+    {
+        return Err("agent.subagents.profileId 必须是有效模型 ID 或空字符串。".into());
+    }
+    if settings
+        .get("agent.subagents.reasoningEffort")
+        .is_some_and(|value| {
+            !matches!(
+                value.as_str(),
+                Some("" | "low" | "medium" | "high" | "xhigh" | "max")
+            )
+        })
+    {
+        return Err("子代理推理强度必须是 low、medium、high、xhigh、max 或空字符串。".into());
+    }
     if settings
         .get("gui.usageWidget.currency")
         .is_some_and(|value| !matches!(value.as_str(), Some("USD" | "CNY")))

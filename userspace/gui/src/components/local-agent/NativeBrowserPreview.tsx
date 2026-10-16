@@ -1,4 +1,5 @@
 import { measureBrowserSurface } from './nativeBrowserLayout';
+import { NativeBrowserControl } from './NativeBrowserControl';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -260,7 +261,7 @@ export function NativeBrowserPreview({
           catch (reason) { setError(String(reason)); }
         }}
       >
-        <input
+        <div className="native-browser-location"><input
           aria-label={t(language, 'reader.address')}
           title={url}
           value={editingAddress ? url : shortAddress()}
@@ -270,6 +271,9 @@ export function NativeBrowserPreview({
           onChange={(event) => setUrl(event.target.value)}
           placeholder="https://…"
         />
+        {page?.control && owner.current && <NativeBrowserControl key={page.previewId}
+          binding={owner.current.binding} previewId={page.previewId} language={language} onError={setError} />}
+        </div>
         <button disabled={!page || busy || page.kind === 'deepcode'} type="submit">
           {t(language, 'reader.open')}
         </button>

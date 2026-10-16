@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::ptr::null_mut;
+#[cfg(test)]
 use windows_sys::core::GUID;
 use windows_sys::Win32::{Foundation::*, Security::Authorization::*};
 
@@ -12,17 +13,7 @@ pub(super) fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
 /// Shells treat a verbatim DOS cwd as a UNC location and may start at C:\ instead.
 /// Keep canonical paths for ACLs, but pass the equivalent Win32 path to processes.
 pub(super) fn process_path(path: &Path) -> Vec<u16> {
-    let value = wide(path);
-    match path.components().next() {
-        Some(std::path::Component::Prefix(prefix)) => match prefix.kind() {
-            std::path::Prefix::VerbatimDisk(_) => value[4..].to_vec(),
-            std::path::Prefix::VerbatimUNC(_, _) => {
-                [wide(r"\\")[..2].to_vec(), value[8..].to_vec()].concat()
-            }
-            _ => value,
-        },
-        _ => value,
-    }
+    wide(crate::file_access::process_visible_path(path))
 }
 pub(super) fn error(operation: &str) -> String {
     format!("{operation}: {}", std::io::Error::last_os_error())
@@ -66,6 +57,7 @@ pub(super) fn sid(value: &str) -> Result<Local, String> {
     }
     Ok(Local(pointer))
 }
+#[cfg(test)]
 pub(super) fn uuid() -> GUID {
     let mut guid: GUID = unsafe { std::mem::zeroed() };
     unsafe {
@@ -73,6 +65,7 @@ pub(super) fn uuid() -> GUID {
     }
     guid
 }
+#[cfg(test)]
 pub(super) fn random_text() -> String {
     let id = uuid();
     format!(

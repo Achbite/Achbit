@@ -30,7 +30,7 @@ export function ConversationVirtualRow({ rowKey, virtualizer, hidden = false, ea
   const layout = virtualizer.layout(rowKey);
   const rendered = !hidden && (visible || live);
   useLayoutEffect(() => virtualizer.register(rowKey, node.current!, setVisible), [virtualizer, rowKey, hidden]);
-  useLayoutEffect(() => { virtualizer.measure(node.current!); });
+  useLayoutEffect(() => { virtualizer.measure(node.current!); }, [virtualizer, rowKey, rendered]);
   return <div ref={node} className="conversation-virtual-row" data-conversation-anchor={rowKey}
     data-virtual-rendered={rendered} hidden={hidden}
     style={!hidden && !rendered ? { height: layout.height ?? 120 } : undefined}>

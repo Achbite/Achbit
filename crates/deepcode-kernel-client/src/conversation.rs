@@ -5,9 +5,54 @@ use std::collections::HashSet;
 pub const CONVERSATION_COMMAND_VERSION: &str = "deepcode.command.v3";
 pub const SESSION_PROJECTION_VERSION: &str = "deepcode.session-projection.v6";
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationCatalog {
+    pub projects: Vec<ConversationProject>,
+    pub sessions: Vec<ConversationSessionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationProject {
+    pub id: String,
+    pub title: String,
+    pub workspace_bindings: Vec<WorkspaceBindingDisplay>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationSessionSummary {
+    pub id: String,
+    pub title: String,
+    pub project_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub workspace_bindings: Vec<WorkspaceBindingDisplay>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ConversationCatalog {
+    pub fn validate(&self) -> Result<(), String> {
+        let mut ids = HashSet::new();
+        if self.sessions.iter().any(|session| {
+            session.id.trim().is_empty()
+                || session.id.chars().any(char::is_whitespace)
+                || !ids.insert(&session.id)
+        }) {
+            return Err("conversation catalog session identities are invalid".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationSessionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,6 +208,8 @@ pub struct PluginSelectionInput {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionProjection {
+    #[serde(default)]
+    pub recipe: Option<Value>,
     pub schema_version: String,
     pub session_id: String,
     pub revision: u64,
@@ -181,6 +228,7 @@ pub struct SessionProjection {
     pub interactions: Vec<InteractionProjection>,
     pub pending_interaction: Option<InteractionProjection>,
     pub pending_approval: Option<ApprovalProjection>,
+    pub pending_approvals: Option<Vec<ApprovalProjection>>,
     pub plans: Vec<PlanProjection>,
     pub active_plan_ref: Option<PlanRef>,
     pub pending_plan: Option<PendingPlanProjection>,
@@ -188,6 +236,7 @@ pub struct SessionProjection {
     pub context_usage: Option<ContextUsageProjection>,
     pub context_compositions: Vec<ContextCompositionProjection>,
     pub token_usage: TokenUsageProjection,
+    pub total_token_usage: TokenUsageProjection,
     pub token_usage_history: Vec<TokenUsageRoundProjection>,
     pub run: Option<RunProjection>,
     pub activities: Vec<ActivityProjection>,
@@ -199,6 +248,145 @@ pub struct SessionProjection {
     #[serde(default)]
     pub provider_attempts: Vec<ProviderAttemptProjection>,
     pub failure_snapshot: Option<RunFailureSnapshot>,
+    pub agent_context: Option<AgentContext>,
+    pub agent_tasks: Option<Vec<AgentTaskProjection>>,
+    pub agent_children: Option<Vec<AgentChildProjection>>,
+    pub pending_agent_decisions: Option<Vec<PendingAgentDecision>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingAgentDecision {
+    pub agent_session_id: String,
+    pub display_name: String,
+    pub run_id: String,
+    pub plan: Option<PlanRef>,
+    pub interaction_ids: Vec<String>,
+    pub approval: Option<PendingAgentApproval>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingAgentApproval {
+    pub approval_id: String,
+    pub call_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCapabilities {
+    pub messaging: AgentMessaging,
+    pub continuation: bool,
+    pub delegation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum AgentMessaging {
+    Enabled(bool),
+    Scope(AgentMessagingScope),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentMessagingScope {
+    Parent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentContext {
+    pub capabilities: AgentCapabilities,
+    pub configuration: Option<AgentConfiguration>,
+    pub model: Option<AgentModelConfiguration>,
+    pub owner_session_id: String,
+    pub parent_session_id: String,
+    pub parent_run_id: String,
+    pub parent_call_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentContributionSelection {
+    pub id: String,
+    pub parameters: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentConfiguration {
+    pub context: AgentContributionSelection,
+    pub compaction: AgentContributionSelection,
+    pub controls: AgentContributionSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentModelConfiguration {
+    pub profile_id: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub thinking: Option<String>,
+    pub parameters: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskDelivery {
+    Wait,
+    Async,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTaskResult {
+    pub outcome: AgentTaskOutcome,
+    pub content: Option<String>,
+    pub error: Option<ConversationError>,
+    pub final_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTaskProjection {
+    pub task_id: String,
+    pub agent_session_id: String,
+    pub capabilities: AgentCapabilities,
+    pub display_name: String,
+    pub text: String,
+    pub delivery: AgentTaskDelivery,
+    pub parent_run_id: String,
+    pub child_run_id: Option<String>,
+    pub status: AgentTaskStatus,
+    pub result: Option<AgentTaskResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentChildProjection {
+    pub agent_session_id: String,
+    pub display_name: String,
+    pub capabilities: AgentCapabilities,
+    pub closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -242,6 +430,56 @@ impl SessionProjection {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SESSION_PROJECTION_VERSION || self.session_id.is_empty() {
             return Err("shared Session projection identity is invalid".to_string());
+        }
+        if self.agent_context.as_ref().is_some_and(|context| {
+            [
+                &context.owner_session_id,
+                &context.parent_session_id,
+                &context.parent_run_id,
+                &context.parent_call_id,
+            ]
+            .iter()
+            .any(|id| id.is_empty())
+        }) || self.agent_tasks.as_ref().is_some_and(|tasks| {
+            tasks.iter().any(|task| {
+                [&task.task_id, &task.agent_session_id, &task.parent_run_id]
+                    .iter()
+                    .any(|id| id.is_empty())
+                    || task.display_name.trim().is_empty()
+                    || task.text.trim().is_empty()
+                    || task.child_run_id.as_ref().is_some_and(|id| id.is_empty())
+                    || task
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.final_message_id.as_ref())
+                        .is_some_and(|id| id.is_empty())
+            })
+        }) || self.agent_children.as_ref().is_some_and(|children| {
+            children.iter().any(|child| {
+                child.agent_session_id.is_empty() || child.display_name.trim().is_empty()
+            })
+        }) || self
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .any(|decision| {
+                decision.agent_session_id.is_empty()
+                    || decision.display_name.trim().is_empty()
+                    || decision.run_id.is_empty()
+                    || decision.interaction_ids.iter().any(String::is_empty)
+                    || decision
+                        .plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.plan_id.is_empty() || plan.revision == 0)
+                    || decision.approval.as_ref().is_some_and(|approval| {
+                        approval.approval_id.is_empty() || approval.call_id.is_empty()
+                    })
+                    || (decision.plan.is_none()
+                        && decision.approval.is_none()
+                        && decision.interaction_ids.is_empty())
+            })
+        {
+            return Err("shared Agent projection is invalid".into());
         }
         if self.provider_attempts.iter().any(|attempt| {
             !(1..=5).contains(&attempt.attempt)
@@ -443,22 +681,27 @@ impl SessionProjection {
         {
             return Err("shared Session projection has an invalid interaction".to_string());
         }
-        if self.pending_approval.as_ref().is_some_and(|approval| {
-            approval.approval_id.is_empty()
-                || approval.call_id.is_empty()
-                || approval.run_id.is_empty()
-                || approval.preview.summary.is_empty()
-                || approval
-                    .preview
-                    .authorization_scope
-                    .as_deref()
-                    .is_some_and(|scope| {
-                        scope != "sessionBrowser"
-                            && !AUTHORIZATION_OPTIONS
-                                .iter()
-                                .any(|(candidate, _)| *candidate == scope)
-                    })
-        }) {
+        if self
+            .pending_approval
+            .iter()
+            .chain(self.pending_approvals.iter().flatten())
+            .any(|approval| {
+                approval.approval_id.is_empty()
+                    || approval.call_id.is_empty()
+                    || approval.run_id.is_empty()
+                    || approval.preview.summary.is_empty()
+                    || approval
+                        .preview
+                        .authorization_scope
+                        .as_deref()
+                        .is_some_and(|scope| {
+                            scope != "sessionBrowser"
+                                && !AUTHORIZATION_OPTIONS
+                                    .iter()
+                                    .any(|(candidate, _)| *candidate == scope)
+                        })
+            })
+        {
             return Err("shared Session projection has an invalid approval".to_string());
         }
         let mut plan_revisions = HashSet::new();
@@ -566,17 +809,22 @@ impl SessionProjection {
                 "shared Session projection context usage has no exact request receipt".to_string(),
             );
         }
-        if !valid_token_usage_fields(
-            self.token_usage.provider_call_count,
-            self.token_usage.reported_call_count,
-            self.token_usage.input_tokens,
-            self.token_usage.output_tokens,
-            self.token_usage.cache_read_input_tokens,
-            self.token_usage.cache_miss_input_tokens,
-            self.token_usage.cache_available,
-            self.token_usage.cache_complete,
-            self.token_usage.cache_hit_ratio,
-        ) {
+        if [&self.token_usage, &self.total_token_usage]
+            .iter()
+            .any(|usage| {
+                !valid_token_usage_fields(
+                    usage.provider_call_count,
+                    usage.reported_call_count,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_input_tokens,
+                    usage.cache_miss_input_tokens,
+                    usage.cache_available,
+                    usage.cache_complete,
+                    usage.cache_hit_ratio,
+                )
+            })
+        {
             return Err("shared Session projection has invalid cumulative token usage".to_string());
         }
         let mut usage_run_ids = HashSet::new();
@@ -623,8 +871,32 @@ impl SessionProjection {
                 || !activity_ids.insert(activity.activity_id.as_str())
                 || !matches!(
                     activity.kind.as_str(),
-                    "run" | "tool" | "providerHosted" | "approval" | "interaction" | "plan"
+                    "run"
+                        | "tool"
+                        | "providerHosted"
+                        | "approval"
+                        | "interaction"
+                        | "agent"
+                        | "plan"
                 )
+                || (activity.kind == "agent") != activity.agent.is_some()
+                || activity.agent.as_ref().is_some_and(|agent| {
+                    if agent.phase == "updated" {
+                        agent.task_id.is_some()
+                            || self
+                                .agent_children
+                                .iter()
+                                .flatten()
+                                .all(|child| child.agent_session_id != agent.agent_session_id)
+                    } else {
+                        !matches!(agent.phase.as_str(), "started" | "completed")
+                            || self.agent_tasks.iter().flatten().all(|task| {
+                                Some(&task.task_id) != agent.task_id.as_ref()
+                                    || task.agent_session_id != agent.agent_session_id
+                                    || task.parent_run_id != activity.run_id
+                            })
+                    }
+                })
                 || !matches!(
                     activity.status.as_str(),
                     "active"
@@ -649,9 +921,32 @@ impl SessionProjection {
                         || activity.status != "active"
                         || activity.started_at.is_none())
                 || activity.kind != "tool" && activity.tool.is_some()
-                || (activity.kind == "tool" && activity.status == "rejected")
+                || (activity.kind == "tool"
+                    && activity.status == "rejected"
+                    && activity.not_executed.is_none())
                     != activity.input_rejection.is_some()
                 || activity.status == "rejected" && activity.tool.is_some()
+                || activity.not_executed.as_ref().is_some_and(|disposition| {
+                    activity.kind != "tool"
+                        || activity.tool.is_some()
+                        || activity.started_at.is_some()
+                        || activity.input_rejection.is_some()
+                        || activity.interruption.is_some()
+                        || match disposition.reason.as_str() {
+                            "cancelled" => {
+                                activity.status != "cancelled"
+                                    || disposition.predecessor_call_id.is_some()
+                            }
+                            "dependencyFailed" => {
+                                activity.status != "rejected"
+                                    || disposition
+                                        .predecessor_call_id
+                                        .as_deref()
+                                        .is_none_or(str::is_empty)
+                            }
+                            _ => true,
+                        }
+                })
                 || activity.interruption.as_ref().is_some_and(|error| {
                     activity.kind != "tool"
                         || activity.status != "indeterminate"
@@ -674,7 +969,6 @@ impl SessionProjection {
                     && activity.provider_hosted.as_ref().is_none_or(|hosted| {
                         hosted.provider_tool_type != "web_search"
                             || hosted.provider_call_id.is_empty()
-                            || !hosted.action.is_object()
                     })
                 || activity.tool.as_ref().is_some_and(|tool| {
                     tool.operation.is_empty()
@@ -810,7 +1104,13 @@ impl SessionProjection {
                     activity_ids,
                     ..
                 } => {
-                    provider_request_id.is_empty()
+                    provider_request_id.as_deref().is_some_and(str::is_empty)
+                        || (provider_request_id.is_none()
+                            && activity_ids.iter().any(|id| {
+                                !self.activities.iter().any(|activity| {
+                                    activity.activity_id == *id && activity.kind == "agent"
+                                })
+                            }))
                         || activity_ids.is_empty()
                         || activity_ids.iter().any(|activity_id| {
                             !timeline_activity_ids.insert(activity_id.as_str())
@@ -818,7 +1118,11 @@ impl SessionProjection {
                                     activity.activity_id != *activity_id
                                         || !matches!(
                                             activity.kind.as_str(),
-                                            "tool" | "providerHosted" | "approval" | "interaction"
+                                            "tool"
+                                                | "providerHosted"
+                                                | "approval"
+                                                | "interaction"
+                                                | "agent"
                                         )
                                 })
                         })
@@ -842,7 +1146,7 @@ impl SessionProjection {
                     .filter(|activity| {
                         matches!(
                             activity.kind.as_str(),
-                            "tool" | "providerHosted" | "approval" | "interaction"
+                            "tool" | "providerHosted" | "approval" | "interaction" | "agent"
                         )
                     })
                     .count()
@@ -853,11 +1157,14 @@ impl SessionProjection {
     }
 
     pub fn last_assistant_message(&self, after_message_count: usize) -> Option<&ProjectionMessage> {
-        self.messages
-            .iter()
-            .skip(after_message_count)
-            .rev()
-            .find(|message| message.role == "assistant")
+        self.timeline.iter().rev().find_map(|item| match item {
+            SessionTimelineItem::Message { message_id, .. } => self
+                .messages
+                .iter()
+                .skip(after_message_count)
+                .find(|message| message.role == "assistant" && message.message_id == *message_id),
+            _ => None,
+        })
     }
 }
 
@@ -907,7 +1214,7 @@ pub enum SessionTimelineItem {
         timeline_id: String,
         sequence: u64,
         #[serde(rename = "providerRequestId")]
-        provider_request_id: String,
+        provider_request_id: Option<String>,
         #[serde(rename = "activityIds")]
         activity_ids: Vec<String>,
     },
@@ -1391,7 +1698,8 @@ pub enum AssistantDraftBlockProjection {
         #[serde(rename = "providerToolType")]
         provider_tool_type: String,
         status: String,
-        action: Value,
+        #[serde(default, deserialize_with = "deserialize_hosted_search_action")]
+        action: Option<serde_json::Map<String, Value>>,
     },
 }
 
@@ -1444,13 +1752,11 @@ impl AssistantDraftBlockProjection {
                 provider_call_id,
                 provider_tool_type,
                 status,
-                action,
                 ..
             } => {
                 provider_call_id.is_empty()
                     || provider_tool_type != "web_search"
                     || !matches!(status.as_str(), "completed" | "failed")
-                    || !action.is_object()
             }
         }
     }
@@ -1788,6 +2094,14 @@ pub struct HostWindowBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentActivityProjection {
+    pub agent_session_id: String,
+    pub task_id: Option<String>,
+    pub phase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityProjection {
     pub activity_id: String,
@@ -1801,8 +2115,10 @@ pub struct ActivityProjection {
     pub live_output: Option<ToolOutputProjection>,
     pub tool: Option<ToolActivityProjection>,
     pub input_rejection: Option<ToolInputRejectionProjection>,
+    pub not_executed: Option<ToolNotExecutedProjection>,
     pub interruption: Option<ConversationError>,
     pub provider_hosted: Option<ProviderHostedActivityProjection>,
+    pub agent: Option<AgentActivityProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1826,6 +2142,13 @@ pub struct ToolInputRejectionProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolNotExecutedProjection {
+    pub reason: String,
+    pub predecessor_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolInputIssueProjection {
     pub path: String,
     pub rule: String,
@@ -1838,7 +2161,18 @@ pub struct ToolInputIssueProjection {
 pub struct ProviderHostedActivityProjection {
     pub provider_tool_type: String,
     pub provider_call_id: String,
-    pub action: Value,
+    #[serde(default, deserialize_with = "deserialize_hosted_search_action")]
+    pub action: Option<serde_json::Map<String, Value>>,
+}
+
+// Missing details are allowed; an explicitly supplied value must be an object.
+fn deserialize_hosted_search_action<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Map::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2443,6 +2777,141 @@ fn is_normalized_logical_path(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pending_child_decisions_preserve_the_original_session_and_references() {
+        let mut value = projection_value();
+        value["pendingAgentDecisions"] = json!([{
+            "agentSessionId":"session:descendant", "displayName":"Writer", "runId":"run:child",
+            "plan":{"planId":"plan:child","revision":2}, "interactionIds":["interaction:child"],
+            "approval":{"approvalId":"approval:child","callId":"call:child"}
+        }]);
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        let child = &projection.pending_agent_decisions.as_ref().unwrap()[0];
+        assert_eq!(child.agent_session_id, "session:descendant");
+        assert_eq!(child.plan.as_ref().unwrap().revision, 2);
+        assert_eq!(child.approval.as_ref().unwrap().call_id, "call:child");
+        value["pendingAgentDecisions"][0]["plan"]["revision"] = json!(0);
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn unified_agent_projection_preserves_explicit_capabilities() {
+        let capabilities = json!({"messaging":true,"continuation":false,"delegation":false});
+        let mut value = projection_value();
+        value["agentContext"] = json!({
+            "capabilities":capabilities,"ownerSessionId":"session:owner","parentSessionId":"session:parent",
+            "parentRunId":"run:parent","parentCallId":"call:spawn",
+            "configuration":{"context":{"id":"journal"},"compaction":{"id":"summary"},"controls":{"id":"standard","parameters":{"optionalTools":[]}}},
+            "model":{"profileId":"profile:chosen","model":"chosen-model","reasoningEffort":"high","thinking":"enabled","parameters":{"adapterId":"openai","kind":"responses","providerFlavor":null,"contextWindowTokens":100000,"maxOutputTokens":4096,"imageInput":false,"temperature":null,"hostedWebSearch":null}}
+        });
+        value["agentTasks"] = json!([{
+            "taskId":"task:child","agentSessionId":"session:child","capabilities":capabilities,
+            "displayName":"Child","text":"Analyze","delivery":"async","parentRunId":"run:parent","status":"running"
+        }]);
+        value["agentChildren"] = json!([{
+            "agentSessionId":"session:child","displayName":"Child","capabilities":capabilities,"closed":false
+        }]);
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        let expected = AgentCapabilities {
+            messaging: AgentMessaging::Enabled(true),
+            continuation: false,
+            delegation: false,
+        };
+        let context = projection.agent_context.unwrap();
+        assert_eq!(context.capabilities, expected);
+        assert_eq!(
+            context.configuration.unwrap().controls.parameters.unwrap()["optionalTools"],
+            json!([])
+        );
+        assert_eq!(context.model.unwrap().model, "chosen-model");
+        assert_eq!(projection.agent_tasks.unwrap()[0].capabilities, expected);
+        assert_eq!(projection.agent_children.unwrap()[0].capabilities, expected);
+        let mut missing = value.clone();
+        missing["agentChildren"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("capabilities");
+        assert!(serde_json::from_value::<SessionProjection>(missing).is_err());
+        let mut invalid = value.clone();
+        invalid["agentContext"]["capabilities"]["messaging"] = json!("true");
+        assert!(serde_json::from_value::<SessionProjection>(invalid).is_err());
+        value["agentTasks"][0]["role"] = json!("analysis");
+        assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+    }
+
+    #[test]
+    fn member_message_activity_has_no_task_settlement() {
+        let mut value = projection_value();
+        value["agentChildren"] = json!([{
+            "agentSessionId":"session:child","displayName":"Child","closed":false,
+            "capabilities":{"messaging":true,"continuation":true,"delegation":false}
+        }]);
+        value["activities"].as_array_mut().unwrap().push(json!({
+            "activityId":"agent:message:7","kind":"agent","status":"completed","label":"Child",
+            "runId":"run:test","sequence":7,
+            "agent":{"agentSessionId":"session:child","phase":"updated"}
+        }));
+        value["timeline"].as_array_mut().unwrap().insert(
+            3,
+            json!({
+                "kind":"toolGroup","timelineId":"agent:message:7","sequence":7,
+                "activityIds":["agent:message:7"]
+            }),
+        );
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        assert_eq!(
+            projection.activities[1].agent.as_ref().unwrap().task_id,
+            None
+        );
+        value["activities"][1]["agent"]["phase"] = json!("completed");
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn projection_preserves_unexecuted_dispositions_and_approval_collection() {
+        for (status, disposition) in [
+            ("cancelled", json!({"reason":"cancelled"})),
+            (
+                "rejected",
+                json!({"reason":"dependencyFailed","predecessorCallId":"call:earlier"}),
+            ),
+        ] {
+            let mut value = projection_value();
+            value["pendingApprovals"] = json!([]);
+            value["activities"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("tool");
+            value["activities"][0]["status"] = json!(status);
+            value["activities"][0]["notExecuted"] = disposition.clone();
+            let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+            projection.validate().unwrap();
+            assert_eq!(projection.pending_approvals.unwrap().len(), 0);
+            assert_eq!(
+                projection.activities[0]
+                    .not_executed
+                    .as_ref()
+                    .unwrap()
+                    .reason,
+                disposition["reason"]
+            );
+            value["activities"][0]["startedAt"] = json!("1");
+            assert!(serde_json::from_value::<SessionProjection>(value)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+    }
+
     fn projection_value() -> Value {
         let mut value = json!({
             "schemaVersion": SESSION_PROJECTION_VERSION, "permissionOverrides":{}, "effectivePermissions":null, "shellAuthorizations":[],
@@ -2628,6 +3097,7 @@ mod tests {
             "deliverables": [],
             "terminalError": null
         });
+        value["totalTokenUsage"] = value["tokenUsage"].clone();
         value["interactions"] = json!([]);
         value["queuedInputs"] = json!([]);
         value["timeline"] = json!([
@@ -2845,6 +3315,47 @@ mod tests {
     }
 
     #[test]
+    fn hosted_search_projection_preserves_optional_action() {
+        let activity = json!({
+            "providerToolType": "web_search", "providerCallId": "ws_optional",
+        });
+        let draft = json!({
+            "kind": "providerHosted", "outputIndex": 0,
+            "providerToolType": "web_search", "providerCallId": "ws_optional",
+            "status": "completed",
+        });
+        let decoded: ProviderHostedActivityProjection =
+            serde_json::from_value(activity.clone()).unwrap();
+        assert!(decoded.action.is_none());
+        let decoded: AssistantDraftBlockProjection = serde_json::from_value(draft.clone()).unwrap();
+        assert!(!decoded.invalid());
+        assert!(matches!(
+            decoded,
+            AssistantDraftBlockProjection::ProviderHosted { action: None, .. }
+        ));
+        for action in [
+            json!({"type": "search"}),
+            json!(null),
+            json!("search"),
+            json!([]),
+        ] {
+            let mut with_activity = activity.clone();
+            with_activity["action"] = action.clone();
+            let mut with_draft = draft.clone();
+            with_draft["action"] = action.clone();
+            let decoded = serde_json::from_value::<ProviderHostedActivityProjection>(with_activity);
+            let decoded_draft = serde_json::from_value::<AssistantDraftBlockProjection>(with_draft);
+            if action.is_object() {
+                assert_eq!(decoded.unwrap().action.as_ref(), action.as_object());
+                assert!(!decoded_draft.unwrap().invalid());
+            } else {
+                assert!(decoded.is_err());
+                assert!(decoded_draft.is_err());
+            }
+        }
+    }
+
+    #[test]
     fn directory_reference_command_omits_file_only_metadata() {
         let reference = FilesystemReference {
             reference_id: "reference:directory".to_string(),
@@ -3044,6 +3555,23 @@ mod tests {
         let projection: SessionProjection =
             serde_json::from_value(value).expect("projection decodes");
         assert!(projection.validate().is_err());
+    }
+
+    #[test]
+    fn validates_descendant_total_usage_independently_of_own_usage() {
+        let mut value = projection_value();
+        value["totalTokenUsage"]["inputTokens"] = json!(180);
+        value["totalTokenUsage"]["cacheReadInputTokens"] = json!(100);
+        value["totalTokenUsage"]["cacheMissInputTokens"] = json!(80);
+        value["totalTokenUsage"]["cacheHitRatio"] = json!(100.0 / 180.0);
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(projection.validate(), Ok(()));
+        assert_eq!(projection.token_usage.input_tokens, 80);
+        value["totalTokenUsage"]["cacheHitRatio"] = json!(0.625);
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
     }
 
     #[test]

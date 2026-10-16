@@ -303,7 +303,6 @@ fn atomic_write_workspace_json(path: &Path, value: &Value) -> Result<(), KernelE
         std::process::id(),
         crate::now_millis()
     ));
-    let cleanup = HostTemporaryPath::new(temp_path.clone());
     let mut temp_file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -314,6 +313,7 @@ fn atomic_write_workspace_json(path: &Path, value: &Value) -> Result<(), KernelE
                 format!("无法创建临时文件 {}：{error}", temp_path.display()),
             )
         })?;
+    let cleanup = HostTemporaryPath::new(temp_path.clone());
     std::io::Write::write_all(&mut temp_file, &content).map_err(|error| {
         host_service_error(
             "host_workspace_save_failed",

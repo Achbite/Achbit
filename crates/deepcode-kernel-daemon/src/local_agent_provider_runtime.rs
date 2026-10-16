@@ -26,6 +26,7 @@ pub(crate) struct ProviderRuntimeSnapshot {
 pub(crate) struct ProviderRuntimeBinding {
     snapshot: ProviderRuntimeSnapshot,
     profile: ResolvedLlmProfile,
+    codex_turn_state: crate::provider_transport::CodexTurnState,
 }
 
 impl ProviderRuntimeBinding {
@@ -37,8 +38,19 @@ impl ProviderRuntimeBinding {
         self.profile.clone()
     }
 
+    pub(crate) fn codex_request_context(
+        &self,
+        session_id: &str,
+    ) -> crate::provider_transport::CodexRequestContext {
+        crate::provider_transport::CodexRequestContext {
+            session_id: session_id.to_owned(),
+            turn_state: self.codex_turn_state.clone(),
+        }
+    }
+
     pub(crate) fn approval_reviewer(&self, effort: Option<&str>) -> Result<Self, String> {
         let mut binding = self.clone();
+        binding.codex_turn_state = Default::default();
         if let Some(effort) = effort {
             binding.profile = with_reasoning_override(binding.profile, Some(effort))?;
             binding.snapshot.reasoning_effort = Some(effort.to_string());
@@ -62,7 +74,16 @@ impl ProviderRuntimeRegistry {
         profile_id: Option<&str>,
         reasoning_effort_override: Option<&str>,
     ) -> Result<ProviderRuntimeBinding, String> {
-        capture_binding(gui, profile_id, reasoning_effort_override)
+        capture_binding(gui, profile_id, reasoning_effort_override, None)
+    }
+
+    pub(crate) fn prepare_agent(
+        gui: &GuiState,
+        profile_id: Option<&str>,
+        reasoning_effort_override: Option<&str>,
+        model: Option<&Value>,
+    ) -> Result<ProviderRuntimeBinding, String> {
+        capture_binding(gui, profile_id, reasoning_effort_override, model)
     }
 
     pub(crate) fn bind(
@@ -157,12 +178,23 @@ fn capture_binding(
     gui: &GuiState,
     requested_profile_id: Option<&str>,
     reasoning_effort_override: Option<&str>,
+    agent_model: Option<&Value>,
 ) -> Result<ProviderRuntimeBinding, String> {
     let profile_id = selected_profile_id(gui, requested_profile_id)?;
-    let profile = with_reasoning_override(
-        resolve_llm_profile(gui, Some(&profile_id))?,
-        reasoning_effort_override,
-    )?;
+    let mut profile = resolve_llm_profile(gui, Some(&profile_id))?;
+    if let Some(model) = agent_model {
+        if model["profileId"] != profile_id {
+            return Err("子代理模型必须沿用创建时的实例配置。".into());
+        }
+        profile.model = model["model"]
+            .as_str()
+            .ok_or("子代理缺少实例模型。")?
+            .into();
+        profile.thinking = model["thinking"].as_str().map(str::to_owned);
+        profile.reasoning_effort = model["reasoningEffort"].as_str().map(str::to_owned);
+        apply_instance_parameters(&mut profile, &model["parameters"])?;
+    }
+    let profile = with_reasoning_override(profile, reasoning_effort_override)?;
     let context_window_tokens = profile
         .context_window_tokens
         .filter(|value| *value > 0)
@@ -201,7 +233,11 @@ fn capture_binding(
             Some(_) => return Err("LLM Profile hostedWebSearch 无法映射。".to_string()),
         },
     };
-    Ok(ProviderRuntimeBinding { snapshot, profile })
+    Ok(ProviderRuntimeBinding {
+        snapshot,
+        profile,
+        codex_turn_state: Default::default(),
+    })
 }
 
 fn selected_profile_id(gui: &GuiState, requested: Option<&str>) -> Result<String, String> {
@@ -217,6 +253,60 @@ fn selected_profile_id(gui: &GuiState, requested: Option<&str>) -> Result<String
     }
     selected_profile(gui, profile_id)?;
     Ok(profile_id.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstanceModelParameters {
+    adapter_id: String,
+    kind: String,
+    provider_flavor: Option<String>,
+    context_window_tokens: u64,
+    max_output_tokens: u32,
+    image_input: bool,
+    temperature: Option<f64>,
+    hosted_web_search: Option<String>,
+}
+
+pub(crate) fn validate_instance_parameters(value: &Value) -> Result<(), String> {
+    let parameters: InstanceModelParameters =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    if parameters.adapter_id.is_empty()
+        || !matches!(
+            parameters.kind.as_str(),
+            "responses" | "openaiCompatible" | "anthropic" | "ollama"
+        )
+        || parameters.max_output_tokens == 0
+        || parameters.context_window_tokens <= u64::from(parameters.max_output_tokens)
+        || parameters
+            .hosted_web_search
+            .as_deref()
+            .is_some_and(|value| value != "web_search")
+    {
+        return Err("子代理实例模型参数无效。".into());
+    }
+    Ok(())
+}
+
+fn apply_instance_parameters(
+    profile: &mut ResolvedLlmProfile,
+    value: &Value,
+) -> Result<(), String> {
+    validate_instance_parameters(value)?;
+    let parameters: InstanceModelParameters =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    if profile.connection.adapter_id != parameters.adapter_id
+        || profile.kind != parameters.kind
+        || profile.provider_flavor != parameters.provider_flavor
+    {
+        return Err("子代理实例的模型服务类型已更改，原配置当前不可用。".into());
+    }
+    profile.context_window_tokens = Some(parameters.context_window_tokens);
+    profile.max_output_tokens = Some(parameters.max_output_tokens);
+    profile.image_input = parameters.image_input;
+    profile.temperature = parameters.temperature;
+    profile.hosted_web_search = parameters.hosted_web_search;
+    Ok(())
 }
 
 fn with_reasoning_override(
@@ -267,6 +357,27 @@ mod tests {
     }
 
     #[test]
+    fn dormant_instance_keeps_model_budget_and_capabilities_after_profile_edits() {
+        let mut profile = configured_profile();
+        profile.context_window_tokens = Some(900000);
+        profile.max_output_tokens = Some(50000);
+        profile.image_input = true;
+        apply_instance_parameters(
+            &mut profile,
+            &json!({
+            "adapterId":"openai","kind":"openaiCompatible","providerFlavor":"deepseek",
+                "contextWindowTokens":4096,"maxOutputTokens":512,"imageInput":false,
+                "temperature":0.5,"hostedWebSearch":null
+            }),
+        )
+        .unwrap();
+        assert_eq!(profile.context_window_tokens, Some(4096));
+        assert_eq!(profile.max_output_tokens, Some(512));
+        assert!(!profile.image_input);
+        assert_eq!(profile.temperature, Some(0.5));
+    }
+
+    #[test]
     fn reviewer_binding_is_independent_and_released_with_its_run() {
         let profile = configured_profile();
         let main = ProviderRuntimeBinding {
@@ -282,8 +393,19 @@ mod tests {
                 hosted_web_search: "web_search",
             },
             profile,
+            codex_turn_state: Default::default(),
         };
         let reviewer = main.approval_reviewer(Some("low")).unwrap();
+        let main_context = main.codex_request_context("session:model");
+        main_context
+            .turn_state
+            .set(reqwest::header::HeaderValue::from_static("main-route"))
+            .unwrap();
+        assert!(reviewer
+            .codex_request_context("session:model")
+            .turn_state
+            .get()
+            .is_none());
         assert_ne!(
             reviewer.snapshot.provider_runtime_ref,
             main.snapshot.provider_runtime_ref
@@ -331,6 +453,31 @@ mod tests {
                 )
                 .is_ok());
         }
+        let resumed = registry
+            .resolve(
+                "session:model",
+                "run:model",
+                "provider-runtime:main",
+                "profile:main",
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            resumed
+                .codex_request_context("session:model")
+                .turn_state
+                .get(),
+            main_context.turn_state.get()
+        );
+        assert!(registry
+            .resolve(
+                "session:model",
+                "run:other",
+                "provider-runtime:main",
+                "profile:main",
+                None
+            )
+            .is_err());
         registry.release("session:model", "run:model").unwrap();
         for binding in [&main, &reviewer] {
             assert!(registry

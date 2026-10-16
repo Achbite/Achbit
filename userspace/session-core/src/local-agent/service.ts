@@ -1,6 +1,11 @@
+import { decodeAgentRecipe } from '@deepcode/protocol';
+import { reduceAgentLifecycle } from './agentLifecycle.js';
+import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
 import { loopSnapshot } from './loop.js';
 import type {
+  AgentHostPort,
+  SessionCreationInput,
   CommandJournalPort,
   CommandReply,
   ContextCompositionProjection,
@@ -9,12 +14,17 @@ import type {
   ConversationReadResult,
   ConversationSessionStatus,
   SessionProjection,
+  PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@deepcode/protocol';
 import { SessionActor } from './actor.js';
-import type { AgentComposition } from './plugins.js';
+import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { emptySessionState, projectSession, recoverSession, reduceSession, type SessionState } from './reducer.js';
+import { combineTokenUsage, projectSession, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { activeConversationEvents } from './conversationHistory.js';
+import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
+import { SessionConfigurationRegistry } from './sessionConfiguration.js';
+import { AgentLoopRegistry } from './loopRegistry.js';
 
 export interface SessionCompositionFactory {
   create(input: {
@@ -25,102 +35,346 @@ export interface SessionCompositionFactory {
   }>;
 }
 
+/** Complete Host-facing surface; a service implementation is selected only at startup. */
+export interface SessionServicePort extends ConversationPort {
+  createSession: SessionService['createSession'];
+  deleteSession: SessionService['deleteSession'];
+  snapshot: SessionService['snapshot'];
+  statuses: SessionService['statuses'];
+  activity: SessionService['activity'];
+  delegationChanged: SessionService['delegationChanged'];
+  contextComposition: SessionService['contextComposition'];
+  read: SessionService['read'];
+  replaceCapabilities: SessionService['replaceCapabilities'];
+  dispose(): Promise<void>;
+}
+
+export type SessionServiceFactory = (input: {
+  journal: CommandJournalPort;
+  compositions: SessionCompositionFactory;
+  agentHost?: AgentHostPort;
+  configurations?: SessionConfigurationRegistry;
+  loops?: AgentLoopRegistry;
+}) => Promise<SessionServicePort>;
+
+export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations, loops }) => (
+  new SessionService(journal, compositions, agentHost, configurations, loops)
+);
+
+export class SessionDeletionError extends AggregateError {
+  readonly details: { deletedSessionIds: string[]; remainingSessionIds: string[] };
+  constructor(error: unknown, deletedSessionIds: readonly string[], remainingSessionIds: readonly string[]) {
+    super([error], `session_delete_partial:${error instanceof Error ? error.message : String(error)}`);
+    this.details = { deletedSessionIds: [...deletedSessionIds], remainingSessionIds: [...remainingSessionIds] };
+  }
+}
+
 export class SessionService implements ConversationPort {
   readonly #actors = new Map<string, Promise<SessionActor>>();
-  readonly #statusStates = new Map<string, SessionState>();
+  readonly #actorUsers = new Map<string, number>();
+  readonly #retirements = new Map<string, Promise<void>>();
+  readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
+  readonly #deletingSessionIds = new Set<string>();
+  readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
+  readonly #lifetime = new AbortController();
+  #disposeTask?: Promise<void>;
+  #delegationNotifications: Promise<void> = Promise.resolve();
+  #delegationEnabled?: boolean;
+  readonly #initialDelegation: Promise<boolean | undefined>;
+  readonly #agents?: AgentManager;
 
   constructor(
     readonly journal: CommandJournalPort,
     readonly compositions: SessionCompositionFactory,
-  ) {}
+    agentHost?: AgentHostPort,
+    readonly configurations = new SessionConfigurationRegistry(),
+    readonly loops = new AgentLoopRegistry(),
+  ) {
+    // One bootstrap read per service lifetime; updates are delivered by Host.
+    this.#initialDelegation = agentHost ? agentHost.settings().then(settings => settings.enabled) : Promise.resolve(undefined);
+    void this.#initialDelegation.catch(() => undefined);
+    if (agentHost) this.#agents = new AgentManager(agentHost, {
+      withActor: (id, operation) => this.withActor(id, operation),
+      read: id => this.agentManagement(id),
+    }, configurations, loops);
+  }
 
-  async createSession(input: {
-    sessionId: string;
-    displayTitle: string;
-    workspaceBindings: WorkspaceBindingDisplay[];
-    profileId?: string;
-  }): Promise<SessionProjection> {
+  /** Ordered Host setting facts; this does not start a run or activate a new Actor. */
+  delegationChanged(enabled: boolean): Promise<void> {
+    this.assertOpen();
+    if (!this.#agents) return Promise.resolve();
+    this.#delegationEnabled = enabled;
+    const actors = [...this.#actors.values()];
+    const task = this.#delegationNotifications.then(async () => {
+      const results = await Promise.allSettled(actors.map(async actor => (await actor).delegationChanged(enabled)));
+      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, 'agent_delegation_notification_failed');
+    });
+    this.#delegationNotifications = task.catch(() => undefined);
+    return task;
+  }
+
+  async createSession(input: SessionCreationInput): Promise<SessionProjection> {
+    this.assertOpen();
+    if (input.recipe) {
+      const recipe = decodeAgentRecipe(input.recipe);
+      if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
+      if (recipe.configuration) this.configurations.resolve(recipe.configuration, {}, true);
+      if (recipe.runner) this.loops.validate(recipe.runner);
+      if (input.agentContext?.configuration && recipe.configuration
+        && JSON.stringify(input.agentContext.configuration) !== JSON.stringify(recipe.configuration)) throw new Error('session_configuration_owner_conflict');
+      input = { ...input, recipe, profileId: input.profileId ?? recipe.profileId };
+    }
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
+        ...(input.recipe ? { recipe: input.recipe } : {}),
+        ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.profileId ? { profileId: input.profileId } : {}) },
     }]);
     await this.journal.createSession({
       sessionId: input.sessionId,
       displayTitle: input.displayTitle,
+      ...(input.recipe ? { recipe: input.recipe } : {}),
       workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
+      ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
       ...(input.profileId ? { profileId: input.profileId } : {}),
     });
-    const actor = await this.actor(input.sessionId);
-    return await actor.snapshot();
+    try {
+      return await this.withActor(input.sessionId, actor => actor.snapshot(), false);
+    } catch (error) {
+      try {
+        await this.deleteSession(input.sessionId, { unstartedOnly: true });
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError],
+          `session_creation_rollback_failed:${error instanceof Error ? error.message : String(error)}; cleanup=${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+      }
+      throw error;
+    }
   }
 
-  async deleteSession(sessionId: string): Promise<void> {
-    const actorPromise = this.#actors.get(sessionId);
-    if (actorPromise) {
-      let actor: SessionActor | undefined;
-      try {
-        actor = await actorPromise;
-      } catch (error) {
-        if (this.#actors.get(sessionId) === actorPromise) this.#actors.delete(sessionId);
-        if (isActorOpenRollbackFailure(error)) throw error;
+  async deleteSession(sessionId: string, options?: { unstartedOnly?: boolean }): Promise<{ deletedSessionIds: string[] }> {
+    this.assertOpen();
+    if (this.#deletingSessionIds.has(sessionId)) throw new Error('session_delete_in_progress');
+    const claimed = new Set<string>([sessionId]);
+    this.#deletingSessionIds.add(sessionId);
+    let releaseOwner: (() => void) | undefined;
+    const deletedSessionIds: string[] = [];
+    const deletionOrder: string[] = [];
+    const readStored = async (id: string, required: boolean): Promise<SessionProjection | undefined> => {
+      let events;
+      try { events = await readSessionEvents(this.journal, id); }
+      catch (error) {
+        if (!required && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') return;
+        throw error;
       }
-      if (actor) {
-        if (!actor.hasLoopFailure()) {
-          const projection = await actor.snapshot();
-          if (projection.run && ['running', 'waiting'].includes(projection.run.status)) {
-            throw new Error('session_delete_active_run');
+      if (!events.length) {
+        if (required) throw new Error('session_not_found');
+        return;
+      }
+      return projectSession(recoverSession(id, events));
+    };
+    try {
+      if (options?.unstartedOnly) {
+        await Promise.allSettled(this.#submissions.get(sessionId) ?? []);
+        const events = await readSessionEvents(this.journal, sessionId);
+        if (events.some(event => event.type === 'run.started'
+          || event.type.startsWith('agent.task.') || event.type === 'agent.closed')) {
+          throw new Error('session_rollback_already_started');
+        }
+        deletionOrder.push(sessionId);
+      } else {
+        const initial = (await readStored(sessionId, true))!;
+        const ownerId = initial.agentContext?.ownerSessionId ?? sessionId;
+        releaseOwner = await this.#agents?.blockOwner(ownerId);
+        const visited = new Set<string>();
+        const visit = async (id: string, parentId?: string): Promise<void> => {
+          if (visited.has(id)) return;
+          const projection = await readStored(id, id === sessionId);
+          // A failed creation can leave a task fact without ever creating a child Session.
+          if (!projection) return;
+          if (parentId && (projection.agentContext?.parentSessionId !== parentId
+            || projection.agentContext.ownerSessionId !== ownerId)) return;
+          visited.add(id);
+          if (!claimed.has(id)) {
+            if (this.#deletingSessionIds.has(id)) throw new Error('session_delete_in_progress');
+            this.#deletingSessionIds.add(id);
+            claimed.add(id);
+          }
+          const children = new Set((projection.agentChildren ?? []).map(child => child.agentSessionId));
+          for (const childId of children) await visit(childId, id);
+          deletionOrder.push(id);
+        };
+        await visit(sessionId);
+        await Promise.allSettled(deletionOrder.flatMap(id => [...(this.#submissions.get(id) ?? [])]));
+        for (const id of deletionOrder) {
+          const projection = (await readStored(id, true))!;
+          if (projection.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(projection.run.status)) {
+            throw new Error(`session_delete_active_run:${id}`);
           }
         }
-        await actor.dispose();
-        if (this.#actors.get(sessionId) === actorPromise) this.#actors.delete(sessionId);
       }
+      for (const id of deletionOrder) {
+        const actorPromise = this.#actors.get(id);
+        if (actorPromise) {
+          let actor: SessionActor | undefined;
+          try { actor = await actorPromise; }
+          catch (error) {
+            if (this.#actors.get(id) === actorPromise) this.#actors.delete(id);
+            if (isActorOpenRollbackFailure(error)) throw error;
+          }
+          if (actor) {
+            await actor.dispose();
+            if (this.#actors.get(id) === actorPromise) this.#actors.delete(id);
+          }
+        }
+        this.assertOpen();
+        await this.journal.deleteSession(id);
+        this.#statusStates.delete(id);
+        deletedSessionIds.push(id);
+      }
+      return { deletedSessionIds };
+    } catch (error) {
+      if (!deletedSessionIds.length) throw error;
+      const remainingSessionIds = deletionOrder.filter(id => !deletedSessionIds.includes(id));
+      throw new SessionDeletionError(error, deletedSessionIds, remainingSessionIds);
+    } finally {
+      releaseOwner?.();
+      for (const id of claimed) this.#deletingSessionIds.delete(id);
     }
-    await this.journal.deleteSession(sessionId);
-    this.#statusStates.delete(sessionId);
   }
 
   async submit(command: ConversationCommand): Promise<CommandReply> {
-    return await (await this.actor(command.sessionId)).submit(command);
+    if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
+    return this.withActor(command.sessionId, async actor => {
+      this.assertOpen();
+      const projection = await actor.agentSnapshot();
+      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'run.host.rebind'].includes(command.type)) {
+        throw new Error('agent_session_requires_managed_task');
+      }
+      if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
+      const pending = actor.submit(command);
+      let submissions = this.#submissions.get(command.sessionId);
+      if (!submissions) {
+        submissions = new Set();
+        this.#submissions.set(command.sessionId, submissions);
+      }
+      submissions.add(pending);
+      try { return await pending; }
+      finally {
+        submissions.delete(pending);
+        if (!submissions.size) this.#submissions.delete(command.sessionId);
+      }
+    });
+  }
+
+  /** Same-process operator API; control calls and conversation commands cannot install code. */
+  async replaceCapabilities(sessionId: string, implementation: SessionCapabilities): Promise<void> {
+    await this.withActor(sessionId, actor => actor.replaceCapabilities(implementation));
   }
 
   async snapshot(sessionId: string): Promise<SessionProjection> {
+    const projection = await this.ownSnapshot(sessionId);
+    const ownerSessionId = projection.agentContext?.ownerSessionId ?? sessionId;
+    const seen = new Set<string>([sessionId]);
+    let totalTokenUsage = projection.tokenUsage;
+    const visit = async (parent: { sessionId: string; agentChildren?: AgentManagementSnapshot['agentChildren'];
+      agentTasks?: AgentManagementSnapshot['agentTasks'] }): Promise<void> => {
+      for (const member of parent.agentChildren ?? []) {
+        if (seen.has(member.agentSessionId)) continue;
+        seen.add(member.agentSessionId);
+        let child: AgentManagementSnapshot;
+        try { child = await this.agentManagement(member.agentSessionId); }
+        catch (error) {
+          // A task reservation precedes child creation; failed creation can leave no Session.
+          const started = parent.agentTasks?.some(task => task.agentSessionId === member.agentSessionId && task.childRunId);
+          if (!started && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') continue;
+          throw error;
+        }
+        if (child.agentContext?.parentSessionId !== parent.sessionId
+          || child.agentContext.ownerSessionId !== ownerSessionId) throw new Error('agent_lineage_mismatch');
+        // Each own aggregate already accounts for each Provider request exactly once.
+        // Follow creation identities, never tasks or recursively aggregated snapshots.
+        const read = await this.journal.readProviderUsage(child.sessionId);
+        if (read.sessionId !== child.sessionId) throw new Error('session_event_identity_mismatch');
+        totalTokenUsage = combineTokenUsage(totalTokenUsage, providerUsageFromEvents(read));
+        await visit(child);
+      }
+    };
+    await visit(projection);
+    const pendingAgentDecisions = await this.agentDecisionRoutes(projection);
+    return { ...projection, totalTokenUsage, ...(pendingAgentDecisions.length ? { pendingAgentDecisions } : {}) };
+  }
+
+  private async ownSnapshot(sessionId: string): Promise<SessionProjection> {
+    if (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
     const live = this.#actors.get(sessionId);
-    if (live) return (await live).snapshot();
-    const events = await readSessionEvents(this.journal, sessionId);
-    if (!events.length) throw new Error('session_not_found');
-    return projectSession(recoverSession(sessionId, events));
+    return live ? await this.withActor(sessionId, actor => actor.snapshot())
+      : await (async () => {
+        const events = await readSessionEvents(this.journal, sessionId);
+        if (!events.length) throw new Error('session_not_found');
+        return projectSession(recoverSession(sessionId, events));
+      })();
+  }
+
+  private async agentDecisionRoutes(parent: Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks'>): Promise<PendingAgentDecision[]> {
+    const decisions: PendingAgentDecision[] = [];
+    const ownerSessionId = parent.agentContext?.ownerSessionId ?? parent.sessionId;
+    const seen = new Set<string>([parent.sessionId]);
+    const visit = async (owner: { sessionId: string; agentTasks?: AgentManagementSnapshot['agentTasks'] }) => {
+      for (const task of owner.agentTasks ?? []) {
+        if (task.status !== 'running' || !task.childRunId || seen.has(task.agentSessionId)) continue;
+        seen.add(task.agentSessionId);
+        const child = await this.agentManagement(task.agentSessionId);
+        if (child.agentContext?.ownerSessionId !== ownerSessionId) throw new Error('agent_lineage_mismatch');
+        // A continuation can be assigned by an ancestor other than the creating parent.
+        // The current task/run owns its decision route; the creation tree still owns archival.
+        if (child.run?.runId !== task.childRunId) continue;
+        const lifecycle = this.#statusStates.get(child.sessionId)!.lifecycle;
+        const plan = lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
+        const approval = lifecycle.pendingApproval?.runId === task.childRunId ? lifecycle.pendingApproval : null;
+        const interactionIds = lifecycle.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
+        if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,
+          displayName: task.displayName, runId: task.childRunId, interactionIds,
+          ...(plan ? { plan: { planId: plan.planId, revision: plan.revision } } : {}),
+          ...(approval ? { approval: { approvalId: approval.approvalId, callId: approval.callId } } : {}) });
+        await visit(child);
+      }
+    };
+    await visit(parent);
+    return decisions;
   }
 
   async activity(): Promise<{ active: boolean }> {
-    const actors = await Promise.all(this.#actors.values());
-    const activity = await Promise.all(actors.map((actor) => actor.hasActiveWork()));
+    // Observe existing objects only; an idle read must never reopen a retiring child.
+    const activity = await Promise.all([...this.#actors.values()].map(async pending =>
+      (await pending).hasActiveWork()));
     return { active: activity.some(Boolean) };
   }
 
   async statuses(sessionIds: readonly string[]): Promise<ConversationSessionStatus[]> {
     return await Promise.all(sessionIds.map(async (sessionId) => {
-      // Reuse the canonical reducer and read only new events after the first read.
-      // Sidebar reads must not open Actors or resume waiting/running conversations.
-      let state = this.#statusStates.get(sessionId) ?? emptySessionState(sessionId);
-      for await (const event of this.journal.read(sessionId, state.revision)) {
-        if (event.type === 'conversation.revised') {
-          state = recoverSession(sessionId, await readSessionEvents(this.journal, sessionId));
-          break;
-        }
-        state = reduceSession(state, event);
+      // This cache contains no message, tool result, runtime or Actor state.
+      const previous = this.#statusStates.get(sessionId);
+      let read = await this.journal.readRunLifecycle(sessionId, previous?.revision ?? 0);
+      let lifecycle = previous?.lifecycle ?? emptyRunLifecycle();
+      if (read.events.some(event => event.type === 'conversation.revised')) {
+        if (previous) read = await this.journal.readRunLifecycle(sessionId);
+        lifecycle = emptyRunLifecycle();
       }
+      if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+      for (const event of activeConversationEvents(read.events)) {
+        if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+        lifecycle = reduceRunLifecycle(lifecycle, event);
+      }
+      const state = { revision: read.revision, lifecycle };
       if (state.revision === 0) throw new Error('session_not_found');
       if (state.revision >= (this.#statusStates.get(sessionId)?.revision ?? 0)) {
         this.#statusStates.set(sessionId, state);
       }
       return {
         sessionId, revision: state.revision,
-        run: state.run ? {
-          runId: state.run.runId,
-          status: state.run.status,
-          ...(state.run.waitingReason ? { waitingReason: state.run.waitingReason } : {}),
-        } : null,
+        run: lifecycle.run ? { ...lifecycle.run } : null,
       };
     }));
   }
@@ -145,26 +399,84 @@ export class SessionService implements ConversationPort {
     return await readConversation(this.journal, query);
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.#disposeTask) return this.#disposeTask;
+    this.#lifetime.abort(new Error('session_service_disposed'));
+    this.#disposeTask = this.disposeActors();
+    return this.#disposeTask;
+  }
+
+  private async disposeActors(): Promise<void> {
+    let agentError: unknown;
+    try { await this.#agents?.dispose(); } catch (error) { agentError = error; }
     const actorPromises = [...this.#actors.values()];
+    const results = await Promise.allSettled(actorPromises.map(async pending => {
+      let actor: SessionActor;
+      try {
+        actor = await pending;
+      } catch (error) {
+        if (error !== this.#lifetime.signal.reason) throw error;
+        return;
+      }
+      await actor.dispose();
+    }));
     this.#actors.clear();
     this.#statusStates.clear();
-    const actorResults = await Promise.allSettled(actorPromises);
-    const errors: unknown[] = actorResults.flatMap((result) => (
+    const errors = results.flatMap((result) => (
       result.status === 'rejected' ? [result.reason] : []
     ));
-    const disposeResults = await Promise.allSettled(
-      actorResults.flatMap((result) => (
-        result.status === 'fulfilled' ? [result.value.dispose()] : []
-      )),
-    );
-    errors.push(...disposeResults.flatMap((result) => (
-      result.status === 'rejected' ? [result.reason] : []
-    )));
+    if (agentError) errors.unshift(agentError);
     if (errors.length > 0) throw new AggregateError(errors, 'session_service_dispose_failed');
   }
 
+  /** Journal-only management reads do not activate Providers, tools or Actors. */
+  private async agentManagement(sessionId: string): Promise<AgentManagementSnapshot> {
+    const read = await this.journal.readAgentLifecycle(sessionId);
+    if (read.sessionId !== sessionId || read.events.some(event => event.sessionId !== sessionId)) {
+      throw new Error('session_event_identity_mismatch');
+    }
+    if (read.events[0]?.type !== 'session.created') throw new Error('session_creation_event_missing');
+    let relations = { agentTasks: [], agentChildren: [] } as import('./agentLifecycle.js').AgentLifecycleState;
+    for (const event of read.events) if (event.type !== 'session.created') relations = reduceAgentLifecycle(relations, event);
+    const [status] = await this.statuses([sessionId]);
+    return { sessionId, agentContext: read.events[0].payload.agentContext, ...relations, run: status!.run };
+  }
+
+  /** Physical references only; durable ownership remains in the Session journal. */
+  private async withActor<T>(sessionId: string, operation: (actor: SessionActor) => Promise<T>, retire = true): Promise<T> {
+    while (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
+    this.#actorUsers.set(sessionId, (this.#actorUsers.get(sessionId) ?? 0) + 1);
+    let failure: unknown;
+    try {
+      const actor = await (this.#actors.get(sessionId) ?? this.actor(sessionId));
+      return await operation(actor);
+    } catch (error) { failure = error; throw error; }
+    finally {
+      const users = this.#actorUsers.get(sessionId)! - 1;
+      if (users) this.#actorUsers.set(sessionId, users);
+      else {
+        this.#actorUsers.delete(sessionId);
+        const pending = this.#actors.get(sessionId);
+        if (pending && retire) {
+          const retirement = (async () => {
+            const actor = await pending;
+            if (await actor.retireIfSettledChild() && this.#actors.get(sessionId) === pending) this.#actors.delete(sessionId);
+          })();
+          this.#retirements.set(sessionId, retirement);
+          try { await retirement; }
+          catch (error) {
+            if (failure) throw new AggregateError([failure, error], 'session_actor_operation_cleanup_failed');
+            throw error;
+          } finally {
+            if (this.#retirements.get(sessionId) === retirement) this.#retirements.delete(sessionId);
+          }
+        }
+      }
+    }
+  }
+
   private async actor(sessionId: string): Promise<SessionActor> {
+    this.assertOpen();
     let actor = this.#actors.get(sessionId);
     if (!actor) {
       actor = this.openActor(sessionId);
@@ -177,7 +489,9 @@ export class SessionService implements ConversationPort {
   }
 
   private async openActor(sessionId: string): Promise<SessionActor> {
+    this.assertOpen();
     const events = await readSessionEvents(this.journal, sessionId);
+    this.assertOpen();
     const first = events[0];
     if (!first) throw new Error('session_not_found');
     if (first.type !== 'session.created') throw new Error('session_creation_event_missing');
@@ -186,12 +500,35 @@ export class SessionService implements ConversationPort {
       sessionId,
       workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
     });
+    const configuration = first.payload.recipe?.configuration ?? first.payload.agentContext?.configuration;
+    try {
+      if (configuration) {
+        if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');
+        installed.composition.capabilities = await this.configurations.create(configuration);
+      }
+      if (first.payload.recipe?.runner) {
+        if (installed.composition.runner) throw new Error('session_loop_owner_conflict');
+        installed.composition.runner = this.loops.create(first.payload.recipe.runner);
+      }
+    } catch (error) {
+      const cleanup = await Promise.allSettled([installed.composition.capabilities?.dispose(),
+        installed.composition.runner?.dispose?.(), installed.composition.dispose()]);
+      const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length) throw new AggregateError([error, ...failures], 'session_configuration_initialization_failed');
+      throw error;
+    }
     const actor = new SessionActor(sessionId, this.journal, installed.composition, {
       initialEvents: events,
+      ...(this.#agents ? { agents: this.#agents.forSession(sessionId) } : {}),
       ...(profileId ? { profileId } : {}),
     });
     try {
-      await actor.recover();
+      this.assertOpen();
+      const initialDelegation = await this.#initialDelegation;
+      const delegation = this.#delegationEnabled ?? initialDelegation;
+      if (delegation !== undefined) await actor.delegationChanged(delegation);
+      await actor.recover(this.#lifetime.signal);
+      this.assertOpen();
       return actor;
     } catch (error) {
       try {
@@ -204,6 +541,10 @@ export class SessionService implements ConversationPort {
       }
       throw error;
     }
+  }
+
+  private assertOpen(): void {
+    this.#lifetime.signal.throwIfAborted();
   }
 }
 

@@ -1,6 +1,11 @@
-/* Focus stays on the control surface; it does not add an enclosing ring. */
-:is(button, input, select, textarea, summary, a, [tabindex], [contenteditable]):focus {
+/* Shared focus appearance: keep the control's surface, never add an enclosing ring.
+   Pointer/keyboard focus ownership stays in interactionFocus.ts. */
+:root[data-product='deepcode-gui'] :is(button, input, select, textarea, summary, a, [tabindex], [contenteditable]):is(:focus, :focus-visible) {
   outline: none;
+}
+
+:root[data-product='deepcode-gui'] :is(input, select, textarea, [contenteditable]):is(:focus, :focus-visible) {
+  box-shadow: none;
 }
 
 :root[data-product='deepcode-gui'] :is(input[type='checkbox'], input[type='radio'], input[type='range']) {
@@ -11,4 +16,8 @@
   box-shadow: none;
   background-color: var(--dc-surface-hover);
   color: var(--dc-foreground);
+}
+
+:root[data-product='deepcode-gui'] .settings-switch > input:focus-visible + span {
+  filter: brightness(.85);
 }

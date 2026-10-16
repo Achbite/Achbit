@@ -15,6 +15,174 @@
     "Id": { "type": "string", "minLength": 1 },
     "Timestamp": { "type": "string", "minLength": 1 },
     "JsonObject": { "type": "object" },
+    "AgentCapabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["messaging", "continuation", "delegation"],
+      "properties": {
+        "messaging": {"enum": [false, "parent", true]},
+        "continuation": {"type": "boolean"},
+        "delegation": {"type": "boolean"}
+      }
+    },
+    "AgentOperation": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["action"],
+          "properties": {"action": {"const": "models"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "task", "name", "delivery"],
+          "properties": {
+            "action": {"const": "spawn"},
+            "preset": {"type": "string", "minLength": 1},
+            "capabilities": {
+              "type": "object", "additionalProperties": false,
+              "properties": {
+                "messaging": {"enum": [false, "parent", true]},
+                "continuation": {"type": "boolean"},
+                "delegation": {"type": "boolean"}
+              }
+            },
+            "task": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1},
+            "delivery": {"enum": ["wait", "async"]},
+            "profileId": {"type": "string", "minLength": 1},
+            "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
+            "context": {"$ref": "#/$defs/AgentContributionSelection"},
+            "runner": {"$ref": "#/$defs/AgentContributionSelection"},
+            "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
+            "workspaceSandbox": {"$ref": "#/$defs/AgentRecipe/properties/workspaceSandbox"},
+            "loop": {"type": "object", "additionalProperties": false, "properties": {
+              "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
+              "controls": {"$ref": "#/$defs/AgentContributionSelection"}
+            }},
+            "permissions": {"$ref": "#/$defs/PermissionSettings"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action", "agentId", "text"],
+          "properties": {"action": {"const": "send"}, "agentId": {"$ref": "#/$defs/Id"}, "text": {"type": "string", "minLength": 1}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action"],
+          "properties": {"action": {"const": "wait"}, "taskIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action", "taskId"],
+          "properties": {"action": {"const": "cancel"}, "taskId": {"$ref": "#/$defs/Id"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["action", "agentId"],
+          "properties": {"action": {"const": "close"}, "agentId": {"$ref": "#/$defs/Id"}}
+        }
+      ]
+    },
+    "SessionOperation": {
+      "oneOf": [
+        {"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"const":"describe"}}},
+        {"type":"object","additionalProperties":false,"required":["action","afterSeconds","text"],"properties":{
+          "action":{"const":"schedule"},"afterSeconds":{"type":"number","exclusiveMinimum":0,"maximum":2147483},"text":{"type":"string","minLength":1}}},
+        {"type":"object","additionalProperties":false,"required":["action","scheduleId"],"properties":{
+          "action":{"const":"cancelSchedule"},"scheduleId":{"$ref":"#/$defs/Id"}}},
+        {"type":"object","additionalProperties":false,"required":["action"],"properties":{
+          "action":{"const":"wait"},"timeoutSeconds":{"type":"number","exclusiveMinimum":0,"maximum":2147483}}}
+      ]
+    },
+    "PendingAgentDecision": {
+      "type":"object","additionalProperties":false,"required":["agentSessionId","displayName","runId","interactionIds"],
+      "properties":{
+        "agentSessionId":{"$ref":"#/$defs/Id"},"displayName":{"type":"string"},"runId":{"$ref":"#/$defs/Id"},
+        "interactionIds":{"type":"array","items":{"$ref":"#/$defs/Id"}},"plan":{"$ref":"#/$defs/PlanRef"},
+        "approval":{"type":"object","additionalProperties":false,"required":["approvalId","callId"],"properties":{
+          "approvalId":{"$ref":"#/$defs/Id"},"callId":{"$ref":"#/$defs/Id"}}}
+      }
+    },
+    "AgentContributionSelection": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": {"id": {"$ref": "#/$defs/Id"}, "parameters": {"type": "object"}}
+    },
+    "AgentConfiguration": {
+      "type": "object", "additionalProperties": false, "required": ["context", "compaction", "controls"],
+      "properties": {
+        "context": {"$ref": "#/$defs/AgentContributionSelection"},
+        "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
+        "controls": {"$ref": "#/$defs/AgentContributionSelection"}
+      }
+    },
+    "AgentRecipe": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "profileId": {"$ref": "#/$defs/Id"},
+        "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
+        "configuration": {"$ref": "#/$defs/AgentConfiguration"},
+        "runner": {"$ref": "#/$defs/AgentContributionSelection"},
+        "permissions": {"$ref": "#/$defs/PermissionSettings"},
+        "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
+        "workspaceSandbox": {
+          "type": "object", "additionalProperties": false, "required": ["backendId"],
+          "properties": {"backendId": {"$ref": "#/$defs/Id"}, "requireIsolatedProcesses": {"type": "boolean"}}
+        }
+      }
+    },
+    "AgentContext": {
+      "type": "object", "additionalProperties": false,
+      "required": ["capabilities", "ownerSessionId", "parentSessionId", "parentRunId", "parentCallId"],
+      "properties": {
+        "configuration": {"$ref": "#/$defs/AgentConfiguration"},
+        "model": {"type": "object", "additionalProperties": false,
+          "required": ["profileId", "model", "reasoningEffort", "thinking", "parameters"], "properties": {
+            "profileId": {"$ref": "#/$defs/Id"}, "model": {"type": "string", "minLength": 1},
+            "reasoningEffort": {"enum": [null, "low", "medium", "high", "xhigh", "max"]},
+            "thinking": {"enum": [null, "enabled", "disabled"]},
+            "parameters": {"type":"object","additionalProperties":false,
+              "required":["adapterId","kind","providerFlavor","contextWindowTokens","maxOutputTokens","imageInput","temperature","hostedWebSearch"],
+              "properties":{"adapterId":{"type":"string","minLength":1},"kind":{"enum":["responses","openaiCompatible","anthropic","ollama"]},"providerFlavor":{"type":["string","null"]},
+                "contextWindowTokens":{"type":"integer","minimum":1},"maxOutputTokens":{"type":"integer","minimum":1},"imageInput":{"type":"boolean"},
+                "temperature":{"type":["number","null"]},"hostedWebSearch":{"enum":[null,"web_search"]}}}
+          }},
+        "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "ownerSessionId": {"$ref": "#/$defs/Id"},
+        "parentSessionId": {"$ref": "#/$defs/Id"},
+        "parentRunId": {"$ref": "#/$defs/Id"},
+        "parentCallId": {"$ref": "#/$defs/Id"}
+      }
+    },
+    "AgentTaskResult": {
+      "type": "object", "additionalProperties": false, "required": ["outcome"],
+      "properties": {
+        "outcome": {"enum": ["completed", "failed", "cancelled", "indeterminate"]},
+        "content": {"type": "string"},
+        "error": {"$ref": "#/$defs/LocalAgentError"},
+        "finalMessageId": {"$ref": "#/$defs/Id"}
+      }
+    },
+    "AgentTaskProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["taskId", "agentSessionId", "capabilities", "displayName", "text", "delivery", "parentRunId", "status"],
+      "properties": {
+        "taskId": {"$ref": "#/$defs/Id"},
+        "agentSessionId": {"$ref": "#/$defs/Id"},
+        "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "displayName": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1},
+        "delivery": {"enum": ["wait", "async"]},
+        "parentRunId": {"$ref": "#/$defs/Id"},
+        "childRunId": {"$ref": "#/$defs/Id"},
+        "status": {"enum": ["running", "completed", "failed", "cancelled", "indeterminate"]},
+        "result": {"$ref": "#/$defs/AgentTaskResult"}
+      }
+    },
+    "AgentChildProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["agentSessionId", "displayName", "capabilities", "closed"],
+      "properties": {
+        "agentSessionId": {"$ref": "#/$defs/Id"},
+        "displayName": {"type": "string", "minLength": 1},
+        "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "closed": {"type": "boolean"}
+      }
+    },
     "WorkspaceBinding": {
       "type": "object",
       "additionalProperties": false,
@@ -223,7 +391,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "outputIndex", "kind", "providerCallId", "providerToolType", "status", "action"
+            "outputIndex", "kind", "providerCallId", "providerToolType", "status"
           ],
           "properties": {
             "outputIndex": { "type": "integer", "minimum": 0 },
@@ -387,6 +555,15 @@
         "thinking": {"enum": ["enabled", "disabled"]}
       }
     },
+    "ToolUnavailabilityReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1}
+      }
+    },
     "ToolDescriptor": {
       "type": "object",
       "additionalProperties": false,
@@ -402,7 +579,9 @@
             "enum": ["localRead", "workspaceRead", "workspaceMutation", "process", "network", "external"]
           }
         },
-        "availability": { "enum": ["callable", "blocked"] }
+        "availability": { "enum": ["callable", "blocked"] },
+        "availabilityReason": {"$ref": "#/$defs/ToolUnavailabilityReason"},
+        "runtimeStatus": {"$ref": "#/$defs/JsonObject"}
       }
     },
     "PreparedToolDescriptor": {
@@ -424,6 +603,8 @@
           }
         },
         "availability": { "enum": ["callable", "blocked"] },
+        "availabilityReason": {"$ref": "#/$defs/ToolUnavailabilityReason"},
+        "runtimeStatus": {"$ref": "#/$defs/JsonObject"},
         "origin": { "enum": ["coreBuiltin", "extension"] },
         "pluginUri": {
           "type": "string",
@@ -530,7 +711,8 @@
         "selectedPlugins",
         "permissions",
         "environment",
-        "webSearch"
+        "webSearch",
+        "agentCapabilities"
       ],
       "properties": {
         "runRuntimeSnapshotRef": {"$ref": "#/$defs/Id"},
@@ -539,6 +721,9 @@
         "provider": {"$ref": "#/$defs/ProviderRuntimeSnapshot"},
         "approvalReviewer": {"$ref": "#/$defs/ProviderRuntimeSnapshot"},
         "approvalReviewerError": {"$ref": "#/$defs/LocalAgentError"},
+        "agentCapabilities": {"$ref": "#/$defs/AgentCapabilities"},
+        "agentToolsEnabled": {"type": "boolean"},
+        "agentDelegationEnabled": {"type": "boolean"},
         "instructions": {
           "type": "array",
           "items": {
@@ -596,6 +781,7 @@
         "profileId": {"$ref": "#/$defs/Id"},
         "purpose": {"enum": ["agent", "contextCompaction", "approvalReview"]},
         "responseConstraint": {"enum": ["normal", "answerOnly"]},
+        "responseFormat": {"type": "object", "additionalProperties": false, "required": ["name", "schema"], "properties": {"name": {"$ref": "#/$defs/Id"}, "schema": {"$ref": "#/$defs/JsonObject"}}},
         "maxOutputTokens": {"type": "integer", "minimum": 1},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
         "messages": {"type": "array", "items": {"$ref": "#/$defs/ModelMessage"}},
@@ -616,7 +802,13 @@
         {
           "if": {"properties": {"purpose": {"enum": ["contextCompaction", "approvalReview"]}}},
           "then": {
-            "properties": {"responseConstraint": {"const": "answerOnly"}, "tools": {"maxItems": 0}, "hostedTools": {"maxItems": 0}}
+            "properties": {"responseConstraint": {"const": "answerOnly"}}
+          }
+        },
+        {
+          "if": {"properties": {"purpose": {"const": "approvalReview"}}},
+          "then": {
+            "properties": {"tools": {"maxItems": 0}, "hostedTools": {"maxItems": 0}}
           }
         }
       ],
@@ -1288,7 +1480,7 @@
         "createdAt": { "$ref": "#/$defs/Timestamp" },
         "updatedAt": { "$ref": "#/$defs/Timestamp" },
         "confirmationSource": {
-          "enum": ["user", "agent"]
+          "enum": ["user", "agent", "parent", "sessionWorkdir"]
         }
       }
     },
@@ -1316,7 +1508,7 @@
           "items": { "$ref": "#/$defs/PlanOperation" }
         },
         "status": { "const": "published" },
-        "confirmationSource": { "enum": ["user", "agent"] },
+        "confirmationSource": { "enum": ["user", "agent", "parent", "sessionWorkdir"] },
         "decisionId": { "$ref": "#/$defs/Id" },
         "responseMode": { "const": "confirmReviseOrCancel" },
         "sequence": { "type": "integer", "minimum": 1 },
@@ -1957,11 +2149,23 @@
             "approval.revoked",
             "tool.input-rejected",
             "tool.interrupted",
+            "tool.not-executed",
+            "agent.delegation.changed",
             "process.updated",
             "tool.completed",
             "session.plugins.activated",
+            "agent.task.created",
+            "agent.task.started",
+            "agent.task.completed",
+            "agent.closed",
+            "agent.control.completed",
+            "agent.message.received",
             "artifacts.presented",
             "session.control.rejected",
+            "session.control.completed",
+            "wake.scheduled",
+            "wake.cancelled",
+            "wake.triggered",
             "context.compaction.requested",
             "context.compacted",
             "context.composed",
@@ -1980,6 +2184,262 @@
       },
       "allOf": [
         {
+          "if":{"properties":{"type":{"const":"session.control.completed"}}},
+          "then":{"required":["runId","callId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["providerCallId","operation","result"],
+            "properties":{"providerCallId":{"$ref":"#/$defs/Id"},"operation":{"$ref":"#/$defs/SessionOperation"},"result":{"$ref":"#/$defs/JsonObject"}}
+          }}}
+        },
+        {
+          "if":{"properties":{"type":{"const":"wake.scheduled"}}},
+          "then":{"required":["runId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["scheduleId","dueAt","text"],
+            "properties":{"scheduleId":{"$ref":"#/$defs/Id"},"dueAt":{"type":"integer","minimum":0},"text":{"type":"string","minLength":1}}
+          }}}
+        },
+        {
+          "if":{"properties":{"type":{"const":"wake.cancelled"}}},
+          "then":{"required":["runId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["scheduleId"],"properties":{"scheduleId":{"$ref":"#/$defs/Id"}}
+          }}}
+        },
+        {
+          "if":{"properties":{"type":{"const":"wake.triggered"}}},
+          "then":{"required":["runId"],"properties":{"payload":{
+            "type":"object","additionalProperties":false,"required":["scheduleId","text"],
+            "properties":{"scheduleId":{"$ref":"#/$defs/Id"},"text":{"type":"string","minLength":1}}
+          }}}
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.task.created"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "agentSessionId",
+                  "capabilities",
+                  "createsAgent",
+                  "displayName",
+                  "text",
+                  "delivery"
+                ],
+                "properties": {
+                  "taskId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "agentSessionId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "capabilities": {
+                    "$ref": "#/$defs/AgentCapabilities"
+                  },
+                  "createsAgent": {"type": "boolean"},
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "delivery": {
+                    "enum": [
+                      "wait",
+                      "async"
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId",
+              "callId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.task.started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "childRunId"
+                ],
+                "properties": {
+                  "taskId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "childRunId": {
+                    "$ref": "#/$defs/Id"
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.task.completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "result"
+                ],
+                "properties": {
+                  "taskId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "result": {
+                    "$ref": "#/$defs/AgentTaskResult"
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.closed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "agentSessionId"
+                ],
+                "properties": {
+                  "agentSessionId": {
+                    "$ref": "#/$defs/Id"
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "runId"
+                  ]
+                },
+                {
+                  "required": [
+                    "callId"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.control.completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "providerCallId",
+                  "operation",
+                  "result"
+                ],
+                "properties": {
+                  "providerCallId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "operation": {
+                    "$ref": "#/$defs/AgentOperation"
+                  },
+                  "result": {
+                    "$ref": "#/$defs/JsonObject"
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId",
+              "callId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "agent.message.received"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "sourceSessionId",
+                  "text"
+                ],
+                "properties": {
+                  "sourceSessionId": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          }
+        },
+        {
           "if": {"properties": {"type": {"const": "session.created"}}},
           "then": {
             "properties": {
@@ -1990,7 +2450,9 @@
                 "properties": {
                   "displayTitle": {"type": "string"},
                   "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
-                  "profileId": {"$ref": "#/$defs/Id"}
+                  "profileId": {"$ref": "#/$defs/Id"},
+                  "recipe": {"$ref": "#/$defs/AgentRecipe"},
+                  "agentContext": {"$ref": "#/$defs/AgentContext"}
                 }
               }
             },
@@ -2228,7 +2690,7 @@
                   "revision": {"type": "integer", "minimum": 1},
                   "commandId": {"$ref": "#/$defs/Id"},
                   "decisionId": {"$ref": "#/$defs/Id"},
-                  "source": {"enum": ["user", "agent"]},
+                  "source": {"enum": ["user", "agent", "parent", "sessionWorkdir"]},
                   "authorities": {"type": "array", "items": {"$ref": "#/$defs/PlanAuthority"}}
                 }
               }
@@ -2448,6 +2910,15 @@
           }
         },
         {
+          "if": {"properties": {"type": {"const": "tool.not-executed"}}},
+          "then": {"properties": {"payload": {"$ref": "#/$defs/ToolNotExecuted"}}, "required": ["runId", "callId"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "agent.delegation.changed"}}},
+          "then": {"properties": {"payload": {"type": "object", "additionalProperties": false,
+            "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}}}
+        },
+        {
           "if": {"properties": {"type": {"const": "tool.interrupted"}}},
           "then": {
             "properties": {
@@ -2550,10 +3021,11 @@
               "payload": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["providerCallId", "pluginUris"],
+                "required": ["providerCallId", "pluginUris", "kernelCatalogSnapshotRef"],
                 "properties": {
                   "providerCallId": {"$ref": "#/$defs/Id"},
-                  "pluginUris": {"type": "array", "items": {"$ref": "#/$defs/Id"}}
+                  "pluginUris": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
+                  "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"}
                 }
               }
             },
@@ -2751,7 +3223,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "kind", "timelineId", "sequence", "providerRequestId", "activityIds"
+            "kind", "timelineId", "sequence", "activityIds"
           ],
           "properties": {
             "kind": { "const": "toolGroup" },
@@ -2792,6 +3264,7 @@
         "contextUsage",
         "contextCompositions",
         "tokenUsage",
+        "totalTokenUsage",
         "tokenUsageHistory",
         "run",
         "activities",
@@ -2805,6 +3278,11 @@
         "modelSettings"
       ],
       "properties": {
+        "recipe": {"$ref": "#/$defs/AgentRecipe"},
+        "agentContext": {"$ref": "#/$defs/AgentContext"},
+        "agentTasks": {"type": "array", "items": {"$ref": "#/$defs/AgentTaskProjection"}},
+        "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},
+        "pendingAgentDecisions": {"type": "array", "items": {"$ref": "#/$defs/PendingAgentDecision"}},
         "schemaVersion": {"const": "deepcode.session-projection.v6"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 0},
@@ -2817,6 +3295,7 @@
         "assistantDraft": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AssistantDraftProjection"}]},
         "interactions": {"type":"array","items":{"$ref":"#/$defs/InteractionProjection"}},
         "pendingInteraction": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/InteractionProjection"}]},
+        "pendingApprovals": {"type": "array", "items": {"$ref": "#/$defs/ApprovalProjection"}},
         "pendingApproval": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/ApprovalProjection"}]},
         "plans": {"type": "array", "items": {"$ref": "#/$defs/PlanProjection"}},
         "activePlanRef": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/PlanRef"}]},
@@ -2841,6 +3320,7 @@
         "contextUsage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/ContextUsage"}]},
         "contextCompositions": {"type": "array", "items": {"$ref": "#/$defs/ContextComposition"}},
         "tokenUsage": {"$ref": "#/$defs/TokenUsage"},
+        "totalTokenUsage": {"$ref": "#/$defs/TokenUsage"},
         "tokenUsageHistory": {"type": "array", "items": {"$ref": "#/$defs/TokenUsageRound"}},
         "run": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/RunProjection"}]},
         "activities": {"type": "array", "items": {"$ref": "#/$defs/ActivityProjection"}},
@@ -2995,7 +3475,7 @@
         {"if": {"properties": {"outcome": {"enum": ["failed", "indeterminate"]}}}, "then": {"required": ["error"]}},
         {
           "if": {"properties": {"outcome": {"const": "cancelled"}}},
-          "then": {"not": {"anyOf": [{"required": ["error"]}, {"required": ["output"]}]}}
+          "then": {"not": {"required": ["error"]}}
         }
       ]
     },
@@ -3287,6 +3767,15 @@
         "messages": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionMessage"}},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionItem"}},
         "tools": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionTool"}},
+        "modelView": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["throughSequence", "additions"],
+          "properties": {
+            "throughSequence": {"type": "integer", "minimum": 1},
+            "additions": {"type": "array", "items": {"$ref": "#/$defs/ContextModelViewContribution"}}
+          }
+        },
         "partitions": {
           "type": "array",
           "minItems": 7,
@@ -3294,6 +3783,21 @@
           "items": {"$ref": "#/$defs/ContextCompositionPartitionReceipt"}
         },
         "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"}
+      },
+      "if": {"properties": {"purpose": {"enum": ["agent", "contextCompaction"]}}},
+      "then": {"required": ["modelView"]},
+      "else": {"not": {"required": ["modelView"]}}
+    },
+    "ContextModelViewContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contributionId", "contributionKind", "label", "sourceSequence", "message"],
+      "properties": {
+        "contributionId": {"$ref": "#/$defs/Id"},
+        "contributionKind": {"$ref": "#/$defs/ContextCompositionMessage/properties/contributionKind"},
+        "label": {"type": "string"},
+        "sourceSequence": {"type": "integer", "minimum": 1},
+        "message": {"$ref": "#/$defs/ModelMessage"}
       }
     },
     "ContextCompositionPartitionReceipt": {
@@ -3332,6 +3836,12 @@
         "diagnostics": {"$ref": "#/$defs/ErrorDiagnostics"},
         "issues": {"type": "array", "items": {"$ref": "#/$defs/ToolInputIssue"}}
       }
+    },
+    "ToolNotExecuted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attemptId", "reason"],
+      "properties": {"attemptId": {"$ref": "#/$defs/Id"}, "reason": {"enum": ["cancelled", "dependencyFailed"]},
+        "predecessorCallId": {"$ref": "#/$defs/Id"}}
     },
     "ToolInputRejection": {
       "type": "object",
@@ -3734,6 +4244,36 @@
         }
       }
     },
+    "ComputerActivityProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "input"],
+      "properties": {
+        "action": {"type": "string"},
+        "input": {"$ref": "#/$defs/JsonObject"},
+        "app": {"type": "string"},
+        "window": {"$ref": "#/$defs/JsonObject"},
+        "page": {"$ref": "#/$defs/JsonObject"},
+        "dispatched": {"type": "boolean"},
+        "result": {"$ref": "#/$defs/JsonObject"},
+        "observation": {
+          "type": "object", "additionalProperties": false, "required": ["artifactIds"],
+          "properties": {
+            "observationId": {"$ref": "#/$defs/Id"},
+            "artifactIds": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
+            "interface": {"$ref": "#/$defs/JsonObject"}
+          }
+        },
+        "inputObservation": {
+          "type": "object", "additionalProperties": false, "required": ["observationId", "artifactIds"],
+          "properties": {
+            "observationId": {"$ref": "#/$defs/Id"},
+            "artifactIds": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
+            "element": {"$ref": "#/$defs/JsonObject"}
+          }
+        }
+      }
+    },
     "ToolActivityProjection": {
       "type": "object",
       "additionalProperties": false,
@@ -3746,6 +4286,7 @@
         "resources": {"type": "array", "items": {"$ref": "#/$defs/ActivityResourceProjection"}},
         "shell": {"$ref": "#/$defs/ShellActivityProjection"},
         "process": {"$ref": "#/$defs/ProcessActivityProjection"},
+        "computer": {"$ref": "#/$defs/ComputerActivityProjection"},
         "fileChanges": {"type": "array", "items": {"$ref": "#/$defs/FileChangeProjection"}}
       }
     },
@@ -3755,7 +4296,7 @@
       "required": ["activityId", "kind", "status", "label", "runId", "sequence"],
       "properties": {
         "activityId": {"$ref": "#/$defs/Id"},
-        "kind": {"enum": ["run", "tool", "providerHosted", "approval", "plan", "interaction"]},
+        "kind": {"enum": ["run", "tool", "providerHosted", "approval", "plan", "interaction", "agent"]},
         "status": {
           "enum": [
             "active",
@@ -3776,12 +4317,16 @@
         "startedAt": {"$ref": "#/$defs/Timestamp"},
         "liveOutput": {"$ref": "#/$defs/ToolOutputProjection"},
         "tool": {"$ref": "#/$defs/ToolActivityProjection"},
+        "approvalReview": {"$ref": "#/$defs/EffectPreview/properties/review"},
         "inputRejection": {"$ref": "#/$defs/ToolInputError"},
         "interruption": {"$ref": "#/$defs/LocalAgentError"},
+        "notExecuted": {"type": "object", "additionalProperties": false, "required": ["reason"],
+          "properties": {"reason": {"enum": ["cancelled", "dependencyFailed"]}, "predecessorCallId": {"$ref": "#/$defs/Id"}}},
+        "agent": {"type": "object", "additionalProperties": false, "required": ["agentSessionId", "taskId", "phase"], "properties": {"agentSessionId": {"$ref": "#/$defs/Id"}, "taskId": {"$ref": "#/$defs/Id"}, "phase": {"enum": ["started", "completed"]}}},
         "providerHosted": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["providerToolType", "providerCallId", "action"],
+          "required": ["providerToolType", "providerCallId"],
           "properties": {
             "providerToolType": {"const": "web_search"},
             "providerCallId": {"$ref": "#/$defs/Id"},

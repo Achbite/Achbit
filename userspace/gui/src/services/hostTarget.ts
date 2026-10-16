@@ -10,6 +10,8 @@ interface KernelHostTarget {
   port: string;
   uiToken: string;
   windowChrome: 'custom' | 'nativeOverlay';
+  remote: boolean;
+  remoteLabel?: string;
 }
 
 interface KernelHostBootstrap {
@@ -18,6 +20,8 @@ interface KernelHostBootstrap {
   port: string;
   uiToken: string;
   windowChrome: 'custom' | 'nativeOverlay';
+  remote?: boolean;
+  remoteLabel?: string;
 }
 
 declare global {
@@ -63,7 +67,7 @@ function consumeTrustedBootstrap(): KernelHostTarget | null {
   ) {
     return null;
   }
-  return { host, port, uiToken, windowChrome };
+  return { host, port, uiToken, windowChrome, remote: boot.remote === true, remoteLabel: boot.remoteLabel };
 }
 
 const trustedTarget = consumeTrustedBootstrap();
@@ -102,3 +106,6 @@ export function getHostConnectionHeaders(): Record<string, string> {
 export function usesNativeWindowChrome(): boolean {
   return trustedTarget?.windowChrome === 'nativeOverlay';
 }
+
+export const isRemoteHost = (): boolean => trustedTarget?.remote === true;
+export const remoteHostLabel = (): string | undefined => trustedTarget?.remoteLabel;

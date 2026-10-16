@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_USER_SETTINGS, permissionSettings, validatePermissionPatches } from '../../protocol/dist/index.js';
 import { emptySessionState, loopSnapshot, projectSession, reduceSession } from '../dist/index.js';
-import { prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
+import { APPROVAL_REVIEW_SCHEMA, decodeApprovalReview, prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
 import {
   actorWith, createSession, fakeRunPreparation, emptyKernel,
   workspaceBinding, providerEvent, messageCommand, waitForProjection, completedExecutionReply, readEvents, runtimeSnapshot,
@@ -208,6 +208,7 @@ for (const mode of ['ask', 'review', 'allow']) test(`Shell ${mode} has a distinc
       reviews++;
       assert.deepEqual(request.tools, []); assert.deepEqual(request.hostedTools, []);
       assert.equal(request.responseConstraint, 'answerOnly');
+      assert.deepEqual(request.responseFormat, { name: 'execution_permission_decision', schema: APPROVAL_REVIEW_SCHEMA });
       assert.equal(request.providerRuntimeRef, 'provider-runtime:reviewer');
       assert.equal(request.profileId, 'profile:reviewer');
       assert.match(request.messages[1].content, /make check/);
@@ -309,15 +310,20 @@ for (const needsReview of [false, true]) test(`a frozen reviewer configuration e
   }
 });
 
-test('cancelling an independent reviewer settles its own request and never executes the command', async t => {
+for (const malformedFirst of [false, true]) test(`cancelling an independent reviewer (format retry=${malformedFirst}) never executes the command`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:cancel-review';
   await createSession(journal, sessionId, [workspaceBinding]);
   let startedReview;
   const started = new Promise(resolve => { startedReview = resolve; });
   const preparation = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review' } });
-  let executions = 0;
+  let executions = 0, reviews = 0;
   const actor = actorWith(journal, sessionId, { async *stream(request, signal) {
     if (request.purpose === 'approvalReview') {
+      if (++reviews === 1 && malformedFirst) {
+        yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"bad "quote""}' });
+        yield providerEvent(request.requestId, 'completed', {});
+        return;
+      }
       startedReview();
       await new Promise((resolve, reject) => {
         if (signal.aborted) reject(signal.reason);
@@ -343,7 +349,8 @@ test('cancelling an independent reviewer settles its own request and never execu
   assert.equal(stopped.pendingApproval, null);
   assert.equal(executions, 0);
   const events = await readEvents(journal, sessionId);
-  const review = events.find(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview');
+  assert.equal(reviews, malformedFirst ? 2 : 1);
+  const review = events.filter(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview').at(-1);
   assert.equal(review.payload.providerRuntimeRef, 'provider-runtime:reviewer');
   assert.equal(review.payload.outcome, 'indeterminate');
   assert.equal(events.some(event => event.type === 'approval.resolved'), false);
@@ -361,7 +368,7 @@ test('delegated Plan confirmation records Agent authority without waiting for a 
     } });
     else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
     yield providerEvent(request.requestId, 'completed', {});
-  } }, emptyKernel(), prep.port, 'delegated');
+  } }, emptyKernel({ async planAdmission() { return { source: 'agent', authorities: [] }; } }), prep.port, 'delegated');
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:start', 'Inspect the project.'));
   const done = await waitForProjection(actor, state => state.run?.status === 'completed');
@@ -375,11 +382,19 @@ for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents a
   ...['allow', 'deny', 'ask'].map(decision => JSON.stringify({ decision: [decision], reason: 'Malformed decision type.' })),
 ]) test(`unresolved review retains a user decision: ${result}`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:review-uncertain';
+  const appendBatch = journal.appendBatch.bind(journal);
+  journal.appendBatch = async events => {
+    assert.ok(events.length > 0, 'the Session store rejects empty event batches');
+    return await appendBatch(events);
+  };
   await createSession(journal, sessionId, [workspaceBinding]);
-  let executions = 0;
+  let executions = 0, reviews = 0;
   const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'full' } });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
-    if (request.purpose === 'approvalReview') yield providerEvent(request.requestId, 'assistant.message', { content: result });
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      yield providerEvent(request.requestId, 'assistant.message', { content: result });
+    }
     else yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:script', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
@@ -392,7 +407,89 @@ for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents a
   const waiting = await waitForProjection(actor, state => state.run?.status === 'waiting');
   assert.equal(waiting.pendingApproval.preview.review.decision, 'ask');
   assert.ok(waiting.pendingApproval.preview.review.reason); assert.equal(executions, 0);
-  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved'), false);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.some(event => event.type === 'approval.resolved'), false);
+  const validAsk = result.startsWith('{"decision":"ask"');
+  assert.equal(reviews, validAsk ? 1 : 2, 'only invalid format gets one further review');
+  if (!validAsk) {
+    const failures = events.filter(event => event.type === 'approval.reviewed');
+    assert.equal(failures.length, 2);
+    for (const event of failures) {
+      assert.equal(event.payload.decision, 'ask');
+      assert.match(event.payload.reason, /approval_review_invalid/);
+      assert.ok(event.payload.reason.endsWith(result));
+    }
+  }
+});
+
+for (const decision of ['allow', 'deny', 'ask']) test(`one malformed review recovers to ${decision} without changing the operation`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:format-recovery-${decision}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review' } });
+  const requests = [];
+  let agentTurns = 0, executions = 0, denied = 0;
+  const invalid = '{"decision":"allow","reason":"Click "Name""}';
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      requests.push(request);
+      yield providerEvent(request.requestId, 'assistant.message', { content: requests.length === 1 ? invalid
+        : JSON.stringify({ decision, reason: 'Reviewed the original operation.' }) });
+    } else if (++agentTurns === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:format', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
+    } else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Finished.' });
+    yield providerEvent(request.requestId, 'completed', { usage: { inputTokens: 100, outputTokens: 20,
+      contextWindowTokens: request.purpose === 'approvalReview' ? 8192 : 4096 } });
+  } }, emptyKernel({ async execute(request) {
+    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      callId: request.callId, status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
+        approvalReviewer: 'agent', authorizationContext: context } };
+    const reply = shellReply(request);
+    if (request.nonWorkspaceAuthority.decision === 'deny') {
+      denied++;
+      reply.record.outcome = 'denied';
+      reply.record.error = { code: 'permission_denied', message: 'Review denied the operation.' };
+    } else executions++;
+    return reply;
+  } }), prep.port, 'format-recovery');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Run make check, without changing the command.'));
+  const state = await waitForProjection(actor, state => state.run?.status === (decision === 'ask' ? 'waiting' : 'completed'));
+  assert.equal(requests.length, 2);
+  assert.notEqual(requests[0].requestId, requests[1].requestId);
+  assert.deepEqual(requests[0].messages[1], requests[1].messages[1], 'original user, operation, evidence and permissions remain identical');
+  assert.deepEqual(requests[0].responseFormat, requests[1].responseFormat);
+  assert.deepEqual(requests[1].tools, []);
+  assert.match(requests[1].messages[0].content, /previous response did not satisfy/);
+  assert.equal(executions, decision === 'allow' ? 1 : 0);
+  assert.equal(denied, decision === 'deny' ? 1 : 0);
+  const events = await readEvents(journal, sessionId);
+  const reviews = events.filter(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview');
+  assert.deepEqual(reviews.map(event => event.payload.outcome), ['completed', 'completed'], 'format failure does not falsify a completed Provider request');
+  const verdicts = events.filter(event => event.type === 'approval.reviewed');
+  assert.deepEqual(verdicts.map(event => event.payload.decision), ['ask', decision]);
+  assert.ok(verdicts[0].payload.reason.endsWith(invalid));
+  assert.equal(events.filter(event => event.type === 'context.updated' && requests.some(request => request.requestId === event.payload.providerRequestId)).length, 2);
+  assert.equal(verdicts.at(-1).payload.providerRequestId, requests[1].requestId);
+  const review = { decision, reason: 'Reviewed the original operation.' };
+  assert.deepEqual(state.activities.find(activity => activity.kind === 'approval').approvalReview, review,
+    'the latest reason remains in history after automatic resolution or user handoff');
+  const replayed = projectSession(loopSnapshot(sessionId, events).state);
+  assert.deepEqual(replayed.activities.find(activity => activity.kind === 'approval').approvalReview, review);
+  assert.equal(events.some(event => event.type === 'run.waiting'), decision === 'ask', 'format recovery does not enter a human wait');
+  if (decision === 'ask') assert.equal(state.pendingApproval.preview.review.decision, 'ask');
+});
+
+test('format diagnostics retain the parser error and a bounded original response', () => {
+  const invalid = '{"decision":"allow","reason":"' + 'x'.repeat(6000);
+  assert.throws(() => decodeApprovalReview(invalid), error => {
+    assert.equal(error.code, 'approval_review_invalid');
+    assert.equal(error.diagnostics.phase, 'approvalReview');
+    assert.ok(error.diagnostics.causes[0].message.length > 0);
+    assert.ok(error.diagnostics.causes[1].message.startsWith(invalid.slice(0, 4096)));
+    assert.match(error.diagnostics.causes[1].message, /response truncated/);
+    assert.ok(error.diagnostics.causes[1].message.length < 4200);
+    return true;
+  });
 });
 
 function shellReply(request) {
@@ -407,7 +504,7 @@ function shellReply(request) {
   return reply;
 }
 
-for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} during review applies before execution`, async t => {
+for (const nextMode of ['ask', 'allow']) for (const malformed of [false, true]) test(`changing Shell to ${nextMode} during review (malformed=${malformed}) applies before execution`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = `session:change-${nextMode}`;
   await createSession(journal, sessionId, [workspaceBinding]);
   let startReview, releaseReview;
@@ -418,14 +515,15 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
   const actor = actorWith(journal, sessionId, { async *stream(request) {
     if (request.purpose === 'approvalReview') {
       reviews++; startReview(); await released;
-      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"The requested command fits the delegated scope."}' });
+      yield providerEvent(request.requestId, 'assistant.message', { content: malformed ? 'not JSON'
+        : '{"decision":"allow","reason":"The requested command fits the delegated scope."}' });
     } else if (++turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:change', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
     else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
     const changes = (await readEvents(journal, sessionId)).filter(event => event.type === 'session.permissions.updated');
     const mode = changes.at(-1)?.payload.patches['agent.permissions.shell'] ?? 'review';
-    if (mode === 'allow' || request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
+    if (mode === 'allow' || mode === 'review' && request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
     return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: mode === 'review' ? 'agent' : 'user', authorizationContext: context } };
@@ -438,7 +536,8 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
   releaseReview();
   const state = await waitForProjection(actor, state => state.run?.status === (nextMode === 'ask' ? 'waiting' : 'completed'));
   assert.equal(reviews, 1); assert.equal(executions, nextMode === 'ask' ? 0 : 1);
-  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), false);
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), !malformed,
+    'Only a valid review is retained as authority evidence; current Kernel admission still decides whether it grants execution.');
   if (nextMode === 'ask') {
     assert.equal(state.pendingApproval.preview.approvalReviewer, 'user');
     assert.equal(state.activities.filter(activity => activity.kind === 'approval' && activity.status === 'waiting').length, 1);
@@ -448,9 +547,9 @@ for (const nextMode of ['ask', 'allow']) test(`changing Shell to ${nextMode} dur
 test('desktop review uses the exact observation as evidence without treating Agent assurances as authority or replaying images', () => {
   const runId = 'run:desktop-review', callId = 'call:click';
   const args = { action: 'click', app: 'example.app', observationId: 'frame:exact', x: 12, y: 18 };
-  const observed = { observationId: 'frame:exact', app: args.app, window: { title: 'Requested form' },
+  const observed = { observationId: 'frame:exact', app: args.app, mode: 'background', window: { title: 'Requested form' },
     contentRef: '/private/archive/frame.png', image: 'pixels-must-not-be-replayed', capturedAt: '123',
-    elements: [{ title: 'Submit', bounds: { x: 10, y: 10, width: 20, height: 20 } },
+    elements: [{ elementId: 'element:1', title: 'Submit', bounds: { x: 10, y: 10, width: 20, height: 20 } },
       { title: 'Other control', bounds: { x: 100, y: 100, width: 20, height: 20 } }] };
   const snapshot = { state: { ...emptySessionState('session:desktop-review'), run: { runId, workspaceBindings: [] } }, events: [
     { type: 'tool.completed', payload: { record: { toolName: 'computer.control', outcome: 'completed', output: observed } } },
@@ -486,6 +585,115 @@ test('desktop review uses the exact observation as evidence without treating Age
   assert.match(request.messages[0].content, /never allow solely because the requester promises safety/);
   assert.match(request.messages[0].content, /return ask to withhold automatic approval/);
   assert.deepEqual(request.tools, []);
+  args.action = 'press'; args.elementId = 'element:1'; delete args.x; delete args.y;
+  const semantic = JSON.parse(prepare().messages[1].content).observedTarget;
+  assert.equal(semantic.mode, 'background');
+  assert.deepEqual(semantic.selectedElement, observed.elements[0]);
+  args.elementId = 'element:missing';
+  assert.equal(JSON.parse(prepare().messages[1].content).observedTarget.selectedElement, undefined);
   args.observationId = 'frame:missing';
   assert.equal(JSON.parse(prepare().messages[1].content).observedTarget, undefined, 'No latest-frame substitute for missing observation');
+});
+
+
+function chromeReviewFixture() {
+  const sessionId = 'session:chrome-review', runId = 'run:chrome-review', callId = 'call:chrome-review';
+  const pluginUri = 'plugin://chrome-devtools@builtin', pluginInstanceRef = 'plugin-instance:chrome-review';
+  const runtime = runtimeSnapshot(runId);
+  const name = action => `mcp.deepcode-chrome.${action}`;
+  const actions = ['take_snapshot', 'fill_form', 'click', 'drag', 'evaluate_script', 'navigate_page', 'close_page', 'list_pages'];
+  runtime.tools = actions.map(action => ({ ...shell, name: name(action), toolBindingRef: `binding:chrome:${action}`,
+    pluginUri, origin: 'extension', possibleEffects: ['external'] }));
+  runtime.selectedPlugins = { catalogRevision: 'plugins:review', plugins: [{ uri: pluginUri, pluginInstanceRef,
+    pluginArtifactRef: 'plugin-artifact:chrome', extensionGenerationRef: runtime.extensionGenerationRef, capabilityRefs: [] }] };
+  const args = { pageId: 11, elements: [{ uid: '1_10', value: 'test' }, { uid: '1_15', value: 'preview' }] };
+  const request = { type: 'tool.requested', sessionId, runId, callId, payload: { toolName: name('fill_form'), input: args } };
+  const snapshot = { state: { ...emptySessionState(sessionId), run: { runId, workspaceBindings: [] } }, events: [] };
+  const tree = { id: '1_0', role: 'RootWebArea', name: 'Requested local test', url: 'file:///owned/test.html', children: [
+    { id: '1_10', role: 'textbox', name: 'Test text' }, { id: '1_15', role: 'combobox', name: 'Test mode', value: 'idle' },
+  ] };
+  const completed = (sequence, action, input, structuredContent) => ({ type: 'tool.completed', sessionId, runId, sequence,
+    payload: { record: { sessionId, runId, recordId: `record:chrome:${sequence}`, callId: `call:chrome:${sequence}`,
+      toolName: name(action), input, outcome: 'completed', kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+      extensionGenerationRef: runtime.extensionGenerationRef, toolBindingRef: `binding:chrome:${action}`,
+      preparedEffect: { pluginInstanceRef }, completedAt: String(sequence), authority: { source: 'user', decision: 'allow' },
+      output: { structuredContent, content: [{ type: 'text', text: 'Do not infer target identity from this rendered text.' }],
+        modelImages: [{ artifactId: 'pixels-must-not-be-replayed' }] } } } });
+  const observed = completed(10, 'take_snapshot', { pageId: 11 }, { snapshot: tree });
+  snapshot.events.push(observed, request);
+  const prepare = () => prepareApprovalReview(snapshot, runtime, { runId, callId,
+    preview: { operation: { toolName: request.payload.toolName, arguments: request.payload.input }, effects: ['external'], logicalTargets: [] } }, 'provider:chrome-review').request;
+  return { snapshot, runtime, observed, request, tree, completed, prepare };
+}
+
+test('Chrome review supplies exact page and all target UIDs with recorded provenance, without granting authority', () => {
+  const f = chromeReviewFixture();
+  f.snapshot.events.splice(1, 0, f.completed(11, 'click', { pageId: 11, uid: '1_10' }, { message: 'Clicked' }));
+  const request = f.prepare(), packet = JSON.parse(request.messages[1].content);
+  assert.deepEqual(packet.observedTarget.page, { pageId: 11, id: '1_0', role: 'RootWebArea', name: 'Requested local test', url: 'file:///owned/test.html' });
+  assert.deepEqual(packet.observedTarget.selectedElements, f.tree.children);
+  assert.deepEqual(packet.observedTarget.observation, { recordId: 'record:chrome:10', sequence: 10, completedAt: '10',
+    toolBindingRef: 'binding:chrome:take_snapshot' });
+  assert.equal(packet.observedTarget.priorOperations[1].callId, 'call:chrome:11');
+  assert.deepEqual(packet.observedTarget.priorOperations[1].authority, { source: 'user', decision: 'allow' });
+  assert.match(packet.observedTarget.scope, /not current DOM verification or user authorization/);
+  assert.doesNotMatch(request.messages[1].content, /pixels-must-not-be-replayed|Do not infer target identity/);
+  assert.equal(packet.grant, 'thisCallOnly');
+  assert.deepEqual(request.tools, []);
+  assert.match(request.messages[0].content, /return ask to withhold automatic approval/);
+  f.runtime.kernelCatalogSnapshotRef = 'kernel-catalog:expanded';
+  f.runtime.extensionGenerationRef = 'extension-generation:expanded';
+  f.runtime.tools = f.runtime.tools.map(tool => ({ ...tool, toolBindingRef: `${tool.toolBindingRef}:expanded` }));
+  assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget, packet.observedTarget,
+    'unrelated tool-view expansion does not replace the same Chrome instance or its recorded evidence');
+  f.request.payload.toolName = 'mcp.deepcode-chrome.drag';
+  f.request.payload.input = { pageId: 11, from_uid: '1_10', to_uid: '1_15' };
+  assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget.selectedElements, f.tree.children);
+  f.request.payload.toolName = 'mcp.deepcode-chrome.evaluate_script';
+  f.request.payload.input = { pageId: 11, function: '(first, second) => [first.value, second.value]', args: ['1_10', '1_15'] };
+  assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget.selectedElements, f.tree.children);
+  f.request.payload.input.args = ['1_10', 'missing'];
+  assert.equal(JSON.parse(f.prepare().messages[1].content).observedTarget, undefined);
+});
+
+test('Chrome review uses only the current page observation and never substitutes an older UID match', () => {
+  const f = chromeReviewFixture();
+  const target = () => JSON.parse(f.prepare().messages[1].content).observedTarget;
+  const baseline = structuredClone(f.observed);
+  for (const change of [
+    event => { event.sessionId = 'session:other'; },
+    event => { event.runId = 'run:other'; },
+    event => { event.payload.record.preparedEffect.pluginInstanceRef = 'plugin-instance:other'; },
+    event => { event.payload.record.input.pageId = 12; },
+  ]) {
+    const unrelated = structuredClone(baseline); change(unrelated);
+    f.snapshot.events = [unrelated, f.request];
+    assert.equal(target(), undefined, 'unrelated recorded observations cannot establish this target');
+  }
+  const newerMissingTarget = f.completed(12, 'take_snapshot', { pageId: 11 },
+    { snapshot: { ...f.tree, children: [f.tree.children[0]] } });
+  f.snapshot.events = [baseline, newerMissingTarget, f.request];
+  assert.equal(target(), undefined, 'every fill_form UID must belong to the same latest snapshot');
+  for (const invalidation of [
+    f.completed(12, 'navigate_page', { pageId: 11, type: 'reload' }, {}),
+    f.completed(12, 'close_page', { pageId: 11 }, {}),
+    f.completed(12, 'list_pages', {}, { reconnected: true }),
+    f.completed(12, 'take_snapshot', { pageId: 11, filePath: '/owned/snapshot.txt' }, { snapshotFilePath: '/owned/snapshot.txt' }),
+  ]) {
+    f.snapshot.events = [baseline, invalidation, f.request];
+    assert.equal(target(), undefined, 'a changed or unreturned latest observation must not reuse old evidence');
+    f.snapshot.events.splice(2, 0, f.completed(13, 'take_snapshot', { pageId: 11 }, { snapshot: f.tree }));
+    assert.equal(target().observation.sequence, 13, 'an explicit new recorded snapshot can establish evidence again');
+  }
+  f.snapshot.events = [baseline, f.completed(12, 'navigate_page', { pageId: 12, type: 'reload' }, {}), f.request];
+  assert.equal(target().observation.sequence, 10, 'another page does not replace this page observation');
+  f.runtime.tools = f.runtime.tools.map(tool => ({ ...tool, pluginUri: 'plugin://external-chrome@user' }));
+  assert.equal(target(), undefined, 'same canonical names from an external MCP cannot borrow builtin Chrome evidence');
+});
+
+test('permission decision wire fields remain English while the reason preserves the user language', () => {
+  assert.deepEqual(decodeApprovalReview('{"decision":"allow","reason":"按用户要求读取文件"}'),
+    { decision: 'allow', reason: '按用户要求读取文件' });
+  assert.throws(() => decodeApprovalReview('{"决策":"允许","原因":"读取文件"}'), /approval_review_invalid/);
+  assert.deepEqual(APPROVAL_REVIEW_SCHEMA.properties.decision.enum, ['allow', 'deny', 'ask']);
 });

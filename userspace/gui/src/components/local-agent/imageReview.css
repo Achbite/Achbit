@@ -1,0 +1,11 @@
+.conversation-image-review { display: block; max-width: 640px; margin: 12px 0; }
+.conversation-image-review__open { display: block; padding: 0; border: 0; border-radius: 12px; background: transparent; cursor: zoom-in; max-width: 100%; overflow: hidden; }
+/* Keep Windows screenshots flush when the shared .local-agent button rule applies. */
+.conversation-image-review__open[data-frameless] { min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: zoom-in; }
+.conversation-image-review__open:disabled { cursor: default; }
+.conversation-image-review__open img { display: block; max-width: 100%; height: auto; }
+.conversation-image-review__dialog { box-sizing: border-box; color: var(--dc-foreground); width: min(1200px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: calc(100vh - 48px); padding: 12px; border: 1px solid var(--dc-border); border-radius: 12px; background: var(--dc-surface); }
+.conversation-image-review__dialog::backdrop { background: color-mix(in srgb, var(--dc-shadow-color) 40%, transparent); }
+.conversation-image-review__close { display: block; margin: 0 0 12px auto; }
+.conversation-image-review__scroll { display: block; max-width: 100%; max-height: calc(100vh - 128px); overflow: auto; }
+.conversation-image-review__scroll img { display: block; max-width: none; height: auto; }

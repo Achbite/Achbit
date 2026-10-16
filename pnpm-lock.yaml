@@ -12,6 +12,12 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  plugins/chrome-devtools:
+    dependencies:
+      chrome-devtools-mcp:
+        specifier: 1.10.1
+        version: 1.10.1
+
   shells/deepcode-gui:
     devDependencies:
       '@tauri-apps/cli':
@@ -1083,6 +1089,19 @@ packages:
 
   character-reference-invalid@2.0.1:
     resolution: {integrity: sha512-iBZ4F4wRbyORVsu0jPV7gXkOsGYjGHPmAyv+HiHG8gi5PtC9KI2j1+v8/tlibRvjoWX027ypmG/n0HtO5t7unw==}
+
+  chrome-devtools-mcp@1.10.1:
+    resolution: {integrity: sha512-Klw6HWDqHC/XS1JwZldd2r49aUhbUJN9m9Mvcx4SEueIPXtzuQX+QelxAViobv8YUkDZ7HWDrmViR6LeYK0wAw==}
+    engines: {node: ^20.19.0 || ^22.12.0 || >=23}
+    hasBin: true
+    peerDependencies:
+      '@blackwell-systems/gcf': ^2.2.2
+      '@toon-format/toon': ^4.1.0
+    peerDependenciesMeta:
+      '@blackwell-systems/gcf':
+        optional: true
+      '@toon-format/toon':
+        optional: true
 
   comma-separated-tokens@2.0.3:
     resolution: {integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==}
@@ -2880,6 +2899,8 @@ snapshots:
   character-entities@2.0.2: {}
 
   character-reference-invalid@2.0.1: {}
+
+  chrome-devtools-mcp@1.10.1: {}
 
   comma-separated-tokens@2.0.3: {}
 

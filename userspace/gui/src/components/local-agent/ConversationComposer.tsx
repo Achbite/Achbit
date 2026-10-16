@@ -1,6 +1,6 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import type { BrowserAnnotationDraft } from './browserReview';
-import React, { useId, useLayoutEffect, useRef } from 'react';
+import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import SessionModelSelector from './SessionModelSelector';
@@ -10,6 +10,7 @@ import { ComposerPermissionControl } from './ComposerPermissionControl';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
 import { pastedTextTitle } from '../../services/pastedText';
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
 
@@ -72,8 +73,10 @@ export function ConversationComposer({
     pluginQuery,
     setPluginQuery,
     selectPlugin,
-    focusCommandSuggestionVisible,
-    selectFocusCommand,
+    commandSuggestions,
+    commandActiveIndex,
+    setCommandActiveIndex,
+    selectCommand,
     updateDraft,
     openPluginPicker,
     insertFocusCommand,
@@ -90,6 +93,22 @@ export function ConversationComposer({
     addAttachments: composer.selectMessageAttachments,
   };
   const pickerId = useId();
+  const commandMenuId = useId();
+  const [pressFeedback, setPressFeedback] = useState<'a' | 'b' | null>(null);
+  const editedDraft = useRef<string | null>(null);
+  // Alternating names restarts the surface pulse, including rapid repeat clicks.
+  const playPressFeedback = () => setPressFeedback(current => current === 'a' ? 'b' : 'a');
+  const draftEmpty = !draft && !pendingFilesystemPaths.length
+    && !composer.pastedTexts.length && !pluginSelections.length;
+  useLayoutEffect(() => {
+    // Sending clears the draft; deleting the last character is still editing.
+    if (draftEmpty && editedDraft.current !== draft) setPressFeedback(null);
+    editedDraft.current = null;
+  }, [draftEmpty, draft]);
+  const commandMenuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    commandMenuRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [commandActiveIndex, draft]);
   const annotations = composer.pastedTexts.filter(item => item.browserReview);
   const attachmentRail = useRef<HTMLDivElement>(null);
   const previousAttachments = useRef(new Set<string>());
@@ -127,6 +146,10 @@ export function ConversationComposer({
     observer.observe(textarea);
     return () => observer.disconnect();
   }, [inputMode, textareaRef]);
+
+  useAutoDismiss(error, composer.clearError);
+  useAutoDismiss(attachmentError, composer.clearAttachmentError);
+  useAutoDismiss(uiActionError, onDismissUiActionError);
 
   return (
     <UiRegion slot="composer.layout" data={regionData} actions={regionActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
@@ -169,11 +192,19 @@ export function ConversationComposer({
       <ComposerQuestionPrompt language={language} composer={composer} />
       <div
         className={`local-agent__composer local-agent__composer--${inputMode}`}
+        data-press-feedback={pressFeedback ?? undefined}
         onMouseDown={(event) => {
+          const textarea = textareaRef.current;
+          if (event.button !== 0 || !textarea || textarea.disabled) return;
           const target = event.target as HTMLElement;
+          if (target === textarea) {
+            playPressFeedback();
+            return;
+          }
           if (target.closest('button, input, select, textarea, label, a, [role="button"], .local-agent__interaction-panel, .local-agent__decision')) return;
           event.preventDefault();
-          textareaRef.current?.focus();
+          textarea.focus();
+          playPressFeedback();
         }}
       >
         <ComposerDecisionPanels language={language} composer={composer} />
@@ -232,25 +263,32 @@ export function ConversationComposer({
             </div>
           </div>
         )}
-        {focusCommandSuggestionVisible && (
+        {commandSuggestions.length > 0 && (
           <div
+            id={commandMenuId}
+            ref={commandMenuRef}
             className="local-agent__command-suggestions"
             role="listbox"
-            aria-label={t(language, 'agent.context.focusCommand')}
+            aria-label={t(language, 'agent.commands.title')}
           >
-            <button
+            {commandSuggestions.map((command, index) => <button
+              key={command.id}
+              id={`${commandMenuId}-${index}`}
               type="button"
               role="option"
-              aria-selected="true"
-              onClick={selectFocusCommand}
+              aria-selected={index === commandActiveIndex}
+              disabled={!command.enabled}
+              onMouseEnter={() => { if (command.enabled) setCommandActiveIndex(index); }}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => void selectCommand(command.id)}
             >
-              <DeepCodeShellIcon name="activity" />
+              <DeepCodeShellIcon name={command.icon} />
               <span>
-                <b>{t(language, 'agent.context.focusCommand')}</b>
-                <small>{t(language, 'agent.context.focusCommandDescription')}</small>
+                <b>{t(language, command.id === 'focus' ? 'agent.context.focusCommand' : `agent.commands.${command.id}`)}</b>
+                <small>{t(language, command.id === 'focus' ? 'agent.context.focusCommandDescription' : `agent.commands.${command.id}Description`)}</small>
               </span>
-              <kbd>/focus</kbd>
-            </button>
+              <kbd>/{command.id}</kbd>
+            </button>)}
           </div>
         )}
         {selectedProfileId && !profiles.some((profile) => profile.id === selectedProfileId && profile.enabled) && (
@@ -330,16 +368,26 @@ export function ConversationComposer({
         <textarea
           ref={textareaRef}
           value={draft}
+          aria-controls={commandSuggestions.length ? commandMenuId : undefined}
+          aria-activedescendant={commandSuggestions.length && commandActiveIndex >= 0 ? `${commandMenuId}-${commandActiveIndex}` : undefined}
           rows={compactInput ? 1 : 3}
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'
             : pendingInteraction ? 'agent.composer.placeholder.interaction' : 'agent.composer.placeholder.task')}
           disabled={Boolean(pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}
-          onChange={(event) => updateDraft(
-            event.target.value,
-            event.target.selectionStart ?? event.target.value.length,
-          )}
-          onFocus={(event) => recordComposerElementState(event.currentTarget, true)}
-          onBlur={(event) => recordComposerElementState(event.currentTarget, false)}
+          onChange={(event) => {
+            // Typing after a send re-engages the surface even when focus was retained.
+            editedDraft.current = event.target.value;
+            setPressFeedback(current => current ?? 'a');
+            updateDraft(event.target.value, event.target.selectionStart ?? event.target.value.length);
+          }}
+          onFocus={(event) => {
+            setPressFeedback(current => current ?? 'a');
+            recordComposerElementState(event.currentTarget, true);
+          }}
+          onBlur={(event) => {
+            setPressFeedback(null);
+            recordComposerElementState(event.currentTarget, false);
+          }}
           onSelect={(event) => recordComposerElementState(
             event.currentTarget,
             document.activeElement === event.currentTarget,
@@ -421,6 +469,7 @@ export function ConversationComposer({
               contextUsage={projection?.contextUsage ?? null}
               contextCompositions={projection?.contextCompositions ?? []}
               busy={loading || submitting || modelSettingsBusy}
+              requestedPanel={composer.modelPanelRequest}
               confirmed={modelSelectionConfirmed}
               onSelect={selectModel}
             />}

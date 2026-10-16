@@ -1,9 +1,11 @@
+import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
 import { isManagedProcessSnapshot, isSessionAuthorizationScope, providerRuntimeForPurpose } from '@deepcode/protocol';
 import { advanceDeliverables, compareDeliverables } from './deliverables.js';
 import { advanceTodoList } from './todoState.js';
-import { appendInputFileBindings } from './workspaceBindings.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { computerRequest, projectComputerActivity } from './computerActivity.js';
+import { projectRunLifecycleEvent, reduceRunLifecycle } from './runLifecycle.js';
 import { projectDraftSourceContent, projectSourceContent } from './sourceReferences.js';
 import type {
   ActivityProjection,
@@ -30,13 +32,20 @@ import {
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
+  SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_SESSION,
   SESSION_PROJECTION_VERSION, permissionSettings, validatePermissionPatches, isLocalAgentErrorValue,
 } from '@deepcode/protocol';
 
 export interface SessionState {
+  recipe?: SessionProjection['recipe'];
+  agentContext?: SessionProjection['agentContext'];
+  agentTasks: NonNullable<SessionProjection['agentTasks']>;
+  agentChildren: NonNullable<SessionProjection['agentChildren']>;
   providerAttempts: Record<string, NonNullable<SessionProjection['providerAttempts']>[number]>;
   failureSnapshots: Record<string, NonNullable<SessionProjection['failureSnapshot']>>;
   permissionOverrides: SessionProjection['permissionOverrides'];
+  publishedPermissions?: NonNullable<SessionProjection['effectivePermissions']>;
   shellAuthorizations: SessionProjection['shellAuthorizations'];
   modelSettings: SessionProjection['modelSettings'];
   sessionId: string;
@@ -50,7 +59,9 @@ export interface SessionState {
   acceptedInputs: Record<string, { messageId: string; replyToInteraction?: { interactionId: string; prompt: string } }>;
   narratives: SessionProjection['narratives'];
   interactions: SessionProjection['interactions'];
+  pendingApprovals: NonNullable<SessionProjection['pendingApprovals']>;
   pendingApproval: SessionProjection['pendingApproval'];
+  agentDelegationEnabled: boolean | null;
   plans: SessionProjection['plans'];
   activePlanRef: SessionProjection['activePlanRef'];
   pendingPlan: SessionProjection['pendingPlan'];
@@ -102,6 +113,7 @@ export interface ProviderCallFactState {
 
 export function emptySessionState(sessionId: string): SessionState {
   return {
+    agentTasks: [], agentChildren: [],
     providerAttempts: {}, failureSnapshots: {},
     permissionOverrides: {}, shellAuthorizations: [],
     modelSettings: null,
@@ -116,7 +128,9 @@ export function emptySessionState(sessionId: string): SessionState {
     acceptedInputs: {},
     narratives: [],
     interactions: [],
+    pendingApprovals: [],
     pendingApproval: null,
+    agentDelegationEnabled: null,
     plans: [],
     activePlanRef: null,
     pendingPlan: null,
@@ -156,8 +170,20 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
   if (event.sequence !== previous.revision + 1) throw new Error('session_event_sequence_gap');
 
   const next: SessionState = { ...previous, revision: event.sequence };
+  const lifecycleEvent = projectRunLifecycleEvent(event);
+  const lifecycle = lifecycleEvent ? reduceRunLifecycle({
+    run: previous.run ? { runId: previous.run.runId, status: previous.run.status,
+      ...(previous.run.waitingReason ? { waitingReason: previous.run.waitingReason } : {}) } : null,
+    pendingInteractions: previous.interactions.filter(item => item.status === 'pending'),
+    pendingPlan: previous.pendingPlan,
+    pendingApprovals: previous.pendingApprovals,
+    pendingApproval: previous.pendingApproval,
+  }, lifecycleEvent) : null;
 
   switch (event.type) {
+    case 'agent.delegation.changed':
+      next.agentDelegationEnabled = event.payload.enabled;
+      break;
     case 'provider.attempt.updated': {
       assertRunningRun(next, event.runId, 'provider_attempt_run_not_active');
       const fact = event.payload;
@@ -219,22 +245,28 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
     case 'session.permissions.updated':
       validatePermissionPatches(event.payload.patches);
       next.permissionOverrides = { ...next.permissionOverrides, ...event.payload.patches };
-      if (next.run?.status === 'waiting' && next.run.waitingReason === 'approval') resumeRun(next, next.run.runId);
       break;
     case 'approval.revoked':
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.authorityId !== event.payload.authorityId);
       break;
-    case 'approval.reviewed':
-      if (!next.pendingApproval || next.pendingApproval.approvalId !== event.payload.approvalId) throw new Error('approval_review_request_missing');
-      next.pendingApproval = { ...next.pendingApproval, preview: { ...next.pendingApproval.preview,
-        review: { decision: event.payload.decision, reason: event.payload.reason } } };
+    case 'approval.reviewed': {
+      if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
+      const review = { decision: event.payload.decision, reason: event.payload.reason };
+      next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
+        ? { ...item, preview: { ...item.preview, review } } : item);
+      const activityId = approvalActivityId(event.payload.approvalId);
+      next.activities = { ...next.activities, [activityId]: { ...next.activities[activityId], approvalReview: review } };
       break;
+    }
     case 'session.model-settings.updated':
       next.modelSettings = { ...event.payload.settings };
       break;
     case 'session.created':
+      if (event.payload.recipe) next.recipe = structuredClone(event.payload.recipe);
+      next.permissionOverrides = structuredClone(event.payload.recipe?.permissions ?? {});
+      if (event.payload.agentContext) next.agentContext = structuredClone(event.payload.agentContext);
       next.modelSettings = event.payload.profileId
-        ? { profileId: event.payload.profileId, reasoningEffortOverride: null } : null;
+        ? { profileId: event.payload.profileId, reasoningEffortOverride: event.payload.recipe?.reasoningEffort ?? null } : null;
       next.display = { creationTitle: event.payload.displayTitle };
       next.creationWorkspaceBindings = event.payload.workspaceBindings.map((binding) => ({ ...binding }));
       next.sessionDirectoryIndexes = [];
@@ -293,10 +325,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         );
       }
       next.run = {
-        runId: event.runId,
+        ...lifecycle!.run!,
         ...(event.payload.runtimeSnapshot.environment.hostBinding
           ? { hostBinding: structuredClone(event.payload.runtimeSnapshot.environment.hostBinding) as unknown as NonNullable<RunProjection['hostBinding']> } : {}),
-        status: 'running',
         workspaceBindings: event.payload.workspaceBindings.map((binding) => ({ ...binding })),
         profileId: event.payload.runtimeSnapshot.provider.profileId,
       };
@@ -357,9 +388,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         } else {
           if (event.payload.role === 'user' && event.runId && event.payload.filesystemReferences?.length) {
             assertRunningRun(next, event.runId, 'input_resources_run_not_active');
-            next.run = { ...next.run!, workspaceBindings: appendInputFileBindings(
-              next.run!.workspaceBindings, event.payload.filesystemReferences,
-            ) };
           }
           next.messages.push({
             ...common,
@@ -446,10 +474,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.interactions = next.interactions.map(item => item === interaction
         ? { ...item, status: 'answered', response: event.payload.response } : item);
       settleActivity(next, interactionActivityId(event.payload.interactionId), 'completed');
-      if (next.run?.status === 'waiting' && next.run.waitingReason === 'userInput'
-        && !next.interactions.some(item => item.runId === event.runId && item.status === 'pending' && item.mode !== 'continue')) {
-        resumeRun(next, event.runId);
-      }
       break;
     }
     case 'plan.published': {
@@ -506,7 +530,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planActivityId(event.payload.planId, event.payload.revision),
         'completed',
       );
-      resumeRun(next, event.runId);
       break;
     case 'plan.revision.requested':
       assertPendingPlan(next, event);
@@ -523,7 +546,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planActivityId(event.payload.planId, event.payload.revision),
         'completed',
       );
-      resumeRun(next, event.runId);
       break;
     case 'plan.cancelled':
       assertPendingPlan(next, event);
@@ -540,7 +562,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planActivityId(event.payload.planId, event.payload.revision),
         'cancelled',
       );
-      resumeRun(next, event.runId);
       break;
     case 'plan.superseded':
       if (!['confirmed', 'revisionRequested'].includes(
@@ -559,7 +580,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         planFor(next, event.payload.planId, event.payload.revision).status,
       )) throw new Error('plan_invalidation_state_invalid');
       {
-        const invalidatedPending = samePlanRef(next.pendingPlan, event.payload);
         updatePlan(next, event.payload.planId, event.payload.revision, (plan) => ({
           ...plan,
           status: 'invalidated',
@@ -573,7 +593,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
           planActivityId(event.payload.planId, event.payload.revision),
           'failed',
         );
-        if (invalidatedPending) resumeRun(next, event.runId);
       }
       break;
     case 'artifacts.presented': {
@@ -591,7 +610,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.todoList = advanceTodoList(next.todoList, event);
       break;
     }
-    case 'tool.requested':
+    case 'tool.requested': {
       next.activities = { ...next.activities };
       recordProviderCallFact(
         next,
@@ -610,7 +629,12 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         callId: event.callId,
         sequence: event.sequence,
       };
+      const computer = computerRequest(event.payload.toolName, event.payload.input);
+      if (computer) next.activities[toolActivityId(event.callId)].tool = {
+        operation: event.payload.toolName, resources: [], computer,
+      };
       break;
+    }
     case 'tool.started': {
       next.activities = { ...next.activities };
       const activity = next.activities[toolActivityId(event.callId)];
@@ -618,13 +642,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.activities[activity.activityId] = { ...activity, status: 'active', startedAt: event.payload.startedAt };
       break;
     }
-    case 'approval.requested':
-      if (next.pendingApproval) {
-        // A fresh Kernel preview replaces the pending decision after policy changes.
-        settleActivity(next, approvalActivityId(next.pendingApproval.approvalId), 'cancelled');
-      }
+    case 'approval.requested': {
+      const previousApproval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (previousApproval) settleActivity(next, approvalActivityId(previousApproval.approvalId), 'cancelled');
       next.activities = { ...next.activities };
-      next.pendingApproval = {
+      const approval = {
         approvalId: event.payload.approvalId,
         runId: event.runId,
         callId: event.callId,
@@ -637,6 +659,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         sequence: event.sequence,
         createdAt: event.occurredAt,
       };
+      next.pendingApprovals = [...next.pendingApprovals.filter(item => item.callId !== event.callId), approval];
       next.activities[approvalActivityId(event.payload.approvalId)] = {
         activityId: approvalActivityId(event.payload.approvalId),
         kind: 'approval',
@@ -647,48 +670,50 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         sequence: event.sequence,
       };
       break;
-    case 'approval.resolved':
+    }
+    case 'approval.resolved': {
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
       if (
-        !next.pendingApproval
-        || next.pendingApproval.approvalId !== event.payload.approvalId
-        || next.pendingApproval.callId !== event.callId
-        || next.pendingApproval.runId !== event.runId
+        !approval
+        || approval.approvalId !== event.payload.approvalId
+        || approval.callId !== event.callId
+        || approval.runId !== event.runId
       ) throw new Error('approval_request_missing');
-      if (event.payload.decision === 'allow' && event.payload.authorizationScope && next.pendingApproval.preview.authorizationContext) {
+      if (event.payload.decision === 'allow' && event.payload.authorizationScope && approval.preview.authorizationContext) {
         next.shellAuthorizations = [...next.shellAuthorizations, { authorityId: event.payload.authorityId,
-          runId: event.runId, scope: event.payload.authorizationScope, summary: next.pendingApproval.preview.summary,
-          context: structuredClone(next.pendingApproval.preview.authorizationContext) }];
+          runId: event.runId, scope: event.payload.authorizationScope, summary: approval.preview.summary,
+          context: structuredClone(approval.preview.authorizationContext) }];
       }
-      next.pendingApproval = null;
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       settleActivity(next, approvalActivityId(event.payload.approvalId), event.payload.decision === 'allow' ? 'completed' : 'denied');
-      // Conversation grants also replay after an edit removes their original run.
-      if (event.payload.decision !== 'allow' || !(event.payload.authorizationScope && isSessionAuthorizationScope(event.payload.authorizationScope))
-        || next.run?.runId === event.runId) resumeRun(next, event.runId);
       break;
-    case 'tool.input-rejected':
+    }
+    case 'tool.input-rejected': {
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       settleActivity(next, toolActivityId(event.callId), 'rejected');
       next.activities[toolActivityId(event.callId)] = {
         ...next.activities[toolActivityId(event.callId)],
         inputRejection: structuredClone(event.payload.rejection.error),
       };
       break;
+    }
     case 'process.updated': {
       next.processes = { ...next.processes, [event.payload.job.jobId]: structuredClone(event.payload.job) };
       projectProcess(next, event.payload.job);
       break;
     }
     case 'tool.completed': {
-      if (next.pendingApproval?.callId === event.callId) {
-        settleActivity(next, approvalActivityId(next.pendingApproval.approvalId), 'completed');
-        next.pendingApproval = null;
-        resumeRun(next, event.runId);
-      }
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'completed');
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
       settleActivity(
         next,
         toolActivityId(event.callId),
         event.payload.record.outcome,
       );
-      const { tool, artifacts } = projectToolRecord(event.payload.record);
+      const { tool, artifacts } = projectToolRecord(event.payload.record, next.activities);
       next.activities[toolActivityId(event.callId)] = {
         ...next.activities[toolActivityId(event.callId)],
         tool,
@@ -710,6 +735,15 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       }
       break;
     }
+    case 'tool.not-executed': {
+      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
+      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
+      settleActivity(next, toolActivityId(event.callId), event.payload.reason === 'cancelled' ? 'cancelled' : 'rejected');
+      next.activities[toolActivityId(event.callId)] = { ...next.activities[toolActivityId(event.callId)],
+        notExecuted: { reason: event.payload.reason, ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) } };
+      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
+      break;
+    }
     case 'tool.interrupted':
       if (!next.runRuntimeReleases[event.runId]
         || !['requested', 'active'].includes(next.activities[toolActivityId(event.callId)]?.status ?? '')) {
@@ -720,6 +754,32 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         ...next.activities[toolActivityId(event.callId)],
         interruption: { ...event.payload.error },
       };
+      break;
+    case 'agent.task.created':
+      assertRunningRun(next, event.runId, 'agent_task_run_not_active');
+      Object.assign(next, reduceAgentLifetime(next, event));
+      recordAgentActivity(next, event, 'started');
+      break;
+    case 'agent.task.started':
+    case 'agent.task.completed':
+    case 'agent.closed':
+      Object.assign(next, reduceAgentLifetime(next, event));
+      if (event.type === 'agent.task.completed') recordAgentActivity(next, event, 'completed');
+      break;
+    case 'agent.control.completed':
+    case 'session.control.completed':
+      assertRunningRun(next, event.runId, 'agent_control_run_not_active');
+      recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
+        event.type === 'agent.control.completed' ? SESSION_CONTROL_AGENT : SESSION_CONTROL_SESSION, event.sequence);
+      break;
+    case 'wake.scheduled':
+    case 'wake.cancelled':
+    case 'wake.triggered':
+      if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('wake_run_not_active');
+      break;
+    case 'agent.message.received':
+      if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('agent_message_run_not_active');
+      recordAgentMessageActivity(next, event);
       break;
     case 'session.plugins.activated':
       assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
@@ -939,7 +999,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
           const action = block.item.action;
           if (
             status !== 'completed' && status !== 'failed'
-            || !isRecord(action)
+            || action !== undefined && !isRecord(action)
           ) throw new Error('provider_hosted_search_item_invalid');
           next.activities[block.activityId] = {
             activityId: block.activityId,
@@ -951,7 +1011,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
             providerHosted: {
               providerToolType: block.providerToolType,
               providerCallId: block.providerCallId,
-              action: structuredClone(action),
+              ...(action === undefined ? {} : { action: structuredClone(action) }),
             },
           };
         }
@@ -1018,13 +1078,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       break;
     }
     case 'run.waiting':
-      next.run = {
-        runId: event.runId,
-        status: 'waiting',
-        waitingReason: event.payload.reason,
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: requiredRunRuntimeSnapshot(next, event.runId).provider.profileId,
-      };
+      assertCurrentRun(next, event.runId, 'run_workspace_snapshot_missing');
       break;
     case 'run.finishing':
       next.pendingRunSettlements = { ...next.pendingRunSettlements };
@@ -1039,13 +1093,8 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       }
       next.pendingRunSettlements[event.runId] = cloneRunSettlement(event.payload);
       next.activePlanRef = null;
-      next.run = {
-        runId: event.runId,
-        status: 'releasing',
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: requiredRunRuntimeSnapshot(next, event.runId).provider.profileId,
-      };
       closeInteractions(next, event.runId);
+      next.pendingApprovals = [];
       next.pendingApproval = null;
       break;
     case 'run.runtime.release_failed': {
@@ -1060,12 +1109,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         || event.payload.kernelCatalogSnapshotRef !== runtime.kernelCatalogSnapshotRef
         || event.payload.providerRuntimeRef !== runtime.provider.providerRuntimeRef
       ) throw new Error('run_runtime_release_failure_state_invalid');
-      next.run = {
-        runId: event.runId,
-        status: 'releaseFailed',
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: runtime.provider.profileId,
-      };
       next.terminalError = { ...event.payload.error };
       break;
     }
@@ -1092,16 +1135,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         ...event.payload,
         pluginInstanceRefs: [...event.payload.pluginInstanceRefs],
       };
-      next.run = {
-        runId: event.runId,
-        status: 'releasing',
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: runtime.provider.profileId,
-      };
       next.terminalError = null;
       break;
     }
     case 'run.settled':
+      assertCurrentRun(next, event.runId, 'run_workspace_snapshot_missing');
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.runId !== event.runId || isSessionAuthorizationScope(grant.scope));
       next.tokenUsageHistory = { ...next.tokenUsageHistory };
       next.pendingRunSettlements = { ...next.pendingRunSettlements };
@@ -1118,13 +1156,8 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         completedAt: event.occurredAt,
         outcome: event.payload.outcome,
       };
-      next.run = {
-        runId: event.runId,
-        status: event.payload.outcome,
-        workspaceBindings: currentRunBindings(next, event.runId),
-        profileId: requiredRunRuntimeSnapshot(next, event.runId).provider.profileId,
-      };
       closeInteractions(next, event.runId);
+      next.pendingApprovals = [];
       next.pendingApproval = null;
       settleActivity(next, runActivityId(event.runId), event.payload.outcome);
       next.terminalError = event.payload.outcome === 'failed'
@@ -1133,6 +1166,10 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         : null;
       delete next.pendingRunSettlements[event.runId];
       break;
+  }
+  if (lifecycle?.run && next.run) {
+    const { waitingReason: _waitingReason, ...run } = next.run;
+    next.run = { ...run, ...lifecycle.run };
   }
   if (next.run) {
     const provider = requiredRunRuntimeSnapshot(next, next.run.runId).provider;
@@ -1146,17 +1183,61 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       ...(provider.thinking ? { thinking: provider.thinking } : {}),
     };
   }
+  next.pendingApproval = next.pendingApprovals[0] ?? null;
   return next;
 }
 
+function recordAgentActivity(state: SessionState,
+  event: Extract<SessionEvent, { type: 'agent.task.created' | 'agent.task.completed' }>,
+  phase: 'started' | 'completed'): void {
+  const task = state.agentTasks.find(task => task.taskId === event.payload.taskId)!;
+  const activityId = `agent:${task.taskId}:${phase}`;
+  state.activities = {
+    ...state.activities,
+    [activityId]: {
+      activityId, kind: 'agent', label: task.displayName, runId: event.runId,
+      sequence: event.sequence, status: phase === 'started' ? 'completed' : task.result!.outcome,
+      agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase },
+    },
+  };
+}
+
+function recordAgentMessageActivity(state: SessionState,
+  event: Extract<SessionEvent, { type: 'agent.message.received' }>): void {
+  const child = state.agentChildren.find(child => child.agentSessionId === event.payload.sourceSessionId);
+  if (!child) return; // Parent and peer messages are not child status notifications in this Session.
+  const activityId = `agent:message:${event.sequence}`;
+  state.activities = { ...state.activities, [activityId]: {
+    activityId, kind: 'agent', label: child.displayName, runId: event.runId,
+    sequence: event.sequence, status: 'completed',
+    agent: { agentSessionId: child.agentSessionId, phase: 'updated' },
+  } };
+}
+
+
 export function recoverSession(sessionId: string, events: readonly SessionEvent[]): SessionState {
+  let agents: AgentLifetime = { agentTasks: [], agentChildren: [] };
   for (const [index, event] of events.entries()) {
     if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
     if (event.sequence !== index + 1) throw new Error('session_event_sequence_gap');
+    if (isAgentLifetimeEvent(event)) agents = reduceAgentLifetime(agents, event);
   }
   let state = emptySessionState(sessionId);
+  // Archived child identities also label received messages during history-only replay.
+  state.agentChildren = agents.agentChildren;
   const active = activeConversationEvents(events);
   for (const event of active) {
+    // The lifetime stream above has already reduced these facts exactly once.
+    if (isAgentLifetimeEvent(event)) {
+      // Lifetime and visible history are different projections of the same fact.
+      // Editing may hide an activity without deleting the archived child.
+      if (event.type === 'agent.task.created' || event.type === 'agent.task.completed') {
+        const activityState = { ...state, agentTasks: agents.agentTasks };
+        recordAgentActivity(activityState, event, event.type === 'agent.task.created' ? 'started' : 'completed');
+        state = { ...state, activities: activityState.activities };
+      }
+      continue;
+    }
     // Only explicitly superseded journal ranges may create a gap in active history.
     state = reduceSession({ ...state, revision: event.sequence - 1 }, event);
   }
@@ -1167,7 +1248,7 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
     if (event.type === 'provider.turn.settled') state.tokenUsage = withProviderCompletion(state.tokenUsage);
     if (event.type === 'context.updated') state.tokenUsage = withProviderUsage(state.tokenUsage, event.payload);
   }
-  return { ...state, revision: events.at(-1)?.sequence ?? 0 };
+  return { ...state, ...agents, revision: events.at(-1)?.sequence ?? 0 };
 }
 
 function sourceReferenceProjection(state: SessionState, content: string, requestId: string, referenceId: string) {
@@ -1193,11 +1274,15 @@ export function projectSession(
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
   return {
+    ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
+    ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
+    ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
+    ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
     ...(Object.keys(state.providerAttempts).length ? { providerAttempts: Object.values(state.providerAttempts)
       .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
     ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),
     permissionOverrides: structuredClone(state.permissionOverrides),
-    effectivePermissions: state.run ? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions, ...state.permissionOverrides }) : null,
+    effectivePermissions: state.run ? state.publishedPermissions ?? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions, ...state.permissionOverrides }) : null,
     shellAuthorizations: structuredClone(state.shellAuthorizations),
     schemaVersion: SESSION_PROJECTION_VERSION,
     ...(rounds.size ? { fileChangeRounds: [...rounds].map(([runId, recordIds]) => ({ runId, recordIds })) } : {}),
@@ -1226,6 +1311,7 @@ export function projectSession(
     assistantDraft: draft,
     interactions: state.interactions.map(item => cloneInteraction(item)!),
     pendingInteraction: cloneInteraction(pendingInteraction(state)),
+    pendingApprovals: state.pendingApprovals.map(item => cloneApproval(item)!),
     pendingApproval: cloneApproval(state.pendingApproval),
     plans: state.plans.map((plan) => clonePlanProjection(plan)),
     activePlanRef: state.activePlanRef ? { ...state.activePlanRef } : null,
@@ -1238,6 +1324,8 @@ export function projectSession(
       || index === state.contextCompositions.length - 1
     )).map(cloneContextComposition),
     tokenUsage: { ...state.tokenUsage },
+    // SessionService adds descendants at the public snapshot boundary.
+    totalTokenUsage: { ...state.tokenUsage },
     tokenUsageHistory: Object.values(state.tokenUsageHistory)
       .sort((left, right) => right.sequence - left.sequence)
       .map((usage) => ({ ...usage })),
@@ -1259,11 +1347,6 @@ function effectiveWorkspaceBindings(state: Pick<
     ...state.creationWorkspaceBindings.map((binding) => ({ ...binding })),
     ...state.sessionDirectoryIndexes.map((binding) => ({ ...binding })),
   ];
-}
-
-function currentRunBindings(state: SessionState, runId: string): WorkspaceBindingDisplay[] {
-  if (!state.run || state.run.runId !== runId) throw new Error('run_workspace_snapshot_missing');
-  return state.run.workspaceBindings.map((binding) => ({ ...binding }));
 }
 
 function cloneRun(run: NonNullable<SessionProjection['run']>): NonNullable<SessionProjection['run']> {
@@ -1296,6 +1379,7 @@ function cloneRunRuntimeSnapshot(snapshot: RunRuntimeSnapshot): RunRuntimeSnapsh
   }));
   return {
     ...snapshot,
+    ...(snapshot.agentCapabilities !== undefined ? { agentCapabilities: structuredClone(snapshot.agentCapabilities) } : {}),
     environment: structuredClone(snapshot.environment),
     provider: { ...snapshot.provider },
     ...(snapshot.approvalReviewer ? { approvalReviewer: { ...snapshot.approvalReviewer } } : {}),
@@ -1472,6 +1556,11 @@ function projectTimeline(state: SessionState): SessionProjection['timeline'] {
         messageId: message.messageId,
       }],
     });
+  }
+  for (const activity of Object.values(state.activities)) {
+    if (activity.kind !== 'agent') continue;
+    groups.push({ sequence: activity.sequence, items: [{ kind: 'toolGroup',
+      timelineId: activity.activityId, sequence: activity.sequence, activityIds: [activity.activityId] }] });
   }
   for (const turn of Object.values(state.providerTurns)) {
     if (turn.purpose !== 'agent' || turn.outcome !== 'completed') continue;
@@ -1888,7 +1977,9 @@ function estimatePartitionTokens(
 function cloneActivity(activity: ActivityProjection): ActivityProjection {
   return {
     ...activity,
+    ...(activity.approvalReview ? { approvalReview: { ...activity.approvalReview } } : {}),
     ...(activity.inputRejection ? { inputRejection: structuredClone(activity.inputRejection) } : {}),
+    ...(activity.notExecuted ? { notExecuted: { ...activity.notExecuted } } : {}),
     ...(activity.interruption ? { interruption: { ...activity.interruption } } : {}),
     ...(activity.tool
       ? {
@@ -1914,7 +2005,8 @@ function cloneActivity(activity: ActivityProjection): ActivityProjection {
       ? {
           providerHosted: {
             ...activity.providerHosted,
-            action: structuredClone(activity.providerHosted.action),
+            ...(activity.providerHosted.action === undefined
+              ? {} : { action: structuredClone(activity.providerHosted.action) }),
           },
         }
       : {}),
@@ -1944,16 +2036,6 @@ function assertRunningRun(state: SessionState, runId: string, code: string): voi
   if (!state.run || state.run.runId !== runId || state.run.status !== 'running') {
     throw new Error(code);
   }
-}
-
-function resumeRun(state: SessionState, runId: string): void {
-  assertCurrentRun(state, runId, 'run_resume_identity_mismatch');
-  state.run = {
-    runId,
-    status: 'running',
-    workspaceBindings: state.run!.workspaceBindings.map((binding) => ({ ...binding })),
-    profileId: state.run!.profileId,
-  };
 }
 
 function settleActivity(
@@ -1992,7 +2074,7 @@ function projectProcess(state: SessionState, job: ManagedProcessSnapshot): void 
 
 class ToolDetailProjectionError extends Error {}
 
-function projectToolRecord(record: ToolExecutionRecord): {
+function projectToolRecord(record: ToolExecutionRecord, activities: SessionState['activities']): {
   tool: NonNullable<ActivityProjection['tool']>; artifacts: ArtifactProjection[];
 } {
   const { preparedEffect } = record;
@@ -2036,6 +2118,8 @@ function projectToolRecord(record: ToolExecutionRecord): {
     if (['bash', 'powershell'].includes(preparedEffect.operation)) tool.shell = projectShellActivity(record);
     Object.assign(tool, projectFileChanges(record));
     artifacts = artifactsFromRecord(record);
+    const computer = projectComputerActivity(record, artifacts, activities);
+    if (computer) tool.computer = computer;
   } catch (error) {
     if (!(error instanceof ToolDetailProjectionError)) throw error;
     tool.projectionError = { code: error.message, message: '工具详情无法显示；原始执行记录已保留。' };
@@ -2066,7 +2150,7 @@ function projectShellActivity(
   }
   const output = record.outcome === 'completed'
     ? record.output
-    : record.outcome === 'failed' || record.outcome === 'indeterminate'
+    : record.outcome === 'failed' || record.outcome === 'indeterminate' || record.outcome === 'cancelled'
       ? record.output
       : undefined;
   // Kernel failures before a process result exists carry diagnostics (or null),
@@ -2202,7 +2286,7 @@ function isCanonicalTerminalInput(value: unknown): value is { stdin: string } {
 }
 
 function artifactsFromRecord(record: ToolExecutionRecord): ArtifactProjection[] {
-  if (record.outcome !== 'completed' || !isRecord(record.output)) return [];
+  if (!('output' in record) || !isRecord(record.output)) return [];
   const artifacts = record.output.artifacts;
   if (artifacts === undefined) return [];
   if (!Array.isArray(artifacts)) throw new ToolDetailProjectionError('tool_artifact_invalid');
@@ -2280,6 +2364,45 @@ function withProviderUsage<T extends SessionProjection['tokenUsage']>(
       reported.cacheMissInputTokens ?? 0,
     ),
   });
+}
+
+export function combineTokenUsage(
+  own: SessionProjection['tokenUsage'],
+  descendant: SessionProjection['tokenUsage'],
+): SessionProjection['tokenUsage'] {
+  return recomputeCacheAggregate({
+    ...own,
+    providerCallCount: addTokenCount(own.providerCallCount, descendant.providerCallCount),
+    reportedCallCount: addTokenCount(own.reportedCallCount, descendant.reportedCallCount),
+    inputTokens: addTokenCount(own.inputTokens, descendant.inputTokens),
+    outputTokens: addTokenCount(own.outputTokens, descendant.outputTokens),
+    cacheReadInputTokens: addTokenCount(own.cacheReadInputTokens, descendant.cacheReadInputTokens),
+    cacheMissInputTokens: addTokenCount(own.cacheMissInputTokens, descendant.cacheMissInputTokens),
+  });
+}
+
+/** Replay compact receipts without loading child prompts, outputs or execution state. */
+export function providerUsageFromEvents(read: import('@deepcode/protocol').ProviderUsageRead): SessionProjection['tokenUsage'] {
+  let usage = emptySessionState(read.sessionId).tokenUsage;
+  const completed = new Set<string>(), reported = new Set<string>();
+  let previous = 0;
+  for (const event of read.events) {
+    if (event.sessionId !== read.sessionId) throw new Error('session_event_identity_mismatch');
+    if (event.sequence <= previous || event.sequence > read.revision) throw new Error('provider_usage_sequence_invalid');
+    previous = event.sequence;
+    const requestId = event.payload.providerRequestId;
+    if (event.type === 'provider.turn.settled') {
+      if (completed.has(requestId)) throw new Error('provider_turn_completion_duplicate');
+      completed.add(requestId);
+      usage = withProviderCompletion(usage);
+    } else {
+      if (!completed.has(requestId)) throw new Error('provider_turn_missing');
+      if (reported.has(requestId)) throw new Error('provider_usage_duplicate');
+      reported.add(requestId);
+      usage = withProviderUsage(usage, event.payload);
+    }
+  }
+  return usage;
 }
 
 function recomputeCacheAggregate<T extends SessionProjection['tokenUsage']>(usage: T): T {

@@ -19,6 +19,7 @@ pub(super) fn invocation(id: impl Into<String>, tool: &str, input: Value) -> Ker
 #[cfg(unix)]
 fn shell_executor() -> ConfiguredShellExecutor {
     ConfiguredShellExecutor {
+        sandbox_backends: Default::default(),
         temporary_root: None,
         program: Some(
             crate::shell_environment::discover("bash").expect("fixture Bash environment"),
@@ -89,6 +90,79 @@ fn shell_progress_precedes_completion_and_keeps_full_archive() {
             .expect("complete archive reference");
         assert_eq!(fs::read(path).unwrap(), expected);
     }
+}
+
+#[test]
+fn workspace_shell_routes_through_registered_backend_and_never_falls_back() {
+    use crate::workspace_sandbox::{
+        SandboxBackend, SandboxBackendRegistry, SandboxProcessRequest, SandboxStatus,
+    };
+    struct Backend(Arc<std::sync::atomic::AtomicUsize>);
+    impl SandboxBackend for Backend {
+        fn id(&self) -> &str {
+            "test-isolation"
+        }
+        fn probe(&self) -> SandboxStatus {
+            SandboxStatus {
+                backend: self.id().into(),
+                available: true,
+                reason: None,
+            }
+        }
+        fn execute(
+            &self,
+            request: SandboxProcessRequest<'_>,
+        ) -> KernelResult<KernelToolExecutionResult> {
+            assert_eq!(
+                request.context.file_access.sandbox_backend.as_deref(),
+                Some(self.id())
+            );
+            assert!(request.context.cancellation.is_cancelled());
+            self.0.fetch_add(1, AtomicOrdering::SeqCst);
+            Err(KernelError::Structured {
+                code: "fixture_cancelled",
+                stage: "execution",
+                message: "cancelled".into(),
+                details: serde_json::json!({}),
+            })
+        }
+    }
+    let workspace = TempWorkspace::new("registered-sandbox");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let executor = ConfiguredShellExecutor {
+        program: None,
+        execution_path: None,
+        temporary_root: None,
+        sandbox_backends: Arc::new(
+            SandboxBackendRegistry::new(vec![Box::new(Backend(calls.clone()))]).unwrap(),
+        ),
+    };
+    let mut context = context_with_target(&workspace.0, ".");
+    context.file_access.sandbox_backend = Some("test-isolation".into());
+    context.cancellation.cancel();
+    let shell = || {
+        invocation(
+            "registered",
+            "bash",
+            serde_json::json!({"command":"echo must-not-run","workspaceMode":"read","executionScope":"workspace","timeout":1}),
+        )
+    };
+    assert!(matches!(
+        executor.invoke(shell(), context.clone()),
+        Err(KernelError::Structured {
+            code: "fixture_cancelled",
+            ..
+        })
+    ));
+    context.file_access.sandbox_backend = Some("missing".into());
+    assert!(matches!(
+        executor.invoke(shell(), context),
+        Err(KernelError::Structured {
+            code: "sandbox_backend_unavailable",
+            ..
+        })
+    ));
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
 }
 
 #[test]

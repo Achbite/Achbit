@@ -1,3 +1,5 @@
+import ToggleSwitch from '../../shared/ToggleSwitch';
+import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import NativeSelect from '../../shared/NativeSelect';
 import { modelReasoningEfforts } from '@deepcode/protocol';
 import { t } from '../../../i18n';
@@ -16,6 +18,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [failed, setFailed] = useState(false);
+  useAutoDismiss(!failed && feedback, () => setFeedback(''));
   useInterfaceReloadGuard(!!onRemove || JSON.stringify(draft) !== JSON.stringify(profile), profile.name, busy);
   const set = <K extends keyof LlmProviderProfile>(key: K, value: LlmProviderProfile[K]) => setDraft(p => ({ ...p, [key]: value }));
   const perform = async (action: () => Promise<void>) => {
@@ -41,7 +44,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
           <label>Temperature<input type="number" step="0.1" min="0" max="2" value={draft.temperature ?? ''} onChange={e => set('temperature', e.target.value === '' ? undefined : e.target.valueAsNumber)} /></label>
           {adapter.id === 'custom' && <label>{text('协议行为', 'Protocol behavior')}<NativeSelect value={draft.providerFlavor} onChange={e => set('providerFlavor', e.target.value as LlmProviderProfile['providerFlavor'])}>{['openai','deepseek','zhipu','moonshot'].map(v => <option key={v}>{v}</option>)}</NativeSelect></label>}
         </div></details>
-        <div className="model-actions"><label className="model-check"><input type="checkbox" checked={draft.enabled} onChange={e => set('enabled', e.target.checked)} />{text('启用', 'Enabled')}</label>
+        <div className="model-actions"><label className="model-check"><ToggleSwitch checked={draft.enabled} onChange={e => set('enabled', e.target.checked)} />{text('启用', 'Enabled')}</label>
           <button type="button" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
           {!onRemove && profile.id !== defaultId && <button type="button" disabled={!profile.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为最近使用', 'Use by default')}</button>}
           <button className="model-danger" type="button" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{text('移除', 'Remove')}</button>

@@ -55,9 +55,17 @@ case "${1:-}" in
     pnpm --filter @deepcode/client build:web
     mkdir -p "$destination"
     dependencies="$(dirname "$destination")/dependencies.json"
-    pnpm --filter @deepcode/client --filter @deepcode/session-core list --prod --depth Infinity --json > "$dependencies"
+    pnpm --filter @deepcode/client --filter @deepcode/session-core --filter @deepcode/chrome-devtools-runtime list --prod --depth Infinity --json > "$dependencies"
     python3 scripts/package-runtime.py shared "$ROOT_DIR" "$destination" "$dependencies"
     printf '==[build][shared][DONE]== seconds=%s\n' "$((SECONDS - started))"
+    ;;
+  --computer-use-windows)
+    # Replace only the Windows desktop executor in an existing win64 runtime.
+    output="$2"
+    check_platform windows
+    configure_cache
+    cargo build --release --target "$WINDOWS_TARGET" -p deepcode-computer-use
+    python3 scripts/computer_use_package.py --windows --native "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release" --output "$output/win64"
     ;;
   --native)
     configure_cache
@@ -88,6 +96,8 @@ case "${1:-}" in
     fi
     cargo build --release "${target_args[@]}" -p deepcode-kernel-daemon -p deepcode-first-party-tools -p deepcode-host-web -p deepcode-cli -p deepcode-tui
     if [ "$platform" = windows ]; then
+      # The desktop executor is a sibling program of the Windows GUI.
+      cargo build --release "${target_args[@]}" -p deepcode-computer-use
       messages="$(dirname "$shared")/windows-native.jsonl"
       cargo build --release "${target_args[@]}" --manifest-path "$GUI_MANIFEST" --message-format=json-render-diagnostics > "$messages"
       # Read this Cargo invocation's dependency output, not a glob over cached builds.
@@ -109,5 +119,5 @@ case "${1:-}" in
     fi
     python3 scripts/package-runtime.py publish "$stage" "$output/$platform_dir" "$archive" "${installer_args[@]}"
     ;;
-  *) printf 'Internal usage: --check platform | --shared directory | --native stage | --package platform shared output\n' >&2; exit 2 ;;
+  *) printf 'Internal usage: --check platform | --shared directory | --native stage | --package platform shared output | --computer-use-windows output\n' >&2; exit 2 ;;
 esac

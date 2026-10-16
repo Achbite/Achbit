@@ -114,7 +114,7 @@ class Provider(fixture.MockProviderHandler):
                 job = results['wait-checkpoint']['output']['job']
                 require(job['status'] == 'active' and 'managed-pid:' in job['output']['stdout'], job)
                 if state.mode == 'user-stop':
-                    self._send_text('premature-answer')
+                    self._send_text('process-progress')
                 else:
                     call('cancel-long', action='cancel', jobId=state.job_id)
             elif ordinal == 4 and state.mode == 'complete':
@@ -130,9 +130,14 @@ class Provider(fixture.MockProviderHandler):
                 assert_stopped(job)
                 call('start-short', action='start', tool=SHELL, input=execution_input(SHORT_COMMAND))
             elif ordinal == 7 and state.mode == 'complete':
-                self._send_text('premature-answer')
+                self._send_text('process-progress')
             elif ordinal == 8 and state.mode == 'complete':
-                job = results['start-short']['process']
+                job_id = results['start-short']['output']['job']['jobId']
+                updates = [value['process'] for value in fixture.json_payloads(body)
+                           if value.get('type') == 'process.updated'
+                           and value.get('process', {}).get('jobId') == job_id]
+                require(updates, 'The completed process must have its own process.updated fact')
+                job = updates[-1]
                 require(job['status'] == 'completed' and 'managed-complete' in job['output']['stdout'], job)
                 require(job['result']['exitCode'] == 0, job)
                 self._send_text('managed-process-cli-complete')
@@ -169,7 +174,7 @@ def check(mode):
                 command.extend(['--plugin', 'plugin://containers@builtin'])
             command.extend(['ask', 'Start and control the requested test processes.'])
             initial = subprocess.run(command, cwd=fixture.ROOT, env=fixture.shell_environment(daemon),
-                                     capture_output=True, text=True, timeout=30)
+                                     capture_output=True, text=True, encoding='utf-8', timeout=30)
             state.assert_healthy()
             require(initial.returncode == 5, initial.stdout + initial.stderr)
             waiting = fixture.projection(daemon, session)
@@ -178,15 +183,18 @@ def check(mode):
             scope = 'allow-container-run' if CONTAINER else 'allow-host-run'
             reply = command[:7] + ['ask', '/reply ' + scope]
             client = subprocess.Popen(reply, cwd=fixture.ROOT, env=fixture.shell_environment(daemon),
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
             if mode == 'user-stop':
                 def running():
                     state.assert_healthy()
                     current = fixture.projection(daemon, session)
                     return current if len(state.requests) == 3 and any(
+                        message.get('content') == 'process-progress' for message in current['messages']) and any(
                         activity.get('tool', {}).get('process') and activity['status'] == 'active'
                         for activity in current['activities']) else None
                 current = fixture.wait_until(running, 12, 'Managed process did not become observable')
+                require(current['run']['status'] == 'running' and client.poll() is None,
+                        'Generated text must not settle the run while its process is active')
                 reply = fixture.api_json(daemon.base_url, f'/api/conversation/sessions/{session}/commands',
                     token=daemon.token, method='POST', timeout=15, body={
                         'schemaVersion': fixture.COMMAND_VERSION, 'type': 'run.cancel',
@@ -203,8 +211,8 @@ def check(mode):
                                       for activity in processes), processes)
             if mode == 'complete':
                 require('managed-process-cli-complete' in stdout and len(state.requests) == 8, stdout)
-            require(not any(message.get('content') == 'premature-answer' for message in done['messages']),
-                    'Final answer was committed before owned processes ended')
+            require(sum(message.get('content') == 'process-progress' for message in done['messages']) == 1,
+                    'Valid generated text must persist while owned processes prevent settlement')
             daemon.shutdown()
             with closing(fixture.sqlite_read_only(daemon.config_root / 'data/agent-runtime/session.sqlite3')) as database:
                 events = [(kind, json.loads(payload)) for kind, payload in database.execute(
@@ -212,7 +220,21 @@ def check(mode):
             jobs = [payload['job'] for kind, payload in events if kind == 'process.updated']
             if mode == 'user-stop':
                 assert_stopped(jobs[-1])
-            require(sum(kind == 'run.runtime.released' for kind, _ in events) == 1, 'Runtime release missing')
+            release_indices = [index for index, (kind, _) in enumerate(events) if kind == 'run.runtime.released']
+            settlement_indices = [index for index, (kind, _) in enumerate(events) if kind == 'run.settled']
+            require(len(release_indices) == len(settlement_indices) == 1, 'Run must release and settle exactly once')
+            terminal_indices = [index for index, (kind, payload) in enumerate(events)
+                                if kind == 'process.updated' and payload['job']['status'] != 'active']
+            require(terminal_indices and max(terminal_indices) < release_indices[0] < settlement_indices[0],
+                    'Owned process termination must precede runtime release and settlement')
+            if mode == 'complete':
+                finishing_indices = [index for index, (kind, _) in enumerate(events) if kind == 'run.finishing']
+                require(len(finishing_indices) == 1 and max(terminal_indices) < finishing_indices[0] < release_indices[0],
+                        'Run must not finish before owned processes end')
+                final_message_id = events[settlement_indices[0]][1]['finalMessageId']
+                require(any(kind == 'message.committed' and payload.get('messageId') == final_message_id
+                            and payload.get('content') == 'managed-process-cli-complete' for kind, payload in events),
+                        'Settlement must reference the answer generated after the process result')
             print(f'[managed-process-cli] PASS: {mode}, actual process exit, archived output, shared projection, {len(state.requests)} model calls, owned shutdown')
         except BaseException:
             print(daemon.log_tail())

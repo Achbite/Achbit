@@ -21,13 +21,17 @@ mod llm_provider_transport;
 mod llm_stream_parser;
 mod llm_transport;
 mod local_agent_api;
+mod local_agent_authorities;
 mod local_agent_cli;
 mod local_agent_first_party_plugins;
 mod local_agent_kernel;
 mod local_agent_mcp;
+mod local_agent_permissions;
 mod local_agent_plugins;
 mod local_agent_product_tools;
 mod local_agent_provider_runtime;
+mod local_agent_recipe;
+mod local_agent_resources;
 mod local_agent_search;
 mod local_agent_store;
 mod local_agent_tool_catalog;
@@ -54,6 +58,7 @@ pub(crate) use config_root_lease::*;
 pub(crate) use conversation_api::*;
 use conversation_resources::*;
 mod browser_tools;
+mod desktop_tools;
 pub(crate) use host_connection::*;
 pub(crate) use host_lifecycle::*;
 pub(crate) use host_services::*;
@@ -82,8 +87,28 @@ async fn main() {
     let user_directories =
         deepcode_host_connection::UserDirectories::resolve().expect("解析 DeepCode 用户目录");
     #[cfg(windows)]
+    {
+        deepcode_kernel_runtime::executors::suppress_error_dialogs();
+        // Sandbox identities and recorded grants belong to this data root.
+        deepcode_kernel_runtime::workspace_sandbox::windows::configure(
+            &user_directories
+                .data_dir
+                .join("agent-runtime")
+                .join("windows-sandbox"),
+        )
+        .expect("初始化 Windows 工作区沙箱状态");
+    }
+    #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--workspace-sandbox-init") {
         if let Err(error) = deepcode_kernel_runtime::workspace_sandbox::windows::request_setup() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--workspace-sandbox-reset") {
+        if let Err(error) = deepcode_kernel_runtime::workspace_sandbox::windows::reset() {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -145,13 +170,19 @@ async fn main() {
     let workspace_resolver = Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
         gui.clone(),
     ));
-    let local_agent = LocalAgentRuntime::open(
+    configure_host_process_identity(addr).expect("初始化 Host 进程身份");
+    let desktop = Arc::new(desktop_tools::DesktopHost::new(
+        host_process_identity().instance_id.clone(),
+        std::env::var(HOST_SHELL_TOKEN_ENV).expect("Host shell token"),
+    ));
+    let mut local_agent = LocalAgentRuntime::open(
         &session_store_path,
         &tool_record_store_path,
         workspace_resolver,
         &user_settings,
     )
     .expect("打开本地 Agent Runtime");
+    local_agent.kernel.desktop = desktop;
     let session_service = match SessionServiceProcess::spawn(
         &format!("http://{addr}"),
         local_agent.service_token(),
@@ -164,7 +195,6 @@ async fn main() {
     };
     let host_connection =
         HostConnection::from_environment().expect("初始化 Host Shell 本地连接凭证");
-    configure_host_process_identity(addr).expect("初始化 Host 进程身份");
     let state = AppState {
         local_agent,
         session_service,
@@ -243,6 +273,7 @@ pub(crate) fn runtime_tool_configuration(
     Ok((
         deepcode_kernel_runtime::executors::KernelExecutorConfig {
             temporary_root: Some(gui.paths.temporary_root.clone()),
+            shell_cache_root: Some(gui.paths.directories.cache_dir.join("agent-shell")),
             web_search_endpoint_template: setting("agent.web.search.endpointTemplate")?.to_string(),
             web_search_auth_header_name: setting("agent.web.search.authHeaderName")?.to_string(),
             web_search_auth_secret_ref: setting("agent.web.search.authSecretRef")?.to_string(),

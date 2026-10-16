@@ -62,12 +62,16 @@ run_required() {
   printf '[test] Userspace 共享依赖\n'
   pnpm --store-dir "${PNPM_STORE_DIR:-${PNPM_HOME:-$HOME/.local/share/pnpm}/store}" install --frozen-lockfile
   pnpm build:userspace-shared
+  printf '[test] TUI 字体选择与窗口启动参数\n'
+  node --test ./shells/tui/tests/*.test.mjs
   printf '[test] Session 数据流\n'
   pnpm --filter @deepcode/session-core test
   printf '[test] GUI 投影合同与状态交互\n'
   pnpm --filter @deepcode/client test
   printf '[test] GUI 类型接线（共享包已编译）\n'
   pnpm --filter @deepcode/client typecheck
+  printf '[test] 手工预览类型接线\n'
+  pnpm --filter @deepcode/client typecheck:manual
 }
 
 run_workspace_shell() {
@@ -102,12 +106,15 @@ case "$profile" in
   cli)
     run_required
     printf '[test] CLI 与 daemon 正式入口\n'
-    cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli
+    cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui
+    python3 -I -S ./scripts/tests/owned-daemon.py
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
+    python3 -I -S ./scripts/tests/agent-composition-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py
     run_workspace_shell
     python3 -I -S ./scripts/tests/managed-process-cli.py
+    python3 -I -S ./scripts/tests/subagent-cli.py
     python3 -I -S ./scripts/tests/conversation-storage.py
     ;;
   full)
@@ -115,12 +122,15 @@ case "$profile" in
     printf '[test] CLI、TUI 与 GUI 正式包入口\n'
     cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui -p deepcode-host-web
     pnpm --filter @deepcode/client build:web
+    python3 -I -S ./scripts/tests/owned-daemon.py
     printf '[test] 本地 Agent 真实链路与共享投影壳\n'
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
+    python3 -I -S ./scripts/tests/agent-composition-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py
     run_workspace_shell
     python3 -I -S ./scripts/tests/managed-process-cli.py
+    python3 -I -S ./scripts/tests/subagent-cli.py
     python3 -I -S ./scripts/tests/conversation-storage.py
     python3 -I -S ./scripts/tests/local-agent-e2e.py
     python3 -I -S ./scripts/tests/document-render-e2e.py

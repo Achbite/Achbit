@@ -1,7 +1,10 @@
+import { isRemoteHost } from './hostTarget';
+
 export interface NativeHostBinding { hostInstanceId: string; windowLabel: string; sessionId?:string }
 export interface NativePage extends NativeHostBinding {
   previewId: string; url: string; status: string; visible: boolean; serviceOwner: string;
   kind:string; serviceId?:string;
+  control?: { activeRuns: string[] };
   surface: { generation: number; sequence: number; activationId: number; activationAck: number; reason: string; bounds: [number, number, number, number] | null };
 }
 /** Translate a user's address into the existing Host navigation contract. */
@@ -20,7 +23,7 @@ export function nativeNavigationInput(address: string): { url: string } | { file
   return { url: url.href };
 }
 export function hasNativeBrowser(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke)
+  return !isRemoteHost() && typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke)
     && !window.__DEEPCODE_BROWSER_PREVIEW__
     && document.documentElement.dataset.product === 'deepcode-gui';
 }

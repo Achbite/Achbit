@@ -4,15 +4,29 @@ DeepCode 提供图形界面、CLI 和 TUI。三种入口共享模型设置、会
 
 ## macOS
 
+主程序支持 macOS 12 及以上；桌面截图与操作要求 macOS 15.2 及以上。macOS 12–15.1 会在启用桌面控制前显示版本要求，聊天、文件工具和浏览器工具继续可用。
+
 打开 `DeepCode-<version>-macos-arm64.pkg` 完成安装。应用位于 `/Applications/DeepCode-GUI.app`；终端可使用 `deepcode`、`deepcode-cli` 和 `deepcode-tui`，命令安装在 `/usr/local/bin`。
 
 解压版可直接打开 `DeepCode-GUI.app`，或使用同目录的 `DeepCode-CLI.command`、`DeepCode-TUI.command`。移动解压版时应保留这些文件的相对位置。用户文件存放在下表所列目录，与应用位置无关。
+
+macOS TUI 默认使用 GUI“外观 → 字体详情 → 终端与代码”的有效选择。双击 `DeepCode-TUI.command` 时复用 Terminal 已打开的窗口；正常退出后，该专用窗口在 Shell 结束时自动关闭。若在普通终端手动执行 `.command`，退出时恢复该标签原来的字体和标题并返回 Shell。在终端执行安装后的 `deepcode-tui` 则新开专用窗口，正常退出后自动关闭。窗口包含其他标签或进程时会保留；启动失败和非零退出保留诊断窗口。其他终端窗口和默认配置不变。
+
+输入 `/font` 查看四套内置字体及系统默认选项，`/font compact` 等命令只切换当前窗口，`/font follow` 重新读取 GUI 选择。内置终端版本保持英文一格、中文两格；自定义终端字体须为固定字宽。首次使用可能需要允许启动器控制 Terminal，拒绝时显示原始错误；启动诊断区分字体准备、窗口创建、字体应用和 TUI 首帧确认。`deepcode-tui --in-place` 保留在当前终端运行，管道、帮助和 `--smoke` 也不打开新窗口，这些方式使用原终端字体。更多命令与阅读规则见[产品指南](product/operations.md#reading-and-appearance)。
+
+macOS 安装包包含 DeepCode-GUI.app 和独立的 DeepCode Computer Use.app。桌面截图与操作由后者执行，需要首次为该辅助 App 授予辅助功能和屏幕录制权限；`computer.control status` 返回实际执行进程。运行 `bash build.sh --stage computer-use` 可单独更新辅助组件，下一次调用前由 GUI、CLI、TUI 共用的 Host 退出旧组件并启动新版，旧观察句柄需重新获取。工具定义和内置指南仍由 Kernel 构建提供。
+
+macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕录制授权。首次安装或从早期 ad-hoc 构建切换签名身份时，系统可能要求授权一次；日常更新不应通过重置权限完成。授权保留与系统的“继续允许”提醒是两件事：当前外部窗口采用直接捕获，macOS 仍可能再次提醒，不能据此断言签名失效或重新申请了首次授权。本机开发的固定签名设置见[运行管理](product/operations.md#macos-signing)。
 
 ## Windows
 
 运行 `DeepCode-<version>-win64-setup.exe`。默认程序目录为 `%LOCALAPPDATA%\Programs\DeepCode`。安装器创建开始菜单入口并添加用户 PATH，重新打开终端后可使用 `deepcode`、`deepcode-cli` 和 `deepcode-tui`。
 
 GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运行微软安装器；无法完成时会显示错误。解压版使用同一套用户目录，GUI 入口为 `DeepCode-GUI.exe`，命令入口为 `deepcode-cli.bat` 和 `deepcode-tui.bat`。卸载移除程序和本安装添加的 PATH 项，保留用户文件。
+
+桌面截图与操作由程序目录中的 `DeepCode-Computer-Use.exe` 执行，共享 Host 在首次调用时启动它，并随 Host 退出回收；关闭某个 GUI 窗口不等于结束其他入口的任务。Windows 不需要单独授予辅助功能或屏幕录制权限；以管理员身份运行的程序窗口不能由普通权限的 DeepCode 观察或操作。替换该文件后，下一次调用前 Host 会结束旧组件并启动新版本，旧观察句柄需重新获取。
+
+Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 → 终端与代码”的字体和代码字号。`/font` 切换四套内置字体或系统等宽字体，`/font follow` 重新读取 GUI 选择；`--font compact` 可指定启动字体。正常退出后关闭专用窗口，失败时保留诊断并等待 Enter。`--in-place`、管道、帮助和 `--smoke` 在当前终端运行并保留其字体。内置字体为当前登录会话加载；自定义字体须已安装、固定字宽且能被 Windows 控制台识别，无法应用时显示原因。
 
 ## Linux
 
@@ -28,7 +42,7 @@ GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运�
 | 临时文件 | 系统用户临时目录下的 `DeepCode` | `%TEMP%\DeepCode` | 系统临时目录下的 `DeepCode` |
 | 日志 | `~/Library/Logs/DeepCode` | `%LOCALAPPDATA%\DeepCode\Logs` | `${XDG_STATE_HOME:-~/.local/state}/DeepCode/log` |
 
-配置目录中的 `user/local/settings` 保存设置和模型配置，`user/local/secrets` 保存本地凭据。持久数据目录中的 `agent-runtime` 保存会话数据库、附件、工具记录和会话工作目录。会话引用的预览、截图和生成文件随会话保留，不属于可清理缓存。
+配置目录中的 `user/local/settings` 保存设置和模型配置，`user/local/secrets` 保存本地凭据。持久数据目录中的 `agent-runtime` 保存会话数据库、附件、工具记录和会话工作目录。会话引用的预览、截图和生成文件随会话保留，不属于可清理缓存。macOS 和 Windows 的 Chrome 文件工具使用当前会话已有的私有工作目录作为根和进程工作目录，相对截图路径也落在这里；不把项目或附件目录自动加入根，上游系统临时目录仍保留。
 
 缓存用于可重新生成的内容。macOS WebKit 的网站存储由系统管理，使用其标准 Library 目录。每次 Shell 调用拥有独立临时目录，调用及其子进程结束后清理；需要后续使用的文件应保存到会话工作目录或已授权项目目录。GUI 启动诊断位于日志目录的 `host-startup`，CLI 启动的后台服务日志为 `deepcode-kernel.log`。
 
@@ -48,10 +62,13 @@ GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运�
 
 | 调整内容 | 生效时机 |
 | --- | --- |
+| 已保存的 GUI 字体、字号、配色 | 立即应用于 GUI；已有 macOS TUI 专用窗口用 `/font follow` 重新读取字体，新窗口启动时读取。 |
 | 已启用 UI 插件的编译后入口模块或 manifest | 保存后在当前 GUI 窗口更新；TypeScript 源码需先编译为插件声明的 JavaScript 入口。 |
 | 当前运行已选用的 Skill、CLI 插件内容 | 下一次模型请求前重新准备；已有请求、待审批调用和正在执行的调用保留原内容与绑定。 |
 | 模型、权限、插件注册和执行环境设置 | 下一次运行生效。 |
+| 子智能体委派开关 | 新建或续派任务按最新值准入；关闭不取消已经运行或等待的任务，也不删除历史。 |
 | 更新后的 GUI 资源 | macOS 使用 Cmd+Shift+R，其他平台使用 Ctrl+Shift+R 重载界面。 |
+| TUI 二进制、内置终端字体或原生启动脚本 | 更新对应平台程序包并重新打开 TUI；GUI 重载不替换正在运行的 TUI。 |
 | Session、Kernel、原生程序或内置产品说明 | 安装对应构建产物并重启相关进程，修改源码不会直接更新运行中的程序。 |
 
 Skill、CLI 插件及运行设置的生效边界适用于 GUI、CLI 和 TUI；UI 插件仅影响图形界面。完整程序更新后重新打开 DeepCode。详见[插件说明](product/ui-plugins.md)和[模型服务](product/model-services.md)。

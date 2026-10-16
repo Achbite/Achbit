@@ -52,7 +52,6 @@ export function installInterfaceUpdateMonitor(): () => void {
 }
 
 export async function loadInterfaceModule<T>(load: () => Promise<T>): Promise<T> {
-  await checkInterfaceUpdate();
   try { return await load(); }
   catch (error) { reportInterfaceLoadError(error); throw error; }
 }

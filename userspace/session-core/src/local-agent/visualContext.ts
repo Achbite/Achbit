@@ -51,7 +51,7 @@ export function readImageReferences(events: readonly SessionEvent[], imageIds: r
 }
 
 export function visualContextInstruction(sessionId: string, readerName: string): string {
-  return `Historical image references contain no pixels. The final Current visual inputs messages identify the images attached to this request. GUI observations and explicitly reopened images are attached for one successful model request, then archived references remain without pixels. Use ${readerName} with view=images, sessionId=${sessionId} and imageIds to reopen exact references or compare images; do not infer omitted visual details. User attachments remain during this run; fresh tool images replace the preceding batch. Release unneeded pixels with imageIds=[].`;
+  return `Historical image references contain no pixels. The final Current visual inputs messages identify the images attached to this request. User attachments, GUI observations and explicitly reopened images are attached for one successful model request, then archived references remain without pixels. Use ${readerName} with view=images, sessionId=${sessionId} and imageIds to reopen exact references or compare images; do not infer omitted visual details. Fresh tool images replace the preceding batch. Release unneeded pixels with imageIds=[].`;
 }
 
 /** Selection is replayed from existing input and tool facts; retries reuse the prepared request. */
@@ -77,6 +77,7 @@ export function visualContextMessages(events: readonly SessionEvent[], runId: st
     }
     if (event.type === 'provider.turn.settled' && event.payload.purpose === 'agent' && event.payload.outcome === 'completed') {
       const consumed = requests.get(event.payload.providerRequestId);
+      attachments = attachments.filter(image => !consumed?.has(image.imageId));
       observations = observations.filter(image => !image.transient || !consumed?.has(image.imageId));
     }
     if (event.type === 'message.committed' && event.payload.role === 'user') {

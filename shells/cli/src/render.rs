@@ -361,6 +361,21 @@ impl CliRenderState {
         if !self.summarized_runs.insert(run_id.to_owned()) {
             return Ok(());
         }
+        let mut members = HashSet::new();
+        for task in projection
+            .agent_tasks
+            .iter()
+            .flatten()
+            .filter(|task| task.parent_run_id == run_id)
+        {
+            if members.insert(&task.agent_session_id) {
+                writeln!(
+                    out,
+                    "子代理 {} · deepcode-cli show --session {}",
+                    task.display_name, task.agent_session_id
+                )?;
+            }
+        }
         let changes = projection.file_changes_for_run(run_id);
         if !changes.is_empty() {
             writeln!(out, "本轮修改 · {run_id}")?;
@@ -520,7 +535,17 @@ pub(crate) fn render_tool_activity(
         .as_ref()
         .map(|tool| tool.operation.as_str())
         .unwrap_or(activity.label.as_str());
-    writeln!(out, "工具 {operation} [{}]", activity.status)?;
+    let status = activity
+        .not_executed
+        .as_ref()
+        .map_or(activity.status.as_str(), |result| {
+            if result.reason == "dependencyFailed" {
+                "未执行：前序调用未成功"
+            } else {
+                "未执行：已取消"
+            }
+        });
+    writeln!(out, "工具 {operation} [{status}]")?;
     if activity.status == "active" {
         if let Some(elapsed) = activity.started_at.as_ref().and_then(|started| {
             let started = started.parse::<u128>().ok()?;
@@ -963,8 +988,28 @@ mod tests {
             "contextCompositions": [], "tokenUsageHistory": [], "activities": [], "artifacts": [], "deliverables": [],
             "tokenUsage": {"providerCallCount":0,"reportedCallCount":0,"inputTokens":0,"outputTokens":0,
                 "cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
+            "totalTokenUsage": {"providerCallCount":0,"reportedCallCount":0,"inputTokens":0,"outputTokens":0,
+                "cacheReadInputTokens":0,"cacheMissInputTokens":0,"cacheAvailable":false,"cacheComplete":false},
             "run": {"runId":"run:test","profileId":"profile:test","workspaceBindings":[],"status":"running"}
         })).unwrap()
+    }
+
+    #[test]
+    fn unexecuted_tools_report_the_explicit_reason() {
+        for (status, disposition, expected) in [
+            ("cancelled", json!({"reason":"cancelled"}), "未执行：已取消"),
+            (
+                "rejected",
+                json!({"reason":"dependencyFailed","predecessorCallId":"call:earlier"}),
+                "未执行：前序调用未成功",
+            ),
+        ] {
+            let activity = serde_json::from_value(json!({"activityId":"tool:pending", "kind":"tool", "status":status,
+                "label":"fs.write", "runId":"run:test", "callId":"call:pending", "sequence":1, "notExecuted":disposition})).unwrap();
+            let mut output = Vec::new();
+            render_tool_activity(&mut output, &projection(), &activity).unwrap();
+            assert!(String::from_utf8(output).unwrap().contains(expected));
+        }
     }
 
     #[test]
@@ -1009,6 +1054,9 @@ mod tests {
         assert!(text.contains("部分引用来源未返回"));
         let mut projection = projection();
         projection.messages.push(serde_json::from_value(json!({"messageId":"message:sources", "role":"assistant", "content":"Original text with source marker", "sequence":1, "createdAt":"now", "filesystemReferences":[], "pluginSelections":[], "sourceReferences":{"citations":[{"url":"https://example.test/docs","title":"Reference"}],"unresolved":true}})).unwrap());
+        projection.timeline.push(serde_json::from_value(json!({"kind":"message", "timelineId":"timeline:sources", "sequence":1, "messageId":"message:sources"})).unwrap());
+        projection.messages.push(serde_json::from_value(json!({"messageId":"message:repaired", "role":"assistant", "content":"Earlier repaired answer", "sequence":3, "createdAt":"now", "filesystemReferences":[], "pluginSelections":[]})).unwrap());
+        projection.timeline.insert(0, serde_json::from_value(json!({"kind":"message", "timelineId":"timeline:repaired", "sequence":0, "messageId":"message:repaired"})).unwrap());
         let mut plain = Vec::new();
         render_final_message(&mut plain, &projection, 0).unwrap();
         assert_eq!(String::from_utf8(plain).unwrap(), text);

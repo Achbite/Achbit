@@ -24,6 +24,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 pub(crate) struct SessionServiceError {
     pub(crate) code: String,
     pub(crate) message: String,
+    pub(crate) details: Option<Value>,
 }
 
 impl SessionServiceError {
@@ -31,6 +32,7 @@ impl SessionServiceError {
         Self {
             code: code.into(),
             message: message.into(),
+            details: None,
         }
     }
 }
@@ -39,6 +41,12 @@ impl SessionServiceError {
 pub(crate) struct SessionServiceProcess {
     process: Arc<Mutex<OwnedSessionService>>,
     next_request: Arc<AtomicU64>,
+}
+
+/// Enqueue while the Host holds its settings transition; wait only after releasing it.
+pub(crate) struct PendingSessionResponse {
+    receiver: mpsc::Receiver<SessionReply>,
+    deadline: Instant,
 }
 
 impl std::fmt::Debug for SessionServiceProcess {
@@ -183,6 +191,33 @@ impl SessionServiceProcess {
         data: Value,
     ) -> Result<Value, SessionServiceError> {
         self.request_with_timeout(operation, data, REQUEST_TIMEOUT)
+    }
+
+    pub(crate) fn enqueue(
+        &self,
+        operation: &str,
+        data: Value,
+    ) -> Result<PendingSessionResponse, SessionServiceError> {
+        let request_id = format!("host:{}", self.next_request.fetch_add(1, Ordering::Relaxed));
+        let receiver = self
+            .process
+            .lock()
+            .map_err(|_| transport_lock_error())?
+            .begin_request(&request_id, operation, data)?;
+        Ok(PendingSessionResponse {
+            receiver,
+            deadline: Instant::now() + REQUEST_TIMEOUT,
+        })
+    }
+
+    pub(crate) fn receive(
+        &self,
+        pending: PendingSessionResponse,
+    ) -> Result<Value, SessionServiceError> {
+        self.receive_response(
+            pending.receiver,
+            pending.deadline.saturating_duration_since(Instant::now()),
+        )
     }
 
     fn request_with_timeout(
@@ -636,7 +671,7 @@ fn decode_response(
         Ok(value.get("data").cloned().unwrap_or(Value::Null))
     } else {
         let error = value.get("error").and_then(Value::as_object);
-        Err(SessionServiceError::new(
+        let mut failure = SessionServiceError::new(
             error
                 .and_then(|value| value.get("code"))
                 .and_then(Value::as_str)
@@ -645,7 +680,9 @@ fn decode_response(
                 .and_then(|value| value.get("message"))
                 .and_then(Value::as_str)
                 .unwrap_or("Session Service 请求失败。"),
-        ))
+        );
+        failure.details = error.and_then(|value| value.get("details")).cloned();
+        Err(failure)
     };
     Ok((request_id.expect("validated requestId").to_string(), result))
 }
@@ -713,6 +750,23 @@ fn process_wait_error(error: std::io::Error) -> SessionServiceError {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn partial_deletion_response_preserves_original_error_and_structured_details() {
+        let details =
+            json!({"deletedSessionIds":["session:child"],"remainingSessionIds":["session:owner"]});
+        let (_, result) = decode_response(serde_json::to_vec(&json!({
+            "protocolVersion":PROTOCOL_VERSION,"requestId":"request:delete","ok":false,
+            "error":{"code":"session_delete_partial","message":"session_delete_partial: original journal failure","details":details}
+        })).unwrap()).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "session_delete_partial");
+        assert_eq!(
+            error.message,
+            "session_delete_partial: original journal failure"
+        );
+        assert_eq!(error.details, Some(details));
+    }
 
     #[test]
     fn session_eof_keeps_stderr_for_the_failed_and_later_requests() {

@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "update-ui.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("ui_update", SCRIPT)
 updater = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(updater)
@@ -29,6 +30,12 @@ class UiUpdateTests(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory(prefix="deepcode-ui-publish-")
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
+        identity = patch.object(updater, 'signing_identity', return_value='A' * 40)
+        same_identity = patch.object(updater, 'require_same_identity')
+        self.identity = identity.start()
+        self.same_identity = same_identity.start()
+        self.addCleanup(identity.stop)
+        self.addCleanup(same_identity.stop)
         self.assets, self.package = self.root / "assets", self.root / "package"
         self.target = self.package / "web-deepcode-gui"
         write(self.assets, "index.html", b'<script type="module" src="assets/current.js"></script>')
@@ -60,18 +67,32 @@ class UiUpdateTests(unittest.TestCase):
         target = app / "Contents/Resources/web-deepcode-gui"
         write(target, "index.html", b"previous app resources")
         before = files(app)
-        with patch.object(updater, "sign", side_effect=[OSError("signing failed"), None]):
+        with patch.object(updater, "sign_app", side_effect=[OSError("signing failed"), None]):
             with self.assertRaisesRegex(OSError, "signing failed"):
                 updater.replace_ui(self.assets, target, app)
         self.assertEqual(files(app), before)
         self.assertFalse(any(self.package.glob(".ui-update-*")))
+
+    def test_signing_preflight_failure_does_not_modify_the_app(self):
+        app = self.package / 'DeepCode-GUI.app'
+        target = app / 'Contents/Resources/web-deepcode-gui'
+        write(target, 'index.html', b'previous app resources')
+        before = files(app)
+        for check in (self.identity, self.same_identity):
+            with self.subTest(check=check):
+                check.side_effect = ValueError('signing identity unavailable or changed')
+                with self.assertRaisesRegex(ValueError, 'signing identity'):
+                    updater.replace_ui(self.assets, target, app)
+                self.assertEqual(files(app), before)
+                self.assertFalse(any(self.package.glob('.ui-update-*')))
+                check.side_effect = None
 
     def test_app_and_standalone_command_destinations(self):
         app = self.package / "DeepCode-GUI.app"
         target = app / "Contents/Resources/web-deepcode-gui"
         write(target, "index.html", b"previous app resources")
         for argument, destination in [("--package", app), ("--output", self.root / "standalone")]:
-            with patch.object(sys, "argv", [str(SCRIPT), "--assets", str(self.assets), argument, str(destination)]), patch.object(updater, "sign"):
+            with patch.object(sys, "argv", [str(SCRIPT), "--assets", str(self.assets), argument, str(destination)]), patch.object(updater, "sign_app"):
                 self.assertEqual(updater.main(), 0)
             published = target if argument == "--package" else destination
             self.assertEqual(files(published), files(self.assets))

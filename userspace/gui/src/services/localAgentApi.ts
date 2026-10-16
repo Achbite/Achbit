@@ -3,6 +3,7 @@ import { isProcessActivity } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { validatePermissionPatches } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
+import { decodeAgentContext, decodeAgentRecipe } from '@deepcode/protocol';
 import type {
   AssistantDraftBlockProjection,
   CommandReply,
@@ -365,13 +366,19 @@ function decodeProjection(value: unknown): SessionProjection {
       'contextUsage',
       'contextCompositions',
       'tokenUsage',
+      'totalTokenUsage',
       'tokenUsageHistory',
       'run',
       'activities',
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot'])
+    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals'])
+    || (value.recipe !== undefined && !isAgentRecipe(value.recipe))
+    || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
+    || (value.agentTasks !== undefined && !isArrayOf(value.agentTasks, isAgentTask))
+    || (value.agentChildren !== undefined && !isArrayOf(value.agentChildren, isAgentChild))
+    || (value.pendingAgentDecisions !== undefined && !isArrayOf(value.pendingAgentDecisions, isPendingAgentDecision))
     || (value.providerAttempts !== undefined && !isArrayOf(value.providerAttempts, isProviderAttempt))
     || (value.failureSnapshot !== undefined && !isFailureSnapshot(value.failureSnapshot))
     || (value.fileChangeRounds !== undefined && !isArrayOf(value.fileChangeRounds, (round) => isRecord(round) && isIdentifier(round.runId) && isArrayOf(round.recordIds, isIdentifier)))
@@ -395,6 +402,7 @@ function decodeProjection(value: unknown): SessionProjection {
     || !isArrayOf(value.interactions, isInteraction)
     || !isNullable(value.pendingInteraction, isInteraction)
     || !isNullable(value.pendingApproval, isApproval)
+    || (value.pendingApprovals !== undefined && !isArrayOf(value.pendingApprovals, isApproval))
     || !isArrayOf(value.plans, isPlanProjection)
     || !isNullable(value.activePlanRef, isPlanReference)
     || !isNullable(value.pendingPlan, isPendingPlan)
@@ -402,6 +410,7 @@ function decodeProjection(value: unknown): SessionProjection {
     || !isNullable(value.contextUsage, isContextUsage)
     || !isArrayOf(value.contextCompositions, isContextComposition)
     || !isTokenUsage(value.tokenUsage)
+    || !isTokenUsage(value.totalTokenUsage)
     || !isTokenUsageHistory(value.tokenUsageHistory)
     || !isNullable(value.run, isRun)
     || !isArrayOf(value.activities, isActivity)
@@ -432,6 +441,56 @@ function decodeProjection(value: unknown): SessionProjection {
     throw new Error('conversation_projection_invalid');
   }
   return value as unknown as SessionProjection;
+}
+
+function isAgentCapabilities(value: unknown): boolean {
+  return isExactRecord(value, ['messaging', 'continuation', 'delegation'])
+    && (typeof value.messaging === 'boolean' || value.messaging === 'parent') && typeof value.continuation === 'boolean' && typeof value.delegation === 'boolean';
+}
+
+function isPendingAgentDecision(value: unknown): boolean {
+  return isExactRecord(value, ['agentSessionId', 'displayName', 'runId', 'interactionIds'], ['plan', 'approval'])
+    && isIdentifier(value.agentSessionId) && isNonEmptyText(value.displayName) && isIdentifier(value.runId)
+    && isArrayOf(value.interactionIds, isIdentifier)
+    && (value.plan === undefined || isPlanReference(value.plan))
+    && (value.approval === undefined || isExactRecord(value.approval, ['approvalId', 'callId'])
+      && isIdentifier(value.approval.approvalId) && isIdentifier(value.approval.callId))
+    && (value.plan !== undefined || value.approval !== undefined || value.interactionIds.length > 0);
+}
+
+function isAgentContext(value: unknown): boolean {
+  try {
+    const context = decodeAgentContext(value);
+    return [context.ownerSessionId, context.parentSessionId, context.parentRunId, context.parentCallId].every(isIdentifier);
+  } catch { return false; }
+}
+
+function isAgentRecipe(value: unknown): boolean {
+  try { decodeAgentRecipe(value); return true; } catch { return false; }
+}
+
+function isAgentTaskResult(value: unknown): boolean {
+  return isExactRecord(value, ['outcome'], ['content', 'error', 'finalMessageId'])
+    && (value.outcome === 'completed' || value.outcome === 'failed' || value.outcome === 'cancelled' || value.outcome === 'indeterminate')
+    && (value.content === undefined || typeof value.content === 'string')
+    && (value.error === undefined || isLocalAgentError(value.error))
+    && (value.finalMessageId === undefined || isIdentifier(value.finalMessageId));
+}
+
+function isAgentTask(value: unknown): boolean {
+  return isExactRecord(value, ['taskId', 'agentSessionId', 'capabilities', 'displayName', 'text', 'delivery', 'parentRunId', 'status'], ['childRunId', 'result'])
+    && isIdentifier(value.taskId) && isIdentifier(value.agentSessionId) && isAgentCapabilities(value.capabilities)
+    && isNonEmptyText(value.displayName) && isNonEmptyText(value.text)
+    && (value.delivery === 'wait' || value.delivery === 'async') && isIdentifier(value.parentRunId)
+    && (value.childRunId === undefined || isIdentifier(value.childRunId))
+    && (value.status === 'running' || value.status === 'completed' || value.status === 'failed' || value.status === 'cancelled' || value.status === 'indeterminate')
+    && (value.result === undefined || isAgentTaskResult(value.result));
+}
+
+function isAgentChild(value: unknown): boolean {
+  return isExactRecord(value, ['agentSessionId', 'displayName', 'capabilities', 'closed'])
+    && isIdentifier(value.agentSessionId) && isNonEmptyText(value.displayName) && isAgentCapabilities(value.capabilities)
+    && typeof value.closed === 'boolean';
 }
 
 function isTimelineItem(value: unknown): boolean {
@@ -467,9 +526,9 @@ function isTimelineItem(value: unknown): boolean {
         && isPositiveNaturalNumber(value.revision);
     case 'toolGroup':
       return isExactRecord(value, [
-        'kind', 'timelineId', 'sequence', 'providerRequestId', 'activityIds',
-      ])
-        && isIdentifier(value.providerRequestId)
+        'kind', 'timelineId', 'sequence', 'activityIds',
+      ], ['providerRequestId'])
+        && (value.providerRequestId === undefined || isIdentifier(value.providerRequestId))
         && Array.isArray(value.activityIds)
         && value.activityIds.length > 0
         && value.activityIds.every(isIdentifier);
@@ -542,7 +601,8 @@ function timelineReferencesAreValid(
           addUnique(activityIds, activityId)
           && activities.some((activity) => (
             activity.activityId === activityId
-            && ['tool', 'providerHosted', 'approval', 'interaction'].includes(String(activity.kind))
+            && ['tool', 'providerHosted', 'approval', 'interaction', 'agent'].includes(String(activity.kind))
+            && (item.providerRequestId !== undefined || activity.kind === 'agent')
           ))
         ));
       default:
@@ -556,7 +616,7 @@ function timelineReferencesAreValid(
     && narrativeIds.size === narratives.length
     && planRefs.size === plans.length
     && activityIds.size === activities.filter((activity) => (
-      ['tool', 'providerHosted', 'approval', 'interaction'].includes(String(activity.kind))
+      ['tool', 'providerHosted', 'approval', 'interaction', 'agent'].includes(String(activity.kind))
     )).length;
 }
 
@@ -812,13 +872,13 @@ function isAssistantDraftBlock(value: unknown): value is AssistantDraftBlockProj
   }
   return value.kind === 'providerHosted'
     && isExactRecord(value, [
-      'outputIndex', 'kind', 'providerCallId', 'providerToolType', 'status', 'action',
-    ])
+      'outputIndex', 'kind', 'providerCallId', 'providerToolType', 'status',
+    ], ['action'])
     && isIdentifier(value.providerCallId)
     && isNaturalNumber(value.outputIndex)
     && value.providerToolType === 'web_search'
     && (value.status === 'completed' || value.status === 'failed')
-    && isRecord(value.action);
+    && (value.action === undefined || isRecord(value.action));
 }
 
 function isInteraction(value: unknown): boolean {
@@ -876,8 +936,7 @@ function isEffectPreview(value: unknown): boolean {
     && (value.fileAccess === undefined || (isRecord(value.fileAccess) && isArrayOf(value.fileAccess.read, isNonEmptyText) && isArrayOf(value.fileAccess.write, isNonEmptyText)))
     && (value.authorizationScopes === undefined || isArrayOf(value.authorizationScopes, scope => isShellAuthorizationScope(scope)))
     && (value.approvalReviewer === undefined || ['user', 'agent'].includes(String(value.approvalReviewer)))
-    && (value.review === undefined || isExactRecord(value.review, ['decision', 'reason'])
-      && ['allow', 'deny', 'ask'].includes(String(value.review.decision)) && isNonEmptyText(value.review.reason))
+    && (value.review === undefined || isApprovalReview(value.review))
     && isNonEmptyText(value.summary)
     && Array.isArray(value.effects)
     && value.effects.every((effect) => effects.includes(String(effect)))
@@ -925,7 +984,7 @@ function isPendingPlan(value: unknown): boolean {
 }
 
 function isPlanProjectionFields(value: Record<string, unknown>): boolean {
-  if (value.confirmationSource !== undefined && !['user', 'agent'].includes(String(value.confirmationSource))) return false;
+  if (value.confirmationSource !== undefined && !['user', 'agent', 'parent', 'sessionWorkdir'].includes(String(value.confirmationSource))) return false;
   if (
     !isIdentifier(value.planId)
     || !isPositiveNaturalNumber(value.revision)
@@ -1303,14 +1362,19 @@ function isModelSettings(value: unknown): boolean {
     && (value.reasoningEffortOverride === null || isReasoningEffort(value.reasoningEffortOverride));
 }
 
+function isApprovalReview(value: unknown): boolean {
+  return isExactRecord(value, ['decision', 'reason'])
+    && ['allow', 'deny', 'ask'].includes(String(value.decision)) && isNonEmptyText(value.reason);
+}
+
 function isActivity(value: unknown): boolean {
   return isExactRecord(
     value,
     ['activityId', 'kind', 'status', 'label', 'runId', 'sequence'],
-    ['callId', 'tool', 'providerHosted', 'inputRejection', 'interruption', 'startedAt', 'liveOutput'],
+    ['callId', 'tool', 'approvalReview', 'providerHosted', 'inputRejection', 'interruption', 'notExecuted', 'startedAt', 'liveOutput', 'agent'],
   )
     && isIdentifier(value.activityId)
-    && ['run', 'tool', 'providerHosted', 'approval', 'plan', 'interaction']
+    && ['run', 'tool', 'providerHosted', 'approval', 'plan', 'interaction', 'agent']
       .includes(String(value.kind))
     && ['active', 'requested', 'waiting', 'completed', 'denied', 'rejected', 'failed', 'cancelled', 'indeterminate']
       .includes(String(value.status))
@@ -1323,15 +1387,30 @@ function isActivity(value: unknown): boolean {
     && (value.liveOutput === undefined || value.kind === 'tool' && value.status === 'active'
       && value.startedAt !== undefined && isLiveToolOutput(value.liveOutput))
     && (value.tool === undefined || isToolActivity(value.tool, String(value.status)))
+    && (value.approvalReview === undefined || value.kind === 'approval' && isApprovalReview(value.approvalReview))
     && (value.providerHosted === undefined || isProviderHostedActivity(value.providerHosted))
     && (value.kind === 'tool'
-      ? value.status === 'rejected' ? value.tool === undefined && isInputRejection(value.inputRejection)
+      ? value.notExecuted !== undefined ? isNotExecuted(value.notExecuted) && value.tool === undefined
+          && value.inputRejection === undefined && value.interruption === undefined
+          && value.status === (value.notExecuted.reason === 'cancelled' ? 'cancelled' : 'rejected')
+        : value.status === 'rejected' ? value.tool === undefined && isInputRejection(value.inputRejection)
         : value.status === 'requested' || value.status === 'active' && value.startedAt !== undefined || value.tool !== undefined
           || value.status === 'indeterminate' && isLocalAgentError(value.interruption)
       : value.tool === undefined)
-    && (value.status === 'rejected' && value.kind === 'tool') === (value.inputRejection !== undefined)
+    && (value.notExecuted === undefined || value.kind === 'tool')
+    && (value.status === 'rejected' && value.kind === 'tool' && value.notExecuted === undefined) === (value.inputRejection !== undefined)
     && (value.interruption === undefined || value.kind === 'tool' && value.status === 'indeterminate' && value.tool === undefined && isLocalAgentError(value.interruption))
-    && (value.kind === 'providerHosted') === (value.providerHosted !== undefined);
+    && (value.kind === 'providerHosted') === (value.providerHosted !== undefined)
+    && (value.kind === 'agent' ? isExactRecord(value.agent, ['agentSessionId', 'phase'], ['taskId'])
+      && isIdentifier(value.agent.agentSessionId)
+      && (value.agent.phase === 'updated' ? value.agent.taskId === undefined
+        : ['started', 'completed'].includes(String(value.agent.phase)) && isIdentifier(value.agent.taskId)) : value.agent === undefined);
+}
+
+function isNotExecuted(value: unknown): value is { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string } {
+  return isExactRecord(value, ['reason'], ['predecessorCallId'])
+    && ['cancelled', 'dependencyFailed'].includes(String(value.reason))
+    && (value.predecessorCallId === undefined || isIdentifier(value.predecessorCallId));
 }
 
 function isLiveToolOutput(value: unknown): boolean {
@@ -1351,14 +1430,14 @@ function isInputRejection(value: unknown): boolean {
 }
 
 function isProviderHostedActivity(value: unknown): boolean {
-  return isExactRecord(value, ['providerToolType', 'providerCallId', 'action'])
+  return isExactRecord(value, ['providerToolType', 'providerCallId'], ['action'])
     && value.providerToolType === 'web_search'
     && isIdentifier(value.providerCallId)
-    && isRecord(value.action);
+    && (value.action === undefined || isRecord(value.action));
 }
 
 function isToolActivity(value: unknown, activityStatus: string): boolean {
-  return isExactRecord(value, ['operation', 'resources'], ['shell', 'process', 'fileChanges', 'recordId', 'error', 'projectionError'])
+  return isExactRecord(value, ['operation', 'resources'], ['shell', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
     && (value.error === undefined || isLocalAgentError(value.error))
     && (value.projectionError === undefined || isLocalAgentError(value.projectionError))
     && (value.recordId === undefined || isIdentifier(value.recordId))
@@ -1370,9 +1449,25 @@ function isToolActivity(value: unknown, activityStatus: string): boolean {
       && [change.before, change.after].every((side) => isRecord(side) && typeof side.exists === 'boolean'
         && (!side.exists || typeof side.contentRef === 'string' || typeof side.error === 'string'))))
     && (value.process === undefined || isProcessActivity(value.process))
+    && (value.computer === undefined || isComputerActivity(value.computer))
     && (value.process !== undefined ? value.shell === undefined : (value.operation === 'bash' || value.operation === 'powershell')
       ? value.shell === undefined && value.projectionError !== undefined || isShellActivity(value.shell, activityStatus)
       : value.shell === undefined);
+}
+
+function isComputerActivity(value: unknown): boolean {
+  return isExactRecord(value, ['action', 'input'], ['app', 'window', 'page', 'dispatched', 'observation', 'inputObservation', 'result'])
+    && typeof value.action === 'string' && isRecord(value.input)
+    && (value.app === undefined || typeof value.app === 'string')
+    && ['window', 'page', 'result'].every(key => value[key] === undefined || isRecord(value[key]))
+    && (value.dispatched === undefined || typeof value.dispatched === 'boolean')
+    && (value.observation === undefined || isExactRecord(value.observation, ['artifactIds'], ['observationId', 'interface'])
+      && isArrayOf(value.observation.artifactIds, isIdentifier)
+      && (value.observation.observationId === undefined || isIdentifier(value.observation.observationId))
+      && (value.observation.interface === undefined || isRecord(value.observation.interface)))
+    && (value.inputObservation === undefined || isExactRecord(value.inputObservation, ['observationId', 'artifactIds'], ['element'])
+      && isIdentifier(value.inputObservation.observationId) && isArrayOf(value.inputObservation.artifactIds, isIdentifier)
+      && (value.inputObservation.element === undefined || isRecord(value.inputObservation.element)));
 }
 
 function isShellActivity(value: unknown, activityStatus: string): boolean {
@@ -1393,7 +1488,7 @@ function isShellActivity(value: unknown, activityStatus: string): boolean {
     && resultMatchesShell
     && (activityStatus === 'completed'
       ? resultValid
-      : activityStatus === 'failed' || activityStatus === 'indeterminate'
+      : activityStatus === 'failed' || activityStatus === 'indeterminate' || activityStatus === 'cancelled'
         ? value.result === undefined || resultValid
         : value.result === undefined);
 }

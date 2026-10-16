@@ -90,6 +90,76 @@ test('Agent plugin activation and explicit user mentions coexist across request 
   }
 });
 
+test('desktop activation and explicit selection carry execution availability without a GUI or shell probe', async t => {
+  for (const explicit of [false, true]) {
+    const journal = new InMemoryCommandJournal(), sessionId = `session:desktop-${explicit}`;
+    await createSession(journal, sessionId, [workspaceBinding]);
+    const uri = 'plugin://computer-use@builtin';
+    const desktop = { toolBindingRef: 'binding:desktop', name: 'computer.control', description: 'Native desktop control.',
+      inputSchema: { type: 'object', properties: {} }, possibleEffects: ['external'], availability: 'callable',
+      origin: 'extension', pluginUri: uri, runtimeStatus: { platform: 'macos', accessibility: true } };
+    const browser = { ...desktop, toolBindingRef: 'binding:browser', name: 'browser.observe', availability: 'blocked',
+      availabilityReason: { code: 'gui_browser_unavailable', message: 'This run has no GUI window for embedded browser tools.' } };
+    delete browser.runtimeStatus;
+    const preparation = fakeRunPreparation({ tools: [discoveryTool], contextWindowTokens: 8192 });
+    const port = { ...preparation.port, async prepare(request) {
+      assert.equal(request.hostBinding, undefined);
+      const prepared = await preparation.port.prepare(request);
+      const runtime = prepared.runtimeSnapshot;
+      runtime.kernelCatalogSnapshotRef = `catalog:desktop:${preparation.prepared.length}`;
+      if (request.pluginSelections?.some(selection => selection.uri === uri)) runtime.tools.push(desktop, browser);
+      runtime.providerToolAliases = createProviderToolAliases([...runtime.tools.map(tool => tool.name),
+        ...sessionControlToolDefinitions().map(tool => tool.name)]);
+      return prepared;
+    } };
+    let turns = 0, executions = 0;
+    const actor = actorWith(journal, sessionId, { async *stream(request) {
+      turns += 1;
+      assert.ok(turns <= (explicit ? 2 : 3));
+      if (!explicit && turns === 1) {
+        yield providerEvent(request.requestId, 'tool.call', { callId: 'native:activate', name: 'plugin_activate', input: { pluginUris: [uri] } });
+      } else {
+        assert.ok(request.tools.some(tool => tool.name === 'computer_control'));
+        assert.ok(!request.tools.some(tool => tool.name === 'browser_observe'));
+        const capabilities = request.messages.find(message => message.role === 'system' && message.content.includes('Execution-layer tool status'));
+        assert.ok(capabilities.content.includes('gui_browser_unavailable'));
+        assert.ok(capabilities.content.includes('"accessibility":true'));
+        if (!explicit) {
+          const result = request.messages.filter(message => message.role === 'tool')
+            .map(message => JSON.parse(message.content)).find(result => result.activated);
+          assert.deepEqual(result.activated, [uri]);
+          assert.deepEqual(result.tools, [
+            { name: desktop.name, availability: desktop.availability, runtimeStatus: desktop.runtimeStatus },
+            { name: browser.name, availability: browser.availability, reason: browser.availabilityReason },
+          ]);
+        }
+        if (!executions) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:desktop', name: 'computer_control', input: { action: 'status' } });
+        else yield providerEvent(request.requestId, 'text.delta', { text: 'Native desktop is available; embedded preview needs a GUI window.' });
+      }
+      yield providerEvent(request.requestId, 'completed', {});
+    } }, emptyKernel({ async execute(request) {
+      assert.equal(request.toolName, 'computer.control');
+      executions += 1;
+      const reply = completedExecutionReply(request, { status: 'ready' });
+      reply.record.preparedEffect.origin = 'extension';
+      reply.record.preparedEffect.pluginInstanceRef = 'instance:desktop';
+      return reply;
+    } }), port, `desktop-${explicit}`);
+    t.after(() => actor.dispose());
+    await actor.submit({ ...messageCommand(sessionId, 'command:start', 'Inspect the native desktop status.'),
+      ...(explicit ? { pluginSelections: [{ selectionId: 'selection:desktop', uri, label: 'Computer Use' }], pluginCatalogRevision: 'catalog:desktop' } : {}) });
+    await waitForProjection(actor, state => state.run?.status === 'completed');
+    assert.equal(executions, 1);
+    assert.equal(preparation.released.length, 1);
+    if (!explicit) {
+      const events = await readEvents(journal, sessionId);
+      const activated = events.find(event => event.type === 'session.plugins.activated');
+      assert.equal(activated.payload.kernelCatalogSnapshotRef,
+        events.find(event => event.type === 'run.tools.prepared').payload.toolView.kernelCatalogSnapshotRef);
+    }
+  }
+});
+
 test('plugin preparation failure is returned without changing the callable tool view', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:plugin-disabled';
   await createSession(journal, sessionId, [workspaceBinding]);

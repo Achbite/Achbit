@@ -1,3 +1,4 @@
+import { installTextSelectionBoundary } from '../components/shared/textSelection';
 import '../components/shared/focus.css';
 import { ConversationDisplayProvider } from '../components/local-agent/ConversationDisplayProvider';
 import { HostStartupDiagnostic } from '../components/shared/HostStartupDiagnostic';
@@ -5,6 +6,8 @@ import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 
 import useAppStatusStore from '../state/appStatusStore';
 import { useSettingsStore } from '../state/settingsStore';
 import { initializeHostWorkspace } from '../services/workspaceInitialization';
+import { isRemoteHost } from '../services/hostTarget';
+import { requestInterfaceReload } from '../services/interfaceReload';
 import { useLocalAgentStore } from '../state/localAgentStore';
 import { normalizeUiLanguage, setActiveUiLanguage, t, type UiLanguage } from '../i18n';
 import {
@@ -58,12 +61,16 @@ const HOST_STARTUP_MESSAGE_KEYS: Readonly<Record<string, string>> = {
   host_startup_process_exited: 'deepcodeGui.hostStartup.processExited',
   host_startup_process_status_failed: 'deepcodeGui.hostStartup.processStatusFailed',
   host_startup_health_timeout: 'deepcodeGui.hostStartup.healthTimeout',
+  host_ssh_connecting: 'deepcodeGui.ssh.connecting',
+  host_ssh_connect_failed: 'deepcodeGui.ssh.failed',
+  host_ssh_disconnected: 'deepcodeGui.ssh.disconnected',
 };
 
 function startupStatusMessage(
   language: UiLanguage,
   status: {
     code: string;
+    message?: string;
     reasonCode?: string;
     diagnosticRef?: string;
   },
@@ -72,7 +79,7 @@ function startupStatusMessage(
   const message = messageKey
     ? t(language, messageKey)
     : t(language, 'deepcodeGui.hostStartup.unknown', { code: status.code });
-  const details = [status.code, status.reasonCode, status.diagnosticRef].filter(Boolean);
+  const details = [status.code, status.reasonCode, status.code.startsWith('host_ssh_') ? status.message : undefined, status.diagnosticRef].filter(Boolean);
   return details.length > 0
     ? `${message} (${details.join(' · ')})`
     : message;
@@ -93,6 +100,10 @@ const BootFallback: React.FC<{ language: ReturnType<typeof normalizeUiLanguage> 
 );
 
 const DeepCodeGuiApp: React.FC = () => {
+  useEffect(() => {
+    return installTextSelectionBoundary(document);
+  }, []);
+
   const {
     apiStatus,
     serverVersion,
@@ -109,7 +120,6 @@ const DeepCodeGuiApp: React.FC = () => {
   const [connectedIncarnation, setConnectedIncarnation] = useState<string | null>(null);
   const [kernelStartBusy, setKernelStartBusy] = useState(false);
   const [hostStartup, setHostStartup] = useState<HostStartupStatusV1 | null>(null);
-  const [kernelStartMessage, setKernelStartMessage] = useState<string | null>(null);
   const [workspaceInitializationError, setWorkspaceInitializationError] = useState<string | null>(null);
   const recordRuntimeReady = useCallback((attemptId: string | null) => {
     if (attemptId) {
@@ -123,14 +133,12 @@ const DeepCodeGuiApp: React.FC = () => {
 
   const retryKernelStart = useCallback(async () => {
     setKernelStartBusy(true);
-    setKernelStartMessage(null);
     setApiStatus('checking');
     const start = await startKernelAfterPermission();
     if (!start.ok) {
       setApiStatus('error');
       const message = start.message || t(language, 'deepcodeGui.kernelStart.failed');
       setErrorMessage(message);
-      setKernelStartMessage(message);
       setKernelStartBusy(false);
       return;
     }
@@ -142,7 +150,6 @@ const DeepCodeGuiApp: React.FC = () => {
         ? startupStatusMessage(language, startupStatus)
         : start.data?.message || t(language, 'deepcodeGui.kernelStart.failed');
       setErrorMessage(message);
-      setKernelStartMessage(message);
       setKernelStartBusy(false);
       return;
     }
@@ -153,8 +160,10 @@ const DeepCodeGuiApp: React.FC = () => {
         recordRuntimeReady(hostAttemptId(startupStatus));
         setApiStatus('connected');
         setServerVersion(healthVersion(result.data));
-        setKernelStartMessage(null);
         setKernelStartBusy(false);
+        // A new SSH tunnel also replaces file watchers and pending preview reads.
+        // The shared reload path preserves this window's view and composer drafts.
+        if (isRemoteHost() && loadedIncarnationRef.current !== null) requestInterfaceReload();
         return;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 500));
@@ -165,7 +174,6 @@ const DeepCodeGuiApp: React.FC = () => {
       : start.data?.message || t(language, 'deepcodeGui.kernelStart.waitingHealth');
     setApiStatus('error');
     setErrorMessage(message);
-    setKernelStartMessage(message);
     setKernelStartBusy(false);
   }, [language, recordRuntimeReady, setApiStatus, setErrorMessage, setServerVersion]);
 
@@ -179,6 +187,7 @@ const DeepCodeGuiApp: React.FC = () => {
       || !connectedIncarnation
       || loadedIncarnationRef.current === connectedIncarnation
     ) return;
+    const reconnectingRemote = isRemoteHost() && loadedIncarnationRef.current !== null;
     loadedIncarnationRef.current = connectedIncarnation;
     setWorkspaceInitializationError(null);
     void initializeHostWorkspace().catch((error: unknown) => {
@@ -187,7 +196,17 @@ const DeepCodeGuiApp: React.FC = () => {
       }
     });
     void loadUserSettings();
-    void useLocalAgentStore.getState().initialize();
+    const store = useLocalAgentStore.getState();
+    if (reconnectingRemote) {
+      // This window still targets the same remote Host. Refresh its facts while
+      // preserving the user's selected conversation and in-progress input.
+      void store.refreshCatalog();
+      void store.refreshPluginCatalog();
+      void store.refreshProfiles();
+      void store.refresh();
+    } else {
+      void store.initialize();
+    }
   }, [apiStatus, connectedIncarnation, loadUserSettings]);
 
 
@@ -231,13 +250,11 @@ const DeepCodeGuiApp: React.FC = () => {
         recordRuntimeReady(attemptId);
         setApiStatus('connected');
         setServerVersion(healthVersion(result.data));
-        setKernelStartMessage(null);
-        timeout = window.setTimeout(() => void check(), 30000);
+        timeout = window.setTimeout(() => void check(), isRemoteHost() ? 5000 : 30000);
       } else {
         healthWasReadyRef.current = false;
         if (startup.ok && startup.data) {
           const message = startupStatusMessage(language, startup.data);
-          setKernelStartMessage(message);
           if (startup.data.phase === 'starting' || startup.data.phase === 'idle') {
             setApiStatus('checking');
             timeout = window.setTimeout(() => void check(), 500);
@@ -263,7 +280,6 @@ const DeepCodeGuiApp: React.FC = () => {
     recordRuntimeReady,
     setApiStatus,
     setErrorMessage,
-    setKernelStartMessage,
     setServerVersion,
   ]);
 
@@ -281,9 +297,6 @@ const DeepCodeGuiApp: React.FC = () => {
       <DeepCodeWorkbenchLayout
         apiStatus={apiStatus}
         serverVersion={serverVersion}
-        kernelStartBusy={kernelStartBusy}
-        kernelStartMessage={kernelStartMessage}
-        onRetryKernelStart={retryKernelStart}
       />
     </Suspense></ConversationDisplayProvider>
   </>);

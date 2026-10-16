@@ -5,6 +5,7 @@ use deepcode_kernel_tools::kernel_internal::{
 };
 use deepcode_kernel_tools::KernelToolRegistry;
 use deepcode_kernel_tools::ToolAvailability;
+pub(crate) use process::invoke_workspace_shell as execute_workspace_shell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -20,6 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default)]
 pub struct KernelExecutorConfig {
+    pub sandbox_backend: Option<String>,
+    /// Trusted registration at Host startup; never supplied by a model or tool argument.
+    pub sandbox_backends: Arc<crate::workspace_sandbox::SandboxBackendRegistry>,
     pub web_search_endpoint_template: String,
     pub web_search_auth_header_name: String,
     pub web_search_auth_secret_ref: String,
@@ -27,6 +31,8 @@ pub struct KernelExecutorConfig {
     pub shell_program: Option<crate::shell_environment::ShellProgram>,
     pub execution_path: Option<String>,
     pub temporary_root: Option<PathBuf>,
+    /// Shared package cache of workspace Shells across Sessions.
+    pub shell_cache_root: Option<PathBuf>,
     pub file_read_roots: Vec<PathBuf>,
     pub wsl: Option<crate::wsl_execution::WslExecution>,
 }
@@ -297,6 +303,7 @@ fn executor_for_binding(
                 program: config.shell_program,
                 execution_path: config.execution_path,
                 temporary_root: config.temporary_root,
+                sandbox_backends: config.sandbox_backends,
             })
         }
     }
@@ -709,3 +716,5 @@ mod tests;
 
 #[cfg(windows)]
 pub(crate) mod windows_job;
+#[cfg(windows)]
+pub use windows_job::suppress_error_dialogs;

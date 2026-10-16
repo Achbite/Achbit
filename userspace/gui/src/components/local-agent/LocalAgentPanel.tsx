@@ -1,9 +1,10 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
+import useAppStatusStore from '../../state/appStatusStore';
 import { usePresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
@@ -15,9 +16,12 @@ import { FileChanges, roundChangeActivities } from './FileChanges';
 import { useDisplayedConversation } from './ConversationDisplayProvider';
 import { ConversationComposer } from './ConversationComposer';
 import { ConversationTranscript } from './ConversationTranscript';
+import { ConversationLayoutCache } from './conversationVirtualizer';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
 import { ArtifactLinks } from './ArtifactLinks';
 import './localAgentPanel.css';
+import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
+import { AgentPlanReview } from './AgentPlanReview';
 import type { ReaderNavigation } from './readerState';
 
 export interface ConversationReaderLayout {
@@ -44,8 +48,10 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const projection = useLocalAgentStore((state) => state.projection);
   const loading = useLocalAgentStore((state) => state.loading);
   const refresh = useLocalAgentStore((state) => state.refresh);
+  const hostReady = useAppStatusStore((state) => state.apiStatus === 'connected');
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
   const [uiActionError, setUiActionError] = useState<string | null>(null);
+  const conversationLayouts = useRef(new ConversationLayoutCache());
   useEffect(() => setUiActionError(null), [sessionId]);
   const presentation = usePresentedCommittedContent(projection, language);
   const activeSummary = catalog.sessions.find((session) => session.id === sessionId);
@@ -86,7 +92,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     || Boolean(projection?.pendingPlan)
     || Boolean(projection?.terminalError);
   useProfilesUpdated(refreshProfiles);
-  useProjectionPolling(sessionId, projectionPollingActive, refresh);
+  useProjectionPolling(sessionId, projectionPollingActive, refresh, hostReady);
   const viewport = useConversationViewport({
     sessionId,
     loading,
@@ -98,6 +104,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const { bodyRef, bodyHandlers, showJumpToLatest, scrollToLatest } = viewport;
   const composer = useAgentComposer(language, viewport.setLatestFollowMode);
   const resourcePreview = useResourcePreview(sessionId, readerNavigation);
+  const activeReader = resourcePreview.tabs.find(tab => tab.id === resourcePreview.activeId)?.target;
+  const activeAgent = resourcePreview.visible && activeReader?.kind === 'agent' ? activeReader : null;
   const [readerHeader, setReaderHeader] = useState<HTMLDivElement | null>(null);
   const [conversationBounds, setConversationBounds] = useState<HTMLDivElement | null>(null);
   const readerLayout = { '--reader-width': `${resourcePreview.width}%` } as React.CSSProperties;
@@ -134,11 +142,12 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   );
 
   return (
-    <section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
+    <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
       <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
         <ConversationTranscript
+          layoutCache={conversationLayouts.current}
           displaySettledRunIds={display.displaySettledRunIds}
           onDisplayed={display.onDisplayed}
           showReasoning={showReasoning}
@@ -155,6 +164,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
+          composerInteractionId={composer.pendingInteraction?.interactionId}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">
@@ -184,6 +194,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         onDismissUiActionError={() => setUiActionError(null)}
       />
       <ResourcePreview language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview} />
+      {projection && hostReady && <AgentPlanReview key={sessionId} decisions={projection.pendingAgentDecisions ?? []}
+        language={language} refresh={refresh} />}
       {onReaderLayoutChange && <div ref={setConversationBounds} className="local-agent__conversation-overlay-bounds" aria-hidden="true" />}
       {composer.attachmentDialogOpen && (
         <ProjectFolderDialog
@@ -196,7 +208,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           }}
         />
       )}
-    </section>
+    </section></AgentNavigationScope>
   );
 };
 

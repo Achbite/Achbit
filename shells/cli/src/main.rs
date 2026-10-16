@@ -1,11 +1,15 @@
 #[path = "../../shared/conversation_input.rs"]
 mod conversation_input;
 // CLI retains its existing Chinese messages; TUI also uses the shared locale loader.
+mod gui_attach;
 #[allow(dead_code)]
 #[path = "../../shared/i18n.rs"]
 mod i18n;
 mod model_services;
 mod render;
+#[path = "../../shared/session_navigation.rs"]
+mod session_navigation;
+mod ssh;
 
 use deepcode_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, CreateConversationSessionRequest,
@@ -38,7 +42,18 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
 async fn main() {
-    let args = match Args::parse(env::args().skip(1).collect()) {
+    if std::env::var("DEEPCODE_SSH_ASKPASS").as_deref() == Ok("1") {
+        if let Err(error) = deepcode_host_connection::ssh::run_askpass_helper() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let values: Vec<String> = env::args().skip(1).collect();
+    if values.first().map(String::as_str) == Some("ssh") {
+        std::process::exit(ssh::run(&values[1..]));
+    }
+    let args = match Args::parse(values) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("{error}");
@@ -50,10 +65,17 @@ async fn main() {
         print_help();
         return;
     }
+    if matches!(args.command, Command::GuiAttach) && args.api.is_some() {
+        eprintln!("gui-attach uses the shared Host of DEEPCODE_USER_ROOT; --api is not supported");
+        std::process::exit(EXIT_BAD_ARGS);
+    }
     let bootstrap = match KernelBootstrap::connect(
         KernelBootstrapOptions::new(args.api.clone())
             .auto_start(!args.no_auto_start_kernel && !matches!(args.command, Command::StopHost))
-            .persistent(matches!(args.command, Command::StartHost)),
+            .persistent(matches!(
+                args.command,
+                Command::StartHost | Command::GuiAttach
+            )),
     )
     .await
     {
@@ -100,12 +122,14 @@ enum Command {
     Status,
     StopHost,
     StartHost,
+    GuiAttach,
     Diff {
         record_id: String,
         index: usize,
     },
     Ask(String),
     Chat,
+    Sessions,
     Show,
     Read {
         query: Value,
@@ -135,6 +159,7 @@ struct Args {
     session_id: Option<String>,
     plain: bool,
     profile_id: Option<String>,
+    recipe: Option<Value>,
     plugins: Vec<String>,
     files: Vec<String>,
     directories: Vec<String>,
@@ -149,6 +174,7 @@ impl Args {
         let mut session_id = None;
         let mut plain = false;
         let mut profile_id = None;
+        let mut recipe = None;
         let mut plugins = Vec::new();
         let mut files = Vec::new();
         let mut directories = Vec::new();
@@ -160,6 +186,18 @@ impl Args {
                 "--api" => {
                     index += 1;
                     api = Some(required_arg(&values, index, "--api")?.to_string());
+                }
+                "--recipe" => {
+                    index += 1;
+                    let path = required_arg(&values, index, "--recipe")?;
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|error| format!("读取 Agent 配方失败 {path}: {error}"))?;
+                    let value: Value = serde_json::from_str(&text)
+                        .map_err(|error| format!("Agent 配方 JSON 无效: {error}"))?;
+                    if !value.is_object() {
+                        return Err("Agent 配方必须是 JSON 对象。".into());
+                    }
+                    recipe = Some(value);
                 }
                 "--model" => {
                     index += 1;
@@ -249,12 +287,20 @@ impl Args {
             },
             Some("stop-host") if positional.len() == 1 => Command::StopHost,
             Some("start-host") if positional.len() == 1 => Command::StartHost,
+            Some("gui-attach") if positional.len() == 1 => Command::GuiAttach,
             Some("diff") if positional.len() == 3 => Command::Diff {
                 record_id: positional[1].clone(),
                 index: positional[2]
                     .parse()
                     .map_err(|_| "diff index must be a nonnegative integer")?,
             },
+            Some("sessions") if positional.len() == 1 && session_id.is_none() && workspace.is_none() => Command::Sessions,
+            Some("new") if positional.len() == 1 && session_id.is_none() => Command::Chat,
+            Some("resume") if positional.len() == 2 && session_id.is_none() && workspace.is_none() => {
+                session_id = Some(session_navigation::resolve_selector(i18n::Language::ZhCn, &positional[1], None)?);
+                Command::Chat
+            }
+            Some("sessions" | "new" | "resume") => return Err("用法：sessions | new [-C <workspace>] | resume <完整 session: ID>；不可同时指定 --session。".into()),
             Some("chat") => Command::Chat,
             Some("show") => Command::Show,
             Some("read") => {
@@ -323,6 +369,11 @@ impl Args {
         if !read_query.is_empty() && !matches!(command, Command::Read { .. }) {
             return Err("--view/--record/--request/--before/--limit 仅用于 read。".into());
         }
+        if recipe.is_some()
+            && (session_id.is_some() || !matches!(command, Command::Ask(_) | Command::Chat))
+        {
+            return Err("--recipe 仅用于 ask/chat 创建新会话，不能与 --session 同用。".into());
+        }
         Ok(Self {
             api,
             no_auto_start_kernel,
@@ -330,6 +381,7 @@ impl Args {
             session_id,
             plain,
             profile_id,
+            recipe,
             plugins,
             files,
             directories,
@@ -467,6 +519,14 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
     }
     match args.command {
         Command::Help => Ok(Outcome::Done),
+        Command::Sessions => {
+            let catalog = client
+                .conversation_catalog()
+                .await
+                .map_err(|error| error.to_string())?;
+            print_sessions(&session_navigation::ordered_sessions(catalog), None);
+            Ok(Outcome::Done)
+        }
         Command::Connections => model_services::connections(client).await,
         Command::AuthLogin {
             selector,
@@ -503,6 +563,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
             )
             .await
         }
+        Command::GuiAttach => gui_attach::serve().await.map(|()| Outcome::Done),
         Command::StartHost => {
             println!("共享 Host 已启动为常驻服务。");
             Ok(Outcome::Done)
@@ -542,6 +603,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 args.session_id.as_deref(),
                 args.workspace.as_ref(),
                 args.profile_id.as_deref(),
+                args.recipe.as_ref(),
             )
             .await?;
             let filesystem_references = resolve_cli_filesystem_references(
@@ -574,6 +636,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 args.workspace.as_ref(),
                 &args.plugins,
                 args.profile_id.as_deref(),
+                args.recipe.as_ref(),
             )
             .await
         }
@@ -597,6 +660,9 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .map_err(|error| error.to_string())?;
             render_projection(&mut io::stdout().lock(), &projection)
                 .map_err(|error| error.to_string())?;
+            if render_pending_agent_decisions(client, &projection).await? {
+                return Ok(Outcome::ActionRequired);
+            }
             Ok(outcome_for_projection(&projection).unwrap_or(Outcome::Done))
         }
         Command::CancelPlan => {
@@ -696,8 +762,12 @@ async fn open_session(
     session_id: Option<&str>,
     workspace: Option<&PathBuf>,
     profile_id: Option<&str>,
+    recipe: Option<&Value>,
 ) -> Result<SessionProjection, String> {
     if let Some(session_id) = session_id {
+        if recipe.is_some() {
+            return Err("--recipe 仅用于创建新会话；已有会话保留其配方。".into());
+        }
         return client
             .conversation_projection(session_id)
             .await
@@ -713,6 +783,7 @@ async fn open_session(
     };
     client
         .create_conversation_session(&CreateConversationSessionRequest {
+            recipe: recipe.cloned(),
             session_id: None,
             workspace_paths,
             project_id: None,
@@ -731,14 +802,18 @@ async fn submit_input_and_wait(
     plugin_binding: Option<&PluginBinding>,
     plain: bool,
 ) -> Result<Outcome, String> {
+    let child =
+        conversation_input::child_reply_projection(i18n::Language::ZhCn, client, before, text)
+            .await?;
+    let target = child.as_ref().unwrap_or(before);
     let command = contextual_input_command(
-        before,
+        target,
         text,
         profile_id,
         filesystem_references,
         plugin_binding,
     )?;
-    submit_checked(client, &before.session_id, &command).await?;
+    submit_checked(client, &target.session_id, &command).await?;
     if matches!(
         command["type"].as_str(),
         Some("session.permissions.set" | "approval.revoke")
@@ -825,6 +900,20 @@ async fn wait_for_projection(
                 .render(&mut io::stdout().lock(), &projection)
                 .map_err(|error| error.to_string())?;
         }
+        if projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            output
+                .finish_text(&mut io::stdout().lock())
+                .map_err(|error| error.to_string())?;
+            if render_pending_agent_decisions(client, &projection).await? {
+                return Ok(Outcome::ActionRequired);
+            }
+        }
         if let Some(run) = projection.run.as_ref() {
             if run.status == "waiting" {
                 output
@@ -870,17 +959,37 @@ async fn wait_for_projection(
     }
 }
 
+fn print_sessions(
+    sessions: &[deepcode_kernel_client::ConversationSessionSummary],
+    current: Option<&str>,
+) {
+    let language = i18n::Language::ZhCn;
+    println!("{}", language.text("tui.sessionsTitle"));
+    if sessions.is_empty() {
+        println!("{}", language.text("tui.sessionsEmpty"));
+    }
+    for (index, session) in sessions.iter().enumerate() {
+        println!(
+            "{}",
+            session_navigation::session_label(index + 1, session, current)
+        );
+    }
+    println!("{}", language.text("tui.sessionsHint"));
+}
+
 async fn run_chat(
     client: &HttpKernelClient,
     session_id: Option<&str>,
     workspace: Option<&PathBuf>,
     initial_plugin_uris: &[String],
     initial_profile_id: Option<&str>,
+    recipe: Option<&Value>,
 ) -> Result<Outcome, String> {
     if !io::stdin().is_terminal() {
         return Err("chat 需要交互式终端；非交互调用请使用 ask。".to_string());
     }
-    let mut projection = open_session(client, session_id, workspace, initial_profile_id).await?;
+    let mut projection =
+        open_session(client, session_id, workspace, initial_profile_id, recipe).await?;
     let mut plugin_catalog = client
         .conversation_plugin_catalog()
         .await
@@ -891,14 +1000,19 @@ async fn run_chat(
         plugin_binding_from_catalog(plugin_catalog.clone(), initial_plugin_uris)?.selections
     };
     println!("session: {}", projection.session_id);
+    render_projection(&mut io::stdout().lock(), &projection).map_err(|error| error.to_string())?;
+    println!("/sessions 列出会话；/resume <序号或完整 ID> 进入；/new 沿用启动目录新建；切换不会取消后台任务。");
     println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/cancel；/quit。");
     render_action_required_if_any(&mut io::stdout().lock(), &projection)
         .map_err(|error| error.to_string())?;
+    render_pending_agent_decisions(client, &projection).await?;
     let mut input_lines = chat_input_lines()?;
     let mut refresh = tokio::time::interval(POLL_INTERVAL);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut output = CliRenderState::after(&projection);
     let mut rendered_revision = projection.revision;
+    let mut rendered_agent_decisions = projection.pending_agent_decisions.clone();
+    let mut session_list: Option<Vec<deepcode_kernel_client::ConversationSessionSummary>> = None;
     let mut next_message_profile_id: Option<String> = initial_profile_id.map(str::to_owned);
     let mut prompt_needed = true;
     loop {
@@ -921,6 +1035,11 @@ async fn run_chat(
                         output.render_action_required(&mut io::stdout().lock(), &updated).map_err(|error| error.to_string())?;
                     }
                 }
+                if updated.pending_agent_decisions != rendered_agent_decisions {
+                    output.finish_text(&mut io::stdout().lock()).map_err(|error| error.to_string())?;
+                    render_pending_agent_decisions(client, &updated).await?;
+                    rendered_agent_decisions = updated.pending_agent_decisions.clone();
+                }
                 rendered_revision = updated.revision;
                 projection = updated;
                 continue;
@@ -938,6 +1057,12 @@ async fn run_chat(
             return Ok(
                 if projection.pending_plan.is_some()
                     || projection.pending_interaction.is_some()
+                    || projection
+                        .pending_agent_decisions
+                        .iter()
+                        .flatten()
+                        .next()
+                        .is_some()
                     || projection
                         .pending_approval
                         .as_ref()
@@ -959,6 +1084,69 @@ async fn run_chat(
         }
         match input {
             "/quit" | "/exit" => return Ok(Outcome::Done),
+            "/sessions" | "/resume" => {
+                session_list = None;
+                match client.conversation_catalog().await {
+                    Ok(catalog) => {
+                        let sessions = session_navigation::ordered_sessions(catalog);
+                        print_sessions(&sessions, Some(&projection.session_id));
+                        session_list = Some(sessions);
+                    }
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
+            value if value == "/new" || value.starts_with("/resume ") => {
+                let target = if value == "/new" {
+                    None
+                } else {
+                    match session_navigation::resolve_selector(
+                        i18n::Language::ZhCn,
+                        value.trim_start_matches("/resume ").trim(),
+                        session_list.as_deref(),
+                    ) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            eprintln!("{error}");
+                            continue;
+                        }
+                    }
+                };
+                if target.as_deref() == Some(projection.session_id.as_str()) {
+                    continue;
+                }
+                match open_session(
+                    client,
+                    target.as_deref(),
+                    if target.is_none() { workspace } else { None },
+                    None,
+                    if target.is_none() { recipe } else { None },
+                )
+                .await
+                {
+                    Ok(next) => {
+                        output
+                            .finish_text(&mut io::stdout().lock())
+                            .map_err(|error| error.to_string())?;
+                        if let Some(notice) = session_navigation::background_notice(
+                            i18n::Language::ZhCn,
+                            Some(&projection),
+                        ) {
+                            println!("{notice}");
+                        }
+                        projection = next;
+                        selected_plugins.clear();
+                        next_message_profile_id = None;
+                        output = CliRenderState::after(&projection);
+                        rendered_revision = projection.revision;
+                        rendered_agent_decisions = projection.pending_agent_decisions.clone();
+                        println!("session: {}", projection.session_id);
+                        render_projection(&mut io::stdout().lock(), &projection)
+                            .map_err(|error| error.to_string())?;
+                        render_pending_agent_decisions(client, &projection).await?;
+                    }
+                    Err(error) => eprintln!("{}: {error}", target.as_deref().unwrap_or("/new")),
+                }
+            }
             "/show" => render_projection(&mut io::stdout().lock(), &projection)
                 .map_err(|error| error.to_string())?,
             "/cancel-plan" => {
@@ -1074,8 +1262,23 @@ async fn run_chat(
                         selections: selected_plugins.clone(),
                     })
                 };
-                let command = match contextual_input_command(
+                let child = match conversation_input::child_reply_projection(
+                    i18n::Language::ZhCn,
+                    client,
                     &projection,
+                    text,
+                )
+                .await
+                {
+                    Ok(child) => child,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        continue;
+                    }
+                };
+                let target = child.as_ref().unwrap_or(&projection);
+                let command = match contextual_input_command(
+                    target,
                     line.trim_end_matches(['\r', '\n']),
                     next_message_profile_id.as_deref(),
                     &[],
@@ -1087,7 +1290,7 @@ async fn run_chat(
                         continue;
                     }
                 };
-                if let Err(error) = submit_checked(client, &projection.session_id, &command).await {
+                if let Err(error) = submit_checked(client, &target.session_id, &command).await {
                     eprintln!("{error}");
                     continue;
                 }
@@ -1185,7 +1388,53 @@ async fn refresh_projection(
         .map_err(|error| error.to_string())
 }
 
+/// Management contains identities only. Read the selected child decision from its own Session.
+async fn render_pending_agent_decisions(
+    client: &HttpKernelClient,
+    parent: &SessionProjection,
+) -> Result<bool, String> {
+    let mut waiting = false;
+    for decision in parent.pending_agent_decisions.iter().flatten() {
+        let child = refresh_projection(client, &decision.agent_session_id).await?;
+        if child.run.as_ref().map(|run| &run.run_id) != Some(&decision.run_id)
+            || !(child.pending_plan.is_some()
+                || child.pending_interaction.is_some()
+                || child
+                    .pending_approval
+                    .as_ref()
+                    .is_some_and(|approval| !approval.is_model_reviewing(child.run.as_ref())))
+        {
+            continue;
+        }
+        waiting = true;
+        let mut stdout = io::stdout().lock();
+        writeln!(
+            stdout,
+            "\n子代理 {} 等待确认 · {}",
+            decision.display_name, child.session_id
+        )
+        .map_err(|error| error.to_string())?;
+        render_action_required_if_any(&mut stdout, &child).map_err(|error| error.to_string())?;
+        writeln!(
+            stdout,
+            "回复此子代理：deepcode-cli ask --session {} \"/reply <答复>\"",
+            child.session_id
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(waiting)
+}
+
 fn outcome_for_projection(projection: &SessionProjection) -> Option<Outcome> {
+    if projection
+        .pending_agent_decisions
+        .iter()
+        .flatten()
+        .next()
+        .is_some()
+    {
+        return Some(Outcome::ActionRequired);
+    }
     outcome_for_status(&projection.run.as_ref()?.status)
 }
 
@@ -1228,6 +1477,9 @@ fn print_help() {
 用法：
   deepcode-cli ask [-C <workspace>] [--session <id>] [--file <path>]... [--directory <path>]... [--plugin <plugin://uri>]... [--plain] <message-or-response>
   deepcode-cli chat [-C <workspace>] [--session <id>] [--plugin <plugin://uri>]...
+  deepcode-cli sessions
+  deepcode-cli new [-C <workspace>]
+  deepcode-cli resume <完整 session: ID>
   deepcode-cli show --session <id>
   deepcode-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
   deepcode-cli cancel-plan --session <id>
@@ -1239,11 +1491,14 @@ fn print_help() {
   deepcode-cli start-host
   deepcode-cli stop-host
   deepcode-cli status
+  deepcode-cli ssh help
 
 使用 -C/--workspace 为新对话指定工作目录；已有对话通过 attach-directory/detach-directory 管理目录。
+chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启动目录新建；切换不会取消原会话或复制权限。序号仅对应本进程最后显示的列表。
 chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，/reply <说明> 修改计划或回答问题，/reply 1/2 允许/拒绝操作；cancel-plan 取消计划。
 权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
 文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
+ask/chat 创建新会话时支持 --recipe <JSON 文件> 选择模型、Loop 组件、权限策略和 Sandbox 后端。
 ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务。"#,
     );
 }
@@ -1252,6 +1507,31 @@ ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现�
 mod tests {
     use super::*;
     use crate::conversation_input::fixtures::{pending_decisions, waiting_projection};
+
+    #[test]
+    fn session_commands_parse_without_rebinding_existing_workspaces() {
+        let parse =
+            |args: &[&str]| Args::parse(args.iter().map(|value| value.to_string()).collect());
+        assert_eq!(parse(&["sessions"]).unwrap().command, Command::Sessions);
+        let new = parse(&["new", "-C", "/project"]).unwrap();
+        assert_eq!(new.command, Command::Chat);
+        assert!(new.session_id.is_none());
+        assert_eq!(
+            parse(&["resume", "session:known"])
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("session:known")
+        );
+        for args in [
+            &["resume", "1"][..],
+            &["resume", "session:x", "-C", "/other"],
+            &["new", "--session", "session:x"],
+            &["sessions", "--session", "session:x"],
+        ] {
+            assert!(parse(args).is_err());
+        }
+    }
 
     #[tokio::test]
     async fn long_focus_upload_preserves_the_task_and_existing_references() {

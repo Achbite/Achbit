@@ -1,7 +1,18 @@
 use serde_json::{json, Value};
 use std::error::Error;
 use std::io::ErrorKind;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+/// Routing state belongs to the existing run-bound Provider runtime, never the
+/// shared HTTP pool. Clones within that runtime retain the first server token.
+pub(crate) type CodexTurnState = Arc<OnceLock<reqwest::header::HeaderValue>>;
+
+#[derive(Clone, Debug)]
+pub(crate) struct CodexRequestContext {
+    pub(crate) session_id: String,
+    pub(crate) turn_state: CodexTurnState,
+}
 
 /// One connection pool per transport service. Session owns the retry budget.
 #[derive(Clone)]
@@ -70,12 +81,20 @@ pub(crate) fn network_failure(error: reqwest::Error, phase: &str, secret: Option
                     | ErrorKind::Interrupted
                     | ErrorKind::WouldBlock
             );
+            // No HTTP request was sent if the peer closed during TLS setup.
+            retryable |= is_connect && phase == "send" && io.kind() == ErrorKind::UnexpectedEof;
         }
         causes.push(item);
         if causes.len() == 16 {
             break;
         }
-        cause = current.source();
+        // hyper-rustls wraps the handshake's io::Error in ErrorKind::Other.
+        // io::Error::source skips that inner error's own kind; inspect get_ref
+        // first so UnexpectedEof and other native causes are not lost.
+        cause = current
+            .downcast_ref::<std::io::Error>()
+            .and_then(|io| io.get_ref().map(|inner| inner as &(dyn Error + 'static)))
+            .or_else(|| current.source());
     }
     json!({
         "code": if phase == "send" { "provider_transport_failed" } else { "provider_stream_read_failed" },
@@ -213,6 +232,52 @@ pub(crate) fn valid_diagnostics(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tls_handshake_eof_is_transient_but_invalid_tls_is_not() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for (reply, retryable) in [
+            (None, true),
+            (Some(b"HTTP/1.1 200 OK\r\n\r\n".as_slice()), false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut hello = [0; 4096];
+                assert!(socket.read(&mut hello).await.unwrap() > 0);
+                if let Some(reply) = reply {
+                    socket.write_all(reply).await.unwrap();
+                }
+                socket.shutdown().await.unwrap();
+            });
+            let transport = ProviderTransport::new().unwrap();
+            let error = transport
+                .client
+                .post(format!("https://{address}/responses"))
+                .body("request must not reach HTTP")
+                .send()
+                .await
+                .unwrap_err();
+            peer.await.unwrap();
+            let failure = network_failure(error, "send", None);
+            assert!(valid_diagnostics(&failure["diagnostics"]));
+            assert_eq!(failure["diagnostics"]["isConnect"], true);
+            assert_eq!(failure["diagnostics"]["retryable"], retryable, "{failure}");
+            if retryable {
+                assert_eq!(failure["diagnostics"]["category"], "network");
+                assert!(
+                    failure["diagnostics"]["causes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|cause| cause["kind"] == "UnexpectedEof"),
+                    "{failure}"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn connection_refusal_keeps_native_cause_and_redacts_credentials() {

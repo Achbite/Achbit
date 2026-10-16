@@ -1,0 +1,7 @@
+dialog.app-modal.agent-plan-review { display:grid; place-items:center; padding:24px; background:rgb(0 0 0 / 18%); }
+.local-agent.agent-plan-review__card { display:flex; flex-direction:column; width:min(720px, 100%); height:auto; max-height:calc(100dvh - 48px); min-height:0; border:1px solid var(--dc-border); border-radius:14px; background:var(--dc-background); box-shadow:0 16px 60px rgb(0 0 0 / 16%); overflow:hidden; }
+.agent-plan-review__heading { display:flex; flex:none; align-items:center; justify-content:space-between; gap:20px; padding:18px 22px; border-bottom:1px solid var(--dc-border); }
+.agent-plan-review__heading h2 { margin:0; font:inherit; font-weight:600; }
+.agent-plan-review__heading p { margin:4px 0 0; color:var(--dc-muted); }
+.agent-plan-review__heading > button { flex:none; }
+.agent-plan-review__body { overflow:auto; min-height:0; padding:4px 22px 20px; }

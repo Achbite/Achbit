@@ -46,7 +46,10 @@ def request_host(operation, shared=None, output=None, timeout=3600):
     worker = json.loads(WORKER.read_text())
     directory = Path(tempfile.mkdtemp(prefix='request-', dir=BRIDGE))
     request = {'workerId': worker['workerId'], 'operation': operation}
-    if operation == 'package':
+    # Forward the public identity selector explicitly; credentials stay in the host keychain.
+    if 'DEEPCODE_MACOS_SIGN_IDENTITY' in os.environ:
+        request['signingIdentity'] = os.environ['DEEPCODE_MACOS_SIGN_IDENTITY']
+    if operation in ('package', 'computer-use'):
         shared = Path(shared).resolve()
         request.update(
             shared=str(shared.relative_to(ROOT)),
@@ -187,10 +190,12 @@ def serve(container_id):
                     else:
                         arguments = ['bash', str(PACKAGER)]
                         environment = os.environ.copy()
+                        if 'signingIdentity' in request:
+                            environment['DEEPCODE_MACOS_SIGN_IDENTITY'] = request['signingIdentity']
                         if operation == 'check':
                             arguments.append('--check')
-                        elif operation == 'package':
-                            arguments.extend([str(workspace_path(request['shared'])),
+                        elif operation in ('package', 'computer-use'):
+                            arguments.extend([str(workspace_path(request['shared'])) if operation == 'package' else '--computer-use',
                                               str(workspace_path(request['output']))])
                             environment.update(DEEPCODE_BUILD_COMMIT=request['commit'],
                                                DEEPCODE_BUILD_TIME=request['builtAt'])
@@ -305,7 +310,7 @@ def cancel_package(shared):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['ensure', 'serve', 'stop', 'check', 'package', 'cancel'])
+    parser.add_argument('operation', choices=['ensure', 'serve', 'stop', 'check', 'package', 'computer-use', 'cancel'])
     parser.add_argument('--container', default=os.environ.get('CONTAINER_NAME', 'deepcode-dev'))
     parser.add_argument('--workdir', default=os.environ.get('WORKDIR_IN_CTNR', '/workspace'))
     parser.add_argument('--shared')
@@ -329,7 +334,7 @@ def main():
     else:
         if not args.shared or not args.output:
             parser.error('package requires --shared and --output')
-        return request_host('package', args.shared, args.output)
+        return request_host(args.operation, args.shared, args.output)
     return 0
 
 

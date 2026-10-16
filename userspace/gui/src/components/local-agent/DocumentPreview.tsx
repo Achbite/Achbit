@@ -8,6 +8,7 @@ import './documentPreview.css';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import SourceFileView from './SourceFileView';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import { ImageReview } from './ImageReview';
 
 const PdfDocumentPreview = lazy(() => loadInterfaceModule(() => import('./PdfDocumentPreview')));
 
@@ -46,7 +47,7 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
     </div>
     {error ? <p role="alert" className="local-agent__resource-error">{error}</p>
       : showSource ? (content === null ? loading : <SourceFileView content={content} filename={filename} viewKey={`${readingKey ?? filename}:source`} wrap />)
-        : format === 'image' ? <img className="document-preview__image" src={download || undefined} alt={filename} /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>
+        : format === 'image' ? <ImageReview source={download || undefined} alt={filename} imageClassName="document-preview__image" /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>
           {format === 'pdf' ? <InterfaceLoadBoundary><Suspense fallback={loading}><PdfDocumentPreview blob={blob} language={language} readingKey={readingKey} /></Suspense></InterfaceLoadBoundary>
             : content === null ? loading
             : format === 'html' ? <iframe className="document-preview__html" title={filename} sandbox="" srcDoc={content} />

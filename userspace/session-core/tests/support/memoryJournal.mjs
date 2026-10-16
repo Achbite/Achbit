@@ -1,5 +1,7 @@
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import { assertRuntimeContract } from './runtimeContract.mjs';
+import { projectAgentLifecycleEvent } from '../../dist/local-agent/agentLifecycle.js';
+import { projectRunLifecycleEvent } from '../../dist/local-agent/runLifecycle.js';
 
 /** Test storage adapter. SQLite atomicity is verified by the store tests. */
 export class InMemoryCommandJournal {
@@ -7,6 +9,8 @@ export class InMemoryCommandJournal {
   #commands = new Map();
   #tail = Promise.resolve();
   #eventCounter = 0;
+
+  subscribePermissions() { return () => {}; }
 
   async createSession(input) {
     return await this.serial(async () => {
@@ -18,7 +22,9 @@ export class InMemoryCommandJournal {
         payload: {
           displayTitle: input.displayTitle,
           workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
+          ...(input.recipe ? { recipe: structuredClone(input.recipe) } : {}),
           ...(input.profileId ? { profileId: input.profileId } : {}),
+          ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
         },
       });
     });
@@ -54,6 +60,35 @@ export class InMemoryCommandJournal {
     return stored ? structuredClone(stored) : null;
   }
 
+  async readRunLifecycle(sessionId, afterSequence = 0) {
+    const events = this.#events.get(sessionId);
+    if (!events) throw new Error('session_not_found');
+    return { sessionId, revision: events.at(-1)?.sequence ?? 0,
+      events: events.filter(event => event.sequence > afterSequence).flatMap(event => {
+        const projected = projectRunLifecycleEvent(event);
+        return projected ? [projected] : [];
+      }),
+    };
+  }
+
+  async readAgentLifecycle(sessionId) {
+    const events = this.#events.get(sessionId);
+    if (!events) throw new Error('session_not_found');
+    return { sessionId, revision: events.at(-1)?.sequence ?? 0,
+      events: events.flatMap(event => { const value = projectAgentLifecycleEvent(event); return value ? [value] : []; }) };
+  }
+
+  async readProviderUsage(sessionId) {
+    const events = this.#events.get(sessionId);
+    if (!events) throw new Error('session_not_found');
+    return { sessionId, revision: events.at(-1)?.sequence ?? 0, events: events.flatMap(event => {
+      if (!['provider.turn.settled', 'context.updated'].includes(event.type)) return [];
+      return [{ sessionId, sequence: event.sequence, runId: event.runId, type: event.type,
+        payload: event.type === 'context.updated' ? structuredClone(event.payload)
+          : { providerRequestId: event.payload.providerRequestId } }];
+    }) };
+  }
+
   async commitCommand(
     command,
     events,
@@ -63,14 +98,14 @@ export class InMemoryCommandJournal {
       const key = commandKey(command.sessionId, command.commandId);
       if (this.#commands.has(key)) throw new Error('command_already_recorded');
       if (reply.status !== 'rejected') assertRuntimeContract('ConversationCommand', command);
-      for (const event of events) this.appendNow(event);
+      const committed = events.map(event => this.appendNow(event));
       const revision = this.#events.get(command.sessionId)?.at(-1)?.sequence ?? 0;
       const admitted = { ...reply, revision };
       this.#commands.set(key, {
         command: structuredClone(command),
         reply: structuredClone(admitted),
       });
-      return admitted;
+      return { reply: admitted, events: committed };
     });
   }
 

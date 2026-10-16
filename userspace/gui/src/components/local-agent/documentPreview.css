@@ -8,7 +8,6 @@
 .document-preview__toolbar a { margin-left: auto; color: var(--dc-accent, var(--accent)); text-decoration: none; }
 .document-preview__html { width: 100%; height: min(66dvh, 760px); border: 0; background: var(--dc-document-paper); }
 .document-preview__markdown { padding: 24px clamp(18px, 4vw, 48px); overflow-wrap: anywhere; }
-.local-agent__resource-body .document-preview__source { min-width: 0; padding: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .document-preview__markdown pre { min-width: 0; }
 .document-pdf { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; }
 .document-pdf__controls { flex: none; }
@@ -83,6 +82,11 @@
 .native-browser-preview__surface {flex:1;min-width:0;min-height:0;overflow:hidden;}
 .native-browser-preview input {min-width:40px;flex:1;}
 .native-browser-address {flex-wrap:nowrap;gap:6px;}
+.native-browser-location { position:relative; display:flex; flex:1; min-width:40px; }
+/* Feedback occupies the address field, never changing the native viewport/capture geometry. */
+.native-browser-control { position:absolute; inset:0; display:flex; align-items:center; gap:8px; padding:0 8px; border-radius:6px; font-size:12px; color:var(--dc-accent); background:var(--dc-surface-hover); pointer-events:none; }
+.native-browser-control > span:first-child { width:7px; height:7px; flex:none; border-radius:50%; background:currentColor; }
+.native-browser-control__label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .native-browser-address button {display:flex;align-items:center;justify-content:center;}
 .native-browser-address button {gap:5px;white-space:nowrap;}
 .native-browser-address button[aria-pressed=true] {color:var(--dc-accent);background:var(--dc-surface-hover);}
@@ -163,12 +167,11 @@
 .reader-diff { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .reader-diff > small,.reader-diff > p { padding:8px 12px; }
 .reader-diff .conversation-diff-editor { flex:1; min-height:0; overflow:auto; }
-.reader-tree-panel { position:relative; display:flex; flex:none; min-height:0; }
+.reader-tree-panel { position:relative; display:flex; flex:none; flex-direction:column; min-height:0; }
 .reader-tree-panel[hidden] { display:none; }
 .reader-tree-panel > .reader-tree-resize { position:absolute; inset-block:0; left:0; transform:translateX(-50%); }
 .resource-tree { display:flex; flex-direction:column; width:100%; flex:1; min-height:0; border-left:0; background:var(--dc-surface); font-size:12px; }
 .resource-tree__filter { display:flex; align-items:center; gap:5px; margin:8px; padding:7px 8px; border:0; border-radius:var(--dc-radius-control,8px); background:var(--dc-surface-subtle); }
-.resource-tree__filter:focus-within { outline:2px solid var(--dc-focus-ring,var(--dc-accent)); outline-offset:1px; }
 .resource-tree svg { flex:none; width:14px; height:14px; color:var(--dc-muted); }
 .resource-tree__filter input { min-width:0; width:100%; border:0; outline:none; background:transparent; color:inherit; font:inherit; }
 .resource-tree__items { flex:1; min-height:0; overflow:auto; padding:4px 5px; }
@@ -181,4 +184,3 @@
 .resource-tree p.local-agent__resource-error { padding:8px; overflow-wrap:anywhere; }
 
 .resource-tree[hidden] { display:none; }
-.resource-tree__item:focus-visible { outline:2px solid var(--dc-accent); outline-offset:-2px; }

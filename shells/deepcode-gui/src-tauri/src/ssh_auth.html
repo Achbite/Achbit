@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeepCode · SSH</title><style>
+:root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px}
+body{margin:0;padding:24px;background:Canvas;color:CanvasText}h1{font-size:18px;margin:0 0 8px;font-weight:600}
+#endpoint{opacity:.7;overflow-wrap:anywhere}pre{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto;margin:20px 0}
+input[type=password]{box-sizing:border-box;width:100%;height:34px;padding:6px 10px;border:1px solid GrayText;border-radius:6px;background:Field;color:FieldText}
+#saveLabel{display:flex;align-items:center;gap:6px;margin:14px 0}#error{color:#d34545;white-space:pre-wrap;font-size:12px}
+footer{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}button{font:inherit;padding:6px 14px;border:1px solid GrayText;border-radius:6px;background:ButtonFace;color:ButtonText;cursor:pointer}
+button[type=submit]{background:#2677e8;color:white;border-color:transparent}small{opacity:.65;display:block;margin-top:8px;line-height:1.5}[hidden]{display:none!important}
+</style></head><body>
+<form id="form"><h1 id="title"></h1><div id="endpoint"></div><pre id="prompt"></pre>
+<label id="secretLabel"><span id="secretText"></span><input id="secret" type="password" maxlength="4096" autocomplete="off" spellcheck="false"></label>
+<label id="saveLabel"><input id="save" type="checkbox" checked><span id="saveText"></span></label><small id="privacy"></small>
+<p id="error" role="alert"></p><footer><button id="cancel" type="button"></button><button id="submit" type="submit"></button></footer></form>
+<script>
+(async()=>{
+ const invoke=window.__TAURI__.core.invoke;
+ const {context,labels}=await invoke('deepcode_ssh_auth_context');
+ const text=labels[navigator.language.toLowerCase().startsWith('zh')?'zh':'en'];
+ const el=id=>document.getElementById(id);
+ el('title').textContent=text[context.confirm?'confirmTitle':'title'];
+ for(const id of ['endpoint','prompt'])el(id).textContent=context[id];
+ el('secretText').textContent=text.secret;el('saveText').textContent=text.save;el('privacy').textContent=text.privacy;
+ el('cancel').textContent=text.cancel;el('submit').textContent=text[context.confirm?'trust':'continue'];
+ el('secretLabel').hidden=context.confirm;el('saveLabel').hidden=!context.canSave;el('privacy').hidden=context.confirm;
+ el('secret').required=!context.confirm;
+ el('error').textContent=context.error==='authentication_rejected'?text.rejected:(context.error??'');
+ if(!context.confirm)el('secret').focus();
+ const respond=async reply=>{
+   el('submit').disabled=true;el('cancel').disabled=true;
+   try{await invoke('deepcode_ssh_auth_respond',{id:context.id,reply});el('secret').value='';}
+   catch(error){el('error').textContent=String(error);el('submit').disabled=false;el('cancel').disabled=false;}
+ };
+ el('form').onsubmit=event=>{event.preventDefault();void respond({value:context.confirm?'yes':el('secret').value,save:context.canSave&&el('save').checked});};
+ el('cancel').onclick=()=>respond(null);
+ document.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();void respond(null);}};
+})().catch(error=>{document.getElementById('error').textContent=String(error);});
+</script></body></html>

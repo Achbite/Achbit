@@ -1,18 +1,73 @@
 use crate::i18n::Language;
 use crate::renderer::Renderer;
+use crossterm::event::KeyCode;
 use deepcode_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, ConversationResourceReadResult,
-    CreateConversationSessionRequest, HttpKernelClient, PluginCatalogItem, PluginCatalogProjection,
-    PluginSelectionInput, SessionProjection,
+    ConversationSessionSummary, CreateConversationSessionRequest, HttpKernelClient,
+    PluginCatalogItem, PluginCatalogProjection, PluginSelectionInput, SessionProjection,
 };
 use serde_json::json;
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn agent_status_key(status: deepcode_kernel_client::AgentTaskStatus) -> &'static str {
+    use deepcode_kernel_client::AgentTaskStatus::*;
+    match status {
+        Running => "agent.team.status.running",
+        Completed => "agent.team.status.completed",
+        Failed => "agent.team.status.failed",
+        Cancelled => "agent.team.status.cancelled",
+        Indeterminate => "agent.team.status.indeterminate",
+    }
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+// Presentation metadata for the existing submit_line commands. Completion never executes them.
+const COMMANDS: &[(&str, &str, bool)] = &[
+    ("/help", "tui.command.help", false),
+    ("/new", "tui.command.new", false),
+    ("/sessions", "tui.command.sessions", false),
+    ("/resume", "tui.command.resume", false),
+    ("/model", "tui.command.model", false),
+    ("/connection", "tui.command.model", false),
+    ("/context", "tui.command.context", false),
+    ("/font", "tui.command.font", false),
+    ("/tasks", "tui.command.tasks", false),
+    ("/agents", "tui.command.agents", false),
+    ("/agent", "tui.command.agent", true),
+    ("/back", "tui.command.back", false),
+    ("/focus", "tui.command.focus", true),
+    ("/reply", "tui.command.reply", true),
+    ("/attach", "tui.command.attach", true),
+    ("/detach", "tui.command.detach", true),
+    ("/open", "tui.command.open", true),
+    ("/next", "tui.command.next", false),
+    ("/diff", "tui.command.diff", true),
+    ("/reasoning", "tui.command.reasoning", false),
+    ("/reasoning-history", "tui.command.reasoningHistory", false),
+    ("/tool", "tui.command.tool", true),
+    ("/show", "tui.command.show", false),
+    ("/error", "tui.command.error", false),
+    ("/decision", "tui.command.decision", false),
+    ("/permissions", "tui.command.permissions", true),
+    ("/revoke", "tui.command.revoke", true),
+    ("/cancel", "tui.command.cancel", false),
+    ("/cancel-plan", "tui.command.cancelPlan", false),
+    ("/close", "tui.command.close", false),
+    ("/clear", "tui.command.clear", false),
+    ("/quit", "tui.command.quit", false),
+    ("/exit", "tui.command.quit", false),
+];
+
+pub struct CommandPickerEntry {
+    pub command: &'static str,
+    pub description: &'static str,
+    pub highlighted: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct TuiHostOptions {
@@ -51,18 +106,31 @@ struct ModelPicker {
     selected: usize,
 }
 
+struct AgentReturnView {
+    projection: SessionProjection,
+    input: String,
+    transcript_scroll: Option<usize>,
+}
+
 pub struct TuiApp {
     client: HttpKernelClient,
     renderer: Renderer,
     host: TuiHostOptions,
     projection: Option<SessionProjection>,
     input: String,
+    command_picker: Option<usize>,
+    recent_commands: VecDeque<&'static str>,
+    initialized: bool,
     status: String,
     connection_error: Option<String>,
     next_message_profile_id: Option<String>,
     model_connections: Option<deepcode_kernel_client::ModelConnections>,
     model_profiles: Vec<deepcode_kernel_client::ModelProfile>,
     model_picker: Option<ModelPicker>,
+    session_list: Option<Vec<ConversationSessionSummary>>,
+    session_picker: Option<usize>,
+    agent_picker: Option<usize>,
+    agent_return_views: Vec<AgentReturnView>,
     plugin_catalog: Option<PluginCatalogProjection>,
     selected_plugins: Vec<PluginSelectionInput>,
     selected_mentions: Vec<SelectedMention>,
@@ -72,7 +140,9 @@ pub struct TuiApp {
     tasks_open: bool,
     detail_preview: Option<String>,
     reasoning_enabled: bool,
-    detail_scroll: u16,
+    detail_scroll: Cell<u16>,
+    detail_scroll_max: Cell<u16>,
+    viewport_height: Cell<u16>,
     transcript_scroll: Cell<Option<usize>>,
     transcript_scroll_max: Cell<usize>,
 }
@@ -88,10 +158,17 @@ impl TuiApp {
             host,
             projection: None,
             input: String::new(),
+            command_picker: None,
+            recent_commands: VecDeque::new(),
+            initialized: false,
             next_message_profile_id: None,
             model_connections: None,
             model_profiles: Vec::new(),
             model_picker: None,
+            session_list: None,
+            session_picker: None,
+            agent_picker: None,
+            agent_return_views: Vec::new(),
             plugin_catalog: None,
             selected_plugins: Vec::new(),
             selected_mentions: Vec::new(),
@@ -101,68 +178,71 @@ impl TuiApp {
             tasks_open: false,
             detail_preview: None,
             reasoning_enabled: false,
-            detail_scroll: 0,
+            detail_scroll: Cell::new(0),
+            detail_scroll_max: Cell::new(0),
+            viewport_height: Cell::new(1),
             transcript_scroll: Cell::new(None),
             transcript_scroll_max: Cell::new(0),
         }
     }
 
     pub async fn bootstrap(&mut self) -> Result<(), String> {
+        if let Some(path) = self.host.workspace_path.as_mut() {
+            *path = path.canonicalize().map_err(|error| {
+                self.host
+                    .language
+                    .format("tui.workspaceUnavailable", &[error.to_string()])
+            })?;
+        }
+        if self.host.session_id.is_some() {
+            self.ensure_session().await?;
+        }
+        let catalog = self
+            .client
+            .conversation_plugin_catalog()
+            .await
+            .map_err(|error| {
+                self.host
+                    .language
+                    .format("tui.pluginCatalogLoadFailed", &[error.to_string()])
+            })?;
+        self.selected_plugins =
+            plugin_selections_from_uris(self.host.language, &catalog, &self.host.plugin_uris)?;
+        self.plugin_catalog = Some(catalog);
+        self.initialized = true;
+        self.status = self.host.language.text("tui.readyHelp").to_string();
+        Ok(())
+    }
+
+    // Opening the shell is a local draft. Persist a Session only for an explicit
+    // session action; the shared Session service remains its sole owner.
+    async fn ensure_session(&mut self) -> Result<(), String> {
+        if self.projection.is_some() {
+            return Ok(());
+        }
         let result = if let Some(session_id) = self.host.session_id.as_deref() {
             self.client.conversation_projection(session_id).await
         } else {
-            let workspace_paths = match self.host.workspace_path.as_ref() {
-                Some(path) => match path.canonicalize() {
-                    Ok(root) => Some(vec![root.to_string_lossy().to_string()]),
-                    Err(error) => {
-                        self.status = self
-                            .host
-                            .language
-                            .format("tui.workspaceUnavailable", &[format!("{}", error)]);
-                        return Err(self.status.clone());
-                    }
-                },
-                None => None,
-            };
             self.client
                 .create_conversation_session(&CreateConversationSessionRequest {
+                    recipe: None,
                     session_id: None,
-                    workspace_paths,
+                    workspace_paths: self
+                        .host
+                        .workspace_path
+                        .as_ref()
+                        .map(|path| vec![path.to_string_lossy().to_string()]),
                     project_id: None,
                     profile_id: None,
                 })
                 .await
         };
-        match result {
-            Ok(projection) => {
-                let catalog = self
-                    .client
-                    .conversation_plugin_catalog()
-                    .await
-                    .map_err(|error| {
-                        self.host
-                            .language
-                            .format("tui.pluginCatalogLoadFailed", &[format!("{}", error)])
-                    })?;
-                let selected_plugins = plugin_selections_from_uris(
-                    self.host.language,
-                    &catalog,
-                    &self.host.plugin_uris,
-                )?;
-                self.status = self.host.language.text("tui.readyHelp").to_string();
-                self.projection = Some(projection);
-                self.plugin_catalog = Some(catalog);
-                self.selected_plugins = selected_plugins;
-                Ok(())
-            }
-            Err(error) => {
-                self.status = self
-                    .host
-                    .language
-                    .format("tui.sessionInitializationFailed", &[format!("{}", error)]);
-                Err(self.status.clone())
-            }
-        }
+        self.projection = Some(result.map_err(|error| {
+            self.host
+                .language
+                .format("tui.sessionInitializationFailed", &[error.to_string()])
+        })?);
+        Ok(())
     }
 
     pub async fn poll(&mut self) {
@@ -193,22 +273,98 @@ impl TuiApp {
         if input.is_empty() {
             return true;
         }
+        self.record_command(input);
         self.transcript_scroll.set(None);
         match input {
             "/quit" | "/exit" => return false,
+            "/sessions" | "/resume" => self.open_sessions().await,
+            "/agents" => {
+                self.agent_picker = Some(0);
+            }
+            "/back" => {
+                self.back_from_agent();
+                self.poll().await;
+            }
+            value if value.starts_with("/agent ") => {
+                let selector = value.trim_start_matches("/agent ").trim();
+                let entries = self.agent_entries();
+                let selected = selector
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|number| number.checked_sub(1))
+                    .filter(|index| *index < entries.len())
+                    .or_else(|| entries.iter().position(|(id, _, _)| id == selector));
+                if let Some(index) = selected {
+                    self.agent_picker = Some(index);
+                    self.select_agent().await;
+                } else {
+                    self.status = self.host.language.text("tui.agentNotFound").into();
+                }
+            }
+            "/new" => self.new_session(),
+            value if value.starts_with("/resume ") => {
+                self.resume_session(value.trim_start_matches("/resume ").trim())
+                    .await
+            }
             "/help" => {
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.detail_preview = Some(self.host.language.text("tui.commandHelp").into());
+            }
+            "/font" => {
+                self.context_open = false;
+                self.tasks_open = false;
+                self.resource_preview = None;
+                self.detail_scroll.set(0);
+                self.detail_preview = Some(self.host.language.text("tui.font.help").into());
+            }
+            value if value.starts_with("/font ") => {
+                let choice = value.trim_start_matches("/font ").trim();
+                self.status =
+                    match crate::fonts::apply(choice, self.host.language, &self.client).await {
+                        Ok(()) => self
+                            .host
+                            .language
+                            .format("tui.font.changed", &[choice.into()]),
+                        Err(error) => self.host.language.format("tui.font.failed", &[error]),
+                    };
             }
             "/show" => self.status = self.projection_label(),
             "/error" | "/decision" => {
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
+                if input == "/decision"
+                    && self.projection.as_ref().is_some_and(|projection| {
+                        projection.pending_plan.is_none()
+                            && projection.pending_interaction.is_none()
+                            && projection.pending_approval.is_none()
+                            && projection
+                                .pending_agent_decisions
+                                .iter()
+                                .flatten()
+                                .next()
+                                .is_some()
+                    })
+                {
+                    let pending = &self
+                        .projection
+                        .as_ref()
+                        .unwrap()
+                        .pending_agent_decisions
+                        .as_ref()
+                        .unwrap()[0]
+                        .agent_session_id;
+                    self.agent_picker = self
+                        .agent_entries()
+                        .iter()
+                        .position(|(id, _, _)| id == pending);
+                    self.detail_preview = None;
+                    return true;
+                }
                 self.detail_preview = Some(if input == "/error" {
                     crate::renderer::failure_details(self.host.language, self.projection.as_ref())
                 } else {
@@ -225,7 +381,7 @@ impl TuiApp {
                 self.context_open = false;
                 self.resource_preview = None;
                 self.detail_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
             }
             "/next" => self.next_resource().await,
             "/reasoning" => {
@@ -242,6 +398,9 @@ impl TuiApp {
                 self.read_detail(value, true).await
             }
             "/close" => {
+                self.agent_picker = None;
+                self.back_from_agent();
+                self.session_picker = None;
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
@@ -252,7 +411,7 @@ impl TuiApp {
                 self.context_open = false;
                 self.tasks_open = false;
                 self.resource_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.detail_preview = Some(crate::renderer::tool_details(
                     self.host.language,
                     self.projection.as_ref(),
@@ -301,7 +460,311 @@ impl TuiApp {
         true
     }
 
+    async fn open_sessions(&mut self) {
+        self.session_picker = None;
+        self.session_list = None;
+        match self.client.conversation_catalog().await {
+            Ok(catalog) => {
+                let sessions = crate::session_navigation::ordered_sessions(catalog);
+                let selected = sessions
+                    .iter()
+                    .position(|session| {
+                        self.projection
+                            .as_ref()
+                            .is_some_and(|projection| projection.session_id == session.id)
+                    })
+                    .unwrap_or(0);
+                self.session_list = Some(sessions);
+                self.model_picker = None;
+                self.plugin_picker = None;
+                self.session_picker = Some(selected);
+                self.status = self.host.language.text("tui.sessionsHint").into();
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    // A view change never submits a cancellation or copies authority to another Session.
+    fn reset_session_view(&mut self) {
+        self.agent_return_views.clear();
+        self.agent_picker = None;
+        self.clear_input();
+        self.next_message_profile_id = None;
+        self.model_picker = None;
+        self.session_picker = None;
+        self.connection_error = None;
+        self.resource_preview = None;
+        self.context_open = false;
+        self.tasks_open = false;
+        self.detail_preview = None;
+        self.detail_scroll.set(0);
+        self.transcript_scroll.set(None);
+        self.transcript_scroll_max.set(0);
+    }
+
+    fn new_session(&mut self) {
+        let background = crate::session_navigation::background_notice(
+            self.host.language,
+            self.projection.as_ref(),
+        );
+        self.reset_session_view();
+        self.host.session_id = None;
+        self.projection = None;
+        self.status = self.host.language.text("tui.sessionNew").into();
+        if let Some(notice) = background {
+            self.status.push_str(&format!(" · {notice}"));
+        }
+    }
+
+    async fn resume_session(&mut self, selector: &str) {
+        let session_id = match crate::session_navigation::resolve_selector(
+            self.host.language,
+            selector,
+            self.session_list.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.session_id == session_id)
+        {
+            self.session_picker = None;
+            self.status = self
+                .host
+                .language
+                .format("tui.sessionOpened", &[session_id]);
+            return;
+        }
+        match self.client.conversation_projection(&session_id).await {
+            Ok(projection) => {
+                let background = crate::session_navigation::background_notice(
+                    self.host.language,
+                    self.projection.as_ref(),
+                );
+                self.reset_session_view();
+                self.host.session_id = Some(session_id.clone());
+                self.projection = Some(projection);
+                self.status = self
+                    .host
+                    .language
+                    .format("tui.sessionOpened", &[session_id]);
+                if let Some(notice) = background {
+                    self.status.push_str(&format!(" · {notice}"));
+                }
+            }
+            Err(error) => self.status = format!("{session_id}: {error}"),
+        }
+    }
+
+    pub fn agent_picker_open(&self) -> bool {
+        self.agent_picker.is_some()
+    }
+    pub fn close_agent_picker(&mut self) {
+        self.agent_picker = None;
+    }
+    pub fn viewing_agent(&self) -> bool {
+        !self.agent_return_views.is_empty()
+    }
+    pub fn agent_entries(&self) -> Vec<(String, String, bool)> {
+        let Some(projection) = &self.projection else {
+            return Vec::new();
+        };
+        let mut members = Vec::new();
+        for child in projection.agent_children.iter().flatten() {
+            members.push((
+                child.agent_session_id.clone(),
+                child.display_name.clone(),
+                child.closed,
+            ));
+        }
+        for task in projection.agent_tasks.iter().flatten() {
+            if !members
+                .iter()
+                .any(|(id, _, _)| *id == task.agent_session_id)
+            {
+                members.push((
+                    task.agent_session_id.clone(),
+                    task.display_name.clone(),
+                    false,
+                ));
+            }
+        }
+        for decision in projection.pending_agent_decisions.iter().flatten() {
+            if !members
+                .iter()
+                .any(|(id, _, _)| *id == decision.agent_session_id)
+            {
+                members.push((
+                    decision.agent_session_id.clone(),
+                    decision.display_name.clone(),
+                    false,
+                ));
+            }
+        }
+        members
+            .into_iter()
+            .enumerate()
+            .map(|(index, (id, name, closed))| {
+                let task = projection
+                    .agent_tasks
+                    .iter()
+                    .flatten()
+                    .rev()
+                    .find(|task| task.agent_session_id == id);
+                let status = if projection
+                    .pending_agent_decisions
+                    .iter()
+                    .flatten()
+                    .any(|decision| decision.agent_session_id == id)
+                {
+                    "agent.team.needsInput"
+                } else {
+                    task.map(|task| agent_status_key(task.status))
+                        .unwrap_or("agent.team.status.idle")
+                };
+                let label = format!(
+                    "{}. {} · {}{}",
+                    index + 1,
+                    name,
+                    self.host.language.text(status),
+                    if closed {
+                        format!(" · {}", self.host.language.text("agent.team.closed"))
+                    } else {
+                        String::new()
+                    }
+                );
+                (id, label, self.agent_picker == Some(index))
+            })
+            .collect()
+    }
+    pub fn agent_picker_move(&mut self, delta: isize) {
+        let count = self.agent_entries().len();
+        if let Some(selected) = self.agent_picker.as_mut().filter(|_| count > 0) {
+            *selected = (*selected as isize + delta).rem_euclid(count as isize) as usize;
+        }
+    }
+    pub async fn select_agent(&mut self) {
+        let Some((id, label, _)) = self
+            .agent_picker
+            .and_then(|index| self.agent_entries().get(index).cloned())
+        else {
+            return;
+        };
+        match self.client.conversation_projection(&id).await {
+            Ok(child) => {
+                if let Some(projection) = self.projection.take() {
+                    self.agent_return_views.push(AgentReturnView {
+                        projection,
+                        input: std::mem::take(&mut self.input),
+                        transcript_scroll: self.transcript_scroll.get(),
+                    });
+                }
+                self.projection = Some(child);
+                self.agent_picker = None;
+                self.command_picker = None;
+                self.transcript_scroll.set(None);
+                self.detail_preview = None;
+                self.resource_preview = None;
+                self.context_open = false;
+                self.tasks_open = false;
+                self.status = format!(
+                    "{} · {}",
+                    label,
+                    self.host.language.text("tui.agentBackHint")
+                );
+            }
+            Err(error) => {
+                self.status = error.to_string();
+            }
+        }
+    }
+    pub fn back_from_agent(&mut self) {
+        if let Some(parent) = self.agent_return_views.pop() {
+            self.projection = Some(parent.projection);
+            self.input = parent.input;
+            self.command_picker = None;
+            self.transcript_scroll.set(parent.transcript_scroll);
+            self.detail_preview = None;
+            self.resource_preview = None;
+            self.context_open = false;
+            self.tasks_open = false;
+            self.status = self.projection_label();
+        }
+    }
+    pub fn agent_status(&self) -> String {
+        let Some(projection) = &self.projection else {
+            return String::new();
+        };
+        let mut counts = std::collections::BTreeMap::new();
+        let mut seen = HashSet::new();
+        for task in projection.agent_tasks.iter().flatten().rev() {
+            if seen.insert(&task.agent_session_id)
+                && task.status == deepcode_kernel_client::AgentTaskStatus::Running
+            {
+                *counts
+                    .entry(agent_status_key(task.status))
+                    .or_insert(0usize) += 1;
+            }
+        }
+        if counts.is_empty() {
+            return String::new();
+        }
+        format!(
+            "{} · {} · /agents",
+            self.host.language.text("agent.team.title"),
+            counts
+                .into_iter()
+                .map(|(status, count)| format!("{} {}", count, self.host.language.text(status)))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    }
+
+    pub fn session_picker_open(&self) -> bool {
+        self.session_picker.is_some()
+    }
+    pub fn close_session_picker(&mut self) {
+        self.session_picker = None;
+    }
+    pub fn session_picker_entries(&self) -> Vec<(String, bool)> {
+        let current = self
+            .projection
+            .as_ref()
+            .map(|projection| projection.session_id.as_str());
+        self.session_list
+            .iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, session)| {
+                (
+                    crate::session_navigation::session_label(index + 1, session, current),
+                    self.session_picker == Some(index),
+                )
+            })
+            .collect()
+    }
+    pub fn session_picker_move(&mut self, delta: isize) {
+        let count = self.session_list.as_ref().map_or(0, Vec::len);
+        if let Some(selected) = self.session_picker.as_mut().filter(|_| count > 0) {
+            *selected = (*selected as isize + delta).rem_euclid(count as isize) as usize;
+        }
+    }
+    pub async fn session_picker_select(&mut self) {
+        if let Some(selected) = self.session_picker {
+            self.resume_session(&(selected + 1).to_string()).await;
+        }
+    }
+
     async fn submit_contextual_input(&mut self, text: &str) {
+        if let Err(error) = self.ensure_session().await {
+            self.status = error;
+            return;
+        }
         let Some(projection) = self.projection.as_ref() else {
             self.status = self
                 .host
@@ -310,14 +773,33 @@ impl TuiApp {
                 .to_string();
             return;
         };
-        let session_id = projection.session_id.clone();
-        let command = match self.contextual_input_command(projection, text) {
+        let child = match crate::conversation_input::child_reply_projection(
+            self.host.language,
+            &self.client,
+            projection,
+            text,
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let target = child.as_ref().unwrap_or(projection);
+        let session_id = target.session_id.clone();
+        let command = match self.contextual_input_command(target, text) {
             Ok(command) => command,
             Err(error) => {
                 self.status = error;
                 return;
             }
         };
+        if self.viewing_agent() && command["type"] == "message.submit" {
+            self.status = self.host.language.text("tui.agentReadOnly").into();
+            return;
+        }
         if self
             .submit_command(
                 &session_id,
@@ -600,7 +1082,7 @@ impl TuiApp {
         {
             Ok(resource) => {
                 self.status = self.host.language.text("tui.resourceNext").into();
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.resource_preview = Some(resource);
             }
             Err(error) => self.status = error.to_string(),
@@ -651,7 +1133,7 @@ impl TuiApp {
         };
         match result {
             Ok(content) => {
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.detail_preview = Some(content);
                 self.resource_preview = None;
                 self.context_open = false;
@@ -703,7 +1185,7 @@ impl TuiApp {
                     ],
                 );
                 self.detail_preview = None;
-                self.detail_scroll = 0;
+                self.detail_scroll.set(0);
                 self.resource_preview = Some(resource);
             }
             Err(error) => {
@@ -718,6 +1200,10 @@ impl TuiApp {
     async fn attach_directory(&mut self, path: &str) {
         if path.is_empty() {
             self.status = self.host.language.text("tui.attachUsage").to_string();
+            return;
+        }
+        if let Err(error) = self.ensure_session().await {
+            self.status = error;
             return;
         }
         let Some(session_id) = self
@@ -845,6 +1331,14 @@ impl TuiApp {
                 Some(self.host.language.text("tui.actionReply").to_string())
             } else if projection.pending_approval.is_some() {
                 Some(self.host.language.text("tui.actionApproval").to_string())
+            } else if projection
+                .pending_agent_decisions
+                .iter()
+                .flatten()
+                .next()
+                .is_some()
+            {
+                Some(self.host.language.text("tui.agentDecisionHint").to_string())
             } else {
                 None
             }
@@ -868,20 +1362,41 @@ impl TuiApp {
     }
 
     pub fn scroll_content(&mut self, down: bool) {
-        self.scroll_lines(down, 12);
+        self.scroll_lines(down, self.viewport_height.get().saturating_sub(1).max(1));
     }
 
     pub fn scroll_lines(&mut self, down: bool, lines: u16) {
+        // An open picker owns navigation; do not scroll the obscured document.
+        let delta = if down { 1 } else { -1 };
+        if self.command_picker_open() {
+            self.command_completion_key(if down { KeyCode::Down } else { KeyCode::Up });
+            return;
+        } else if self.plugin_picker_open() {
+            self.plugin_picker_move(delta);
+            return;
+        } else if self.model_picker_open() {
+            self.model_picker_move(delta);
+            return;
+        } else if self.session_picker_open() {
+            self.session_picker_move(delta);
+            return;
+        } else if self.agent_picker_open() {
+            self.agent_picker_move(delta);
+            return;
+        }
         if self.detail_preview.is_some()
             || self.resource_preview.is_some()
             || self.context_open
             || self.tasks_open
         {
-            self.detail_scroll = if down {
-                self.detail_scroll.saturating_add(lines)
+            let current = self.detail_scroll.get();
+            self.detail_scroll.set(if down {
+                current
+                    .saturating_add(lines)
+                    .min(self.detail_scroll_max.get())
             } else {
-                self.detail_scroll.saturating_sub(lines)
-            };
+                current.saturating_sub(lines)
+            });
         } else {
             let maximum = self.transcript_scroll_max.get();
             let current = self.transcript_scroll.get().unwrap_or(maximum);
@@ -909,8 +1424,21 @@ impl TuiApp {
     pub fn tasks_open(&self) -> bool {
         self.tasks_open
     }
-    pub fn detail_scroll(&self) -> u16 {
-        self.detail_scroll
+    pub fn set_viewport_height(&self, height: u16) {
+        self.viewport_height.set(height);
+    }
+
+    pub fn detail_offset(&self, maximum: usize, height: u16) -> u16 {
+        self.set_viewport_height(height);
+        let maximum = maximum.min(usize::from(u16::MAX)) as u16;
+        self.detail_scroll_max.set(maximum);
+        let offset = self.detail_scroll.get().min(maximum);
+        self.detail_scroll.set(offset);
+        offset
+    }
+
+    pub fn initialized(&self) -> bool {
+        self.initialized
     }
     pub fn detail_preview(&self) -> Option<&str> {
         self.detail_preview.as_deref()
@@ -942,12 +1470,12 @@ impl TuiApp {
 
     pub fn push_input(&mut self, value: char) {
         self.input.push(value);
-        self.sync_plugin_picker_from_input();
+        self.sync_input_pickers();
     }
 
     pub fn push_input_text(&mut self, value: &str) {
         self.input.push_str(value);
-        self.sync_plugin_picker_from_input();
+        self.sync_input_pickers();
     }
 
     pub fn backspace_input(&mut self) {
@@ -962,22 +1490,138 @@ impl TuiApp {
                 .retain(|candidate| candidate.uri != mention.uri);
             self.selected_plugins
                 .retain(|selection| selection.uri != mention.uri);
-            self.sync_plugin_picker_from_input();
+            self.sync_input_pickers();
             return;
         }
-        self.input.pop();
-        self.sync_plugin_picker_from_input();
+        // Remove one displayed grapheme, including combining marks and emoji sequences.
+        let length = if self.input.ends_with('\n') {
+            1
+        } else {
+            ratatui::text::Line::from(self.input.as_str())
+                .styled_graphemes(ratatui::style::Style::default())
+                .last()
+                .map(|grapheme| grapheme.symbol.len())
+                .unwrap_or(0)
+        };
+        self.input.truncate(self.input.len().saturating_sub(length));
+        self.sync_input_pickers();
     }
 
     pub fn clear_input(&mut self) {
         self.input.clear();
+        self.command_picker = None;
         self.clear_plugin_selections();
     }
 
     pub fn take_input(&mut self) -> String {
+        self.command_picker = None;
         self.plugin_picker = None;
         self.selected_mentions.clear();
         std::mem::take(&mut self.input)
+    }
+
+    pub fn command_picker_open(&self) -> bool {
+        self.command_picker.is_some()
+            && !self.agent_picker_open()
+            && !self.session_picker_open()
+            && !self.model_picker_open()
+            && !self.plugin_picker_open()
+    }
+
+    pub fn command_completion_key(&mut self, key: KeyCode) -> bool {
+        if !self.command_picker_open() {
+            return false;
+        }
+        let commands = self.matching_commands();
+        let selected = self.command_picker.unwrap();
+        match key {
+            KeyCode::Esc => self.command_picker = None,
+            KeyCode::Up | KeyCode::BackTab => {
+                self.command_picker = Some((selected + commands.len() - 1) % commands.len());
+            }
+            KeyCode::Down => {
+                self.command_picker = Some((selected + 1) % commands.len());
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let (command, _, takes_argument) = commands[selected];
+                self.input = command.to_string();
+                if takes_argument {
+                    self.input.push(' ');
+                }
+                self.command_picker = None;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn command_picker_entries(&self, visible_count: usize) -> Vec<CommandPickerEntry> {
+        if !self.command_picker_open() {
+            return Vec::new();
+        }
+        let selected = self.command_picker.unwrap();
+        let start = selected.saturating_sub(visible_count.saturating_sub(1));
+        self.matching_commands()
+            .into_iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_count)
+            .map(|(index, (command, description, _))| CommandPickerEntry {
+                command,
+                description: self.host.language.text(description),
+                highlighted: index == selected,
+            })
+            .collect()
+    }
+
+    fn matching_commands(&self) -> Vec<(&'static str, &'static str, bool)> {
+        let query = self.input.trim_start();
+        if self.input.contains(['\n', '\r'])
+            || !query.starts_with('/')
+            || query.chars().any(char::is_whitespace)
+        {
+            return Vec::new();
+        }
+        let mut matches: Vec<_> = COMMANDS
+            .iter()
+            .copied()
+            .filter(|(command, _, _)| command.starts_with(query))
+            .collect();
+        // A bounded local history combines frequency with recency; stable ties retain
+        // the discoverable default order. Arguments and message contents are never stored.
+        matches.sort_by_cached_key(|(command, _, _)| {
+            std::cmp::Reverse(
+                self.recent_commands
+                    .iter()
+                    .rev()
+                    .enumerate()
+                    .filter(|(_, used)| *used == command)
+                    .map(|(age, _)| 32 - age)
+                    .sum::<usize>(),
+            )
+        });
+        matches
+    }
+
+    fn record_command(&mut self, input: &str) {
+        let name = input.split_whitespace().next().unwrap_or("");
+        if let Some((command, _, _)) = COMMANDS.iter().find(|(command, _, _)| *command == name) {
+            if self.recent_commands.len() == 32 {
+                self.recent_commands.pop_front();
+            }
+            self.recent_commands.push_back(command);
+        }
+    }
+
+    fn sync_input_pickers(&mut self) {
+        let commands = self.matching_commands();
+        // A fully typed command keeps its existing Enter-to-execute behavior.
+        self.command_picker = (!commands.is_empty()
+            && !commands
+                .iter()
+                .any(|(command, _, _)| *command == self.input.trim_start()))
+        .then_some(0);
+        self.sync_plugin_picker_from_input();
     }
 
     pub fn plugin_picker_open(&self) -> bool {
@@ -1276,7 +1920,7 @@ impl TuiApp {
             .unwrap_or_else(|| {
                 self.host
                     .language
-                    .text("tui.sessionNotInitialized")
+                    .text("agent.session.newTitle")
                     .to_string()
             })
     }
@@ -1284,7 +1928,7 @@ impl TuiApp {
     fn toggle_context(&mut self) {
         self.context_open = !self.context_open;
         self.tasks_open = false;
-        self.detail_scroll = 0;
+        self.detail_scroll.set(0);
         if self.context_open {
             self.resource_preview = None;
             self.status = self.host.language.text("tui.contextOpened").to_string();
@@ -1384,6 +2028,324 @@ mod input_tests {
             },
         )
     }
+
+    #[tokio::test]
+    async fn command_completion_accepts_text_without_executing_or_consuming_plugins() {
+        for key in [KeyCode::Tab, KeyCode::Enter] {
+            let mut app = test_app();
+            app.selected_plugins.push(PluginSelectionInput {
+                selection_id: "selection:test".into(),
+                uri: "plugin://test@builtin".into(),
+                label: "Test plugin".into(),
+            });
+            app.push_input_text("/he");
+            let entries = app.command_picker_entries(7);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].command, "/help");
+            assert!(app.command_completion_key(key));
+            assert_eq!(app.input(), "/help");
+            assert!(app.detail_preview().is_none());
+            assert!(app.projection().is_none());
+            assert_eq!(app.selected_plugin_labels(), vec!["Test plugin"]);
+            assert!(!app.command_picker_open());
+            assert!(!app.command_completion_key(KeyCode::Enter));
+            let input = app.take_input();
+            assert!(app.submit_line(&input).await);
+            assert!(app.detail_preview().unwrap().contains("DeepCode 命令"));
+
+            app.push_input_text("/att");
+            assert!(app.command_completion_key(key));
+            assert_eq!(app.input(), "/attach ");
+            app.push_input_text("/tmp/项目");
+            assert!(!app.command_picker_open());
+            assert_eq!(app.take_input(), "/attach /tmp/项目");
+        }
+    }
+
+    #[test]
+    fn command_completion_dismisses_and_resets_with_the_draft() {
+        let mut app = test_app();
+        app.push_input('/');
+        assert!(app.command_picker_open());
+        assert!(app.command_completion_key(KeyCode::Esc));
+        assert_eq!(app.input(), "/");
+        assert!(!app.command_picker_open());
+        app.push_input('h');
+        assert!(app.command_picker_open());
+        app.clear_input();
+        assert!(!app.command_picker_open());
+        assert_eq!(app.input(), "");
+        app.push_input_text("/con");
+        assert_eq!(app.take_input(), "/con");
+        assert!(!app.command_picker_open());
+        app.push_input_text("/ta");
+        app.new_session();
+        assert_eq!(app.input(), "");
+        assert!(!app.command_picker_open());
+    }
+
+    #[tokio::test]
+    async fn font_choices_are_local_ui_and_do_not_create_a_conversation() {
+        let mut app = test_app();
+        app.push_input_text("/fon");
+        assert!(app.command_completion_key(KeyCode::Tab));
+        assert_eq!(app.take_input(), "/font");
+        assert!(app.submit_line("/font").await);
+        assert!(app.detail_preview().unwrap().contains("/font compact-kai"));
+        assert!(app.submit_line("/font unavailable").await);
+        assert!(app.status().contains("unavailable"));
+        assert!(app.projection().is_none());
+    }
+
+    #[test]
+    fn command_completion_leaves_full_commands_text_and_existing_pickers_alone() {
+        let mut app = test_app();
+        for input in [
+            "ordinary /he",
+            "/help",
+            "/model profile:test",
+            "/he\n",
+            "\n/he",
+            "/unknown",
+            "中文 /he",
+            "@plugin",
+        ] {
+            app.clear_input();
+            app.push_input_text(input);
+            assert!(!app.command_picker_open(), "{input}");
+            assert!(!app.command_completion_key(KeyCode::Tab), "{input}");
+            assert!(!app.command_completion_key(KeyCode::Enter), "{input}");
+            assert_eq!(app.input(), input);
+        }
+        app.clear_input();
+        app.push_input_text("/help");
+        app.backspace_input();
+        assert!(app.command_picker_open());
+        app.session_picker = Some(0);
+        assert!(!app.command_completion_key(KeyCode::Enter));
+        app.session_picker = None;
+        app.model_picker = Some(ModelPicker {
+            connection_id: None,
+            selected: 0,
+        });
+        assert!(!app.command_completion_key(KeyCode::Tab));
+        app.model_picker = None;
+        app.agent_picker = Some(0);
+        assert!(!app.command_completion_key(KeyCode::Down));
+        app.agent_picker = None;
+        assert!(app.command_completion_key(KeyCode::Tab));
+        assert_eq!(app.input(), "/help");
+    }
+
+    #[test]
+    fn command_completion_keeps_scrolled_selection_visible_in_both_languages() {
+        use ratatui::{backend::TestBackend, Terminal};
+        for language in [Language::ZhCn, Language::EnUs] {
+            let mut app = test_app();
+            app.host.language = language;
+            app.push_input('/');
+            assert!(app.command_completion_key(KeyCode::Up));
+            assert_eq!(
+                app.command_picker_entries(7).last().unwrap().command,
+                "/exit"
+            );
+            for (width, height) in [(60, 24), (32, 12)] {
+                let screen = screen_rows(&app, width, height).join("\n");
+                assert!(screen.contains("> /exit"), "{screen}");
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| app.renderer().draw(frame, &app))
+                    .unwrap();
+                let cursor = terminal.get_cursor_position().unwrap();
+                assert!(
+                    cursor.x < width && cursor.y >= height - 5 && cursor.y < height - 2,
+                    "{cursor:?}"
+                );
+            }
+            assert!(app.command_completion_key(KeyCode::Down));
+            assert!(app.command_picker_entries(7)[0].highlighted);
+            let agents_index = COMMANDS
+                .iter()
+                .position(|entry| entry.0 == "/agents")
+                .unwrap();
+            assert!(agents_index >= 7);
+            for _ in 0..agents_index {
+                app.command_completion_key(KeyCode::Down);
+            }
+            let entries = app.command_picker_entries(7);
+            assert_eq!(entries.len(), 7);
+            assert!(entries.last().unwrap().highlighted);
+            assert_eq!(entries.last().unwrap().command, "/agents");
+            assert_eq!(
+                entries.last().unwrap().description,
+                language.text("tui.command.agents")
+            );
+            let screen = screen_rows(&app, 90, 24).join("\n");
+            assert!(
+                screen.contains(language.text("tui.command.agents")),
+                "{screen}"
+            );
+            assert!(
+                screen.contains(language.text("tui.commandPickerHint")),
+                "{screen}"
+            );
+            app.command_completion_key(KeyCode::BackTab);
+            app.command_completion_key(KeyCode::Enter);
+            assert_eq!(app.input(), "/tasks");
+            app.clear_input();
+            app.push_input_text("/con");
+            let commands: Vec<_> = app
+                .command_picker_entries(7)
+                .into_iter()
+                .map(|entry| entry.command)
+                .collect();
+            assert_eq!(commands, vec!["/connection", "/context"]);
+            app.command_completion_key(KeyCode::Down);
+            app.command_completion_key(KeyCode::Tab);
+            assert_eq!(app.input(), "/context");
+        }
+    }
+    #[tokio::test]
+    async fn session_navigation_preserves_failed_targets_and_new_draft_is_isolated() {
+        for (field, decision, _, _, _) in pending_decisions() {
+            let mut app = test_app();
+            app.host.workspace_path = Some(PathBuf::from("/startup"));
+            app.host.session_id = Some("session:test".into());
+            app.projection = Some(waiting_projection(field, decision));
+            app.next_message_profile_id = Some("profile:old".into());
+            app.push_input_text("draft");
+            app.detail_preview = Some("old detail".into());
+            let before = app.projection.clone();
+            app.resume_session("session:missing").await;
+            assert_eq!(app.projection, before);
+            assert_eq!(app.input, "draft");
+            assert!(app.status.contains("daemon request failed"));
+            app.new_session();
+            assert!(app.projection.is_none());
+            assert!(app.host.session_id.is_none());
+            assert_eq!(app.host.workspace_path, Some(PathBuf::from("/startup")));
+            assert!(app.input.is_empty());
+            assert!(app.next_message_profile_id.is_none());
+            assert!(app.detail_preview.is_none());
+            assert!(app.status.contains("仍在后台运行"));
+        }
+    }
+
+    #[test]
+    fn agent_list_uses_latest_task_and_back_restores_the_main_view() {
+        let mut app = test_app();
+        let (field, decision, _, _, _) = pending_decisions().into_iter().next().unwrap();
+        let mut main = waiting_projection(field, decision);
+        main.agent_children = Some(
+            serde_json::from_value(json!([
+                {"agentSessionId":"session:child","displayName":"Researcher","closed":false,
+                    "capabilities":{"messaging":true,"continuation":true,"delegation":false}}
+            ]))
+            .unwrap(),
+        );
+        main.agent_tasks = Some(serde_json::from_value(json!([
+            {"taskId":"task:one","agentSessionId":"session:child","displayName":"Researcher","text":"Inspect",
+                "delivery":"async","parentRunId":"run:test","status":"completed",
+                "capabilities":{"messaging":true,"continuation":true,"delegation":false}},
+            {"taskId":"task:two","agentSessionId":"session:child","displayName":"Researcher","text":"Continue",
+                "delivery":"async","parentRunId":"run:test","status":"running",
+                "capabilities":{"messaging":true,"continuation":true,"delegation":false}}
+        ])).unwrap());
+        app.projection = Some(main.clone());
+        app.agent_picker = Some(0);
+        assert_eq!(app.agent_entries().len(), 1);
+        assert!(app.agent_status().contains("1 运行中"));
+        assert!(app.renderer().render_plain(&app).contains("Researcher"));
+        app.agent_return_views.push(AgentReturnView {
+            projection: main.clone(),
+            input: "unfinished draft".into(),
+            transcript_scroll: Some(7),
+        });
+        app.projection.as_mut().unwrap().session_id = "session:child".into();
+        app.input = "child view".into();
+        app.back_from_agent();
+        assert_eq!(app.projection().unwrap().session_id, main.session_id);
+        assert_eq!(app.input, "unfinished draft");
+        assert_eq!(app.transcript_scroll.get(), Some(7));
+        assert!(!app.viewing_agent());
+        app.projection
+            .as_mut()
+            .unwrap()
+            .agent_tasks
+            .as_mut()
+            .unwrap()[1]
+            .status = deepcode_kernel_client::AgentTaskStatus::Completed;
+        assert!(app.agent_status().is_empty());
+        assert_eq!(app.agent_entries().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn parent_decision_entry_opens_the_child_picker_without_rewriting_a_reply() {
+        let mut app = test_app();
+        let (field, decision, _, _, _) = pending_decisions().into_iter().next().unwrap();
+        let mut parent = waiting_projection(field, decision);
+        parent.pending_plan = None;
+        parent.pending_interaction = None;
+        parent.pending_approval = None;
+        parent.pending_agent_decisions = Some(
+            serde_json::from_value(json!([{
+                "agentSessionId":"session:grandchild", "displayName":"Writer", "runId":"run:child",
+                "plan":{"planId":"plan:child", "revision":2}, "interactionIds":[]
+            }]))
+            .unwrap(),
+        );
+        app.projection = Some(parent.clone());
+        assert!(app.action_required().unwrap().contains("子代理等待确认"));
+        assert_eq!(app.agent_entries()[0].0, "session:grandchild");
+        assert!(app.agent_entries()[0]
+            .1
+            .contains(app.language().text("agent.team.needsInput")));
+        assert!(app
+            .renderer()
+            .render_plain(&app)
+            .contains("/agent session:grandchild"));
+        app.submit_line("/decision").await;
+        assert_eq!(app.agent_picker, Some(0));
+        assert_eq!(
+            app.projection,
+            Some(parent),
+            "navigation never fabricates a parent Plan"
+        );
+    }
+
+    #[test]
+    fn session_picker_wraps_and_plain_output_keeps_the_displayed_numbers() {
+        let mut app = test_app();
+        app.session_list = Some(
+            (1..=12)
+                .map(|number| {
+                    serde_json::from_value(json!({
+                        "id":format!("session:{number}"), "title":format!("Title {number}"),
+                        "workspaceBindings":[], "createdAt":"1", "updatedAt":"1"
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        );
+        app.session_picker = Some(0);
+        app.session_picker_move(-1);
+        assert!(app.session_picker_entries()[11].1);
+        assert!(app.renderer().render_plain(&app).contains("12. Title 12"));
+        app.session_picker_move(1);
+        assert!(app.session_picker_entries()[0].1);
+        app.close_session_picker();
+        assert!(!app.session_picker_open());
+        assert_eq!(
+            crate::session_navigation::resolve_selector(
+                Language::ZhCn,
+                "12",
+                app.session_list.as_deref()
+            )
+            .unwrap(),
+            "session:12"
+        );
+    }
+
     #[test]
     fn pending_plain_input_queues_while_explicit_reply_keeps_decision_semantics() {
         for (field, decision, command_type, response_field, expected) in pending_decisions() {
@@ -1458,6 +2420,142 @@ mod input_tests {
         }
     }
 
+    #[tokio::test]
+    async fn detail_views_stop_at_the_rendered_bottom_and_reflow_after_resize() {
+        for language in [Language::ZhCn, Language::EnUs] {
+            let mut app = test_app();
+            app.host.language = language;
+            app.submit_line("/help").await;
+            let top = screen_rows(&app, 60, 18);
+            assert!(top
+                .join("\n")
+                .contains(language.text("tui.commandHelp").lines().next().unwrap()));
+            app.scroll_lines(true, u16::MAX);
+            let bottom = screen_rows(&app, 60, 18);
+            assert!(bottom.join("\n").contains("/quit"));
+            assert_ne!(top, bottom);
+            for _ in 0..5 {
+                app.scroll_content(true);
+                assert_eq!(screen_rows(&app, 60, 18), bottom);
+            }
+            let resized = screen_rows(&app, 140, 26);
+            assert!(resized.join("\n").contains("/quit"));
+            app.scroll_content(true);
+            assert_eq!(screen_rows(&app, 140, 26), resized);
+            app.scroll_lines(false, u16::MAX);
+            assert_eq!(screen_rows(&app, 60, 18), top);
+
+            for command in ["/context", "/tasks", "/font"] {
+                app.submit_line(command).await;
+                let visible = screen_rows(&app, 140, 50);
+                app.scroll_lines(true, u16::MAX);
+                assert_eq!(screen_rows(&app, 140, 50), visible, "{command}");
+            }
+        }
+    }
+
+    #[test]
+    fn detail_pages_overlap_by_one_visible_row_and_keep_file_truncation_visible() {
+        let mut app = test_app();
+        app.detail_preview = Some(
+            (0..60)
+                .map(|i| format!("row-{i:02} 中文内容"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let before = screen_rows(&app, 60, 18);
+        let last = before
+            .iter()
+            .filter(|line| line.contains("row-"))
+            .last()
+            .unwrap()
+            .clone();
+        app.scroll_content(true);
+        let after = screen_rows(&app, 60, 18);
+        assert_eq!(
+            after.iter().find(|line| line.contains("row-")).unwrap(),
+            &last
+        );
+        app.detail_preview = None;
+        app.resource_preview = Some(
+            serde_json::from_value(json!({
+                "workspaceId":"workspace:test", "logicalPath":"文本.txt", "content":"最后一行",
+                "sizeBytes":99, "startLine":1, "endLine":1, "nextByte":50, "truncated":true
+            }))
+            .unwrap(),
+        );
+        let screen = screen_rows(&app, 60, 18).join("\n");
+        assert!(screen.contains("最后一行"));
+        assert!(screen.contains("/next"));
+    }
+
+    #[tokio::test]
+    async fn completion_orders_recent_frequent_commands_but_completion_does_not_record_use() {
+        let mut app = test_app();
+        app.submit_line("/tasks").await;
+        app.submit_line("/tasks").await;
+        app.submit_line("/context").await;
+        app.push_input('/');
+        let names: Vec<_> = app
+            .command_picker_entries(7)
+            .into_iter()
+            .map(|entry| entry.command)
+            .collect();
+        assert_eq!(&names[..3], &["/tasks", "/context", "/help"]);
+        app.clear_input();
+        app.push_input_text("/he");
+        app.command_completion_key(KeyCode::Tab);
+        app.clear_input();
+        app.push_input('/');
+        assert_eq!(app.command_picker_entries(7)[0].command, "/tasks");
+        app.clear_input();
+        app.push_input_text("/con");
+        assert_eq!(app.command_picker_entries(7)[0].command, "/context");
+        app.command_completion_key(KeyCode::Enter);
+        assert_eq!(app.input(), "/context");
+        assert!(app.context_open()); // completion did not execute /context again
+        assert!(app.projection().is_none());
+        let mut fresh = test_app();
+        fresh.push_input('/');
+        assert_eq!(fresh.command_picker_entries(7)[0].command, "/help");
+    }
+
+    #[test]
+    fn picker_wheel_navigation_keeps_the_hidden_document_in_place() {
+        let mut app = test_app();
+        app.detail_preview = Some(
+            (0..80)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let before = screen_rows(&app, 60, 18);
+        app.push_input('/');
+        app.scroll_lines(true, 4);
+        assert!(app.command_picker_entries(7)[1].highlighted);
+        assert!(screen_rows(&app, 60, 18).join("\n").contains("> /new"));
+        app.clear_input();
+        assert_eq!(screen_rows(&app, 60, 18), before);
+    }
+
+    #[test]
+    fn ready_draft_header_and_grapheme_deletion_match_the_visible_state() {
+        let mut app = test_app();
+        assert!(screen_rows(&app, 60, 18)[0].contains("初始化"));
+        app.initialized = true;
+        assert!(screen_rows(&app, 60, 18)[0].contains("就绪"));
+        app.push_input_text("中文e\u{301}👩‍💻");
+        app.backspace_input();
+        assert_eq!(app.input(), "中文e\u{301}");
+        app.backspace_input();
+        assert_eq!(app.input(), "中文");
+        app.push_input_text("\n中");
+        app.backspace_input();
+        app.backspace_input();
+        assert_eq!(app.input(), "中文");
+        assert!(app.projection().is_none());
+    }
+
     #[test]
     fn wheel_reading_stays_detached_until_reaching_latest() {
         let mut app = test_app();
@@ -1522,6 +2620,82 @@ mod input_tests {
             assert!(!text.contains("**读文件**"));
             assert!(!text.contains("run [completed]"));
             assert!(!text.contains("⠋"));
+        }
+        assert_eq!(app.projection, before);
+    }
+
+    #[test]
+    fn transcript_keeps_decisions_once_in_their_recorded_position() {
+        let mut app = test_app();
+        let mut projection = waiting_projection("pendingPlan", serde_json::Value::Null);
+        projection.run.as_mut().unwrap().status = "completed".into();
+        for (id, role, content, sequence) in [
+            ("request", "user", "检查项目", 1),
+            ("followup", "user", "停止检查", 8),
+            ("answer", "assistant", "已停止，没有修改文件", 10),
+        ] {
+            projection.messages.push(
+                serde_json::from_value(json!({
+                    "messageId":id,"role":role,"content":content,"filesystemReferences":[],
+                    "pluginSelections":[],"sequence":sequence,"createdAt":"now"
+                }))
+                .unwrap(),
+            );
+        }
+        for (id, kind, status, label, sequence) in [
+            ("approval:read", "approval", "completed", "读取目录权限", 3),
+            ("tool:read", "tool", "completed", "目录已读取", 2),
+            ("approval:write", "approval", "denied", "修改目录权限", 5),
+            (
+                "question:scope",
+                "interaction",
+                "completed",
+                "选择检查范围",
+                6,
+            ),
+        ] {
+            projection.activities.push(
+                serde_json::from_value(json!({
+                    "activityId":id,"kind":kind,"status":status,"label":label,
+                    "runId":"run:test","callId":id,"sequence":sequence
+                }))
+                .unwrap(),
+            );
+        }
+        projection.timeline = serde_json::from_value(json!([
+            {"kind":"message","timelineId":"request","sequence":1,"messageId":"request"},
+            {"kind":"toolGroup","timelineId":"read","sequence":3,"providerRequestId":"provider:read",
+                "activityIds":["approval:read","tool:read"]},
+            {"kind":"toolGroup","timelineId":"write","sequence":5,"providerRequestId":"provider:write",
+                "activityIds":["approval:write","question:scope"]},
+            {"kind":"message","timelineId":"followup","sequence":8,"messageId":"followup"},
+            {"kind":"message","timelineId":"answer","sequence":10,"messageId":"answer"}
+        ])).unwrap();
+        app.projection = Some(projection);
+        let before = app.projection.clone();
+        let plain = app.renderer().render_plain(&app);
+        for text in [plain, screen_rows(&app, 120, 40).join("\n")] {
+            let labels = [
+                "检查项目",
+                "读取目录权限",
+                "目录已读取",
+                "修改目录权限",
+                "选择检查范围",
+                "停止检查",
+                "已停止，没有修改文件",
+            ];
+            let mut previous = 0;
+            for label in labels {
+                assert_eq!(text.matches(label).count(), 1, "{label}: {text}");
+                let position = text.find(label).unwrap();
+                assert!(position >= previous, "{label}: {text}");
+                previous = position;
+            }
+            assert!(text.contains("授权 读取目录权限 [已完成]"), "{text}");
+            assert!(text.contains("授权 修改目录权限 [已拒绝]"), "{text}");
+            assert!(text.contains("交互 选择检查范围 [已完成]"), "{text}");
+            let final_reply = text.find("已停止，没有修改文件").unwrap();
+            assert!(!text[final_reply..].contains("权限"), "{text}");
         }
         assert_eq!(app.projection, before);
     }

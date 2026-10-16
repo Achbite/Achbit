@@ -9,11 +9,13 @@ mod open_file;
 mod native_browser;
 #[path = "../../../shared/native_path_dialog/mod.rs"]
 mod native_path_dialog;
+mod ssh_auth;
+mod ssh_gui;
 
 use deepcode_host_connection::loopback_http::{
-    connect_loopback, parse_port, probe_loopback_listener, request_connected_json,
-    request_loopback_json,
+    connect_loopback, parse_port, request_loopback_json_until,
 };
+use deepcode_host_connection::startup;
 use deepcode_kernel_abi::{
     is_valid_host_instance_id, is_valid_host_shell_token, is_valid_host_ui_token,
     HostProcessIdentity, HOST_INSTANCE_ID_ENV, HOST_INSTANCE_ID_PREFIX, HOST_SHELL_TOKEN_ENV,
@@ -27,15 +29,15 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-use deepcode_host_connection::process::{
-    spawn_owned_host_process, terminate_owned_process_tree, OwnedHostProcess,
-};
-use deepcode_host_connection::shell_lifecycle::{shutdown_daemon_process, OwnedHostChildren};
+#[cfg(test)]
+use deepcode_host_connection::process::{spawn_owned_host_process, terminate_owned_process_tree};
+use deepcode_host_connection::process::{terminate_owned_process_tree_until, OwnedHostProcess};
+use deepcode_host_connection::shell_lifecycle::OwnedHostChildren;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 31246;
@@ -78,6 +80,7 @@ struct HostProcessGroup {
 }
 
 struct HostProcessState {
+    ssh: Option<deepcode_host_connection::ssh::SshGuiConnection>,
     external_client: Option<deepcode_host_connection::HostClientLease>,
     children: Option<OwnedHostChildren>,
     active_startups: usize,
@@ -180,6 +183,7 @@ impl HostProcessGroup {
     fn new(children: Option<OwnedHostChildren>) -> Self {
         Self {
             state: Mutex::new(HostProcessState {
+                ssh: None,
                 external_client: None,
                 children,
                 active_startups: 0,
@@ -230,7 +234,14 @@ impl HostProcessGroup {
         true
     }
 
-    fn reclaim_current(&self) {
+    fn reclaim_current(&self, deadline: Instant) -> std::io::Result<()> {
+        let remote = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ssh
+            .take();
+        drop(remote);
         let current = self
             .state
             .lock()
@@ -238,8 +249,20 @@ impl HostProcessGroup {
             .children
             .take();
         if let Some(mut processes) = current {
-            processes.shutdown();
+            let mut errors = Vec::new();
+            if let Err(error) = terminate_owned_process_tree_until(&mut processes.proxy, deadline) {
+                errors.push(format!("proxy cleanup failed: {error}"));
+            }
+            if let Some(daemon) = processes.daemon.as_mut() {
+                if let Err(error) = terminate_owned_process_tree_until(daemon, deadline) {
+                    errors.push(format!("daemon cleanup failed: {error}"));
+                }
+            }
+            if !errors.is_empty() {
+                return Err(std::io::Error::other(errors.join("; ")));
+            }
         }
+        Ok(())
     }
 
     fn detach(&self) {
@@ -248,6 +271,7 @@ impl HostProcessGroup {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.shutting_down = true;
+        drop(state.ssh.take());
         drop(state.external_client.take());
         if let Some(mut children) = state.children.take() {
             children.shutdown();
@@ -289,6 +313,10 @@ impl Drop for HostProcessGroup {
 }
 
 fn main() {
+    let auth_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        ssh_auth::deepcode_ssh_auth_context,
+        ssh_auth::deepcode_ssh_auth_respond
+    ];
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         native_path_dialog::deepcode_pick_path,
         open_file::deepcode_open_file,
@@ -302,6 +330,8 @@ fn main() {
         deepcode_window_toggle_maximize,
         deepcode_window_close,
         deepcode_open_external_url,
+        ssh_gui::deepcode_connect_ssh,
+        ssh_gui::deepcode_open_local,
         native_browser::deepcode_browser_host,
         native_browser::deepcode_browser_command
     ];
@@ -310,7 +340,11 @@ fn main() {
         .register_uri_scheme_protocol(APP_ASSET_SCHEME, |_ctx, request| {
             serve_bundled_asset(APP_ASSET_DIR, request)
         })
+        .register_uri_scheme_protocol(ssh_auth::SCHEME, |_ctx, _request| ssh_auth::page())
         .invoke_handler(move |invoke| {
+            if invoke.message.webview_ref().label() == "ssh-auth" {
+                return auth_handler(invoke);
+            }
             if invoke.message.webview_ref().label() != "main" {
                 invoke
                     .resolver
@@ -325,6 +359,7 @@ fn main() {
                 Ok(target) => target,
                 Err(error) => {
                     eprintln!("host_startup_configuration_failed: {error}");
+                    ssh_gui::write_startup_receipt(false, &error.to_string(), None);
                     let handle = app.handle().clone();
                     app.dialog()
                         .message(error.to_string())
@@ -336,81 +371,152 @@ fn main() {
             };
             let mut host_tokens = HostConnectionTokens::resolve()?;
             let registration = Arc::clone(&host_tokens.browser_registration);
+            #[cfg(windows)]
+            let control_registration = Arc::clone(&host_tokens.browser_registration);
             let browser_id = host_tokens.browser_instance_id.clone();
             let callback_token = host_tokens.browser_token.clone();
-            host_tokens.browser_endpoint = native_browser::start(
-                app.handle(),
-                runtime_locations().user.clone(),
-                host_tokens.browser_instance_id.clone(),
-                host_tokens.browser_token.clone(),
-                host_bootstrap_script(&target, &host_tokens, true),
-                Box::new(move || {
-                    if let Ok(mut registration) = registration.lock() {
-                        if let Some((host, port, token, endpoint)) = registration.take() {
-                            let _ = register_native_browser(
+            if target.ssh.is_none() {
+                host_tokens.browser_endpoint = native_browser::start(
+                    app.handle(),
+                    runtime_locations().user.clone(),
+                    host_tokens.browser_instance_id.clone(),
+                    host_tokens.browser_token.clone(),
+                    host_bootstrap_script(&target, &host_tokens, true),
+                    #[cfg(windows)]
+                    Box::new(move |sessions| {
+                        let (host, port, token, _) = control_registration
+                            .lock()
+                            .map_err(|_| "native_control_registration_unavailable")?
+                            .clone()
+                            .ok_or("native_control_host_unavailable")?;
+                        let request = http_request(
+                            &host,
+                            &port,
+                            "GET",
+                            "/api/conversation/statuses",
+                            &[(HOST_SHELL_TOKEN_HEADER, &token)],
+                        );
+                        let response: HostApiEnvelope<serde_json::Value> =
+                            request_loopback_json_until(
                                 &host,
                                 &port,
-                                &token,
-                                &browser_id,
-                                &endpoint,
-                                &callback_token,
-                                true,
-                            );
+                                &request,
+                                Instant::now() + Duration::from_secs(2),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        let mut statuses = response
+                            .into_data()
+                            .map_err(|error| error.to_string())?
+                            .as_array()
+                            .cloned()
+                            .ok_or("native_control_statuses_invalid")?;
+                        // The sidebar catalog omits child Sessions. Read those exact
+                        // owned Sessions instead of interpreting absence as completion.
+                        for session in sessions {
+                            if statuses
+                                .iter()
+                                .any(|status| status["sessionId"] == *session)
+                            {
+                                continue;
+                            }
+                            let body = r#"{"view":"summary","limit":1}"#;
+                            let request = http_request(
+                                &host,
+                                &port,
+                                "POST",
+                                &format!("/api/conversation/sessions/{session}/read"),
+                                &[
+                                    (HOST_SHELL_TOKEN_HEADER, &token),
+                                    ("Content-Type", "application/json"),
+                                ],
+                            )
+                            .replace(
+                                "Content-Length: 0",
+                                &format!("Content-Length: {}", body.len()),
+                            ) + body;
+                            let response: HostApiEnvelope<serde_json::Value> =
+                                request_loopback_json_until(
+                                    &host,
+                                    &port,
+                                    &request,
+                                    Instant::now() + Duration::from_secs(2),
+                                )
+                                .map_err(|error| error.to_string())?;
+                            let run = if response.error.as_deref() == Some("session_not_found") {
+                                serde_json::Value::Null
+                            } else {
+                                let read =
+                                    response.into_data().map_err(|error| error.to_string())?;
+                                read.get("summary")
+                                    .and_then(|summary| summary.get("run"))
+                                    .cloned()
+                                    .ok_or("native_control_run_status_missing")?
+                            };
+                            statuses.push(serde_json::json!({"sessionId":session,"run":run}));
                         }
-                    }
-                }),
-            )
-            .map_err(std::io::Error::other)?;
+                        Ok(serde_json::Value::Array(statuses))
+                    }),
+                    Box::new(move || {
+                        if let Ok(mut registration) = registration.lock() {
+                            if let Some((host, port, token, endpoint)) = registration.take() {
+                                let _ = register_native_browser(
+                                    &host,
+                                    &port,
+                                    &token,
+                                    &browser_id,
+                                    &endpoint,
+                                    &callback_token,
+                                    true,
+                                );
+                            }
+                        }
+                    }),
+                )
+                .map_err(std::io::Error::other)?;
+            }
             app.manage(target.clone());
             app.manage(host_tokens.clone());
             app.manage(HostProcessGroup::new(None));
             app.manage(HostStartupStatusStore::new());
-            create_main_window(app, &target, &host_tokens)?;
-            let menu = tauri::menu::Menu::default(app.handle())?;
-            let reload = tauri::menu::MenuItem::with_id(
-                app,
-                "reload-interface",
-                "重新加载界面",
-                true,
-                Some("CmdOrCtrl+Shift+R"),
-            )?;
-            let mut added = false;
-            for item in menu.items()? {
-                if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
-                    if submenu.text()? == "View" {
-                        submenu.insert(&reload, 0)?;
-                        added = true;
-                        break;
-                    }
-                }
-            }
-            if !added {
-                menu.append(&tauri::menu::Submenu::with_items(
-                    app,
-                    "视图",
-                    true,
-                    &[&reload],
-                )?)?;
-            }
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id().as_ref() == "reload-interface" {
-                    let _ = tauri::Emitter::emit_to(app, "main", "deepcode:reload-interface", ());
-                }
-            });
-            // Actual Host I/O reports access failures. Do not enumerate parent
-            // directories before startup or block the native window event loop.
+            app.manage(ssh_auth::AuthUi::default());
+            // Host startup and WebView initialization are independent. A cold
+            // WebView2 profile must not delay the daemon's startup work.
             let app_handle = app.handle().clone();
+            let startup_target = target.clone();
+            let startup_tokens = host_tokens.clone();
             std::thread::spawn(move || {
                 let processes = app_handle.state::<HostProcessGroup>();
                 let status = app_handle.state::<HostStartupStatusStore>();
-                start_host_processes(&target, &host_tokens, &processes, &status);
+                start_host_processes(
+                    &app_handle,
+                    &startup_target,
+                    &startup_tokens,
+                    &processes,
+                    &status,
+                );
             });
+            if let Err(error) = initialize_main_window(app, &target, &host_tokens) {
+                if let Some(browser) = app.try_state::<native_browser::NativeBrowser>() {
+                    browser.stop();
+                }
+                app.state::<HostProcessGroup>().detach();
+                return Err(error);
+            }
             Ok(())
         })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
-                window.state::<native_browser::NativeBrowser>().stop();
+                if window.label() == "ssh-auth" {
+                    window.state::<ssh_auth::AuthUi>().close_prompt();
+                    return;
+                }
+                if window.label() != "main" {
+                    return;
+                }
+                window.state::<ssh_auth::AuthUi>().cancel();
+                if let Some(browser) = window.try_state::<native_browser::NativeBrowser>() {
+                    browser.stop();
+                }
                 window.state::<HostProcessGroup>().detach();
                 window.app_handle().exit(0);
             }
@@ -421,6 +527,9 @@ fn main() {
 
     app.run(|app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            if let Some(auth) = app_handle.try_state::<ssh_auth::AuthUi>() {
+                auth.cancel();
+            }
             if let Some(browser) = app_handle.try_state::<native_browser::NativeBrowser>() {
                 browser.stop();
             }
@@ -439,6 +548,8 @@ struct LaunchTarget {
     port: String,
     #[serde(skip)]
     daemon_port: String,
+    ssh: Option<deepcode_host_connection::ssh::SshTarget>,
+    ssh_endpoint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -602,18 +713,45 @@ fn deepcode_default_workspace_path() -> Option<String> {
 }
 
 #[tauri::command]
-fn deepcode_host_startup_status(status: State<'_, HostStartupStatusStore>) -> HostStartupStatusV1 {
+fn deepcode_host_startup_status(
+    status: State<'_, HostStartupStatusStore>,
+    processes: State<'_, HostProcessGroup>,
+) -> HostStartupStatusV1 {
+    let error = processes
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .ssh
+        .as_mut()
+        .and_then(|connection| connection.check().err());
+    if let Some(error) = error {
+        let current = status.read();
+        if current.phase != "failed" {
+            return status.update(
+                &current.attempt_id,
+                "failed",
+                "ssh",
+                "host_ssh_disconnected",
+                None,
+                error.to_string(),
+                true,
+                true,
+                current.diagnostic_ref,
+            );
+        }
+    }
     status.read()
 }
 
 #[tauri::command(async)]
 fn deepcode_start_kernel_after_permission(
+    app: tauri::AppHandle,
     target: State<'_, LaunchTarget>,
     host_tokens: State<'_, HostConnectionTokens>,
     processes: State<'_, HostProcessGroup>,
     status: State<'_, HostStartupStatusStore>,
 ) -> KernelStartResult {
-    let current = start_host_processes(&target, &host_tokens, &processes, &status);
+    let current = start_host_processes(&app, &target, &host_tokens, &processes, &status);
     let started = current.phase == "ready";
     KernelStartResult {
         started,
@@ -679,21 +817,29 @@ async fn deepcode_open_external_url(url: String) -> Result<(), String> {
 
 fn resolve_launch_target() -> std::io::Result<LaunchTarget> {
     let host = std::env::var("DEEPCODE_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
+    let explicit_port = match std::env::var("DEEPCODE_PORT") {
+        Ok(value) => Some(parse_port(&value)?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
+    };
+    let mut target = select_launch_ports(host, explicit_port)?;
+    target.ssh = ssh_gui::launch_target()?;
+    target.ssh_endpoint = target
+        .ssh
+        .as_ref()
+        .map(|ssh| ssh.endpoint_label())
+        .transpose()?;
+    Ok(target)
+}
+
+fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Result<LaunchTarget> {
+    // Validate before OS name resolution: Windows accepts an empty bind host.
     if !is_loopback_host(&host) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "DeepCode desktop Host requires a loopback target",
         ));
     }
-    let explicit_port = match std::env::var("DEEPCODE_PORT") {
-        Ok(value) => Some(parse_port(&value)?),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
-    };
-    select_launch_ports(host, explicit_port)
-}
-
-fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Result<LaunchTarget> {
     // Hold the selected proxy port until the daemon port has been chosen.
     let (port, _proxy_listener) = match explicit_port {
         Some(port) if port != 0 => (port, None),
@@ -724,7 +870,50 @@ fn select_launch_ports(host: String, explicit_port: Option<u16>) -> std::io::Res
         host,
         port: port.to_string(),
         daemon_port: daemon_port.to_string(),
+        ssh: None,
+        ssh_endpoint: None,
     })
+}
+
+fn initialize_main_window(
+    app: &tauri::App,
+    target: &LaunchTarget,
+    host_tokens: &HostConnectionTokens,
+) -> Result<(), Box<dyn std::error::Error>> {
+    create_main_window(app, target, host_tokens)?;
+    let menu = tauri::menu::Menu::default(app.handle())?;
+    let reload = tauri::menu::MenuItem::with_id(
+        app,
+        "reload-interface",
+        "重新加载界面",
+        true,
+        Some("CmdOrCtrl+Shift+R"),
+    )?;
+    let mut added = false;
+    for item in menu.items()? {
+        if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
+            if submenu.text()? == "View" {
+                submenu.insert(&reload, 0)?;
+                added = true;
+                break;
+            }
+        }
+    }
+    if !added {
+        menu.append(&tauri::menu::Submenu::with_items(
+            app,
+            "视图",
+            true,
+            &[&reload],
+        )?)?;
+    }
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id().as_ref() == "reload-interface" {
+            let _ = tauri::Emitter::emit_to(app, "main", "deepcode:reload-interface", ());
+        }
+    });
+    Ok(())
 }
 
 fn create_main_window(
@@ -735,7 +924,7 @@ fn create_main_window(
     let boot_url = format!("{APP_ASSET_SCHEME}://localhost/index.html");
     let initialization_script = host_bootstrap_script(target, host_tokens, false);
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(boot_url.parse()?))
-        .data_directory(runtime_locations().user.cache_dir.join("webview"))
+        .data_directory(ssh_gui::webview_directory(target))
         .initialization_script(initialization_script)
         .on_navigation(trusted_app_navigation)
         .title("DeepCode-GUI")
@@ -769,7 +958,8 @@ fn host_bootstrap_script(
 ) -> String {
     let bootstrap = serde_json::json!({
         "schemaVersion":"deepcode.host-ui-bootstrap", "host":target.host, "port":target.port.to_string(),
-        "uiToken":host_tokens.ui_token(), "windowChrome":if cfg!(target_os="macos") && !preview {"nativeOverlay"} else {"custom"}
+        "uiToken":host_tokens.ui_token(), "windowChrome":if cfg!(target_os="macos") && !preview {"nativeOverlay"} else {"custom"},
+        "remote": target.ssh.is_some(), "remoteLabel": target.ssh_endpoint
     });
     format!("Object.defineProperty(window,'__DEEPCODE_HOST_BOOT__',{{value:Object.freeze({bootstrap}),writable:false,configurable:true}});")
 }
@@ -858,11 +1048,13 @@ fn content_type_for_path(path: &Path) -> &'static str {
 }
 
 fn start_host_processes(
+    app: &tauri::AppHandle,
     target: &LaunchTarget,
     host_tokens: &HostConnectionTokens,
     processes: &HostProcessGroup,
     status: &HostStartupStatusStore,
 ) -> HostStartupStatusV1 {
+    let deadline = Instant::now() + startup::STARTUP_BUDGET;
     let attempt_id = startup_attempt_id();
     let Some(_startup_lease) = processes.begin_startup() else {
         return status.update(
@@ -877,11 +1069,23 @@ fn start_host_processes(
             None,
         );
     };
+    if let Some(ssh) = &target.ssh {
+        return ssh_gui::connect(
+            app,
+            ssh,
+            target,
+            host_tokens,
+            processes,
+            status,
+            &attempt_id,
+        );
+    }
     if env_truthy("DEEPCODE_SHELL_CONNECT_ONLY") {
-        let result = deepcode_host_connection::HostClientLease::connect(
+        let result = deepcode_host_connection::HostClientLease::connect_until(
             &format!("http://{}:{}", target.host, target.daemon_port),
             host_tokens.daemon_token(),
             false,
+            deadline,
         );
         return match result {
             Ok(lease) => {
@@ -934,7 +1138,19 @@ fn start_host_processes(
     // Retry may be requested while this shell still owns a surviving proxy or
     // daemon.  Reclaim only those exact children before checking ports; an
     // external listener is never terminated by this path.
-    processes.reclaim_current();
+    if let Err(error) = processes.reclaim_current(deadline) {
+        return status.update(
+            &attempt_id,
+            "failed",
+            "startAdmission",
+            "host_startup_cleanup_failed",
+            None,
+            error.to_string(),
+            false,
+            false,
+            None,
+        );
+    }
     let diagnostic = prepare_host_startup_diagnostics(&attempt_id).ok();
     let diagnostic_ref = diagnostic.as_ref().map(|value| value.reference.clone());
     status.update(
@@ -956,6 +1172,7 @@ fn start_host_processes(
         status,
         &attempt_id,
         diagnostic.as_ref(),
+        deadline,
     ) {
         Ok(children) => {
             if !processes.install(children) {
@@ -988,10 +1205,10 @@ fn start_host_processes(
                 status.update(
                     &attempt_id,
                     "stopped",
-                    "shutdown",
-                    "host_startup_stopped",
-                    None,
-                    "Host startup was stopped because the application is closing.",
+                    failure.stage,
+                    failure.code,
+                    failure.reason_code,
+                    failure.message,
                     false,
                     false,
                     diagnostic_ref,
@@ -1020,6 +1237,7 @@ fn spawn_host_processes_if_available(
     status: &HostStartupStatusStore,
     attempt_id: &str,
     diagnostic: Option<&HostDiagnosticAttempt>,
+    deadline: Instant,
 ) -> Result<OwnedHostChildren, HostStartupFailure> {
     if processes.is_shutting_down() {
         return Err(startup_stopped_failure());
@@ -1089,16 +1307,18 @@ fn spawn_host_processes_if_available(
     let proxy_dir = parent_dir(&proxy_path).unwrap_or_else(|| exe_dir.clone());
     let data_root = runtime_locations().user.data_dir.clone();
 
-    let shared_start_guard = deepcode_host_connection::HostStartGuard::acquire(&data_root)
-        .map_err(|error| {
-            startup_failure(
-                "sharedHost",
-                "host_connection_start_failed",
-                None,
-                error.to_string(),
-                true,
-            )
-        })?;
+    let shared_start_guard = deepcode_host_connection::HostStartGuard::acquire_until(
+        &data_root, deadline,
+    )
+    .map_err(|error| {
+        startup_failure(
+            "sharedHost",
+            "host_connection_start_failed",
+            None,
+            error.to_string(),
+            true,
+        )
+    })?;
     let data_root = data_root.canonicalize().map_err(|error| {
         startup_failure(
             "sharedHost",
@@ -1109,18 +1329,19 @@ fn spawn_host_processes_if_available(
         )
     })?;
     let shared =
-        deepcode_host_connection::LocalHostConnection::discover(&data_root).map_err(|error| {
-            startup_failure(
-                "sharedHost",
-                "host_connection_discovery_failed",
-                None,
-                error.to_string(),
-                true,
-            )
-        })?;
+        deepcode_host_connection::LocalHostConnection::discover_until(&data_root, deadline)
+            .map_err(|error| {
+                startup_failure(
+                    "sharedHost",
+                    "host_connection_discovery_failed",
+                    None,
+                    error.to_string(),
+                    true,
+                )
+            })?;
     // A ready daemon outlives this shell. On retry its original port is still
     // occupied by that shared service; only ports we will bind are private.
-    admit_private_host_ports(target, shared.is_some())?;
+    admit_private_host_ports_until(target, shared.is_some(), deadline)?;
     let proxy_host = target.host.clone();
     let mut target = target.clone();
     let mut host_tokens = host_tokens.clone();
@@ -1138,11 +1359,12 @@ fn spawn_host_processes_if_available(
         .unwrap_or_else(|| runtime_locations().resources.join(APP_ASSET_DIR));
 
     let (mut daemon, daemon_identity) = if let Some(connection) = shared {
-        match authenticated_health_status(
+        match authenticated_health_status_until(
             &target.host,
             &target.daemon_port,
             HOST_SHELL_TOKEN_HEADER,
             host_tokens.daemon_token(),
+            deadline,
         ) {
             Ok(AuthenticatedHealthStatus::Ready) => {}
             Ok(AuthenticatedHealthStatus::Unavailable(error)) | Err(error) => {
@@ -1211,77 +1433,23 @@ fn spawn_host_processes_if_available(
             ));
         }
 
-        let mut daemon = spawn_owned_host_process(&mut daemon_command).map_err(|error| {
-            startup_failure(
-                "daemonSpawn",
-                "host_startup_daemon_spawn_failed",
-                None,
-                format!("The Kernel daemon could not be started: {error}"),
-                true,
-            )
-        })?;
-
-        status.update(
-            attempt_id,
-            "starting",
-            "daemonIdentity",
-            "host_startup_waiting_daemon_identity",
-            None,
-            "Waiting for the Kernel daemon identity.",
-            true,
-            true,
-            diagnostic.map(|value| value.reference.clone()),
-        );
-        let daemon_identity = match wait_for_public_identity(
-            &mut daemon,
+        let (daemon, daemon_identity) = start_gui_component(
+            &mut daemon_command,
             &target.host,
             &target.daemon_port,
             KERNEL_DAEMON_SERVICE,
             host_tokens.instance_id(),
-            processes,
-            40,
-            diagnostic,
-        ) {
-            Ok(identity) => identity,
-            Err(failure) => {
-                terminate_owned_process_tree(&mut daemon);
-                return Err(failure);
-            }
-        };
-        status.update(
-            attempt_id,
-            "starting",
-            "daemonRecovery",
-            "host_startup_waiting_daemon_recovery",
-            None,
-            "Waiting for Kernel and Session recovery.",
-            true,
-            true,
-            diagnostic.map(|value| value.reference.clone()),
-        );
-        if let Err(failure) = wait_for_authenticated_health(
-            &mut daemon,
-            &target.host,
-            &target.daemon_port,
             HOST_SHELL_TOKEN_HEADER,
             host_tokens.daemon_token(),
             processes,
-            400,
-        ) {
-            terminate_owned_process_tree(&mut daemon);
-            return Err(startup_failure(
-                "daemonRecovery",
-                failure.code,
-                failure.reason_code,
-                failure.message,
-                failure.retryable,
-            ));
-        }
+            deadline,
+            diagnostic,
+        )?;
 
         (Some(daemon), daemon_identity)
     };
 
-    if let Err(message) = register_native_browser(
+    if let Err(message) = register_native_browser_until(
         &target.host,
         &target.daemon_port,
         host_tokens.daemon_token(),
@@ -1289,6 +1457,7 @@ fn spawn_host_processes_if_available(
         &host_tokens.browser_endpoint,
         &host_tokens.browser_token,
         false,
+        deadline,
     ) {
         eprintln!("[native-browser] {message}");
     } else if let Ok(mut registration) = host_tokens.browser_registration.lock() {
@@ -1311,14 +1480,11 @@ fn spawn_host_processes_if_available(
         diagnostic.map(|value| value.reference.clone()),
     );
     if processes.is_shutting_down() {
-        shutdown_daemon_process(
+        return Err(cleanup_startup_daemon(
             &mut daemon,
-            &target.host,
-            &target.daemon_port,
-            host_tokens.daemon_token(),
-            &daemon_identity,
-        );
-        return Err(startup_stopped_failure());
+            deadline,
+            startup_stopped_failure(),
+        ));
     }
     let mut proxy_command = Command::new(proxy_path);
     proxy_command
@@ -1339,109 +1505,33 @@ fn spawn_host_processes_if_available(
         diagnostic.map(|value| value.directory.as_path()),
         "proxy",
     ) {
-        shutdown_daemon_process(
+        return Err(cleanup_startup_daemon(
             &mut daemon,
-            &target.host,
-            &target.daemon_port,
-            host_tokens.daemon_token(),
-            &daemon_identity,
-        );
-        return Err(startup_failure(
-            "proxySpawn",
-            "host_startup_log_capture_failed",
-            None,
-            error.to_string(),
-            true,
+            deadline,
+            startup_failure(
+                "proxySpawn",
+                "host_startup_log_capture_failed",
+                None,
+                error.to_string(),
+                false,
+            ),
         ));
     }
-
-    let mut proxy = match spawn_owned_host_process(&mut proxy_command) {
-        Ok(proxy) => proxy,
-        Err(error) => {
-            shutdown_daemon_process(
-                &mut daemon,
-                &target.host,
-                &target.daemon_port,
-                host_tokens.daemon_token(),
-                &daemon_identity,
-            );
-            return Err(startup_failure(
-                "proxySpawn",
-                "host_startup_proxy_spawn_failed",
-                None,
-                format!("The Host UI proxy could not be started: {error}"),
-                true,
-            ));
-        }
-    };
-
-    status.update(
-        attempt_id,
-        "starting",
-        "proxyIdentity",
-        "host_startup_waiting_proxy_identity",
-        None,
-        "Waiting for the Host UI proxy identity.",
-        true,
-        true,
-        diagnostic.map(|value| value.reference.clone()),
-    );
-    if let Err(failure) = wait_for_public_identity(
-        &mut proxy,
+    let (proxy, _) = match start_gui_component(
+        &mut proxy_command,
         &proxy_host,
         &target.port,
         "deepcode-host-web",
         host_tokens.instance_id(),
-        processes,
-        40,
-        diagnostic,
-    ) {
-        terminate_owned_process_tree(&mut proxy);
-        shutdown_daemon_process(
-            &mut daemon,
-            &target.host,
-            &target.daemon_port,
-            host_tokens.daemon_token(),
-            &daemon_identity,
-        );
-        return Err(failure);
-    }
-    status.update(
-        attempt_id,
-        "starting",
-        "proxyHealth",
-        "host_startup_waiting_proxy_health",
-        None,
-        "Waiting for the Host UI proxy health check.",
-        true,
-        true,
-        diagnostic.map(|value| value.reference.clone()),
-    );
-    if let Err(failure) = wait_for_authenticated_health(
-        &mut proxy,
-        &proxy_host,
-        &target.port,
         HOST_UI_TOKEN_HEADER,
         host_tokens.ui_token(),
         processes,
-        80,
+        deadline,
+        diagnostic,
     ) {
-        terminate_owned_process_tree(&mut proxy);
-        shutdown_daemon_process(
-            &mut daemon,
-            &target.host,
-            &target.daemon_port,
-            host_tokens.daemon_token(),
-            &daemon_identity,
-        );
-        return Err(startup_failure(
-            "proxyHealth",
-            failure.code,
-            failure.reason_code,
-            failure.message,
-            failure.retryable,
-        ));
-    }
+        Ok(ready) => ready,
+        Err(failure) => return Err(cleanup_startup_daemon(&mut daemon, deadline, failure)),
+    };
     let mut children = OwnedHostChildren {
         daemon,
         start_guard: Some(shared_start_guard),
@@ -1452,14 +1542,23 @@ fn spawn_host_processes_if_available(
         daemon_identity,
         client_lease: None,
     };
-    if let Err(error) = children.attach_client() {
-        children.shutdown();
-        return Err(startup_failure(
+    if let Err(error) = children.attach_client_until(deadline) {
+        let mut failure = startup_failure(
             "sharedHost",
             "host_client_attach_failed",
             None,
             error.to_string(),
-            true,
+            false,
+        );
+        if let Err(error) = terminate_owned_process_tree_until(&mut children.proxy, deadline) {
+            failure
+                .message
+                .push_str(&format!("; proxy cleanup failed: {error}"));
+        }
+        return Err(cleanup_startup_daemon(
+            &mut children.daemon,
+            deadline,
+            failure,
         ));
     }
     Ok(children)
@@ -1608,158 +1707,80 @@ fn acquire_kernel_start_lock(
     )
 }
 
-fn wait_for_authenticated_health(
-    process: &mut OwnedHostProcess,
+fn cleanup_startup_daemon(
+    daemon: &mut Option<OwnedHostProcess>,
+    deadline: Instant,
+    mut failure: HostStartupFailure,
+) -> HostStartupFailure {
+    if let Some(mut daemon) = daemon.take() {
+        if let Err(error) = terminate_owned_process_tree_until(&mut daemon, deadline) {
+            failure
+                .message
+                .push_str(&format!("; daemon cleanup failed: {error}"));
+        }
+    }
+    failure
+}
+
+fn start_gui_component(
+    command: &mut Command,
     host: &str,
     port: &str,
+    service: &str,
+    instance_id: &str,
     token_header: &str,
     token: &str,
     processes: &HostProcessGroup,
-    attempts: usize,
-) -> Result<(), HostStartupFailure> {
-    let mut last_unavailable = None;
-    for _ in 0..attempts {
-        if processes.is_shutting_down() {
-            return Err(startup_stopped_failure());
-        }
-        match process.child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(startup_failure(
-                    "daemonRecovery",
-                    "host_startup_process_exited",
-                    None,
-                    format!("A managed Host process exited before becoming ready: {status}"),
-                    true,
-                ));
-            }
-            Err(error) => {
-                return Err(startup_failure(
-                    "daemonRecovery",
-                    "host_startup_process_status_failed",
-                    None,
-                    format!("A managed Host process status could not be read: {error}"),
-                    true,
-                ));
-            }
-            Ok(None) => {}
-        }
-        match authenticated_health_status(host, port, token_header, token) {
-            Ok(AuthenticatedHealthStatus::Ready) => return Ok(()),
-            Err(error) => {
-                return Err(startup_failure(
-                    "daemonRecovery",
-                    "host_startup_daemon_recovery_failed",
-                    None,
-                    format!("Kernel 与 Session 未能进入就绪状态：{error}"),
-                    true,
-                ));
-            }
-            Ok(AuthenticatedHealthStatus::Unavailable(error)) => last_unavailable = Some(error),
-        }
-        std::thread::sleep(Duration::from_millis(75));
-    }
-    Err(startup_failure(
-        "daemonRecovery",
-        "host_startup_health_timeout",
-        None,
-        format!(
-            "A managed Host process did not become ready before the startup deadline.{}",
-            last_unavailable
-                .map(|error| format!(" Last connection error: {error}"))
-                .unwrap_or_default()
-        ),
-        true,
-    ))
-}
-
-fn wait_for_public_identity(
-    process: &mut OwnedHostProcess,
-    host: &str,
-    port: &str,
-    expected_service: &str,
-    expected_instance_id: &str,
-    processes: &HostProcessGroup,
-    attempts: usize,
+    deadline: Instant,
     diagnostic: Option<&HostDiagnosticAttempt>,
-) -> Result<HostProcessIdentity, HostStartupFailure> {
-    let (stage, identity_failure, process_name) = if expected_service == KERNEL_DAEMON_SERVICE {
-        (
-            "daemonIdentity",
-            "host_startup_daemon_identity_failed",
-            "daemon",
-        )
+) -> Result<(OwnedHostProcess, HostProcessIdentity), HostStartupFailure> {
+    let (stage, code, process_name) = if service == KERNEL_DAEMON_SERVICE {
+        ("daemonIdentity", "host_startup_daemon_failed", "daemon")
     } else {
-        (
-            "proxyIdentity",
-            "host_startup_proxy_identity_failed",
-            "proxy",
-        )
+        ("proxyIdentity", "host_startup_proxy_failed", "proxy")
     };
-    let expected_pid = process.child.id();
-    for _ in 0..attempts {
+    startup::start_owned_ready(command, deadline, |process, probe_deadline| {
         if processes.is_shutting_down() {
-            return Err(startup_stopped_failure());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Host startup was cancelled",
+            ));
         }
-        match process.child.try_wait() {
-            Ok(Some(exit_status)) => {
-                let mut message = format!(
-                    "{expected_service} exited during initialization ({exit_status}), before publishing its process identity."
-                );
-                if let Some(diagnostic) = diagnostic {
-                    let path = diagnostic
-                        .directory
-                        .join(format!("{process_name}.stderr.log"));
-                    message.push_str(&format!(
-                        "\nStartup log: {}/{process_name}.stderr.log",
-                        diagnostic.reference
-                    ));
-                    match read_startup_log_tail(&path) {
-                        Ok(tail) if !tail.trim().is_empty() => {
-                            message.push_str("\n\n");
-                            message.push_str(tail.trim());
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            message.push_str(&format!("\nCould not read startup log: {error}"))
-                        }
-                    }
-                }
-                return Err(startup_failure(
-                    stage,
-                    "host_startup_process_exited",
-                    None,
-                    message,
-                    true,
-                ));
-            }
-            Err(error) => {
-                return Err(startup_failure(
-                    stage,
-                    "host_startup_process_status_failed",
-                    None,
-                    format!("Could not read {expected_service} process status: {error}"),
-                    true,
-                ));
-            }
-            Ok(None) => {}
-        }
-        if let Some(identity) = matching_public_identity(
+        let identity = matching_public_identity(
             host,
             port,
-            expected_service,
-            expected_instance_id,
-            expected_pid,
-        )
-        .map_err(|error| startup_failure(stage, identity_failure, None, error.to_string(), true))?
-        {
-            return Ok(identity);
+            service,
+            instance_id,
+            process.child.id(),
+            probe_deadline,
+        )?;
+        match authenticated_health_status_until(host, port, token_header, token, probe_deadline)? {
+            AuthenticatedHealthStatus::Ready => Ok(identity),
+            AuthenticatedHealthStatus::Unavailable(error) => Err(error),
         }
-        std::thread::sleep(Duration::from_millis(75));
-    }
-    Err(startup_failure(
-        stage, identity_failure, None,
-        format!("{expected_service} did not publish the expected process identity before the startup deadline."), true,
-    ))
+    })
+    .map_err(|error| {
+        let mut message = format!("{service} startup failed: {error}");
+        if let Some(diagnostic) = diagnostic {
+            message.push_str(&format!(
+                "\nStartup log: {}/{process_name}.stderr.log",
+                diagnostic.reference
+            ));
+            match read_startup_log_tail(
+                &diagnostic
+                    .directory
+                    .join(format!("{process_name}.stderr.log")),
+            ) {
+                Ok(tail) if !tail.trim().is_empty() => {
+                    message.push_str("\n\n");
+                    message.push_str(tail.trim());
+                }
+                Ok(_) => {}
+                Err(error) => message.push_str(&format!("\nCould not read startup log: {error}")),
+            }
+        }
+        startup_failure(stage, code, None, message, false)
+    })
 }
 
 fn read_startup_log_tail(path: &Path) -> std::io::Result<String> {
@@ -1783,28 +1804,18 @@ fn matching_public_identity(
     expected_service: &str,
     expected_instance_id: &str,
     expected_pid: u32,
-) -> std::io::Result<Option<HostProcessIdentity>> {
+    deadline: Instant,
+) -> std::io::Result<HostProcessIdentity> {
     let request = http_request(host, port, "GET", "/api/host/identity", &[]);
-    let stream = match connect_loopback(host, port, Duration::from_millis(180)) {
-        Ok(stream) => stream,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
-            ) =>
-        {
-            return Ok(None)
-        }
-        Err(error) => return Err(error),
-    };
-    let identity =
-        request_connected_json::<HostApiEnvelope<HostProcessIdentity>>(stream, &request, 300)?
-            .into_data()?;
+    let identity = request_loopback_json_until::<HostApiEnvelope<HostProcessIdentity>>(
+        host, port, &request, deadline,
+    )?
+    .into_data()?;
     if identity.service == expected_service
         && identity.instance_id == expected_instance_id
         && identity.pid == expected_pid
     {
-        Ok(Some(identity))
+        Ok(identity)
     } else {
         Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!(
             "Host identity mismatch: expected {expected_service} / {expected_instance_id} / PID {expected_pid}, received {} / {} / PID {}",
@@ -1818,27 +1829,40 @@ enum AuthenticatedHealthStatus {
     Unavailable(std::io::Error),
 }
 
+#[cfg(test)]
 fn authenticated_health_status(
     host: &str,
     port: &str,
     token_header: &str,
     token: &str,
 ) -> std::io::Result<AuthenticatedHealthStatus> {
+    authenticated_health_status_until(
+        host,
+        port,
+        token_header,
+        token,
+        Instant::now() + Duration::from_millis(500),
+    )
+}
+
+fn authenticated_health_status_until(
+    host: &str,
+    port: &str,
+    token_header: &str,
+    token: &str,
+    deadline: Instant,
+) -> std::io::Result<AuthenticatedHealthStatus> {
     let request = http_request(host, port, "GET", "/api/health", &[(token_header, token)]);
-    let stream = match connect_loopback(host, port, Duration::from_millis(180)) {
-        Ok(stream) => stream,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
-            ) =>
-        {
+    let envelope = match request_loopback_json_until::<HostApiEnvelope<HostHealthData>>(
+        host, port, &request, deadline,
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) if startup::transport_pending(&error) => {
             return Ok(AuthenticatedHealthStatus::Unavailable(error))
         }
         Err(error) => return Err(error),
     };
-    let data = request_connected_json::<HostApiEnvelope<HostHealthData>>(stream, &request, 500)?
-        .into_data()?;
+    let data = envelope.into_data()?;
     if data.ok && data.status == "ok" {
         return Ok(AuthenticatedHealthStatus::Ready);
     }
@@ -1880,6 +1904,28 @@ fn register_native_browser(
     callback_token: &str,
     remove: bool,
 ) -> Result<(), String> {
+    register_native_browser_until(
+        host,
+        port,
+        token,
+        id,
+        endpoint,
+        callback_token,
+        remove,
+        Instant::now() + Duration::from_secs(6),
+    )
+}
+
+fn register_native_browser_until(
+    host: &str,
+    port: &str,
+    token: &str,
+    id: &str,
+    endpoint: &str,
+    callback_token: &str,
+    remove: bool,
+    deadline: Instant,
+) -> Result<(), String> {
     let body=serde_json::json!({"hostInstanceId":id,"endpoint":endpoint,"callbackToken":callback_token,"remove":remove}).to_string();
     let request = http_request(
         host,
@@ -1895,8 +1941,9 @@ fn register_native_browser(
         "Content-Length: 0",
         &format!("Content-Length: {}", body.len()),
     ) + &body;
-    let response: serde_json::Value = request_loopback_json(host, port, &request, 6000)
-        .map_err(|error| format!("Native browser registration connection failed: {error}"))?;
+    let response: serde_json::Value =
+        request_loopback_json_until(host, port, &request, deadline)
+            .map_err(|error| format!("Native browser registration connection failed: {error}"))?;
     if response["ok"] == true {
         Ok(())
     } else {
@@ -1907,12 +1954,48 @@ fn register_native_browser(
     }
 }
 
+#[cfg(test)]
 fn admit_private_host_ports(
     target: &LaunchTarget,
     reuse_daemon: bool,
 ) -> Result<(), HostStartupFailure> {
+    admit_private_host_ports_until(
+        target,
+        reuse_daemon,
+        Instant::now() + startup::STARTUP_BUDGET,
+    )
+}
+
+fn admit_private_host_ports_until(
+    target: &LaunchTarget,
+    reuse_daemon: bool,
+    deadline: Instant,
+) -> Result<(), HostStartupFailure> {
     let probe = |port: &str| {
-        probe_loopback_listener(&target.host, port).map_err(|error| {
+        let timeout = startup::remaining(deadline)
+            .map_err(|error| {
+                startup_failure(
+                    "startAdmission",
+                    "host_startup_deadline",
+                    None,
+                    error.to_string(),
+                    false,
+                )
+            })?
+            .min(Duration::from_millis(180));
+        let result = match connect_loopback(&target.host, port, timeout) {
+            Ok(_) => Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        };
+        result.map_err(|error| {
             startup_failure(
                 "startAdmission",
                 "host_startup_port_probe_failed",
@@ -2041,6 +2124,8 @@ mod tests {
             host: "127.0.0.1".into(),
             port: proxy.local_addr().unwrap().port().to_string(),
             daemon_port: daemon.local_addr().unwrap().port().to_string(),
+            ssh: None,
+            ssh_endpoint: None,
         };
         let occupied_proxy = admit_private_host_ports(&target, true).unwrap_err();
         assert_eq!(occupied_proxy.code, "host_startup_port_in_use");
@@ -2075,23 +2160,24 @@ mod tests {
             "printf '%s\\n' 'session_store_event_schema_mismatch: original error' >&2; exit 17",
         ]);
         configure_process_capture(&mut command, Some(&directory), "daemon").unwrap();
-        let mut daemon = spawn_owned_host_process(&mut command).unwrap();
-        let status = daemon.child.wait().unwrap();
-        let failure = wait_for_public_identity(
-            &mut daemon,
+        let failure = start_gui_component(
+            &mut command,
             "127.0.0.1",
             "0",
             KERNEL_DAEMON_SERVICE,
             "test-instance",
+            HOST_SHELL_TOKEN_HEADER,
+            "test-token",
             &HostProcessGroup::new(None),
-            1,
+            Instant::now() + Duration::from_secs(2),
             Some(&diagnostic),
         )
-        .unwrap_err();
+        .err()
+        .unwrap();
         std::fs::remove_dir_all(&directory).unwrap();
         assert_eq!(failure.stage, "daemonIdentity");
-        assert_eq!(failure.code, "host_startup_process_exited");
-        assert!(failure.message.contains(&status.to_string()));
+        assert_eq!(failure.code, "host_startup_daemon_failed");
+        assert!(failure.message.contains("exit status: 17"));
         assert!(failure
             .message
             .contains("session_store_event_schema_mismatch: original error"));
@@ -2187,12 +2273,39 @@ mod tests {
         assert!(!process_exists(proxy_pid));
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_reclaim_does_not_latch_application_shutdown() {
-        let processes = HostProcessGroup::new(None);
-
-        processes.reclaim_current();
-
+        let mut external_daemon = sleeping_owned_host_process();
+        let daemon_pid = external_daemon.child.id();
+        let proxy = sleeping_owned_host_process();
+        let proxy_pid = proxy.child.id();
+        let processes = HostProcessGroup::new(Some(OwnedHostChildren {
+            client_lease: None,
+            daemon: None,
+            start_guard: None,
+            proxy,
+            daemon_host: "127.0.0.1".into(),
+            daemon_port: "0".into(),
+            daemon_token: "test-token".into(),
+            daemon_identity: HostProcessIdentity {
+                service: KERNEL_DAEMON_SERVICE.into(),
+                instance_id: format!("{HOST_INSTANCE_ID_PREFIX}test"),
+                pid: daemon_pid,
+                address: "http://127.0.0.1:0".into(),
+            },
+        }));
+        let result = processes.reclaim_current(Instant::now() + startup::STARTUP_BUDGET);
+        let external_alive = process_exists(daemon_pid);
+        let proxy_alive = process_exists(proxy_pid);
+        terminate_owned_process_tree_until(
+            &mut external_daemon,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        result.unwrap();
+        assert!(external_alive, "retry must leave the external daemon alive");
+        assert!(!proxy_alive, "retry must reap the old private proxy");
         assert!(!processes.is_shutting_down());
     }
 

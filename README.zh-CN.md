@@ -35,7 +35,15 @@ Agent 可以读取数据、提出修改计划、生成页面，再通过浏览�
 - **边工作边澄清：** Agent 可以先提出问题，继续不依赖答案的工作。用户回复接入同一任务，未答问题保留等待裁决。
 - **审核具体结果：** 交付文件、实时预览与固定版本引用留在对话中。Markdown 和 HTML 支持只读预览及源码切换；交互式 HTML 可在浏览器中打开。
 
-演示来自当前 macOS 开发构建，使用虚构数据。GUI 各平台支持浏览器检查；原生视口截图和外部桌面控制目前需要 macOS。PDF 导出需要配置[文档运行环境](skills/deepcode-documents/SKILL.md)。
+### 0.6.50 的变化
+
+- **在 macOS 和 Windows 跟随操控目标：** 当前原生窗口和内嵌浏览器页面各有独立的无边框小预览，默认错位堆叠，允许重叠。每个预览可单独拖动；点击会打开对应的精确目标，不向被控应用发送鼠标点击，拖动则不激活目标。各预览会随聊天区和 Reader 布局调整。macOS 蓝色虚拟指针还作为独立项目出现在系统共享界面，并随任务保留和释放。
+- **查看图片和子智能体工作：** 产出图片、Markdown 图片和 Reader 图片共用原图查看器，支持滚动、关闭和 Esc。Reader 的子智能体标签提供列表、任务详情与返回操作，可查看对应消息、工具和结果。
+- **看清累计缓存：** 对话总缓存包含自身及全部后代智能体的调用，包括已经关闭的成员；复用同一智能体继续任务不会重复计算该成员。当前请求上下文和账单视图保留各自口径。
+- **按需使用进度与委派：** Plan 用于新增或扩大的工作区授权，现有许可范围内的必要修改可省略新 Plan；超出授权范围的执行由 Kernel 门禁拒绝，模型声明不能自行授予权限。Todo 是可选进度。关闭委派会阻止新的智能体任务，不取消已有工作或删除历史。
+- **将 Chrome 截图保存到会话：** macOS 和 Windows 的 Chrome 接入将文件输出与相对路径绑定到当前会话私有目录，并保留上游临时目录；项目目录和附件目录不会自动加入这些根。委托审批可收到精确 Chrome 页面及本次元素的既有观察证据，不确定时仍交由用户决定。
+
+演示来自 macOS，使用虚构数据。原生桌面操作使用各平台的辅助组件；Windows 保留独立实现，不使用 macOS 系统共享控件。每次运行会报告实际可用工具及不可用原因。PDF 导出需要配置[文档运行环境](skills/deepcode-documents/SKILL.md)。
 
 ## 快速使用
 
@@ -51,9 +59,15 @@ Agent 可以读取数据、提出修改计划、生成页面，再通过浏览�
 2. **连接模型。** 在 **设置 → 模型与服务** 中添加 API 连接，或登录支持的 Coding Plan。
 3. **选择项目并描述任务。** 选择模型、提交需求，审核修改方案并查看结果。
 
+**使用 DeepSeek：** 选择 DeepSeek API 连接，填写 API Key，再选择 **DeepSeek V4.1 Flash**（`deepseek-flash`）和 **Responses API**。预设采用 1,000,000 token 上下文窗口、384,000 token 最大输出；启用 Thinking 并选择 `max` 推理强度，具体步骤见 [DeepSeek 接入说明](docs/product/model-services.md#deepseek)。
+
 项目菜单中的 **管理工作区** 用于配置文件夹和执行环境；Windows 项目可以选择本地 Shell 或 WSL。
 
 GUI 支持向消息附加文件或文件夹、查看产物和 diff，以及让 Agent 打开 HTML 预览。浏览器批注仅通过工具栏按钮或 Esc 退出。新对话继承上次提交任务使用的模型及该模型记住的推理强度。重载界面使用 macOS 的 **Cmd+Shift+R**，其他平台使用 **Ctrl+Shift+R**。
+
+在 **设置 → 外观** 中调整阅读体验。默认使用温和阅读；温和与紧凑两组均提供文楷、无衬线中文版本，同时保留系统和自定义字体。总字体统一应用于三个区域，展开字体详情后可分别组合界面、内容、终端与代码字体。正文默认 14 px，代码默认 12 px；主题只切换配色。字体选项与终端限制见[阅读与外观](docs/product/operations.md#reading-and-appearance)。
+
+一轮执行完成后，自动折叠执行过程并保留最终回答；点击可展开或再次收起，操作入口保持可见。对话正文居中，宽表格和代码可以适当向两侧扩展，长命令摘要限制在阅读区域内。Computer Use 历史保留操作详情和归档画面，查看历史不会重新激活被操作的页面或应用。
 
 ## 也可以在终端中使用
 
@@ -65,8 +79,17 @@ GUI 支持向消息附加文件或文件夹、查看产物和 diff，以及让 A
 ./deepcode-cli connections
 ./deepcode-cli auth login openai-codex browser
 ./deepcode-cli ask -C /path/to/project "分析一下这个项目"
+./deepcode-cli sessions
+./deepcode-cli resume session:<完整ID>
+./deepcode-cli new -C /path/to/project
 ./deepcode-tui -C /path/to/project
 ```
+
+TUI 和 CLI 交互中均可用 `/sessions` 查看会话、`/resume <序号或完整 ID>` 进入、`/new` 沿用启动目录新建。TUI 列表支持方向键、Enter 和 Esc；序号对应本次显示的列表。切换不取消后台任务，也不复制其他会话的目录或权限。
+
+在 TUI 输入 `/` 可查看命令提示，当前 TUI 进程内近期常用的命令会优先排列。帮助和详情按实际内容限制滚动范围；表格显示完整边框，支持的 LaTeX 公式转换为终端字符排版，输入区上方显示运行中的转圈提示。不能呈现的公式保留原文与诊断。
+
+macOS TUI 在专用 Terminal 窗口中使用 GUI 的有效终端与代码字体。双击 `DeepCode-TUI.command` 复用启动窗口，正常退出且启动 Shell 结束后自动关闭该专用窗口；普通终端窗口和默认配置不变。`/font` 查看内置选项，`/font follow` 重新读取 GUI 选择。使用 `--in-place` 可在当前终端中运行并保留其字体；Windows 也会打开专用控制台，使用相同的 GUI 字体设置和 `/font` 命令，`--in-place` 保留当前终端。Linux 使用终端程序设置的字体。详见[安装与窗口行为](docs/distribution.md)。
 
 通过 PKG 或 Windows Setup 安装后，可在终端直接使用 `deepcode-cli` 和 `deepcode-tui`；Windows 需重新打开终端以读取更新后的 PATH。
 
@@ -75,7 +98,7 @@ GUI 支持向消息附加文件或文件夹、查看产物和 diff，以及让 A
 <details>
 <summary>平台依赖、权限与本地数据</summary>
 
-Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版需自行准备该依赖。Linux GUI 需要 GTK/WebKitGTK。macOS 程序包使用 ad-hoc 签名；即使应用路径相同，重新构建也可能使已有的辅助功能和屏幕录制授权失效。安装并授权目标构建后，应通过 `computer.control status` 核对实际 GUI 进程。配置、持久数据、缓存、临时文件和日志分别使用对应的平台目录，详见[安装与用户文件](docs/distribution.md)。
+Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版需自行准备该依赖。Linux GUI 需要 GTK/WebKitGTK。macOS 全量打包和 UI 更新复用固定签名身份，使正常更新可以保留辅助功能和屏幕录制授权；从早期 ad-hoc 构建切换时可能需要授权一次。桌面控制由独立的 **DeepCode Computer Use** App 执行，首次需为它单独授权。直接访问屏幕时，macOS 仍可能显示“继续允许”提醒；固定签名不关闭这类系统提醒。之后可用 `bash build.sh --stage computer-use` 单独更新，通过 `computer.control status` 核对实际执行进程。配置、持久数据、缓存、临时文件和日志分别使用对应的平台目录，详见[安装与用户文件](docs/distribution.md)。
 
 </details>
 
@@ -85,6 +108,7 @@ Windows Setup 会在缺少 WebView2 Evergreen Runtime 时安装它，解压版�
 
 - [插件发现与配置](docs/product/operations.md#settings-and-extensions)
 - [Computer Use：浏览器与桌面控制](plugins/computer-use/README.md)
+- [Chrome 页面控制与私有目录截图](plugins/chrome-devtools/README.md)
 - [UI 插件接口与示例](docs/product/ui-plugins.md)
 - [模型、订阅与用量](docs/product/model-services.md)
 - [工作区环境与权限](docs/product/execution-environments.md)
@@ -118,13 +142,15 @@ make shell
 
 共享 TypeScript、GUI、Linux 程序和 Windows 交叉编译都在 Docker 中执行。macOS 原生编译与签名通过通道交给 Mac 宿主。不可用的平台会明确列出，构建错误仍会返回失败。每个平台也会在 `bin/` 生成带版本号的压缩包，macOS 另生成 PKG，Windows 另生成 Setup 安装包。用户配置和会话保存在程序目录之外，不会进入程序包。
 
-只更新已有程序包的前端：
+macOS 本地开发（包括 fork）先在 Mac 宿主终端执行一次 `bash scripts/setup-macos-signing.sh`。每位开发者使用自己登录钥匙串里的固定签名身份，切换分支和克隆目录后，全量打包与 UI 更新仍共同复用；此配置不需要 Apple 开发者账号，私钥不会写入仓库或程序包。已有签名身份时，可用 `DEEPCODE_MACOS_SIGN_IDENTITY` 指定名称或证书指纹。身份不可用时构建会在替换已安装程序包前停止，详见[macOS 签名](docs/product/operations.md#macos-signing)。
+
+只更新已有程序包的前端；目标为 macOS 时，在 Mac 宿主终端执行，以便签名访问本机钥匙串：
 
 ```bash
 make ui-update UI_PACKAGE=bin/macos-arm64
 ```
 
-其他平台替换为 `bin/win64` 或对应 Linux 目录。此命令构建并复制 GUI 资源；macOS 资源更新在宿主机运行以完成签名，随后重载界面。它不会替换正在运行的 Session 或 Kernel；修改这些服务的源码或内置产品说明后，需要构建对应服务或程序包并重启。插件的更新时机见[运行管理](docs/product/operations.md#updates)。
+其他平台替换为 `bin/win64` 或对应 Linux 目录。此命令构建并复制 GUI 资源；macOS 资源更新在宿主机运行以完成签名，随后重载界面。它不会替换正在运行的 TUI、Session 或 Kernel；TUI 二进制与原生启动脚本需要更新程序包并重新打开 TUI。修改服务源码或内置产品说明后，需要构建对应服务或程序包并重启。插件的更新时机见[运行管理](docs/product/operations.md#updates)。
 
 ## 开发检查
 
@@ -137,6 +163,8 @@ bash ./test.sh full       # 另加终端/Web 壳及文档产出检查
 ```
 
 `bash ./test.sh static` 检查 Shell 语法和 Git 空白差异，可在宿主机运行。端到端脚本使用本地 fixture Provider，不替代真实模型或原生 GUI 验收。原生 GUI 测试使用独立 Cargo workspace：`shells/deepcode-gui/src-tauri/Cargo.toml`。
+
+Windows 专用控制台字体测试需要交互式桌面：将 `DEEPCODE_TEST_TUI_FONTS` 指向解压后的终端 TTF 目录，`DEEPCODE_TEST_TUI_RESULT` 指向尚不存在的回执文件，再执行 `cargo test -p deepcode-tui windows_terminal::tests -- --include-ignored --test-threads=1`。测试独立打开控制台并检查四套内置字体和系统字体；默认忽略不算通过，已有回执也不会作为本次验收证据。
 
 ## 许可证
 

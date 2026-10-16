@@ -14,7 +14,6 @@ export type ProjectionItem =
       value: SessionProjection['narratives'][number];
     }
   | { type: 'plan'; sequence: number; value: SessionProjection['plans'][number] }
-  | { type: 'approval'; sequence: number; value: ActivityProjection }
   | { type: 'interaction'; sequence: number; value: SessionProjection['interactions'][number] }
   | {
       type: 'toolGroup';
@@ -125,11 +124,10 @@ export function projectionItems(projection: SessionProjection | null): Projectio
   });
   const grouped: ProjectionItem[] = [];
   const displayItems = items.flatMap((item): ProjectionItem[] => {
-    if (item.type !== 'toolGroup' || !item.values.some((activity) => activity.kind === 'approval' || activity.kind === 'interaction')) return [item];
+    if (item.type !== 'toolGroup' || !item.values.some((activity) => activity.kind === 'interaction')) return [item];
     const rows: ProjectionItem[] = [];
     for (const activity of item.values) {
-      if (activity.kind === 'approval') rows.push({ type: 'approval', sequence: activity.sequence, value: activity });
-      else if (activity.kind === 'interaction') {
+      if (activity.kind === 'interaction') {
         const interaction = requiredProjectionValue(interactions.get(activity.callId!), 'conversation_interaction_missing');
         rows.push({ type: 'interaction', sequence: interaction.sequence, value: interaction });
       }
@@ -144,7 +142,10 @@ export function projectionItems(projection: SessionProjection | null): Projectio
   for (const item of displayItems) {
     const previous = grouped.at(-1);
     if (item.type === 'toolGroup' && previous?.type === 'toolGroup'
-      && item.values[0]?.runId === previous.values[0]?.runId) {
+      && item.values[0]?.runId === previous.values[0]?.runId
+      // An arriving member notification belongs at its event position, after preceding tools.
+      && !item.values.some(activity => activity.agent && activity.agent.phase !== 'started')
+      && !previous.values.some(activity => activity.agent && activity.agent.phase !== 'started')) {
       previous.values.push(...item.values);
     } else grouped.push(item);
   }

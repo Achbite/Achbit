@@ -233,7 +233,7 @@ pub(crate) fn adapter_descriptors() -> Value {
     let custom_astra = astra.clone();
     astra["hostedWebSearch"] = json!("web_search");
     let mut deepseek = model(
-        "DeepSeek Flash",
+        "DeepSeek V4.1 Flash",
         "deepseek-flash",
         "responses",
         "deepseek",

@@ -3,9 +3,7 @@ use crate::local_agent_kernel::{
     PermissionMode, PrepareToolCatalogRequest, ReleaseToolCatalogRequest, WorkspaceResolverPort,
 };
 use crate::local_agent_provider_runtime::{ProviderRuntimeRegistry, ProviderRuntimeSnapshot};
-use crate::local_agent_store::{
-    delete_session_archive, LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime,
-};
+use crate::local_agent_store::{LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime};
 use crate::prelude::*;
 use crate::*;
 use axum::http::HeaderMap;
@@ -22,6 +20,7 @@ pub(crate) struct LocalAgentRuntime {
     provider_runtimes: ProviderRuntimeRegistry,
     pub(crate) provider_transport: crate::provider_transport::ProviderTransport,
     runtime_transition: Arc<Mutex<()>>,
+    pub(crate) settings_publication: Arc<Mutex<()>>,
     prepared_runs: Arc<Mutex<HashMap<PreparedRunKey, Vec<PreparedRunRecord>>>>,
     active_runtime_settings: Arc<Mutex<Value>>,
     session_store_path: Arc<std::path::PathBuf>,
@@ -54,6 +53,7 @@ impl LocalAgentRuntime {
             provider_transport: crate::provider_transport::ProviderTransport::new()
                 .map_err(|error| format!("provider_client_init_failed: {error}"))?,
             runtime_transition: Arc::new(Mutex::new(())),
+            settings_publication: Arc::new(Mutex::new(())),
             prepared_runs: Arc::new(Mutex::new(HashMap::new())),
             active_runtime_settings: Arc::new(Mutex::new(settings.clone())),
             session_store_path: Arc::new(session_store_path.to_path_buf()),
@@ -85,12 +85,21 @@ impl LocalAgentRuntime {
             .map_err(|_| "Agent active runtime settings 锁已损坏。".to_string())
     }
 
-    pub(crate) fn apply_immediate_runtime_settings(&self, patch: &Value) -> Result<(), String> {
+    /// Acquire all fallible resources before persisting. Once persistence succeeds,
+    /// publishing the prepared in-memory value cannot fail.
+    pub(crate) fn publish_runtime_settings(
+        &self,
+        patch: &Value,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut settings = self
             .active_runtime_settings
             .lock()
             .map_err(|_| "Agent active runtime settings 锁已损坏。".to_string())?;
-        merge_object(&mut settings, patch);
+        let mut next = settings.clone();
+        merge_object(&mut next, patch);
+        persist()?;
+        *settings = next;
         Ok(())
     }
 
@@ -111,6 +120,48 @@ impl LocalAgentRuntime {
                 ));
             }
         }
+        let agent_context = self
+            .journal
+            .agent_context(&request.session_id)
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let recipe = self
+            .journal
+            .agent_recipe(&request.session_id)
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let policy_constraints = recipe
+            .constraints()
+            .map_err(|error| RunPreparationError::new("permission_policy_invalid", error))?;
+        let agent_capabilities = agent_context
+            .as_ref()
+            .map(|context| context["capabilities"].clone())
+            .unwrap_or_else(
+                || json!({"messaging": true, "continuation": true, "delegation": true}),
+            );
+        if agent_context.is_some() {
+            if request.host_binding.is_some()
+                || request.rebind_host.is_some()
+                || request
+                    .environment
+                    .as_ref()
+                    .is_some_and(|environment| environment.get("hostBinding").is_some())
+            {
+                return Err(RunPreparationError::new(
+                    "agent_host_binding_forbidden",
+                    "子 Agent 不绑定 GUI Host 或父会话桌面。",
+                ));
+            }
+            if request.plugin_selections.iter().any(|selection| {
+                !crate::local_agent_plugins::plugin_allowed_for_session(
+                    &selection.uri,
+                    agent_context.is_some(),
+                )
+            }) {
+                return Err(RunPreparationError::new(
+                    "agent_computer_use_forbidden",
+                    "子 Agent 不支持 Computer Use。",
+                ));
+            }
+        }
         let _transition = self.runtime_transition().map_err(|message| {
             RunPreparationError::new("runtime_transition_lock_failed", message)
         })?;
@@ -118,6 +169,7 @@ impl LocalAgentRuntime {
             session_id: request.session_id.clone(),
             run_id: request.run_id.clone(),
         };
+        let resource_catalog = gui.clone();
         let gui = gui.lock().map_err(|_| {
             RunPreparationError::new("gui_state_lock_failed", "GUI state 锁已损坏。")
         })?;
@@ -129,18 +181,18 @@ impl LocalAgentRuntime {
         })?;
         let previous = prepared_runs
             .get(&key)
-            .and_then(|views| views.last())
+            .and_then(|views| views.iter().rev().find(|view| view.mcp.is_some()))
             .cloned();
         let mut settings = previous
             .as_ref()
             .map(|prepared| &prepared.runtime_settings)
             .unwrap_or(&gui.user_settings)
             .clone();
-        let overrides = self
+        let permissions = self
             .journal
-            .permission_overrides(&request.session_id)
+            .permissions_for_run(&request.session_id, &settings)
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
-        merge_object(&mut settings, &overrides);
+        merge_object(&mut settings, &permissions);
         let settings = &settings;
         if request.restore_environment {
             return prepared_runs
@@ -162,6 +214,21 @@ impl LocalAgentRuntime {
         .map_err(|message| {
             RunPreparationError::new("extension_snapshot_prepare_failed", message)
         })?;
+        if (!policy_constraints.allow_external_tools || !policy_constraints.allow_host_execution)
+            && (!plugin_selection.mcp_plugin_instances().is_empty()
+                || plugin_selection.computer_use_instance().is_some())
+        {
+            return Err(RunPreparationError::new("agent_plugin_isolation_required",
+                "The selected policy prohibits Host CLI/MCP processes. No plugin process was started."));
+        }
+        if !policy_constraints.allow_host_execution
+            && plugin_selection.container_instance().is_some()
+        {
+            return Err(RunPreparationError::new(
+                "permission_policy_denied",
+                "Container tools require a Host execution route.",
+            ));
+        }
         let requested_plugin_identity = json!({
             "pluginCatalogRevision": request.plugin_catalog_revision.clone(),
             "refreshPlugins":request.refresh_plugins,
@@ -212,7 +279,8 @@ impl LocalAgentRuntime {
             }
             if let Some(existing) = prepared_runs.get(&key).and_then(|views| {
                 views.iter().find(|view| {
-                    view.requested_plugin_identity == requested_plugin_identity
+                    view.mcp.is_some()
+                        && view.requested_plugin_identity == requested_plugin_identity
                         && view.plugin_selection.same_inputs(&plugin_selection)
                         && view.response.pointer("/environment/hostBinding") == requested_host
                 })
@@ -247,6 +315,9 @@ impl LocalAgentRuntime {
             )
             .map_err(|message| RunPreparationError::new("session_environment_invalid", message))?
         };
+        recipe
+            .bind_environment(&mut environment)
+            .map_err(|error| RunPreparationError::new("agent_composition_unavailable", error))?;
         // A new task binds its own originating window; it never inherits the
         // preceding task's GUI capability from the saved execution environment.
         if previous.is_none() {
@@ -292,10 +363,13 @@ impl LocalAgentRuntime {
         let provider_binding = if let Some(previous) = &previous {
             previous.provider_binding.clone()
         } else {
-            ProviderRuntimeRegistry::prepare(
+            ProviderRuntimeRegistry::prepare_agent(
                 &gui,
                 request.profile_id.as_deref(),
                 request.reasoning_effort_override.as_deref(),
+                agent_context
+                    .as_ref()
+                    .and_then(|context| context.get("model")),
             )
             .map_err(|message| {
                 RunPreparationError::new("provider_runtime_prepare_failed", message)
@@ -331,14 +405,23 @@ impl LocalAgentRuntime {
                     RunPreparationError::new("extension_snapshot_prepare_failed", message)
                 })?;
         let mcp = if let Some(previous) = &previous {
-            previous.mcp.extend_selected_sources(
-                &plugin_selection.mcp_sources,
-                plugin_selection.mcp_plugin_instances(),
-            )
+            previous
+                .mcp
+                .as_ref()
+                .expect("live prepared view")
+                .extend_selected_sources(
+                    &plugin_selection.mcp_sources,
+                    plugin_selection.mcp_plugin_instances(),
+                )
         } else {
             crate::local_agent_mcp::McpRuntime::from_selected_sources(
                 &plugin_selection.mcp_sources,
                 plugin_selection.mcp_plugin_instances(),
+                crate::local_agent_mcp::session_workdir_for_run(
+                    &gui.conversation_catalog,
+                    &request.session_id,
+                )
+                .map_err(|error| RunPreparationError::new(error.code, error.message))?,
             )
         }
         .map_err(|error| RunPreparationError::new(error.code, error.message))?;
@@ -353,6 +436,14 @@ impl LocalAgentRuntime {
                 RunPreparationError::new("kernel_runtime_config_prepare_failed", message)
             })?
         };
+        executor_config.sandbox_backend =
+            if recipe.workspace_sandbox.backend_id == "platform-default" {
+                None
+            } else {
+                environment["workspaceSandbox"]["backend"]
+                    .as_str()
+                    .map(str::to_owned)
+            };
         executor_config.shell_program = serde_json::from_value(environment["shell"].clone())
             .map_err(|error| {
                 RunPreparationError::new("session_environment_invalid", error.to_string())
@@ -432,8 +523,9 @@ impl LocalAgentRuntime {
                 }
             }
         }
-        let permissions = LocalAgentPermissionPolicy::from_settings(settings)
+        let mut permissions = LocalAgentPermissionPolicy::from_settings(settings)
             .map_err(RunPreparationError::from)?;
+        permissions.constraints = policy_constraints;
         let web_search = prepare_web_search_binding(
             &provider_runtime,
             permissions.clone(),
@@ -450,8 +542,18 @@ impl LocalAgentRuntime {
             enable_kernel_web_search,
             Arc::new(
                 crate::local_agent_product_tools::ProductTools::new(Arc::new(session_service))
-                    .with_plugin_settings(settings.clone())
+                    .with_resources(crate::local_agent_resources::SessionResources::new(
+                        request.session_id.clone(),
+                        self.journal.clone(),
+                        resource_catalog,
+                    ))
+                    .with_plugin_settings(settings.clone(), agent_context.is_some())
                     .with_computer_use(plugin_selection.computer_use_instance())
+                    .with_desktop(
+                        self.kernel
+                            .desktop
+                            .run(&request.session_id, &request.run_id),
+                    )
                     .with_containers(plugin_selection.container_instance())
                     .with_processes(plugin_selection.process_instance())
                     .with_browser_binding(environment.get("hostBinding").cloned().map(
@@ -503,14 +605,12 @@ impl LocalAgentRuntime {
             &request.run_id,
             provider_binding.clone(),
         ) {
-            let _ = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+            return Err(self.rollback_run_preparation(
+                RunPreparationError::new("provider_runtime_bind_failed", message),
                 &request.session_id,
                 &request.run_id,
                 &kernel_catalog_snapshot_ref,
-            ));
-            return Err(RunPreparationError::new(
-                "provider_runtime_bind_failed",
-                message,
+                false,
             ));
         }
         if let Err(message) = approval_reviewer_binding
@@ -520,19 +620,12 @@ impl LocalAgentRuntime {
                     .bind(&request.session_id, &request.run_id, binding.clone())
             })
         {
-            let _ = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+            return Err(self.rollback_run_preparation(
+                RunPreparationError::new("approval_reviewer_bind_failed", message),
                 &request.session_id,
                 &request.run_id,
                 &kernel_catalog_snapshot_ref,
-            ));
-            if previous.is_none() {
-                let _ = self
-                    .provider_runtimes
-                    .release(&request.session_id, &request.run_id);
-            }
-            return Err(RunPreparationError::new(
-                "approval_reviewer_bind_failed",
-                message,
+                previous.is_none(),
             ));
         }
         plugin_config["extensionGenerationRef"] = json!(extension_generation_ref.clone());
@@ -556,7 +649,18 @@ impl LocalAgentRuntime {
             "pluginConfig": plugin_config,
             "selectedPlugins": selected_plugins,
             "environment": environment,
+            "agentCapabilities": agent_capabilities,
         });
+        // Handler availability is stable; latest admission policy is a separate fact.
+        response["agentToolsEnabled"] = json!(true);
+        response["agentDelegationEnabled"] = json!(
+            self.active_runtime_settings()
+                .map_err(|message| RunPreparationError::new(
+                    "active_runtime_settings_unavailable",
+                    message
+                ))?["agent.subagents.enabled"]
+                == true
+        );
         match &approval_reviewer_binding {
             Ok(binding) => response["approvalReviewer"] = json!(binding.snapshot()),
             Err(message) => {
@@ -578,9 +682,91 @@ impl LocalAgentRuntime {
                 provider_binding,
                 approval_reviewer_binding,
                 plugin_selection,
-                mcp,
+                mcp: Some(mcp),
             });
         Ok(response)
+    }
+
+    fn retire_tool_views(
+        &self,
+        request: RetireToolViewsRequest,
+    ) -> Result<Value, RunPreparationError> {
+        let _transition = self.runtime_transition().map_err(|message| {
+            RunPreparationError::new("runtime_transition_lock_failed", message)
+        })?;
+        let key = PreparedRunKey {
+            session_id: request.session_id.clone(),
+            run_id: request.run_id.clone(),
+        };
+        let mut prepared_runs = self.prepared_runs.lock().map_err(|_| {
+            RunPreparationError::new(
+                "prepared_run_registry_lock_failed",
+                "Prepared run registry 锁已损坏。",
+            )
+        })?;
+        let views = prepared_runs.get_mut(&key).ok_or_else(|| {
+            RunPreparationError::new("prepared_run_missing", "当前 run 没有已准备的工具视图。")
+        })?;
+        if !views.iter().any(|view| {
+            view.mcp.is_some()
+                && view.kernel_catalog_snapshot_ref == request.keep_kernel_catalog_snapshot_ref
+        }) {
+            return Err(RunPreparationError::new(
+                "tool_catalog_keep_binding_missing",
+                "保留的工具视图不存在或已退役。",
+            ));
+        }
+        let result = self.kernel.retire_tool_views(
+            &request.session_id,
+            &request.run_id,
+            &request.keep_kernel_catalog_snapshot_ref,
+        );
+        // Kernel has accepted retirement even when a disposer reports failure. Never reuse
+        // those physical views; keep their original response identities for final release.
+        if result
+            .as_ref()
+            .err()
+            .is_none_or(|error| error.code == "tool_view_retire_failed")
+        {
+            for view in views.iter_mut().filter(|view| {
+                view.kernel_catalog_snapshot_ref != request.keep_kernel_catalog_snapshot_ref
+            }) {
+                view.mcp = None;
+            }
+        }
+        result.map_err(RunPreparationError::from)?;
+        Ok(
+            json!({ "sessionId": request.session_id, "runId": request.run_id,
+            "keepKernelCatalogSnapshotRef": request.keep_kernel_catalog_snapshot_ref }),
+        )
+    }
+
+    fn rollback_run_preparation(
+        &self,
+        mut failure: RunPreparationError,
+        session_id: &str,
+        run_id: &str,
+        catalog_ref: &str,
+        release_provider: bool,
+    ) -> RunPreparationError {
+        if let Err(error) = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+            session_id,
+            run_id,
+            catalog_ref,
+        )) {
+            failure.message.push_str(&format!(
+                "；初始化回滚清理失败 {}: {}",
+                error.code, error.message
+            ));
+        }
+        if release_provider {
+            if let Err(message) = self.provider_runtimes.release(session_id, run_id) {
+                failure.message.push_str(&format!(
+                    "；初始化回滚清理失败 provider_runtime_release_failed: {message}"
+                ));
+            }
+        }
+        failure
     }
 
     fn release_run_runtime(
@@ -610,34 +796,49 @@ impl LocalAgentRuntime {
                 ));
             }
         }
+        let mut failures = Vec::new();
         if let Some(views) = prepared_runs.get(&key) {
             for view in views.iter().filter(|view| {
                 view.kernel_catalog_snapshot_ref != request.kernel_catalog_snapshot_ref()
             }) {
-                self.kernel
-                    .release_catalog(ReleaseToolCatalogRequest::new(
-                        &key.session_id,
-                        &key.run_id,
-                        &view.kernel_catalog_snapshot_ref,
-                    ))
-                    .map_err(RunPreparationError::from)?;
+                if let Err(error) = self.kernel.release_catalog(ReleaseToolCatalogRequest::new(
+                    &key.session_id,
+                    &key.run_id,
+                    &view.kernel_catalog_snapshot_ref,
+                )) {
+                    failures.push(RunPreparationError::from(error));
+                }
             }
         }
         let response = self
             .kernel
             .release_catalog(request)
-            .map_err(RunPreparationError::from)?;
-        self.provider_runtimes
-            .release(&key.session_id, &key.run_id)
-            .map_err(|message| {
-                RunPreparationError::new("provider_runtime_release_failed", message)
-            })?;
+            .map_err(RunPreparationError::from);
+        if let Err(message) = self.provider_runtimes.release(&key.session_id, &key.run_id) {
+            failures.push(RunPreparationError::new(
+                "provider_runtime_release_failed",
+                message,
+            ));
+        }
+        if let Err(error) = &response {
+            failures.push(RunPreparationError::new(error.code, error.message.clone()));
+        }
+        if !failures.is_empty() {
+            let mut failure = failures.remove(0);
+            for error in failures {
+                failure
+                    .message
+                    .push_str(&format!("；{}: {}", error.code, error.message));
+            }
+            return Err(failure);
+        }
+        let response = response?;
         prepared_runs.remove(&key);
         Ok(response)
     }
 
     fn delete_session_archive(&self, session_id: &str) -> Result<usize, LocalAgentStoreError> {
-        delete_session_archive(
+        self.journal.delete_archive(
             self.session_store_path.as_ref(),
             self.tool_record_store_path.as_ref(),
             session_id,
@@ -691,10 +892,19 @@ struct PreparedRunRecord {
     approval_reviewer_binding:
         Result<crate::local_agent_provider_runtime::ProviderRuntimeBinding, String>,
     plugin_selection: crate::local_agent_plugins::ResolvedPluginSelection,
-    mcp: crate::local_agent_mcp::McpRuntime,
+    // None after retirement; immutable response identity remains available for restore/release.
+    mcp: Option<crate::local_agent_mcp::McpRuntime>,
     kernel_catalog_snapshot_ref: String,
     requested_plugin_identity: Value,
     response: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RetireToolViewsRequest {
+    session_id: String,
+    run_id: String,
+    keep_kernel_catalog_snapshot_ref: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -704,6 +914,8 @@ pub(crate) struct CreateLocalSessionRequest {
     display_title: String,
     workspace_bindings: Value,
     profile_id: Option<String>,
+    agent_context: Option<Value>,
+    recipe: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -785,6 +997,7 @@ struct LocalProviderRequest {
     profile_id: String,
     purpose: String,
     response_constraint: String,
+    response_format: Option<crate::llm_transport::StructuredResponseFormat>,
     max_output_tokens: u32,
     workspace_bindings: Vec<LocalProviderWorkspaceBinding>,
     messages: Vec<LocalProviderMessage>,
@@ -870,15 +1083,117 @@ pub(crate) async fn local_agent_session_create(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.create_session(
+    match state.local_agent.journal.create_session_with_recipe(
         &body.session_id,
         &body.display_title,
         &body.workspace_bindings,
         body.profile_id.as_deref(),
+        body.agent_context.as_ref(),
+        body.recipe.as_ref(),
     ) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
     }
+}
+
+pub(crate) async fn local_agent_settings_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let gui = state.gui.lock().expect("gui state lock");
+    let mut result = serde_json::Map::new();
+    for field in [
+        "enabled",
+        "profileId",
+        "reasoningEffort",
+        "maxConcurrent",
+        "maxCallsPerRun",
+        "maxMembersPerSession",
+        "allowMemberAnalysis",
+        "allowFullConfiguration",
+        "presets",
+    ] {
+        let key = format!("agent.subagents.{field}");
+        let Some(value) = gui.user_settings.get(&key) else {
+            return ApiResponse::error(
+                "agent_settings_missing",
+                format!("缺少子 Agent 设置：{key}"),
+            );
+        };
+        result.insert(field.into(), value.clone());
+    }
+    ApiResponse::ok(Value::Object(result))
+}
+
+pub(crate) async fn local_agent_models_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let gui = state.gui.lock().expect("gui state lock");
+    let profiles = match gui.llm_profiles.usable() {
+        Ok(config) => config["profiles"]
+            .as_array()
+            .expect("validated profile list"),
+        Err(error) => return ApiResponse::error("agent_models_unavailable", error),
+    };
+    let mut models = Vec::new();
+    for profile in profiles {
+        if !crate::llm_profiles::llm_profile_value_is_enabled(profile) {
+            continue;
+        }
+        let profile_id = profile["id"].as_str().expect("validated profile id");
+        let Ok(binding) = ProviderRuntimeRegistry::prepare(&gui, Some(profile_id), None) else {
+            continue;
+        };
+        let snapshot = binding.snapshot();
+        let resolved = binding.profile();
+        let efforts: &[&str] = if snapshot.thinking.as_deref() == Some("disabled") {
+            &[]
+        } else if profile["providerFlavor"].as_str() == Some("deepseek") {
+            &["low", "high", "max"]
+        } else {
+            &["low", "medium", "high", "xhigh", "max"]
+        };
+        let mut model = json!({
+            "profileId": profile_id,
+            "name": profile["name"],
+            "model": profile["model"],
+            "reasoningEfforts": efforts,
+            "parameters": {
+                "adapterId":resolved.connection.adapter_id,
+                "kind":resolved.kind, "providerFlavor":resolved.provider_flavor,
+                "contextWindowTokens":snapshot.context_window_tokens, "maxOutputTokens":snapshot.max_output_tokens,
+                "imageInput":resolved.image_input, "temperature":resolved.temperature, "hostedWebSearch":resolved.hosted_web_search
+            },
+        });
+        if let Some(thinking) = &snapshot.thinking {
+            model["thinking"] = json!(thinking);
+        }
+        if !efforts.is_empty() {
+            if let Some(effort) = &snapshot.reasoning_effort {
+                model["reasoningEffort"] = json!(effort);
+            }
+        }
+        models.push(model);
+    }
+    ApiResponse::ok(json!(models))
+}
+
+pub(crate) async fn local_agent_child_session_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::conversation_api::CreateAgentSessionRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    crate::conversation_api::create_agent_session(state, body).await
 }
 
 pub(crate) async fn local_agent_session_delete(
@@ -889,11 +1204,17 @@ pub(crate) async fn local_agent_session_delete(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.delete_session_archive(&session_id) {
-        Ok(tool_record_count) => ApiResponse::ok(json!({
-            "deleted": true,
-            "toolRecordCount": tool_record_count,
-        })),
+    match state
+        .local_agent
+        .delete_session_archive(&session_id)
+        .and_then(|count| {
+            state.local_agent.journal.publication(
+                json!({"deleted": true, "toolRecordCount": count}),
+                &session_id,
+                true,
+            )
+        }) {
+        Ok(publication) => ApiResponse::ok(publication),
         Err(error) => store_error(error),
     }
 }
@@ -906,7 +1227,12 @@ pub(crate) async fn local_agent_event_append(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.append(&body) {
+    match state.local_agent.journal.append(&body).and_then(|event| {
+        state
+            .local_agent
+            .journal
+            .event_publication(event, std::slice::from_ref(&body))
+    }) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
     }
@@ -920,8 +1246,17 @@ pub(crate) async fn local_agent_events_append_batch(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.append_batch(&body.events) {
-        Ok(events) => ApiResponse::ok(Value::Array(events)),
+    match state
+        .local_agent
+        .journal
+        .append_batch(&body.events)
+        .and_then(|events| {
+            state
+                .local_agent
+                .journal
+                .event_publication(json!(events), &body.events)
+        }) {
+        Ok(events) => ApiResponse::ok(events),
         Err(error) => store_error(error),
     }
 }
@@ -939,8 +1274,60 @@ pub(crate) async fn local_agent_events_read(
         .local_agent
         .journal
         .read_events(&session_id, query.after.unwrap_or(0))
+        .and_then(|events| {
+            state
+                .local_agent
+                .journal
+                .publication(json!(events), &session_id, true)
+        }) {
+        Ok(events) => ApiResponse::ok(events),
+        Err(error) => store_error(error),
+    }
+}
+
+pub(crate) async fn local_agent_run_lifecycle_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<LocalSessionEventsQuery>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state
+        .local_agent
+        .journal
+        .read_run_lifecycle(&session_id, query.after.unwrap_or(0))
     {
-        Ok(events) => ApiResponse::ok(Value::Array(events)),
+        Ok(read) => ApiResponse::ok(read),
+        Err(error) => store_error(error),
+    }
+}
+
+pub(crate) async fn local_agent_agent_lifecycle_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.journal.read_agent_lifecycle(&session_id) {
+        Ok(read) => ApiResponse::ok(read),
+        Err(error) => store_error(error),
+    }
+}
+
+pub(crate) async fn local_agent_provider_usage_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.journal.read_provider_usage(&session_id) {
+        Ok(read) => ApiResponse::ok(read),
         Err(error) => store_error(error),
     }
 }
@@ -971,7 +1358,16 @@ pub(crate) async fn local_agent_command_commit(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.commit_command(&body) {
+    match state
+        .local_agent
+        .journal
+        .commit_command_with_events(&body)
+        .and_then(|commit| {
+            state
+                .local_agent
+                .journal
+                .event_publication(commit, body["events"].as_array().expect("validated events"))
+        }) {
         Ok(reply) => ApiResponse::ok(reply),
         Err(error) => store_error(error),
     }
@@ -994,6 +1390,20 @@ pub(crate) async fn local_agent_run_runtime_prepare(
     }
 }
 
+pub(crate) async fn local_agent_tool_views_retire(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RetireToolViewsRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.retire_tool_views(body) {
+        Ok(retired) => ApiResponse::ok(retired),
+        Err(error) => ApiResponse::error(error.code, error.message),
+    }
+}
+
 pub(crate) async fn local_agent_run_runtime_release(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1005,6 +1415,22 @@ pub(crate) async fn local_agent_run_runtime_release(
     match state.local_agent.release_run_runtime(body) {
         Ok(release) => ApiResponse::ok(release),
         Err(error) => ApiResponse::error(error.code, error.message),
+    }
+}
+
+pub(crate) async fn local_agent_kernel_prepare(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::local_agent_kernel::LocalToolPreparationRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let kernel = state.local_agent.kernel.clone();
+    match tokio::task::spawn_blocking(move || kernel.prepare_file_calls(body)).await {
+        Ok(Ok(reply)) => ApiResponse::ok(reply),
+        Ok(Err(error)) => kernel_error(error),
+        Err(error) => ApiResponse::error("tool_prepare_failed", error.to_string()),
     }
 }
 
@@ -1059,6 +1485,20 @@ pub(crate) async fn local_agent_tool_execute(
         .into_response()
 }
 
+pub(crate) async fn local_agent_plan_admission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::local_agent_kernel::PlanAdmissionRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.kernel.plan_admission(body) {
+        Ok(scope) => ApiResponse::ok(scope),
+        Err(error) => kernel_error(error),
+    }
+}
+
 pub(crate) async fn local_agent_tool_cancel(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1067,13 +1507,12 @@ pub(crate) async fn local_agent_tool_cancel(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state
-        .local_agent
-        .kernel
-        .cancel(&body.call_id, &body.attempt_id)
+    let kernel = state.local_agent.kernel.clone();
+    match tokio::task::spawn_blocking(move || kernel.cancel(&body.call_id, &body.attempt_id)).await
     {
-        Ok(reply) => ApiResponse::ok(reply),
-        Err(error) => kernel_error(error),
+        Ok(Ok(reply)) => ApiResponse::ok(reply),
+        Ok(Err(error)) => kernel_error(error),
+        Err(error) => ApiResponse::error("tool_cancel_failed", error.to_string()),
     }
 }
 
@@ -1265,6 +1704,8 @@ pub(crate) async fn local_agent_provider_stream(
         );
     }
     let mut request_envelope = ProviderRequestInput {
+        answer_only: body.response_constraint == "answerOnly",
+        response_format: body.response_format,
         messages: body.messages,
         tools: body.tools,
         hosted_tools: body.hosted_tools,
@@ -1309,6 +1750,7 @@ pub(crate) async fn local_agent_provider_stream(
         state.local_agent.provider_transport.client.clone(),
         body.provider_attempt_id,
         profile,
+        runtime.codex_request_context(&body.session_id),
         request_envelope,
         request_id,
         archive_directory,
@@ -1358,21 +1800,34 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
     if !matches!(body.response_constraint.as_str(), "normal" | "answerOnly") {
         return Err("Provider 请求的 responseConstraint 无效。".to_string());
     }
+    if body.response_format.as_ref().is_some_and(|format| {
+        !valid_provider_text(&format.name)
+            || !format.schema.is_object()
+            || body.response_constraint != "answerOnly"
+            || !body.tools.is_empty()
+            || !body.hosted_tools.is_empty()
+    }) {
+        return Err("结构化输出必须指定名称与对象 schema，并使用无工具的 answerOnly 请求。".into());
+    }
     match body.purpose.as_str() {
         "agent" => {
             if body.response_constraint != "normal" || body.max_output_tokens == 0 {
                 return Err("普通 Agent 请求必须使用固定的完整输出预算。".to_string());
             }
         }
-        "contextCompaction" | "approvalReview" => {
+        "contextCompaction" => {
+            if body.response_constraint != "answerOnly" || body.max_output_tokens == 0 {
+                return Err("上下文压缩必须使用 answerOnly 和固定的完整输出预算。".to_string());
+            }
+        }
+        "approvalReview" => {
             if body.response_constraint != "answerOnly"
                 || !body.tools.is_empty()
                 || !body.hosted_tools.is_empty()
                 || body.max_output_tokens == 0
             {
                 return Err(
-                    "上下文压缩请求必须使用 answerOnly、空工具目录和固定的完整输出预算。"
-                        .to_string(),
+                    "自动审批请求必须使用 answerOnly、空工具目录和固定的完整输出预算。".to_string(),
                 );
             }
         }
@@ -1382,7 +1837,7 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
     for binding in &body.workspace_bindings {
         if !valid_provider_text(&binding.workspace_id)
             || binding.display_name.trim().is_empty()
-            || binding.display_name.len() > 160
+            || binding.display_name.chars().count() > 120
             || !workspace_ids.insert(binding.workspace_id.as_str())
         {
             return Err("Provider 请求的 workspaceBindings 无效或重复。".to_string());
@@ -1623,8 +2078,8 @@ fn validate_provider_search_binding(
     match runtime.web_search_owner.as_str() {
         "providerHosted" => {
             let request_matches_purpose = match purpose {
-                "agent" => hosted_search_requested,
-                "contextCompaction" | "approvalReview" => hosted_tools.is_empty(),
+                "agent" | "contextCompaction" => hosted_search_requested,
+                "approvalReview" => hosted_tools.is_empty(),
                 _ => false,
             };
             if runtime.api_surface != "responses"
@@ -1703,6 +2158,35 @@ fn random_service_token() -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn provider_workspace_names_follow_catalog_character_limit() {
+        let display_name = crate::conversation_catalog::workspace_display_name(&format!(
+            "/workspace/{}",
+            "文".repeat(54)
+        ));
+        let mut request: LocalProviderRequest = serde_json::from_value(json!({
+            "protocolVersion": "deepcode.local-agent",
+            "requestId": "request:test",
+            "sessionId": "session:test",
+            "runId": "run:test",
+            "providerRuntimeRef": "provider-runtime:test",
+            "profileId": "profile:test",
+            "purpose": "agent",
+            "responseConstraint": "normal",
+            "maxOutputTokens": 512,
+            "workspaceBindings": [{"workspaceId": "workspace:test", "displayName": display_name}],
+            "messages": [{"role": "user", "content": "Read the project."}],
+            "tools": [],
+            "hostedTools": []
+        }))
+        .unwrap();
+        assert!(validate_local_provider_request(&request).is_ok());
+        request.workspace_bindings[0].display_name = "文".repeat(120);
+        assert!(validate_local_provider_request(&request).is_ok());
+        request.workspace_bindings[0].display_name.push('文');
+        assert!(validate_local_provider_request(&request).is_err());
+    }
+
     fn permission_policy(network: &str) -> LocalAgentPermissionPolicy {
         LocalAgentPermissionPolicy::from_settings(&json!({
             "agent.permissions.networkRead": network,
@@ -1755,7 +2239,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_hosted_search_is_agent_only_and_compaction_remains_tool_free() {
+    fn compaction_retains_hosted_definitions_and_approval_remains_tool_free() {
         let runtime = RunProviderRuntime {
             reasoning_effort_override: None,
             provider_runtime_ref: "provider-runtime:test".to_string(),
@@ -1777,11 +2261,17 @@ mod tests {
             std::slice::from_ref(&hosted_tool),
         )
         .is_ok());
-        assert!(validate_provider_search_binding(&runtime, "contextCompaction", &[]).is_ok());
+        assert!(validate_provider_search_binding(&runtime, "approvalReview", &[]).is_ok());
         assert!(validate_provider_search_binding(&runtime, "agent", &[]).is_err());
+        assert!(validate_provider_search_binding(&runtime, "contextCompaction", &[]).is_err());
+        assert!(validate_provider_search_binding(
+            &runtime,
+            "contextCompaction",
+            std::slice::from_ref(&hosted_tool)
+        )
+        .is_ok());
         assert!(
-            validate_provider_search_binding(&runtime, "contextCompaction", &[hosted_tool],)
-                .is_err()
+            validate_provider_search_binding(&runtime, "approvalReview", &[hosted_tool]).is_err()
         );
     }
 }

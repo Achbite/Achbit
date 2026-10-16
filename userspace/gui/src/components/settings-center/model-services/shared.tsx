@@ -3,6 +3,7 @@ import type { ApiResponse, UsageQuery, UsageTotals } from '@deepcode/protocol';
 import { normalizeUiLanguage } from '../../../i18n';
 import { formatUsageCost, useUsageCostDisplay } from '../../../ui-plugins/usageCost';
 import { useSettingsStore } from '../../../state/settingsStore';
+import { useInteractionFocus } from '../../shared/interactionFocus';
 
 export function useModelLanguage() {
   const language = normalizeUiLanguage(useSettingsStore(s => s.effectiveSettings['workbench.language']));
@@ -14,11 +15,12 @@ export function data<T>(response: ApiResponse<T>): T {
 }
 export function message(error: unknown) { return error instanceof Error ? error.message : String(error); }
 export function Hint({ children, label = 'ⓘ' }: { children: React.ReactNode; label?: string }) {
+  const interaction = useInteractionFocus();
   const id = useId();
   const [open, setOpen] = useState(false);
   return <span className="model-hint" data-escape-layer={open ? 'open' : undefined}
     onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}
-    onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+    onFocus={() => { if (interaction?.keyboard !== false) setOpen(true); }} onBlur={() => setOpen(false)}
     onKeyDown={event => { if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); } }}>
     <button type="button" aria-describedby={open ? id : undefined} aria-label={label} onClick={() => setOpen(true)}>{label}</button>
     <span id={id} role="tooltip" hidden={!open}>{children}</span>

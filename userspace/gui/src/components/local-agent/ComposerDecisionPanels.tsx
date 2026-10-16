@@ -8,16 +8,23 @@ import type { AgentComposer } from './useAgentComposer';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { planOperationDetail } from './planReview';
 import { ApprovalOperationDetails } from './ApprovalOperationDetails';
+import { ApprovalReviewReason } from './ApprovalReviewReason';
+import { InteractionOptions } from './InteractionOptions';
+import type { LocalAgentState } from '../../state/localAgentStore';
+
+type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAddition' | 'pendingInteraction'
+  | 'pendingApproval' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'respondApproval' | 'projection'>;
 
 export function ComposerQuestionPrompt({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
   const { pendingPlan, pendingScopeAddition, pendingInteraction, submitting, submitPlanDecision, respondInteraction, projection } = composer;
   const confirmation = pendingInteraction?.kind === 'confirmation';
   const sendDecision = async (text: string) => {
-    try { await respondInteraction(text); } catch { /* The shared store exposes the error. */ }
+    try { await respondInteraction(text, pendingInteraction?.interactionId); } catch { /* The shared store exposes the error. */ }
   };
   return <>
       {(pendingPlan || pendingInteraction) && (
-        <section className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
+        <section id={pendingPlan ? undefined : 'conversation-interaction'} tabIndex={-1}
+          className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
           <div
             className="local-agent__interaction-document-scroll"
             tabIndex={0}
@@ -58,7 +65,9 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
   </>;
 }
 
-export function ComposerDecisionPanels({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
+export function ComposerDecisionPanels({ language, composer, onSetPermissions }: {
+  language: UiLanguage; composer: DecisionComposer; onSetPermissions?: LocalAgentState['setPermissions'];
+}) {
   const {
     pendingPlan,
     pendingScopeAddition,
@@ -68,6 +77,7 @@ export function ComposerDecisionPanels({ language, composer }: { language: UiLan
     submitPlanDecision,
     respondInteraction,
     respondApproval,
+    projection,
   } = composer;
   const proposedScope = pendingApproval?.preview.authorizationScope;
   const offeredScopes = pendingApproval?.preview.authorizationScopes ?? [];
@@ -76,8 +86,8 @@ export function ComposerDecisionPanels({ language, composer }: { language: UiLan
   const approvalRef = useRef<HTMLElement>(null);
   const sessionBrowser = pendingApproval?.preview.authorizationScope === 'sessionBrowser';
   const runCommand = pendingApproval?.preview.authorizationScopes?.includes('runCommand');
-  const projection = useLocalAgentStore(state => state.projection);
-  const setPermissions = useLocalAgentStore(state => state.setPermissions);
+  const setMainPermissions = useLocalAgentStore(state => state.setPermissions);
+  const setPermissions = onSetPermissions ?? setMainPermissions;
   const savedRules = useSettingsStore(state => state.effectiveSettings['agent.permissions.commandRules']);
   const patchSetting = useSettingsStore(state => state.patchUserSetting);
   const [ruleDecision, setRuleDecision] = useState<'allow' | 'ask' | 'deny'>('allow');
@@ -107,48 +117,26 @@ export function ComposerDecisionPanels({ language, composer }: { language: UiLan
   const sendDecision = async (text: string) => {
     if (!pendingInteraction || !text.trim() || submitting) return;
     try {
-      await respondInteraction(text);
+      await respondInteraction(text, pendingInteraction.interactionId);
     } catch {
       // The store reports the original command error; the shared draft is retained.
     }
   };
   return (
     <>
-      {(pendingPlan || pendingInteraction) && (
+      {pendingPlan ? (
             <ol className="local-agent__interaction-options">
-              {pendingPlan ? <li>
+              <li>
                 <button type="button" disabled={submitting}
                   title={pendingScopeAddition ? t(language, 'agent.plan.continuePhases') : undefined}
                   onClick={() => void submitPlanDecision({ kind: 'confirm' })}>
                   <span className="local-agent__interaction-option-marker" aria-hidden="true">1</span>
                   <span className="local-agent__interaction-option-copy"><b>{t(language, pendingScopeAddition ? 'agent.plan.confirmScope' : 'agent.plan.confirm')}</b></span>
                 </button>
-              </li> : pendingInteraction?.options?.map((option, index) => (
-                <li key={option.id}>
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    title={option.description ? `${option.label}\n\n${option.description}` : option.label}
-                    onClick={() => {
-                      void sendDecision(option.label);
-                    }}
-                  >
-                    <span className="local-agent__interaction-option-marker" aria-hidden="true">
-                      {index + 1}
-                    </span>
-                    <span className="local-agent__interaction-option-copy">
-                      <b><MarkdownInline>{option.label}</MarkdownInline></b>
-                      {option.description && (
-                        <span className="local-agent__interaction-option-description">
-                          <MarkdownInline>{option.description}</MarkdownInline>
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              </li>
             </ol>
-      )}
+      ) : pendingInteraction && <InteractionOptions options={pendingInteraction.options} disabled={submitting}
+        onAnswer={response => { void sendDecision(response); }} />}
       {reviewing && pendingApproval && <section className="local-agent__auto-review" aria-label={t(language, 'agent.permission.reviewing')}>
         <header>
           <span className="local-agent__auto-review-spinner" aria-hidden="true" />
@@ -189,7 +177,7 @@ export function ComposerDecisionPanels({ language, composer }: { language: UiLan
           {!sessionBrowser && <pre className="local-agent__decision-command">
             <code>{pendingApproval.preview.summary}</code>
           </pre>}
-          {pendingApproval.preview.review && <p>{pendingApproval.preview.review.reason}</p>}
+          {pendingApproval.preview.review && <ApprovalReviewReason review={pendingApproval.preview.review} language={language} />}
           <ApprovalOperationDetails preview={pendingApproval.preview} language={language} />
           <div className="local-agent__decision-controls">
           {(sessionBrowser || runCommand) ? (

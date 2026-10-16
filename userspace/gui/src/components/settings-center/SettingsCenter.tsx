@@ -15,6 +15,7 @@ import LlmSection from './sections/LlmSection';
 import PluginsSection from './sections/PluginsSection';
 import DeepCodeShellIcon, { type DeepCodeShellIconName } from '../shared/DeepCodeShellIcon';
 import './settingsCenter.css';
+import { createInteractionFocus, InteractionFocusContext } from '../shared/interactionFocus';
 
 type SettingsKey = 'general' | 'about' | 'gui' | 'agent' | 'environment' | 'permissions' | 'llm' | 'plugins';
 
@@ -29,6 +30,8 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   serverVersion,
   navigationTarget,
 }) => {
+  const [interaction] = useState(createInteractionFocus);
+  useEffect(() => () => interaction.clearReveal(), [interaction]);
   const [activeKey, setActiveKey] = useState<SettingsKey>(
     () => restoredInterfaceView<SettingsKey>('settingsPage', 'gui'),
   );
@@ -68,6 +71,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   ];
   const matches = entries.filter((entry) => items.some((item) => item.key === entry.category) && matchesSettingsQuery(searchQuery, entry.title, entry.keywords ?? ''));
   const navigate = (key: SettingsKey, target?: string) => {
+    interaction.clearReveal();
     pendingTarget.current = target ?? null;
     setActiveKey(key); setSearchQuery('');
     setVisited((current) => current.includes(key) ? current : [...current, key]);
@@ -78,7 +82,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   useEffect(() => {
     if (searching || !pendingTarget.current) return;
     const element = targets.current.get(pendingTarget.current) ?? document.getElementById(`setting-${pendingTarget.current}`);
-    if (element) { element.scrollIntoView({ block: 'center' }); element.focus({ preventScroll: true }); pendingTarget.current = null; }
+    if (element) { interaction.reveal(element); pendingTarget.current = null; }
   }, [searching, activeKey, visited]);
 
   const body = (key: SettingsKey) => {
@@ -91,17 +95,16 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
             category={key === 'gui' ? 'appearance' : key}
             apiStatus={statusText(apiStatus)}
             serverVersion={serverVersion}
-            query=""
           />
         );
       case 'agent':
       case 'environment':
       case 'permissions':
-        return <AgentSettingsSection category={key} query="" />;
+        return <AgentSettingsSection category={key} />;
       case 'llm':
         return <LlmSection active={!searching && activeKey === 'llm'} />;
       case 'plugins':
-        return <PluginsSection query="" />;
+        return <PluginsSection />;
     }
   };
 
@@ -143,7 +146,9 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   );
 
   return (
-    <SettingsSearchTargets.Provider value={targets.current}><SettingsSearchContext.Provider value={register}><div className="settings-center">
+    <InteractionFocusContext.Provider value={interaction}><SettingsSearchTargets.Provider value={targets.current}><SettingsSearchContext.Provider value={register}><div className="settings-center"
+      onPointerDownCapture={event => interaction.pointerDown(event.target)}
+      onKeyDownCapture={event => interaction.keyDown(event.key)}>
       {navigationTarget ? createPortal(navigation, navigationTarget) : navigation}
 
       <section className="settings-body" ref={scrollRef}>
@@ -157,7 +162,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
         </div>}
         {visited.map((key) => <div className="settings-page" id={`setting-page-${key}`} tabIndex={-1} key={key} hidden={searching || key !== activeKey}>{body(key)}</div>)}
       </section>
-    </div></SettingsSearchContext.Provider></SettingsSearchTargets.Provider>
+    </div></SettingsSearchContext.Provider></SettingsSearchTargets.Provider></InteractionFocusContext.Provider>
   );
 };
 

@@ -8,18 +8,3 @@ export interface AppStatusState {
   serverVersion?: string;
   errorMessage?: string;
 }
-
-/** 全局确认弹窗数据 */
-export interface ConfirmDialogAction {
-  label: string;
-  variant?: 'primary' | 'secondary' | 'danger';
-  onClick: () => void | Promise<void>;
-}
-
-export interface ConfirmDialogData {
-  open: boolean;
-  title: string;
-  message: string;
-  detail?: string;
-  actions?: ConfirmDialogAction[];
-}
