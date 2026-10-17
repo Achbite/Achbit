@@ -4,6 +4,16 @@ DeepCode is a local-first coding agent with a desktop GUI, TUI, and CLI. Read an
 
 **[Quick start](#quick-start) · [Download](https://github.com/Achbite/DeepCode/releases) · [DeepSeek guide](docs/product/deepseek.md) · [简体中文](README.zh-CN.md)**
 
+## See it in use
+
+![DeepCode GUI showing a project delivery dashboard beside the conversation](assets/readme/workspace-en.jpg)
+
+*A real GUI task using fictional project data: read a CSV, create an interactive dashboard, and inspect its preview. Try the [sample CSV](examples/delivery-dashboard/delivery-data.csv). This is a general product demonstration.*
+
+![English illustration of DeepCode TUI with mathematical notation](assets/readme/tui-localized-en.png)
+
+*Based on a real TUI conversation; the interface labels were translated into English with image editing. The [original Chinese screenshot](assets/readme/tui-native-zh.png) shows the native capture. See [capture notes](assets/readme/README.md).*
+
 ## Quick start
 
 ### Download and run
@@ -82,16 +92,6 @@ deepcode-tui -C /path/to/project
 ```
 
 For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. Use `/language en-US` or `/language zh-CN` to change and save the interface language; this is separate from the language requested in a message. See [terminal and window behavior](docs/distribution.md).
-
-## See it in use
-
-![DeepCode GUI showing a project delivery dashboard beside the conversation](assets/readme/workspace-en.jpg)
-
-*A real GUI task using fictional project data: read a CSV, create an interactive dashboard, and inspect its preview. Try the [sample CSV](examples/delivery-dashboard/delivery-data.csv). This is a general product demonstration.*
-
-![English illustration of DeepCode TUI with mathematical notation](assets/readme/tui-localized-en.png)
-
-*Based on a real TUI conversation; the interface labels were translated into English with image editing. The [original Chinese screenshot](assets/readme/tui-native-zh.png) shows the native capture. See [capture notes](assets/readme/README.md).*
 
 ## Models and DeepSeek
 
