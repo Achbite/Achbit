@@ -675,9 +675,9 @@ mod tests {
 
     #[test]
     fn failed_cloud_response_retains_original_payload_and_specific_error() {
-        let response = json!({"content":[{"type":"web_search_tool_result","content":[
-            {"type":"web_search_result","url":"/invalid","title":"Provider response"}
-        ]}]});
+        let response = json!({"results":[
+            {"url":"/invalid","title":"Provider response"}
+        ]});
         let raw = serde_json::to_vec(&response).unwrap();
         let (url, server) = serve_http_response("Content-Type: application/json", raw.clone());
         let context = archived_test_context("search-failure");

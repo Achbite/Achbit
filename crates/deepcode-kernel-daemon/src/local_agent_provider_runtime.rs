@@ -226,8 +226,8 @@ fn capture_binding(
             Some("web_search") if profile.provider_flavor.as_deref() == Some("openai") => {
                 "web_search"
             }
-            // DeepSeek Responses ignores this built-in tool. GLM and Kimi also
-            // use their own search APIs, selected by the run's Kernel adapter.
+            // Flash Responses ignores this built-in tool. DeepSeek, GLM and
+            // Kimi use the search API selected by the run's Kernel adapter.
             Some("web_search") => "none",
             None => "none",
             Some(_) => return Err("LLM Profile hostedWebSearch 无法映射。".to_string()),

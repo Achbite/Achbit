@@ -233,14 +233,15 @@ pub(crate) fn adapter_descriptors() -> Value {
     let custom_astra = astra.clone();
     astra["hostedWebSearch"] = json!("web_search");
     let mut deepseek = model(
-        "DeepSeek V4.1 Flash",
+        "DeepSeek Flash",
         "deepseek-flash",
         "responses",
         "deepseek",
         1_000_000,
         384_000,
     );
-    deepseek["hostedWebSearch"] = json!("web_search");
+    deepseek["thinking"] = json!("enabled");
+    deepseek["reasoningEffort"] = json!("max");
     json!([
         {"id":"openai","name":"OpenAI","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible"],"defaultBaseUrl":"https://api.openai.com/v1","models":[astra],"pricing":true,"quota":false,"source":"builtin"},
         {"id":"openai-codex","name":"OpenAI · Codex","billingModes":["subscription"],"authMethods":["browser","deviceCode"],"protocols":["responses"],"defaultBaseUrl":"https://chatgpt.com/backend-api/codex","models":[astra],"pricing":false,"quota":true,"source":"builtin"},
@@ -465,14 +466,17 @@ mod tests {
         let descriptors = adapter_descriptors();
         for adapter in descriptors.as_array().unwrap() {
             for model in adapter["models"].as_array().unwrap() {
-                if matches!(
-                    adapter["id"].as_str().unwrap(),
-                    "openai" | "openai-codex" | "deepseek"
-                ) {
+                if matches!(adapter["id"].as_str().unwrap(), "openai" | "openai-codex") {
                     assert_eq!(model["hostedWebSearch"], "web_search");
                     assert_eq!(model["kind"], "responses");
                 } else {
                     assert!(model.get("hostedWebSearch").is_none());
+                }
+                if adapter["id"] == "deepseek" {
+                    assert_eq!(model["model"], "deepseek-flash");
+                    assert_eq!(model["thinking"], "enabled");
+                    assert_eq!(model["reasoningEffort"], "max");
+                    assert_eq!(model["imageInput"], true);
                 }
             }
         }
@@ -482,6 +486,12 @@ mod tests {
                 .replace(':', "-"),
         );
         let mut gui = GuiState::open_at(&root).unwrap();
+        let initial = document(&gui).unwrap();
+        let flash = &initial["profiles"][0];
+        assert_eq!(flash["model"], "deepseek-flash");
+        assert!(flash.get("hostedWebSearch").is_none());
+        assert_eq!(flash["reasoningEffort"], "max");
+        assert_eq!(flash["imageInput"], true);
         let edit: Edit = serde_json::from_value(json!({"connection":{
             "id":"search", "name":"Search", "adapterId":"openai", "billingMode":"metered",
             "baseUrl":"https://api.openai.com/v1", "credentialKind":"apiKey"}}))
