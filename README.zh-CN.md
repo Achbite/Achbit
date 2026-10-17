@@ -4,6 +4,16 @@ DeepCode 是提供 GUI、TUI 和 CLI 的本地优先编程 Agent。它可以读�
 
 **[快速开始](#快速开始) · [下载](https://github.com/Achbite/DeepCode/releases) · [DeepSeek 接入](docs/product/deepseek.zh-CN.md) · [English](README.md)**
 
+## 界面展示
+
+![DeepCode GUI 在对话旁展示项目交付看板](assets/readme/workspace-zh.jpg)
+
+*使用虚构项目数据的真实 GUI 任务：读取 CSV、生成交互式看板并检查预览。可使用[示例 CSV](examples/delivery-dashboard/delivery-data.csv)尝试。这张图片用于通用产品展示。*
+
+![DeepCode 在真实终端窗口中展示中文与数学公式](assets/readme/tui-native-zh.png)
+
+*真实 TUI 窗口中的已完成对话，展示当前中文与数学公式排版效果。详见[截图说明](assets/readme/README.md)。*
+
 ## 快速开始
 
 ### 下载并运行
@@ -82,16 +92,6 @@ deepcode-tui -C /path/to/project
 ```
 
 解压版请将命令替换为对应启动器。`<profile-id>` 从 `connections` 中复制，是保存的配置 ID。TUI 中用 `/model` 选择模型、`/sessions` 和 `/resume` 继续会话，输入 `/` 查看可用命令。使用 `/language en-US` 或 `/language zh-CN` 切换并保存界面语言；它与消息中要求的回复语言分别设置。窗口和字体行为见[安装指南](docs/distribution.md)。
-
-## 界面展示
-
-![DeepCode GUI 在对话旁展示项目交付看板](assets/readme/workspace-zh.jpg)
-
-*使用虚构项目数据的真实 GUI 任务：读取 CSV、生成交互式看板并检查预览。可使用[示例 CSV](examples/delivery-dashboard/delivery-data.csv)尝试。这张图片用于通用产品展示。*
-
-![DeepCode 在真实终端窗口中展示中文与数学公式](assets/readme/tui-native-zh.png)
-
-*真实 TUI 窗口中的已完成对话，展示当前中文与数学公式排版效果。详见[截图说明](assets/readme/README.md)。*
 
 ## 模型与 DeepSeek
 
