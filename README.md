@@ -93,11 +93,11 @@ deepcode-tui -C /path/to/project
 
 For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. Use `/language en-US` or `/language zh-CN` to change and save the interface language; this is separate from the language requested in a message. See [terminal and window behavior](docs/distribution.md).
 
-## Models and DeepSeek
+## Models and services
 
 Add API services or supported subscription connections in **Settings → Models & services**. GUI, CLI, and TUI share saved connections and conversations.
 
-The DeepSeek preset uses **DeepSeek V4.1 Flash** (`deepseek-flash`) with **Responses API**, a `1000000`-token context setting, and a `384000`-token output budget. Enable Thinking and save `max` reasoning effort. Follow the complete [DeepSeek guide](docs/product/deepseek.md) for configuration, a first task, and continued conversation. [Models, subscriptions, and usage](docs/product/model-services.md) covers other connections and token accounting; current prices are linked to the provider documentation.
+See [Models, subscriptions, and usage](docs/product/model-services.md) for connection management and accounting. Provider-specific setup is documented in the [DeepSeek guide](docs/product/deepseek.md).
 
 ## Extensions and Computer Use
 

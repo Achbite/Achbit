@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
 const RESPONSE_LIMIT: usize = 1024 * 1024;
@@ -13,6 +13,13 @@ pub(super) fn invoke(
     archive: &mut ExecutionArchive,
 ) -> KernelResult<Value> {
     validate_http_url(&config.endpoint)?;
+    if config.provider == CloudWebSearchProvider::DeepSeek
+        && (query.trim().is_empty() || query.chars().count() > 128)
+    {
+        return Err(KernelError::InvalidCommand(
+            "DeepSeek search query must contain 1 to 128 Unicode characters".into(),
+        ));
+    }
     if config.provider == CloudWebSearchProvider::Glm && query.chars().count() > 70 {
         return Err(KernelError::InvalidCommand(
             "GLM search query must be at most 70 characters".into(),
@@ -58,10 +65,7 @@ pub(super) async fn cancelled(cancellation: &KernelCancellationToken) {
 fn request_body(provider: CloudWebSearchProvider, query: &str, limit: usize) -> Value {
     match provider {
         CloudWebSearchProvider::DeepSeek => json!({
-            "model": "deepseek-flash", "max_tokens": 4096,
-            "messages": [{ "role": "user", "content": [{ "type": "text",
-                "text": format!("Perform a web search for the query: {query}") }] }],
-            "tools": [{ "type": "web_search_20250305", "name": "web_search", "max_uses": 5 }]
+            "query": query, "count": limit, "need_content": false,
         }),
         CloudWebSearchProvider::Glm => json!({
             "search_query": query, "search_engine": "search_std",
@@ -85,13 +89,10 @@ async fn request(
         .user_agent("DeepCode-Kernel/0.1")
         .build()
         .map_err(|error| KernelError::Other(error.to_string()))?;
-    let mut request = client.post(&config.endpoint).bearer_auth(key).json(body);
-    if config.provider == CloudWebSearchProvider::DeepSeek {
-        request = request
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01");
-    }
-    let mut response = request
+    let mut response = client
+        .post(&config.endpoint)
+        .bearer_auth(key)
+        .json(body)
         .send()
         .await
         .map_err(|error| search_error("web_search_request_failed", &error.to_string()))?;
@@ -188,98 +189,48 @@ fn parse_response(
 }
 
 fn parse_deepseek(response: &Value, limit: usize) -> KernelResult<Value> {
-    let blocks = response["content"].as_array().ok_or_else(|| {
+    let items = response["results"].as_array().ok_or_else(|| {
         search_error(
             "web_search_response_invalid",
-            "DeepSeek response lacks content blocks",
+            "DeepSeek response lacks results array",
         )
     })?;
-    let snippets: HashMap<&str, &str> = blocks
-        .iter()
-        .filter(|block| block["type"] == "text")
-        .flat_map(|block| block["citations"].as_array().into_iter().flatten())
-        .filter_map(|citation| Some((citation["url"].as_str()?, citation["cited_text"].as_str()?)))
-        .collect();
-    let result_blocks = blocks
-        .iter()
-        .filter(|block| block["type"] == "web_search_tool_result")
-        .collect::<Vec<_>>();
-    if result_blocks.is_empty() {
-        return Err(search_error(
-            "web_search_not_executed",
-            "DeepSeek returned no web_search_tool_result",
-        ));
-    }
     let mut results = Vec::new();
     let mut issues = Vec::new();
     let mut seen = HashSet::new();
-    for (block_index, block) in result_blocks.into_iter().enumerate() {
-        if block["content"]["type"] == "web_search_tool_result_error" {
-            issues.push(json!({ "blockIndex": block_index,
-                "code": "web_search_provider_error", "providerError": block["content"] }));
+    for (item_index, item) in items.iter().enumerate() {
+        let parsed =
+            source(item, "url", "snippet", "date", "deepseekSearch").and_then(|mut result| {
+                // Keep the API's model-facing summary alongside its display snippet.
+                result["summary"] = json!(optional_string(item, "summary")?);
+                Ok(result)
+            });
+        let result = match parsed {
+            Ok(result) => result,
+            Err(error) => {
+                issues.push(json!({ "itemIndex": item_index,
+                    "code": "web_search_result_invalid", "url": item.get("url"), "message": error.to_string() }));
+                continue;
+            }
+        };
+        let url = result["url"].as_str().expect("validated source URL");
+        if !seen.insert(url.to_string()) {
             continue;
         }
-        let items = block["content"].as_array().ok_or_else(|| {
-            search_error(
-                "web_search_response_invalid",
-                "DeepSeek search result content must be an array",
-            )
-        })?;
-        for (item_index, item) in items.iter().enumerate() {
-            if item["type"] == "web_search_tool_result_error" {
-                issues.push(json!({ "blockIndex": block_index, "itemIndex": item_index,
-                    "code": "web_search_provider_error", "providerError": item }));
-                continue;
-            }
-            if item["type"] != "web_search_result" {
-                issues.push(json!({ "blockIndex": block_index, "itemIndex": item_index,
-                    "code": "web_search_result_type_unknown", "type": item.get("type") }));
-                continue;
-            }
-            let mut result = match source(item, "url", "snippet", "page_age", "deepseekSearch") {
-                Ok(result) => result,
-                Err(error) => {
-                    issues.push(json!({ "blockIndex": block_index, "itemIndex": item_index,
-                        "code": "web_search_result_invalid", "url": item.get("url"), "message": error.to_string() }));
-                    continue;
-                }
-            };
-            let url = result["url"].as_str().expect("validated source URL");
-            if !seen.insert(url.to_string()) {
-                continue;
-            }
-            if let Some(snippet) = snippets.get(url) {
-                result["snippet"] = json!(snippet);
-            }
-            results.push(result);
-        }
+        results.push(result);
     }
     if results.is_empty() && !issues.is_empty() {
-        let provider_error = issues.iter().find_map(|issue| issue.get("providerError"));
         return Err(KernelError::Structured {
-            code: if provider_error.is_some() {
-                "web_search_provider_error"
-            } else {
-                "web_search_response_invalid"
-            },
+            code: "web_search_response_invalid",
             stage: "execution",
-            message: provider_error
-                .map(Value::to_string)
-                .unwrap_or_else(|| "Search returned no usable source entries".into()),
+            message: "Search returned no usable source entries".into(),
             details: json!({"resultIssues": issues}),
         });
     }
     let truncated = results.len() > limit;
     results.truncate(limit);
-    let calls = blocks
-        .iter()
-        .filter(|block| block["type"] == "server_tool_use" && block["name"] == "web_search")
-        .cloned()
-        .collect::<Vec<_>>();
     Ok(
         json!({ "provider": "deepseek-search", "results": results, "truncated": truncated,
-        "responseId": response.get("id"), "model": response.get("model"),
-        "searchCalls": calls, "usage": response.get("usage"),
         "partial": !issues.is_empty(), "resultIssues": issues }),
     )
 }
@@ -311,12 +262,135 @@ fn search_error(code: &'static str, message: &str) -> KernelError {
 mod tests {
     use super::*;
 
+    async fn read_search_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
+        use tokio::io::AsyncReadExt;
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            headers.push(socket.read_u8().await.unwrap());
+        }
+        let headers = String::from_utf8(headers).unwrap();
+        let length: usize = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .unwrap()
+            .1
+            .trim()
+            .parse()
+            .unwrap();
+        let mut body = vec![0; length];
+        socket.read_exact(&mut body).await.unwrap();
+        (headers, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn deepseek_http_posts_raw_unicode_query_and_receives_search_results() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/tools/search", listener.local_addr().unwrap());
+        let query = format!("{} site:example.com", "界".repeat(111));
+        assert_eq!(query.chars().count(), 128);
+        let sent_query = query.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            invoke(
+                &sent_query,
+                3,
+                CloudWebSearchConfig {
+                    provider: CloudWebSearchProvider::DeepSeek,
+                    endpoint,
+                },
+                "test-only-key".into(),
+                &KernelCancellationToken::default(),
+                &mut ExecutionArchive::open(None, json!({})).unwrap(),
+            )
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (headers, body) = read_search_request(&mut socket).await;
+            assert!(headers.starts_with("POST /v1/tools/search HTTP/1.1\r\n"));
+            let headers = headers.to_ascii_lowercase();
+            assert!(headers.contains("\r\nauthorization: bearer test-only-key\r\n"));
+            assert!(headers.contains("\r\ncontent-type: application/json\r\n"));
+            assert!(!headers.contains("x-api-key:"));
+            assert!(!headers.contains("anthropic-version:"));
+            assert_eq!(body, json!({"query":query,"count":3,"need_content":false}));
+            let response = json!({"results":[{"url":"https://example.com/docs","title":"Docs",
+                "snippet":"Display excerpt","summary":"Model evidence","date":null}]}).to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            let output = worker.await.unwrap().unwrap();
+            assert_eq!(output["provider"], "deepseek-search");
+            assert_eq!(output["query"]["original"], query);
+            assert_eq!(output["results"][0]["summary"], "Model evidence");
+            assert_eq!(output["partial"], false);
+        }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deepseek_cancellation_closes_the_in_flight_search_request() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/tools/search", listener.local_addr().unwrap());
+        let cancellation = KernelCancellationToken::default();
+        let worker_cancellation = cancellation.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            invoke(
+                "release",
+                5,
+                CloudWebSearchConfig {
+                    provider: CloudWebSearchProvider::DeepSeek,
+                    endpoint,
+                },
+                "test-only-key".into(),
+                &worker_cancellation,
+                &mut ExecutionArchive::open(None, json!({})).unwrap(),
+            )
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_search_request(&mut socket).await;
+            cancellation.cancel();
+            assert!(matches!(
+                worker.await.unwrap(),
+                Err(KernelError::Structured {
+                    code: "web_search_cancelled",
+                    ..
+                })
+            ));
+            let mut remaining = Vec::new();
+            assert_eq!(socket.read_to_end(&mut remaining).await.unwrap(), 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn deepseek_rejects_unsupported_query_lengths_without_truncation() {
+        for query in [" ".into(), "界".repeat(129)] {
+            let result = invoke(
+                &query,
+                5,
+                CloudWebSearchConfig {
+                    provider: CloudWebSearchProvider::DeepSeek,
+                    endpoint: "http://127.0.0.1:1/v1/tools/search".into(),
+                },
+                "test-only-key".into(),
+                &KernelCancellationToken::default(),
+                &mut ExecutionArchive::open(None, json!({})).unwrap(),
+            );
+            assert!(
+                matches!(result, Err(KernelError::InvalidCommand(message)) if message.contains("128 Unicode"))
+            );
+        }
+    }
+
     #[test]
     fn cloud_requests_use_each_providers_actual_search_protocol() {
         let query = "发布信息";
         let deepseek = request_body(CloudWebSearchProvider::DeepSeek, query, 3);
-        assert_eq!(deepseek["tools"][0]["type"], "web_search_20250305");
-        assert!(deepseek.get("thinking").is_none());
+        assert_eq!(
+            deepseek,
+            json!({"query": query, "count": 3, "need_content": false})
+        );
         let glm = request_body(CloudWebSearchProvider::Glm, query, 3);
         assert_eq!(
             glm,
@@ -331,35 +405,39 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_requires_real_results_and_joins_citations_without_prose_scraping() {
-        let raw = json!({ "id": "response:1", "content": [
-            { "type": "server_tool_use", "id": "search:1", "name": "web_search", "input": {"query": "release"} },
-            { "type": "web_search_tool_result", "content": [
-                { "type": "web_search_result", "url": "https://example.com/a", "title": "A" },
-                { "type": "web_search_result", "url": "https://example.com/a", "title": "A duplicate" },
-                { "type": "web_search_result", "url": "https://example.com/b", "title": "B" }
-            ] },
-            { "type": "text", "text": "not a search result", "citations": [{"url": "https://example.com/a", "cited_text": "excerpt"}] }
-        ], "usage": {"server_tool_use": {"web_search_requests": 1}} });
+    fn deepseek_requires_results_and_preserves_search_evidence_without_prose_scraping() {
+        let raw = json!({ "results": [
+            { "url": "https://example.com/a", "title": "A", "snippet": "excerpt",
+              "summary": "Longer evidence for the model", "content": "", "date": "2026-10-17T00:00:00Z" },
+            { "url": "https://example.com/a", "title": "A duplicate" },
+            { "url": "https://example.com/b", "title": "B" }
+        ] });
         let output = parse_response(CloudWebSearchProvider::DeepSeek, &raw, 1).unwrap();
         assert_eq!(output["results"].as_array().unwrap().len(), 1);
         assert_eq!(output["results"][0]["snippet"], "excerpt");
-        assert_eq!(output["searchCalls"][0]["id"], "search:1");
+        assert_eq!(
+            output["results"][0]["summary"],
+            "Longer evidence for the model"
+        );
+        assert_eq!(output["results"][0]["publishedAt"], "2026-10-17T00:00:00Z");
+        assert_eq!(output["results"][0]["sourceId"], "https://example.com/a");
         assert_eq!(output["truncated"], true);
+        assert_eq!(output["partial"], false);
+        let all = parse_response(CloudWebSearchProvider::DeepSeek, &raw, 5).unwrap();
+        assert_eq!(all["results"].as_array().unwrap().len(), 2);
+        assert_eq!(all["results"][1]["url"], "https://example.com/b");
         assert!(parse_response(
             CloudWebSearchProvider::DeepSeek,
-            &json!({"content": [{"type": "text", "text": "https://example.com"}]}),
+            &json!({"text": "https://example.com"}),
             5
         )
         .is_err());
-        assert!(parse_response(CloudWebSearchProvider::DeepSeek, &json!({"content": [{"type":"web_search_tool_result", "content":{"type":"web_search_tool_result_error", "error_code":"max_uses_exceeded"}}]}), 5).is_err());
+        assert!(
+            parse_response(CloudWebSearchProvider::DeepSeek, &json!({"results": {}}), 5).is_err()
+        );
         assert_eq!(
-            parse_response(
-                CloudWebSearchProvider::DeepSeek,
-                &json!({"content": [{"type":"web_search_tool_result", "content":[]}]}),
-                5
-            )
-            .unwrap()["results"],
+            parse_response(CloudWebSearchProvider::DeepSeek, &json!({"results": []}), 5).unwrap()
+                ["results"],
             json!([])
         );
     }
@@ -381,56 +459,41 @@ mod tests {
 
     #[test]
     fn deepseek_keeps_usable_sources_and_exposes_bad_entries_without_inventing_urls() {
-        let response = json!({"content": [{"type": "web_search_tool_result", "content": [
-            {"type": "web_search_result", "url": "https://example.com/first", "title": "First"},
-            {"type": "web_search_result", "url": "/relative", "title": "Invalid"},
-            {"type": "unexpected_provider_item", "text": "https://example.com/not-a-source"},
-            {"type": "web_search_result", "url": "https://example.com/last", "title": "Last"}
-        ]}]});
+        let response = json!({"results": [
+            {"url": "https://example.com/first", "title": "First"},
+            {"url": "/relative", "title": "Invalid"},
+            {"text": "https://example.com/not-a-source"},
+            {"url": "https://example.com/last", "title": "Last"}
+        ]});
         let output = parse_deepseek(&response, 5).unwrap();
         assert_eq!(output["results"].as_array().unwrap().len(), 2);
         assert_eq!(output["results"][1]["url"], "https://example.com/last");
         assert_eq!(output["partial"], true);
         assert_eq!(output["resultIssues"].as_array().unwrap().len(), 2);
         assert_eq!(output["resultIssues"][0]["url"], "/relative");
+        assert!(parse_deepseek(&json!({"results": [{"url":"/relative"}]}), 5).is_err());
         assert!(parse_deepseek(
-            &json!({"content": [{"type": "web_search_tool_result", "content": [
-                {"type":"web_search_result", "url":"/relative"}
-            ]}]}),
-            5
-        )
-        .is_err());
-        assert!(parse_deepseek(
-            &json!({"content": [{"type": "web_search_tool_result", "content": [
-                {"type":"web_search_tool_result_error", "error_code":"unavailable"}
-            ]}]}),
+            &json!({"results": [{"url":"https://example.com", "summary":42}]}),
             5
         )
         .is_err());
     }
 
     #[test]
-    fn deepseek_retains_prior_sources_when_the_last_native_search_exhausts_its_limit() {
-        // Shape observed in the real CLI archive: several result blocks, then
-        // an error entry inside the last result array, not a failed HTTP request.
-        let error =
-            json!({"type":"web_search_tool_result_error", "error_code":"max_uses_exceeded"});
-        let mut response = json!({"content":[
-            {"type":"web_search_tool_result", "content":[{"type":"web_search_result", "url":"https://example.com/docs", "title":"Docs"}]},
-            {"type":"web_search_tool_result", "content":[]},
-            {"type":"web_search_tool_result", "content":[error.clone()]}
-        ]});
-        let output = parse_deepseek(&response, 5).unwrap();
-        assert_eq!(output["results"].as_array().unwrap().len(), 1);
-        assert_eq!(output["partial"], true);
-        assert_eq!(output["resultIssues"][0]["providerError"], error);
-        response["content"][0]["content"] = json!([]);
-        assert!(matches!(
-            parse_deepseek(&response, 5),
-            Err(KernelError::Structured {
-                code: "web_search_provider_error",
-                ..
-            })
-        ));
+    fn deepseek_preserves_provider_errors_instead_of_returning_success_or_empty_results() {
+        let error = json!({"type":"invalid_request_error", "code":"invalid_request_error",
+            "message":"'count' must be between 1 and 50", "param":null});
+        for results in [json!([]), json!([{"url":"https://example.com/docs"}])] {
+            let response = json!({"error":error, "results":results});
+            let failure =
+                parse_response(CloudWebSearchProvider::DeepSeek, &response, 5).unwrap_err();
+            match failure {
+                KernelError::Structured { code, message, .. } => {
+                    assert_eq!(code, "web_search_provider_error");
+                    assert_eq!(serde_json::from_str::<Value>(&message).unwrap(), error);
+                }
+                other => panic!("expected the provider error, got {other:?}"),
+            }
+        }
     }
 }

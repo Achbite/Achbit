@@ -2,15 +2,16 @@
   "profiles": [
     {
       "id": "deepseek-v4-flash-openai",
-      "name": "DeepSeek V4.1 Flash",
+      "name": "DeepSeek Flash",
       "kind": "responses",
-      "hostedWebSearch": "web_search",
       "providerFlavor": "deepseek",
       "model": "deepseek-flash",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 384000,
       "temperature": 0.2,
       "thinking": "enabled",
+      "reasoningEffort": "max",
+      "imageInput": true,
       "enabled": true,
       "connectionId": "deepseek-api"
     }

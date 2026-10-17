@@ -327,7 +327,7 @@
     "settings.llm.defaultRepairHint": "先选择默认模型，再点击对应卡片的“保存模型”修复配置。",
     "settings.llm.defaultSaved": "默认模型已更新",
     "settings.llm.saveBeforeProbe": "请先保存此模型的修改，再执行探测。",
-    "settings.llm.preset.deepseekFlash": "DeepSeek V4.1 Flash",
+    "settings.llm.preset.deepseekFlash": "DeepSeek Flash",
     "settings.llm.preset.deepseekPro": "DeepSeek Pro",
     "settings.llm.preset.deepseekAnthropic": "DeepSeek Anthropic",
     "settings.llm.preset.glm": "GLM 5.3",

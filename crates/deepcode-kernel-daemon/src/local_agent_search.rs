@@ -38,7 +38,7 @@ fn cloud_search_config(profile: &ResolvedLlmProfile) -> Option<CloudWebSearchCon
     let (provider, endpoint) = match (profile.provider_flavor.as_deref(), base.host_str()?, path) {
         (Some("deepseek"), "api.deepseek.com", "" | "/v1" | "/anthropic" | "/anthropic/v1") => (
             CloudWebSearchProvider::DeepSeek,
-            "https://api.deepseek.com/anthropic/v1/messages".into(),
+            "https://api.deepseek.com/v1/tools/search".into(),
         ),
         (Some("zhipu"), "open.bigmodel.cn", "/api/paas/v4") => (
             CloudWebSearchProvider::Glm,
@@ -93,6 +93,49 @@ mod tests {
     }
 
     #[test]
+    fn openai_and_codex_do_not_bind_deepseek_search_or_copy_credentials() {
+        for (adapter, base, credential_kind) in [
+            ("openai", "https://api.openai.com/v1", "apiKey"),
+            (
+                "openai-codex",
+                "https://chatgpt.com/backend-api/codex",
+                "oauth",
+            ),
+        ] {
+            let mut selected = profile("openai", base);
+            selected.connection.adapter_id = adapter.into();
+            selected.connection.base_url = base.into();
+            selected.connection.credential_kind = credential_kind.into();
+            selected.connection.billing_mode = if credential_kind == "oauth" {
+                "subscription"
+            } else {
+                "metered"
+            }
+            .into();
+            selected.kind = "responses".into();
+            selected.model = "gpt-6-astra".into();
+            selected.hosted_web_search = Some("web_search".into());
+            if credential_kind == "oauth" {
+                selected.api_key = None;
+                selected.account_id = Some("account:codex-test".into());
+            }
+            assert!(cloud_search_config(&selected).is_none());
+            let mut config = KernelExecutorConfig::default();
+            let existing_secrets = HashMap::from([(
+                "configured-deepseek".to_string(),
+                "deepseek-test-key".to_string(),
+            )]);
+            let mut secrets = DaemonSecretProvider {
+                values: existing_secrets.clone(),
+            };
+            bind_cloud_search(&mut config, &mut secrets, &selected, "selected-gpt");
+            assert!(config.cloud_web_search.is_none());
+            assert!(config.web_search_auth_secret_ref.is_empty());
+            assert_eq!(secrets.values, existing_secrets);
+        }
+    }
+
+    #[test]
     fn search_binding_uses_provider_endpoints_not_model_aliases() {
         for (flavor, base, provider) in [
             (
@@ -131,7 +174,11 @@ mod tests {
                 &profile(flavor, base),
                 "selected",
             );
-            assert_eq!(config.cloud_web_search.unwrap().provider, provider);
+            let cloud = config.cloud_web_search.unwrap();
+            assert_eq!(cloud.provider, provider);
+            if provider == CloudWebSearchProvider::DeepSeek {
+                assert_eq!(cloud.endpoint, "https://api.deepseek.com/v1/tools/search");
+            }
             assert_eq!(
                 secrets
                     .resolve(&config.web_search_auth_secret_ref)
