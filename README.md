@@ -10,9 +10,9 @@ DeepCode is a local-first coding agent with a desktop GUI, TUI, and CLI. Read an
 
 *A real GUI task using fictional project data: read a CSV, create an interactive dashboard, and inspect its preview. Try the [sample CSV](examples/delivery-dashboard/delivery-data.csv). This is a general product demonstration.*
 
-![English illustration of DeepCode TUI with mathematical notation](assets/readme/tui-localized-en.png)
+![English illustration of DeepCode TUI with mathematical notation](assets/readme/tui-borderless-en.png)
 
-*Based on a real TUI conversation; the interface labels were translated into English with image editing. The [original Chinese screenshot](assets/readme/tui-native-zh.png) shows the native capture. See [capture notes](assets/readme/README.md).*
+*Based on a real TUI conversation; image editing translated the interface labels into English and removed the outer white border. The [original Chinese screenshot](assets/readme/tui-native-zh.png) remains available. See [image notes](assets/readme/README.md).*
 
 ## Quick start
 

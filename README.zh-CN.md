@@ -10,9 +10,9 @@ DeepCode 是提供 GUI、TUI 和 CLI 的本地优先编程 Agent。它可以读�
 
 *使用虚构项目数据的真实 GUI 任务：读取 CSV、生成交互式看板并检查预览。可使用[示例 CSV](examples/delivery-dashboard/delivery-data.csv)尝试。这张图片用于通用产品展示。*
 
-![DeepCode 在真实终端窗口中展示中文与数学公式](assets/readme/tui-native-zh.png)
+![DeepCode TUI 中文与数学公式展示图](assets/readme/tui-borderless-zh.png)
 
-*真实 TUI 窗口中的已完成对话，展示当前中文与数学公式排版效果。详见[截图说明](assets/readme/README.md)。*
+*基于真实 TUI 对话截图，经图片编辑去除外沿白边的展示图。[原始截图](assets/readme/tui-native-zh.png)仍保留，详见[图片说明](assets/readme/README.md)。*
 
 ## 快速开始
 
