@@ -2,7 +2,7 @@
 
 # 在 DeepCode (Achbite) 中使用 DeepSeek
 
-[DeepCode](https://github.com/Achbite/DeepCode) 是采用 MIT 许可证、提供 GUI、TUI 和 CLI 的本地优先编程 Agent。本指南通过 **Responses API** 接入 **DeepSeek V4.1 Flash**，完成项目读取、工具执行和继续对话。
+[DeepCode](https://github.com/Achbite/DeepCode) 是采用 MIT 许可证、提供 GUI、TUI 和 CLI 的本地优先编程 Agent。本指南通过 **Responses API** 接入 **DeepSeek Flash**，完成项目读取、工具执行和继续对话。
 
 ## 1. 安装并打开 DeepCode
 
@@ -49,20 +49,21 @@ make shell
 
 | 设置 | 值 |
 | --- | --- |
-| 显示名称 | `DeepSeek V4.1 Flash` |
+| 显示名称 | `DeepSeek Flash` |
 | 模型 | `deepseek-flash` |
 | API 协议 | Responses API |
 | 上下文窗口 | `1000000` |
 | 最大输出 | `384000` |
 | 更多选项 → Thinking | 开启 |
 | 更多选项 → 推理强度 | `max` |
+| 更多选项 → 图像输入 | 开启 |
 | Web search / 联网搜索 | 关闭 |
 
-按照[最新 DeepSeek 模型文档](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)，API 模型名使用 `deepseek-flash`，`DeepSeek V4.1 Flash` 只是显示名称。部分接入示例仍写 `deepseek-v4-flash`，本指南采用上述当前 API 名称。
+API 模型名继续使用 `deepseek-flash`。DeepSeek [2026 年 10 月 17 日的更新](https://api-docs.deepseek.com/updates/)已将该名称指向 V4.1 Flash-1017，调用地址与模型名均不变。`DeepSeek Flash` 是显示名称。
 
-DeepSeek 官方说明支持 **1M token 上下文**和**最高 384K token 输出**。上表数值是 DeepCode 的 token 预算配置。上下文包含输入与生成输出，最大输出预算不代表必须生成这么多内容。保持 Thinking 开启，并明确保存 `max`；内置预设本身没有将推理强度固定为 `max`。详见[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)。
+DeepSeek 官方说明支持 **1M token 上下文**和**最高 384K token 输出**。上表数值是 DeepCode 的 token 预算配置。上下文包含输入与生成输出，最大输出预算不代表必须生成这么多内容。内置预设开启 Thinking 和图像输入，并将推理强度设为 `max`；已保存的模型配置保留原有设置。详见[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)。
 
-[Responses API](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 对 `deepseek-flash` 忽略内置 `web_search`，因此本指南的 Flash 配置将它关闭。同一 API 文档说明 `deepseek-v4-pro` 支持服务端联网搜索，那是另一条模型路径。单独配置的搜索工具有各自的可用条件。
+模型编辑器的**联网搜索**选项控制 Responses API 内置工具。Flash [会忽略该工具](https://api-docs.deepseek.com/guides/responses_api/)，因此预设将它关闭。DeepCode 独立的 `web.search` 工具使用 [DeepSeek Search API](https://api-docs.deepseek.com/guides/search/)：`POST https://api.deepseek.com/v1/tools/search`。使用官方 DeepSeek API 连接且未显式覆盖搜索配置时，自动复用该连接的 API Key，直接取得搜索结果与摘要，无需额外模型请求。查询支持服务提供的搜索操作符，最长 128 个 Unicode 字符；工具的结果数量范围仍为 1–10。搜索沿用现有公网访问权限，并按请求独立计费，详见[官方价格](https://api-docs.deepseek.com/quick_start/pricing/)。
 
 ![DeepCode 模型编辑器保存 DeepSeek V4.1 Flash、Responses API 和 Max](assets/deepseek-settings-en.png)
 

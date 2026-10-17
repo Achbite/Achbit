@@ -93,11 +93,11 @@ deepcode-tui -C /path/to/project
 
 解压版请将命令替换为对应启动器。`<profile-id>` 从 `connections` 中复制，是保存的配置 ID。TUI 中用 `/model` 选择模型、`/sessions` 和 `/resume` 继续会话，输入 `/` 查看可用命令。使用 `/language en-US` 或 `/language zh-CN` 切换并保存界面语言；它与消息中要求的回复语言分别设置。窗口和字体行为见[安装指南](docs/distribution.md)。
 
-## 模型与 DeepSeek
+## 模型与服务
 
 在 **设置 → 模型与服务** 中添加 API 服务或支持的订阅连接。GUI、CLI 和 TUI 共享已保存的连接与会话。
 
-DeepSeek 预设使用 **DeepSeek V4.1 Flash**（`deepseek-flash`）和 **Responses API**，上下文配置为 `1000000` token，最大输出预算为 `384000` token。启用 Thinking，并选择、保存 `max` 推理强度。完整的配置、首次任务和继续对话步骤见 [DeepSeek 接入指南](docs/product/deepseek.zh-CN.md)。其他连接及用量口径见[模型、订阅与用量](docs/product/model-services.md)，当前价格以链接的服务商文档为准。
+连接管理与用量口径见[模型、订阅与用量](docs/product/model-services.md)。DeepSeek 的具体配置与使用说明见[接入指南](docs/product/deepseek.zh-CN.md)。
 
 ## 扩展与 Computer Use
 

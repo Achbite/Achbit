@@ -2,7 +2,7 @@
 
 # Use DeepSeek with DeepCode (Achbite)
 
-[DeepCode](https://github.com/Achbite/DeepCode) is an MIT-licensed, local-first coding agent with GUI, TUI, and CLI interfaces. This guide connects **DeepSeek V4.1 Flash** through the **Responses API** to read a project, run tools, and continue the conversation.
+[DeepCode](https://github.com/Achbite/DeepCode) is an MIT-licensed, local-first coding agent with GUI, TUI, and CLI interfaces. This guide connects **DeepSeek Flash** through the **Responses API** to read a project, run tools, and continue the conversation.
 
 ## 1. Install and open DeepCode
 
@@ -49,20 +49,21 @@ Get an API key from the [DeepSeek Platform](https://platform.deepseek.com/).
 
 | Setting | Value |
 | --- | --- |
-| Display name | `DeepSeek V4.1 Flash` |
+| Display name | `DeepSeek Flash` |
 | Model | `deepseek-flash` |
 | API protocol | Responses API |
 | Context window | `1000000` |
 | Maximum output | `384000` |
 | More options → Thinking | Enabled |
 | More options → Reasoning effort | `max` |
+| More options → Image input | Enabled |
 | Web search | Off |
 
-Use `deepseek-flash` as the API model name, following the [current DeepSeek model documentation](https://api-docs.deepseek.com/quick_start/pricing/). `DeepSeek V4.1 Flash` is the display label. Some integration examples still use `deepseek-v4-flash`; use the current API name above for this setup.
+Use `deepseek-flash` as the API model name. DeepSeek's [October 17, 2026 update](https://api-docs.deepseek.com/updates/) routes that name to V4.1 Flash-1017 without changing the API address or model name. `DeepSeek Flash` is the display label.
 
-DeepSeek documents a **1M-token context window** and **up to 384K output tokens**. The settings above are DeepCode's token budgets. Context includes both input and generated output, and a maximum output budget does not request that many output tokens. Keep Thinking enabled and explicitly save `max`; the built-in preset does not itself fix the effort to `max`. See [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/).
+DeepSeek documents a **1M-token context window** and **up to 384K output tokens**. The settings above are DeepCode's token budgets. Context includes both input and generated output, and a maximum output budget does not request that many output tokens. The built-in preset enables Thinking and image input and sets reasoning effort to `max`. Existing saved profiles retain their settings. See [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/).
 
-For `deepseek-flash`, the [Responses API](https://api-docs.deepseek.com/guides/responses_api/) ignores the built-in `web_search` tool, so leave it off in this Flash setup. The same API documents server-side web search for `deepseek-v4-pro`; that is a different model path. Separately configured web-search tools have their own availability.
+The model editor's **Web search** option controls the Responses API's built-in tool. Flash [ignores that tool](https://api-docs.deepseek.com/guides/responses_api/), so this preset leaves it off. DeepCode's separate `web.search` tool uses the [DeepSeek Search API](https://api-docs.deepseek.com/guides/search/): `POST https://api.deepseek.com/v1/tools/search`. With an official DeepSeek API connection and no explicit search override, it reuses that connection's API key automatically. It returns search results and summaries directly, without an additional model request. Queries support the service's search operators and must contain at most 128 Unicode characters; the tool's result limit remains 1–10. Search calls follow the existing web-access permissions and are billed separately from model tokens; see [pricing](https://api-docs.deepseek.com/quick_start/pricing/).
 
 ![DeepCode model editor with DeepSeek V4.1 Flash, Responses API, and Max saved](assets/deepseek-settings-en.png)
 
