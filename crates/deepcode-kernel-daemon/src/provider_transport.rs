@@ -81,8 +81,10 @@ pub(crate) fn network_failure(error: reqwest::Error, phase: &str, secret: Option
                     | ErrorKind::Interrupted
                     | ErrorKind::WouldBlock
             );
-            // No HTTP request was sent if the peer closed during TLS setup.
-            retryable |= is_connect && phase == "send" && io.kind() == ErrorKind::UnexpectedEof;
+            // A peer can close during TLS setup or before the HTTP body ends.
+            // Session owns the retry budget and never resends a completed turn.
+            retryable |= io.kind() == ErrorKind::UnexpectedEof
+                && ((is_connect && phase == "send") || phase == "responseBody");
         }
         causes.push(item);
         if causes.len() == 16 {
@@ -232,6 +234,78 @@ pub(crate) fn valid_diagnostics(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chunked_body_eof_is_transient_but_invalid_framing_is_not() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for (tail, retryable) in [
+            (b"".as_slice(), true),
+            (b"invalid-size\r\n".as_slice(), false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let content = b"data: {\"type\":\"response.created\"}\n\n";
+            let peer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+                socket
+                    .write_all(format!("{:x}\r\n", content.len()).as_bytes())
+                    .await
+                    .unwrap();
+                socket.write_all(content).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+                socket.write_all(tail).await.unwrap();
+                socket.shutdown().await.unwrap();
+            });
+            let transport = ProviderTransport::new().unwrap();
+            let mut response = transport
+                .client
+                .get(format!("http://{address}/responses"))
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+                .unwrap();
+            let mut received = Vec::new();
+            let error = loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => received.extend_from_slice(&chunk),
+                    Ok(None) => panic!("an incomplete HTTP body must not complete successfully"),
+                    Err(error) => break error,
+                }
+            };
+            peer.await.unwrap();
+            assert_eq!(received, content);
+            let failure = network_failure(error, "responseBody", None);
+            assert!(valid_diagnostics(&failure["diagnostics"]));
+            assert_eq!(failure["code"], "provider_stream_read_failed");
+            assert_eq!(failure["diagnostics"]["phase"], "responseBody");
+            assert_eq!(failure["diagnostics"]["isConnect"], false);
+            assert_eq!(failure["diagnostics"]["isTimeout"], false);
+            assert_eq!(failure["diagnostics"]["retryable"], retryable, "{failure}");
+            assert_eq!(
+                failure["diagnostics"]["category"],
+                if retryable { "network" } else { "transport" }
+            );
+            if retryable {
+                assert!(
+                    failure["diagnostics"]["causes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|cause| cause["kind"] == "UnexpectedEof"),
+                    "{failure}"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn tls_handshake_eof_is_transient_but_invalid_tls_is_not() {

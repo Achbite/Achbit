@@ -5758,14 +5758,20 @@ test('mixed Plan batches are rejected before any effect and can be corrected to 
   }
 });
 
-test('transient provider attempts keep one request, discard partial output, and execute no partial tools', async (t) => {
+for (const failure of [
+  { code: 'provider_transport_failed', message: 'Connection reset.', diagnostics: {
+    source: 'providerTransport', phase: 'send', category: 'network', retryable: true,
+    isConnect: true, isTimeout: false, causes: [{ message: 'Connection reset by peer', kind: 'ConnectionReset', osCode: 104 }],
+  } },
+  { code: 'provider_stream_read_failed', message: 'Provider stream interrupted.', diagnostics: {
+    source: 'providerTransport', phase: 'responseBody', category: 'network', retryable: true,
+    isConnect: false, isTimeout: false, isBody: false,
+    causes: [{ message: 'unexpected EOF during chunk size line', kind: 'UnexpectedEof' }],
+  } },
+]) test(`transient ${failure.code} attempts keep one request, discard partial output, and execute no partial tools`, async (t) => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:network-retry';
   await createSession(journal, sessionId, [workspaceBinding]);
   const requests = [];
-  const failure = { code: 'provider_transport_failed', message: 'Connection reset.', diagnostics: {
-    source: 'providerTransport', phase: 'send', category: 'network', retryable: true,
-    isConnect: true, isTimeout: false, causes: [{ message: 'Connection reset by peer', kind: 'ConnectionReset', osCode: 104 }],
-  } };
   const actor = actorWith(journal, sessionId, { async *stream(request) {
     requests.push(structuredClone(request));
     if (requests.length === 1) {
