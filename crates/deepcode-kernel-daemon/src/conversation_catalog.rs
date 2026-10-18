@@ -3,6 +3,8 @@ use rusqlite::{params, Connection};
 
 const CATALOG_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/catalog.sql");
 const CATALOG_VERSION: u32 = 2;
+const CONVERSATION_TITLES_SCHEMA: &str =
+    include_str!("../../../contracts/agent-runtime/conversation-titles.sql");
 const SESSION_WORKDIR_SCHEMA: &str =
     include_str!("../../../contracts/agent-runtime/session-workdirs.sql");
 
@@ -33,10 +35,37 @@ pub(crate) struct ConversationProjectRecord {
     pub(crate) updated_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConversationTitleSource {
+    Initial,
+    Generated,
+    Manual,
+}
+
+impl ConversationTitleSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Generated => "generated",
+            Self::Manual => "manual",
+        }
+    }
+
+    fn decode(value: &str) -> Result<Self, String> {
+        match value {
+            "initial" => Ok(Self::Initial),
+            "generated" => Ok(Self::Generated),
+            "manual" => Ok(Self::Manual),
+            _ => Err(format!("Invalid conversation title source: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationSessionRecord {
     pub(crate) id: String,
     pub(crate) title: String,
+    pub(crate) title_source: Option<ConversationTitleSource>,
     pub(crate) workspace_bindings: Vec<WorkspaceBindingDisplayRecord>,
     pub(crate) project_id: Option<String>,
     pub(crate) profile_id: Option<String>,
@@ -86,6 +115,9 @@ impl ConversationCatalog {
         connection
             .execute_batch(SESSION_WORKDIR_SCHEMA)
             .map_err(|error| format!("创建会话工作目录目录表失败：{error}"))?;
+        connection
+            .execute_batch(CONVERSATION_TITLES_SCHEMA)
+            .map_err(|error| format!("创建会话标题目录表失败：{error}"))?;
         Self::read_all(&connection)
     }
 
@@ -163,6 +195,15 @@ impl ConversationCatalog {
                  workspace_bindings_json=excluded.workspace_bindings_json, profile_id=excluded.profile_id, updated_at=excluded.updated_at",
                 params![session.id, session.title, session.project_id, bindings, session.profile_id, session.created_at, session.updated_at],
             ).map_err(|error| format!("Write session catalog: {error}"))?;
+            if let Some(source) = session.title_source {
+                transaction
+                    .execute(
+                        "INSERT INTO conversation_titles(session_id, source) VALUES (?1, ?2)
+                     ON CONFLICT(session_id) DO UPDATE SET source=excluded.source",
+                        params![session.id, source.as_str()],
+                    )
+                    .map_err(|error| format!("Write conversation title source: {error}"))?;
+            }
         }
         transaction
             .commit()
@@ -175,6 +216,25 @@ impl ConversationCatalog {
             self.insert_session(session);
         }
         Ok(())
+    }
+
+    pub(crate) fn set_generated_title(
+        &mut self,
+        path: &FsPath,
+        session_id: &str,
+        title: String,
+    ) -> Result<bool, String> {
+        let Some(mut session) = self.session(session_id).cloned() else {
+            return Ok(false);
+        };
+        if session.title_source != Some(ConversationTitleSource::Initial) {
+            return Ok(false);
+        }
+        session.title = clean_title(&title)?;
+        session.title_source = Some(ConversationTitleSource::Generated);
+        // A metadata result must not reorder the user's conversations.
+        self.write_rows(path, vec![], None, Some(session))?;
+        Ok(true)
     }
 
     pub(crate) fn remove_project(
@@ -421,9 +481,9 @@ impl ConversationCatalog {
         {
             let mut statement = connection
                 .prepare(
-                    "SELECT session_id, title, project_id,
-                            workspace_bindings_json, profile_id, created_at, updated_at
-                     FROM session_catalog",
+                    "SELECT s.session_id, s.title, s.project_id,
+                            s.workspace_bindings_json, s.profile_id, s.created_at, s.updated_at, t.source
+                     FROM session_catalog s LEFT JOIN conversation_titles t ON t.session_id=s.session_id",
                 )
                 .map_err(|error| format!("读取 session catalog 失败：{error}"))?;
             let rows = statement
@@ -436,15 +496,28 @@ impl ConversationCatalog {
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 })
                 .map_err(|error| format!("读取 session catalog 失败：{error}"))?;
             for row in rows {
-                let (id, title, project_id, bindings, profile_id, created_at, updated_at) =
-                    row.map_err(|error| format!("解码 session catalog 失败：{error}"))?;
+                let (
+                    id,
+                    title,
+                    project_id,
+                    bindings,
+                    profile_id,
+                    created_at,
+                    updated_at,
+                    title_source,
+                ) = row.map_err(|error| format!("解码 session catalog 失败：{error}"))?;
                 catalog.sessions.push(ConversationSessionRecord {
                     id,
                     title,
+                    title_source: title_source
+                        .as_deref()
+                        .map(ConversationTitleSource::decode)
+                        .transpose()?,
                     project_id,
                     workspace_bindings: serde_json::from_str(&bindings)
                         .map_err(|error| format!("Session binding display 已损坏：{error}"))?,
@@ -680,6 +753,7 @@ mod tests {
         ConversationSessionRecord {
             id: id.into(),
             title: id.into(),
+            title_source: Some(ConversationTitleSource::Initial),
             workspace_bindings: vec![],
             project_id: None,
             profile_id: None,
@@ -696,6 +770,64 @@ mod tests {
             session_workdir: false,
             created_at: "now".into(),
         }
+    }
+
+    #[test]
+    fn conversation_title_generation_preserves_manual_priority_and_source_after_reopen() {
+        let store = Store::new();
+        let path = store.path();
+        let mut catalog = ConversationCatalog::load(&path).unwrap();
+        catalog
+            .write_rows(&path, vec![], None, Some(session("session:auto")))
+            .unwrap();
+        assert!(catalog
+            .set_generated_title(&path, "session:auto", "Review database design".into())
+            .unwrap());
+        let mut reopened = ConversationCatalog::load(&path).unwrap();
+        let automatic = reopened.session("session:auto").unwrap();
+        assert_eq!(automatic.title, "Review database design");
+        assert_eq!(
+            automatic.title_source,
+            Some(ConversationTitleSource::Generated)
+        );
+        assert_eq!(
+            automatic.updated_at, "now",
+            "background metadata must not reorder conversations"
+        );
+        assert!(!reopened
+            .set_generated_title(&path, "session:auto", "Second generation".into())
+            .unwrap());
+
+        let mut manual = session("session:manual");
+        manual.title = "My chosen name".into();
+        manual.title_source = Some(ConversationTitleSource::Manual);
+        reopened
+            .write_rows(&path, vec![], None, Some(manual))
+            .unwrap();
+        let mut reopened = ConversationCatalog::load(&path).unwrap();
+        assert!(!reopened
+            .set_generated_title(&path, "session:manual", "Late model response".into())
+            .unwrap());
+        assert_eq!(
+            reopened.session("session:manual").unwrap().title,
+            "My chosen name"
+        );
+        reopened.remove_session(&path, "session:auto").unwrap();
+        assert!(!reopened
+            .set_generated_title(&path, "session:auto", "Deleted task result".into())
+            .unwrap());
+        let connection = Connection::open(&path).unwrap();
+        let remaining: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM conversation_titles WHERE session_id='session:auto'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "deleting a Session also removes its title metadata"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::conversation_catalog::{
     automatic_conversation_title, canonical_folder_path, clean_title, workspace_display_name,
     ConversationCatalog, ConversationProjectRecord, ConversationSessionRecord,
-    ConversationWorkspaceRecord, WorkspaceBindingDisplayRecord,
+    ConversationTitleSource, ConversationWorkspaceRecord, WorkspaceBindingDisplayRecord,
 };
 use crate::prelude::*;
 use crate::{ApiResponse, AppState, GuiState, SessionServiceError, SessionServiceProcess};
@@ -190,7 +190,20 @@ pub(crate) async fn conversation_statuses_get(State(state): State<AppState>) -> 
     )
     .await
     {
-        Ok(value) => ApiResponse::ok(value),
+        Ok(mut value) => {
+            let gui = state.gui.lock().expect("gui state lock");
+            if let Some(statuses) = value.as_array_mut() {
+                for status in statuses {
+                    if let Some(session) = status["sessionId"]
+                        .as_str()
+                        .and_then(|id| gui.conversation_catalog.session(id))
+                    {
+                        status["title"] = json!(session.title);
+                    }
+                }
+            }
+            ApiResponse::ok(value)
+        }
         Err(error) => session_service_error(error),
     }
 }
@@ -1103,6 +1116,7 @@ pub(crate) async fn conversation_session_create(
         ConversationSessionRecord {
             id: session_id,
             title: "新对话".into(),
+            title_source: Some(crate::conversation_catalog::ConversationTitleSource::Initial),
             workspace_bindings: bindings,
             project_id: body.project_id,
             profile_id: Some(profile_id),
@@ -1281,6 +1295,7 @@ pub(crate) async fn create_agent_session(
         ConversationSessionRecord {
             id: body.session_id.clone(),
             title,
+            title_source: Some(crate::conversation_catalog::ConversationTitleSource::Manual),
             workspace_bindings: bindings,
             project_id: None,
             profile_id: Some(profile_id),
@@ -1387,8 +1402,10 @@ pub(crate) async fn conversation_session_update(
     let Some(mut session) = gui.conversation_catalog.session(&session_id).cloned() else {
         return ApiResponse::error("conversation_session_not_found", "对话不存在。");
     };
+    let renamed = title.is_some();
     if let Some(title) = title {
         session.title = title;
+        session.title_source = Some(ConversationTitleSource::Manual);
     }
     if let Some(project_id) = body.project_id.as_ref() {
         if project_id
@@ -1402,6 +1419,11 @@ pub(crate) async fn conversation_session_update(
     session.updated_at = now;
     if let Err(error) = persist_catalog_rows(&mut gui, Vec::new(), None, Some(session)) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
+    }
+    if renamed {
+        if let Some(task) = gui.conversation_title_tasks.remove(&session_id) {
+            task.abort();
+        }
     }
     visible_catalog_response(&gui, &state.local_agent.journal, false)
 }
@@ -1465,6 +1487,9 @@ async fn delete_conversation_session(
         let errors_before = cleanup_errors.len();
         let owned_roots = {
             let mut gui = state.gui.lock().expect("gui state lock");
+            if let Some(task) = gui.conversation_title_tasks.remove(deleted_id) {
+                task.abort();
+            }
             let path = gui.paths.catalog_store_path.clone();
             if let Err(error) = gui.conversation_catalog.remove_session(&path, deleted_id) {
                 cleanup_errors.push(format!("{deleted_id} [catalog] {error}"));
@@ -1693,6 +1718,14 @@ pub(crate) async fn conversation_command_submit(
         Some("context.focus") => Some("task"),
         _ => None,
     };
+    let title_input = input_field.map(|field| {
+        command[field]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(8_000)
+            .collect::<String>()
+    });
     if let Some(field) = input_field {
         if command
             .get("filesystemReferences")
@@ -1796,6 +1829,22 @@ pub(crate) async fn conversation_command_submit(
         } else {
             None
         };
+        if let (Some(text), Some(profile_id), Some(command_id)) = (
+            title_input.as_deref(),
+            chosen_profile.as_deref(),
+            command["commandId"].as_str(),
+        ) {
+            if let Err(error) = schedule_conversation_title(
+                &state,
+                &session_id,
+                command_id,
+                profile_id,
+                text,
+                &command["filesystemReferences"],
+            ) {
+                eprintln!("[conversation-title] session={session_id} command={command_id} {error}");
+            }
+        }
         if let Some(profile_id) = chosen_profile.as_deref() {
             let result = (|| {
                 let _transition = state.local_agent.runtime_transition()?;
@@ -1838,7 +1887,9 @@ pub(crate) async fn conversation_command_submit(
         let mut gui = state.gui.lock().expect("gui state lock");
         if gui.conversation_catalog_error.is_none() {
             if let Some(mut session) = gui.conversation_catalog.session(&session_id).cloned() {
-                if session.title == "新对话" {
+                if session.title == "新对话"
+                    && session.title_source == Some(ConversationTitleSource::Initial)
+                {
                     if let Some(title) = automatic_title.filter(|title| !title.is_empty()) {
                         session.title = title;
                     }
@@ -1855,6 +1906,163 @@ pub(crate) async fn conversation_command_submit(
         }
     }
     ApiResponse::ok(reply)
+}
+
+fn title_request_excerpt(text: &str, pasted_paths: &[PathBuf]) -> Result<String, String> {
+    let mut excerpt: String = text.chars().take(8_000).collect();
+    for path in pasted_paths {
+        let remaining = 8_000usize.saturating_sub(excerpt.chars().count());
+        if remaining <= 1 {
+            break;
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(path)
+            .and_then(|file| file.take((remaining * 4) as u64).read_to_end(&mut bytes))
+            .map_err(|error| format!("conversation_title_input_read_failed: {error}"))?;
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            // The bounded byte read can end between UTF-8 code points.
+            Err(error) if error.error_len().is_none() => {
+                std::str::from_utf8(&bytes[..error.valid_up_to()]).expect("validated UTF-8 prefix")
+            }
+            Err(error) => return Err(format!("conversation_title_input_invalid: {error}")),
+        };
+        excerpt.push('\n');
+        excerpt.extend(text.chars().take(remaining - 1));
+    }
+    if excerpt.trim().is_empty() {
+        return Err("conversation_title_input_empty".into());
+    }
+    Ok(format!(
+        "First user message (excerpt, at most 8,000 characters):\n{excerpt}"
+    ))
+}
+
+/// Title generation is Host metadata work; it never joins or advances the Session loop.
+fn schedule_conversation_title(
+    state: &AppState,
+    session_id: &str,
+    command_id: &str,
+    profile_id: &str,
+    text: &str,
+    filesystem_references: &Value,
+) -> Result<(), String> {
+    if state
+        .local_agent
+        .journal
+        .first_input_command_id(session_id)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?
+        .as_deref()
+        != Some(command_id)
+    {
+        return Ok(());
+    }
+    let mut gui = state.gui.lock().expect("gui state lock");
+    if gui
+        .conversation_catalog
+        .session(session_id)
+        .is_none_or(|session| session.title_source != Some(ConversationTitleSource::Initial))
+        || gui.conversation_title_tasks.contains_key(session_id)
+    {
+        return Ok(());
+    }
+    // Only Host-owned pasted text is part of the submitted message. Other attachments
+    // remain addresses, and are never silently opened by this auxiliary request.
+    let pasted_paths = filesystem_references
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|reference| reference["source"] == "pastedText")
+        .map(|reference| {
+            let workspace = reference["workspaceId"]
+                .as_str()
+                .and_then(|id| gui.conversation_catalog.workspace(id))
+                .filter(|workspace| workspace.owner_session_id.as_deref() == Some(session_id))
+                .ok_or_else(|| "conversation_title_pasted_input_unavailable".to_string())?;
+            Ok(PathBuf::from(&workspace.canonical_root).join("user-input.txt"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let text = if text.trim().is_empty() && pasted_paths.is_empty() {
+        filesystem_references[0]["displayName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        text.to_string()
+    };
+    let mut profile = crate::resolve_llm_profile(&gui, Some(profile_id))?;
+    let request_id = crate::new_runtime_ref("conversation-title")?;
+    let state = state.clone();
+    let session_id = session_id.to_string();
+    let key = session_id.clone();
+    let profile_id = profile_id.to_string();
+    let task = tokio::spawn(async move {
+        let result = async {
+            let text =
+                tokio::task::spawn_blocking(move || title_request_excerpt(&text, &pasted_paths))
+                    .await
+                    .map_err(|error| format!("conversation_title_input_failed: {error}"))??;
+            crate::model_auth::authorize(&state, &mut profile)
+                .await
+                .map_err(|error| format!("provider_authentication_failed: {error}"))?;
+            let mut usage = state
+                .model_usage
+                .begin(
+                    &profile,
+                    &json!({
+                        "profileId": profile_id, "sessionId": session_id,
+                        "requestId": request_id, "purpose": "conversationTitle",
+                    }),
+                )
+                .map_err(|error| format!("usage_record_failed: {error}"))?;
+            crate::llm_transport::generate_conversation_title(
+                &state.local_agent.provider_transport.client,
+                &profile,
+                &session_id,
+                &request_id,
+                &text,
+                &mut usage,
+            )
+            .await
+            .map_err(|error| format!("{}: {}", error.code, error.safe_message()))
+        }
+        .await;
+        let mut gui = state.gui.lock().expect("gui state lock");
+        match result {
+            Ok(title) => {
+                let path = gui.paths.catalog_store_path.clone();
+                if let Err(error) =
+                    gui.conversation_catalog
+                        .set_generated_title(&path, &session_id, title)
+                {
+                    eprintln!("[conversation-title] session={session_id} request={request_id} conversation_catalog_write_failed: {error}");
+                }
+            }
+            Err(error) => {
+                eprintln!("[conversation-title] session={session_id} request={request_id} {error}")
+            }
+        }
+        gui.conversation_title_tasks.remove(&session_id);
+    });
+    gui.conversation_title_tasks.insert(key, task);
+    Ok(())
+}
+
+pub(crate) async fn shutdown_conversation_titles(state: &AppState) {
+    let tasks: Vec<_> = state
+        .gui
+        .lock()
+        .expect("gui state lock")
+        .conversation_title_tasks
+        .drain()
+        .map(|(_, task)| task)
+        .collect();
+    for task in &tasks {
+        task.abort();
+    }
+    for task in tasks {
+        let _ = task.await;
+    }
 }
 
 /// Register and bind the Host-owned working directory before the next run freezes
@@ -2826,6 +3034,26 @@ mod tests {
     }
 
     #[test]
+    fn conversation_title_reads_bounded_pasted_text_and_keeps_input_errors() {
+        let tree = TemporaryTree::new("title-input");
+        let path = tree.0.join("user-input.txt");
+        fs::write(
+            &path,
+            format!("数据库检索与分析方案：{}", "中文响应耗时".repeat(4_000)),
+        )
+        .unwrap();
+        let request =
+            title_request_excerpt("请分析下面的产品需求", std::slice::from_ref(&path)).unwrap();
+        let excerpt = request.split_once('\n').unwrap().1;
+        assert!(excerpt.starts_with("请分析下面的产品需求\n数据库检索与分析方案："));
+        assert_eq!(excerpt.chars().count(), 8_000);
+        fs::remove_file(&path).unwrap();
+        assert!(title_request_excerpt("请分析", &[path])
+            .unwrap_err()
+            .starts_with("conversation_title_input_read_failed:"));
+    }
+
+    #[test]
     fn session_workdir_is_separate_stable_and_retains_contents_after_catalog_reopen() {
         let tree = TemporaryTree::new("session-workdir");
         let store = tree.0.join("catalog.sqlite3");
@@ -2839,6 +3067,9 @@ mod tests {
                 Some(ConversationSessionRecord {
                     id: "session:working".into(),
                     title: "Preview".into(),
+                    title_source: Some(
+                        crate::conversation_catalog::ConversationTitleSource::Initial,
+                    ),
                     workspace_bindings: vec![],
                     project_id: None,
                     profile_id: None,
@@ -2917,6 +3148,7 @@ mod tests {
             sessions: vec![ConversationSessionRecord {
                 id: "session:test".to_string(),
                 title: "Test".to_string(),
+                title_source: Some(crate::conversation_catalog::ConversationTitleSource::Initial),
                 workspace_bindings: Vec::new(),
                 project_id: None,
                 profile_id: Some("profile:test".to_string()),

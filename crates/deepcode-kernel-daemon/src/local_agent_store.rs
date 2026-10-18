@@ -271,6 +271,22 @@ impl LocalAgentJournal {
         Ok(committed)
     }
 
+    pub(crate) fn first_input_command_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        self.lock()?
+            .query_row(
+                "SELECT json_extract(payload_json, '$.commandId') FROM session_events
+             WHERE session_id=?1 AND event_type='input.accepted' ORDER BY sequence LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))
+    }
+
     pub(crate) fn read_events(
         &self,
         session_id: &str,
@@ -6268,6 +6284,50 @@ mod tests {
                 .unwrap()
                 .settings["agent.permissions.shellAccess"],
             "workspace"
+        );
+    }
+
+    #[test]
+    fn conversation_title_uses_only_the_first_accepted_input_identity() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        journal
+            .create_session("session:title", "Title", &json!([]), None, None)
+            .unwrap();
+        assert_eq!(
+            journal.first_input_command_id("session:title").unwrap(),
+            None
+        );
+        for (command_id, message_id, text) in [
+            (
+                "command:first",
+                "message:first",
+                "Review the database product",
+            ),
+            ("command:next", "message:next", "Continue implementation"),
+        ] {
+            journal
+                .append(
+                    &json!({"type":"input.accepted", "sessionId":"session:title",
+                "payload":{"commandId":command_id,"messageId":message_id,"text":text}}),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            journal
+                .first_input_command_id("session:title")
+                .unwrap()
+                .as_deref(),
+            Some("command:first")
+        );
+        drop(journal);
+        let reopened = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(
+            reopened
+                .first_input_command_id("session:title")
+                .unwrap()
+                .as_deref(),
+            Some("command:first")
         );
     }
 

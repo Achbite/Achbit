@@ -2425,6 +2425,83 @@ test('unchanged status snapshots do not publish redundant GUI state updates', as
   assert.equal(publications, 2);
 });
 
+test('background titles use the existing status refresh independently of Session revision', async (t) => {
+  const summary = { id: 'session:title', title: '新对话', workspaceBindings: [],
+    createdAt: '2026-10-18', updatedAt: '2026-10-18' };
+  let statuses = [{ sessionId: summary.id, revision: 1, run: null }];
+  let requests = 0;
+  installGuiFetch(t, async (url) => {
+    assert.equal(url.pathname, '/api/conversation/statuses');
+    requests += 1;
+    return Response.json({ ok: true, data: statuses });
+  });
+  const store = await loadGuiModelStore(t);
+  store.setState({ catalog: { projects: [], sessions: [summary] } });
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '新对话', 'missing title does not invent a replacement');
+  statuses = [{ ...statuses[0], title: '修复会话标题' },
+    { sessionId: 'session:uncatalogued', revision: 1, run: null, title: 'Not a new catalog entry' }];
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
+  assert.equal(store.getState().catalog.sessions.length, 1);
+  assert.equal(store.getState().sessionStatuses[summary.id].revision, 1);
+  let publications = 0;
+  const unsubscribe = store.subscribe(() => { publications += 1; });
+  t.after(unsubscribe);
+  await store.getState().refresh();
+  assert.equal(publications, 0, 'unchanged title and status do not republish the catalog');
+  statuses = [{ sessionId: summary.id, revision: 1, run: null }];
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
+  statuses = [{ ...statuses[0], title: 7 }];
+  await store.getState().refresh();
+  assert.equal(store.getState().statusError, 'conversation_statuses_invalid');
+  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
+  assert.equal(requests, 5, 'each existing refresh makes only its status request');
+});
+
+test('background title replies do not overwrite a concurrent manual rename', async (t) => {
+  const summary = { id: 'session:rename', title: '新对话', workspaceBindings: [],
+    createdAt: '2026-10-18', updatedAt: '2026-10-18' };
+  let releaseStatus, releaseRename;
+  let deferStatus = true, deferRename = false;
+  let statusTitle = '模型标题';
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname === '/api/conversation/statuses') {
+      const result = { ok: true, data: [{ sessionId: summary.id, revision: 2,
+        run: { runId: 'run:title', status: 'completed' }, title: statusTitle }] };
+      if (deferStatus) await new Promise(resolve => { releaseStatus = resolve; });
+      return Response.json(result);
+    }
+    assert.equal(url.pathname, `/api/conversation/sessions/${encodeURIComponent(summary.id)}`);
+    assert.equal(init.method, 'PATCH');
+    const { title } = JSON.parse(init.body);
+    if (deferRename) await new Promise(resolve => { releaseRename = resolve; });
+    return Response.json({ ok: true, data: { projects: [], sessions: [{ ...summary, title }] } });
+  });
+  const store = await loadGuiModelStore(t);
+  store.setState({ catalog: { projects: [], sessions: [summary] } });
+  const oldRefresh = store.getState().refresh();
+  await waitUntil(() => releaseStatus, 'status request started');
+  await store.getState().updateSession(summary.id, { title: '用户标题' });
+  releaseStatus();
+  await oldRefresh;
+  assert.equal(store.getState().catalog.sessions[0].title, '用户标题');
+  assert.equal(store.getState().sessionStatuses[summary.id].run.status, 'completed', 'late status still carries valid run facts');
+
+  deferStatus = false;
+  deferRename = true;
+  const renaming = store.getState().updateSession(summary.id, { title: '用户再次改名' });
+  await waitUntil(() => releaseRename, 'rename request started');
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '用户标题', 'pending rename owns the title mutation');
+  releaseRename();
+  await renaming;
+  statusTitle = '用户再次改名';
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '用户再次改名');
+});
+
 test('round change totals use first before and final after, without summing repeated edits', async (t) => {
   const { changedFiles, readRoundChange } = await loadGuiModule(t, '/src/components/local-agent/fileChangeSummary.ts');
   const { calculateChangedLines: countChangedLines } = await loadGuiModule(t, '/src/components/local-agent/fileChangeLineCounts.ts');

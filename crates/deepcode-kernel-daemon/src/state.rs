@@ -36,6 +36,7 @@ pub(crate) struct GuiState {
     pub(crate) llm_profiles: LlmProfileStore,
     pub(crate) conversation_catalog: crate::conversation_catalog::ConversationCatalog,
     pub(crate) conversation_catalog_error: Option<String>,
+    pub(crate) conversation_title_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
 impl GuiState {
@@ -85,6 +86,7 @@ impl GuiState {
             llm_profiles,
             conversation_catalog,
             conversation_catalog_error,
+            conversation_title_tasks: HashMap::new(),
         })
     }
 }

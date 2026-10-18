@@ -52,6 +52,8 @@ struct CallRecord {
     provider_attempt_id: Option<String>,
     purpose: String,
     started_at: u64,
+    completed_at: Option<u64>,
+    duration_ms: Option<f64>,
     billing_mode: String,
     requested_model: String,
     actual_model: Option<String>,
@@ -107,6 +109,7 @@ impl UsageStore {
         identity: &Value,
     ) -> Result<UsageCall, String> {
         // A physical HTTP attempt is counted once. Retrying creates another attempt, not another Session fact.
+        let started = std::time::Instant::now();
         let record = CallRecord {
             id: new_runtime_ref("usage")?,
             connection_id: profile.connection.id.clone(),
@@ -117,6 +120,8 @@ impl UsageStore {
             provider_attempt_id: identity["providerAttemptId"].as_str().map(str::to_owned),
             purpose: identity["purpose"].as_str().unwrap_or("probe").into(),
             started_at: crate::model_auth::now_ms(),
+            completed_at: None,
+            duration_ms: None,
             billing_mode: profile.connection.billing_mode.clone(),
             requested_model: profile.model.clone(),
             actual_model: None,
@@ -131,6 +136,7 @@ impl UsageStore {
         };
         self.save(&record)?;
         Ok(UsageCall {
+            started,
             store: self.clone(),
             record,
             adapter_id: profile.connection.adapter_id.clone(),
@@ -226,6 +232,7 @@ impl UsageStore {
 }
 
 pub(crate) struct UsageCall {
+    started: std::time::Instant,
     store: Arc<UsageStore>,
     record: CallRecord,
     adapter_id: String,
@@ -234,6 +241,15 @@ pub(crate) struct UsageCall {
     observed: Option<ObservedUsage>,
 }
 impl UsageCall {
+    /// Called only by an owner that observed the request end; Drop never invents completion.
+    pub fn finish_timing(&mut self) -> Result<(), String> {
+        if self.record.completed_at.is_none() {
+            self.record.completed_at = Some(crate::model_auth::now_ms());
+            self.record.duration_ms = Some(self.started.elapsed().as_secs_f64() * 1000.0);
+        }
+        self.store.save(&self.record)
+    }
+
     pub fn observe(&mut self, observed: ObservedUsage) -> Result<(), String> {
         if self.observed.as_ref() == Some(&observed) {
             return Ok(());

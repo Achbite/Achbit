@@ -95,9 +95,10 @@ export async function getConversationCatalog(
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
   const value = await request<unknown>(`${API_BASE}/conversation/statuses`, { signal });
   if (!Array.isArray(value) || !value.every((item) => (
-    isExactRecord(item, ['sessionId', 'revision', 'run'])
+    isExactRecord(item, ['sessionId', 'revision', 'run'], ['title'])
     && isIdentifier(item.sessionId)
     && Number.isSafeInteger(item.revision) && Number(item.revision) >= 1
+    && (item.title === undefined || typeof item.title === 'string')
     && (item.run === null || (
       isExactRecord(item.run, ['runId', 'status'], ['waitingReason'])
       && isIdentifier(item.run.runId)
