@@ -10,6 +10,7 @@ export default defineConfig({
       reader: fileURLToPath(new URL('./reader.html', import.meta.url)),
       approvalModel: fileURLToPath(new URL('./approval-model.html', import.meta.url)),
       composer: fileURLToPath(new URL('./composer.html', import.meta.url)),
+      imageReview: fileURLToPath(new URL('./image-review.html', import.meta.url)),
       followModel: fileURLToPath(new URL('./follow-model.html', import.meta.url)),
       usageWidget: fileURLToPath(new URL('./usage-widget.html', import.meta.url)),
       viewport: fileURLToPath(new URL('./viewport.html', import.meta.url)),

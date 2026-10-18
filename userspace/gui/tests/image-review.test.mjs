@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
-test('image review handlers open and close the dialog reference and SSR retains the loaded image', async t => {
+test('image review keeps its native dialog and image source with explicit zoom and fit controls', async t => {
   const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'Win32' } });
   t.after(() => {
@@ -13,20 +13,26 @@ test('image review handlers open and close the dialog reference and SSR retains 
   });
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
   const calls = [];
+  let view;
   function Probe() {
-    const view = ImageReview({ source: 'blob:loaded-image', alt: 'Rendered chart' });
-    const opener = findReactElement(view, node => node.type === 'button' && node.props['aria-label']?.includes('Rendered chart'));
-    const dialog = findReactElement(view, node => node.type === 'dialog' && node.props['aria-label'] === 'Rendered chart');
-    dialog.props.ref.current = { showModal: () => calls.push('open'), close: () => calls.push('close') };
-    opener.props.onClick();
-    findReactElement(dialog, node => node.type === 'button').props.onClick();
+    view = ImageReview({ source: 'blob:loaded-image', alt: 'Rendered chart' });
     return view;
   }
   const html = renderToStaticMarkup(createElement(Probe));
+  const opener = findReactElement(view, node => node.type === 'button' && node.props['aria-label']?.includes('Rendered chart'));
+  const dialog = findReactElement(view, node => node.type === 'dialog' && node.props['aria-label'] === 'Rendered chart');
+  dialog.props.ref.current = { showModal: () => calls.push('open'), close: () => calls.push('close') };
+  opener.props.onClick();
+  findReactElement(dialog, node => node.type === 'button' && /^(Close image|关闭图片)$/.test(node.props.children)).props.onClick();
   assert.deepEqual(calls, ['open', 'close']);
   assert.equal((html.match(/src="blob:loaded-image"/g) ?? []).length, 2);
   assert.match(html, /<dialog[^>]+aria-label="Rendered chart"/);
-  assert.doesNotMatch(html, /disabled=/);
+  assert.equal(opener.props.disabled, false, 'loaded thumbnails remain clickable');
+  assert.equal(findReactElement(dialog, node => node.type === 'button' && /^(Fit to window|适应窗口)$/.test(node.props.children)).props['aria-pressed'], true);
+  for (const label of [/^(Zoom in|放大图片)$/, /^(Zoom out|缩小图片)$/]) {
+    assert.equal(findReactElement(dialog, node => node.type === 'button' && label.test(node.props['aria-label'])).props.disabled, true,
+      'zoom waits for the decoded image and visible viewport dimensions');
+  }
   assert.match(html, /data-frameless="true"/, 'Windows image display remains a clickable viewer without button chrome');
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'MacIntel' } });
   const mac = renderToStaticMarkup(createElement(ImageReview, { source: 'blob:loaded-image', alt: 'Rendered chart' }));
