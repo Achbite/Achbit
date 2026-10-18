@@ -18,6 +18,8 @@ export DEEPCODE_USER_ROOT=/absolute/debug-state
 
 `launch` 启动独立 Host 和 GUI，返回实例、控制身份与目录。`--headless` 只启动 Host。已有实例使用 `attach --workspace ...` 接管；`detach` 结束控制但不等于取消任务，`stop` 关闭当前启动器拥有的 GUI 和 Host 并返回生命周期结果。模型设置在此独立实例中配置，不自动复制稳定版凭据。重新打包不更新正在运行的进程；新 GUI 也可能连接已有 Host，验证 Session、Kernel 或内置指导修改时应确认实际加载的进程。
 
+GUI 启动最多等待 20 秒，确认进程仍在、控制端已注册、主工作台已加载且 Host 已连接。`gui` 字段报告就绪和耗时；提前退出或未就绪返回非零退出码，保留本轮归属回执供 `stop` 清理。仅生成 PID 不代表 GUI 就绪。
+
 ## 工具、组件和界面
 
 ```sh
@@ -32,6 +34,12 @@ export DEEPCODE_USER_ROOT=/absolute/debug-state
 `tools call` 直接进入 Kernel 工具执行链，不创建 Session、Provider 或 Agent Loop。每次 `fs.read` 仍只接收一个文件；多个独立调用可并发执行，最多四个在途执行。可并发启动 CLI 调用，或用 `--no-wait` 连续提交后以 `operation inspect --operation-id ... --wait-ms 180000` 等待结果。普通 Agent 也可并行调度连续独立 read，写入及其他工具保留顺序边界，不新增多文件 read 输入。需要授权的操作返回 `operationId` 和决定信息，使用 `operation respond` 沿既有权限批准，或用 `operation cancel` 取消。失败终态使用非零退出码。
 
 `action --target ... --name ... --args JSON` 控制产品界面。先 inspect 获取真实目标和控件，再调用对应动作；结果包含状态、截图引用和计时。DOM 点击会检查实际命中目标，遮挡返回原始失败。`components list/activate` 复用 Kernel 插件目录；GUI 组件实例及其可调用动作来自 surface inspection，使用 `plugin.action` 和返回的 `componentId`、`action`、`arguments` 调用。回调返回不等于异步业务结束，提交消息仍沿原 Session 执行。系统权限和外部登录窗口不属于产品控制面。
+
+组件 owner 可声明当前可用性、不可用原因以及自己确认的业务完成语义；未声明时保留 `not-declared` / `not-asserted`，调用前再次检查。会话切换会从真实目录加载外部创建的会话，确认投影已加载才返回 `session-loaded`。
+
+动作可附带 `waitFor`：DOM 条件使用观察到的 `selector` 和 `text/value/visible/absent`；组件条件使用观察到的 `componentId`、输入字段路径 `path` 和目标值 `equals`，例如 `{"componentId":"实际ID","path":["data","activeSessionId"],"equals":"目标Session ID"}`。等待最长 15 秒；状态条件匹配不代表 Agent 已完成执行。
+
+文字和元素截断明确报告覆盖范围，DOM 控件列出支持动作和禁用/只读状态。条件超时保留已执行结果和原始错误，继续取得动作后的观察与截图。未取得渲染边界、截断观察、缺失测量或截图会返回 `partial` 与 `observationFailures`，CLI 非零退出，不重放动作。控制 Agent 应读取同一回执的 `screenshot.contentRef` 原图；组件测量保留自身身份，不能把同期采集等同为全部由该动作造成。
 
 ## macOS 原生文件与目录选择器
 

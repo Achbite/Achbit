@@ -42,6 +42,32 @@ test('component schema rejects arbitrary methods and bad inputs; original owner 
   assert.equal(result.businessCompletion, 'not-asserted');
 });
 
+test('component owner publishes availability and verifies its own completion', async t => {
+  const { createDebugUiRegistry } = await loadGuiModule(t, '/src/debug/registry.ts');
+  const registry = createDebugUiRegistry();
+  let busy = true, loaded = null;
+  registry.register('navigation', { slot: 'navigation', pluginId: null,
+    read: () => ({ loaded }),
+    actionStates: () => ({ activateSession: { unavailableReason: busy ? 'navigation_busy' : null, completion: 'session-loaded' } }),
+    actions: () => ({ activateSession: async id => {
+      if (id === 'missing') throw new Error('session_not_found');
+      loaded = id;
+    } }),
+  });
+  assert.equal(registry.list()[0].actions[0].availability, 'unavailable');
+  await assert.rejects(registry.call('navigation', 'activateSession', ['one']), /navigation_busy/);
+  assert.equal(loaded, null);
+  busy = false;
+  assert.equal(registry.list()[0].actions[0].availability, 'available');
+  const result = await registry.call('navigation', 'activateSession', ['one']);
+  assert.equal(result.businessCompletion, 'session-loaded');
+  assert.equal(loaded, 'one');
+  await assert.rejects(registry.call('navigation', 'activateSession', ['missing']), /session_not_found/);
+  busy = true;
+  await assert.rejects(registry.call('navigation', 'activateSession', ['two']), /navigation_busy/);
+  assert.equal(loaded, 'one');
+});
+
 test('ordinary run timing displays recorded response duration and omits unrecorded duration', async t => {
   const { RunTiming } = await loadGuiModule(t, '/src/components/local-agent/RunTiming.tsx');
   const text = value => Array.isArray(value) ? value.map(text).join(' ') : value && typeof value === 'object' ? text(value.props?.children) : String(value ?? '');

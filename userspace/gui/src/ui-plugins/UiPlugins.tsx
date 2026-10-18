@@ -140,6 +140,7 @@ export function UiPluginSlotView({
   onConnectionChanged,
   regions,
   actions,
+  debugActions,
 }: {
   slot: Exclude<UiPluginSlot, 'theme'>;
   input: UiPluginInput;
@@ -148,6 +149,7 @@ export function UiPluginSlotView({
   onConnectionChanged?(): Promise<void>;
   regions?: Record<string, React.ReactNode>;
   actions?: UiViewActions;
+  debugActions?: import('../debug/registry').DebugActionStates;
 }) {
   const context = useContext(Context);
   const { entries } = useUiPlugins();
@@ -164,6 +166,7 @@ export function UiPluginSlotView({
   const latestInput = useRef(input);
   latestInput.current = input;
   const liveActions = useRef(actions); liveActions.current = actions;
+  const liveDebugActions = useRef(debugActions); liveDebugActions.current = debugActions;
   const names = Object.keys(regions ?? {}).join('|');
   const regionHosts = useMemo(() => Object.fromEntries(context && typeof document !== 'undefined' && names ? names.split('|').map(name => {
     const host = document.createElement('div'); host.style.display = 'contents'; host.dataset.uiRegion = name;
@@ -179,6 +182,7 @@ export function UiPluginSlotView({
       slot, pluginId: entry?.manifest?.id ?? null,
       read: () => latestInput.current,
       actions: () => (liveActions.current ?? {}) as Record<string, (...args: never[]) => unknown>,
+      actionStates: () => liveDebugActions.current ?? {},
     });
   }, [debugId, slot, entry?.manifest?.id]);
 

@@ -1,9 +1,16 @@
 /** Only the explicit Debug entry installs this registry. Actions retain their UI owner. */
+export interface DebugActionState {
+  unavailableReason: string | null;
+  /** Only an owner that verifies the business result may declare this. */
+  completion?: string;
+}
+export type DebugActionStates = Record<string, DebugActionState>;
 export interface ComponentSource {
   slot: string;
   pluginId: string | null;
   read(): unknown;
   actions(): Record<string, (...args: never[]) => unknown>;
+  actionStates?(): DebugActionStates;
 }
 const signatures: Record<string, readonly string[]> = {
   selectModel: ['string', 'nullableString'], pickAttachments: [], addAttachments: ['attachments'],
@@ -35,7 +42,11 @@ export function createDebugUiRegistry() {
     },
     measure,
     list: () => [...components].map(([id, source]) => ({ id, slot: source.slot, pluginId: source.pluginId,
-      input: source.read(), actions: Object.keys(source.actions()).filter(name => name in signatures).map(name => ({ name, arguments: signatures[name] })) })),
+      input: source.read(), actions: Object.keys(source.actions()).filter(name => name in signatures).map(name => {
+        const state = source.actionStates?.()[name];
+        return { name, arguments: signatures[name], availability: state ? (state.unavailableReason ? 'unavailable' : 'available') : 'not-declared',
+          reason: state?.unavailableReason ?? null, businessCompletion: state?.completion ?? 'not-asserted' };
+      }) })),
     async call(id: string, name: string, args: unknown[]) {
       const source = components.get(id);
       if (!source) throw new Error('debug_component_not_mounted');
@@ -43,13 +54,15 @@ export function createDebugUiRegistry() {
       if (!signature || args.length !== signature.length || !signature.every((kind, index) => valid(kind, args[index]))) throw new Error('debug_component_invalid_arguments');
       const action = source.actions()[name];
       if (!action) throw new Error('debug_component_action_unavailable');
+      const state = source.actionStates?.()[name];
+      if (state?.unavailableReason) throw new Error(state.unavailableReason);
       const startedAt = performance.now();
       try {
         const value = action(...args as never[]);
         const asynchronous = value instanceof Promise || (value && typeof (value as { then?: unknown }).then === 'function');
         const result = await value;
         measure(id, name, startedAt, 'completed');
-        return { result: result ?? null, completion: asynchronous ? 'handler-resolved' : 'handler-returned', businessCompletion: 'not-asserted' };
+        return { result: result ?? null, completion: asynchronous ? 'handler-resolved' : 'handler-returned', businessCompletion: state?.completion ?? 'not-asserted' };
       } catch (error) { measure(id, name, startedAt, 'failed'); throw error; }
     },
     measurements() {

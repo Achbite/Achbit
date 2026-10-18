@@ -17,28 +17,41 @@
     return r.width > 0 && r.height > 0 && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
   };
   const frames = () => [...document.querySelectorAll('iframe,frame')];
-  const inspect = () => ({
+  const inspect = () => {
+    const text = document.body?.innerText ?? '';
+    const elements = [...document.querySelectorAll('a,button,input,textarea,select,summary,[role],[tabindex],[contenteditable="true"]')].filter(visible);
+    return {
     url: location.href, title: document.title, readyState: document.readyState,
+    hostStatus: document.querySelector('[data-host-status]')?.getAttribute('data-host-status') ?? null,
     viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
-    text: document.body?.innerText?.slice(0, 64000) ?? '', textLimit: 64000,
-    elements: [...document.querySelectorAll('a,button,input,textarea,select,summary,[role],[tabindex],[contenteditable="true"]')]
-      .filter(visible).slice(0, 512).map(element => {
+    text: text.slice(0, 64000), textLimit: 64000,
+    coverage: { text: text.length > 64000 ? 'truncated' : 'complete', elements: elements.length > 512 ? 'truncated' : 'complete', totalElements: elements.length },
+    elements: elements.slice(0, 512).map(element => {
         const r = element.getBoundingClientRect();
+        const disabled = !!element.closest(':disabled,[aria-disabled="true"],[inert]');
+        const editable = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable;
+        const actions = ['focus', 'scroll', 'key'];
+        if (typeof element.click === 'function') actions.push('click');
+        if (editable) actions.push('type');
+        if (element instanceof HTMLSelectElement) actions.push('select');
         return { selector: selectorFor(element), role: element.getAttribute('role') ?? element.localName,
           text: (element.getAttribute('aria-label') ?? element.innerText ?? '').slice(0, 1000),
           value: element.matches('input[type="password"]') ? undefined : element.value,
-          checked: element.checked, disabled: element.disabled ?? element.getAttribute('aria-disabled') === 'true',
+          checked: element.checked, disabled, readOnly: !!element.readOnly,
+          actions: actions.map(name => ({ name, availability: disabled || (name === 'type' && element.readOnly) ? 'unavailable' : 'available',
+            reason: disabled ? 'debug_element_disabled' : name === 'type' && element.readOnly ? 'debug_input_read_only' : null })),
           options: element instanceof HTMLSelectElement ? [...element.options].map(option => ({ value: option.value, text: option.text, selected: option.selected })) : undefined,
           bounds: { x: r.x, y: r.y, width: r.width, height: r.height } };
       }), elementLimit: 512,
     frames: frames().map((frame, index) => ({ index, title: frame.title, src: frame.src, selector: selectorFor(frame), visible: visible(frame) })),
     components: window.__DEEPCODE_DEBUG_UI__?.list() ?? [],
-  });
+    };
+  };
   function requestFrame(frame, request) {
     if (!frame?.contentWindow) return Promise.reject(Error('debug_frame_not_found'));
     const id = `${Date.now()}-${++sequence}`;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { waiting.delete(id); reject(Error('debug_frame_response_timeout')); }, 12000);
+      const timeout = setTimeout(() => { waiting.delete(id); reject(Error('debug_frame_response_timeout')); }, 18000);
       waiting.set(id, { source: frame.contentWindow, resolve, reject, timeout });
       frame.contentWindow.postMessage({ channel, id, request }, '*');
     });
@@ -52,18 +65,32 @@
   }
   function waitFor(spec) {
     if (!spec) return Promise.resolve(null);
-    if (typeof spec.selector !== 'string') throw Error('debug_wait_selector_required');
+    if (typeof spec.selector !== 'string' && typeof spec.componentId !== 'string') throw Error('debug_wait_target_required');
+    if (spec.path !== undefined && (!Array.isArray(spec.path) || spec.path.some(key => typeof key !== 'string'))) throw Error('debug_wait_path_invalid');
     const timeoutMs = Math.min(Math.max(Number(spec.timeoutMs ?? 5000), 1), 15000);
     const matches = () => {
+      if (typeof spec.componentId === 'string') {
+        const component = window.__DEEPCODE_DEBUG_UI__?.list().find(item => item.id === spec.componentId);
+        if (spec.absent) return !component;
+        if (!component) return false;
+        if (!('equals' in spec)) return true;
+        const value = (spec.path ?? []).reduce((current, key) => current?.[key], component.input);
+        return JSON.stringify(value) === JSON.stringify(spec.equals);
+      }
       const element = document.querySelector(spec.selector);
       if (spec.absent) return !element;
       return !!element && (!spec.visible || visible(element)) && (spec.text === undefined || element.textContent.includes(spec.text)) && (spec.value === undefined || element.value === spec.value);
     };
     if (matches()) return Promise.resolve({ matched: true });
     return new Promise((resolve, reject) => {
-      const observer = new MutationObserver(() => { if (matches()) { clearTimeout(timer); observer.disconnect(); resolve({ matched: true }); } });
-      const timer = setTimeout(() => { observer.disconnect(); reject(Error('debug_wait_condition_timeout')); }, timeoutMs);
-      observer.observe(document, { subtree: true, attributes: true, childList: true, characterData: true });
+      let frame;
+      const timer = setTimeout(() => { cancelAnimationFrame(frame); reject(Error('debug_wait_condition_timeout')); }, timeoutMs);
+      // Component state and input.value need not mutate DOM attributes.
+      const check = () => {
+        if (matches()) { clearTimeout(timer); resolve({ matched: true }); }
+        else frame = requestAnimationFrame(check);
+      };
+      frame = requestAnimationFrame(check);
     });
   }
   async function dispatch(request) {
@@ -89,7 +116,7 @@
     const args = request.args ?? {};
     const element = args.selector ? document.querySelector(args.selector) : null;
     if (args.selector && !element) throw Error('debug_element_not_found');
-    if (element && element.closest(':disabled,[aria-disabled="true"]')) throw Error('debug_element_disabled');
+    if (element && element.closest(':disabled,[aria-disabled="true"],[inert]')) throw Error('debug_element_disabled');
     let result;
     switch (request.name) {
       case 'plugin.action':
@@ -140,9 +167,14 @@
       default: throw Error('debug_action_not_supported');
     }
     const handlerDurationMs = performance.now() - startedAt;
-    const condition = await waitFor(args.waitFor);
+    let condition;
+    try { condition = await waitFor(args.waitFor); }
+    catch (error) { condition = { matched: false, error: String(error) }; }
     const rendered = await renderBoundary();
-    return { before, after: inspect(), result, condition, completion: 'ui-observed', businessCompletion: 'not-asserted',
+    const after = inspect();
+    const complete = condition?.matched !== false && rendered.rendered && after.coverage.text === 'complete' && after.coverage.elements === 'complete';
+    return { before, after, result, condition, completion: complete ? 'ui-observed' : 'observation-incomplete',
+      businessCompletion: request.name === 'plugin.action' ? result.businessCompletion : 'not-asserted',
       timing: { clockDomain: 'webview.performance', handlerDurationMs, observedDurationMs: performance.now() - startedAt, ...rendered } };
   }
   window.addEventListener('message', async event => {

@@ -337,7 +337,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
 
   return (
     <div className={`deepcode-gui-workbench${settingsOpen ? ' deepcode-gui-workbench--settings' : ''}${navigationCollapsed ? ' deepcode-gui-workbench--navigation-collapsed' : ''}`}
-      ref={workbench} style={{ '--dc-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
+      ref={workbench} data-host-status={apiStatus} style={{ '--dc-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
       onKeyDown={(event) => {
         if (settingsOpen && event.key !== 'Escape') event.stopPropagation();
       }}>
@@ -349,7 +349,14 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
         </button>
       </> : undefined} /></>,
         navigation: <UiRegion slot="navigation" data={{ kind: 'navigation', projects: sidebarOrder.projects, sessions: sidebarOrder.sessions, activeSessionId, busy }}
-          actions={{ activateSession: async (id: string) => { if (!busy && catalog.sessions.some(session => session.id === id)) await activateSession(id); } }}><DeepCodeNavigationBox settingsOpen={settingsOpen} settingsTargetRef={setSettingsNavigation} collapsed={navigationCollapsed}
+          debugActions={{ activateSession: { unavailableReason: busy ? 'conversation_navigation_busy' : null, completion: 'session-loaded' } }}
+          actions={{ activateSession: async (id: string) => {
+            if (busy) throw new Error('conversation_navigation_busy');
+            await activateSession(id);
+            const state = useLocalAgentStore.getState();
+            if (state.error) throw new Error(state.error);
+            if (state.sessionId !== id || state.projection?.sessionId !== id || state.loading) throw new Error('conversation_session_not_loaded');
+          } }}><DeepCodeNavigationBox settingsOpen={settingsOpen} settingsTargetRef={setSettingsNavigation} collapsed={navigationCollapsed}
           resizeHandle={<ResizeHandle className="deepcode-gui-navigation-resize" label={t(language, 'deepcodeGui.navigation.resize')}
             value={navigationWidth.width} min={navigationWidth.min} max={navigationWidth.max} step={PANE_GEOMETRY.navigation.step}
             direction={1} onResize={navigationWidth.setWidth} />} toolbar={<>

@@ -351,13 +351,26 @@ const store = create<LocalAgentState>((set, get) => ({
 
   activateSession: async (sessionId) => {
     if (get().sessionId === sessionId && (get().projection || get().loading)) return;
-    const summary = get().catalog.sessions.find((session) => session.id === sessionId);
-    if (!summary) {
-      set({ error: 'conversation_session_not_found', errorSource: 'operation' });
-      return;
-    }
     const currentGeneration = advanceView();
     const signal = viewReadController.signal;
+    let summary = get().catalog.sessions.find((session) => session.id === sessionId);
+    if (!summary) {
+      // CLI and other windows can create conversations after this view's catalog read.
+      set({ loading: true, error: null, errorSource: null });
+      try {
+        const catalog = await getConversationCatalog(signal);
+        if (currentGeneration !== generation) return;
+        set({ catalog });
+        summary = catalog.sessions.find((session) => session.id === sessionId);
+      } catch (error) {
+        if (currentGeneration === generation) set({ loading: false, error: errorMessage(error), errorSource: 'catalog' });
+        return;
+      }
+    }
+    if (!summary) {
+      set({ loading: false, error: 'conversation_session_not_found', errorSource: 'operation' });
+      return;
+    }
     activeSubmissionCount = 0;
     const cached = projectionCache.get(sessionId) ?? null;
     if (cached) cacheProjection(cached);

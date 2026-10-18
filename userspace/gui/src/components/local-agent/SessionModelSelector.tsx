@@ -80,7 +80,13 @@ export default function SessionModelSelector({ language, profiles, connections =
       contextOpen={contextOpen} setContextOpen={setContextOpen} rootRef={rootRef}
       onToggle={() => { setOpen(false); setContextOpen(value => !value); }} />
     <UiRegion slot="composer.model" input={{ kind: 'composer.model', profiles, connections, selectedProfileId,
-      reasoningEffort: effectiveEffort, confirmed, busy, locale: language, theme }} actions={{ selectModel: onSelect }}>
+      reasoningEffort: effectiveEffort, confirmed, busy, locale: language, theme }}
+      debugActions={{ selectModel: { unavailableReason: busy ? 'model_settings_busy' : null } }}
+      actions={{ selectModel: async (id, effort) => {
+        if (busy) throw new Error('model_settings_busy');
+        if (!profiles.some(profile => profile.id === id && profile.enabled)) throw new Error('model_profile_unavailable');
+        await onSelect(id, effort);
+      } }}>
       <button ref={triggerRef} type="button" className="deepcode-session-model__selector" disabled={busy}
         aria-label={`${title} · ${effortLabel}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined}
         onClick={() => { setContextOpen(false); setCandidateId(null); setChoosingModel(false); setSubagentsOpen(false); setOpen(value => !value); }}>

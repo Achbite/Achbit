@@ -20,6 +20,8 @@ export DEEPCODE_USER_ROOT=/absolute/debug-state
 
 Every connected command requires that state root, either through `--state-root` or the explicit environment variable. `launch --headless` starts only the Host. `inspect` reports the current instance and registered GUI hosts; GUI actions require an available GUI. Configure models in the independent product as needed; launch does not copy credentials from the ordinary product.
 
+GUI launch waits up to 20 seconds for the process to remain alive, the control endpoint to register, and the main workbench to load with its Host connected. The `gui` result reports readiness and elapsed time. An early exit or readiness failure exits nonzero and retains the owned-instance receipt for explicit `stop`; a spawned PID alone is not readiness.
+
 Use `attach --workspace ...` to control an existing Debug instance. `detach` releases the control attachment; it is not a task-cancellation command. `stop` closes only the GUI/Host owned by the launch receipt and confirms their lifecycle result. Rebuilding a package does not replace a running process. A newly opened GUI can use an existing Host, so verify the loaded process and Host when testing changed Session, Kernel or compiled-in guidance. Keep ordinary-product installation and replacement separate from Debug iteration.
 
 ## Direct tools and plugin components
@@ -53,7 +55,13 @@ Use the returned surface IDs for embedded pages and frames; do not assume an old
 
 Surface inspection also lists mounted UI components and their allowed callback signatures. Invoke a listed callback with `--name plugin.action --args '{"componentId":"OBSERVED_ID","action":"OBSERVED_ACTION","arguments":[]}'`, supplying the actual argument list. A component handler returning or resolving is not proof that its asynchronous business operation has finished. Submitting a message through the UI still follows the normal Session path.
 
+Component owners can publish current `availability`, its `reason`, and the business completion they verify. Undeclared availability/completion remains explicit; the registry does not infer Session facts. Availability is checked again at invocation. Navigation refreshes the actual catalog for an externally created conversation and verifies its loaded projection before returning `session-loaded`.
+
+For a state observation, pass `waitFor` with an inspected DOM `selector` plus `text`, `value`, `visible` or `absent`; or with an inspected `componentId`, an input `path` array and `equals`. `timeoutMs` is bounded to 15 seconds. For example, `{"componentId":"OBSERVED_ID","path":["data","activeSessionId"],"equals":"SESSION_ID"}` observes the owner's projected input. This condition does not assert that an Agent run settled.
+
 Action receipts contain before/after state where available, native-dialog state, an operation ID, screenshot reference and measured phases. Read the original error and terminal status even when a later observation shows a side effect. The CLI retains the failed receipt and exits nonzero for failed terminal actions. Screenshots observe the real target; they are not automatically model input or published artifacts.
+
+Inspection reports text/element truncation and each DOM control's supported actions and disabled/read-only state. A timed-out condition preserves the action result, error and subsequent observation. Missing render, truncated observation, unavailable measurements or missing screenshot produces `status: partial` and `observationFailures`; the CLI exits nonzero without replaying the action. Read the original `screenshot.contentRef` to use that capture as visual input. Component timing records collected with an action retain their own identities and are not a causal breakdown of the action.
 
 ### Product-owned native file selectors
 

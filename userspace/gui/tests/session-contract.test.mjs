@@ -1704,6 +1704,37 @@ test('cached navigation displays immediately and another session read cannot blo
   assert.equal(requests, 4, 'an aborted late response was not installed in the recent-session cache');
 });
 
+test('navigation refreshes the catalog for an externally created session and preserves read errors', async (t) => {
+  const journal = new InMemoryCommandJournal();
+  const sessionId = 'session:external';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const actor = actorWith(journal, sessionId, { async *stream() {} }, emptyKernel(), fakeRunPreparation().port, 'external');
+  t.after(() => actor.dispose());
+  const projection = await actor.snapshot();
+  const store = await loadGuiModelStore(t);
+  const paths = [];
+  let failCatalog = false;
+  installGuiFetch(t, async url => {
+    paths.push(url.pathname);
+    if (url.pathname === '/api/conversation/catalog') {
+      if (failCatalog) throw new Error('catalog read interrupted');
+      return Response.json({ ok: true, data: { projects: [], sessions: [{ id: sessionId, title: 'External conversation',
+        workspaceBindings: [workspaceBinding], createdAt: '2026-10-18T00:00:00Z', updatedAt: '2026-10-18T00:00:00Z' }] } });
+    }
+    assert.match(url.pathname, /\/projection$/);
+    return Response.json({ ok: true, data: projection });
+  });
+  await store.getState().activateSession(sessionId);
+  assert.equal(store.getState().projection.sessionId, sessionId);
+  assert.equal(store.getState().loading, false);
+  assert.equal(paths.length, 2);
+  failCatalog = true;
+  await store.getState().activateSession('session:unavailable');
+  assert.match(store.getState().error, /catalog read interrupted/);
+  assert.equal(store.getState().sessionId, sessionId);
+  assert.deepEqual(store.getState().projection, projection);
+});
+
 test('continuous conversation keeps every message anchor while mounting nearby content', async (t) => {
   const { conversationNavigation } = await loadGuiModule(t, '/src/components/local-agent/conversationWindow.ts');
   const rows = Array.from({ length: 75 }, (_, index) => ({

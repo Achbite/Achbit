@@ -229,6 +229,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         return crate::debug_tools::dispatch(&state, method, params).await;
     }
     if method.starts_with("surfaces.")
+        || method == "gui.ready"
         || method == "action"
         || (method.starts_with("metrics.")
             && matches!(params["kind"].as_str(), Some("component" | "ui" | "event")))
@@ -236,6 +237,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         let action = match method {
             "surfaces.list" => "debug:surfaces",
             "surfaces.inspect" => "debug:inspect",
+            "gui.ready" => "debug:ready",
             "action" => "debug:action",
             _ => "debug:metrics",
         };

@@ -104,6 +104,13 @@ export function ConversationComposer({
     pickAttachments: () => setAttachmentDialogOpen(true),
     addAttachments: composer.selectMessageAttachments,
   };
+  const debugActions = {
+    submitDraft: { unavailableReason: canSend ? null : 'composer_cannot_send' },
+    stopRun: { unavailableReason: showStopAction ? null : 'composer_no_stoppable_run' },
+    updateDraft: { unavailableReason: null },
+    pickAttachments: { unavailableReason: null },
+    addAttachments: { unavailableReason: null },
+  };
   const pickerId = useId();
   const commandMenuId = useId();
   const [pressFeedback, setPressFeedback] = useState<'a' | 'b' | null>(null);
@@ -164,7 +171,7 @@ export function ConversationComposer({
   useAutoDismiss(uiActionError, onDismissUiActionError);
 
   return (
-    <UiRegion slot="composer.layout" data={regionData} actions={regionActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
+    <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
       ? ' local-agent__composer-shell--decision'
       : ''}`} onKeyDown={(event) => {
           if (composer.editingMessage && event.key === 'Escape' && !event.repeat
@@ -424,7 +431,7 @@ export function ConversationComposer({
           onPaste={composer.pasteText}
         />
         <div className="local-agent__composer-footer">
-          {!composer.textDecision && !composer.editingMessage && <UiRegion slot="composer.attachments" data={regionData} actions={regionActions}><div className="local-agent__composer-tools">
+          {!composer.textDecision && !composer.editingMessage && <UiRegion slot="composer.attachments" data={regionData} actions={regionActions} debugActions={debugActions}><div className="local-agent__composer-tools">
             <div ref={attachmentControlRef} className="local-agent__attachment-control">
               <button
                 type="button"
@@ -484,7 +491,7 @@ export function ConversationComposer({
             </div>
             <ComposerPermissionControl language={language} composer={composer} />
           </div></UiRegion>}
-          <UiRegion slot="composer.actions" data={regionData} actions={regionActions}><div className="local-agent__composer-actions">
+          <UiRegion slot="composer.actions" data={regionData} actions={regionActions} debugActions={debugActions}><div className="local-agent__composer-actions">
             {!composer.textDecision && !composer.editingMessage && <SessionModelSelector
               key={composer.conversationKey}
               language={language}

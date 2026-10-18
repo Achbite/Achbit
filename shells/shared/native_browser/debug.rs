@@ -238,7 +238,13 @@ async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String>
     use objc2::{msg_send, runtime::AnyObject, MainThreadOnly};
     use objc2_foundation::{NSError, NSString};
     use objc2_web_kit::{WKContentWorld, WKWebView};
-    let script = format!("try {{ if (!window.__DEEPCODE_DEBUG_DOM__) throw Error('debug_bridge_not_loaded'); return JSON.stringify({{ok:true,value:await window.__DEEPCODE_DEBUG_DOM__.dispatch({request})}}); }} catch(error) {{ return JSON.stringify({{ok:false,error:String(error)}}); }}");
+    let script = if request["name"] == "readiness" {
+        // Native registration precedes page-script initialization. Report the
+        // actual lifecycle state without invoking an unavailable action bridge.
+        "return JSON.stringify({ok:true,value:{readyState:document.readyState,bridgeLoaded:!!window.__DEEPCODE_DEBUG_DOM__,hostStatus:document.querySelector('[data-host-status]')?.getAttribute('data-host-status')??null,components:window.__DEEPCODE_DEBUG_UI__?.list().map(({slot})=>({slot}))??[]}});".to_string()
+    } else {
+        format!("try {{ if (!window.__DEEPCODE_DEBUG_DOM__) throw Error('debug_bridge_not_loaded'); return JSON.stringify({{ok:true,value:await window.__DEEPCODE_DEBUG_DOM__.dispatch({request})}}); }} catch(error) {{ return JSON.stringify({{ok:false,error:String(error)}}); }}")
+    };
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
         let webview = &*(platform.inner() as *const WKWebView);
@@ -448,13 +454,18 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         }
         records.sort_by(|a, b| a["acceptedAtMs"].as_u64().cmp(&b["acceptedAtMs"].as_u64()));
         query_metrics(records, &input)
-    } else if action == "debug:inspect" || action == "debug:components" {
+    } else if action == "debug:inspect" || action == "debug:components" || action == "debug:ready" {
         let (id, frame) = target(&input)?;
         if id == "native-dialog" {
             return dialogs(&app, "inspect", input["args"].clone()).await;
         }
         let view = app.get_webview(&id).ok_or("debug_surface_not_found")?;
-        dispatch(view, json!({"name":if action=="debug:components"{"components"}else{"inspect"},"framePath":frame})).await
+        let name = match action {
+            "debug:components" => "components",
+            "debug:ready" => "readiness",
+            _ => "inspect",
+        };
+        dispatch(view, json!({"name":name,"framePath":frame})).await
     } else if action == "debug:action" {
         let started = Instant::now();
         let accepted = stamp()?;
@@ -510,7 +521,32 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         let mut receipt = json!({"operationId":operation_id,"origin":"debugOperation","kind":"ui","target":input["target"].as_str().unwrap_or("main"),"name":name,"acceptedAtMs":accepted,"responseDurationMs":response_ms,"totalDurationMs":started.elapsed().as_secs_f64()*1000.0,"clockDomain":"gui.monotonic","screenshot":capture,"nativeDialogs":native,"components":components});
         match outcome {
             Ok(value) => {
-                receipt["status"] = json!("observed");
+                let mut missing = Vec::new();
+                if value["completion"] == "observation-incomplete" {
+                    missing.push(json!({"stage":"ui","condition":value["condition"],"render":value["timing"],"coverage":value["after"]["coverage"]}));
+                }
+                if receipt["screenshot"]["contentRef"].as_str().is_none() {
+                    missing.push(json!({"stage":"screenshot","detail":receipt["screenshot"]}));
+                }
+                if matches!(
+                    receipt["components"]["coverage"].as_str(),
+                    Some("unavailable" | "incomplete")
+                ) {
+                    missing.push(json!({"stage":"components","detail":receipt["components"]}));
+                }
+                if receipt["nativeDialogs"]["status"] == "unavailable" {
+                    missing
+                        .push(json!({"stage":"native-dialogs","detail":receipt["nativeDialogs"]}));
+                }
+                receipt["status"] = json!(if missing.is_empty() {
+                    "observed"
+                } else {
+                    "partial"
+                });
+                if !missing.is_empty() {
+                    receipt["error"] = json!("debug_observation_incomplete");
+                }
+                receipt["observationFailures"] = json!(missing);
                 receipt["result"] = value;
             }
             Err(error) => {

@@ -8,8 +8,8 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::Duration,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
 };
 
 const HELP: &str = r#"DeepCode Debug CLI (debug-only)
@@ -421,21 +421,73 @@ pub(super) async fn run(values: &[String]) -> Result<(), String> {
     } else {
         output(&result)?;
     }
-    if result["status"] == "rejected"
-        || (matches!(
-            args.method.as_str(),
-            "tools.call" | "operation.inspect" | "action"
-        ) && matches!(
-            result["status"].as_str(),
-            Some("inputRejected" | "failed" | "denied" | "indeterminate" | "cancelled")
-        ))
-    {
+    if command_failed(&args.method, &result) {
         return Err(format!("Command rejected: {}", result["error"]));
     }
     if args.method == "task.submit" && args.flag("follow") {
         client.observe(json!({"controlId":params["controlId"],"subscriptionId":result["subscriptionId"],"follow":true,"waitMs":params.get("waitMs").cloned().unwrap_or(json!(180000))})).await?;
     }
     Ok(())
+}
+
+fn command_failed(method: &str, result: &Value) -> bool {
+    result["status"] == "rejected"
+        || (matches!(method, "tools.call" | "operation.inspect" | "action")
+            && matches!(
+                result["status"].as_str(),
+                Some(
+                    "inputRejected"
+                        | "failed"
+                        | "partial"
+                        | "denied"
+                        | "indeterminate"
+                        | "cancelled"
+                )
+            ))
+}
+
+fn gui_ready(state: &Value) -> bool {
+    state["readyState"] == "complete"
+        && state["bridgeLoaded"] == true
+        && state["hostStatus"] == "connected"
+        && state["components"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["slot"] == "workbench.layout"))
+}
+
+async fn wait_for_gui(client: &Client, gui: &mut Child, control: &Value) -> Result<Value, String> {
+    let waiting = async {
+        loop {
+            if let Some(status) = gui.try_wait().map_err(|error| error.to_string())? {
+                return Err(format!("debug_gui_exited_before_ready: {status}"));
+            }
+            let state = client.call("inspect", json!({})).await?;
+            let hosts = state["guiHosts"]
+                .as_array()
+                .ok_or("GUI host list missing")?;
+            if hosts.len() > 1 {
+                return Err("debug_gui_launch_multiple_hosts".into());
+            }
+            if let Some(host) = hosts.first() {
+                let surface = client
+                    .call(
+                        "gui.ready",
+                        json!({"controlId":control,"guiHostId":host,"target":"main"}),
+                    )
+                    .await?;
+                if gui_ready(&surface) {
+                    return Ok(
+                        json!({"status":"ready","hostId":host,"readyState":surface["readyState"],"hostStatus":surface["hostStatus"]}),
+                    );
+                }
+            }
+            // A bounded startup wait, not a replay of failed UI actions.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(20), waiting)
+        .await
+        .map_err(|_| "debug_gui_ready_timeout".to_string())?
 }
 
 async fn launch(args: &Args, root: &Path) -> Result<(), String> {
@@ -489,9 +541,12 @@ async fn launch(args: &Args, root: &Path) -> Result<(), String> {
         .await?;
     receipt["controlId"] = attached["controlId"].clone();
     save_receipt(root, &receipt)?;
+    let mut gui_error = None;
+    receipt["gui"] = json!({"status":"not-requested"});
     if !args.flag("headless") {
+        let started = Instant::now();
         let log = File::create(dirs.log_dir.join("debug-gui.log")).map_err(|e| e.to_string())?;
-        let gui = deepcode_host_connection::process::spawn_independent_shell(
+        let mut gui = deepcode_host_connection::process::spawn_independent_shell(
             Command::new(binaries.join("DeepCode-GUI"))
                 .current_dir(&workspace)
                 .stdin(Stdio::null())
@@ -501,16 +556,58 @@ async fn launch(args: &Args, root: &Path) -> Result<(), String> {
         .map_err(|e| format!("GUI spawn failed (Host retained for explicit stop): {e}"))?;
         receipt["guiPid"] = json!(gui.id());
         save_receipt(root, &receipt)?;
+        receipt["gui"] = match wait_for_gui(&client, &mut gui, &receipt["controlId"]).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                gui_error = Some(error.clone());
+                json!({"status":"failed","error":error})
+            }
+        };
+        receipt["gui"]["readyDurationMs"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+        save_receipt(root, &receipt)?;
     }
     drop(host);
     output(
-        &json!({"instanceId":receipt["instanceId"],"controlId":receipt["controlId"],"workspace":workspace,"stateRoot":root,"artifact":artifact,"ownsHost":true,"guiPid":receipt["guiPid"],"build":metadata}),
-    )
+        &json!({"instanceId":receipt["instanceId"],"controlId":receipt["controlId"],"workspace":workspace,"stateRoot":root,"artifact":artifact,"ownsHost":true,"guiPid":receipt["guiPid"],"gui":receipt["gui"],"build":metadata}),
+    )?;
+    if let Some(error) = gui_error {
+        return Err(format!("{error}; Host retained for explicit stop"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn debug_partial_observation_is_not_a_successful_command() {
+        assert!(command_failed(
+            "action",
+            &json!({"status":"partial","result":{"dispatched":true}})
+        ));
+        assert!(command_failed("action", &json!({"status":"failed"})));
+        assert!(!command_failed("action", &json!({"status":"observed"})));
+        assert!(!command_failed(
+            "tools.call",
+            &json!({"status":"approvalRequired"})
+        ));
+    }
+    #[test]
+    fn debug_gui_ready_requires_loaded_workbench_and_connected_host() {
+        assert!(!gui_ready(
+            &json!({"readyState":"complete","hostStatus":"connected","components":[]})
+        ));
+        let mut state = json!({"readyState":"complete","bridgeLoaded":true,"hostStatus":"connected","components":[{"slot":"workbench.layout"}]});
+        assert!(gui_ready(&state));
+        state["bridgeLoaded"] = json!(false);
+        assert!(!gui_ready(&state));
+        state["bridgeLoaded"] = json!(true);
+        state["hostStatus"] = json!("error");
+        assert!(!gui_ready(&state));
+        state["hostStatus"] = json!("connected");
+        state["readyState"] = json!("loading");
+        assert!(!gui_ready(&state));
+    }
     fn identity(suffix: char) -> HostProcessIdentity {
         HostProcessIdentity {
             service: deepcode_kernel_abi::KERNEL_DAEMON_SERVICE.into(),
