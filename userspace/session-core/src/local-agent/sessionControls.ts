@@ -43,10 +43,10 @@ export function sessionControlInstructions(
   hasPluginDiscovery = false,
   optionalTools?: readonly string[],
 ): string {
-  const decisions = ` Ask for missing information or decisions with ${names.interactionRequest}. Use mode=continue for clarification when independent work can proceed; use mode=wait (default) otherwise. Confirmations always wait. Continue only work that does not depend on an unanswered question; silence is not agreement. Ask early and avoid repeating unresolved questions. Put choices in options with stable IDs and concise labels, keeping context in prompt instead of duplicating a numbered list. Correct rejected inputs. Tool execution approval is separate.`;
-  const plugins = hasPluginDiscovery ? ` For external-program tasks, use CLI or MCP tools for program operations and GUI tools for interface-specific actions or visual confirmation; combine interfaces as needed. Programmatic calls do not require screenshots. Discover needed capabilities with plugin search using a short capability or product name and the tool's declared matching rules. Call ${names.pluginActivate} alone for relevant results, then use their declared tools. Activation does not grant execution permissions.` : '';
-  const delivery = ` Tool artifacts are archived runtime resources, not automatically user deliverables. Use ${names.artifactPresent} to explicitly select completed results or review materials the user should see. Temporary scripts, logs and observation screenshots stay intermediate unless requested as results. For a file or URL without an artifact reference, first use artifact.prepare for a file or artifact.preview for a live URL. Present updated versions under the same deliveryId; cite the returned resource URI in final prose, using Markdown images for visual review. Presentation does not resend pixels to the model.`;
-  const progress = ` For multi-step work, use ${names.todoUpdate} when useful. Keep phases few and meaningful, merging similar work; choose the count to fit the task. Skip trivial work and unchanged updates; no update is required per tool call or before answering. Send the complete current list in one update, optionally alongside ordinary calls. Todo grants no permissions and does not gate completion; keep unfinished work honest.`;
+  const decisions = ` Ask early for missing facts or required decisions with ${names.interactionRequest}. Use mode=continue while independent work can proceed; use mode=wait otherwise. Confirmations always wait. An unanswered question stays pending: proceed only on independent work, and ask it once. Put alternatives in options with stable IDs and concise labels; explain context in prompt. Tool execution approval is separate.`;
+  const plugins = hasPluginDiscovery ? ` Use CLI or MCP for program operations and GUI tools for interface actions or visual confirmation; combine them as needed. Capture screenshots when visual evidence is needed. Discover capabilities with a short product or capability query, activate relevant results with ${names.pluginActivate} alone, then use their declared tools. Activation and execution permission are separate.` : '';
+  const delivery = ` Use ${names.artifactPresent} to deliver requested results or review materials. Prepare a file with artifact.prepare or register a live URL with artifact.preview first. Keep temporary scripts, logs and observation images intermediate unless requested. Update a delivered resource using its deliveryId and cite the returned URI; use Markdown images for visual review. Archiving alone does not deliver a resource, and presentation does not resend pixels to the model.`;
+  const progress = ` Use ${names.todoUpdate} for meaningful progress on multi-step work. Keep a few outcome-oriented phases and update the complete list when status changes, optionally alongside ordinary calls. Simple tasks and unchanged status need no update. Todo tracks progress, not permission or completion gates; leave unfinished work open.`;
   const selectedDelivery = optionalTools && !optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT) ? '' : delivery;
   const selectedProgress = optionalTools && !optionalTools.includes(SESSION_CONTROL_TODO_UPDATE) ? '' : progress;
   if (!hasWorkspaceBindings) {
@@ -224,7 +224,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
   return [
     operation('models', 'Discover available operations and model profiles.'),
     ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async returns immediately; wait pauses until a result or incoming message. Results arrive once, here or as a later message.', {
-      task: id, name: id, delivery: { type: 'string', enum: ['wait', 'async'] },
+      task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
       preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'Optional defaults. Both built-in presets keep the instance for later tasks. Combine capabilities and Loop choices for a task-specific agent; a preset does not define a fixed agent type.' },
       capabilities: { type: 'object', additionalProperties: false, properties: {
         messaging: { enum: messaging === true ? [false, 'parent', true] : messaging === 'parent' ? [false, 'parent'] : [false], description: 'false: no messages; parent: only the parent; true: the related team.' },
@@ -271,14 +271,14 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
       description: capabilities && !capabilities.delegation
         ? capabilities.messaging === 'parent' ? 'Contact your parent. Call action=models for your contact and exact operations. Submit each operation alone.'
           : 'Exchange messages with permitted contacts. Call action=models for contacts and exact operations. Submit each operation alone.'
-        : 'Delegate when useful and currently enabled. Disabling delegation stops new tasks; existing tasks may continue, exchange messages or be cancelled. Follow the latest delegation status in the conversation; local admission enforces it. Call action=models for exact operations, presets and configuration choices. Multiple async spawns may share a turn with todo.update. Other operations are submitted alone.',
+        : 'When enabled, proactively delegate scoped work at task planning or as independent work emerges: separate investigations, context-heavy exploration, implementation with distinct ownership, or independent review. No user reminder is needed. Keep short or tightly coupled work direct. Give each task necessary context, a clear scope and expected evidence; continue independent work and verify results. Follow the latest delegation status: disabling blocks new tasks, while existing tasks may continue, exchange messages or be cancelled. Call action=models for exact operations, presets and configuration. Multiple async spawns may share a turn with todo.update; submit other operations alone.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
     },
     {
       name: SESSION_CONTROL_ARTIFACT_PRESENT,
-      description: 'Select archived resources to deliver for user review or as requested results. Observations, temporary scripts and runtime logs are not outputs by default. Supply exact artifactIds returned by tools; use artifact.prepare for a file or artifact.preview for a URL first. Updating a delivered resource reuses its deliveryId. Returns references to cite or embed in final prose. Does not resend images to the model. Submit this control alone; items may contain all needed deliveries.',
+      description: 'Deliver selected archived resources as requested results or review materials. Supply exact artifactIds from tools, artifact.prepare or artifact.preview; reuse deliveryId for updates. Returns references for final prose. Intermediate logs, scripts and observations stay internal unless selected for delivery. Submit alone; items can include all deliveries. Presentation does not resend image pixels to the model.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['items'], properties: {
         items: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
           required: ['artifactId', 'label'], properties: {
@@ -288,7 +288,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Load installed, enabled plugins needed for the current task. Discover exact URIs with plugin search first. User mentions are optional and remain separate user guidance. This adds plugin tools/instructions to the next request in this run; it does not install, enable disabled plugins, change settings or authorize their effects. Must be the only call in its turn.',
+      description: 'Load needed installed, enabled plugins using exact URIs from plugin search. Tools and instructions become available in the next request of this run. User mentions are optional and remain separate. Activation leaves installation, settings and execution permissions unchanged. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -301,12 +301,12 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Publish a Plan when workspace changes require new authorization, or extendScope before expanding confirmed scope; confirmation follows the current Plan setting. Necessary edits within confirmed scope need no new Plan. Kernel scope rejection requires obtaining the missing authorization, not declaring a Plan unnecessary. Keep meaningful outcome phases; a full revision replaces the Plan and must contain the complete intended manifest. Bash command is an optional example; writablePaths defines its write scope. Todo is independent.',
+      description: 'Publish a Plan for changes needing new authorization; use extendScope before expanding confirmed scope. Reuse confirmed scope for related edits. Confirmation follows current settings; a Kernel scope rejection still requires the missing authorization. Keep outcome-oriented phases. A full revision replaces the Plan and includes the complete manifest. For Shell, writablePaths defines write scope; command is an optional example. Todo is independent.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_TODO_UPDATE,
-      description: 'Replace the complete ordered task list when progress meaningfully changes. Keep phases few and meaningful, merging similar work; choose the count to fit the task and revise the list as needed. Report pending, inProgress, completed or blocked work; an empty list clears it. No Plan, record IDs or approval needed; unfinished items do not prevent answering. At most one update per turn; ordinary calls may accompany it.',
+      description: 'Replace the complete ordered task list when progress changes. Use a few meaningful phases with pending, inProgress, completed or blocked status; an empty list clears it. Independent of Plan, approval and record IDs. Unfinished items stay open and do not prevent answering. At most one update per turn; ordinary calls may accompany it.',
       inputSchema: {
         type: 'object', additionalProperties: false, required: ['items'],
         properties: { items: { type: 'array', items: {

@@ -80,11 +80,11 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             &[],
         ),
         KernelToolKind::FsEdit => (
-            "Apply exact, non-overlapping text replacements to one existing workspace file. Every oldText must match a unique region of the original file; later edits do not see earlier replacements. Keep oldText as small as possible while still unique, and do not include large unchanged regions. Combine disjoint changes to the same file in one call. All replacements are applied atomically.",
+            "Apply exact, non-overlapping replacements atomically to one workspace text file. Match each oldText uniquely against the original file using a small anchor. Combine disjoint changes in one call; replacements all use the original content, not earlier edits in the call.",
             &[],
         ),
         KernelToolKind::FsRead => (
-            "Read bounded UTF-8 text from a workspace file. Do not use for PDFs or binary files. The content field contains the selected source text, including whitespace. Check the returned truncation fields and line range before requesting more content.",
+            "Read bounded UTF-8 text from a workspace file. The content field preserves source text and whitespace. Check truncation and returned ranges before reading more. For PDFs or binary files, use a reader suited to that format.",
             &[
                 "Use this to inspect the contents of a known workspace text file instead of shell commands such as cat or sed.",
                 "Use startLine and maxLines for a line range; startByte and maxBytes for byte bounds."
@@ -110,7 +110,7 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             "Run a PowerShell script in the selected Windows environment. Kernel applies available filesystem permissions: project files are read-only; approved test/output directories and session drafts are writable. The result preserves the actual exit status and output.",
             &[
                 "Each call starts in the bound workspace root with no profile and UTF-8 output. Use PowerShell syntax; Windows PowerShell 5.1 does not support && or ||. Preserve $LASTEXITCODE for native commands.",
-                "Use the project's required build/test entrypoints. Report the actual command error; missing commands, denied access and connection failures do not prove that tools or services are absent.",
+                "Use the project's required build/test entrypoints. Report errors precisely: distinguish the current PATH, access permission and connection failure from software availability or service state.",
                 "Use file tools to edit or delete project files. Declare test/output directories in Plan writablePaths. Kernel owns temporary resources for each call; keep files needed by later calls in workspace paths."
             ],
         ),
@@ -118,7 +118,7 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             "Run a Bash script from the bound workspace root. Kernel applies the available filesystem permissions: project files are read-only; approved test/output directories and session drafts are writable. Commands can fail at the sandbox boundary; the result preserves their exit status and output. Optional terminal input uses a one-call PTY; otherwise stdin is closed.",
             &[
                 "Use cd for subdirectories and the project's required build/test entrypoints. Preserve the exit status being checked, including pipeline failures. Use fs.read for known UTF-8 workspace files.",
-                "Report the actual command error; missing commands, denied access and connection failures do not prove that tools or services are absent.",
+                "Report errors precisely: distinguish the current PATH, access permission and connection failure from software availability or service state.",
                 "Use file tools to edit or delete project files. Declare test/output directories in Plan writablePaths. Kernel owns temporary resources for each call; keep files needed by later calls in workspace paths.",
                 "Output is limited to the last 2000 lines or 50 KiB. When truncated, inspect bounded sections of the returned fullOutput log paths instead of repeating the command."
             ],
