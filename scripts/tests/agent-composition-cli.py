@@ -28,6 +28,8 @@ class Provider(fixture.MockProviderHandler):
         state = self.provider_state
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
             lane = next((lane for message in reversed(body['messages']) if message.get('role') == 'user'
                          for lane in ['COMPOSE_CHILD', 'COMPOSE_RESUME', 'COMPOSE_ROOT', 'PERMISSION_ROOT',
                                       'PERMISSION_CONTINUE', 'PERMISSION_CHILD', 'PERMISSION_CHILD_RESUME']
@@ -52,7 +54,8 @@ class Provider(fixture.MockProviderHandler):
             ordinal = state.ordinals.get(lane, 0) + 1
             state.ordinals[lane] = ordinal
             state.requests.append(body)
-            if lane == 'PERMISSION_CHILD' and ordinal >= 4 or lane == 'PERMISSION_CHILD_RESUME':
+            if lane == 'PERMISSION_CHILD' and ordinal >= 3 or lane == 'PERMISSION_CHILD_RESUME':
+                require('plan.publish' in names, 'Tightening permission did not restore the Plan tool')
                 instructions = '\n'.join(fixture.message_text(message.get('content'))
                                          for message in body['messages'] if message.get('role') in ('system', 'developer'))
                 require('it is confirmed automatically' not in instructions, 'Child Provider received stale automatic Plan instructions')
@@ -123,26 +126,22 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('tightening-restored')
             elif lane == 'PERMISSION_CHILD':
                 if ordinal == 1:
-                    call('automatic-plan', 'plan.publish', dict(title='Initial delegated write scope', summary='Use inherited permission.',
-                         steps=[dict(stepId='write', title='Write', details='Write the reports.')],
-                         mutationManifest=[dict(workspace='primary', operation='fs.write', target=path)
-                                           for path in ['before-tightening.txt', 'after-tightening.txt']]))
-                elif ordinal == 2:
+                    require('plan.publish' not in names, 'Plan-off permission exposed a Plan approval tool')
                     call('before-tightening', 'fs.write', dict(path='before-tightening.txt', content='inherited write\n'))
-                elif ordinal == 3:
+                elif ordinal == 2:
                     require(results['before-tightening']['outcome'] == 'completed', json.dumps(results))
                     call('pause', 'interaction.request', dict(mode='wait', kind='question', prompt='Await parent permission change.', allowFreeform=True))
-                elif ordinal == 4:
+                elif ordinal == 3:
                     call('after-tightening', 'fs.write', dict(path='after-tightening.txt', content='must not exist'))
-                elif ordinal == 5:
+                elif ordinal == 4:
                     require('plan_scope_required' in json.dumps(results['after-tightening']), json.dumps(results))
                     call('new-plan', 'plan.publish', dict(title='Request a new write', summary='The parent withdrew automatic permission.',
                          steps=[dict(stepId='request', title='Write after confirmation', details='Await the user.')],
                          mutationManifest=[dict(workspace='primary', operation='fs.write', target='after-user-plan.txt')]))
-                elif ordinal == 6:
+                elif ordinal == 5:
                     call('user-authorized', 'fs.write', dict(path='after-user-plan.txt', content='explicit user permission\n'))
                 else:
-                    require(ordinal == 7 and results['user-authorized']['outcome'] == 'completed', json.dumps(results))
+                    require(ordinal == 6 and results['user-authorized']['outcome'] == 'completed', json.dumps(results))
                     self._send_text('active-child-restricted')
             elif lane == 'PERMISSION_CHILD_RESUME':
                 if ordinal == 1:

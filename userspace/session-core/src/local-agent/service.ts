@@ -28,6 +28,13 @@ import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
+import { LoopFailure } from './loopFailure.js';
+
+function isMissingSession(error: unknown): boolean {
+  // HTTP Journal errors carry a code separate from their localized message.
+  return (error instanceof LoopFailure ? error.code : error instanceof Error ? error.message.split(':', 1)[0] : null)
+    === 'session_not_found';
+}
 
 export interface SessionCompositionFactory {
   create(input: {
@@ -166,7 +173,7 @@ export class SessionService implements ConversationPort {
       let events;
       try { events = await readSessionEvents(this.journal, id); }
       catch (error) {
-        if (!required && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') return;
+        if (!required && isMissingSession(error)) return;
         throw error;
       }
       if (!events.length) {
@@ -296,7 +303,7 @@ export class SessionService implements ConversationPort {
         catch (error) {
           // A task reservation precedes child creation; failed creation can leave no Session.
           const started = parent.agentTasks?.some(task => task.agentSessionId === member.agentSessionId && task.childRunId);
-          if (!started && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') continue;
+          if (!started && isMissingSession(error)) continue;
           throw error;
         }
         if (child.agentContext?.parentSessionId !== parent.sessionId

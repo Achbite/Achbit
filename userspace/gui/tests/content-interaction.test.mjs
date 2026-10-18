@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { loadGuiModule } from './gui-projection-contract.mjs';
 
 test('reply Enter submits through its form; newline, composition and repeated keys do not submit', async t => {
@@ -26,17 +25,4 @@ test('reply Enter submits through its form; newline, composition and repeated ke
   const disabled = event({ currentTarget: { disabled: true, form: { requestSubmit() { assert.fail('disabled answer submitted'); } } } });
   submitReplyOnEnter(disabled.value);
   assert.equal(disabled.calls.prevented, 1);
-});
-
-test('code breakout uses intrinsic content width and retains the centered reading-column minimum', async () => {
-  const css = await readFile(new URL('../src/components/local-agent/richContent.css', import.meta.url), 'utf8');
-  const block = css.match(/\.local-agent__message--assistant \.conversation-markdown > \.conversation-code\s*\{([^}]+)\}/)?.[1];
-  assert.ok(block, 'assistant code has its own content-sized breakout rule');
-  assert.match(block, /width:\s*max-content;/);
-  assert.match(block, /min-width:\s*100%;/);
-  assert.match(block, /max-width:\s*min\(1080px, calc\(100cqi - 48px\)\);/);
-  assert.match(block, /left:\s*50%;/);
-  assert.match(block, /transform:\s*translateX\(-50%\);/);
-  assert.doesNotMatch(css, /\.local-agent__message--assistant \.conversation-markdown > :is\([^)]*conversation-code/);
-  assert.match(css, /\.conversation-code pre\s*\{[^}]*overflow:\s*auto;[^}]*white-space:\s*pre;/);
 });

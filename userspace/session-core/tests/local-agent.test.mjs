@@ -3376,6 +3376,59 @@ test('family deletion rejects an unreadable journal and preserves its data', asy
   }
 });
 
+for (const started of [false, true]) test(`missing child Journal errors retain their code across HTTP (started=${started})`, async t => {
+  const base = new InMemoryCommandJournal(), ownerId = 'session:missing-child-owner', childId = 'session:missing-child';
+  await createSession(base, ownerId);
+  const original = { code: 'agent_permission_not_grantable', message: 'Child cannot widen parent permissions.' };
+  let actor, recorded = false;
+  actor = actorWith(base, ownerId, { async *stream(request) {
+    if (!recorded) {
+      recorded = true;
+      await actor.recordAgentEvents([
+        { type: 'agent.task.created', sessionId: ownerId, runId: request.runId, callId: 'call:child', payload: {
+          taskId: 'task:missing-child', agentSessionId: childId, capabilities: NO_AGENT_CAPS, createsAgent: true,
+          displayName: 'Child', text: 'Attempt a child task.', delivery: 'async',
+        } },
+        ...(started ? [{ type: 'agent.task.started', sessionId: ownerId, runId: request.runId, payload: {
+          taskId: 'task:missing-child', childRunId: 'run:missing-child',
+        } }] : []),
+        { type: 'agent.task.completed', sessionId: ownerId, runId: request.runId, payload: {
+          taskId: 'task:missing-child', result: { outcome: 'failed', error: original },
+        } },
+      ]);
+    }
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Parent continues after the rejected child task.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'missing-child');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(ownerId, 'command:missing-child', 'Run.'));
+  const before = await waitForProjection(actor, value => value.run?.status === 'completed');
+  await actor.dispose();
+  let code = 'journal_read_failed';
+  const http = new HttpCommandJournal({ apiBase: 'http://fixture', serviceToken: 'fixture', fetchImpl: async url => {
+    assert.ok(new URL(url).pathname.includes(encodeURIComponent(childId)));
+    return Response.json({ ok: false, error: code, message: 'Session 不存在。' });
+  } });
+  const journal = forwardingJournal(base, (id, after) => id === childId ? http.read(id, after) : base.read(id, after));
+  journal.readAgentLifecycle = id => id === childId ? http.readAgentLifecycle(id) : base.readAgentLifecycle(id);
+  const service = new SessionService(journal, { async create() { throw new Error('read_must_not_open_actor'); } });
+  t.after(() => service.dispose());
+  const expectError = error => error instanceof LoopFailure && error.code === code && error.message === 'Session 不存在。';
+  await assert.rejects(service.snapshot(ownerId), expectError, 'Unrelated read errors must not be hidden by their message');
+  await assert.rejects(service.deleteSession(ownerId), expectError);
+  assert.ok((await readEvents(base, ownerId)).length > 0, 'A failed read must not delete the parent');
+  code = 'session_not_found';
+  if (started) {
+    await assert.rejects(service.snapshot(ownerId), expectError, 'A started child cannot silently disappear');
+  } else {
+    const after = await service.snapshot(ownerId);
+    assert.deepEqual(after.run, before.run);
+    assert.deepEqual(after.agentTasks[0].result.error, original, 'The child permission failure must remain recorded');
+    assert.deepEqual(after.totalTokenUsage, after.tokenUsage);
+    assert.deepEqual(await service.deleteSession(ownerId), { deletedSessionIds: [ownerId] });
+  }
+});
+
 test('partial family deletion preserves the original error and exact deleted IDs', async (t) => {
   const { SessionDeletionError } = await import('../dist/local-agent/service.js');
   const base = new InMemoryCommandJournal(), ownerId = 'session:partial-owner', childId = 'session:partial-child';

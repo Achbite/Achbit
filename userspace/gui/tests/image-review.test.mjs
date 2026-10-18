@@ -5,12 +5,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('image review keeps its native dialog and image source with explicit zoom and fit controls', async t => {
-  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'Win32' } });
-  t.after(() => {
-    if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
-    else delete globalThis.navigator;
-  });
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
   const calls = [];
   let view;
@@ -33,10 +27,6 @@ test('image review keeps its native dialog and image source with explicit zoom a
     assert.equal(findReactElement(dialog, node => node.type === 'button' && label.test(node.props['aria-label'])).props.disabled, true,
       'zoom waits for the decoded image and visible viewport dimensions');
   }
-  assert.match(html, /data-frameless="true"/, 'Windows image display remains a clickable viewer without button chrome');
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'MacIntel' } });
-  const mac = renderToStaticMarkup(createElement(ImageReview, { source: 'blob:loaded-image', alt: 'Rendered chart' }));
-  assert.doesNotMatch(mac, /data-frameless/, 'macOS keeps its existing image presentation');
 });
 
 test('artifact image card is a single viewer trigger and stays unavailable until its image is loaded', async t => {

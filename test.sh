@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # DeepCode 本地开发验证入口。测试直接调用真实构建与运行路径，不经过自定义控制器。
+# 验证后端链路与显示/输入逻辑（例如权限和问题隔离），不以视觉观感或具体 CSS 写法为断言。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -111,6 +112,7 @@ case "$profile" in
     cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui
     python3 -I -S ./scripts/tests/owned-daemon.py
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
+    python3 -I -S ./scripts/tests/provider-retry-cli.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
     python3 -I -S ./scripts/tests/agent-composition-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py
@@ -127,6 +129,7 @@ case "$profile" in
     python3 -I -S ./scripts/tests/owned-daemon.py
     printf '[test] 本地 Agent 真实链路与共享投影壳\n'
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
+    python3 -I -S ./scripts/tests/provider-retry-cli.py
     python3 -I -S ./scripts/tests/permission-delegation-cli.py
     python3 -I -S ./scripts/tests/agent-composition-cli.py
     python3 -I -S ./scripts/tests/file-access-cli.py

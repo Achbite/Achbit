@@ -40,6 +40,8 @@ class ProviderHandler(fixture.MockProviderHandler):
         try:
             require(self.path.endswith("/chat/completions"), "Provider endpoint 不匹配")
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            if self.respond_to_title(body):
+                return
             ordinal, names, results = self.provider_state.inspect(body)
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")
@@ -165,6 +167,8 @@ class ProviderHandler(fixture.MockProviderHandler):
     def respond_attachments(self) -> None:
         try:
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            if self.respond_to_title(body):
+                return
             state = self.provider_state
             state.attachment_requests.append(body)
             ordinal = len(state.attachment_requests)
@@ -200,6 +204,8 @@ class ProviderHandler(fixture.MockProviderHandler):
         headers_sent = False
         try:
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            if self.respond_to_title(body):
+                return
             requests = self.provider_state.responses_requests
             requests.append(body)
             ordinal = len(requests)

@@ -104,6 +104,8 @@ class Provider(fixture.MockProviderHandler):
         state = self.provider_state
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
             lane, ordinal, names, results, sid = state.inspect_request(body)
             self.send_response(200)
             self.send_header('content-type', 'text/event-stream; charset=utf-8')
