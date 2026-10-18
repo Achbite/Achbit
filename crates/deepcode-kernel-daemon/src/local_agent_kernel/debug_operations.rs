@@ -502,7 +502,7 @@ impl LocalAgentKernel {
                 root: owner.workspace.to_string_lossy().into(),
                 access: WorkspaceAccess::Project,
             }],
-            self.debug_output_directory(&op.id),
+            self.debug_operation_directory(&op.id),
             Vec::new(),
         )?;
         prepared.file_access.sandbox_backend =
@@ -528,10 +528,16 @@ impl LocalAgentKernel {
         Ok(prepared)
     }
 
-    fn debug_output_directory(&self, operation: &str) -> PathBuf {
+    fn debug_operation_directory(&self, operation: &str) -> PathBuf {
         self.output_root
             .join("debug-operations")
             .join(output_directory_key(operation))
+    }
+
+    fn debug_output_directory(&self, operation: &str) -> PathBuf {
+        // Permission preparation owns the operation root. The shared Shell executor
+        // exclusively creates its child archive, just as it does for Session calls.
+        self.debug_operation_directory(operation).join("output")
     }
 
     fn debug_update(
@@ -1330,6 +1336,9 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
+            Self::with_config(KernelExecutorConfig::default())
+        }
+        fn with_config(config: KernelExecutorConfig) -> Self {
             let root = std::env::temp_dir()
                 .join(random_id("debug-kernel-test").unwrap().replace(':', "-"));
             std::fs::create_dir_all(root.join("workspace")).unwrap();
@@ -1342,7 +1351,7 @@ mod tests {
             .unwrap();
             let generation = LocalAgentKernel::prepare_generation(
                 "generation:direct-test",
-                KernelExecutorConfig::default(),
+                config,
                 Arc::new(deepcode_kernel_runtime::executors::EmptySecretProvider),
                 McpRuntime::default(),
                 LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
@@ -1457,6 +1466,57 @@ mod tests {
                 .code,
             "debug_operation_owner_mismatch"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn approved_debug_shell_owns_a_fresh_archive_and_preserves_stdout() {
+        let f = Fixture::with_config(KernelExecutorConfig {
+            shell_program: Some(
+                deepcode_kernel_runtime::shell_environment::discover("bash").unwrap(),
+            ),
+            execution_path: Some(
+                deepcode_kernel_runtime::shell_environment::resolved_agent_shell_path()
+                    .unwrap()
+                    .into_string()
+                    .unwrap(),
+            ),
+            ..Default::default()
+        });
+        let pending = f
+            .call(
+                "bash",
+                json!({"command":"printf debug-archive","requestHostPermission":"Exercise the shared output archive in the test container"}),
+            )
+            .await;
+        assert_eq!(pending["status"], "approvalRequired", "{pending}");
+        let id = pending["operationId"].as_str().unwrap();
+        let archive = f.kernel.debug_output_directory(id);
+        let root_exists = f.kernel.debug_operation_directory(id).is_dir();
+        let archive_existed_before_execution = archive.exists();
+        f.kernel
+            .debug_respond(
+                "control:test",
+                id,
+                pending["decision"]["decisionId"].as_str().unwrap(),
+                "allow",
+            )
+            .unwrap();
+        let result = f
+            .kernel
+            .debug_inspect(&f.root.join("workspace"), id, 30000)
+            .await
+            .unwrap();
+        assert!(root_exists);
+        assert!(!archive_existed_before_execution);
+        assert_eq!(result["status"], "completed", "{result}");
+        assert_eq!(result["output"]["stdout"], "debug-archive");
+        assert_eq!(result["output"]["exitCode"], 0);
+        assert_eq!(result["resourcesReleased"], true);
+        assert_eq!(
+            std::fs::read_to_string(archive.join("stdout.log")).unwrap(),
+            "debug-archive"
+        );
+        assert_eq!(result["timing"]["executor"]["coverage"], "measured");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

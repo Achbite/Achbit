@@ -1586,6 +1586,16 @@ pub(crate) fn local_agent_provider_stream_response(
                 }
             }
             if accumulator.source_done() || eof {
+                // This owner observed the response boundary. Persist physical-request
+                // timing before publishing completion; dropping an unfinished stream
+                // still leaves its completion fields unknown.
+                if let Err(error) = usage_call.finish_timing() {
+                    yield Ok::<Bytes, Infallible>(Bytes::from(provider_event(
+                        &request_id, provider_attempt_id.as_deref(), "failed",
+                        json!({"code":"usage_record_failed","message":error}),
+                    )));
+                    return;
+                }
                 break 'provider;
             }
         }
@@ -2193,6 +2203,24 @@ mod tests {
             );
         }
         drop(received);
+        let db = rusqlite::Connection::open(directory.join("usage.sqlite3")).unwrap();
+        let records = db
+            .prepare("SELECT record FROM provider_usage")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| serde_json::from_str::<Value>(&row.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 3);
+        for record in records {
+            assert!(
+                record["completedAt"].as_u64().unwrap() >= record["startedAt"].as_u64().unwrap()
+            );
+            assert!(record["durationMs"].as_f64().unwrap() > 0.0);
+            assert_eq!(record["inputTokens"], 12);
+            assert_eq!(record["cacheReadTokens"], 8);
+        }
+        drop(db);
         let mut public_profile = test_profile("responses");
         public_profile.api_key = Some("public-api-test-key".into());
         let public = prepare_provider_request(
