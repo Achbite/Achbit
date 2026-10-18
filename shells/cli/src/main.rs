@@ -783,6 +783,7 @@ async fn open_session(
     };
     client
         .create_conversation_session(&CreateConversationSessionRequest {
+            subagent_settings: None,
             recipe: recipe.cloned(),
             session_id: None,
             workspace_paths,

@@ -38,6 +38,7 @@ import {
 } from '@deepcode/protocol';
 
 export interface SessionState {
+  subagentSettings?: SessionProjection['subagentSettings'];
   recipe?: SessionProjection['recipe'];
   agentContext?: SessionProjection['agentContext'];
   agentTasks: NonNullable<SessionProjection['agentTasks']>;
@@ -61,7 +62,6 @@ export interface SessionState {
   interactions: SessionProjection['interactions'];
   pendingApprovals: NonNullable<SessionProjection['pendingApprovals']>;
   pendingApproval: SessionProjection['pendingApproval'];
-  agentDelegationEnabled: boolean | null;
   plans: SessionProjection['plans'];
   activePlanRef: SessionProjection['activePlanRef'];
   pendingPlan: SessionProjection['pendingPlan'];
@@ -130,7 +130,6 @@ export function emptySessionState(sessionId: string): SessionState {
     interactions: [],
     pendingApprovals: [],
     pendingApproval: null,
-    agentDelegationEnabled: null,
     plans: [],
     activePlanRef: null,
     pendingPlan: null,
@@ -181,9 +180,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
   }, lifecycleEvent) : null;
 
   switch (event.type) {
-    case 'agent.delegation.changed':
-      next.agentDelegationEnabled = event.payload.enabled;
-      break;
     case 'provider.attempt.updated': {
       assertRunningRun(next, event.runId, 'provider_attempt_run_not_active');
       const fact = event.payload;
@@ -261,7 +257,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
     case 'session.model-settings.updated':
       next.modelSettings = { ...event.payload.settings };
       break;
+    case 'session.subagent-settings.updated':
+      next.subagentSettings = structuredClone(event.payload.settings);
+      break;
     case 'session.created':
+      if (event.payload.subagentSettings) next.subagentSettings = structuredClone(event.payload.subagentSettings);
       if (event.payload.recipe) next.recipe = structuredClone(event.payload.recipe);
       next.permissionOverrides = structuredClone(event.payload.recipe?.permissions ?? {});
       if (event.payload.agentContext) next.agentContext = structuredClone(event.payload.agentContext);
@@ -1274,6 +1274,7 @@ export function projectSession(
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
   return {
+    ...(state.subagentSettings ? { subagentSettings: structuredClone(state.subagentSettings) } : {}),
     ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),

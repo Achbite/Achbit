@@ -57,6 +57,8 @@ class TestAgentManager extends AgentManager {
 
 const ALL_AGENT_CAPS = { messaging: true, continuation: true, delegation: true };
 const NO_AGENT_CAPS = { messaging: false, continuation: false, delegation: false };
+const AGENT_SETTINGS = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
+  maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' };
 
 test('compact statuses share canonical lifecycle transitions without full journal reads', async (t) => {
   const sessionId = 'session:compact-lifecycle', runId = 'run:compact-lifecycle';
@@ -429,6 +431,7 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
         parentRunId: 'run:owner-bound', parentCallId: 'call:member' },
       runRuntimeSnapshots: { 'run:member-bound': memberRuntime },
       run: { runId: 'run:member-bound', status: 'running', workspaceBindings: [], profileId: 'profile:member-bound', reasoningEffort: 'low' } });
+    for (const state of states.values()) state.subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: Boolean(item.operation), ...item.settings };
     const actors = new Map([...states.keys()].map(sessionId => [sessionId, { sessionId,
       async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
       async snapshot() { return projectSession(states.get(sessionId)); },
@@ -501,7 +504,7 @@ test('subagent models discovery uses the Host port without starting children', a
   host.createSession = async () => { throw new Error('discovery_must_not_create_child'); };
   const manager = new TestAgentManager(host, async sessionId => ({
     async agentCapabilities() { return capabilities; },
-    async snapshot() { return { sessionId, agentContext: { capabilities, ownerSessionId: 'session:owner',
+    async snapshot() { return { sessionId, subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:configured' }, agentContext: { capabilities, ownerSessionId: 'session:owner',
       parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
       run: { runId: 'run:models', status: 'running' } }; },
   }));
@@ -528,6 +531,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
   const sessionId = 'session:member-reuse', runId = 'run:parent-current', childId = 'session:existing-member';
   const runtime = runtimeSnapshot(runId);
   let state = { ...emptySessionState(sessionId),
+    subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:member' },
     run: { runId, status: 'running', workspaceBindings: [], profileId: runtime.provider.profileId },
     runRuntimeSnapshots: { [runId]: runtime },
     agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }] };
@@ -590,8 +594,8 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   const ownerId = 'session:unified-owner';
   const states = new Map(), actors = new Map(), facts = [], submissions = [], results = new Map();
   let sequence = 0, allowChildDelegation = true, configuredProfile = '';
-  const initialize = (sessionId, agentContext) => {
-    states.set(sessionId, { ...emptySessionState(sessionId), ...(agentContext ? { agentContext } : {}) });
+  const initialize = (sessionId, agentContext, subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: true }) => {
+    states.set(sessionId, { ...emptySessionState(sessionId), subagentSettings: structuredClone(subagentSettings), ...(agentContext ? { agentContext } : {}) });
     const actor = { sessionId,
       async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
       async snapshot() { return projectSession(states.get(sessionId)); },
@@ -642,7 +646,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     async models() { return ['profile:owner', 'profile:selected-child', 'profile:new-global-default'].map(profileId => ({
       profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     })); },
-    async createSession(input) { return await initialize(input.sessionId, input.agentContext).snapshot(); },
+    async createSession(input) { return await initialize(input.sessionId, input.agentContext, input.subagentSettings).snapshot(); },
   }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
   t.after(() => manager.dispose());
   const signal = new AbortController().signal;
@@ -692,12 +696,14 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, true);
   assert.equal(facts.some(event => event.type === 'agent.closed' && event.sessionId === ownerId && event.payload.agentSessionId === nestedId), false);
   allowChildDelegation = false;
+  states.get(ownerId).subagentSettings.allowMemberAnalysis = false;
   await assert.rejects(spawn(ownerId, { capabilities: { delegation: true } }), /agent_capability_not_grantable/);
   const limited = await spawn(ownerId, { preset: 'collaboration' });
   assert.deepEqual(states.get(limited.agentId).agentContext.capabilities, { ...ALL_AGENT_CAPS, delegation: false });
   finish(limited.agentId);
   await manager.forSession(ownerId).wait(ownerRunId, signal);
   allowChildDelegation = true;
+  states.get(ownerId).subagentSettings.allowMemberAnalysis = true;
   const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
   await assert.rejects(execute(restricted.agentId, { action: 'send', agentId: limited.agentId, text: 'Peer message is unavailable.' }), /agent_messaging_disabled/);
   await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_capability_not_grantable/);
@@ -3310,7 +3316,7 @@ test('Session service owns Host activity through background completion', async (
 test('deletion remains available while an unloadable actor rolls back cleanly', async () => {
   const baseJournal = new InMemoryCommandJournal();
   const sessionId = 'session:delete-unloadable';
-  await createSession(baseJournal, sessionId);
+  await baseJournal.createSession({ sessionId, displayTitle: 'Unloadable', workspaceBindings: [], recipe: { runner: { id: 'fixture-unavailable' } } });
   let recoveryStartedResolve;
   let releaseRecoveryResolve;
   const recoveryStarted = new Promise((resolve) => { recoveryStartedResolve = resolve; });
@@ -3321,6 +3327,7 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
   const service = new SessionService(journal, {
     async create() {
       recoveryStartedResolve();
+      await releaseRecovery;
       return {
         composition: {
               provider: { async *stream() { throw new Error('unexpected_provider_turn'); } },
@@ -3330,13 +3337,13 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
         },
       };
     },
-  }, { async settings() { await releaseRecovery; throw Error('fixture_recovery_failed'); } });
+  });
 
   const snapshot = service.submit(messageCommand(sessionId, 'command:open-for-delete', 'Start explicitly.'));
   await recoveryStarted;
   const deletion = service.deleteSession(sessionId);
   releaseRecoveryResolve();
-  await assert.rejects(snapshot, /fixture_recovery_failed/u);
+  await assert.rejects(snapshot, /agent_loop_unavailable:fixture-unavailable/u);
   await deletion;
   assert.equal(disposeCount, 1);
   await assert.rejects(async () => {

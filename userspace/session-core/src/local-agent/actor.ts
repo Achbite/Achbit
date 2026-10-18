@@ -1,4 +1,5 @@
-import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
+import { agentPresets } from './agentConfiguration.js';
 import type { SessionOperation, JsonObject } from '@deepcode/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
@@ -149,9 +150,9 @@ export class SessionActor {
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
-  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
     const state = (await this.loadSnapshot()).state;
-    return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, agentContext: state.agentContext,
+    return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, subagentSettings: state.subagentSettings, agentContext: state.agentContext,
       agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
       environment: state.run ? state.runRuntimeSnapshots[state.run.runId]?.environment : undefined });
   }
@@ -346,15 +347,6 @@ export class SessionActor {
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
   }
 
-  async delegationChanged(enabled: boolean): Promise<void> {
-    if (!this.#agents) return;
-    await this.enqueue(() => this.withWrite(async () => {
-      const current = await this.loadSnapshot();
-      if (current.state.agentDelegationEnabled === enabled) return;
-      await this.appendEvents([{ type: 'agent.delegation.changed', sessionId: this.sessionId, payload: { enabled } }], current);
-    }));
-  }
-
   /** Trusted operator entry; never exposed through the model's callable catalog. */
   async replaceCapabilities(implementation: SessionCapabilities): Promise<void> {
     if (this.#disposed) throw new Error('session_actor_disposed');
@@ -391,6 +383,8 @@ export class SessionActor {
         return await this.handleRevoke(command);
       case 'session.model-settings.set':
         return await this.handleModelSettings(command);
+      case 'session.subagent-settings.set':
+        return await this.handleSubagentSettings(command);
       case 'session.directory-index.attach':
         return await this.handleDirectoryIndexAttach(command);
       case 'session.directory-index.detach':
@@ -507,6 +501,20 @@ export class SessionActor {
       type: 'session.model-settings.updated', sessionId: this.sessionId,
       payload: { commandId: command.commandId, settings: { ...command.settings } },
     }], acceptedReply(command));
+  }
+
+  private async handleSubagentSettings(
+    command: Extract<ConversationCommand, { type: 'session.subagent-settings.set' }>,
+  ): Promise<CommandReply> {
+    let settings;
+    try {
+      settings = decodeAgentSettings(command.settings);
+      agentPresets(settings);
+    } catch (error) {
+      return this.recordRejection(command, 'agent_settings_invalid', error instanceof Error ? error.message : String(error));
+    }
+    return this.commitCommand(command, [{ type: 'session.subagent-settings.updated', sessionId: this.sessionId,
+      payload: { commandId: command.commandId, settings } }], acceptedReply(command));
   }
 
   private async handleDirectoryIndexAttach(
@@ -757,9 +765,6 @@ export class SessionActor {
       : prepared.runtimeSnapshot;
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
-      ...(this.#agents && typeof runtimeSnapshot.agentDelegationEnabled === 'boolean'
-        && before.state.agentDelegationEnabled !== runtimeSnapshot.agentDelegationEnabled
-        ? [{ type: 'agent.delegation.changed' as const, sessionId: this.sessionId, payload: { enabled: runtimeSnapshot.agentDelegationEnabled } }] : []),
       {
         type: 'session.model-settings.updated',
         sessionId: this.sessionId,

@@ -62,7 +62,7 @@ pub(crate) fn build_app(state: AppState) -> Router {
         )
         .route(
             "/api/local-agent/agents/settings",
-            get(local_agent_settings_get),
+            get(local_agent_settings_get).post(local_agent_settings_set),
         )
         .route(
             "/api/local-agent/agents/models",

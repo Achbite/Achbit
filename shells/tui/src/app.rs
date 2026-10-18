@@ -226,6 +226,7 @@ impl TuiApp {
         } else {
             self.client
                 .create_conversation_session(&CreateConversationSessionRequest {
+                    subagent_settings: None,
                     recipe: None,
                     session_id: None,
                     workspace_paths: self

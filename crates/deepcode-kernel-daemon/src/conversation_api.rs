@@ -24,6 +24,7 @@ pub(crate) struct CreateConversationSessionRequest {
     project_id: Option<String>,
     profile_id: Option<String>,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +36,7 @@ pub(crate) struct CreateAgentSessionRequest {
     profile_id: String,
     agent_context: Value,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1109,6 +1111,7 @@ pub(crate) async fn conversation_session_create(
         },
         None,
         recipe.map(|recipe| json!(recipe)),
+        body.subagent_settings,
     )
     .await
 }
@@ -1119,6 +1122,7 @@ async fn create_registered_session(
     session: ConversationSessionRecord,
     agent_context: Option<Value>,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 ) -> Json<ApiResponse> {
     let session_id = session.id.clone();
     let mut creation = json!({
@@ -1132,6 +1136,9 @@ async fn create_registered_session(
     }
     if let Some(context) = agent_context {
         creation["agentContext"] = context;
+    }
+    if let Some(settings) = subagent_settings {
+        creation["subagentSettings"] = settings;
     }
     let projection =
         match request_service(state.session_service.clone(), "createSession", creation).await {
@@ -1322,6 +1329,7 @@ pub(crate) async fn create_agent_session(
         session,
         Some(body.agent_context),
         Some(json!(recipe)),
+        body.subagent_settings,
     )
     .await;
     if !created.0.ok {

@@ -2,6 +2,7 @@ import type { AgentRecipe } from './agentRecipe.js';
 import type { UserSettings } from './userSettings.js';
 import type { ShellAuthorizationScope } from './permissions.js';
 import type { LlmReasoningEffort, LlmThinkingMode } from './llm.js';
+import { isLlmReasoningEffort } from './llm.js';
 
 export const LOCAL_AGENT_PROTOCOL_VERSION = 'deepcode.local-agent' as const;
 export const CONVERSATION_COMMAND_VERSION = 'deepcode.command.v3' as const;
@@ -150,9 +151,25 @@ export interface AgentSettings {
   maxCallsPerRun: number;
   maxMembersPerSession: number;
   allowMemberAnalysis: boolean;
-  allowFullConfiguration?: boolean;
-  /** User presets are stored with the shared settings, not in an Agent-owned catalog. */
-  presets?: string;
+  allowFullConfiguration: boolean;
+  /** Snapshot of the selected presets; executable contributions remain Host-installed. */
+  presets: string;
+}
+
+export function decodeAgentSettings(value: unknown): AgentSettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_settings_invalid');
+  const item = value as Record<string, unknown>;
+  const fields = ['enabled', 'profileId', 'reasoningEffort', 'maxConcurrent', 'maxCallsPerRun',
+    'maxMembersPerSession', 'allowMemberAnalysis', 'allowFullConfiguration', 'presets'];
+  if (Object.keys(item).length !== fields.length || Object.keys(item).some(key => !fields.includes(key))
+    || ['enabled', 'allowMemberAnalysis', 'allowFullConfiguration'].some(key => typeof item[key] !== 'boolean')
+    || typeof item.profileId !== 'string' || item.profileId !== item.profileId.trim() || /[\u0000-\u001f\u007f]/u.test(item.profileId)
+    || item.reasoningEffort !== '' && !isLlmReasoningEffort(item.reasoningEffort)
+    || ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'].some(key => !Number.isSafeInteger(item[key]) || Number(item[key]) <= 0)
+    || typeof item.presets !== 'string') throw new Error('agent_settings_invalid');
+  try { if (!Array.isArray(JSON.parse(item.presets))) throw new Error(); }
+  catch { throw new Error('agent_settings_invalid'); }
+  return structuredClone(item) as unknown as AgentSettings;
 }
 
 export type AgentOperation =
@@ -219,7 +236,9 @@ export interface AgentModel {
 
 /** Host assembly only. All delegation policy and task facts belong to Session. */
 export interface AgentHostPort {
+  /** Defaults are read only while creating a new root Session. */
   settings(): Promise<AgentSettings>;
+  saveDefaults(settings: AgentSettings): Promise<void>;
   models(): Promise<readonly AgentModel[]>;
   createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection>;
 }
@@ -447,6 +466,7 @@ export type MessageFeedback = 'up' | 'down';
 export interface HostWindowBinding { hostInstanceId: string; windowLabel: string }
 
 export type ConversationCommand =
+  | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.subagent-settings.set'; commandId: string; sessionId: string; settings: AgentSettings }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'run.host.rebind'; commandId: string; sessionId: string; runId: string; expectedHostBinding: HostWindowBinding; hostBinding: HostWindowBinding }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.permissions.set'; commandId: string; sessionId: string; patches: UserSettings }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'approval.revoke'; commandId: string; sessionId: string; runId: string; authorityId: string }
@@ -900,6 +920,7 @@ export type SessionEvent =
   | (SessionEventBase & { type: 'wake.cancelled'; runId: string; payload: { scheduleId: string } })
   | (SessionEventBase & { type: 'wake.triggered'; runId: string; payload: { scheduleId: string; text: string } })
   | (SessionEventBase & { type: 'session.permissions.updated'; payload: { commandId: string; patches: UserSettings } })
+  | (SessionEventBase & { type: 'session.subagent-settings.updated'; payload: { commandId: string; settings: AgentSettings } })
   | (SessionEventBase & { type: 'approval.revoked'; runId: string; payload: { commandId: string; authorityId: string } })
   | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string } })
   | (SessionEventBase & { type: 'provider.attempt.updated'; runId: string; payload: ProviderAttemptFact })
@@ -915,6 +936,7 @@ export type SessionEvent =
   | (SessionEventBase & {
       type: 'session.created';
       payload: {
+        subagentSettings?: AgentSettings;
         recipe?: AgentRecipe;
         agentContext?: AgentContext;
         displayTitle: string;
@@ -1129,10 +1151,6 @@ export type SessionEvent =
       callId: string;
       /** Session knows that this call never entered effect execution. */
       payload: { attemptId: string; reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
-    })
-  | (SessionEventBase & {
-      type: 'agent.delegation.changed';
-      payload: { enabled: boolean };
     })
   | (SessionEventBase & {
       type: 'tool.interrupted';
@@ -1620,6 +1638,7 @@ export interface QueuedInputProjection {
 }
 
 export interface SessionProjection {
+  subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
   agentTasks?: AgentTaskProjection[];
@@ -1903,7 +1922,6 @@ export interface ProviderToolAlias {
 export interface RunRuntimeSnapshot {
   agentCapabilities: AgentCapabilities;
   agentToolsEnabled?: boolean;
-  agentDelegationEnabled?: boolean;
   permissions: UserSettings;
   environment: JsonObject;
   runRuntimeSnapshotRef: string;
@@ -2280,6 +2298,7 @@ export interface StoredCommand {
 }
 
 export interface SessionCreationInput {
+  subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
   sessionId: string;

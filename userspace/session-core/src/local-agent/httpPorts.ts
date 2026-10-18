@@ -1,4 +1,4 @@
-import { permissionSettings, decodeAgentCapabilities, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
+import { permissionSettings, decodeAgentCapabilities, decodeAgentSettings, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
 import type {
@@ -250,15 +250,11 @@ export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPo
   }
 
   async settings(): Promise<AgentSettings> {
-    const value = await this.json('/api/local-agent/agents/settings');
-    if (!isRecord(value) || typeof value.enabled !== 'boolean' || typeof value.profileId !== 'string'
-      || typeof value.allowMemberAnalysis !== 'boolean'
-      || typeof value.allowFullConfiguration !== 'boolean' || typeof value.presets !== 'string'
-      || value.reasoningEffort !== '' && !isLlmReasoningEffort(value.reasoningEffort)
-      || ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) {
-      throw new Error('agent_settings_invalid');
-    }
-    return value as unknown as AgentSettings;
+    return decodeAgentSettings(await this.json('/api/local-agent/agents/settings'));
+  }
+
+  async saveDefaults(settings: AgentSettings): Promise<void> {
+    await this.json('/api/local-agent/agents/settings', { method: 'POST', body: JSON.stringify(settings) });
   }
 
   async createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection> {
@@ -494,7 +490,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'selectedPlugins',
       'environment',
       'agentCapabilities',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'agentDelegationEnabled'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -511,7 +507,6 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
     try {
       const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
       if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
-      if (value.agentDelegationEnabled !== undefined && typeof value.agentDelegationEnabled !== 'boolean') throw new Error('agent_delegation_status_invalid');
       const provider = decodeProviderRuntime(value.provider);
       const approvalReviewer = value.approvalReviewer === undefined
         ? undefined : decodeProviderRuntime(value.approvalReviewer);
@@ -559,7 +554,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       return {
         runtimeSnapshot: Object.freeze({
           agentCapabilities,
-          ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true, agentDelegationEnabled: value.agentDelegationEnabled === true } : {}),
+          ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true } : {}),
           runRuntimeSnapshotRef: `run-runtime:${request.sessionId}:${request.runId}`,
           extensionGenerationRef: value.extensionGenerationRef,
           kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,

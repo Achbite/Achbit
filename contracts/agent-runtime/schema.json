@@ -15,6 +15,21 @@
     "Id": { "type": "string", "minLength": 1 },
     "Timestamp": { "type": "string", "minLength": 1 },
     "JsonObject": { "type": "object" },
+    "AgentSettings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enabled", "profileId", "reasoningEffort", "maxConcurrent", "maxCallsPerRun", "maxMembersPerSession", "allowMemberAnalysis", "allowFullConfiguration", "presets"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "profileId": {"type": "string"},
+        "reasoningEffort": {"enum": ["", "low", "medium", "high", "xhigh", "max"]},
+        "maxConcurrent": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "maxCallsPerRun": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "maxMembersPerSession": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "allowMemberAnalysis": {"type": "boolean"},
+        "allowFullConfiguration": {"type": "boolean"},
+        "presets": {"type": "string"}
+      }
+    },
     "AgentCapabilities": {
       "type": "object", "additionalProperties": false,
       "required": ["messaging", "continuation", "delegation"],
@@ -723,7 +738,6 @@
         "approvalReviewerError": {"$ref": "#/$defs/LocalAgentError"},
         "agentCapabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "agentToolsEnabled": {"type": "boolean"},
-        "agentDelegationEnabled": {"type": "boolean"},
         "instructions": {
           "type": "array",
           "items": {
@@ -2083,6 +2097,16 @@
           }
         },
         {
+          "type": "object", "additionalProperties": false,
+          "required": ["schemaVersion", "type", "commandId", "sessionId", "settings"],
+          "properties": {
+            "schemaVersion": {"const": "deepcode.command.v3"},
+            "type": {"const": "session.subagent-settings.set"},
+            "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"},
+            "settings": {"$ref": "#/$defs/AgentSettings"}
+          }
+        },
+        {
           "type": "object",
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "messageId", "expectedRevision", "text"],
@@ -2150,7 +2174,7 @@
             "tool.input-rejected",
             "tool.interrupted",
             "tool.not-executed",
-            "agent.delegation.changed",
+            "session.subagent-settings.updated",
             "process.updated",
             "tool.completed",
             "session.plugins.activated",
@@ -2449,6 +2473,7 @@
                 "required": ["displayTitle", "workspaceBindings"],
                 "properties": {
                   "displayTitle": {"type": "string"},
+                  "subagentSettings": {"$ref": "#/$defs/AgentSettings"},
                   "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
                   "profileId": {"$ref": "#/$defs/Id"},
                   "recipe": {"$ref": "#/$defs/AgentRecipe"},
@@ -2914,9 +2939,10 @@
           "then": {"properties": {"payload": {"$ref": "#/$defs/ToolNotExecuted"}}, "required": ["runId", "callId"]}
         },
         {
-          "if": {"properties": {"type": {"const": "agent.delegation.changed"}}},
+          "if": {"properties": {"type": {"const": "session.subagent-settings.updated"}}},
           "then": {"properties": {"payload": {"type": "object", "additionalProperties": false,
-            "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}}}
+            "required": ["commandId", "settings"], "properties": {"commandId": {"$ref": "#/$defs/Id"}, "settings": {"$ref": "#/$defs/AgentSettings"}}}},
+            "not": {"anyOf": [{"required": ["runId"]}, {"required": ["callId"]}]}}
         },
         {
           "if": {"properties": {"type": {"const": "tool.interrupted"}}},
@@ -3279,6 +3305,7 @@
       ],
       "properties": {
         "recipe": {"$ref": "#/$defs/AgentRecipe"},
+        "subagentSettings": {"$ref": "#/$defs/AgentSettings"},
         "agentContext": {"$ref": "#/$defs/AgentContext"},
         "agentTasks": {"type": "array", "items": {"$ref": "#/$defs/AgentTaskProjection"}},
         "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},

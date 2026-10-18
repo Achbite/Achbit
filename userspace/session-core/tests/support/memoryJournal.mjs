@@ -21,6 +21,7 @@ export class InMemoryCommandJournal {
         sessionId: input.sessionId,
         payload: {
           displayTitle: input.displayTitle,
+          ...(input.subagentSettings ? { subagentSettings: structuredClone(input.subagentSettings) } : {}),
           workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
           ...(input.recipe ? { recipe: structuredClone(input.recipe) } : {}),
           ...(input.profileId ? { profileId: input.profileId } : {}),

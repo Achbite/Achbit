@@ -14,13 +14,16 @@ const occurrences = (text, value) => text.split(value).length - 1;
 const call = (request, callId, name, input) => providerEvent(request.requestId, 'tool.call', { callId, name, input });
 const done = request => providerEvent(request.requestId, 'completed', {});
 const answer = (request, text) => providerEvent(request.requestId, 'text.delta', { text });
+const subagentSettingsCommand = (sessionId, commandId, settings) => ({
+  schemaVersion: 'deepcode.command.v3', type: 'session.subagent-settings.set', sessionId, commandId, settings,
+});
 
 async function serviceFixture(t, ownerId, stream, options = {}) {
   const journal = options.journal ?? new InMemoryCommandJournal();
   const requests = new Map(), preparations = new Map(), disposed = new Map(), releases = new Map();
   let service;
   const settings = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
-    maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, ...options.settings };
+    maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]', ...options.settings };
   service = new SessionService(journal, { async create({ sessionId }) {
     const preparation = fakeRunPreparation({ contextWindowTokens: 100_000, ...options.preparation });
     return { composition: {
@@ -34,7 +37,6 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
       }, async prepare(input) {
         const prepared = await preparation.port.prepare(input);
         prepared.runtimeSnapshot.agentToolsEnabled = true;
-        prepared.runtimeSnapshot.agentDelegationEnabled = settings.enabled;
         const creation = (await readEvents(journal, sessionId))[0];
         if (creation.payload.agentContext) prepared.runtimeSnapshot.agentCapabilities = creation.payload.agentContext.capabilities;
         const inputs = preparations.get(sessionId) ?? [];
@@ -52,6 +54,10 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
     } };
   } }, {
     async settings() { return { ...settings }; },
+    async saveDefaults(value) {
+      await options.saveDefaults?.(value);
+      Object.assign(settings, value);
+    },
     async models() { return [
       { profileId: 'profile:default', name: 'Default', model: 'fixture-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] },
       { profileId: 'profile:chosen', name: 'Chosen model', model: 'chosen-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['high'] },
@@ -270,7 +276,7 @@ test('a retained child continues across parent runs with its original Session, m
     }
     yield done(request);
   });
-  fixture.settings.allowFullConfiguration = true;
+  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:retained:configure', { ...fixture.settings, allowFullConfiguration: true }));
   await fixture.service.submit(messageCommand(ownerId, 'command:retained:first', 'Review the frontend.'));
   const first = await completed(fixture.service, ownerId);
   const firstChild = await fixture.service.snapshot(childId);
@@ -1053,7 +1059,7 @@ test('unknown drivers and child policy escalation are rejected before child crea
   assert.deepEqual((await completed(fixture.service, ownerId)).agentTasks ?? [], []);
 });
 
-test('delegation toggles append ordered facts without changing tools or accepting disabled tasks', async t => {
+test('Session delegation settings append ordered facts without changing tools or accepting disabled tasks', async t => {
   const ownerId = 'session:delegation-toggle';
   let fixture;
   fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
@@ -1061,8 +1067,7 @@ test('delegation toggles append ordered facts without changing tools or acceptin
     assert.ok(request.tools.some(tool => tool.name === 'agent'), 'the installed handler remains discoverable when off');
     if (turn === 1) {
       for (const enabled of [true, false, true, true, false]) {
-        fixture.settings.enabled = enabled;
-        await service.delegationChanged(enabled);
+        await service.submit(subagentSettingsCommand(ownerId, `command:toggle:${(await service.snapshot(ownerId)).revision}`, { ...fixture.settings, enabled }));
       }
       yield call(request, 'toggle:discover', 'agent', { action: 'models' });
     } else if (turn === 2) {
@@ -1070,7 +1075,7 @@ test('delegation toggles append ordered facts without changing tools or acceptin
       assert.deepEqual(request.tools, first.tools);
       assert.deepEqual(request.messages.slice(0, first.messages.length), first.messages);
       assert.equal(occurrences(textOf(request), 'stop delegating new tasks'), 3);
-      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 2);
+      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 3);
       yield call(request, 'toggle:rejected', 'agent', { action: 'spawn', name: 'Disabled', task: 'Must not start', delivery: 'async' });
     } else {
       assert.equal(turn, 3);
@@ -1083,8 +1088,9 @@ test('delegation toggles append ordered facts without changing tools or acceptin
   const state = await completed(fixture.service, ownerId);
   assert.deepEqual(state.agentTasks ?? [], []);
   const events = await readEvents(fixture.journal, ownerId);
-  assert.deepEqual(events.filter(event => event.type === 'agent.delegation.changed').map(event => event.payload.enabled),
-    [false, true, false, true, false]);
+  assert.equal(events[0].payload.subagentSettings.enabled, false);
+  assert.deepEqual(events.filter(event => event.type === 'session.subagent-settings.updated').map(event => event.payload.settings.enabled),
+    [true, false, true, true, false]);
   const last = events.at(-1);
   const compacted = [...events, { ...last, eventId: 'event:toggle-compacted', sequence: last.sequence + 1,
     type: 'context.compacted', payload: { compactionId: 'compact:toggle', coveredThroughSequence: last.sequence,
@@ -1094,8 +1100,7 @@ test('delegation toggles append ordered facts without changing tools or acceptin
   assert.equal(policies.length, 1, 'compaction retains the latest exact policy independently of summary wording');
   assert.match(policies[0].message.content, /stop delegating new tasks/u);
   const before = fixture.requests.get(ownerId).length;
-  fixture.settings.enabled = true;
-  await fixture.service.delegationChanged(true);
+  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:toggle:after', { ...fixture.settings, enabled: true }));
   assert.equal(fixture.requests.get(ownerId).length, before, 'a setting change does not start a model request');
 });
 
@@ -1123,13 +1128,96 @@ test('delegation changes during execution preserve the provider call and result 
     yield done(request);
   }, { preparation: { tools: [tool] }, kernel: () => emptyKernel({ async execute(request) {
     for (const enabled of [false, true]) {
-      fixture.settings.enabled = enabled;
-      await fixture.service.delegationChanged(enabled);
+      await fixture.service.submit(subagentSettingsCommand(ownerId, `command:in-flight:${enabled}`, { ...fixture.settings, enabled }));
     }
     return completedExecutionReply(request, { content: 'Read evidence.' });
   } }) });
   await fixture.service.submit(messageCommand(ownerId, 'command:in-flight-toggle', 'Read example.txt.'));
   await completed(fixture.service, ownerId);
+});
+
+test('Session settings isolate peers, update future defaults, survive reopen and preserve child configuration', async t => {
+  const ownerId = 'session:settings-b';
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
+    if (sessionId === ownerId && turn === 1) {
+      assert.match(textOf(request), /Proactively delegate useful independent work/u);
+      yield call(request, 'settings:spawn', 'agent', { action: 'spawn', name: 'Inspector', task: 'Inspect independently.', delivery: 'wait' });
+    } else yield answer(request, 'Independent evidence.');
+    yield done(request);
+  }, { settings: { profileId: 'profile:chosen', reasoningEffort: 'high', allowFullConfiguration: true } });
+  const original = structuredClone(fixture.settings);
+  await fixture.service.createSession({ sessionId: 'session:settings-a', displayTitle: 'A', workspaceBindings: [workspaceBinding] });
+  const changed = { ...original, enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 1, allowFullConfiguration: false };
+  const command = subagentSettingsCommand('session:settings-a', 'command:settings-a', changed);
+  assert.equal((await fixture.service.submit(command)).status, 'accepted');
+  assert.deepEqual((await fixture.service.snapshot(ownerId)).subagentSettings, original);
+  assert.deepEqual(fixture.settings, changed);
+  await fixture.service.createSession({ sessionId: 'session:settings-c', displayTitle: 'C', workspaceBindings: [] });
+  assert.deepEqual((await fixture.service.snapshot('session:settings-c')).subagentSettings, changed);
+  await fixture.service.submit(messageCommand(ownerId, 'command:settings-run', 'Inspect the evidence.'));
+  const finished = await completed(fixture.service, ownerId);
+  const child = await fixture.service.snapshot(finished.agentChildren[0].agentSessionId);
+  assert.deepEqual(child.subagentSettings, original);
+  assert.equal(child.agentContext.capabilities.delegation, false, 'inherited configuration cannot elevate analysis capability');
+  assert.equal(child.run.profileId, 'profile:chosen');
+  assert.equal(child.run.reasoningEffort, 'high');
+  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:settings-b', original));
+  assert.equal((await fixture.service.submit(command)).status, 'replayed');
+  assert.deepEqual(fixture.settings, original, 'replayed A must not overwrite the later B default');
+  await fixture.service.dispose();
+  const reopened = await serviceFixture(t, ownerId, async function* () { throw new Error('reopen_must_not_start_provider'); },
+    { journal: fixture.journal, reopen: true, settings: changed });
+  assert.deepEqual((await reopened.service.snapshot(ownerId)).subagentSettings, original);
+  assert.deepEqual((await reopened.service.snapshot('session:settings-a')).subagentSettings, changed);
+  assert.deepEqual((await reopened.service.snapshot(child.sessionId)).subagentSettings, original);
+});
+
+test('disabling a parent prevents new delegation while its running child completes with its own settings', async t => {
+  const ownerId = 'session:settings-running';
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
+    if (sessionId !== ownerId) {
+      started.resolve(sessionId);
+      await release.promise;
+      assert.equal((await service.snapshot(sessionId)).subagentSettings.enabled, true);
+      yield answer(request, 'Child finished after parent was disabled.');
+    } else if (turn === 1) yield call(request, 'running:first', 'agent', { action: 'spawn', name: 'Running', task: 'Finish the inspection.', delivery: 'wait' });
+    else if (turn === 2) yield call(request, 'running:denied', 'agent', { action: 'spawn', name: 'New', task: 'Must be rejected.', delivery: 'async' });
+    else {
+      assert.match(textOf(request), /agent_disabled/u);
+      yield answer(request, 'Existing child evidence retained.');
+    }
+    yield done(request);
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:settings-running', 'Delegate an inspection.'));
+  const childId = await started.promise;
+  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:disable-running', { ...fixture.settings, enabled: false }));
+  assert.equal((await fixture.service.snapshot(childId)).run.status, 'running');
+  release.resolve();
+  const finished = await completed(fixture.service, ownerId);
+  assert.equal(finished.agentTasks.length, 1);
+  assert.equal(finished.agentTasks[0].status, 'completed');
+  assert.equal(finished.agentChildren[0].closed, false);
+});
+
+test('default publication failure preserves accepted Session settings and replay has no publication side effect', async t => {
+  let attempts = 0, fail = true;
+  const fixture = await serviceFixture(t, 'session:default-write', async function* () { throw new Error('settings_must_not_start_provider'); },
+    { saveDefaults: async () => { attempts += 1; if (fail) throw new Error('fixture_defaults_write_failed'); } });
+  const original = structuredClone(fixture.settings);
+  const settings = { ...original, enabled: false };
+  const command = subagentSettingsCommand('session:default-write', 'command:default-write', settings);
+  await assert.rejects(fixture.service.submit(command), error => /subagent_defaults_update_failed/u.test(error.message)
+    && error.cause.message === 'fixture_defaults_write_failed');
+  assert.deepEqual((await fixture.service.snapshot('session:default-write')).subagentSettings, settings);
+  assert.deepEqual(fixture.settings, original);
+  assert.equal((await fixture.service.submit(command)).status, 'replayed');
+  assert.equal(attempts, 1);
+  fail = false;
+  assert.equal((await fixture.service.submit({ ...command, commandId: 'command:default-write-again' })).status, 'accepted');
+  assert.deepEqual(fixture.settings, settings);
+  assert.equal(attempts, 2);
 });
 
 test('total usage includes nested and closed Agents once and updates without a parent journal event', async t => {

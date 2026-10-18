@@ -328,7 +328,8 @@ export function messagesFromJournal(
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
-  const retainedDelegation = events.findLast(event => event.type === 'agent.delegation.changed');
+  const retainedDelegation = events.findLast(event => event.type === 'session.subagent-settings.updated'
+    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
   const retainedDelegationId = retainedDelegation ? `agent-delegation:${retainedDelegation.sequence}` : undefined;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
@@ -632,14 +633,15 @@ export function messagesFromJournal(
     } else if (event.type === 'wake.triggered') {
       pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
-    } else if (event.type === 'agent.delegation.changed') {
+    } else if (event.type === 'session.subagent-settings.updated'
+      || event.type === 'session.created' && event.payload.subagentSettings !== undefined) {
       // Settings can change while tools run. Deliver the ordered notice at the
       // next request boundary without splitting a provider call/result group.
       pendingAgentEvidence.push({
         contributionId: `agent-delegation:${event.sequence}`, contributionKind: 'journalMessages',
         label: 'Delegation status', sourceSequence: event.sequence,
-        message: { role: 'user', content: event.payload.enabled
-          ? 'Runtime setting changed: new agent delegation is enabled. Delegate only when useful.'
+        message: { role: 'user', content: (event.type === 'session.created' ? event.payload.subagentSettings!.enabled : event.payload.settings.enabled)
+          ? 'Runtime setting changed: new agent delegation is enabled for this Session. Proactively delegate useful independent work: separate investigation tracks, context-heavy exploration or independent review. No additional user request is needed. Use agent models for available operations and configuration; follow the agent tool guidance to scope tasks, continue independent work and integrate verified results.'
           : 'Runtime setting changed: stop delegating new tasks. Existing tasks may continue; you may message running agents, wait for results, cancel or close them. New spawns and new tasks for idle agents are rejected locally.' },
       });
     } else if (event.type === 'agent.message.received') {

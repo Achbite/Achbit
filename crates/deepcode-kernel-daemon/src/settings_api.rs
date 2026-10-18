@@ -38,7 +38,7 @@ pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Js
 }
 
 fn setting_activates_at_next_run(key: &str) -> bool {
-    // Delegation admission reads the current settings; existing children keep their binding.
+    // These are defaults read once when Session creates a new conversation.
     if key.starts_with("agent.subagents.") {
         return false;
     }
@@ -91,17 +91,6 @@ pub(crate) async fn user_settings_patch(
 }
 
 fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> {
-    // Serialize the complete publication, including its acknowledgement. This
-    // lock is independent of run preparation, so IPC can commit Actor facts.
-    let _publication = match state.local_agent.settings_publication.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return ApiResponse::error(
-                "settings_publication_lock_failed",
-                "Settings publication lock is poisoned.",
-            )
-        }
-    };
     let _runtime_transition = match state.local_agent.runtime_transition() {
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
@@ -178,22 +167,6 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
             return ApiResponse::error("write_settings_failed", error);
         }
         gui.user_settings = next_settings.clone();
-    }
-    // The persisted setting is the durable desired state. Every publication
-    // delivers it, including retries of an identical value after a lost/failed
-    // acknowledgement. New Session processes bootstrap it before opening Actors.
-    // Do not infer delivery from equality with the already-persisted value.
-    drop(_runtime_transition);
-    let delivery = state
-        .session_service
-        .enqueue(
-            "delegationChanged",
-            json!({"enabled": next_settings["agent.subagents.enabled"] == true}),
-        )
-        .and_then(|pending| state.session_service.receive(pending));
-    if let Err(error) = delivery {
-        return ApiResponse::error("settings_publication_pending",
-            format!("Settings were saved; Session publication is pending. Retry the settings update to deliver it: {}", error.message));
     }
     ApiResponse::ok(json!({
         "settings": next_settings,

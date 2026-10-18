@@ -67,6 +67,7 @@ export default function SubagentSettings({ profiles, connections }: {
         : t(language, 'settings.common.disabled')}</span>
     </summary>
     <form onSubmit={event => void save(event)}>
+      <p>{t(language, 'settings.subagents.defaultsHelp')}</p>
       <fieldset disabled={saving}>
         <div className="model-form-grid model-subagent-settings">
           <label className="model-toggle-row"><span title={t(language, 'settings.subagents.activation')}>{t(language, 'settings.subagents.enabled')}</span>
@@ -74,7 +75,8 @@ export default function SubagentSettings({ profiles, connections }: {
           </label>
           <SubagentModelFields profiles={profiles} connections={connections} profileId={selected} reasoningEffort={effort}
             mainProfileId={mainProfileId} language={language} onChange={patches => {
-              setDraft(current => ({ ...current, ...patches })); setError('');
+              setDraft(current => ({ ...current, ...Object.fromEntries(Object.entries(patches)
+                .map(([key, value]) => [`agent.subagents.${key}`, value])) })); setError('');
             }} />
           {numericSettings.map(name => <label key={name}>{t(language, `settings.subagents.${name}`)}
             <input type="number" required min={1} step={1} max={Number.MAX_SAFE_INTEGER}

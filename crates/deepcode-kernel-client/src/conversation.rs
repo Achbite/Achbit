@@ -52,6 +52,8 @@ impl ConversationCatalog {
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationSessionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_settings: Option<AgentSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recipe: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -61,6 +63,43 @@ pub struct CreateConversationSessionRequest {
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSettings {
+    pub enabled: bool,
+    pub profile_id: String,
+    pub reasoning_effort: String,
+    pub max_concurrent: u64,
+    pub max_calls_per_run: u64,
+    pub max_members_per_session: u64,
+    pub allow_member_analysis: bool,
+    pub allow_full_configuration: bool,
+    pub presets: String,
+}
+
+impl AgentSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.profile_id.trim() != self.profile_id
+            || self.profile_id.chars().any(char::is_control)
+            || !matches!(
+                self.reasoning_effort.as_str(),
+                "" | "low" | "medium" | "high" | "xhigh" | "max"
+            )
+            || [
+                self.max_concurrent,
+                self.max_calls_per_run,
+                self.max_members_per_session,
+            ]
+            .iter()
+            .any(|value| *value == 0 || *value > 9_007_199_254_740_991)
+            || !serde_json::from_str::<Value>(&self.presets).is_ok_and(|value| value.is_array())
+        {
+            return Err("subagent settings are invalid".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -215,6 +254,7 @@ pub struct SessionProjection {
     pub revision: u64,
     pub display: SessionDisplayProjection,
     pub model_settings: Option<SessionModelSettings>,
+    pub subagent_settings: Option<AgentSettings>,
     pub permission_overrides: Value,
     pub effective_permissions: Option<Value>,
     pub shell_authorizations: Vec<ShellAuthorizationProjection>,
@@ -430,6 +470,9 @@ impl SessionProjection {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SESSION_PROJECTION_VERSION || self.session_id.is_empty() {
             return Err("shared Session projection identity is invalid".to_string());
+        }
+        if let Some(settings) = &self.subagent_settings {
+            settings.validate()?;
         }
         if self.agent_context.as_ref().is_some_and(|context| {
             [
@@ -2776,6 +2819,31 @@ fn is_normalized_logical_path(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_subagent_settings_decode_complete_snapshots_and_reject_invalid_fields() {
+        let settings = json!({"enabled":true,"profileId":"","reasoningEffort":"high",
+            "maxConcurrent":4,"maxCallsPerRun":8,"maxMembersPerSession":12,
+            "allowMemberAnalysis":true,"allowFullConfiguration":false,"presets":"[]"});
+        let mut value = projection_value();
+        value["subagentSettings"] = settings.clone();
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(projection.subagent_settings.unwrap()).unwrap(),
+            settings
+        );
+        value["subagentSettings"]["maxConcurrent"] = json!(0);
+        assert!(serde_json::from_value::<SessionProjection>(value.clone())
+            .unwrap()
+            .validate()
+            .is_err());
+        value["subagentSettings"] = settings;
+        value["subagentSettings"]["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+        let missing: SessionProjection = serde_json::from_value(projection_value()).unwrap();
+        assert!(missing.subagent_settings.is_none());
+    }
 
     #[test]
     fn pending_child_decisions_preserve_the_original_session_and_references() {

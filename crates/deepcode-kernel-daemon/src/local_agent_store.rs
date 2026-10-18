@@ -117,6 +117,7 @@ impl LocalAgentJournal {
             profile_id,
             agent_context,
             None,
+            None,
         )
     }
 
@@ -129,7 +130,11 @@ impl LocalAgentJournal {
         profile_id: Option<&str>,
         agent_context: Option<&Value>,
         recipe: Option<&Value>,
+        subagent_settings: Option<&Value>,
     ) -> Result<Value, LocalAgentStoreError> {
+        if let Some(settings) = subagent_settings {
+            validate_subagent_settings(settings)?;
+        }
         if let Some(recipe) = recipe {
             crate::local_agent_recipe::AgentRecipe::decode(recipe)
                 .map_err(|error| LocalAgentStoreError::new("agent_recipe_invalid", error))?;
@@ -178,6 +183,7 @@ impl LocalAgentJournal {
                 "profileId": profile_id,
                 "agentContext": agent_context,
                 "recipe": recipe,
+                "subagentSettings": subagent_settings,
             }
         });
         let event = strip_null_object_fields(event);
@@ -1324,7 +1330,7 @@ fn validate_new_event(
         "tool.input-rejected",
         "tool.interrupted",
         "tool.not-executed",
-        "agent.delegation.changed",
+        "session.subagent-settings.updated",
         "session.control.rejected",
         "session.plugins.activated",
         "agent.task.created",
@@ -1361,7 +1367,7 @@ fn validate_new_event(
         "session.created"
             | "conversation.revised"
             | "session.model-settings.updated"
-            | "agent.delegation.changed"
+            | "session.subagent-settings.updated"
             | "session.permissions.updated"
             | "session.directory-index.attached"
             | "session.directory-index.detached"
@@ -1576,8 +1582,11 @@ fn validate_new_event(
             exact_object(
                 payload,
                 &["displayTitle", "workspaceBindings"],
-                &["profileId", "agentContext", "recipe"],
+                &["profileId", "agentContext", "recipe", "subagentSettings"],
             )?;
+            if let Some(settings) = payload.get("subagentSettings") {
+                validate_subagent_settings(settings)?;
+            }
             if let Some(recipe) = payload.get("recipe") {
                 crate::local_agent_recipe::AgentRecipe::decode(recipe)
                     .map_err(|error| LocalAgentStoreError::new("agent_recipe_invalid", error))?;
@@ -1740,14 +1749,11 @@ fn validate_new_event(
                 validate_id("predecessorCallId", id.as_str().unwrap_or_default())?;
             }
         }
-        "agent.delegation.changed" => {
-            exact_object(&event["payload"], &["enabled"], &[])?;
-            if !event["payload"]["enabled"].is_boolean() {
-                return Err(LocalAgentStoreError::new(
-                    "agent_delegation_invalid",
-                    "enabled 必须是布尔值。",
-                ));
-            }
+        "session.subagent-settings.updated" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["commandId", "settings"], &[])?;
+            validate_id("commandId", required_string(payload, "commandId")?)?;
+            validate_subagent_settings(&payload["settings"])?;
         }
         "tool.interrupted" => {
             let payload = &event["payload"];
@@ -2815,6 +2821,52 @@ pub(crate) fn validate_permission_patches(value: &Value) -> Result<(), LocalAgen
     Ok(())
 }
 
+pub(crate) fn validate_subagent_settings(value: &Value) -> Result<(), LocalAgentStoreError> {
+    exact_object(
+        value,
+        &[
+            "enabled",
+            "profileId",
+            "reasoningEffort",
+            "maxConcurrent",
+            "maxCallsPerRun",
+            "maxMembersPerSession",
+            "allowMemberAnalysis",
+            "allowFullConfiguration",
+            "presets",
+        ],
+        &[],
+    )?;
+    let profile_id = value["profileId"].as_str().ok_or_else(|| {
+        LocalAgentStoreError::new("agent_settings_invalid", "profileId 必须是字符串。")
+    })?;
+    if profile_id.trim() != profile_id
+        || profile_id.chars().any(char::is_control)
+        || !matches!(
+            value["reasoningEffort"].as_str(),
+            Some("" | "low" | "medium" | "high" | "xhigh" | "max")
+        )
+        || ["enabled", "allowMemberAnalysis", "allowFullConfiguration"]
+            .iter()
+            .any(|key| !value[key].is_boolean())
+        || ["maxConcurrent", "maxCallsPerRun", "maxMembersPerSession"]
+            .iter()
+            .any(|key| {
+                !value[key]
+                    .as_u64()
+                    .is_some_and(|n| (1..=9_007_199_254_740_991).contains(&n))
+            })
+        || !serde_json::from_str::<Value>(required_string(value, "presets")?)
+            .is_ok_and(|presets| presets.is_array())
+    {
+        return Err(LocalAgentStoreError::new(
+            "agent_settings_invalid",
+            "子代理设置无效。",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
     let object = command.as_object().ok_or_else(|| {
         LocalAgentStoreError::new(
@@ -2833,6 +2885,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
     let command_type = required_string(command, "type")?;
     if ![
         "session.model-settings.set",
+        "session.subagent-settings.set",
         "session.permissions.set",
         "approval.revoke",
         "session.directory-index.attach",
@@ -2903,7 +2956,10 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         validate_id("runId", required_string(command, "runId")?)?;
         validate_id("authorityId", required_string(command, "authorityId")?)?;
     }
-    if command_type == "session.model-settings.set" {
+    if matches!(
+        command_type,
+        "session.model-settings.set" | "session.subagent-settings.set"
+    ) {
         exact_object(
             command,
             &[
@@ -2915,7 +2971,11 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
             ],
             &[],
         )?;
-        validate_model_settings(&command["settings"])?;
+        if command_type == "session.subagent-settings.set" {
+            validate_subagent_settings(&command["settings"])?;
+        } else {
+            validate_model_settings(&command["settings"])?;
+        }
     }
     if command_type == "message.edit" {
         exact_object(
@@ -4435,16 +4495,12 @@ fn validate_run_runtime_snapshot(
             "approvalReviewer",
             "approvalReviewerError",
             "agentToolsEnabled",
-            "agentDelegationEnabled",
         ],
     )?;
     validate_agent_capabilities(&value["agentCapabilities"])?;
     if value
         .get("agentToolsEnabled")
         .is_some_and(|enabled| !enabled.is_boolean())
-        || value
-            .get("agentDelegationEnabled")
-            .is_some_and(|enabled| !enabled.is_boolean())
     {
         return Err(LocalAgentStoreError::new(
             "run_agent_tools_invalid",
@@ -5377,6 +5433,50 @@ mod tests {
     }
 
     #[test]
+    fn session_subagent_settings_preserve_creation_and_isolate_updates() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let settings = json!({"enabled":true,"profileId":"","reasoningEffort":"",
+            "maxConcurrent":4,"maxCallsPerRun":8,"maxMembersPerSession":12,
+            "allowMemberAnalysis":true,"allowFullConfiguration":false,"presets":"[]"});
+        for id in ["session:first", "session:second"] {
+            journal
+                .create_session_with_recipe(id, id, &json!([]), None, None, None, Some(&settings))
+                .unwrap();
+        }
+        let mut changed = settings.clone();
+        changed["enabled"] = json!(false);
+        let commit = json!({"command":{"schemaVersion":COMMAND_VERSION,"type":"session.subagent-settings.set",
+            "sessionId":"session:first","commandId":"command:subagent-settings","settings":changed},
+            "events":[{"type":"session.subagent-settings.updated","sessionId":"session:first",
+                "payload":{"commandId":"command:subagent-settings","settings":changed}}],
+            "reply":{"schemaVersion":REPLY_VERSION,"sessionId":"session:first","commandId":"command:subagent-settings",
+                "status":"accepted","revision":0}});
+        journal.commit_command(&commit).unwrap();
+        let first = journal.read_events("session:first", 0).unwrap();
+        let second = journal.read_events("session:second", 0).unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0]["payload"]["subagentSettings"], settings);
+        assert_eq!(first[1]["payload"]["settings"], changed);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0]["payload"]["subagentSettings"], settings);
+
+        let mut invalid = commit;
+        invalid["command"]["commandId"] = json!("command:invalid");
+        invalid["command"]["settings"]["maxConcurrent"] = json!(0);
+        assert!(journal.commit_command(&invalid).is_err());
+        assert_eq!(journal.read_events("session:first", 0).unwrap().len(), 2);
+        journal
+            .create_session("session:missing", "Missing", &json!([]), None, None)
+            .unwrap();
+        assert!(
+            journal.read_events("session:missing", 0).unwrap()[0]["payload"]
+                .get("subagentSettings")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn unified_agent_capabilities_preserve_lineage_and_require_explicit_facts() {
         let capabilities = json!({"messaging":true,"continuation":false,"delegation":false});
         let context = json!({
@@ -6083,6 +6183,7 @@ mod tests {
                     None,
                     context.as_ref(),
                     Some(&json!({"permissions":broad})),
+                    None,
                 )
                 .unwrap();
         }

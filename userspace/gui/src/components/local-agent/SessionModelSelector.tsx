@@ -8,6 +8,7 @@ import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import SubagentQuickSettings from './SubagentQuickSettings';
 import { useSettingsStore } from '../../state/settingsStore';
+import { useLocalAgentStore } from '../../state/localAgentStore';
 
 interface SessionModelSelectorProps {
   language: UiLanguage;
@@ -37,7 +38,10 @@ export default function SessionModelSelector({ language, profiles, connections =
     setOpen(requestedPanel.kind === 'model');
     setChoosingModel(requestedPanel.kind === 'model');
   }, [requestedPanel]);
-  const settings = useSettingsStore(state => state.effectiveSettings);
+  const sessionId = useLocalAgentStore(state => state.sessionId);
+  const sessionSubagents = useLocalAgentStore(state => state.projection?.subagentSettings);
+  const draftSubagents = useLocalAgentStore(state => state.draftSubagentSettings);
+  const defaultSubagentsEnabled = useSettingsStore(state => state.effectiveSettings['agent.subagents.enabled']);
   const rootRef = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null), triggerRef = useRef<HTMLButtonElement>(null);
   const menuId = useId(), theme = useDisplayTheme(), chinese = language === 'zh-CN';
   const selected = profiles.find(profile => profile.id === selectedProfileId);
@@ -45,7 +49,7 @@ export default function SessionModelSelector({ language, profiles, connections =
   const candidate = profiles.find(profile => profile.id === (candidateId ?? selectedProfileId));
   const candidateEffort = candidate?.thinking === 'disabled' ? null
     : candidate?.id === selectedProfileId ? effectiveEffort : candidate?.reasoningEffort ?? null;
-  const subagentsEnabled = settings['agent.subagents.enabled'] === true;
+  const subagentsEnabled = (sessionId ? sessionSubagents?.enabled : draftSubagents?.enabled ?? defaultSubagentsEnabled) === true;
   const subagentLabel = t(language, 'settings.subagents.configure');
   const title = (selected?.name ?? selectedProfileId ?? (chinese ? '选择模型' : 'Choose model')) + (selectedProfileId && !selected?.enabled ? ` · ${t(language, selected ? 'agent.profile.disabled' : 'agent.profile.missing')}` : '');
   const effortLabel = selected?.thinking === 'disabled'

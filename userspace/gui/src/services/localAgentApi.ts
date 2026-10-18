@@ -3,9 +3,10 @@ import { isProcessActivity } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { validatePermissionPatches } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
-import { decodeAgentContext, decodeAgentRecipe } from '@deepcode/protocol';
+import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
 import type {
   AssistantDraftBlockProjection,
+  AgentSettings,
   CommandReply,
   ConversationCatalog,
   ConversationCatalogManagement,
@@ -67,6 +68,7 @@ export async function createLocalAgentSession(
     workspacePaths?: string[];
     projectId?: string;
     profileId?: string;
+    subagentSettings?: AgentSettings;
   },
   signal?: AbortSignal,
 ): Promise<SessionProjection> {
@@ -373,7 +375,8 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals'])
+    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    || (value.subagentSettings !== undefined && !isAgentSettings(value.subagentSettings))
     || (value.recipe !== undefined && !isAgentRecipe(value.recipe))
     || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
     || (value.agentTasks !== undefined && !isArrayOf(value.agentTasks, isAgentTask))
@@ -1355,6 +1358,10 @@ function isRun(value: unknown): boolean {
 
 function isReasoningEffort(value: unknown): boolean {
   return isLlmReasoningEffort(value);
+}
+
+function isAgentSettings(value: unknown): boolean {
+  try { decodeAgentSettings(value); return true; } catch { return false; }
 }
 
 function isModelSettings(value: unknown): boolean {

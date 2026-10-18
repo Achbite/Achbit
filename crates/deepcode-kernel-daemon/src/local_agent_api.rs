@@ -20,7 +20,6 @@ pub(crate) struct LocalAgentRuntime {
     provider_runtimes: ProviderRuntimeRegistry,
     pub(crate) provider_transport: crate::provider_transport::ProviderTransport,
     runtime_transition: Arc<Mutex<()>>,
-    pub(crate) settings_publication: Arc<Mutex<()>>,
     prepared_runs: Arc<Mutex<HashMap<PreparedRunKey, Vec<PreparedRunRecord>>>>,
     active_runtime_settings: Arc<Mutex<Value>>,
     session_store_path: Arc<std::path::PathBuf>,
@@ -53,7 +52,6 @@ impl LocalAgentRuntime {
             provider_transport: crate::provider_transport::ProviderTransport::new()
                 .map_err(|error| format!("provider_client_init_failed: {error}"))?,
             runtime_transition: Arc::new(Mutex::new(())),
-            settings_publication: Arc::new(Mutex::new(())),
             prepared_runs: Arc::new(Mutex::new(HashMap::new())),
             active_runtime_settings: Arc::new(Mutex::new(settings.clone())),
             session_store_path: Arc::new(session_store_path.to_path_buf()),
@@ -651,16 +649,8 @@ impl LocalAgentRuntime {
             "environment": environment,
             "agentCapabilities": agent_capabilities,
         });
-        // Handler availability is stable; latest admission policy is a separate fact.
+        // Handler availability is stable; delegation settings belong to Session.
         response["agentToolsEnabled"] = json!(true);
-        response["agentDelegationEnabled"] = json!(
-            self.active_runtime_settings()
-                .map_err(|message| RunPreparationError::new(
-                    "active_runtime_settings_unavailable",
-                    message
-                ))?["agent.subagents.enabled"]
-                == true
-        );
         match &approval_reviewer_binding {
             Ok(binding) => response["approvalReviewer"] = json!(binding.snapshot()),
             Err(message) => {
@@ -916,6 +906,7 @@ pub(crate) struct CreateLocalSessionRequest {
     profile_id: Option<String>,
     agent_context: Option<Value>,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1090,6 +1081,7 @@ pub(crate) async fn local_agent_session_create(
         body.profile_id.as_deref(),
         body.agent_context.as_ref(),
         body.recipe.as_ref(),
+        body.subagent_settings.as_ref(),
     ) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
@@ -1103,6 +1095,7 @@ pub(crate) async fn local_agent_settings_get(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
+    // Session reads these defaults only when creating a new conversation.
     let gui = state.gui.lock().expect("gui state lock");
     let mut result = serde_json::Map::new();
     for field in [
@@ -1126,6 +1119,27 @@ pub(crate) async fn local_agent_settings_get(
         result.insert(field.into(), value.clone());
     }
     ApiResponse::ok(Value::Object(result))
+}
+
+pub(crate) async fn local_agent_settings_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    if let Err(error) = crate::local_agent_store::validate_subagent_settings(&body) {
+        return ApiResponse::error(error.code, error.message);
+    }
+    let patches = body
+        .as_object()
+        .expect("validated settings object")
+        .iter()
+        .map(|(field, value)| (format!("agent.subagents.{field}"), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    // Session owns when defaults are updated; Host uses the existing atomic settings writer.
+    crate::settings_api::user_settings_patch(State(state), Json(json!({"patches": patches}))).await
 }
 
 pub(crate) async fn local_agent_models_get(

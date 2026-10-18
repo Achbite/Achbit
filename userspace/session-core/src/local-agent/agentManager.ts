@@ -73,7 +73,8 @@ export class AgentManager {
     if (!allowed) throw new Error('agent_capability_unavailable');
     switch (operation.action) {
       case 'models': {
-        const settings = await abortable(this.host.settings(), signal);
+        if (!caller.subagentSettings) throw new Error('agent_settings_missing');
+        const settings = caller.subagentSettings;
         const presets = agentPresets(settings).map(preset => ({ ...preset,
           capabilities: resolveAgentCapabilities(preset, undefined, capabilities, settings.allowMemberAnalysis) }));
         const fullConfiguration = settings.allowFullConfiguration === true;
@@ -154,7 +155,8 @@ export class AgentManager {
     existingChild?: AgentChildProjection): Promise<AgentTaskProjection> {
     signal.throwIfAborted();
     caller = await this.snapshot(caller.sessionId);
-    const settings = await this.host.settings();
+    if (!caller.subagentSettings) throw new Error('agent_settings_missing');
+    const settings = caller.subagentSettings;
     if (!settings.enabled) throw new Error('agent_disabled');
     const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
     if (this.#blockedOwners.has(ownerId)) throw new Error('agent_owner_deleting');
@@ -222,6 +224,7 @@ export class AgentManager {
       if (!existingChild) {
         await this.host.createSession({ sessionId: task.agentSessionId, displayTitle: task.displayName,
           workspaceBindings: caller.run!.workspaceBindings, profileId: modelSelection!.profileId, recipe,
+          subagentSettings: settings,
           agentContext: { capabilities, model: instanceModel, ownerSessionId: ownerId, parentSessionId: caller.sessionId,
             parentRunId: runId, parentCallId: callId } });
         childCreated = true;

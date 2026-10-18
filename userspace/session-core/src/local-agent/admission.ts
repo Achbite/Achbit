@@ -1,4 +1,4 @@
-import { decodeAgentCapabilities, isManagedProcessSnapshot } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, isManagedProcessSnapshot } from '@deepcode/protocol';
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
@@ -74,11 +74,12 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     throw new Error('session_event_run_not_active');
   }
   switch (event.type) {
-    case 'agent.delegation.changed':
-      if (typeof event.payload.enabled !== 'boolean' || state.agentDelegationEnabled === event.payload.enabled) throw new Error('agent_delegation_change_invalid');
+    case 'session.subagent-settings.updated':
+      decodeAgentSettings(event.payload.settings);
       break;
     case 'session.created':
       if (state.revision !== 0) throw new Error('session_creation_duplicate');
+      if (event.payload.subagentSettings) decodeAgentSettings(event.payload.subagentSettings);
       break;
     case 'run.started':
       decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
