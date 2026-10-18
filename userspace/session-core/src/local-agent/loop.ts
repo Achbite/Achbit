@@ -2,12 +2,14 @@ import { permissionSettings, providerRuntimeForPurpose } from '@deepcode/protoco
 import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
+import { preparePlanReview } from './planReview.js';
 import type {
   AgentOperation,
   SessionOperation,
   AssistantDraftBlockProjection,
   AssistantDraftProjection,
   JsonObject,
+  KernelPort,
   LocalAgentError,
   ModelInteractionRequest,
   NewSessionEvent,
@@ -329,6 +331,16 @@ export async function runAgentLoop(
     nextTurn: while (true) {
       throwIfAborted(signal);
       snapshot = await deps.readSnapshot();
+      if (snapshot.state.pendingPlan?.review?.status === 'reviewing') {
+        await reviewPendingPlan(deps, snapshot.state.pendingPlan, signal);
+        snapshot = await deps.readSnapshot();
+      }
+      if (snapshot.state.pendingPlan) {
+        const plan = snapshot.state.pendingPlan;
+        if (snapshot.state.run?.status !== 'waiting') await commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
+          payload: { reason: 'plan', detail: plan.title } });
+        return { status: 'waiting', runId, reason: 'plan', planId: plan.planId };
+      }
       const waiting = pendingControlWait(snapshot.events, runId);
       if (waiting) {
         const wait = controlWait(waiting.payload.result)!;
@@ -561,13 +573,29 @@ export async function runAgentLoop(
             };
           }
           case 'plan': {
-            const fact = capabilities.controls.publishPlan(
-              snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
-              runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
-            );
-            const admission = fact.type === 'plan.published'
-              ? await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
-                runId, mutationManifest: fact.payload.mutationManifest }) : undefined;
+            let fact: NewSessionEvent = runRuntimeSnapshot(snapshot, runId).permissions['agent.permissions.workspaceMutation'] === 'allow'
+              ? { type: 'session.control.rejected', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                payload: { providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLAN_PUBLISH, input: { ...turn.draft },
+                  error: { code: 'plan_disabled', message: 'Plan is off. Continue authorized work without publishing a Plan; execution permissions remain separate.' } } }
+              : capabilities.controls.publishPlan(
+                snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
+                runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
+              );
+            let admission: Awaited<ReturnType<KernelPort['planAdmission']>> | undefined;
+            if (fact.type === 'plan.published') {
+              try {
+                admission = await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
+                  runId, mutationManifest: fact.payload.mutationManifest });
+                if (admission.workspaceRequests?.length) {
+                  fact = { ...fact, payload: { ...fact.payload, workspaceRequests: admission.workspaceRequests } };
+                }
+              } catch (error) {
+                if (!(error instanceof LoopFailure) || error.code !== 'plan_workspace_binding_invalid') throw error;
+                fact = { type: 'session.control.rejected', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                  payload: { providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLAN_PUBLISH,
+                    input: { ...turn.draft }, error: errorFact(error) } };
+              }
+            }
             throwIfAborted(signal);
             // Publish the Plan and its admission together. Shells must never
             // observe an automatically accepted Plan as a pending user decision.
@@ -575,13 +603,17 @@ export async function runAgentLoop(
               ...orderedProviderCallFacts(turn.completion, [fact]),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
-              ...(fact.type !== 'plan.published' || !admission ? [] : admission.source !== 'user'
+              ...(fact.type !== 'plan.published' || !admission ? [] : admission.source === 'review'
+                ? [{ type: 'plan.review.requested' as const, sessionId: current.state.sessionId, runId, callId: fact.callId,
+                  payload: { planId: fact.payload.planId, revision: fact.payload.revision, providerRequestId: deps.nextId('provider-request') } }]
+                : admission.source !== 'user'
                 ? confirmationFacts(current.state, { ...fact.payload, runId, callId: fact.callId },
                   deps.nextId('plan-admission'), admission.source, deps.nextId, admission.authorities)
                 : [{ type: 'run.waiting' as const, sessionId: current.state.sessionId, runId,
                   payload: { reason: 'plan' as const, detail: fact.payload.title } }]),
             ]);
             if (fact.type !== 'plan.published') break;
+            if (admission?.source === 'review') continue nextTurn;
             if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
             break;
           }
@@ -2012,6 +2044,51 @@ function executionRequest(snapshot: LoopSnapshot, requestEvent: ToolRequestEvent
   };
 }
 
+async function reviewPendingPlan(deps: AgentLoopDeps, plan: NonNullable<SessionState['pendingPlan']>, signal: AbortSignal): Promise<void> {
+  let snapshot = await deps.readSnapshot();
+  const requestId = plan.review!.providerRequestId;
+  const runtime = runRuntimeSnapshot(snapshot, plan.runId);
+  let review: ReturnType<typeof preparePlanReview> | undefined;
+  let reviewError: LocalAgentError | undefined;
+  let verdict: ReturnType<typeof decodeApprovalReview>;
+  try {
+    if (runtime.permissions['agent.permissions.workspaceMutation'] !== 'review') {
+      throw new LoopFailure('plan_review_policy_changed', '审批方式已变化，未发起计划审批请求。');
+    }
+    review = preparePlanReview(snapshot, runtime, plan, requestId);
+    snapshot = await deps.commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId: plan.runId, payload: review.receipt });
+    const result = await consumeTextProvider(review.request, deps, signal);
+    snapshot = await deps.commit([providerTurnSettledEvent(snapshot.state.sessionId, plan.runId, result.completion),
+      ...(result.contextUsage ? [{ type: 'context.updated' as const, sessionId: snapshot.state.sessionId, runId: plan.runId, payload: result.contextUsage }] : [])]);
+    verdict = decodeApprovalReview(result.summary);
+    if (verdict.decision === 'allow') {
+      const admitted = await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId, runId: plan.runId, mutationManifest: plan.mutationManifest });
+      if (admitted.source !== 'review') verdict = { decision: 'ask', reason: '计划范围或审批方式已变化，需要人工确认。' };
+    }
+  } catch (error) {
+    if (signal.aborted) throw error;
+    reviewError = errorFact(error);
+    snapshot = await deps.readSnapshot();
+    if (review && !snapshot.state.providerTurns[requestId]) snapshot = await deps.commit({ type: 'provider.turn.settled',
+      sessionId: snapshot.state.sessionId, runId: plan.runId, payload: { providerRequestId: requestId,
+        purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: reviewError } });
+    verdict = { decision: reviewError.code === 'plan_workspace_binding_invalid' ? 'deny' : 'ask',
+      reason: `计划审批未完成。${reviewError.code}：${reviewError.message}` };
+  }
+  await deps.commit(current => {
+    if (current.state.pendingPlan?.planId !== plan.planId || current.state.pendingPlan.revision !== plan.revision) return [];
+    const mode = runRuntimeSnapshot(current, plan.runId).permissions['agent.permissions.workspaceMutation'];
+    const result = mode === 'review' ? verdict : { decision: 'ask' as const, reason: '审批方式已变化，需要人工确认。' };
+    const events: NewSessionEvent[] = [{ type: 'plan.reviewed', sessionId: current.state.sessionId, runId: plan.runId, callId: plan.callId,
+      payload: { planId: plan.planId, revision: plan.revision, providerRequestId: requestId, ...result, ...(reviewError ? { error: reviewError } : {}) } }];
+    if (result.decision === 'allow') events.push(...confirmationFacts(current.state, plan, deps.nextId('plan-review-decision'), 'agent', deps.nextId));
+    else if (result.decision === 'deny') events.push({ type: 'plan.cancelled', sessionId: current.state.sessionId, runId: plan.runId, callId: plan.callId,
+      payload: { planId: plan.planId, revision: plan.revision, commandId: deps.nextId('plan-review-denial') } });
+    else events.push({ type: 'run.waiting', sessionId: current.state.sessionId, runId: plan.runId, payload: { reason: 'plan', detail: result.reason } });
+    return events;
+  });
+}
+
 async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEvent, reply: ToolExecutionReply,
   signal: AbortSignal): Promise<'terminal' | 'approval' | 'retry'> {
   const runId = requestEvent.runId;
@@ -2769,7 +2846,7 @@ function runWorkspaceBindings(
 ): WorkspaceBindingDisplay[] {
   const run = snapshot.state.run;
   if (!run || run.runId !== runId) {
-    throw new LoopFailure('run_workspace_snapshot_missing', '当前 run 缺少冻结的目录索引快照。');
+    throw new LoopFailure('run_workspace_snapshot_missing', '当前 run 缺少已记录的工作区绑定。');
   }
   return requestResourceBindings(run.workspaceBindings, snapshot.events);
 }

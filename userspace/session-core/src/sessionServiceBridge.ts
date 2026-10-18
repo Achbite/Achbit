@@ -1,4 +1,5 @@
 import type { SessionObservationSink } from './local-agent/observation.js';
+import { LoopFailure } from './local-agent/loopFailure.js';
 import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
@@ -227,6 +228,9 @@ function decodeCommand(value: unknown): ConversationCommand {
         throw new Error('conversation_command_invalid');
       }
       return value as unknown as ConversationCommand;
+    case 'session.workspaces.set':
+      if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'workspaceBindings'])) throw new Error('conversation_command_invalid');
+      return { ...value, workspaceBindings: decodeWorkspaceBindings(value.workspaceBindings) } as unknown as ConversationCommand;
     case 'session.directory-index.attach':
       if (
         !hasExactKeys(value, [
@@ -548,9 +552,8 @@ function writeLine(encoded: string): Promise<void> {
 function bridgeError(error: unknown): { code: string; message: string; details?: SessionDeletionError['details'] } {
   const message = error instanceof Error ? error.message : String(error);
   const [candidate] = message.split(':', 1);
-  const code = candidate && /^[a-z][a-z0-9_.-]{0,127}$/u.test(candidate)
-    ? candidate
-    : 'session_service_failed';
+  const code = error instanceof LoopFailure ? error.code
+    : candidate && /^[a-z][a-z0-9_.-]{0,127}$/u.test(candidate) ? candidate : 'session_service_failed';
   return { code, message, ...(error instanceof SessionDeletionError ? { details: error.details } : {}) };
 }
 

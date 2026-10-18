@@ -669,9 +669,6 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
                 onClick={() => setWorkspaceManager(null)}
               ><DeepCodeShellIcon name="close" size={14} /></button>
             </header>
-            <p className="deepcode-gui-text-dialog__message">
-              {t(language, 'deepcodeGui.project.workspaceTemplateHint')}
-            </p>
             <h3 className="deepcode-gui-workspace-manager__heading">{language === 'zh-CN' ? '源文件夹' : 'Source folders'}</h3>
             <div className="deepcode-gui-workspace-manager__list" onMouseDown={(event) => event.stopPropagation()}>
               {!workspaceManager.loading && workspaceManager.records.length === 0 && (

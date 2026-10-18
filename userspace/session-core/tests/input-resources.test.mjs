@@ -11,7 +11,7 @@ const readTool = { toolBindingRef: 'binding:read', name: 'fs.read', description:
   possibleEffects: ['workspaceRead'], availability: 'callable', origin: 'coreBuiltin' };
 const history = request => request.messages.filter(message => !message.images?.length && !message.toolImages?.length);
 
-test('queued file and directory references join the next request without changing project or historical bindings', async t => {
+test('queued directories become formal bindings while files and historical request handles remain references', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:queued-files';
   await createSession(journal, sessionId, [workspaceBinding]);
   const image = file('screen.png', 'image/png'), text = file('notes.txt', 'text/plain');
@@ -64,14 +64,133 @@ test('queued file and directory references join the next request without changin
   finishFirst();
   const completed = await waitForProjection(actor, state => state.run?.status === 'completed');
   assert.equal(completed.run.runId, runId);
-  assert.deepEqual(completed.run.workspaceBindings, [workspaceBinding]);
-  assert.deepEqual(completed.workspaceBindings, [workspaceBinding]);
+  const bound = [workspaceBinding, { workspaceId: 'workspace:other', displayName: 'Other project' }];
+  assert.deepEqual(completed.run.workspaceBindings, bound);
+  assert.deepEqual(completed.workspaceBindings, bound);
   assert.deepEqual(executions.map(request => request.workspaceBindings), [[workspaceBinding.workspaceId], [workspaceBinding.workspaceId, image.workspaceId, text.workspaceId, 'workspace:other']]);
   assert.equal(executions[1].input.workspaceId, text.workspaceId);
   const events = await readEvents(journal, sessionId);
   assert.deepEqual(events.find(event => event.type === 'run.started').payload.workspaceBindings, [workspaceBinding]);
+  assert.deepEqual(events.filter(event => event.type === 'session.directory-index.attached').map(event => event.payload.workspaceBinding), bound.slice(1));
   assert.deepEqual(events.filter(event => event.type === 'context.composed').map(event => event.payload.workspaceBindings.length), [1, 4, 4]);
   // Starting another run must not reinterpret the preceding supplemental messages.
   await actor.submit(messageCommand(sessionId, 'command:next', 'Summarize the same inputs.'));
-  await waitForProjection(actor, state => state.run?.status === 'completed' && state.run.runId !== runId);
+  const next = await waitForProjection(actor, state => state.run?.status === 'completed' && state.run.runId !== runId);
+  assert.deepEqual(next.run.workspaceBindings, bound);
+  assert.equal((await readEvents(journal, sessionId)).filter(event => event.type === 'session.directory-index.attached').length, 1);
+});
+
+const directory = { referenceId: 'reference:project', workspaceId: 'workspace:added', logicalPath: '.', displayName: 'Added project', kind: 'directory' };
+const planFor = workspace => ({ title: 'Update supplied project', summary: 'Write the requested result.',
+  steps: [{ stepId: 'write', title: 'Write', details: 'Create the result after confirmation.' }],
+  mutationManifest: [{ operation: 'fs.write', workspace, target: 'result.txt' }] });
+
+test('initial directories bind before run start and Plan still waits for confirmation; file parents stay unbound', async t => {
+  for (const reference of [directory, { ...file('input.txt', 'text/plain'), workspaceId: 'workspace:file-parent' }]) {
+    const journal = new InMemoryCommandJournal(), sessionId = `session:initial-${reference.kind}`;
+    await createSession(journal, sessionId, [workspaceBinding]);
+    let turns = 0, admissions = 0;
+    const actor = actorWith(journal, sessionId, { async *stream(request) {
+      if (++turns === 1) {
+        yield providerEvent(request.requestId, 'tool.call', { callId: 'native:plan', name: 'plan_publish', input: planFor('workspace2') });
+      } else {
+        assert.equal(turns, 2);
+        yield providerEvent(request.requestId, 'text.delta', { text: 'Binding outcome recorded.' });
+      }
+      yield providerEvent(request.requestId, 'completed', {});
+    } }, emptyKernel({ async planAdmission(request) {
+      admissions++;
+      assert.equal(request.mutationManifest[0].workspaceId, reference.workspaceId);
+      return { source: 'user', authorities: [], ...(reference.kind === 'file'
+        ? { workspaceRequests: [{ workspaceId: reference.workspaceId, rootPath: '/fixture/file-parent' }] } : {}) };
+    } }), fakeRunPreparation().port, `initial-${reference.kind}`);
+    t.after(() => actor.dispose());
+    await actor.submit({ ...messageCommand(sessionId, 'command:input', 'Work on this input.'), filesystemReferences: [reference] });
+    const waiting = await waitForProjection(actor, value => value.pendingPlan !== null);
+    if (reference.kind === 'directory') {
+      assert.equal(waiting.activePlanRef, null);
+      assert.deepEqual(waiting.run.workspaceBindings.map(x => x.workspaceId), [workspaceBinding.workspaceId, directory.workspaceId]);
+      const plan = waiting.pendingPlan;
+      await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+        commandId: 'command:confirm', runId: plan.runId, planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } });
+    } else {
+      assert.deepEqual(waiting.pendingPlan.workspaceRequests, [{ workspaceId: reference.workspaceId, rootPath: '/fixture/file-parent' }]);
+      assert.equal(waiting.workspaceBindings.some(binding => binding.workspaceId === reference.workspaceId), false);
+      const plan = waiting.pendingPlan;
+      const refused = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+        commandId: 'command:unbound-confirm', runId: plan.runId, planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } });
+      assert.equal(refused.status, 'rejected');
+      assert.equal(refused.error.code, 'plan_workspace_binding_required');
+      await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+        commandId: 'command:cancel', runId: plan.runId, planId: plan.planId, revision: plan.revision, response: { kind: 'cancel' } });
+    }
+    const completed = await waitForProjection(actor, value => value.run?.status === (reference.kind === 'file' ? 'cancelled' : 'completed'));
+    assert.equal(admissions, 1);
+    assert.equal(completed.workspaceBindings.some(x => x.workspaceId === reference.workspaceId), reference.kind === 'directory');
+    const events = await readEvents(journal, sessionId);
+    assert.deepEqual(events.find(event => event.type === 'run.started').payload.workspaceBindings, completed.workspaceBindings);
+    assert.equal(events.filter(event => event.type === 'session.control.rejected').length, 0);
+  }
+});
+
+test('explicit directory attachment updates the active run without changing the in-flight tool snapshot', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:explicit-directory';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const release = Promise.withResolvers(), requests = [], executions = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) {
+      await release.promise;
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'native:old', name: 'fs_read', input: { path: 'README.md' } });
+    } else {
+      assert.deepEqual(request.workspaceBindings.map(x => x.workspaceId), [workspaceBinding.workspaceId, directory.workspaceId]);
+      yield providerEvent(request.requestId, 'text.delta', { text: 'New directory is bound.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    executions.push(request);
+    return completedExecutionReply(request, { content: 'Original project.' });
+  } }), fakeRunPreparation({ tools: [readTool] }).port, 'explicit-directory');
+  t.after(async () => { release.resolve(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Read the project.'));
+  await waitUntil(() => requests.length === 1, 'first request held');
+  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.directory-index.attach', sessionId,
+    commandId: 'command:attach', workspaceBinding: { workspaceId: directory.workspaceId, displayName: directory.displayName } });
+  assert.equal(reply.status, 'accepted');
+  assert.equal((await actor.snapshot()).run.workspaceBindings.length, 2);
+  release.resolve();
+  await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.deepEqual(executions[0].workspaceBindings, [workspaceBinding.workspaceId]);
+  const ended = (await actor.snapshot()).run.workspaceBindings;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.directory-index.detach', sessionId,
+    commandId: 'command:detach', workspaceId: directory.workspaceId });
+  assert.deepEqual((await actor.snapshot()).workspaceBindings, [workspaceBinding]);
+  assert.deepEqual((await actor.snapshot()).run.workspaceBindings, ended, 'later detach must not rewrite a completed run');
+});
+
+test('Kernel Plan binding rejection retains its structured error and does not fail the whole Loop', async t => {
+  const { HttpKernelPort } = await import('../dist/local-agent/httpPorts.js');
+  const port = new HttpKernelPort({ apiBase: 'http://fixture.invalid', serviceToken: 'fixture', fetchImpl: async () =>
+    new Response(JSON.stringify({ ok: false, error: 'plan_workspace_binding_invalid', message: 'Directory was detached before admission.' }), { status: 400 }) });
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:plan-binding-rejected';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  let turns = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (++turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:plan', name: 'plan_publish', input: planFor('primary') });
+    else {
+      assert.equal(turns, 2);
+      assert.match(JSON.stringify(request.messages), /Directory was detached before admission/);
+      yield providerEvent(request.requestId, 'text.delta', { text: 'The Plan was rejected without execution.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ planAdmission: request => port.planAdmission(request) }), fakeRunPreparation().port, 'plan-rejected');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare the Plan.'));
+  const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.equal(completed.terminalError, null);
+  const events = await readEvents(journal, sessionId);
+  const rejected = events.find(event => event.type === 'session.control.rejected');
+  assert.equal(rejected.payload.error.code, 'plan_workspace_binding_invalid');
+  assert.equal(rejected.payload.error.message, 'Directory was detached before admission.');
+  assert.equal(events.some(event => event.type === 'plan.published'), false);
 });

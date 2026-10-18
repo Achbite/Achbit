@@ -5333,7 +5333,7 @@ test('the real Session bridge persists model commands and passes effort through 
   for (const type of ['message.submit', 'context.focus']) {
     const reply = await send('submit', { command: { schemaVersion: 'deepcode.command.v3', type, commandId: `command:${type}`, sessionId, [type === 'message.submit' ? 'text' : 'task']: 'Inspect source.', reasoningEffortOverride: 'low' } });
     assert.equal(reply.ok, false);
-    assert.match(JSON.stringify(reply.error), /fixture_prepare_boundary/);
+    assert.deepEqual(reply.error, { code: 'fixture_prepare_boundary', message: 'Preparation reached; no Provider is started.' });
   }
   assert.deepEqual(prepared.map((request) => [request.profileId, request.reasoningEffortOverride]), [['profile:wire', 'low'], ['profile:wire', 'low']]);
   const heldSessionId = 'session:bridge-held';
@@ -5348,7 +5348,7 @@ test('the real Session bridge persists model commands and passes effort through 
   releaseHeldPreparation();
   const heldReply = JSON.parse((await frames.next()).value);
   assert.equal(heldReply.requestId, 'bridge-held');
-  assert.match(JSON.stringify(heldReply.error), /fixture_prepare_boundary/);
+  assert.deepEqual(heldReply.error, { code: 'fixture_prepare_boundary', message: 'Preparation reached; no Provider is started.' });
   assert.equal((await send('shutdown', {})).ok, true);
   await once(child, 'exit');
   assert.equal(child.exitCode, 0, stderr);

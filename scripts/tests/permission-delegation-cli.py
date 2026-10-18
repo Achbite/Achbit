@@ -17,6 +17,11 @@ require = fixture.require
 COMMAND = "[IO.File]::AppendAllText((Join-Path (Get-Location) 'approved.txt'), \"approved`n\")" if os.name == 'nt' else "printf 'approved\\n' >> approved.txt"
 
 
+def title_request(body):
+    messages = body.get('messages', [])
+    return bool(messages and messages[0].get('content', '').startswith('Name this conversation from the user'))
+
+
 def configure_review(daemon, server, profile_id):
     fixture.write_configuration(daemon.config_root, f'http://127.0.0.1:{server.server_port}/v1', {})
     settings_root = daemon.config_root / 'config/user/local/settings'
@@ -45,6 +50,9 @@ class Provider(fixture.MockProviderHandler):
             self.send_header('content-type', 'text/event-stream')
             self.send_header('connection', 'close')
             self.end_headers()
+            if title_request(body):
+                self._send_text('Permission validation')
+                return
             if not body.get('tools'):
                 state.reviews += 1
                 require(state.mode == 'review', 'Review ran without user delegation')
@@ -139,6 +147,9 @@ class ReviewFailureProvider(fixture.MockProviderHandler):
             self.send_header('content-type', 'text/event-stream')
             self.send_header('connection', 'close')
             self.end_headers()
+            if title_request(body):
+                self._send_text('Permission validation')
+                return
             if not body.get('tools'):
                 state.reviews += 1
                 require(state.scenario == 'invalid-decision', 'An unavailable reviewer was replaced by another model')
@@ -244,6 +255,9 @@ class PreviousRunGuidanceProvider(fixture.MockProviderHandler):
             self.send_header('content-type', 'text/event-stream')
             self.send_header('connection', 'close')
             self.end_headers()
+            if title_request(body):
+                self._send_text('Permission validation')
+                return
             if not body.get('tools'):
                 state.reviews += 1
                 require(body['model'] == 'mock-reviewer', 'The selected reviewer was not used for prior-run guidance')
@@ -427,7 +441,160 @@ def check_previous_run_guidance():
             raise
 
 
+class PlanProvider(fixture.MockProviderHandler):
+    def do_POST(self):
+        state = self.provider_state
+        try:
+            body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            self.send_response(200)
+            self.send_header('content-type', 'text/event-stream')
+            self.send_header('connection', 'close')
+            self.end_headers()
+            if title_request(body):
+                self._send_text('Plan permission validation')
+                return
+            if not body.get('tools'):
+                state.reviews += 1
+                require(state.mode == 'review' and body['model'] == 'mock-reviewer', 'Plan review did not use its selected independent model')
+                require(len(body['messages']) == 2, 'Plan review inherited a transcript')
+                review = json.loads(body['messages'][1]['content'])
+                require(review['reviewKind'] == 'plan' and review['grant'] == 'thisPlanRevisionOnly', 'Wrong Plan review context')
+                require('operation' not in review and 'observedTarget' not in review, 'Shell review context leaked into Plan review')
+                require('You do not approve Plans' not in body['messages'][0]['content'], 'Plan reused Shell reviewer instructions')
+                require(review['proposedPlan']['mutationManifest'][0]['target'] == 'result.txt', 'Plan scope changed before review')
+                state.review_ready.set()
+                require(state.release_review.wait(15), 'Plan reviewer was not released')
+                self._send_text(json.dumps({'decision': state.verdict, 'reason': 'The independent Plan scope decision.'}))
+                return
+            if state.delegate_pending and state.mode == 'review':
+                if not state.after_delegation.requests:
+                    first = state.requests[0]
+                    require(body['tools'] == first['tools'], 'Delegating Plan approval changed the tool catalog')
+                    before, after = first['messages'], body['messages'][:len(first['messages'])]
+                    changed = [(old, new) for old, new in zip(before, after) if old != new]
+                    require(len(after) == len(before) and len(changed) == 1, 'Delegation changed more than the permission instruction')
+                    old, new = changed[0]
+                    require(old['role'] == new['role'] == 'system'
+                        and 'call plan_publish and wait for confirmation' in old['content']
+                        and 'An independent Plan reviewer decides the proposed scope' in new['content'],
+                        'Delegation did not replace manual confirmation guidance with independent review guidance')
+                ordinal, names, results = state.after_delegation.inspect(body)
+                ordinal += len(state.requests)
+            else:
+                ordinal, names, results = state.inspect(body)
+            if state.mode == 'allow':
+                require('plan' not in names, 'Plan off still exposed its schema')
+                if ordinal == 1:
+                    self._send_tool_calls([('write', names['write'], {'path': 'result.txt', 'content': 'approved-plan-write'})])
+                else:
+                    require(results['write']['outcome'] == 'completed', results)
+                    self._send_text('plan-mode-complete')
+            elif ordinal == 1:
+                require('plan' in names, 'Enabled Plan tool was missing')
+                self._send_tool_calls([('plan', names['plan'], {
+                    'title': 'Write requested result', 'summary': 'Change only result.txt.',
+                    'steps': [{'stepId': 'write', 'title': 'Write', 'details': 'Write the requested file after approval.'}],
+                    'mutationManifest': [{'workspace': 'primary', 'operation': 'fs.write', 'target': 'result.txt'}],
+                })])
+            elif ordinal == 2 and state.verdict == 'deny':
+                require(results['plan']['response']['kind'] == 'cancel', 'Plan rejection did not reach the Agent')
+                self._send_text('plan-mode-complete')
+            elif ordinal == 2:
+                require(results['plan']['response']['kind'] == 'confirm', 'Write was requested before Plan confirmation')
+                self._send_tool_calls([('write', names['write'], {'path': 'result.txt', 'content': 'approved-plan-write'})])
+            else:
+                require(results['write']['outcome'] == 'completed', results)
+                self._send_text('plan-mode-complete')
+        except BaseException as error:
+            state.record_failure(error)
+            self.close_connection = True
+
+
+def check_plan_mode(mode, verdict='allow', *, delegate_pending=False):
+    with tempfile.TemporaryDirectory(prefix='deepcode-plan-review-') as directory:
+        root = Path(directory)
+        workspace = root / 'workspace'
+        workspace.mkdir()
+        state = fixture.ProviderState(workspace)
+        state.mode, state.verdict, state.reviews = mode, verdict, 0
+        state.delegate_pending = delegate_pending
+        state.after_delegation = fixture.ProviderState(workspace)
+        state.review_ready, state.release_review = threading.Event(), threading.Event()
+        if not delegate_pending:
+            state.release_review.set()
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), PlanProvider)
+        server.provider_state = state
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        daemon = fixture.OwnedDaemon(root / 'state')
+        try:
+            configure_review(daemon, server, 'e2e-reviewer')
+            daemon.start()
+            session = fixture.create_session(daemon, workspace)['sessionId']
+            fixture.cli(daemon, session, '/permissions ' + json.dumps({
+                'agent.permissions.workspaceMutation': mode, 'agent.permissions.shell': 'review',
+            }))
+            result = fixture.cli(daemon, session, 'Write the requested result to result.txt.', expected=5 if mode == 'plan' else 0)
+            state.assert_healthy()
+            if mode == 'plan':
+                require(not (workspace / 'result.txt').exists(), 'Manual mode wrote before confirmation')
+                require(state.reviews == 0, 'Manual mode invoked a Plan reviewer')
+                if delegate_pending:
+                    waiting = fixture.projection(daemon, session)
+                    state.mode = 'review'
+                    fixture.cli(daemon, session, '/permissions ' + json.dumps({'agent.permissions.workspaceMutation': 'review'}))
+                    require(state.review_ready.wait(15), 'Waiting Plan did not start its delegated review')
+                    reviewing = fixture.projection(daemon, session)
+                    require(reviewing['run']['status'] == 'running', 'Plan review retained the manual waiting state')
+                    require(reviewing['run']['runId'] == waiting['run']['runId'], 'Delegation replaced the pending run')
+                    require(reviewing['pendingPlan']['planId'] == waiting['pendingPlan']['planId'], 'Delegation replaced the pending Plan')
+                    statuses = fixture.api_json(daemon.base_url, '/api/conversation/statuses', token=daemon.token)
+                    compact = next(item for item in statuses if item['sessionId'] == session)
+                    require(compact['run']['status'] == 'running' and compact['run']['runId'] == waiting['run']['runId'],
+                        'Compact navigation retained the manual waiting state')
+                    state.release_review.set()
+                else:
+                    result = fixture.cli(daemon, session, '/reply 1')
+            if not delegate_pending:
+                require('plan-mode-complete' in result.stdout, result.stdout)
+            state.assert_healthy()
+            done = fixture.wait_completed(daemon, state, session, 'delegated pending Plan') if delegate_pending else fixture.projection(daemon, session)
+            require(done['run']['status'] == 'completed', 'Plan mode task did not settle')
+            require(done['effectivePermissions']['agent.permissions.shell'] == 'review', 'Plan mode changed Shell approval')
+            require(state.reviews == (1 if state.mode == 'review' else 0), 'Unexpected Plan reviewer requests')
+            if verdict == 'deny':
+                require(not (workspace / 'result.txt').exists(), 'Denied Plan granted write authority')
+                require(done['plans'][0]['review']['decision'] == 'deny', 'Plan denial was not retained')
+            else:
+                require((workspace / 'result.txt').read_text() == 'approved-plan-write', 'Approved file write did not execute')
+            if mode == 'allow':
+                require(not done['plans'], 'Off mode still generated Plans')
+            elif verdict == 'allow':
+                require(done['plans'][0]['confirmationSource'] == ('agent' if state.mode == 'review' else 'user'), 'Wrong confirmation owner')
+            events = stored_events(daemon, session)
+            require(sum(kind == 'plan.reviewed' for kind, _ in events) == (1 if state.mode == 'review' else 0), 'Missing or duplicated Plan review fact')
+            require(not any(kind == 'approval.resolved' for kind, _ in events), 'Plan review borrowed a Shell approval')
+            require(sum(kind == 'run.started' for kind, _ in events) == 1, 'Plan approval created another run')
+            require(sum(kind == 'run.runtime.released' for kind, _ in events) == 1, 'Plan run did not release its runtime once')
+            daemon.shutdown()
+            label = f'{mode}->review' if delegate_pending else mode
+            print(f'[permission-delegation-cli] PASS: Plan {label}/{verdict}, independent scope review, correct owner, real file effect and unchanged Shell policy')
+        finally:
+            state.release_review.set()
+            try:
+                daemon.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+                require(not thread.is_alive(), 'Plan Provider fixture did not exit')
+
+
 if __name__ == '__main__':
+    for plan_mode in ('plan', 'review', 'allow'):
+        check_plan_mode(plan_mode)
+    check_plan_mode('review', 'deny')
+    check_plan_mode('plan', delegate_pending=True)
     for mode in ('ask', 'review', 'allow'):
         check_mode(mode)
     for mode in ('ask', 'allow'):

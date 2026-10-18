@@ -978,18 +978,26 @@ function isPlanProjection(value: unknown): value is Record<string, unknown> & {
   planId: string;
   revision: number;
 } {
-  return isExactRecord(value, PLAN_FIELDS, ['decisionId', 'confirmationSource'])
+  return isExactRecord(value, PLAN_FIELDS, ['decisionId', 'confirmationSource', 'workspaceRequests', 'review'])
     && isPlanProjectionFields(value);
 }
 
 function isPendingPlan(value: unknown): boolean {
-  return isExactRecord(value, [...PLAN_FIELDS, 'responseMode'], ['decisionId', 'confirmationSource'])
+  return isExactRecord(value, [...PLAN_FIELDS, 'responseMode'], ['decisionId', 'confirmationSource', 'workspaceRequests', 'review'])
     && isPlanProjectionFields(value)
     && value.status === 'published'
     && value.responseMode === 'confirmReviseOrCancel';
 }
 
 function isPlanProjectionFields(value: Record<string, unknown>): boolean {
+  if (value.review !== undefined && (!isExactRecord(value.review, ['providerRequestId', 'status'], ['decision', 'reason', 'error'])
+    || !isIdentifier(value.review.providerRequestId) || !['reviewing', 'completed'].includes(String(value.review.status))
+    || value.review.status === 'completed' && (!['allow', 'deny', 'ask'].includes(String(value.review.decision)) || !isNonEmptyText(value.review.reason))
+    || value.review.error !== undefined && !isLocalAgentError(value.review.error))) return false;
+  if (value.workspaceRequests !== undefined && (!Array.isArray(value.workspaceRequests) || !value.workspaceRequests.length
+    || !value.workspaceRequests.every(request => isExactRecord(request, ['workspaceId', 'rootPath'])
+      && isIdentifier(request.workspaceId) && isNonEmptyText(request.rootPath))
+    || new Set(value.workspaceRequests.map(request => request.workspaceId)).size !== value.workspaceRequests.length)) return false;
   if (value.confirmationSource !== undefined && !['user', 'agent', 'parent', 'sessionWorkdir'].includes(String(value.confirmationSource))) return false;
   if (
     !isIdentifier(value.planId)

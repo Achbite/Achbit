@@ -174,6 +174,7 @@ struct ShellCommandRule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceMutationMode {
     Plan,
+    Review,
     Allow,
 }
 
@@ -1366,8 +1367,9 @@ impl LocalAgentKernel {
         Ok(resolved)
     }
 
-    /// A resource handle supplies an address. The immutable Run bindings alone
-    /// identify the project (or managed working directory) whose policy applies.
+    /// A resource handle supplies an address. Recorded Run bindings, including
+    /// admitted directory additions, identify the project whose policy applies.
+    /// A later binding cannot add a new address to an already captured call.
     fn workspace_policy(
         &self,
         request: &LocalToolExecutionRequest,
@@ -1378,6 +1380,9 @@ impl LocalAgentKernel {
             .journal
             .run_workspace_binding_ids(&request.session_id, &request.run_id)?
         {
+            if !request.workspace_bindings.contains(&id) {
+                continue;
+            }
             let binding = self.resolver.resolve(&id)?;
             if binding.access.read_only() {
                 continue;
@@ -2058,6 +2063,7 @@ impl LocalAgentKernel {
             .run_workspace_binding_ids(&request.session_id, &request.run_id)?;
         let mut workdirs = HashSet::new();
         let mut resolved = HashSet::new();
+        let mut workspace_requests = Vec::new();
         for operation in request
             .mutation_manifest
             .as_array()
@@ -2067,10 +2073,31 @@ impl LocalAgentKernel {
                 .as_str()
                 .expect("validated workspace");
             if !bindings.iter().any(|binding| binding == id) {
-                return Err(LocalAgentKernelError::new(
-                    "plan_workspace_binding_invalid",
-                    "Plan 包含不属于当前运行的工作区。",
-                ));
+                if !self
+                    .journal
+                    .latest_workspace_addresses(&request.session_id, &request.run_id)?
+                    .iter()
+                    .any(|address| address == id)
+                {
+                    return Err(LocalAgentKernelError::new(
+                        "plan_workspace_binding_invalid",
+                        "Plan 引用了未知工作区。",
+                    ));
+                }
+                let workspace = self.resolve_owned_workspace(&request.session_id, id)?;
+                if !matches!(workspace.access, WorkspaceAccess::Project) {
+                    return Err(LocalAgentKernelError::new(
+                        "plan_workspace_binding_invalid",
+                        "该资源不能加入项目工作区。",
+                    ));
+                }
+                let root = std::fs::canonicalize(&workspace.root).map_err(|error| {
+                    LocalAgentKernelError::new("workspace_root_unavailable", error.to_string())
+                })?;
+                if resolved.insert(id) {
+                    workspace_requests.push(json!({"workspaceId":id,"rootPath":root}));
+                }
+                continue;
             }
             if resolved.insert(id)
                 && matches!(
@@ -2085,6 +2112,17 @@ impl LocalAgentKernel {
         let authorities = self
             .journal
             .delegated_plan_authorities(&request.session_id, &request.run_id)?;
+        if !workspace_requests.is_empty() {
+            if !authorities.is_empty() {
+                return Err(LocalAgentKernelError::new(
+                    "plan_workspace_binding_invalid",
+                    "新增目录超出继承的计划范围，请先由父任务取得授权。",
+                ));
+            }
+            return Ok(
+                json!({"source":"user","authorities":[],"workspaceRequests":workspace_requests}),
+            );
+        }
         // An inherited Plan remains the scope ceiling even when the permission
         // mode permits automatic confirmation. Keep its original grant identity.
         let manifest = request
@@ -2112,6 +2150,15 @@ impl LocalAgentKernel {
                 == WorkspaceMutationMode::Allow
         {
             return Ok(json!({"source":"agent", "authorities":[]}));
+        }
+        if authorities.is_empty()
+            && self
+                .journal
+                .effective_permissions(&request.session_id)?
+                .workspace_mutation
+                == WorkspaceMutationMode::Review
+        {
+            return Ok(json!({"source":"review","authorities":[]}));
         }
         let mut covered = Vec::new();
         for operation in request
@@ -3412,10 +3459,11 @@ fn workspace_mutation_mode(
         .unwrap_or("plan")
     {
         "plan" => Ok(WorkspaceMutationMode::Plan),
+        "review" => Ok(WorkspaceMutationMode::Review),
         "allow" => Ok(WorkspaceMutationMode::Allow),
         _ => Err(LocalAgentKernelError::new(
             "agent_permission_setting_invalid",
-            "agent.permissions.workspaceMutation 必须是 plan 或 allow。",
+            "agent.permissions.workspaceMutation 必须是 plan、review 或 allow。",
         )),
     }
 }
@@ -4629,6 +4677,54 @@ mod attempt_control_tests {
             kernel.admit(&request, &aliased).unwrap(),
             Admission::Denied { error, .. } if error["code"] == "plan_scope_required"
         ));
+    }
+
+    #[test]
+    fn added_directory_is_a_plan_target_without_implicitly_granting_write_authority() {
+        struct Workspace;
+        impl WorkspaceResolverPort for Workspace {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                Ok(ResolvedWorkspace {
+                    root: std::env::current_dir().unwrap().to_string_lossy().into(),
+                    access: WorkspaceAccess::Project,
+                })
+            }
+        }
+        let (kernel, request, _) = kernel_with_request(
+            Arc::new(Workspace),
+            "fs.write",
+            json!({"workspaceId":"workspace:test","path":"result.txt","content":"result"}),
+        );
+        let manifest =
+            json!([{"workspaceId":"workspace:added","operation":"fs.write","target":"result.txt"}]);
+        let admission = || {
+            kernel.plan_admission(PlanAdmissionRequest {
+                session_id: request.session_id.clone(),
+                run_id: request.run_id.clone(),
+                mutation_manifest: manifest.clone(),
+            })
+        };
+        assert_eq!(
+            admission().unwrap_err().code,
+            "plan_workspace_binding_invalid"
+        );
+        kernel.journal.append(&json!({"type":"session.directory-index.attached", "sessionId":request.session_id,
+            "payload":{"commandId":"command:add", "workspaceBinding":{"workspaceId":"workspace:added","displayName":"Added"}}})).unwrap();
+        assert_eq!(
+            admission().unwrap(),
+            json!({"source":"user","authorities":[]})
+        );
+        kernel
+            .journal
+            .append(
+                &json!({"type":"session.directory-index.detached", "sessionId":request.session_id,
+            "payload":{"commandId":"command:detach", "workspaceId":"workspace:added"}}),
+            )
+            .unwrap();
+        assert_eq!(
+            admission().unwrap_err().code,
+            "plan_workspace_binding_invalid"
+        );
     }
 
     #[test]

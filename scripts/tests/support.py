@@ -440,7 +440,8 @@ class ProviderState:
                 names["plan"] = function["name"]
             elif "items" in properties and "status" in properties["items"].get("items", {}).get("properties", {}):
                 names["progress"] = function["name"]
-        require({"read", "edit", "write", "bash", "plan", "progress"} <= names.keys(), f"缺少本次工具目录：{names}")
+        require({"read", "edit", "write", "bash", "progress"} <= names.keys(), f"缺少本次工具目录：{names}")
+        # Plan is deliberately absent when the conversation's Plan mode is off.
         return ordinal, names, results
 
 

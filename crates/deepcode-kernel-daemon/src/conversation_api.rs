@@ -973,32 +973,108 @@ pub(crate) async fn conversation_project_update(
         },
         None => None,
     };
+    let sync_workspaces = roots.is_some();
     let now = crate::now_text();
-    let mut gui = state.gui.lock().expect("gui state lock");
-    if let Some(error) = gui.conversation_catalog_error.as_deref() {
-        return ApiResponse::error("conversation_catalog_unavailable", error);
+    {
+        let mut gui = state.gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error);
+        }
+        let Some(mut project) = gui.conversation_catalog.project(&project_id).cloned() else {
+            return ApiResponse::error("conversation_project_not_found", "项目不存在。");
+        };
+        let mut workspaces = Vec::new();
+        if let Some(title) = title {
+            project.title = title;
+        }
+        if let Some(roots) = roots {
+            project.workspace_ids =
+                match prepare_roots(&gui.conversation_catalog, &mut workspaces, roots, &now) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return session_service_error(error);
+                    }
+                };
+        }
+        project.updated_at = now;
+        if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
+            return ApiResponse::error("conversation_catalog_write_failed", error);
+        }
     }
-    let Some(mut project) = gui.conversation_catalog.project(&project_id).cloned() else {
-        return ApiResponse::error("conversation_project_not_found", "项目不存在。");
-    };
-    let mut workspaces = Vec::new();
-    if let Some(title) = title {
-        project.title = title;
+    if sync_workspaces {
+        if let Err(error) = sync_project_workspaces(&state, &project_id, None).await {
+            return session_service_error(error);
+        }
     }
-    if let Some(roots) = roots {
-        project.workspace_ids =
-            match prepare_roots(&gui.conversation_catalog, &mut workspaces, roots, &now) {
-                Ok(value) => value,
-                Err(error) => {
-                    return session_service_error(error);
-                }
-            };
-    }
-    project.updated_at = now;
-    if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
-        return ApiResponse::error("conversation_catalog_write_failed", error);
-    }
+    let gui = state.gui.lock().expect("gui state lock");
     visible_catalog_response(&gui, &state.local_agent.journal, false)
+}
+
+/// Project metadata selects roots; each Session commits its own effective bindings.
+async fn sync_project_workspaces(
+    state: &AppState,
+    project_id: &str,
+    only_session: Option<&str>,
+) -> Result<(), SessionServiceError> {
+    let (bindings, sessions) = {
+        let gui = state.gui.lock().expect("gui state lock");
+        let bindings = gui
+            .conversation_catalog
+            .project_binding_snapshot(project_id)
+            .map_err(|code| SessionServiceError::new(code, "项目不存在。"))?;
+        let sessions = gui
+            .conversation_catalog
+            .sessions
+            .iter()
+            .filter(|session| {
+                session.project_id.as_deref() == Some(project_id)
+                    && only_session.is_none_or(|id| session.id == id)
+            })
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        (bindings, sessions)
+    };
+    for session_id in sessions {
+        let reply = request_service(state.session_service.clone(), "submit", json!({"command":{
+            "schemaVersion":"deepcode.command.v3", "type":"session.workspaces.set",
+            "sessionId":session_id, "commandId":random_id("workspace-sync")?, "workspaceBindings":bindings,
+        }})).await?;
+        require_workspace_command(&reply)?;
+        let mut gui = state.gui.lock().expect("gui state lock");
+        let mut session = gui
+            .conversation_catalog
+            .session(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                SessionServiceError::new("conversation_session_not_found", "同步期间会话已移除。")
+            })?;
+        if session.project_id.as_deref() != Some(project_id) {
+            return Err(SessionServiceError::new(
+                "project_workspace_sync_conflict",
+                "同步期间会话所属项目已变化。",
+            ));
+        }
+        session.workspace_bindings = bindings.clone();
+        session.updated_at = crate::now_text();
+        persist_catalog_rows(&mut gui, Vec::new(), None, Some(session)).map_err(|error| {
+            SessionServiceError::new("conversation_catalog_write_failed", error)
+        })?;
+    }
+    Ok(())
+}
+
+fn require_workspace_command(reply: &Value) -> Result<(), SessionServiceError> {
+    if reply["status"] == "accepted" {
+        return Ok(());
+    }
+    Err(SessionServiceError::new(
+        reply["error"]["code"]
+            .as_str()
+            .unwrap_or("workspace_update_rejected"),
+        reply["error"]["message"]
+            .as_str()
+            .unwrap_or("工作区修改未被接纳。"),
+    ))
 }
 
 pub(crate) async fn conversation_project_delete(
@@ -1794,7 +1870,31 @@ pub(crate) async fn conversation_command_submit(
         }
     }
     if input_field.is_some() {
+        let project_id = {
+            let gui = state.gui.lock().expect("gui state lock");
+            gui.conversation_catalog
+                .session(&session_id)
+                .and_then(|session| session.project_id.clone())
+        };
+        if let Some(project_id) = project_id {
+            if let Err(error) =
+                sync_project_workspaces(&state, &project_id, Some(&session_id)).await
+            {
+                return session_service_error(error);
+            }
+        }
         if let Err(error) = ensure_session_workdir(&state, &session_id).await {
+            return session_service_error(error);
+        }
+    }
+    if command["type"] == "session.workspaces.set" {
+        return ApiResponse::error(
+            "project_workspace_management_required",
+            "请通过项目工作区管理修改基础目录。",
+        );
+    }
+    if command["type"] == "plan.respond" && command["response"]["kind"] == "confirm" {
+        if let Err(error) = confirm_plan_workspaces(&state, &session_id, &command).await {
             return session_service_error(error);
         }
     }
@@ -1906,6 +2006,147 @@ pub(crate) async fn conversation_command_submit(
         }
     }
     ApiResponse::ok(reply)
+}
+
+/// Joining a directory is a user decision attached to this exact pending Plan.
+async fn confirm_plan_workspaces(
+    state: &AppState,
+    session_id: &str,
+    command: &Value,
+) -> Result<(), SessionServiceError> {
+    let projection = request_service(
+        state.session_service.clone(),
+        "snapshot",
+        json!({"sessionId":session_id}),
+    )
+    .await?;
+    let plan = &projection["pendingPlan"];
+    // Ordinary confirmations and replay remain owned by Session's command admission.
+    let Some(requests) = plan["workspaceRequests"]
+        .as_array()
+        .filter(|requests| !requests.is_empty())
+    else {
+        return Ok(());
+    };
+    if command["schemaVersion"] != "deepcode.command.v3"
+        || !command["commandId"].as_str().is_some_and(valid_id)
+    {
+        return Err(SessionServiceError::new(
+            "conversation_command_invalid",
+            "计划确认命令无效。",
+        ));
+    }
+    if plan["planId"] != command["planId"]
+        || plan["revision"] != command["revision"]
+        || plan["runId"] != command["runId"]
+    {
+        return Err(SessionServiceError::new(
+            "plan_response_stale",
+            "该计划已关闭或发生变化。",
+        ));
+    }
+    let (project_id, mut roots, bindings) = {
+        let gui = state.gui.lock().expect("gui state lock");
+        let session = gui
+            .conversation_catalog
+            .session(session_id)
+            .ok_or_else(|| {
+                SessionServiceError::new("conversation_session_not_found", "会话不存在。")
+            })?;
+        let mut bindings = Vec::new();
+        for request in requests {
+            let workspace = request["workspaceId"]
+                .as_str()
+                .and_then(|id| gui.conversation_catalog.workspace(id))
+                .filter(|workspace| {
+                    workspace.owner_session_id.is_none()
+                        && request["rootPath"] == workspace.canonical_root
+                })
+                .ok_or_else(|| {
+                    SessionServiceError::new(
+                        "plan_workspace_request_changed",
+                        "待加入目录已变化，请重新提交计划。",
+                    )
+                })?;
+            bindings.push((
+                WorkspaceBindingDisplayRecord {
+                    workspace_id: workspace.workspace_id.clone(),
+                    display_name: workspace.display_name.clone(),
+                },
+                workspace.canonical_root.clone(),
+            ));
+        }
+        let roots = if let Some(project_id) = &session.project_id {
+            let project = gui
+                .conversation_catalog
+                .project(project_id)
+                .ok_or_else(|| {
+                    SessionServiceError::new("conversation_project_not_found", "项目不存在。")
+                })?;
+            project
+                .workspace_ids
+                .iter()
+                .map(|id| {
+                    gui.conversation_catalog
+                        .workspace(id)
+                        .map(|workspace| workspace.canonical_root.clone())
+                        .ok_or_else(|| {
+                            SessionServiceError::new(
+                                "conversation_workspace_not_found",
+                                "工作区目录不存在。",
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        (session.project_id.clone(), roots, bindings)
+    };
+    if let Some(project_id) = project_id {
+        for (_, root) in &bindings {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        let response = conversation_project_update(
+            State(state.clone()),
+            Path(project_id),
+            Json(UpdateConversationProjectRequest {
+                title: None,
+                workspace_paths: Some(roots),
+            }),
+        )
+        .await
+        .0;
+        if !response.ok {
+            return Err(SessionServiceError::new(
+                response
+                    .error
+                    .unwrap_or_else(|| "project_workspace_update_failed".into()),
+                response.message.unwrap_or_default(),
+            ));
+        }
+    } else {
+        for (binding, _) in bindings {
+            if projection["workspaceBindings"]
+                .as_array()
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item["workspaceId"] == binding.workspace_id)
+                })
+            {
+                continue;
+            }
+            let reply = request_service(state.session_service.clone(), "submit", json!({"command":{
+                "schemaVersion":"deepcode.command.v3", "type":"session.directory-index.attach", "sessionId":session_id,
+                "commandId":random_id("workspace-confirm")?, "workspaceBinding":binding,
+            }})).await?;
+            require_workspace_command(&reply)?;
+        }
+    }
+    Ok(())
 }
 
 fn title_request_excerpt(text: &str, pasted_paths: &[PathBuf]) -> Result<String, String> {

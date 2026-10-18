@@ -277,6 +277,15 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.sessionDirectoryIndexes = [];
       next.workspaceBindings = effectiveWorkspaceBindings(next);
       break;
+    case 'session.workspaces.updated': {
+      next.creationWorkspaceBindings = structuredClone(event.payload.baseBindings);
+      next.workspaceBindings = effectiveWorkspaceBindings(next);
+      if (JSON.stringify(next.workspaceBindings) !== JSON.stringify(event.payload.workspaceBindings)) throw new Error('session_workspace_bindings_mismatch');
+      if (next.run && ['running', 'waiting'].includes(next.run.status)) {
+        next.run = { ...next.run, workspaceBindings: structuredClone(next.workspaceBindings) };
+      }
+      break;
+    }
     case 'session.directory-index.attached':
       next.sessionDirectoryIndexes = [...next.sessionDirectoryIndexes];
       if (next.workspaceBindings.some((binding) => (
@@ -284,6 +293,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       ))) throw new Error('session_directory_index_duplicate');
       next.sessionDirectoryIndexes.push({ ...event.payload.workspaceBinding });
       next.workspaceBindings = effectiveWorkspaceBindings(next);
+      if (next.run && ['running', 'waiting'].includes(next.run.status)) {
+        next.run = { ...next.run, workspaceBindings: structuredClone(next.workspaceBindings) };
+      }
       break;
     case 'session.directory-index.detached': {
       const before = next.sessionDirectoryIndexes.length;
@@ -294,6 +306,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         throw new Error('session_directory_index_missing');
       }
       next.workspaceBindings = effectiveWorkspaceBindings(next);
+      if (next.run && ['running', 'waiting'].includes(next.run.status)) {
+        next.run = { ...next.run, workspaceBindings: structuredClone(next.workspaceBindings) };
+      }
       break;
     }
     case 'run.started':
@@ -509,6 +524,16 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       };
       break;
     }
+    case 'plan.review.requested':
+      updatePlan(next, event.payload.planId, event.payload.revision, plan => ({ ...plan,
+        review: { status: 'reviewing', providerRequestId: event.payload.providerRequestId }, updatedAt: event.occurredAt }));
+      break;
+    case 'plan.reviewed':
+      updatePlan(next, event.payload.planId, event.payload.revision, plan => ({ ...plan,
+        review: { status: 'completed', providerRequestId: event.payload.providerRequestId,
+          decision: event.payload.decision, reason: event.payload.reason,
+          ...(event.payload.error ? { error: structuredClone(event.payload.error) } : {}) }, updatedAt: event.occurredAt }));
+      break;
     case 'plan.confirmed':
       if (
         !next.pendingPlan
@@ -1351,10 +1376,10 @@ function effectiveWorkspaceBindings(state: Pick<
   SessionState,
   'creationWorkspaceBindings' | 'sessionDirectoryIndexes'
 >): WorkspaceBindingDisplay[] {
-  return [
-    ...state.creationWorkspaceBindings.map((binding) => ({ ...binding })),
-    ...state.sessionDirectoryIndexes.map((binding) => ({ ...binding })),
-  ];
+  return [...new Map([
+    ...state.creationWorkspaceBindings,
+    ...state.sessionDirectoryIndexes,
+  ].map(binding => [binding.workspaceId, { ...binding }])).values()];
 }
 
 function cloneRun(run: NonNullable<SessionProjection['run']>): NonNullable<SessionProjection['run']> {
@@ -1802,6 +1827,7 @@ function projectPlan(
       ...(step.verification ? { verification: [...step.verification] } : {}),
     })),
     mutationManifest: event.payload.mutationManifest.map((operation) => ({ ...operation })),
+    ...(event.payload.workspaceRequests?.length ? { workspaceRequests: structuredClone(event.payload.workspaceRequests) } : {}),
     status: 'published',
     sequence: event.sequence,
     createdAt: event.occurredAt,
@@ -1847,6 +1873,8 @@ function clonePlanProjection(
       ...(step.verification ? { verification: [...step.verification] } : {}),
     })),
     mutationManifest: plan.mutationManifest.map((operation) => ({ ...operation })),
+    ...(plan.workspaceRequests ? { workspaceRequests: structuredClone(plan.workspaceRequests) } : {}),
+    ...(plan.review ? { review: structuredClone(plan.review) } : {}),
   };
 }
 
@@ -1870,6 +1898,9 @@ function updatePlan(
   if (index < 0) throw new Error('plan_revision_missing');
   state.plans = [...state.plans];
   state.plans[index] = update(planFor(state, planId, revision));
+  if (state.plans[index].status === 'published' && samePlanRef(state.pendingPlan, { planId, revision })) {
+    state.pendingPlan = { ...clonePlanProjection(state.plans[index]), status: 'published', responseMode: 'confirmReviseOrCancel' };
+  }
 }
 
 function assertPendingPlan(

@@ -42,6 +42,7 @@ export function sessionControlInstructions(
   hasWorkspaceBindings = true,
   hasPluginDiscovery = false,
   optionalTools?: readonly string[],
+  planEnabled = true,
 ): string {
   const decisions = ` Ask early for missing facts or required decisions with ${names.interactionRequest}. Use mode=continue while independent work can proceed; use mode=wait otherwise. Confirmations always wait. An unanswered question stays pending: proceed only on independent work, and ask it once. Put alternatives in options with stable IDs and concise labels; explain context in prompt. Tool execution approval is separate.`;
   const plugins = hasPluginDiscovery ? ` Use CLI or MCP for program operations and GUI tools for interface actions or visual confirmation; combine them as needed. Capture screenshots when visual evidence is needed. Discover capabilities with a short product or capability query, activate relevant results with ${names.pluginActivate} alone, then use their declared tools. Activation and execution permission are separate.` : '';
@@ -52,7 +53,8 @@ export function sessionControlInstructions(
   if (!hasWorkspaceBindings) {
     return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} must be the only call in its turn.${decisions}${plugins}${selectedDelivery}`;
   }
-  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} and ${names.planPublish} must each be the only call in their turn. Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.${selectedProgress}${decisions}${plugins}${selectedDelivery}`;
+  const isolatedControls = planEnabled ? `${names.interactionRequest} and ${names.planPublish} must each be the only call in their turn.` : `${names.interactionRequest} must be the only call in its turn.`;
+  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${isolatedControls} Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.${selectedProgress}${decisions}${plugins}${selectedDelivery}`;
 }
 
 const INTERACTION_SCHEMA: JsonObject = {

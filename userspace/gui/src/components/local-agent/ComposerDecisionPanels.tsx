@@ -94,6 +94,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const [ruleSaved, setRuleSaved] = useState(false);
   const [ruleError, setRuleError] = useState<string | null>(null);
   const reviewing = pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running';
+  const reviewingPlan = pendingPlan?.review?.status === 'reviewing'
+    && projection?.effectivePermissions?.['agent.permissions.workspaceMutation'] === 'review';
   useLayoutEffect(() => { setRuleSaved(false); setRuleError(null); }, [pendingApproval?.approvalId]);
   const saveRule = async () => {
     if (!pendingApproval?.preview.authorizationContext) return;
@@ -124,17 +126,35 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   };
   return (
     <>
-      {pendingPlan ? (
+      {pendingPlan ? reviewingPlan ? <section className="local-agent__auto-review" aria-label={t(language, 'agent.plan.reviewing')}>
+          <header><span className="local-agent__auto-review-spinner" aria-hidden="true" /><strong role="status">{t(language, 'agent.plan.reviewing')}</strong>
+            <button type="button" disabled={submitting} onClick={() => void setPermissions({ 'agent.permissions.workspaceMutation': 'plan' }).catch(() => {})}>{t(language, 'agent.permission.takeOver')}</button>
+          </header>
+        </section> : (
+          <>
+            {pendingPlan.review?.status === 'completed' && pendingPlan.review.decision && pendingPlan.review.reason
+              && <ApprovalReviewReason language={language} review={{ decision: pendingPlan.review.decision, reason: pendingPlan.review.reason }} />}
+            {Boolean(pendingPlan.workspaceRequests?.length) && <section className="local-agent__decision" aria-label={language === 'zh-CN' ? '工作区权限' : 'Workspace access'}>
+              <header className="local-agent__decision-heading"><DeepCodeShellIcon name="shield" /><strong>{t(language, 'agent.plan.workspaceRequest')}</strong></header>
+              <ul>{pendingPlan.workspaceRequests!.map(request => <li key={request.workspaceId}><code>{request.rootPath}</code></li>)}</ul>
+            </section>}
             <ol className="local-agent__interaction-options">
               <li>
                 <button type="button" disabled={submitting}
                   title={pendingScopeAddition ? t(language, 'agent.plan.continuePhases') : undefined}
                   onClick={() => void submitPlanDecision({ kind: 'confirm' })}>
                   <span className="local-agent__interaction-option-marker" aria-hidden="true">1</span>
-                  <span className="local-agent__interaction-option-copy"><b>{t(language, pendingScopeAddition ? 'agent.plan.confirmScope' : 'agent.plan.confirm')}</b></span>
+                  <span className="local-agent__interaction-option-copy"><b>{pendingPlan.workspaceRequests?.length ? t(language, 'agent.plan.confirmWorkspace') : t(language, pendingScopeAddition ? 'agent.plan.confirmScope' : 'agent.plan.confirm')}</b></span>
                 </button>
               </li>
+              {Boolean(pendingPlan.workspaceRequests?.length) && <li>
+                <button type="button" disabled={submitting} onClick={() => void submitPlanDecision({ kind: 'cancel' })}>
+                  <span className="local-agent__interaction-option-marker" aria-hidden="true">2</span>
+                  <span className="local-agent__interaction-option-copy"><b>{t(language, 'agent.plan.cancelWorkspace')}</b></span>
+                </button>
+              </li>}
             </ol>
+          </>
       ) : pendingInteraction && <InteractionOptions options={pendingInteraction.options} disabled={submitting}
         onAnswer={response => { void sendDecision(response); }} />}
       {reviewing && pendingApproval && <section className="local-agent__auto-review" aria-label={t(language, 'agent.permission.reviewing')}>

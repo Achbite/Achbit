@@ -2115,6 +2115,21 @@ test('Plan documents and previews render Markdown entities, code names and verif
   } }));
   assert.ok(initialDecision.includes('ObjectPool&lt;T,N&gt;'));
   assert.ok(initialDecision.includes('确认执行'));
+  const workspaceDecision = renderToStaticMarkup(createElement(Decision, { language: 'zh-CN', composer: {
+    pendingPlan: { ...plan, workspaceRequests: [{ workspaceId: 'workspace:join-private', rootPath: '/projects/benchmark' }] },
+    pendingScopeAddition: null, submitting: false,
+  } }));
+  assert.ok(workspaceDecision.includes('将以下目录加入工作区？'));
+  assert.ok(workspaceDecision.includes('/projects/benchmark'));
+  assert.ok(workspaceDecision.includes('加入工作区并确认计划'));
+  assert.ok(workspaceDecision.includes('不加入并取消计划'));
+  assert.equal(workspaceDecision.includes('workspace:join-private'), false);
+  const workspaceEnglish = renderToStaticMarkup(createElement(Decision, { language: 'en-US', composer: {
+    pendingPlan: { ...plan, workspaceRequests: [{ workspaceId: 'workspace:join-private', rootPath: '/projects/benchmark' }] },
+    pendingScopeAddition: null, submitting: false,
+  } }));
+  assert.ok(workspaceEnglish.includes('Add folders and confirm Plan'));
+  assert.ok(workspaceEnglish.includes('Cancel without adding folders'));
   assert.equal(initialDecision.includes('互斥访问'), false, 'the complete Plan body belongs only to its document card');
   const prompt = '保留 **容器环境** 吗？\n\n- 保留 `Dockerfile`\n- 删除演示产物';
   const question = renderToStaticMarkup(createElement(Decision, { language: 'zh-CN', composer: {

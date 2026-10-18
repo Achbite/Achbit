@@ -733,7 +733,20 @@ const store = create<LocalAgentState>((set, get) => ({
   },
 
   updateProject: async (projectId, input) => {
-    await mutateCatalog(set, async () => await updateProjectRequest(projectId, input));
+    let failure: unknown;
+    try { await mutateCatalog(set, async () => await updateProjectRequest(projectId, input)); }
+    catch (error) { failure = error; }
+    const sessionId = get().sessionId;
+    if (input.workspacePaths !== undefined && sessionId
+      && get().catalog.sessions.some(session => session.id === sessionId && session.projectId === projectId)) {
+      try { await reconcileProjectionAfterReply(set, get, sessionId, 0, generation); }
+      catch (error) {
+        const message = `${failure ? `${errorMessage(failure)}; ` : ''}conversation_projection_reconcile_failed:${errorMessage(error)}`;
+        set({ error: message, errorSource: 'operation' });
+        throw new Error(message);
+      }
+    }
+    if (failure) throw failure;
   },
 
   addProjectWorkspace: async (projectId, canonicalRoot) => {

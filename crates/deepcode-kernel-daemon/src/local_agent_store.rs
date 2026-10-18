@@ -382,7 +382,7 @@ impl LocalAgentJournal {
                  THEN json_object('interactionId', json_extract(payload_json, '$.interactionId'))
                  ELSE json_object('interactionId', json_extract(payload_json, '$.interactionId'), 'mode', json_extract(payload_json, '$.mode')) END
                WHEN event_type='interaction.resolved' THEN json_object('interactionId', json_extract(payload_json, '$.interactionId'))
-               WHEN event_type IN ('plan.published','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated')
+               WHEN event_type IN ('plan.published','plan.review.requested','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated')
                  THEN json_object('planId', json_extract(payload_json, '$.planId'), 'revision', json_extract(payload_json, '$.revision'))
                WHEN event_type='approval.requested' THEN json_object('approvalId', json_extract(payload_json, '$.approvalId'))
                WHEN event_type='approval.resolved' THEN
@@ -396,7 +396,7 @@ impl LocalAgentJournal {
              END
              FROM session_events WHERE session_id=?1 AND sequence>?2 AND sequence<=?3
              AND event_type IN ('run.started','run.waiting','run.finishing','run.runtime.release_failed','run.runtime.released','run.settled',
-               'interaction.requested','interaction.resolved','plan.published','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated',
+               'interaction.requested','interaction.resolved','plan.published','plan.review.requested','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated',
                'approval.requested','approval.resolved','approval.revoked','tool.completed','tool.input-rejected','tool.not-executed','session.permissions.updated','conversation.revised')
              ORDER BY sequence ASC",
         ).map_err(sql_error("session_lifecycle_read_prepare_failed"))?;
@@ -681,22 +681,30 @@ impl LocalAgentJournal {
         session_id: &str,
         run_id: &str,
     ) -> Result<Vec<String>, LocalAgentStoreError> {
+        self.run_workspace_binding_ids_at(session_id, run_id, i64::MAX)
+    }
+
+    fn run_workspace_start(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<(i64, Vec<String>), LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         validate_id("runId", run_id)?;
         let connection = self.lock()?;
-        let encoded = connection
+        let (sequence, encoded): (i64, String) = connection
             .query_row(
-                "SELECT payload_json FROM session_events
+                "SELECT sequence, payload_json FROM session_events
                  WHERE session_id=?1 AND run_id=?2 AND event_type='run.started'",
                 params![session_id, run_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(sql_error("session_run_workspace_snapshot_read_failed"))?
             .ok_or_else(|| {
                 LocalAgentStoreError::new(
                     "session_run_workspace_snapshot_missing",
-                    "run.started 缺少冻结的 workspace bindings。",
+                    "run.started 缺少初始 workspace bindings。",
                 )
             })?;
         let payload = decode_json(&encoded, "session_run_workspace_snapshot_corrupt")?;
@@ -707,20 +715,102 @@ impl LocalAgentJournal {
                     "run.started 没有 workspaceBindings。",
                 )
             })?)?;
-        Ok(bindings
-            .into_iter()
-            .filter_map(|binding| binding["workspaceId"].as_str().map(str::to_string))
-            .collect())
+        Ok((
+            sequence,
+            bindings
+                .into_iter()
+                .filter_map(|binding| binding["workspaceId"].as_str().map(str::to_string))
+                .collect(),
+        ))
     }
 
-    /// Address handles frozen in one Provider request; only run.started grants project scope.
+    /// Session directory facts update the active Run, never its historical requests.
+    fn run_workspace_binding_ids_at(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        through_sequence: i64,
+    ) -> Result<Vec<String>, LocalAgentStoreError> {
+        let (started, mut bindings) = self.run_workspace_start(session_id, run_id)?;
+        let connection = self.lock()?;
+        let base: String = connection.query_row(
+            "SELECT payload_json FROM session_events WHERE session_id=?1 AND sequence<=?2
+             AND event_type IN ('session.created','session.workspaces.updated') ORDER BY sequence DESC LIMIT 1",
+            params![session_id, started], |row| row.get(0),
+        ).map_err(sql_error("session_run_workspace_snapshot_read_failed"))?;
+        let base = decode_json(&base, "session_run_workspace_snapshot_corrupt")?;
+        let mut base_ids = validate_workspace_bindings(
+            base.get("baseBindings")
+                .unwrap_or(&base["workspaceBindings"]),
+        )?
+        .into_iter()
+        .map(|binding| {
+            binding["workspaceId"]
+                .as_str()
+                .expect("validated binding")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+        let mut statement = connection.prepare(
+            "SELECT event_type, payload_json FROM session_events
+             WHERE session_id=?1 AND sequence>?2 AND sequence<=?3
+               AND event_type IN ('session.directory-index.attached','session.directory-index.detached','session.workspaces.updated')
+               AND sequence<COALESCE((SELECT MIN(sequence) FROM session_events
+                 WHERE session_id=?1 AND run_id=?4 AND event_type IN ('run.finishing','run.settled')),9223372036854775807)
+             ORDER BY sequence",
+        ).map_err(sql_error("session_run_workspace_snapshot_read_failed"))?;
+        let events = statement
+            .query_map(
+                params![session_id, started, through_sequence, run_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(sql_error("session_run_workspace_snapshot_read_failed"))?;
+        for event in events {
+            let (kind, encoded) =
+                event.map_err(sql_error("session_run_workspace_snapshot_read_failed"))?;
+            let payload = decode_json(&encoded, "session_run_workspace_snapshot_corrupt")?;
+            if kind == "session.workspaces.updated" {
+                base_ids = validate_workspace_bindings(&payload["baseBindings"])?
+                    .into_iter()
+                    .map(|binding| {
+                        binding["workspaceId"]
+                            .as_str()
+                            .expect("validated binding")
+                            .to_string()
+                    })
+                    .collect();
+                bindings = validate_workspace_bindings(&payload["workspaceBindings"])?
+                    .into_iter()
+                    .map(|binding| {
+                        binding["workspaceId"]
+                            .as_str()
+                            .expect("validated binding")
+                            .to_string()
+                    })
+                    .collect();
+            } else if kind == "session.directory-index.attached" {
+                let id = required_string(&payload["workspaceBinding"], "workspaceId")?.to_string();
+                if !bindings.contains(&id) {
+                    bindings.push(id);
+                }
+            } else {
+                let id = required_string(&payload, "workspaceId")?;
+                if !base_ids.iter().any(|base| base == id) {
+                    bindings.retain(|binding| binding != id);
+                }
+            }
+        }
+        Ok(bindings)
+    }
+
+    /// Validate the exact address view at the original Provider request boundary.
     pub(crate) fn provider_workspace_binding_ids(
         &self,
         session_id: &str,
         run_id: &str,
         provider_request_id: &str,
     ) -> Result<Vec<String>, LocalAgentStoreError> {
-        let mut expected = self.run_workspace_binding_ids(session_id, run_id)?;
+        let (started, mut expected) = self.run_workspace_start(session_id, run_id)?;
         let connection = self.lock()?;
         let (sequence, encoded): (i64, String) = connection
             .query_row(
@@ -738,36 +828,57 @@ impl LocalAgentJournal {
                     "Provider 请求缺少已提交的资源视图。",
                 )
             })?;
+        drop(connection);
+        let mut available = self.run_workspace_binding_ids_at(session_id, run_id, sequence)?;
+        let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT input.payload_json FROM session_events input
-             WHERE input.session_id=?1 AND input.event_type='message.committed'
-             AND input.sequence<?2 AND json_extract(input.payload_json, '$.role')='user'
-             AND NOT EXISTS (SELECT 1 FROM session_events revision
-               WHERE revision.session_id=input.session_id AND revision.event_type='conversation.revised'
-               AND revision.sequence<?2
-               AND input.sequence BETWEEN json_extract(revision.payload_json, '$.fromSequence')
-                 AND json_extract(revision.payload_json, '$.throughSequence'))
+                "SELECT input.event_type, input.payload_json FROM session_events input
+             WHERE input.session_id=?1 AND input.sequence<?2 AND (
+               (input.event_type IN ('session.directory-index.attached','session.workspaces.updated') AND input.sequence>?3)
+               OR (input.event_type='message.committed' AND json_extract(input.payload_json, '$.role')='user'
+                 AND NOT EXISTS (SELECT 1 FROM session_events revision
+                   WHERE revision.session_id=input.session_id AND revision.event_type='conversation.revised'
+                   AND revision.sequence<?2
+                   AND input.sequence BETWEEN json_extract(revision.payload_json, '$.fromSequence')
+                     AND json_extract(revision.payload_json, '$.throughSequence'))))
              ORDER BY input.sequence",
             )
             .map_err(sql_error("session_input_resources_read_failed"))?;
         let inputs = statement
-            .query_map(params![session_id, sequence], |row| row.get::<_, String>(0))
+            .query_map(params![session_id, sequence, started], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(sql_error("session_input_resources_read_failed"))?;
         for input in inputs {
-            let input = decode_json(
-                &input.map_err(sql_error("session_input_resources_read_failed"))?,
-                "session_input_resources_invalid",
-            )?;
-            if let Some(references) = input["filesystemReferences"].as_array() {
+            let (kind, encoded) =
+                input.map_err(sql_error("session_input_resources_read_failed"))?;
+            let input = decode_json(&encoded, "session_input_resources_invalid")?;
+            if kind == "session.workspaces.updated" {
+                for binding in validate_workspace_bindings(&input["workspaceBindings"])? {
+                    let id = required_string(&binding, "workspaceId")?.to_string();
+                    if !expected.contains(&id) {
+                        expected.push(id);
+                    }
+                }
+            } else if kind == "session.directory-index.attached" {
+                let id = required_string(&input["workspaceBinding"], "workspaceId")?.to_string();
+                if !expected.contains(&id) {
+                    expected.push(id);
+                }
+            } else if let Some(references) = input["filesystemReferences"].as_array() {
                 for reference in references {
                     let id = required_string(reference, "workspaceId")?.to_string();
+                    if !available.contains(&id) {
+                        available.push(id.clone());
+                    }
                     if !expected.contains(&id) {
                         expected.push(id);
                     }
                 }
             }
         }
+        expected.retain(|id| available.contains(id));
         let receipt = decode_json(&encoded, "session_request_workspace_invalid")?;
         let bindings = receipt["workspaceBindings"].as_array().ok_or_else(|| {
             LocalAgentStoreError::new("session_request_workspace_invalid", "请求资源视图无效。")
@@ -785,7 +896,29 @@ impl LocalAgentJournal {
         Ok(actual)
     }
 
-    /// The original run scope and each committed request scope remain valid independently.
+    pub(crate) fn latest_workspace_addresses(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Vec<String>, LocalAgentStoreError> {
+        let request: Option<String> = self
+            .lock()?
+            .query_row(
+                "SELECT json_extract(payload_json,'$.providerRequestId') FROM session_events
+             WHERE session_id=?1 AND run_id=?2 AND event_type='context.composed'
+             AND json_extract(payload_json,'$.purpose')='agent' ORDER BY sequence DESC LIMIT 1",
+                params![session_id, run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_request_workspace_read_failed"))?;
+        match request {
+            Some(request) => self.provider_workspace_binding_ids(session_id, run_id, &request),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Current formal scope and each committed request scope remain valid independently.
     pub(crate) fn has_workspace_binding_view(
         &self,
         session_id: &str,
@@ -1315,6 +1448,7 @@ fn validate_new_event(
         "session.created",
         "session.model-settings.updated",
         "session.permissions.updated",
+        "session.workspaces.updated",
         "session.directory-index.attached",
         "session.directory-index.detached",
         "input.accepted",
@@ -1328,6 +1462,8 @@ fn validate_new_event(
         "interaction.requested",
         "interaction.resolved",
         "plan.published",
+        "plan.review.requested",
+        "plan.reviewed",
         "plan.confirmed",
         "plan.revision.requested",
         "plan.superseded",
@@ -1386,6 +1522,7 @@ fn validate_new_event(
             | "session.model-settings.updated"
             | "session.subagent-settings.updated"
             | "session.permissions.updated"
+            | "session.workspaces.updated"
             | "session.directory-index.attached"
             | "session.directory-index.detached"
             | "input.accepted"
@@ -1397,6 +1534,8 @@ fn validate_new_event(
         event_type,
         "interaction.requested"
             | "plan.published"
+            | "plan.review.requested"
+            | "plan.reviewed"
             | "plan.confirmed"
             | "plan.revision.requested"
             | "plan.cancelled"
@@ -1892,6 +2031,17 @@ fn validate_new_event(
                 validate_filesystem_references(references, "session_event_invalid")?;
             }
         }
+        "session.workspaces.updated" => {
+            let payload = &event["payload"];
+            exact_object(
+                payload,
+                &["commandId", "baseBindings", "workspaceBindings"],
+                &[],
+            )?;
+            validate_id("commandId", required_string(payload, "commandId")?)?;
+            validate_workspace_bindings(&payload["baseBindings"])?;
+            validate_workspace_bindings(&payload["workspaceBindings"])?;
+        }
         "session.directory-index.attached" => {
             let payload = event.get("payload").expect("validated payload");
             validate_id("commandId", required_string(payload, "commandId")?)?;
@@ -2039,6 +2189,40 @@ fn validate_new_event(
             validate_id("messageId", required_string(payload, "messageId")?)?;
             validate_feedback(payload.get("feedback").expect("validated feedback"))?;
         }
+        "plan.review.requested" | "plan.reviewed" => {
+            let payload = &event["payload"];
+            if event_type == "plan.review.requested" {
+                exact_object(payload, &["planId", "revision", "providerRequestId"], &[])?;
+            } else {
+                exact_object(
+                    payload,
+                    &[
+                        "planId",
+                        "revision",
+                        "providerRequestId",
+                        "decision",
+                        "reason",
+                    ],
+                    &["error"],
+                )?;
+                if !matches!(payload["decision"].as_str(), Some("allow" | "deny" | "ask")) {
+                    return Err(LocalAgentStoreError::new(
+                        "plan_review_invalid",
+                        "计划审批结论无效。",
+                    ));
+                }
+                required_string(payload, "reason")?;
+                if let Some(error) = payload.get("error") {
+                    validate_local_agent_error(error)?;
+                }
+            }
+            validate_id("planId", required_string(payload, "planId")?)?;
+            required_positive_revision(payload, "revision")?;
+            validate_id(
+                "providerRequestId",
+                required_string(payload, "providerRequestId")?,
+            )?;
+        }
         "plan.published" => {
             let payload = event.get("payload").expect("validated payload");
             exact_object(
@@ -2052,8 +2236,33 @@ fn validate_new_event(
                     "steps",
                     "mutationManifest",
                 ],
-                &[],
+                &["workspaceRequests"],
             )?;
+            if let Some(requests) = payload.get("workspaceRequests") {
+                let requests = requests
+                    .as_array()
+                    .filter(|items| !items.is_empty())
+                    .ok_or_else(|| {
+                        LocalAgentStoreError::new(
+                            "plan_workspace_request_invalid",
+                            "待加入目录无效。",
+                        )
+                    })?;
+                let mut ids = std::collections::HashSet::new();
+                for request in requests {
+                    exact_object(request, &["workspaceId", "rootPath"], &[])?;
+                    let id = required_string(request, "workspaceId")?;
+                    validate_id("workspaceId", id)?;
+                    if !ids.insert(id)
+                        || !Path::new(required_string(request, "rootPath")?).is_absolute()
+                    {
+                        return Err(LocalAgentStoreError::new(
+                            "plan_workspace_request_invalid",
+                            "待加入目录必须为不重复的绝对路径。",
+                        ));
+                    }
+                }
+            }
             validate_id("planId", required_string(payload, "planId")?)?;
             required_positive_revision(payload, "revision")?;
             validate_display_text(payload, "title", 240)?;
@@ -2911,6 +3120,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         "session.subagent-settings.set",
         "session.permissions.set",
         "approval.revoke",
+        "session.workspaces.set",
         "session.directory-index.attach",
         "session.directory-index.detach",
         "message.submit",
@@ -2929,6 +3139,20 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
             "session_command_type_invalid",
             format!("当前 Session 合同不接受命令：{command_type}"),
         ));
+    }
+    if command_type == "session.workspaces.set" {
+        exact_object(
+            command,
+            &[
+                "schemaVersion",
+                "type",
+                "commandId",
+                "sessionId",
+                "workspaceBindings",
+            ],
+            &[],
+        )?;
+        validate_workspace_bindings(&command["workspaceBindings"])?;
     }
     if command_type == "run.host.rebind" {
         exact_object(
@@ -6134,6 +6358,14 @@ mod tests {
             .unwrap());
         journal.append(&json!({"type":"message.committed", "sessionId":"session:loop", "runId":"run:loop",
             "payload":{"messageId":"message:image", "role":"user", "content":"", "filesystemReferences":[reference, directory]}})).unwrap();
+        journal.append(&json!({"type":"session.directory-index.attached", "sessionId":"session:loop",
+            "payload":{"commandId":"command:image", "workspaceBinding":{"workspaceId":"workspace:directory","displayName":"Reference directory"}}})).unwrap();
+        assert_eq!(
+            journal
+                .run_workspace_binding_ids("session:loop", "run:loop")
+                .unwrap(),
+            vec!["workspace:directory"]
+        );
         receipt["providerRequestId"] = json!("provider-request:image");
         receipt["workspaceBindings"] = json!([{"itemId":"workspace:image","label":"screen.png"}, {"itemId":"workspace:directory","label":"Reference directory"}]);
         journal.append(&json!({"type":"context.composed", "sessionId":"session:loop", "runId":"run:loop", "payload":receipt})).unwrap();
@@ -6170,6 +6402,63 @@ mod tests {
                 &["workspace:other-project".into()]
             )
             .unwrap());
+    }
+
+    #[test]
+    fn directory_bindings_change_only_the_active_run_and_preserve_initial_facts() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        journal
+            .create_session("session:bindings", "Bindings", &json!([]), None, None)
+            .unwrap();
+        journal.append(&json!({"type":"run.started", "sessionId":"session:bindings", "runId":"run:bindings",
+            "payload":{"inputMessageId":"message:bindings", "workspaceBindings":[{"workspaceId":"workspace:initial","displayName":"Initial"}],
+            "runtimeSnapshot":runtime_snapshot()}})).unwrap();
+        let added = journal.append(&json!({"type":"session.directory-index.attached", "sessionId":"session:bindings",
+            "payload":{"commandId":"command:add", "workspaceBinding":{"workspaceId":"workspace:added","displayName":"Added"}}})).unwrap();
+        let sequence = added["sequence"].as_i64().unwrap();
+        assert_eq!(
+            journal
+                .run_workspace_binding_ids_at("session:bindings", "run:bindings", sequence - 1)
+                .unwrap(),
+            vec!["workspace:initial"]
+        );
+        assert_eq!(
+            journal
+                .run_workspace_binding_ids("session:bindings", "run:bindings")
+                .unwrap(),
+            vec!["workspace:initial", "workspace:added"]
+        );
+        journal
+            .append(
+                &json!({"type":"session.directory-index.detached", "sessionId":"session:bindings",
+            "payload":{"commandId":"command:detach", "workspaceId":"workspace:added"}}),
+            )
+            .unwrap();
+        assert_eq!(
+            journal
+                .run_workspace_binding_ids("session:bindings", "run:bindings")
+                .unwrap(),
+            vec!["workspace:initial"]
+        );
+        assert_eq!(
+            journal
+                .run_workspace_binding_ids_at("session:bindings", "run:bindings", sequence)
+                .unwrap(),
+            vec!["workspace:initial", "workspace:added"]
+        );
+        journal.append(&json!({"type":"run.finishing", "sessionId":"session:bindings", "runId":"run:bindings", "payload":{"outcome":"cancelled"}})).unwrap();
+        journal.append(&json!({"type":"session.directory-index.attached", "sessionId":"session:bindings",
+            "payload":{"commandId":"command:later", "workspaceBinding":{"workspaceId":"workspace:later","displayName":"Later"}}})).unwrap();
+        assert_eq!(
+            journal
+                .run_workspace_binding_ids("session:bindings", "run:bindings")
+                .unwrap(),
+            vec!["workspace:initial"]
+        );
+        assert_eq!(
+            journal.read_events("session:bindings", 0).unwrap()[1]["payload"]["workspaceBindings"],
+            json!([{"workspaceId":"workspace:initial","displayName":"Initial"}])
+        );
     }
 
     fn settings_commit(command_id: &str) -> Value {

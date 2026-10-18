@@ -459,8 +459,10 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
         }
     }
     if let Some(value) = settings.get("agent.permissions.workspaceMutation") {
-        if !matches!(value.as_str(), Some("plan" | "allow")) {
-            return Err("agent.permissions.workspaceMutation 必须是 plan 或 allow。".to_string());
+        if !matches!(value.as_str(), Some("plan" | "review" | "allow")) {
+            return Err(
+                "agent.permissions.workspaceMutation 必须是 plan、review 或 allow。".to_string(),
+            );
         }
     }
     if let Some(value) = settings.get("agent.permissions.engineeringDecisions") {

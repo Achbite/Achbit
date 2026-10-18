@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { DEFAULT_USER_SETTINGS, permissionSettings, validatePermissionPatches } from '../../protocol/dist/index.js';
 import { emptySessionState, loopSnapshot, projectSession, reduceSession } from '../dist/index.js';
 import { APPROVAL_REVIEW_SCHEMA, decodeApprovalReview, prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
+import { emptyRunLifecycle, reduceRunLifecycle } from '../dist/local-agent/runLifecycle.js';
 import {
   actorWith, createSession, fakeRunPreparation, emptyKernel,
   workspaceBinding, providerEvent, messageCommand, waitForProjection, completedExecutionReply, readEvents, runtimeSnapshot,
@@ -357,25 +358,253 @@ for (const malformedFirst of [false, true]) test(`cancelling an independent revi
   assert.equal(preparation.released.length, 1);
 });
 
-test('delegated Plan confirmation records Agent authority without waiting for a user', async t => {
+const reviewPlan = { title: 'Update result', summary: 'Modify only result.txt.',
+  steps: [{ stepId: 'write', title: 'Write', details: 'Write the requested result.' }],
+  mutationManifest: [{ operation: 'fs.write', workspace: 'primary', target: 'result.txt' }] };
+
+test('Plan and Shell use distinct independent review contexts and distinct authorities', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:delegated-plan';
   await createSession(journal, sessionId, [workspaceBinding]);
-  let turns = 0;
-  const prep = fakeRunPreparation({ permissions: { 'agent.permissions.workspaceMutation': 'allow' } });
+  let turns = 0, executions = 0;
+  const reviews = [];
+  const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.workspaceMutation': 'review', 'agent.permissions.shell': 'review' } });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
-    if (++turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: {
-      title: 'Inspect the project', summary: 'Confirm the task scope', steps: [{ stepId: 'inspect', title: 'Inspect', details: 'Read files', verification: ['Report findings'] }], mutationManifest: [],
-    } });
-    else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
+    if (request.purpose === 'approvalReview') {
+      reviews.push(structuredClone(request));
+      assert.equal(request.profileId, 'profile:reviewer');
+      assert.equal(request.messages.length, 2);
+      assert.deepEqual(request.tools, []);
+      assert.deepEqual(request.hostedTools, []);
+      assert.doesNotMatch(JSON.stringify(request.messages), /WORKING_AGENT_PRIVATE_PROSE/);
+      const packet = JSON.parse(request.messages[1].content);
+      if (reviews.length === 1) {
+        assert.equal(request.responseFormat.name, 'plan_scope_decision');
+        assert.equal(packet.reviewKind, 'plan');
+        assert.equal(packet.grant, 'thisPlanRevisionOnly');
+        assert.equal(packet.operation, undefined);
+        yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"PLAN_REVIEW_PRIVATE_REASON"}' });
+      } else {
+        assert.equal(reviews.length, 2);
+        assert.equal(request.responseFormat.name, 'execution_permission_decision');
+        assert.equal(packet.grant, 'thisCallOnly');
+        assert.equal(packet.operation.arguments.command, 'make check');
+        assert.equal(packet.plan.confirmed, true, 'confirmed scope is evidence, not a Shell grant');
+        assert.doesNotMatch(JSON.stringify(request.messages), /PLAN_REVIEW_PRIVATE_REASON/);
+        assert.match(request.messages[0].content, /You do not approve Plans/);
+        yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"SHELL_REVIEW_PRIVATE_REASON"}' });
+      }
+    } else if (++turns === 1) {
+      yield providerEvent(request.requestId, 'text.delta', { text: 'WORKING_AGENT_PRIVATE_PROSE' });
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: reviewPlan });
+    } else if (turns === 2) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:shell', name: 'bash', input: { command: 'make check' } });
+    } else {
+      assert.equal(turns, 3);
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'Done.' });
+    }
     yield providerEvent(request.requestId, 'completed', {});
-  } }, emptyKernel({ async planAdmission() { return { source: 'agent', authorities: [] }; } }), prep.port, 'delegated');
+  } }, emptyKernel({ async planAdmission() { return { source: 'review', authorities: [] }; }, async execute(request) {
+    if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
+    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
+        approvalReviewer: 'agent', authorizationContext: context, operation: { toolName: 'bash', arguments: { command: 'make check' } } } };
+  } }), prep.port, 'delegated');
   t.after(() => actor.dispose());
-  await actor.submit(messageCommand(sessionId, 'command:start', 'Inspect the project.'));
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Update result.txt and run make check.'));
   const done = await waitForProjection(actor, state => state.run?.status === 'completed');
   assert.equal(done.plans[0].confirmationSource, 'agent');
+  assert.equal(done.plans[0].review.reason, 'PLAN_REVIEW_PRIVATE_REASON');
+  assert.equal(reviews.length, 2);
+  assert.notEqual(reviews[0].requestId, reviews[1].requestId);
+  assert.equal(executions, 1, 'Plan approval must not skip the independent Shell approval');
   const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'plan.reviewed').length, 1);
+  assert.equal(events.filter(event => event.type === 'approval.reviewed').length, 1);
   assert.equal(events.find(event => event.type === 'plan.confirmed').payload.source, 'agent');
   assert.equal(events.some(event => event.type === 'run.waiting' && event.payload.reason === 'plan'), false);
+});
+
+for (const decision of ['deny', 'ask', 'invalid']) test(`Plan reviewer ${decision} cannot grant mutation authority`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:plan-review-${decision}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  let main = 0, reviews = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      yield providerEvent(request.requestId, 'assistant.message', { content: decision === 'invalid' ? 'not JSON'
+        : JSON.stringify({ decision, reason: 'The requested scope needs correction or a user decision.' }) });
+    } else if (++main === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: reviewPlan });
+    else yield providerEvent(request.requestId, 'assistant.message', { content: 'No mutation performed.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async planAdmission() { return { source: 'review', authorities: [] }; } }),
+  reviewerPreparation({ permissions: { 'agent.permissions.workspaceMutation': 'review' } }).port, 'plan-review');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare the requested change.'));
+  const projection = await waitForProjection(actor, state => state.run?.status === (decision === 'deny' ? 'completed' : 'waiting'));
+  assert.equal(reviews, 1);
+  assert.equal(projection.activePlanRef, null);
+  assert.equal(projection.plans[0].review.decision, decision === 'invalid' ? 'ask' : decision);
+  if (decision === 'invalid') assert.equal(projection.plans[0].review.error.code, 'approval_review_invalid');
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.some(event => event.type === 'plan.confirmed' || event.type === 'tool.requested'), false);
+});
+
+test('Plan off omits its tool schema and makes no reviewer request while retaining Shell policy', async t => {
+  const packets = new Map();
+  for (const mode of ['plan', 'allow']) {
+    const journal = new InMemoryCommandJournal(), sessionId = `session:plan-mode-${mode}`;
+    await createSession(journal, sessionId, [workspaceBinding]);
+    const actor = actorWith(journal, sessionId, { async *stream(request) {
+      assert.equal(request.purpose, 'agent');
+      packets.set(mode, request);
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'No changes needed.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    } }, emptyKernel(), reviewerPreparation({ tools: [shell], permissions: {
+      'agent.permissions.workspaceMutation': mode, 'agent.permissions.shell': 'review' } }).port, `plan-${mode}`);
+    t.after(() => actor.dispose());
+    await actor.submit(messageCommand(sessionId, 'command:start', 'Inspect the task.'));
+    const projection = await waitForProjection(actor, state => state.run?.status === 'completed');
+    assert.equal(projection.effectivePermissions['agent.permissions.shell'], 'review');
+    assert.equal(projection.plans.length, 0);
+  }
+  assert.ok(packets.get('plan').tools.some(tool => tool.inputSchema.properties?.mutationManifest));
+  assert.equal(packets.get('allow').tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+  assert.ok(JSON.stringify(packets.get('allow').tools).length < JSON.stringify(packets.get('plan').tools).length);
+});
+
+test('delegating a waiting manual Plan resumes the same run and its compact lifecycle before review', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:plan-manual-to-review';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const release = Promise.withResolvers();
+  let mode = 'plan', turns = 0, reviews = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      await release.promise;
+      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"The requested file scope is approved."}' });
+    } else if (++turns === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: reviewPlan });
+    } else {
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'The same Plan was approved.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async planAdmission() { return { source: mode === 'review' ? 'review' : 'user', authorities: [] }; } }),
+  reviewerPreparation().port, 'manual-to-review');
+  t.after(async () => { release.resolve(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Update result.txt.'));
+  const waiting = await waitForProjection(actor, state => state.run?.status === 'waiting');
+  mode = 'review';
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+    commandId: 'command:delegate', patches: { 'agent.permissions.workspaceMutation': 'review' } });
+  const reviewing = await waitForProjection(actor, state => state.run?.status === 'running' && reviews === 1);
+  assert.equal(reviewing.run.runId, waiting.run.runId);
+  assert.equal(reviewing.pendingPlan.planId, waiting.pendingPlan.planId);
+  const compact = (await journal.readRunLifecycle(sessionId)).events.reduce(reduceRunLifecycle, emptyRunLifecycle());
+  assert.equal(compact.run.status, 'running');
+  assert.equal(compact.pendingPlan.planId, waiting.pendingPlan.planId);
+  release.resolve();
+  const done = await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(done.plans[0].confirmationSource, 'agent');
+  assert.equal(reviews, 1);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'run.started').length, 1);
+  assert.equal(events.filter(event => event.type === 'run.runtime.released').length, 1);
+});
+
+test('turning Plan off closes a pending Plan and resumes without a review or Plan schema', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:plan-off-during-wait';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  let turns = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    assert.equal(request.purpose, 'agent');
+    if (++turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: reviewPlan });
+    else {
+      assert.equal(turns, 2);
+      assert.equal(request.tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'Continuing without Plan.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'plan-off');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare a change.'));
+  await waitForProjection(actor, state => state.pendingPlan !== null);
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+    commandId: 'command:off', patches: { 'agent.permissions.workspaceMutation': 'allow' } });
+  const done = await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(done.plans[0].status, 'cancelled');
+  assert.equal(done.activePlanRef, null);
+});
+
+test('taking over a running Plan review accepts the user decision and ignores the late reviewer verdict', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:plan-review-takeover';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  let main = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      started.resolve(); await release.promise;
+      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"deny","reason":"A late independent decision."}' });
+    } else if (++main === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: reviewPlan });
+    } else {
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'The user confirmed the Plan.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async planAdmission() { return { source: 'review', authorities: [] }; } }),
+  reviewerPreparation({ permissions: { 'agent.permissions.workspaceMutation': 'review' } }).port, 'takeover-review');
+  t.after(async () => { release.resolve(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare the requested change.'));
+  await started.promise;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+    commandId: 'command:takeover', patches: { 'agent.permissions.workspaceMutation': 'plan' } });
+  const reviewing = await actor.snapshot(), plan = reviewing.pendingPlan;
+  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+    commandId: 'command:confirm', runId: plan.runId, planId: plan.planId, revision: plan.revision,
+    response: { kind: 'confirm' } });
+  assert.equal(reply.status, 'accepted');
+  const confirmed = await actor.snapshot();
+  assert.equal(confirmed.pendingPlan, null);
+  assert.equal(confirmed.plans[0].confirmationSource, 'user');
+  release.resolve();
+  const done = await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(done.run.runId, reviewing.run.runId);
+  assert.equal(done.plans[0].status, 'confirmed');
+  assert.equal(done.plans[0].confirmationSource, 'user');
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'plan.confirmed').length, 1);
+  assert.equal(events.some(event => event.type === 'plan.cancelled'), false);
+  assert.equal(events.filter(event => event.type === 'run.started').length, 1);
+  assert.equal(events.filter(event => event.type === 'run.runtime.released').length, 1);
+});
+
+test('turning Plan off during its review does not apply the late verdict or confirm the cancelled Plan', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:plan-off-in-review';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  let main = 0, reviews = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++; started.resolve(); await release.promise;
+      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"Scope matched the earlier request."}' });
+    } else if (++main === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan', name: 'plan_publish', input: reviewPlan });
+    else {
+      assert.equal(request.tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'Continue with Plan off.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async planAdmission() { return { source: 'review', authorities: [] }; } }),
+  reviewerPreparation({ permissions: { 'agent.permissions.workspaceMutation': 'review' } }).port, 'off-review');
+  t.after(async () => { release.resolve(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare a change.'));
+  await started.promise;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+    commandId: 'command:off', patches: { 'agent.permissions.workspaceMutation': 'allow' } });
+  release.resolve();
+  const done = await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(reviews, 1);
+  assert.equal(done.plans[0].status, 'cancelled');
+  assert.equal(done.activePlanRef, null);
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'plan.confirmed'), false);
 });
 
 for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents are unknown."}',

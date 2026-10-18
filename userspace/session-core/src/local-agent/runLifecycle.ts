@@ -67,6 +67,9 @@ export function reduceRunLifecycle(previous: RunLifecycleState, event: RunLifecy
     case 'plan.published':
       next.pendingPlan = { ...event.payload, runId: event.runId, callId: event.callId };
       break;
+    case 'plan.review.requested':
+      resume(event.runId);
+      break;
     case 'plan.confirmed':
     case 'plan.revision.requested':
     case 'plan.cancelled':
@@ -124,6 +127,7 @@ export function projectRunLifecycleEvent(event: SessionEvent): RunLifecycleEvent
     case 'interaction.resolved':
       return { ...base, type: event.type, runId: event.runId, payload: { interactionId: event.payload.interactionId } };
     case 'plan.published':
+    case 'plan.review.requested':
     case 'plan.confirmed':
     case 'plan.revision.requested':
     case 'plan.cancelled':

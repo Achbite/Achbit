@@ -120,7 +120,7 @@ class LocalAgentHttpPort {
     if (!response.ok || !envelope.ok) {
       const code = typeof envelope.error === 'string' ? envelope.error : 'local_agent_http_failed';
       const message = typeof envelope.message === 'string' ? envelope.message : code;
-      throw new Error(`${code}:${message}`);
+      throw new LoopFailure(code, message);
     }
     return envelope.data as T;
   }
@@ -281,9 +281,12 @@ export class HttpKernelPort extends LocalAgentHttpPort implements KernelPort {
     const result = await this.json<Awaited<ReturnType<KernelPort['planAdmission']>>>('/api/local-agent/plans/admission', {
       method: 'POST', body: JSON.stringify(request),
     });
-    if (!['agent', 'parent', 'user', 'sessionWorkdir'].includes(result.source) || !Array.isArray(result.authorities)
+    if (!['agent', 'parent', 'user', 'review', 'sessionWorkdir'].includes(result.source) || !Array.isArray(result.authorities)
       || result.source === 'parent' && !result.authorities.length
-      || result.source === 'sessionWorkdir' && result.authorities.length) throw new Error('plan_admission_invalid');
+      || (result.source === 'sessionWorkdir' || result.source === 'review') && result.authorities.length
+      || result.workspaceRequests !== undefined && (result.source !== 'user' || !Array.isArray(result.workspaceRequests)
+        || !result.workspaceRequests.length || result.workspaceRequests.some(request => !isRecord(request)
+          || typeof request.workspaceId !== 'string' || !request.workspaceId || typeof request.rootPath !== 'string' || !request.rootPath))) throw new Error('plan_admission_invalid');
     return result;
   }
   async readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]> {

@@ -728,11 +728,11 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .collect::<Vec<_>>();
             if let [binding] = added.as_slice() {
                 println!(
-                    "已附加目录索引：{} ({})；从下一次 run 起生效。",
+                    "已附加目录索引：{} ({})；后续请求生效。",
                     binding.display_name, binding.workspace_id
                 );
             } else {
-                println!("对话目录已更新，下次运行生效。");
+                println!("对话目录已更新，后续请求生效。");
             }
             Ok(Outcome::Done)
         }
@@ -742,7 +742,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .detach_conversation_directory_index(session_id, &workspace_id)
                 .await
                 .map_err(|error| error.to_string())?;
-            println!("已移除目录索引 {workspace_id}；仅影响之后启动的 run。");
+            println!("已移除目录索引 {workspace_id}；后续请求生效。");
             Ok(Outcome::Done)
         }
         Command::OpenResource {
@@ -1071,7 +1071,10 @@ async fn run_chat(
         };
         let Some(line) = line else {
             return Ok(
-                if projection.pending_plan.is_some()
+                if projection
+                    .pending_plan
+                    .as_ref()
+                    .is_some_and(|plan| !plan.is_model_reviewing(projection.run.as_ref()))
                     || projection.pending_interaction.is_some()
                     || projection
                         .pending_agent_decisions
@@ -1210,7 +1213,7 @@ async fn run_chat(
                     .attach_conversation_directory_index(&projection.session_id, path)
                     .await
                     .map_err(|error| error.to_string())?;
-                println!("目录索引已附加；从下一次 run 起使用当前有效目录集合。");
+                println!("目录索引已附加，后续请求生效。");
             }
             value if value.starts_with("/detach ") => {
                 let workspace_id = value.trim_start_matches("/detach ").trim();
@@ -1222,7 +1225,7 @@ async fn run_chat(
                     .detach_conversation_directory_index(&projection.session_id, workspace_id)
                     .await
                     .map_err(|error| error.to_string())?;
-                println!("目录已移除，下次运行生效。");
+                println!("目录已移除，后续请求生效。");
             }
             value if value.starts_with('@') => {
                 let query = value.trim_start_matches('@').trim();

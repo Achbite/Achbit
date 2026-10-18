@@ -101,6 +101,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     throw new LoopFailure('tool_result_missing', `调用 ${openCall.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
+  const planEnabled = input.runtime.permissions['agent.permissions.workspaceMutation'] !== 'allow';
   const hasPluginDiscovery = input.runtime.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable');
   const hasAgentTools = input.runtime.agentToolsEnabled === true
     && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
@@ -126,7 +127,8 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities).filter(tool => tool.name === SESSION_CONTROL_AGENT
+  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities)
+    .filter(tool => planEnabled || tool.name !== SESSION_CONTROL_PLAN_PUBLISH).filter(tool => tool.name === SESSION_CONTROL_AGENT
     ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
       ? hasPluginDiscovery : (hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
     .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
@@ -176,7 +178,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools),
+      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled),
     },
   });
   if (hasWorkspaceBindings) instructions.push({
@@ -515,6 +517,10 @@ export function messagesFromJournal(
         },
       });
     } else if (event.type === 'plan.cancelled') {
+      const reviewed = events.findLast(item => item.type === 'plan.reviewed'
+        && item.payload.planId === event.payload.planId && item.payload.revision === event.payload.revision);
+      const disabled = events.some(item => item.type === 'session.permissions.updated'
+        && item.payload.commandId === event.payload.commandId && item.payload.patches['agent.permissions.workspaceMutation'] === 'allow');
       messages.push({
         contributionId: `plan-cancel-result:${event.payload.planId}:${event.payload.revision}`,
         contributionKind: 'journalMessages',
@@ -525,6 +531,8 @@ export function messagesFromJournal(
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
           content: JSON.stringify({
             response: { kind: 'cancel' },
+            ...(reviewed?.type === 'plan.reviewed' ? { review: { decision: reviewed.payload.decision, reason: reviewed.payload.reason } } : {}),
+            ...(disabled ? { nextAction: 'Plan is off. Continue authorized work directly; execution permissions remain separate.' } : {}),
             planId: event.payload.planId,
             revision: event.payload.revision,
           }),

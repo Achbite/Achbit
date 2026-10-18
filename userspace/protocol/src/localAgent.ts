@@ -487,7 +487,14 @@ export interface ExecutionPlanStep {
   verification?: string[];
 }
 
+export interface PlanWorkspaceRequest {
+  workspaceId: string;
+  rootPath: string;
+}
+
 export interface ExecutionPlan {
+  /** Kernel-resolved directories requiring explicit workspace inclusion. */
+  workspaceRequests?: PlanWorkspaceRequest[];
   planId: string;
   revision: number;
   /** Inline Markdown, never an execution or authorization input. */
@@ -507,6 +514,7 @@ export type MessageFeedback = 'up' | 'down';
 export interface HostWindowBinding { hostInstanceId: string; windowLabel: string }
 
 export type ConversationCommand =
+  | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.workspaces.set'; commandId: string; sessionId: string; workspaceBindings: WorkspaceBindingDisplay[] }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.subagent-settings.set'; commandId: string; sessionId: string; settings: AgentSettings }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'run.host.rebind'; commandId: string; sessionId: string; runId: string; expectedHostBinding: HostWindowBinding; hostBinding: HostWindowBinding }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.permissions.set'; commandId: string; sessionId: string; patches: UserSettings }
@@ -986,6 +994,9 @@ export type SessionEvent =
         profileId?: string;
       };
     })
+  | (SessionEventBase & { type: 'session.workspaces.updated'; payload: {
+      commandId: string; baseBindings: WorkspaceBindingDisplay[]; workspaceBindings: WorkspaceBindingDisplay[];
+    } })
   | (SessionEventBase & {
       type: 'session.directory-index.attached';
       payload: { workspaceBinding: WorkspaceBindingDisplay; commandId: string };
@@ -1088,6 +1099,10 @@ export type SessionEvent =
       runId: string;
       payload: { interactionId: string; commandId: string; response: string };
     })
+  | (SessionEventBase & { type: 'plan.review.requested'; runId: string; callId: string;
+      payload: { planId: string; revision: number; providerRequestId: string } })
+  | (SessionEventBase & { type: 'plan.reviewed'; runId: string; callId: string;
+      payload: { planId: string; revision: number; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string; error?: LocalAgentError } })
   | (SessionEventBase & {
       type: 'plan.published';
       runId: string;
@@ -1450,7 +1465,16 @@ export type PlanProjectionStatus =
   | 'cancelled'
   | 'invalidated';
 
+export interface PlanReviewProjection {
+  providerRequestId: string;
+  status: 'reviewing' | 'completed';
+  decision?: 'allow' | 'deny' | 'ask';
+  reason?: string;
+  error?: LocalAgentError;
+}
+
 export interface PlanProjection extends ExecutionPlan {
+  review?: PlanReviewProjection;
   runId: string;
   callId: string;
   status: PlanProjectionStatus;
@@ -2277,7 +2301,7 @@ export interface FileCallPreparationReply {
 
 export interface KernelPort {
   prepareFileCalls(request: FileCallPreparationRequest): Promise<FileCallPreparationReply>;
-  planAdmission(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<{ source: 'agent' | 'parent' | 'user' | 'sessionWorkdir'; authorities: PlanAuthority[] }>;
+  planAdmission(request: { sessionId: string; runId: string; mutationManifest: PlanOperation[] }): Promise<{ source: 'agent' | 'parent' | 'user' | 'review' | 'sessionWorkdir'; authorities: PlanAuthority[]; workspaceRequests?: PlanWorkspaceRequest[] }>;
   readProcesses(request: ProcessReadRequest, signal?: AbortSignal): Promise<ManagedProcessSnapshot[]>;
   execute(request: ToolExecutionRequest, onProgress?: (progress: ToolExecutionProgress) => Promise<void>): Promise<ToolExecutionReply>;
   cancel(callId: string, attemptId: string): Promise<ToolCancelReply>;
@@ -2299,6 +2323,7 @@ export type RunLifecycleEvent =
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'interaction.requested' }>, 'interactionId' | 'mode'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'interaction.resolved' }>, 'interactionId'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.published' }>, 'planId' | 'revision'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.review.requested' }>, 'planId' | 'revision'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.confirmed' }>, 'planId' | 'revision'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.revision.requested' }>, 'planId' | 'revision'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'plan.cancelled' }>, 'planId' | 'revision'>

@@ -339,7 +339,7 @@ export class SessionService implements ConversationPort {
         // The current task/run owns its decision route; the creation tree still owns archival.
         if (child.run?.runId !== task.childRunId) continue;
         const lifecycle = this.#statusStates.get(child.sessionId)!.lifecycle;
-        const plan = lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
+        const plan = child.run.status === 'waiting' && lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
         const approval = lifecycle.pendingApproval?.runId === task.childRunId ? lifecycle.pendingApproval : null;
         const interactionIds = lifecycle.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
         if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,

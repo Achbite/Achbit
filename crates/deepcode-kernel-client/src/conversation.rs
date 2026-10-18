@@ -2011,6 +2011,9 @@ pub struct ExecutionPlanStep {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlanProjection {
+    pub review: Option<PlanReviewProjection>,
+    #[serde(default)]
+    pub workspace_requests: Vec<PlanWorkspaceRequest>,
     pub plan_id: String,
     pub revision: u64,
     pub run_id: String,
@@ -2036,7 +2039,27 @@ pub struct PlanRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanWorkspaceRequest {
+    pub workspace_id: String,
+    pub root_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanReviewProjection {
+    pub provider_request_id: String,
+    pub status: String,
+    pub decision: Option<String>,
+    pub reason: Option<String>,
+    pub error: Option<ConversationError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingPlanProjection {
+    pub review: Option<PlanReviewProjection>,
+    #[serde(default)]
+    pub workspace_requests: Vec<PlanWorkspaceRequest>,
     pub plan_id: String,
     pub revision: u64,
     pub run_id: String,
@@ -2052,6 +2075,15 @@ pub struct PendingPlanProjection {
     pub sequence: u64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl PendingPlanProjection {
+    pub fn is_model_reviewing(&self, run: Option<&RunProjection>) -> bool {
+        self.review
+            .as_ref()
+            .is_some_and(|review| review.status == "reviewing")
+            && run.is_some_and(|run| run.status == "running")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2699,7 +2731,9 @@ fn plan_response_command(
 }
 
 fn valid_plan_projection(plan: &PlanProjection) -> bool {
-    !plan.plan_id.is_empty()
+    valid_plan_review(plan.review.as_ref())
+        && valid_workspace_requests(&plan.workspace_requests)
+        && !plan.plan_id.is_empty()
         && plan.revision > 0
         && !plan.run_id.is_empty()
         && !plan.call_id.is_empty()
@@ -2722,7 +2756,9 @@ fn valid_plan_projection(plan: &PlanProjection) -> bool {
 }
 
 fn valid_pending_plan_projection(plan: &PendingPlanProjection) -> bool {
-    !plan.plan_id.is_empty()
+    valid_plan_review(plan.review.as_ref())
+        && valid_workspace_requests(&plan.workspace_requests)
+        && !plan.plan_id.is_empty()
         && plan.revision > 0
         && !plan.run_id.is_empty()
         && !plan.call_id.is_empty()
@@ -2735,6 +2771,34 @@ fn valid_pending_plan_projection(plan: &PendingPlanProjection) -> bool {
         && !plan.created_at.is_empty()
         && !plan.updated_at.is_empty()
         && valid_plan_body(&plan.steps, &plan.mutation_manifest)
+}
+
+fn valid_plan_review(review: Option<&PlanReviewProjection>) -> bool {
+    review.is_none_or(|review| {
+        !review.provider_request_id.is_empty()
+            && match review.status.as_str() {
+                "reviewing" => {
+                    review.decision.is_none() && review.reason.is_none() && review.error.is_none()
+                }
+                "completed" => {
+                    matches!(review.decision.as_deref(), Some("allow" | "deny" | "ask"))
+                        && review
+                            .reason
+                            .as_deref()
+                            .is_some_and(|reason| !reason.trim().is_empty())
+                }
+                _ => false,
+            }
+    })
+}
+
+fn valid_workspace_requests(requests: &[PlanWorkspaceRequest]) -> bool {
+    let mut ids = HashSet::new();
+    requests.iter().all(|request| {
+        !request.workspace_id.is_empty()
+            && !request.root_path.is_empty()
+            && ids.insert(&request.workspace_id)
+    })
 }
 
 fn valid_plan_body(steps: &[ExecutionPlanStep], operations: &[PlanOperation]) -> bool {

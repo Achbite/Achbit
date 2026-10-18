@@ -7,6 +7,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 #[derive(Clone)]
+struct PlanReviewPermission {
+    request_id: String,
+    can_approve: bool,
+    allowed: bool,
+}
+
+#[derive(Clone)]
 struct SessionPermissions {
     parent: Option<String>,
     attached: bool,
@@ -17,6 +24,8 @@ struct SessionPermissions {
     pending_reviews: BTreeSet<String>,
     cancelled_reviews: BTreeSet<String>,
     automatic_plans: BTreeSet<String>,
+    reviewed_plans: BTreeSet<String>,
+    plan_reviews: BTreeMap<(String, String, u64), PlanReviewPermission>,
     revoked: BTreeSet<String>,
 }
 
@@ -42,6 +51,11 @@ impl KernelPermissionModel {
                     | "session.permissions.updated"
                     | "approval.requested"
                     | "approval.resolved"
+                    | "plan.review.requested"
+                    | "plan.reviewed"
+                    | "plan.cancelled"
+                    | "plan.invalidated"
+                    | "run.finishing"
                     | "plan.confirmed"
             )
         )
@@ -125,6 +139,8 @@ impl KernelPermissionModel {
                     pending_reviews: BTreeSet::new(),
                     cancelled_reviews: BTreeSet::new(),
                     automatic_plans: BTreeSet::new(),
+                    reviewed_plans: BTreeSet::new(),
+                    plan_reviews: BTreeMap::new(),
                     revoked: BTreeSet::new(),
                 },
             );
@@ -140,6 +156,14 @@ impl KernelPermissionModel {
                     );
                 }
                 Some("session.permissions.updated") => {
+                    if payload["patches"]
+                        .get("agent.permissions.workspaceMutation")
+                        .is_some()
+                    {
+                        for review in session.plan_reviews.values_mut() {
+                            review.can_approve = false;
+                        }
+                    }
                     // An explicit policy publication invalidates outstanding call
                     // approvals even when the selected value is unchanged.
                     if payload["patches"].as_object().is_some_and(|patches| {
@@ -217,20 +241,72 @@ impl KernelPermissionModel {
                     }
                     return Ok(());
                 }
+                Some("plan.review.requested") => {
+                    session.plan_reviews.insert(
+                        plan_review_key(event)?,
+                        PlanReviewPermission {
+                            request_id: payload["providerRequestId"]
+                                .as_str()
+                                .ok_or_else(invalid_model)?
+                                .into(),
+                            can_approve: session.attached
+                                && session.effective.settings
+                                    ["agent.permissions.workspaceMutation"]
+                                    == "review",
+                            allowed: false,
+                        },
+                    );
+                    return Ok(());
+                }
+                Some("plan.reviewed") => {
+                    let review = session
+                        .plan_reviews
+                        .get_mut(&plan_review_key(event)?)
+                        .ok_or_else(invalid_model)?;
+                    if payload["providerRequestId"].as_str() != Some(review.request_id.as_str()) {
+                        return Err(LocalAgentStoreError::new(
+                            "plan_review_identity_mismatch",
+                            "Plan review belongs to another request.",
+                        ));
+                    }
+                    review.allowed = review.can_approve
+                        && payload["decision"] == "allow"
+                        && payload.get("error").is_none();
+                    return Ok(());
+                }
+                Some("plan.cancelled" | "plan.invalidated") => {
+                    session.plan_reviews.remove(&plan_review_key(event)?);
+                    return Ok(());
+                }
+                Some("run.finishing") => {
+                    let run = event["runId"].as_str().ok_or_else(invalid_model)?;
+                    session.plan_reviews.retain(|key, _| key.0 != run);
+                    return Ok(());
+                }
                 Some("plan.confirmed") => {
                     if payload["source"] == "agent" {
+                        let reviewed = session.effective.settings
+                            ["agent.permissions.workspaceMutation"]
+                            == "review"
+                            && session
+                                .plan_reviews
+                                .get(&plan_review_key(event)?)
+                                .is_some_and(|review| review.can_approve && review.allowed);
                         let granted = session.attached
-                            && session.effective.settings["agent.permissions.workspaceMutation"]
-                                == "allow";
+                            && (session.effective.settings["agent.permissions.workspaceMutation"]
+                                == "allow"
+                                || reviewed);
                         if admit_new && !granted {
                             return Err(LocalAgentStoreError::new(
                                 "plan_delegation_missing",
-                                "The Kernel has not granted automatic Plan confirmation.",
+                                "The Kernel has no valid permission or matching independent review for this Plan.",
                             ));
                         }
                         // An archived child can outlive its deleted parent. Replay
                         // preserves its history while keeping those grants inert.
-                        let plans = if granted {
+                        let plans = if granted && reviewed {
+                            &mut session.reviewed_plans
+                        } else if granted {
                             &mut session.automatic_plans
                         } else {
                             &mut session.revoked
@@ -245,6 +321,9 @@ impl KernelPermissionModel {
                                     .ok_or_else(invalid_model)?
                                     .into(),
                             );
+                        }
+                        if reviewed {
+                            session.plan_reviews.remove(&plan_review_key(event)?);
                         }
                     }
                     return Ok(());
@@ -364,8 +443,11 @@ impl KernelPermissionModel {
                     .is_some_and(|parent| parent.attached)
             });
             let settings = self.resolve(session, &session.base)?;
-            let mutation_restricted = settings["agent.permissions.workspaceMutation"] == "plan"
+            let mutation_restricted = settings["agent.permissions.workspaceMutation"] != "allow"
                 && session.effective.settings["agent.permissions.workspaceMutation"] == "allow";
+            let plan_review_changed = settings["agent.permissions.workspaceMutation"]
+                != session.effective.settings["agent.permissions.workspaceMutation"];
+            let plan_review_disabled = settings["agent.permissions.workspaceMutation"] != "review";
             let execution_changed =
                 settings
                     .as_object()
@@ -380,6 +462,14 @@ impl KernelPermissionModel {
             let session = self.sessions.get_mut(&id).expect("existing session");
             if mutation_restricted || !attached {
                 session.revoked.append(&mut session.automatic_plans);
+            }
+            if plan_review_disabled || !attached {
+                session.revoked.append(&mut session.reviewed_plans);
+            }
+            if plan_review_changed || !attached {
+                for review in session.plan_reviews.values_mut() {
+                    review.can_approve = false;
+                }
             }
             if execution_changed || !attached {
                 // A cached approval cannot keep a descendant's old execution policy alive.
@@ -396,6 +486,19 @@ impl KernelPermissionModel {
         }
         Ok(())
     }
+}
+
+fn plan_review_key(event: &Value) -> Result<(String, String, u64), LocalAgentStoreError> {
+    Ok((
+        event["runId"].as_str().ok_or_else(invalid_model)?.into(),
+        event["payload"]["planId"]
+            .as_str()
+            .ok_or_else(invalid_model)?
+            .into(),
+        event["payload"]["revision"]
+            .as_u64()
+            .ok_or_else(invalid_model)?,
+    ))
 }
 
 fn invalid_model() -> LocalAgentStoreError {
@@ -418,7 +521,7 @@ fn intersect(settings: &mut Value, ceiling: &Value) -> Result<(), LocalAgentStor
     let parent_shell_allowed = ceiling["agent.permissions.shell"] == "allow"
         && ceiling["agent.permissions.shellAccess"] == "full";
     for (key, levels) in [
-        ("workspaceMutation", &["plan", "allow"][..]),
+        ("workspaceMutation", &["plan", "review", "allow"][..]),
         ("engineeringDecisions", &["ask", "delegate"]),
         ("shell", &["ask", "review", "allow"]),
         ("shellAccess", &["workspace", "full"]),
@@ -555,6 +658,66 @@ mod tests {
         model.apply(&json!({"type":"approval.resolved", "sessionId":"child", "payload":{
             "approvalId":"review:new", "authorityId":"grant:new", "source":"agent", "decision":"allow"}})).unwrap();
         assert!(!model.revoked("child", "grant:new"));
+    }
+
+    #[test]
+    fn independent_plan_review_is_required_and_cannot_borrow_shell_or_stale_decisions() {
+        let mut model = KernelPermissionModel::default();
+        create(
+            &mut model,
+            "root",
+            None,
+            json!({"agent.permissions.workspaceMutation":"review","agent.permissions.shell":"review"}),
+        );
+        let mut plan = json!({"type":"plan.confirmed","sessionId":"root","runId":"run:review",
+            "payload":{"planId":"plan:review","revision":1,"source":"agent","authorities":[{"authorityId":"grant:plan","sessionId":"root"}]}});
+        assert_eq!(
+            model.apply(&plan).unwrap_err().code,
+            "plan_delegation_missing"
+        );
+        model.apply(&json!({"type":"approval.requested","sessionId":"root","payload":{"approvalId":"shell:review","preview":{"approvalReviewer":"agent"}}})).unwrap();
+        model.apply(&json!({"type":"approval.resolved","sessionId":"root","payload":{"approvalId":"shell:review","authorityId":"grant:shell","source":"agent","decision":"allow"}})).unwrap();
+        assert_eq!(
+            model.apply(&plan).unwrap_err().code,
+            "plan_delegation_missing"
+        );
+        let requested = json!({"type":"plan.review.requested","sessionId":"root","runId":"run:review",
+            "payload":{"planId":"plan:review","revision":1,"providerRequestId":"request:plan"}});
+        model.apply(&requested).unwrap();
+        model
+            .apply(
+                &json!({"type":"session.permissions.updated","sessionId":"root",
+            "payload":{"patches":{"agent.permissions.shell":"ask"}}}),
+            )
+            .unwrap();
+        let mut reviewed = requested.clone();
+        reviewed["type"] = json!("plan.reviewed");
+        reviewed["payload"]["decision"] = json!("allow");
+        reviewed["payload"]["providerRequestId"] = json!("request:shell");
+        assert_eq!(
+            model.apply(&reviewed).unwrap_err().code,
+            "plan_review_identity_mismatch"
+        );
+        reviewed["payload"]["providerRequestId"] = json!("request:plan");
+        model.apply(&reviewed).unwrap();
+        model.apply(&plan).unwrap();
+        assert!(!model.revoked("root", "grant:plan"));
+        model.apply(&requested).unwrap();
+        for mode in ["plan", "review"] {
+            model
+                .apply(
+                    &json!({"type":"session.permissions.updated","sessionId":"root",
+                "payload":{"patches":{"agent.permissions.workspaceMutation":mode}}}),
+                )
+                .unwrap();
+        }
+        assert!(model.revoked("root", "grant:plan"));
+        model.apply(&reviewed).unwrap();
+        plan["payload"]["authorities"][0]["authorityId"] = json!("grant:late-plan");
+        assert_eq!(
+            model.apply(&plan).unwrap_err().code,
+            "plan_delegation_missing"
+        );
     }
 
     #[test]

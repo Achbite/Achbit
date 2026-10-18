@@ -69,6 +69,12 @@ test('concise session guidance preserves aliases, pending decisions and optional
   assert.match(ask, /Choose local implementation details/u);
   assert.match(ask, /before materially changing requirements/u);
   const delegated = permissionInstructionText({ 'agent.permissions.workspaceMutation': 'allow', 'agent.permissions.engineeringDecisions': 'delegate' });
-  assert.match(delegated, /confirmed automatically/u);
-  assert.match(delegated, /Execution permissions still apply/u);
+  assert.match(delegated, /Work directly within the bound workspaces/u);
+  assert.match(delegated, /execution permissions still apply/u);
+  assert.doesNotMatch(delegated, /confirmed automatically/u);
+  const review = permissionInstructionText({ 'agent.permissions.workspaceMutation': 'review' }, names.interactionRequest, names.planPublish);
+  assert.match(review, /independent Plan reviewer/u);
+  assert.match(review, /you do not approve your own Plan/u);
+  const noPlan = sessionControlInstructions(names, true, true, undefined, false);
+  assert.equal(noPlan.includes(names.planPublish), false);
 });

@@ -14,6 +14,7 @@ import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
+import { appendResourceBindings, directoryBindingEvents } from './workspaceBindings.js';
 import type {
   AssistantDraftProjection,
   AgentTaskResult,
@@ -392,6 +393,8 @@ export class SessionActor {
         return await this.handleModelSettings(command);
       case 'session.subagent-settings.set':
         return await this.handleSubagentSettings(command);
+      case 'session.workspaces.set':
+        return await this.handleWorkspaceBindings(command);
       case 'session.directory-index.attach':
         return await this.handleDirectoryIndexAttach(command);
       case 'session.directory-index.detach':
@@ -465,24 +468,36 @@ export class SessionActor {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }
+    const mode = command.patches['agent.permissions.workspaceMutation'];
+    if (mode === 'allow') {
+      const pending = snapshot.state.pendingPlan;
+      if (pending) events.push({ type: 'plan.cancelled', sessionId: this.sessionId, runId: pending.runId, callId: pending.callId,
+        payload: { planId: pending.planId, revision: pending.revision, commandId: command.commandId } });
+      const active = snapshot.state.activePlanRef;
+      const plan = active && snapshot.state.plans.find(item => item.planId === active.planId && item.revision === active.revision);
+      if (plan && snapshot.state.run?.runId === plan.runId && !isTerminal(snapshot.state.run.status)) events.push({
+        type: 'plan.invalidated', sessionId: this.sessionId, runId: plan.runId,
+        payload: { planId: plan.planId, revision: plan.revision, sourceFactRef: command.commandId, reason: 'Plan 已关闭。' } });
+    }
     const reply = await this.commitCommand(command, events, acceptedReply(command));
-    let planConfirmed = false;
-    if (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow') {
+    let reviewStarted = false;
+    if (mode === 'review' && snapshot.state.pendingPlan && snapshot.state.pendingPlan.review?.status !== 'reviewing') {
       const plan = snapshot.state.pendingPlan;
-      const admission = await this.#composition.kernel.planAdmission({ sessionId: this.sessionId,
-        runId: plan.runId, mutationManifest: plan.mutationManifest });
-      if (admission.source !== 'user') {
+      const admission = await this.#composition.kernel.planAdmission({ sessionId: this.sessionId, runId: plan.runId, mutationManifest: plan.mutationManifest });
+      if (admission.source === 'review') {
         await this.withWrite(async () => {
           const current = await this.loadSnapshot();
-          await this.appendEvents(confirmationFacts(current.state, plan, command.commandId,
-            admission.source, this.#nextId, admission.authorities), current);
+          if (current.state.pendingPlan?.planId !== plan.planId || current.state.pendingPlan.revision !== plan.revision) return;
+          await this.appendEvents([{ type: 'plan.review.requested', sessionId: this.sessionId, runId: plan.runId, callId: plan.callId,
+            payload: { planId: plan.planId, revision: plan.revision, providerRequestId: this.#nextId('provider-request') } }], current);
+          reviewStarted = true;
         });
-        planConfirmed = true;
       }
     }
+    const resumePlan = Boolean(snapshot.state.pendingPlan && (mode === 'allow' || reviewStarted));
+    if (resumePlan && snapshot.state.run?.status === 'waiting' && this.#active && snapshot.state.pendingPlan?.review?.status !== 'reviewing') await this.#active.task;
     if (!this.#active && snapshot.state.run?.status === 'waiting'
-      && (snapshot.state.run.waitingReason === 'approval'
-        || planConfirmed)) {
+      && (snapshot.state.run.waitingReason === 'approval' || resumePlan)) {
       this.startLoop({ type: 'resume', runId: snapshot.state.run.runId });
     }
     return reply;
@@ -522,6 +537,32 @@ export class SessionActor {
     }
     return this.commitCommand(command, [{ type: 'session.subagent-settings.updated', sessionId: this.sessionId,
       payload: { commandId: command.commandId, settings } }], acceptedReply(command));
+  }
+
+  private async handleWorkspaceBindings(
+    command: Extract<ConversationCommand, { type: 'session.workspaces.set' }>,
+  ): Promise<CommandReply> {
+    if (!Array.isArray(command.workspaceBindings) || !command.workspaceBindings.every(validWorkspaceBinding)
+      || new Set(command.workspaceBindings.map(binding => binding.workspaceId)).size !== command.workspaceBindings.length) {
+      return this.recordRejection(command, 'session_workspace_bindings_invalid', '工作区目录无效。');
+    }
+    const snapshot = await this.loadSnapshot();
+    if (JSON.stringify(command.workspaceBindings) === JSON.stringify(snapshot.state.creationWorkspaceBindings)) {
+      return this.commitCommand(command, [], acceptedReply(command));
+    }
+    const workspaceBindings = [...new Map([...command.workspaceBindings, ...snapshot.state.sessionDirectoryIndexes]
+      .map(binding => [binding.workspaceId, { ...binding }])).values()];
+    const events: NewSessionEvent[] = [{ type: 'session.workspaces.updated', sessionId: this.sessionId,
+      payload: { commandId: command.commandId, baseBindings: structuredClone(command.workspaceBindings), workspaceBindings } }];
+    const active = snapshot.state.activePlanRef;
+    const plan = active && snapshot.state.plans.find(candidate => candidate.planId === active.planId && candidate.revision === active.revision);
+    if (plan && snapshot.state.run && ['running', 'waiting'].includes(snapshot.state.run.status)
+      && plan.runId === snapshot.state.run.runId
+      && plan.mutationManifest.some(operation => !workspaceBindings.some(binding => binding.workspaceId === operation.workspaceId))) {
+      events.push({ type: 'plan.invalidated', sessionId: this.sessionId, runId: plan.runId,
+        payload: { planId: plan.planId, revision: plan.revision, reason: '工作区目录已移除。', sourceFactRef: command.commandId } });
+    }
+    return this.commitCommand(command, events, acceptedReply(command));
   }
 
   private async handleDirectoryIndexAttach(
@@ -752,7 +793,8 @@ export class SessionActor {
       ? command.reasoningEffortOverride
       : before.state.modelSettings && profileId === before.state.modelSettings.profileId
         ? before.state.modelSettings.reasoningEffortOverride : null;
-    const runWorkspaceBindings = before.state.workspaceBindings.map(binding => ({ ...binding }));
+    const directoryReferences = command.filesystemReferences?.filter(reference => reference.kind === 'directory') ?? [];
+    const runWorkspaceBindings = appendResourceBindings(before.state.workspaceBindings, directoryReferences);
     const prepared = await this.#composition.runPreparation.prepare({
       sessionId: this.sessionId,
       runId,
@@ -811,6 +853,7 @@ export class SessionActor {
             : {}),
         },
       },
+      ...directoryBindingEvents(this.sessionId, command.commandId, before.state.workspaceBindings, directoryReferences),
       {
         type: 'run.started',
         sessionId: this.sessionId,
@@ -995,20 +1038,28 @@ export class SessionActor {
   ): Promise<CommandReply> {
     const snapshot = await this.loadSnapshot();
     const plan = snapshot.state.pendingPlan;
+    const mode = snapshot.state.publishedPermissions?.['agent.permissions.workspaceMutation']
+      ?? snapshot.state.permissionOverrides['agent.permissions.workspaceMutation']
+      ?? snapshot.state.runRuntimeSnapshots[command.runId]?.permissions['agent.permissions.workspaceMutation'];
+    const manualTakeover = mode === 'plan' && plan?.review?.status === 'reviewing'
+      && snapshot.state.run?.status === 'running' && this.#active?.runId === command.runId;
     if (
       !plan
       || plan.planId !== command.planId
       || plan.revision !== command.revision
       || plan.runId !== command.runId
       || snapshot.state.run?.runId !== command.runId
-      || snapshot.state.run.status !== 'waiting'
-      || snapshot.state.run.waitingReason !== 'plan'
+      || !manualTakeover && (snapshot.state.run.status !== 'waiting' || snapshot.state.run.waitingReason !== 'plan')
     ) {
       return await this.recordRejection(
         command,
         'plan_not_pending',
         '该 Plan 已关闭、已变化或不属于当前运行。',
       );
+    }
+    if (command.response.kind === 'confirm' && plan.workspaceRequests?.some(request =>
+      !snapshot.state.workspaceBindings.some(binding => binding.workspaceId === request.workspaceId))) {
+      return this.recordRejection(command, 'plan_workspace_binding_required', '请先确认将所列目录加入工作区。');
     }
     if (command.response.kind === 'requestRevision' && !command.response.text.trim()) {
       return await this.recordRejection(
@@ -1067,7 +1118,7 @@ export class SessionActor {
       } else {
         await this.runLoop({ type: 'cancel', runId: command.runId });
       }
-    } else {
+    } else if (!manualTakeover) {
       if (this.#active) await this.#active.task;
       this.startLoop({ type: 'resume', runId: command.runId });
     }
@@ -1198,6 +1249,12 @@ export class SessionActor {
               ...(input.filesystemReferences.length ? { filesystemReferences: input.filesystemReferences } : {}),
               ...(input.pluginSelections.length ? { pluginSelections: input.pluginSelections } : {}) },
           }]));
+          let bindings = current.state.workspaceBindings;
+          for (const input of queued) {
+            const directories = input.filesystemReferences.filter(reference => reference.kind === 'directory');
+            events.push(...directoryBindingEvents(this.sessionId, input.commandId, bindings, directories));
+            bindings = appendResourceBindings(bindings, directories);
+          }
           if (events.length) await this.appendEvents(events, current);
           return await this.loadSnapshot();
         }),
@@ -1443,6 +1500,7 @@ export class SessionActor {
   }
 
   private async appendEvents(events: readonly NewSessionEvent[], current: LoopSnapshot): Promise<void> {
+    if (!events.length) return;
     events = this.#timing.decorate(events);
     admitSessionEvents(current, events);
     const previousDraft = this.#assistantDraft;
