@@ -702,6 +702,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         ...next.activities[toolActivityId(event.callId)],
         inputRejection: structuredClone(event.payload.rejection.error),
       };
+      delete next.activities[toolActivityId(event.callId)].tool;
       break;
     }
     case 'process.updated': {

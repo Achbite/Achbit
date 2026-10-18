@@ -1464,6 +1464,8 @@
 .local-agent__composer {
   flex: 0 0 auto;
   position: relative;
+  /* Keep menus in this isolated surface above the sibling change dock. */
+  z-index: 6;
   overflow: visible;
   border: 1px solid var(--dc-border);
   border-radius: 18px;
