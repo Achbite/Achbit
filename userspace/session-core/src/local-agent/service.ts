@@ -1,3 +1,4 @@
+import type { SessionObservationSink } from './observation.js';
 import { decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
 import { agentPresets } from './agentConfiguration.js';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
@@ -56,10 +57,11 @@ export type SessionServiceFactory = (input: {
   agentHost?: AgentHostPort;
   configurations?: SessionConfigurationRegistry;
   loops?: AgentLoopRegistry;
+  observation?: SessionObservationSink;
 }) => Promise<SessionServicePort>;
 
-export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations, loops }) => (
-  new SessionService(journal, compositions, agentHost, configurations, loops)
+export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations, loops, observation }) => (
+  new SessionService(journal, compositions, agentHost, configurations, loops, observation)
 );
 
 export class SessionDeletionError extends AggregateError {
@@ -88,6 +90,7 @@ export class SessionService implements ConversationPort {
     readonly agentHost?: AgentHostPort,
     readonly configurations = new SessionConfigurationRegistry(),
     readonly loops = new AgentLoopRegistry(),
+    readonly observation?: SessionObservationSink,
   ) {
     if (agentHost) this.#agents = new AgentManager(agentHost, {
       withActor: (id, operation) => this.withActor(id, operation),
@@ -525,6 +528,7 @@ export class SessionService implements ConversationPort {
     }
     const actor = new SessionActor(sessionId, this.journal, installed.composition, {
       initialEvents: events,
+      ...(this.observation ? { observation: this.observation } : {}),
       ...(this.#agents ? { agents: this.#agents.forSession(sessionId) } : {}),
       ...(profileId ? { profileId } : {}),
     });

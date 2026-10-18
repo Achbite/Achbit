@@ -105,6 +105,7 @@ class SharedResourcesTests(unittest.TestCase):
                     'type': 'module', 'main': './dist/index.js',
                 }).encode())
                 write(root, f'userspace/{name}/dist/index.js', b'export {};')
+            write(root, 'userspace/session-core/dist/debug/sessionServiceBridge.js', b'DEBUG_ONLY')
             write(root, 'userspace/gui/dist-deepcode-gui/index.html', b'GUI')
             write(root, 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp/index.js', b'upstream')
             write(root, 'LICENSE', b'license')
@@ -123,6 +124,18 @@ class SharedResourcesTests(unittest.TestCase):
 
             self.assertEqual(files(destination / 'docs'), public)
             self.assertEqual((destination / 'session-core/dist/index.js').read_bytes(), b'export {};')
+            self.assertFalse((destination / 'session-core/dist/debug').exists())
+
+    def test_debug_js_is_only_published_when_explicitly_selected(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-debug-modules-') as directory:
+            root = Path(directory)
+            write(root, 'package.json', json.dumps({'name': 'example', 'version': '1', 'license': 'MIT', 'type': 'module', 'main': 'dist/index.js'}).encode())
+            write(root, 'dist/index.js', b'export {};')
+            write(root, 'dist/debug/entry.js', b'DEBUG_ONLY')
+            package.copy_js_package(root, root / 'normal')
+            package.copy_js_package(root, root / 'debug', debug=True)
+            self.assertFalse((root / 'normal/dist/debug/entry.js').exists())
+            self.assertEqual((root / 'debug/dist/debug/entry.js').read_bytes(), b'DEBUG_ONLY')
 
 
 class BuildTests(unittest.TestCase):
@@ -142,6 +155,26 @@ class BuildTests(unittest.TestCase):
         (self.root / 'fixture.json').write_text(json.dumps(config))
         return subprocess.run(['bash', str(self.root / 'build.sh'), *arguments], env=self.environment,
                               text=True, capture_output=True, timeout=20)
+
+    def test_debug_uses_only_macos_and_preserves_normal_outputs(self):
+        self.environment.pop('DEEPCODE_OUTPUT_DIR')
+        write(self.root, 'bin/macos-arm64/running-product', b'unchanged')
+        result = self.build({'content': 'debug'}, '-debug')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / 'bin/debug/macos.txt').read_text(), 'debug')
+        self.assertEqual((self.root / 'bin/macos-arm64/running-product').read_bytes(), b'unchanged')
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual([c['platform'] for c in calls if c['action'] == 'package'], ['macos'])
+
+    def test_debug_rejects_output_conflict_and_unsupported_stage(self):
+        result = self.build({}, '-debug')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('fixed at bin/debug', result.stderr)
+        self.environment.pop('DEEPCODE_OUTPUT_DIR')
+        result = self.build({}, '-debug', '--stage', 'package-linux')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('not supported', result.stderr)
+        self.assertFalse((self.root / 'calls.jsonl').exists())
 
     def test_shared_content_is_prepared_once_and_changes_reach_selected_targets(self):
         for content in ['first', 'changed']:
@@ -181,6 +214,66 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((transaction / 'shared/input.txt').is_file())
 
 
+class NativeMacArgumentsTests(unittest.TestCase):
+    def test_normal_and_debug_cargo_arguments_under_system_bash(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-macos-arguments-') as directory:
+            root = Path(directory).resolve()
+            (root / 'scripts').mkdir()
+            (root / 'commands').mkdir()
+            (root / 'shared').mkdir()
+            shutil.copy2(ROOT / 'scripts/package-macos.sh', root / 'scripts/package-macos.sh')
+            write(root, 'package.json', b'{"version":"0.0.0"}')
+            write(root, 'NODE-LICENSE', b'fixture license')
+            stub = ('#!' + sys.executable + '\n' + r'''import json,os,sys
+from pathlib import Path
+root=Path(__file__).resolve().parents[1]
+name=Path(__file__).name
+with (root/'calls.jsonl').open('a') as log:
+    log.write(json.dumps({'name':name,'argv':sys.argv[1:],'tauriConfig':os.environ.get('TAURI_CONFIG')})+'\n')
+if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
+''')
+            for name in ('cargo', 'node', 'uname', 'xcrun', 'codesign', 'strip', 'pkgbuild'):
+                write(root, 'commands/' + name, stub.encode())
+                (root / 'commands' / name).chmod(0o755)
+            (root / 'commands/python3').symlink_to(sys.executable)
+            for name in ('macos_signing.py', 'package-runtime.py', 'package-installers.py'):
+                write(root, 'scripts/' + name, stub.encode())
+            environment = {
+                **os.environ,
+                'PATH': str(root / 'commands') + os.pathsep + os.environ['PATH'],
+                'DEEPCODE_MACOS_CARGO': str(root / 'commands/cargo'),
+                'DEEPCODE_MACOS_NODE_BIN': str(root / 'commands/node'),
+                'DEEPCODE_MACOS_NODE_LICENSE': str(root / 'NODE-LICENSE'),
+                'DEEPCODE_MACOS_CARGO_TARGET_DIR': str(root / 'target'),
+            }
+            environment.pop('TAURI_CONFIG', None)
+            packages = ['-p', 'deepcode-kernel-daemon', '-p', 'deepcode-first-party-tools',
+                        '-p', 'deepcode-host-web', '-p', 'deepcode-cli', '-p', 'deepcode-tui',
+                        '-p', 'deepcode-computer-use']
+            for kind in ('normal', 'debug'):
+                with self.subTest(kind=kind):
+                    (root / 'calls.jsonl').write_text('')
+                    result = subprocess.run(
+                        ['/bin/bash', str(root / 'scripts/package-macos.sh'),
+                         str(root / 'shared'), str(root / 'output')],
+                        cwd=root, env={**environment, 'DEEPCODE_BUILD_KIND': kind},
+                        text=True, capture_output=True, timeout=20,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
+                    cargo = [call for call in calls if call['name'] == 'cargo']
+                    features = ['--features', 'deepcode-kernel-daemon/debug-control,deepcode-cli/debug-control'] if kind == 'debug' else []
+                    gui_features = ['--features', 'debug-control'] if kind == 'debug' else []
+                    self.assertEqual([call['argv'] for call in cargo], [
+                        ['build', '--release', *features, *packages],
+                        ['build', '--release', *gui_features, '--manifest-path',
+                         str(root / 'shells/deepcode-gui/src-tauri/Cargo.toml')],
+                    ])
+                    config = {'productName': 'DeepCode-Debug', 'identifier': 'com.achbite.deepcode.debug'} if kind == 'debug' else None
+                    self.assertEqual([json.loads(call['tauriConfig']) if call['tauriConfig'] else None
+                                      for call in cargo], [config, config])
+
+
 class BridgeCleanupTests(unittest.TestCase):
     def test_request_forwards_explicit_signing_selection(self):
         with tempfile.TemporaryDirectory(prefix='deepcode-signing-request-') as directory:
@@ -200,6 +293,7 @@ class BridgeCleanupTests(unittest.TestCase):
                     patch.dict(os.environ, {'DEEPCODE_MACOS_SIGN_IDENTITY': 'selected-certificate'}):
                 self.assertEqual(bridge.request_host('check'), 0)
             self.assertEqual(captured, [{'workerId': 'owned-worker', 'operation': 'check',
+                                         'buildKind': 'normal',
                                          'signingIdentity': 'selected-certificate'}])
 
     def test_worker_publication_failure_releases_watcher(self):

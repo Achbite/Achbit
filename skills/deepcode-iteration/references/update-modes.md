@@ -16,6 +16,21 @@ Identify the source checkout, container mount and actual page URL or running app
 
 Replace placeholders with verified paths and read the current Makefile/scripts before running them. These entrypoints do not authorize ending the user's active task, replacing a live application or discarding unsaved state.
 
+## Isolated Debug iteration
+
+Use `bash ./build.sh -debug` through the project's container build entrypoint for the macOS Debug package. It writes the runnable directory and archive under `bin/debug`, with no PKG or global command installation. A normal macOS package uses `bash ./build.sh --stage package-macos` and the ordinary `bin/macos-arm64` path. Keep the two applications, Host processes and user roots distinct; the Debug CLI requires an explicit test workspace and state root. See `doc.read` with `name="debug-control.md"` for exact commands and platform support.
+
+Choose the smallest real execution path:
+
+- Test a tool through `tools call`; it uses an independent operation and Kernel permissions, without a Provider or Session Loop. Submit independent single-file `fs.read` operations concurrently when testing read scheduling; do not invent a multi-path read schema or a special read pool.
+- Test a GUI event through `surfaces inspect` and `action`, preserving its returned state, screenshot and operation identity. UI component actions come from the inspected mounted component; catalog activation and component callback execution are different operations. A handler returning is not the business operation completing.
+- Test an Agent task through `task submit --follow`, or subscribe and follow an existing task. One stream pushes observations at text/tool-group, decision and terminal boundaries. A bounded wait timeout reports state without cancelling the task or requiring another model analysis. Keep observation failure separate from the task's ongoing execution.
+- Query `metrics` for the tool, UI/component, Session or physical Provider stages relevant to the change. Read coverage and units. Concurrent executor time, task wall time, Provider usage and external-controller usage are distinct quantities; missing measurements are not zero.
+
+The GUI's existing execution-process disclosure displays measured time from the first effective response to settlement when that fact exists. This presentation and the underlying Session timing are included in ordinary builds. A Debug-only query endpoint does not make ordinary timing a Debug feature. Do not reconstruct missing timing for historical conversations from message timestamps.
+
+After rebuilding, launch the intended product and verify the process/Host actually loaded it. Reopening a GUI may attach to an existing Host; it does not prove that new Session, Kernel or compiled-in guidance is running. Close only task-owned clients/services through their existing lifecycle. An independent Debug package does not require replacing or stopping the stable application.
+
 ## Browser iteration
 
 1. Distinguish a user project's preview from DeepCode's own UI. `browser.page` action `openSelf` uses installed resources. For source HMR, open the development server URL; for static HTML edits, reload the existing preview.
@@ -24,6 +39,8 @@ Replace placeholders with verified paths and read the current Makefile/scripts b
 4. Refresh the primary application through `browser.page` action `refreshInterface` or the existing interface shortcut. `scheduled` means queued, so observe the resulting page. `needsUser` means unsaved settings or an active save requires attention; it does not permit discarding that state.
 
 A DOM `element.click()` does not prove operating-system pointer, `pointerdown`, drag or focus behavior. Use an interaction path capable of the behavior being tested; when the user retains manual acceptance, provide the exact target and remaining interaction instead of claiming success.
+
+For a DeepCode Debug target, use its surface/action CLI before external desktop automation. A manual fixture can load real UI components and styles in the embedded browser, but its simulated transport is still fixture evidence. The CLI's DOM click checks the actual hit target before dispatch; native file-dialog selection additionally requires the product-owned native completion callback. Neither establishes behavior in an installed ordinary package until that package is separately loaded and checked.
 
 ## Validation
 

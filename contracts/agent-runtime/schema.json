@@ -427,6 +427,7 @@
         "planPreview": { "$ref": "#/$defs/PlanPreviewProjection" },
         "runId": { "$ref": "#/$defs/Id" },
         "turnId": { "$ref": "#/$defs/Id" },
+        "providerAttemptId": { "$ref": "#/$defs/Id" },
         "blocks": {
           "type": "array",
           "items": { "$ref": "#/$defs/AssistantDraftBlockProjection" }
@@ -2195,6 +2196,7 @@
             "context.composed",
             "provider.turn.settled",
             "provider.attempt.updated",
+            "run.timing.updated",
             "context.updated",
             "run.waiting",
             "run.finishing",
@@ -3110,6 +3112,10 @@
           }
         },
         {
+          "if": {"properties": {"type": {"const": "run.timing.updated"}}},
+          "then": {"properties": {"payload": {"$ref": "#/$defs/RunTimingFact"}}, "required": ["runId"]}
+        },
+        {
           "if": {"properties": {"type": {"const": "provider.attempt.updated"}}},
           "then": {
             "properties": {"payload": {"$ref": "#/$defs/ProviderAttemptFact"}},
@@ -3310,6 +3316,7 @@
         "agentTasks": {"type": "array", "items": {"$ref": "#/$defs/AgentTaskProjection"}},
         "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},
         "pendingAgentDecisions": {"type": "array", "items": {"$ref": "#/$defs/PendingAgentDecision"}},
+        "runTimings": {"type": "array", "items": {"$ref": "#/$defs/RunTimingProjection"}},
         "schemaVersion": {"const": "deepcode.session-projection.v6"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 0},
@@ -3476,6 +3483,22 @@
         "completedAt"
       ],
       "properties": {
+        "timing": {
+          "type":"object", "additionalProperties":false,
+          "required":["owner","source","clockDomain","acceptToResultUs","executor","resultStore"],
+          "properties":{
+            "owner":{"const":"kernel"},"source":{"const":"sessionRun"},"clockDomain":{"type":"string"},
+            "acceptToResultUs":{"type":"integer","minimum":0},
+            "executor":{"type":"object","additionalProperties":false,"required":["coverage"],"properties":{
+              "owner":{"const":"kernel"},"phase":{"const":"executor"},"coverage":{"enum":["measured","notApplicable"]},
+              "clockDomain":{"type":"string"},"threadId":{"type":"string"},
+              "startedAt":{"$ref":"#/$defs/Timestamp"},"completedAt":{"$ref":"#/$defs/Timestamp"},
+              "startOffsetUs":{"type":"integer","minimum":0},"endOffsetUs":{"type":"integer","minimum":0},
+              "durationUs":{"type":"integer","minimum":0}
+            }},
+            "resultStore":{"type":"object","additionalProperties":false,"required":["coverage"],"properties":{"coverage":{"const":"notMeasured"}}}
+          }
+        },
         "recordId": {"$ref": "#/$defs/Id"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "runId": {"$ref": "#/$defs/Id"},
@@ -3618,11 +3641,230 @@
         "reasoningEffortOverride": {"oneOf": [{"type": "null"}, {"enum": ["low", "medium", "high", "xhigh", "max"]}]}
       }
     },
+    "RunTimingFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clockDomain",
+        "acceptedAt",
+        "coverage"
+      ],
+      "properties": {
+        "clockDomain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstResponseAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstResponseKind": {
+          "enum": [
+            "text",
+            "tool"
+          ]
+        },
+        "firstResponseMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "firstTextAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstTextMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "settledAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "totalMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "responseElapsedMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        }
+      }
+    },
+    "RunTimingProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clockDomain",
+        "acceptedAt",
+        "coverage",
+        "runId"
+      ],
+      "properties": {
+        "clockDomain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstResponseAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstResponseKind": {
+          "enum": [
+            "text",
+            "tool"
+          ]
+        },
+        "firstResponseMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "firstTextAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstTextMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "settledAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "totalMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "responseElapsedMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "runId": {
+          "$ref": "#/$defs/Id"
+        }
+      }
+    },
+    "ProviderTextSegmentTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outputItemId",
+        "startedAt",
+        "characters"
+      ],
+      "properties": {
+        "outputItemId": {
+          "$ref": "#/$defs/Id"
+        },
+        "outputIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "startedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "endedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "characters": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "interrupted"
+          ]
+        }
+      }
+    },
+    "ProviderAttemptTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clockDomain",
+        "startedAt"
+      ],
+      "properties": {
+        "textSegments": {"type":"array","items":{"$ref":"#/$defs/ProviderTextSegmentTiming"}},
+        "clockDomain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "completedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "firstContentAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstContentMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "firstContentKind": {
+          "enum": [
+            "text",
+            "tool",
+            "reasoning"
+          ]
+        },
+        "firstTextAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstTextMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
     "ProviderAttemptFact": {
       "type": "object",
       "additionalProperties": false,
       "required": ["providerRequestId", "providerAttemptId", "attempt", "purpose", "phase"],
       "properties": {
+        "timing": {"$ref": "#/$defs/ProviderAttemptTiming"},
         "providerRequestId": {"$ref": "#/$defs/Id"},
         "providerAttemptId": {"$ref": "#/$defs/Id"},
         "attempt": {"type": "integer", "minimum": 1, "maximum": 5},
@@ -3649,6 +3891,7 @@
       "additionalProperties": false,
       "required": ["providerRequestId", "providerAttemptId", "attempt", "purpose", "phase", "runId", "updatedAt"],
       "properties": {
+        "timing": {"$ref": "#/$defs/ProviderAttemptTiming"},
         "providerRequestId": {"$ref": "#/$defs/Id"},
         "providerAttemptId": {"$ref": "#/$defs/Id"},
         "attempt": {"type": "integer", "minimum": 1, "maximum": 5},

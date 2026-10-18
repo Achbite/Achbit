@@ -6,7 +6,7 @@ mod computer_preview;
 
 pub(crate) fn build_app(state: AppState) -> Router {
     let host_connection = state.host_connection.clone();
-    Router::new()
+    let app = Router::new()
         .route("/api/host/identity", get(host_identity))
         .route("/api/host/client", get(host_client))
         .route("/api/health", get(health))
@@ -235,8 +235,12 @@ pub(crate) fn build_app(state: AppState) -> Router {
             "/api/conversation/sessions/:session_id/artifacts/:artifact_id/content",
             get(conversation_artifact_read),
         )
-        .route("/api/*path", any(api_route_not_found))
-        .with_state(state)
+        .route("/api/*path", any(api_route_not_found));
+    #[cfg(feature = "debug-control")]
+    let app = app
+        .route("/api/debug/command", post(crate::debug_control::command))
+        .route("/api/debug/observe", post(crate::debug_control::observe));
+    app.with_state(state)
         .layer(localhost_cors_layer())
         .layer(axum::middleware::from_fn_with_state(
             host_connection,

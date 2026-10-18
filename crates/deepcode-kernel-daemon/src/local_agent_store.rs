@@ -1363,6 +1363,7 @@ fn validate_new_event(
         "context.compacted",
         "context.composed",
         "provider.attempt.updated",
+        "run.timing.updated",
         "run.failure.recorded",
         "provider.turn.settled",
         "context.updated",
@@ -1632,7 +1633,7 @@ fn validate_new_event(
                     "purpose",
                     "phase",
                 ],
-                &["error", "retryAt"],
+                &["error", "retryAt", "timing"],
             )?;
             for field in ["providerRequestId", "providerAttemptId"] {
                 validate_id(field, required_string(payload, field)?)?;
@@ -1654,6 +1655,9 @@ fn validate_new_event(
                     "Provider 尝试字段无效。",
                 ));
             }
+            if let Some(timing) = payload.get("timing") {
+                validate_session_timing(timing, false)?;
+            }
             if let Some(error) = payload.get("error") {
                 validate_local_agent_error(error)?;
             }
@@ -1664,6 +1668,9 @@ fn validate_new_event(
                         LocalAgentStoreError::new("provider_retry_time_invalid", "重试时刻无效。")
                     })?;
             }
+        }
+        "run.timing.updated" => {
+            validate_session_timing(&event["payload"], true)?;
         }
         "run.failure.recorded" => {
             let payload = &event["payload"];
@@ -6655,4 +6662,125 @@ mod tests {
         assert_eq!(error.code, "session_event_invalid");
         assert!(error.message.contains("不能复用"));
     }
+}
+
+fn validate_session_timing(value: &Value, run: bool) -> Result<(), LocalAgentStoreError> {
+    if run {
+        exact_object(
+            value,
+            &["clockDomain", "acceptedAt", "coverage"],
+            &[
+                "startedAt",
+                "firstResponseAt",
+                "firstResponseKind",
+                "firstResponseMs",
+                "firstTextAt",
+                "firstTextMs",
+                "settledAt",
+                "totalMs",
+                "responseElapsedMs",
+            ],
+        )?;
+        required_string(value, "acceptedAt")?;
+        if !matches!(value["coverage"].as_str(), Some("complete" | "partial")) {
+            return Err(LocalAgentStoreError::new(
+                "run_timing_invalid",
+                "计时覆盖范围无效。",
+            ));
+        }
+    } else {
+        exact_object(
+            value,
+            &["clockDomain", "startedAt"],
+            &[
+                "completedAt",
+                "durationMs",
+                "firstContentAt",
+                "firstContentMs",
+                "firstContentKind",
+                "firstTextAt",
+                "firstTextMs",
+                "textSegments",
+            ],
+        )?;
+    }
+    if let Some(segments) = value.get("textSegments") {
+        let segments = segments.as_array().ok_or_else(|| {
+            LocalAgentStoreError::new("provider_timing_invalid", "文本段计时必须为数组。")
+        })?;
+        for segment in segments {
+            exact_object(
+                segment,
+                &["outputItemId", "startedAt", "characters"],
+                &["outputIndex", "endedAt", "durationMs", "outcome"],
+            )?;
+            required_string(segment, "outputItemId")?;
+            required_string(segment, "startedAt")?;
+            if !segment["characters"].is_u64()
+                || segment
+                    .get("outputIndex")
+                    .is_some_and(|value| !value.is_u64())
+                || segment
+                    .get("durationMs")
+                    .is_some_and(|value| !value.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0))
+                || segment.get("outcome").is_some_and(|value| {
+                    !matches!(value.as_str(), Some("completed" | "interrupted"))
+                })
+            {
+                return Err(LocalAgentStoreError::new(
+                    "provider_timing_invalid",
+                    "文本段计时字段无效。",
+                ));
+            }
+            if segment.get("endedAt").is_some() {
+                required_string(segment, "endedAt")?;
+            }
+        }
+    }
+    required_string(value, "clockDomain")?;
+    if !run || value.get("startedAt").is_some() {
+        required_string(value, "startedAt")?;
+    }
+    for field in [
+        "firstResponseAt",
+        "firstTextAt",
+        "settledAt",
+        "completedAt",
+        "firstContentAt",
+    ] {
+        if value.get(field).is_some() {
+            required_string(value, field)?;
+        }
+    }
+    for field in [
+        "firstResponseMs",
+        "firstTextMs",
+        "totalMs",
+        "responseElapsedMs",
+        "durationMs",
+        "firstContentMs",
+    ] {
+        if let Some(number) = value.get(field) {
+            if !number.as_f64().is_some_and(|v| v.is_finite() && v >= 0.0) {
+                return Err(LocalAgentStoreError::new(
+                    "session_timing_invalid",
+                    "计时时长必须是有限非负数。",
+                ));
+            }
+        }
+    }
+    if value.get("firstResponseKind").is_some()
+        && !matches!(value["firstResponseKind"].as_str(), Some("text" | "tool"))
+        || value.get("firstContentKind").is_some()
+            && !matches!(
+                value["firstContentKind"].as_str(),
+                Some("text" | "tool" | "reasoning")
+            )
+    {
+        return Err(LocalAgentStoreError::new(
+            "session_timing_invalid",
+            "计时响应类型无效。",
+        ));
+    }
+    Ok(())
 }

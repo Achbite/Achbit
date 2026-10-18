@@ -1,4 +1,6 @@
 use crate::command_denylist::CommandDenylist;
+#[cfg(feature = "debug-control")]
+pub(crate) mod debug_operations;
 mod file_mutations;
 mod file_permissions;
 use crate::local_agent_mcp::McpRuntime;
@@ -57,7 +59,7 @@ impl LocalAgentKernelError {
             input_issues: Some(vec![ToolInputIssue::new(path, rule, message, expected)]),
         }
     }
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -416,6 +418,10 @@ struct NonWorkspaceAuthority {
 #[derive(Clone)]
 pub(crate) struct LocalAgentKernel {
     output_root: PathBuf,
+    clock: Arc<KernelClock>,
+    measurements: Arc<Mutex<HashMap<String, Value>>>,
+    #[cfg(feature = "debug-control")]
+    debug: Arc<debug_operations::DebugOperations>,
     records: LocalToolRecordStore,
     journal: LocalAgentJournal,
     resolver: Arc<dyn WorkspaceResolverPort>,
@@ -425,6 +431,11 @@ pub(crate) struct LocalAgentKernel {
     prepared_file_calls: Arc<Mutex<HashMap<String, PreparedFileCall>>>,
     pub(crate) jobs: crate::managed_processes::Jobs,
     pub(crate) desktop: Arc<crate::desktop_tools::DesktopHost>,
+}
+
+struct KernelClock {
+    origin: Instant,
+    domain: String,
 }
 
 #[derive(Clone)]
@@ -561,6 +572,13 @@ impl LocalAgentKernel {
         Ok(Self {
             records: LocalToolRecordStore::open(record_path)?,
             output_root: record_path.with_extension("outputs"),
+            clock: Arc::new(KernelClock {
+                origin: Instant::now(),
+                domain: random_id("kernel-clock")?,
+            }),
+            measurements: Arc::default(),
+            #[cfg(feature = "debug-control")]
+            debug: Arc::default(),
             journal,
             resolver,
             generations: Arc::new(Mutex::new(KernelGenerationState {
@@ -792,6 +810,7 @@ impl LocalAgentKernel {
         request: LocalToolExecutionRequest,
         progress: deepcode_kernel_runtime::executors::KernelProgressSink,
     ) -> Result<Value, LocalAgentKernelError> {
+        let accepted = Instant::now();
         validate_request(&request)?;
         self.validate_session_snapshot(&request)?;
         if let Some(record) = self.records.read(&request.call_id)? {
@@ -1009,7 +1028,11 @@ impl LocalAgentKernel {
                             "工具调用在进入执行前丢失了确定状态。",
                         )),
                     };
-                    record_result.and_then(|record| {
+                    record_result.and_then(|mut record| {
+                        record["timing"] = json!({"owner":"kernel", "source":"sessionRun", "clockDomain":self.clock.domain,
+                            "acceptToResultUs":accepted.elapsed().as_micros(),
+                            "executor":self.take_execution_timing(&request.attempt_id)?,
+                            "resultStore":{"coverage":"notMeasured"}});
                         self.records.insert(&record)?;
                         Ok(execution_reply(&request, &record))
                     })
@@ -1094,6 +1117,8 @@ impl LocalAgentKernel {
     }
 
     pub(crate) fn shutdown_plugins(&self) -> Result<(), LocalAgentKernelError> {
+        #[cfg(feature = "debug-control")]
+        self.shutdown_debug_operations()?;
         self.cancel_and_drain_attempts(None)?;
         self.release_prepared_file_calls(None)?;
         self.jobs
@@ -1268,270 +1293,20 @@ impl LocalAgentKernel {
                 return Ok(prepared);
             }
         }
-        let scope = match binding
-            .effect_scope(&request.input)
-            .map_err(catalog_error)?
-        {
-            CatalogEffectScope::LocalRead => PreparedEffectScope::LocalRead,
-            CatalogEffectScope::WorkspaceRead => PreparedEffectScope::WorkspaceRead,
-            CatalogEffectScope::WorkspaceMutation => PreparedEffectScope::WorkspaceMutation,
-            CatalogEffectScope::Process => PreparedEffectScope::Process,
-            CatalogEffectScope::Network => PreparedEffectScope::Network,
-            CatalogEffectScope::External => PreparedEffectScope::External,
-        };
-        let mut tool_input = request.input.clone();
-        let network_request = if is_shell_tool(&request.tool_name) {
-            tool_input
-                .as_object_mut()
-                .and_then(|input| input.remove("requestNetworkPermission"))
-                .map(|value| {
-                    value
-                        .as_str()
-                        .filter(|s| !s.trim().is_empty() && s.len() <= 1024)
-                        .map(str::to_owned)
-                        .ok_or_else(|| {
-                            LocalAgentKernelError::input(
-                                "$.requestNetworkPermission",
-                                "reason",
-                                "Provide a short reason for network access.",
-                                None,
-                            )
-                        })
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        let file_requests = if is_shell_tool(&request.tool_name)
-            || matches!(
-                request.tool_name.as_str(),
-                "fs.read" | "fs.write" | "fs.edit" | "fs.delete"
-            ) {
-            tool_input
-                .as_object_mut()
-                .and_then(|input| input.remove("requestFileAccess"))
-                .map(serde_json::from_value::<RequestedFiles>)
-                .transpose()
-                .map_err(|error| {
-                    LocalAgentKernelError::input(
-                        "$.requestFileAccess",
-                        "fileAccess",
-                        &error.to_string(),
-                        None,
-                    )
-                })?
-                .unwrap_or_default()
-        } else {
-            RequestedFiles::default()
-        };
-        // Controls address the already admitted job; the Provider's default workspace selector is unused.
-        if binding.is_process() {
-            tool_input
-                .as_object_mut()
-                .expect("validated process input")
-                .remove("workspaceId");
-        }
-        let workspace_id = match scope {
-            PreparedEffectScope::WorkspaceRead
-            | PreparedEffectScope::WorkspaceMutation
-            | PreparedEffectScope::Process => Some(take_workspace_id(&mut tool_input)?),
-            PreparedEffectScope::LocalRead
-            | PreparedEffectScope::Network
-            | PreparedEffectScope::External => {
-                if tool_input.get("workspaceId").is_some() {
-                    return Err(LocalAgentKernelError::input(
-                        "$.workspaceId",
-                        "additionalProperties",
-                        "非 workspace 工具不能携带 workspaceId。",
-                        None,
-                    ));
-                }
-                None
-            }
-        };
-        if let Some(workspace_id) = workspace_id.as_deref() {
-            if !request
-                .workspace_bindings
-                .iter()
-                .any(|id| id == workspace_id)
-            {
-                let mut error = LocalAgentKernelError::input("$.workspaceId", "workspaceBinding",
-                    "工具引用的 workspace 不在当前运行的目录集合中。请选择已绑定目录；需要其他位置时请向用户确认。", None);
-                error.code = "workspace_not_bound";
-                return Err(error);
-            }
-        }
-        let input = binding.canonicalize(tool_input).map_err(catalog_error)?;
-        let arguments = input.arguments();
-        let mut workspace_access = None;
-        let mut logical_targets = input.logical_targets();
-        if matches!(
-            scope,
-            PreparedEffectScope::Network | PreparedEffectScope::External
-        ) {
-            if let Some(target) = binding.logical_target() {
-                logical_targets.push(target.to_string());
-            }
-        }
-        if let PreparedToolInput::Builtin(canonical) = &input {
-            if let Some(target) = resolved_network_target(canonical, &generation.executor_config)
-                .map_err(|error| {
-                    LocalAgentKernelError::new("tool_target_invalid", error.to_string())
-                })?
-            {
-                logical_targets.push(target);
-                logical_targets.sort();
-                logical_targets.dedup();
-            }
-        }
-        let (workspace_root, private_resolved_targets) = match workspace_id.as_deref() {
-            Some(workspace_id) => {
-                let resolved = self.resolve_owned_workspace(&request.session_id, workspace_id)?;
-                if resolved.access.read_only() && scope == PreparedEffectScope::WorkspaceMutation {
-                    let mut error = LocalAgentKernelError::input(
-                        "$.workspaceId", "readOnlyInput",
-                        "会话输入快照只读。可直接读取或在内部浏览器打开；编辑预览请使用已绑定的 DeepCode 会话工作目录中的副本。",
-                        None,
-                    );
-                    error.code = "input_resource_read_only";
-                    return Err(error);
-                }
-                workspace_access = Some(resolved.access);
-                let root = resolved.root;
-                let canonical_root = std::fs::canonicalize(&root).map_err(|error| {
-                    LocalAgentKernelError::new(
-                        "workspace_root_unavailable",
-                        format!("Workspace root 不可用：{error}"),
-                    )
-                })?;
-                if !canonical_root.is_dir() {
-                    return Err(LocalAgentKernelError::new(
-                        "workspace_root_invalid",
-                        "Workspace root 不是目录。",
-                    ));
-                }
-                let boundary = WorkspaceBoundary::new(canonical_root.clone());
-                let resolve_target = |target: &str| {
-                    if std::path::Path::new(target).is_absolute() {
-                        deepcode_kernel_runtime::file_access::resolve_path(std::path::Path::new(
-                            target,
-                        ))
-                    } else {
-                        match scope {
-                            PreparedEffectScope::WorkspaceRead | PreparedEffectScope::Process => {
-                                boundary.resolve_read(target)
-                            }
-                            PreparedEffectScope::WorkspaceMutation => {
-                                boundary.resolve_mutation(target)
-                            }
-                            PreparedEffectScope::LocalRead
-                            | PreparedEffectScope::Network
-                            | PreparedEffectScope::External => {
-                                unreachable!("workspace target scope")
-                            }
-                        }
-                    }
-                };
-                let private = logical_targets
-                    .iter()
-                    .map(|target| {
-                        resolve_target(target)
-                            .map(|path| path.to_string_lossy().to_string())
-                            .map_err(|error| {
-                                let mut failure = LocalAgentKernelError::new(
-                                    "workspace_target_invalid",
-                                    error.to_string(),
-                                );
-                                // Target I/O failures belong to this invocation. Resolver,
-                                // workspace-root and record-store failures keep their error path.
-                                if matches!(error, deepcode_kernel_abi::KernelError::Other(_)) {
-                                    failure.input_issues = Some(vec![ToolInputIssue::new(
-                                        if arguments.get("path").is_some() {
-                                            "$.path"
-                                        } else {
-                                            "$"
-                                        },
-                                        "workspaceTarget",
-                                        &failure.message,
-                                        None,
-                                    )]);
-                                }
-                                failure
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                (Some(canonical_root.to_string_lossy().to_string()), private)
-            }
-            None => (None, Vec::new()),
-        };
-        let delete_target_kind = match &input {
-            PreparedToolInput::Builtin(KernelCanonicalInvocation::FsDelete(
-                KernelDeleteTarget::File { .. },
-            )) => Some("file".to_owned()),
-            PreparedToolInput::Builtin(KernelCanonicalInvocation::FsDelete(
-                KernelDeleteTarget::DirectoryTree { .. },
-            )) => Some("directoryTree".to_owned()),
-            _ => None,
-        };
-        let (process_workspace_mode, process_execution_scope) = match &input {
-            PreparedToolInput::Builtin(
-                KernelCanonicalInvocation::ProcessShell {
-                    workspace_mode,
-                    execution_scope,
-                    ..
-                }
-                | KernelCanonicalInvocation::ProcessPowerShell {
-                    workspace_mode,
-                    execution_scope,
-                    ..
-                },
-            ) => (
-                Some(workspace_mode.as_str().to_owned()),
-                Some(execution_scope.as_str().to_owned()),
-            ),
-            _ => (None, None),
-        };
         let permissions = self.journal.effective_permissions(&request.session_id)?;
-        let workspace_policy = workspace_root
-            .as_deref()
-            .map(|root| self.workspace_policy(request, Path::new(root)))
-            .transpose()?
-            .flatten();
-        let mut prepared = PreparedEffect {
-            permissions: permissions
-                .as_ref()
-                .clone()
-                .with_constraints(generation.permissions.constraints),
+        let mut prepared = prepare_effect_target(
+            &request.tool_name,
+            &request.input,
+            &request.workspace_bindings,
             generation,
             binding,
-            source_binding: None,
-            scope,
-            workspace_id,
-            operation: request.tool_name.clone(),
-            logical_targets,
-            private_resolved_targets,
-            canonical_invocation: json!({
-                "toolName": request.tool_name,
-                "arguments": arguments,
-            }),
-            input,
-            workspace_root,
-            workspace_access,
-            workspace_policy,
-            delete_target_kind,
-            process_workspace_mode,
-            process_execution_scope,
-            file_requests,
-            file_access: FileAccessScope::default(),
-            file_authority_required: false,
-            git_write_requested: false,
-            network_request: None,
-            network_authority: None,
-        };
+            permissions.as_ref().clone(),
+            |id| self.resolve_owned_workspace(&request.session_id, id),
+            |root| self.workspace_policy(request, root),
+        )?;
         if !include_permissions {
             return Ok(prepared);
         }
-        prepared.network_request = network_request;
         self.prepare_process_permissions(request, &mut prepared)?;
         self.prepare_file_permissions(request, &mut prepared)?;
         prepared.file_access.sandbox_backend =
@@ -1712,57 +1487,8 @@ impl LocalAgentKernel {
                 "当前 run 已 settled，所有 authority 均已失效。",
             ));
         }
-        let constraints = prepared.permissions.constraints;
-        if (!constraints.allow_host_execution || !constraints.allow_external_tools)
-            && prepared.binding.uses_external_runtime()
-            || !constraints.allow_host_execution
-                && (prepared.is_host_process()
-                    || matches!(prepared.input, PreparedToolInput::Container { .. }))
-            || !constraints.allow_external_tools && prepared.scope == PreparedEffectScope::External
-        {
-            return Ok(Admission::denied(
-                "permission_policy_denied",
-                "The selected Agent policy does not permit this execution route.",
-            ));
-        }
-        let rules = &prepared.permissions.command_denylist;
-        let denied = match &prepared.input {
-            PreparedToolInput::Builtin(
-                KernelCanonicalInvocation::ProcessShell {
-                    command, terminal, ..
-                }
-                | KernelCanonicalInvocation::ProcessPowerShell {
-                    command, terminal, ..
-                },
-            ) => rules.matching_rule(command).or_else(|| {
-                terminal
-                    .as_ref()
-                    .and_then(|input| rules.matching_rule(&input.stdin))
-            }),
-            PreparedToolInput::Container { input, .. } => input
-                .command
-                .as_deref()
-                .and_then(|command| rules.matching_rule(command)),
-            _ if prepared.binding.is_browser_service() && prepared.is_host_process() => {
-                let arguments = &prepared.canonical_invocation["arguments"];
-                arguments["command"].as_str().and_then(|command| {
-                    arguments["args"].as_array().and_then(|args| {
-                        let words = std::iter::once(Some(command.to_owned()))
-                            .chain(args.iter().map(|value| value.as_str().map(str::to_owned)))
-                            .collect::<Option<Vec<_>>>()?;
-                        rules.matching_argv(&words)
-                    })
-                })
-            }
-            _ => None,
-        };
-        if let Some(rule) = denied {
-            return Ok(Admission::Denied {
-                authority: json!({"decision":"deny", "source":"userSetting",
-                    "authorityId":crate::command_denylist::SETTING, "matchedRule":rule}),
-                error: json!({"code":"command_denied_by_rule",
-                    "message":format!("Command was not executed: blocked by command rule {rule:?}." )}),
-            });
+        if let Some(denied) = policy_denial(prepared) {
+            return Ok(denied);
         }
         if let PreparedToolInput::Container { input, target } = &prepared.input {
             if input.action == "inspect" {
@@ -2539,28 +2265,64 @@ impl LocalAgentKernel {
         } else {
             None
         };
-        let result = prepared
-            .binding
-            .invoke(
-                &request.attempt_id,
-                prepared.input.clone(),
-                KernelToolExecutionContext {
-                    output_directory: Some(
-                        self.session_output_directory(&request.session_id)
-                            .join(output_directory_key(&request.attempt_id)),
-                    ),
-                    workspace_root: prepared.workspace_root.clone(),
-                    workspace_id: prepared.workspace_id.clone(),
-                    private_resolved_targets: prepared.private_resolved_targets.clone(),
-                    workspace_write_targets,
-                    file_access: prepared.execution_file_access(),
-                    cancellation,
-                    progress,
-                },
-            )
-            .map_err(|error| format!("{}: {}", error.code, error.message));
+        let result = self.invoke_measured(
+            prepared,
+            &request.attempt_id,
+            KernelToolExecutionContext {
+                output_directory: Some(
+                    self.session_output_directory(&request.session_id)
+                        .join(output_directory_key(&request.attempt_id)),
+                ),
+                workspace_root: prepared.workspace_root.clone(),
+                workspace_id: prepared.workspace_id.clone(),
+                private_resolved_targets: prepared.private_resolved_targets.clone(),
+                workspace_write_targets,
+                file_access: prepared.execution_file_access(),
+                cancellation,
+                progress,
+            },
+        );
         drop(lease);
         result
+    }
+
+    fn invoke_measured(
+        &self,
+        prepared: &PreparedEffect,
+        attempt_id: &str,
+        context: KernelToolExecutionContext,
+    ) -> Result<KernelToolExecutionResult, String> {
+        let started_at = crate::now_text();
+        let start_offset_us = self.clock.origin.elapsed().as_micros();
+        let start = Instant::now();
+        let result = prepared
+            .binding
+            .invoke(attempt_id, prepared.input.clone(), context)
+            .map_err(|error| format!("{}: {}", error.code, error.message));
+        let elapsed = start.elapsed();
+        let timing = json!({
+            "owner":"kernel", "phase":"executor", "clockDomain":self.clock.domain,
+            "threadId":format!("{:?}", std::thread::current().id()),
+            "startedAt":started_at, "completedAt":crate::now_text(),
+            "startOffsetUs":start_offset_us, "endOffsetUs":start_offset_us + elapsed.as_micros(),
+            "durationUs":elapsed.as_micros(), "coverage":"measured",
+        });
+        self.measurements
+            .lock()
+            .map_err(|_| "tool_timing_lock_failed".to_owned())?
+            .insert(attempt_id.to_owned(), timing);
+        result
+    }
+
+    fn take_execution_timing(&self, attempt_id: &str) -> Result<Value, LocalAgentKernelError> {
+        Ok(self
+            .measurements
+            .lock()
+            .map_err(|_| {
+                LocalAgentKernelError::new("tool_timing_lock_failed", "Tool timing lock poisoned")
+            })?
+            .remove(attempt_id)
+            .unwrap_or_else(|| json!({"phase":"executor","coverage":"notApplicable"})))
     }
 
     pub(crate) fn session_output_directory(&self, session_id: &str) -> PathBuf {
@@ -2628,6 +2390,262 @@ impl LocalAgentKernel {
     }
 }
 
+/// Resolve the actual catalog binding and targets independently of the caller's
+/// lifecycle. Session and direct operations supply their own proven scope.
+fn prepare_effect_target(
+    tool_name: &str,
+    call_input: &Value,
+    workspace_bindings: &[String],
+    generation: Arc<KernelGeneration>,
+    binding: PreparedCatalogBinding,
+    permissions: LocalAgentPermissionPolicy,
+    resolve_workspace: impl Fn(&str) -> Result<ResolvedWorkspace, LocalAgentKernelError>,
+    resolve_policy: impl Fn(&Path) -> Result<Option<WorkspacePolicy>, LocalAgentKernelError>,
+) -> Result<PreparedEffect, LocalAgentKernelError> {
+    let scope = match binding.effect_scope(&call_input).map_err(catalog_error)? {
+        CatalogEffectScope::LocalRead => PreparedEffectScope::LocalRead,
+        CatalogEffectScope::WorkspaceRead => PreparedEffectScope::WorkspaceRead,
+        CatalogEffectScope::WorkspaceMutation => PreparedEffectScope::WorkspaceMutation,
+        CatalogEffectScope::Process => PreparedEffectScope::Process,
+        CatalogEffectScope::Network => PreparedEffectScope::Network,
+        CatalogEffectScope::External => PreparedEffectScope::External,
+    };
+    let mut tool_input = call_input.clone();
+    let network_request = if is_shell_tool(&tool_name) {
+        tool_input
+            .as_object_mut()
+            .and_then(|input| input.remove("requestNetworkPermission"))
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty() && s.len() <= 1024)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        LocalAgentKernelError::input(
+                            "$.requestNetworkPermission",
+                            "reason",
+                            "Provide a short reason for network access.",
+                            None,
+                        )
+                    })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let file_requests = if is_shell_tool(&tool_name)
+        || matches!(tool_name, "fs.read" | "fs.write" | "fs.edit" | "fs.delete")
+    {
+        tool_input
+            .as_object_mut()
+            .and_then(|input| input.remove("requestFileAccess"))
+            .map(serde_json::from_value::<RequestedFiles>)
+            .transpose()
+            .map_err(|error| {
+                LocalAgentKernelError::input(
+                    "$.requestFileAccess",
+                    "fileAccess",
+                    &error.to_string(),
+                    None,
+                )
+            })?
+            .unwrap_or_default()
+    } else {
+        RequestedFiles::default()
+    };
+    // Controls address the already admitted job; the Provider's default workspace selector is unused.
+    if binding.is_process() {
+        tool_input
+            .as_object_mut()
+            .expect("validated process input")
+            .remove("workspaceId");
+    }
+    let workspace_id = match scope {
+        PreparedEffectScope::WorkspaceRead
+        | PreparedEffectScope::WorkspaceMutation
+        | PreparedEffectScope::Process => Some(take_workspace_id(&mut tool_input)?),
+        PreparedEffectScope::LocalRead
+        | PreparedEffectScope::Network
+        | PreparedEffectScope::External => {
+            if tool_input.get("workspaceId").is_some() {
+                return Err(LocalAgentKernelError::input(
+                    "$.workspaceId",
+                    "additionalProperties",
+                    "非 workspace 工具不能携带 workspaceId。",
+                    None,
+                ));
+            }
+            None
+        }
+    };
+    if let Some(workspace_id) = workspace_id.as_deref() {
+        if !workspace_bindings.iter().any(|id| id == workspace_id) {
+            let mut error = LocalAgentKernelError::input("$.workspaceId", "workspaceBinding",
+                    "工具引用的 workspace 不在当前运行的目录集合中。请选择已绑定目录；需要其他位置时请向用户确认。", None);
+            error.code = "workspace_not_bound";
+            return Err(error);
+        }
+    }
+    let input = binding.canonicalize(tool_input).map_err(catalog_error)?;
+    let arguments = input.arguments();
+    let mut workspace_access = None;
+    let mut logical_targets = input.logical_targets();
+    if matches!(
+        scope,
+        PreparedEffectScope::Network | PreparedEffectScope::External
+    ) {
+        if let Some(target) = binding.logical_target() {
+            logical_targets.push(target.to_string());
+        }
+    }
+    if let PreparedToolInput::Builtin(canonical) = &input {
+        if let Some(target) = resolved_network_target(canonical, &generation.executor_config)
+            .map_err(|error| LocalAgentKernelError::new("tool_target_invalid", error.to_string()))?
+        {
+            logical_targets.push(target);
+            logical_targets.sort();
+            logical_targets.dedup();
+        }
+    }
+    let (workspace_root, private_resolved_targets) = match workspace_id.as_deref() {
+        Some(workspace_id) => {
+            let resolved = resolve_workspace(workspace_id)?;
+            if resolved.access.read_only() && scope == PreparedEffectScope::WorkspaceMutation {
+                let mut error = LocalAgentKernelError::input(
+                        "$.workspaceId", "readOnlyInput",
+                        "会话输入快照只读。可直接读取或在内部浏览器打开；编辑预览请使用已绑定的 DeepCode 会话工作目录中的副本。",
+                        None,
+                    );
+                error.code = "input_resource_read_only";
+                return Err(error);
+            }
+            workspace_access = Some(resolved.access);
+            let root = resolved.root;
+            let canonical_root = std::fs::canonicalize(&root).map_err(|error| {
+                LocalAgentKernelError::new(
+                    "workspace_root_unavailable",
+                    format!("Workspace root 不可用：{error}"),
+                )
+            })?;
+            if !canonical_root.is_dir() {
+                return Err(LocalAgentKernelError::new(
+                    "workspace_root_invalid",
+                    "Workspace root 不是目录。",
+                ));
+            }
+            let boundary = WorkspaceBoundary::new(canonical_root.clone());
+            let resolve_target = |target: &str| {
+                if std::path::Path::new(target).is_absolute() {
+                    deepcode_kernel_runtime::file_access::resolve_path(std::path::Path::new(target))
+                } else {
+                    match scope {
+                        PreparedEffectScope::WorkspaceRead | PreparedEffectScope::Process => {
+                            boundary.resolve_read(target)
+                        }
+                        PreparedEffectScope::WorkspaceMutation => boundary.resolve_mutation(target),
+                        PreparedEffectScope::LocalRead
+                        | PreparedEffectScope::Network
+                        | PreparedEffectScope::External => {
+                            unreachable!("workspace target scope")
+                        }
+                    }
+                }
+            };
+            let private = logical_targets
+                .iter()
+                .map(|target| {
+                    resolve_target(target)
+                        .map(|path| path.to_string_lossy().to_string())
+                        .map_err(|error| {
+                            let mut failure = LocalAgentKernelError::new(
+                                "workspace_target_invalid",
+                                error.to_string(),
+                            );
+                            // Target I/O failures belong to this invocation. Resolver,
+                            // workspace-root and record-store failures keep their error path.
+                            if matches!(error, deepcode_kernel_abi::KernelError::Other(_)) {
+                                failure.input_issues = Some(vec![ToolInputIssue::new(
+                                    if arguments.get("path").is_some() {
+                                        "$.path"
+                                    } else {
+                                        "$"
+                                    },
+                                    "workspaceTarget",
+                                    &failure.message,
+                                    None,
+                                )]);
+                            }
+                            failure
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (Some(canonical_root.to_string_lossy().to_string()), private)
+        }
+        None => (None, Vec::new()),
+    };
+    let delete_target_kind = match &input {
+        PreparedToolInput::Builtin(KernelCanonicalInvocation::FsDelete(
+            KernelDeleteTarget::File { .. },
+        )) => Some("file".to_owned()),
+        PreparedToolInput::Builtin(KernelCanonicalInvocation::FsDelete(
+            KernelDeleteTarget::DirectoryTree { .. },
+        )) => Some("directoryTree".to_owned()),
+        _ => None,
+    };
+    let (process_workspace_mode, process_execution_scope) = match &input {
+        PreparedToolInput::Builtin(
+            KernelCanonicalInvocation::ProcessShell {
+                workspace_mode,
+                execution_scope,
+                ..
+            }
+            | KernelCanonicalInvocation::ProcessPowerShell {
+                workspace_mode,
+                execution_scope,
+                ..
+            },
+        ) => (
+            Some(workspace_mode.as_str().to_owned()),
+            Some(execution_scope.as_str().to_owned()),
+        ),
+        _ => (None, None),
+    };
+    let workspace_policy = workspace_root
+        .as_deref()
+        .map(|root| resolve_policy(Path::new(root)))
+        .transpose()?
+        .flatten();
+    let prepared = PreparedEffect {
+        permissions: permissions.with_constraints(generation.permissions.constraints),
+        generation,
+        binding,
+        source_binding: None,
+        scope,
+        workspace_id,
+        operation: tool_name.to_owned(),
+        logical_targets,
+        private_resolved_targets,
+        canonical_invocation: json!({
+            "toolName": tool_name,
+            "arguments": arguments,
+        }),
+        input,
+        workspace_root,
+        workspace_access,
+        workspace_policy,
+        delete_target_kind,
+        process_workspace_mode,
+        process_execution_scope,
+        file_requests,
+        file_access: FileAccessScope::default(),
+        file_authority_required: false,
+        git_write_requested: false,
+        network_request,
+        network_authority: None,
+    };
+    Ok(prepared)
+}
+
 fn catalog_prepare_reply(
     request: &PrepareToolCatalogRequest,
     catalog: &ToolCatalogSnapshot,
@@ -2684,6 +2702,62 @@ fn catalog_error(error: ToolCatalogError) -> LocalAgentKernelError {
         message: error.message,
         input_issues,
     }
+}
+
+fn policy_denial(prepared: &PreparedEffect) -> Option<Admission> {
+    let constraints = prepared.permissions.constraints;
+    if (!constraints.allow_host_execution || !constraints.allow_external_tools)
+        && prepared.binding.uses_external_runtime()
+        || !constraints.allow_host_execution
+            && (prepared.is_host_process()
+                || matches!(prepared.input, PreparedToolInput::Container { .. }))
+        || !constraints.allow_external_tools && prepared.scope == PreparedEffectScope::External
+    {
+        return Some(Admission::denied(
+            "permission_policy_denied",
+            "The selected Agent policy does not permit this execution route.",
+        ));
+    }
+    let rules = &prepared.permissions.command_denylist;
+    let denied = match &prepared.input {
+        PreparedToolInput::Builtin(
+            KernelCanonicalInvocation::ProcessShell {
+                command, terminal, ..
+            }
+            | KernelCanonicalInvocation::ProcessPowerShell {
+                command, terminal, ..
+            },
+        ) => rules.matching_rule(command).or_else(|| {
+            terminal
+                .as_ref()
+                .and_then(|input| rules.matching_rule(&input.stdin))
+        }),
+        PreparedToolInput::Container { input, .. } => input
+            .command
+            .as_deref()
+            .and_then(|command| rules.matching_rule(command)),
+        _ if prepared.binding.is_browser_service() && prepared.is_host_process() => {
+            let arguments = &prepared.canonical_invocation["arguments"];
+            arguments["command"].as_str().and_then(|command| {
+                arguments["args"].as_array().and_then(|args| {
+                    let words = std::iter::once(Some(command.to_owned()))
+                        .chain(args.iter().map(|value| value.as_str().map(str::to_owned)))
+                        .collect::<Option<Vec<_>>>()?;
+                    rules.matching_argv(&words)
+                })
+            })
+        }
+        _ => None,
+    };
+    if let Some(rule) = denied {
+        return Some(Admission::Denied {
+            authority: json!({"decision":"deny", "source":"userSetting",
+                    "authorityId":crate::command_denylist::SETTING, "matchedRule":rule}),
+            error: json!({"code":"command_denied_by_rule",
+                    "message":format!("Command was not executed: blocked by command rule {rule:?}." )}),
+        });
+    }
+    None
 }
 
 enum Admission {
@@ -3000,6 +3074,8 @@ impl LocalToolRecordStore {
                 ))
             }
         }
+        #[cfg(feature = "debug-control")]
+        debug_operations::initialize_store(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })

@@ -376,7 +376,7 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    ], ['fileChangeRounds', 'providerAttempts', 'runTimings', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
     || (value.subagentSettings !== undefined && !isAgentSettings(value.subagentSettings))
     || (value.recipe !== undefined && !isAgentRecipe(value.recipe))
     || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
@@ -384,6 +384,7 @@ function decodeProjection(value: unknown): SessionProjection {
     || (value.agentChildren !== undefined && !isArrayOf(value.agentChildren, isAgentChild))
     || (value.pendingAgentDecisions !== undefined && !isArrayOf(value.pendingAgentDecisions, isPendingAgentDecision))
     || (value.providerAttempts !== undefined && !isArrayOf(value.providerAttempts, isProviderAttempt))
+    || (value.runTimings !== undefined && !isArrayOf(value.runTimings, isRunTiming))
     || (value.failureSnapshot !== undefined && !isFailureSnapshot(value.failureSnapshot))
     || (value.fileChangeRounds !== undefined && !isArrayOf(value.fileChangeRounds, (round) => isRecord(round) && isIdentifier(round.runId) && isArrayOf(round.recordIds, isIdentifier)))
     || value.schemaVersion !== SESSION_PROJECTION_VERSION
@@ -822,10 +823,11 @@ function isAssistantDraft(value: unknown): boolean {
   if (!isExactRecord(
     value,
     ['runId', 'turnId', 'blocks'],
-    ['activity', 'planPreview'],
+    ['activity', 'planPreview', 'providerAttemptId'],
   )
     || !isIdentifier(value.runId)
     || !isIdentifier(value.turnId)
+    || value.providerAttemptId !== undefined && !isIdentifier(value.providerAttemptId)
     || !isArrayOf(value.blocks, isAssistantDraftBlock)
     || value.activity !== undefined && !isProviderActivity(value.activity)
     || value.planPreview !== undefined && !isPlanPreview(value.planPreview)
@@ -1604,14 +1606,40 @@ export async function readFileChange(sessionId: string, recordId: string, index:
 }
 
 function isProviderAttempt(value: unknown): boolean {
-  return isExactRecord(value, ['providerRequestId', 'providerAttemptId', 'attempt', 'purpose', 'phase', 'runId', 'updatedAt'], ['error', 'retryAt'])
+  return isExactRecord(value, ['providerRequestId', 'providerAttemptId', 'attempt', 'purpose', 'phase', 'runId', 'updatedAt'], ['error', 'retryAt', 'timing'])
     && ['providerRequestId', 'providerAttemptId', 'runId'].every((key) => isIdentifier(value[key]))
     && Number.isInteger(value.attempt) && Number(value.attempt) >= 1 && Number(value.attempt) <= 5
     && ['agent', 'contextCompaction', 'approvalReview'].includes(String(value.purpose))
     && ['started', 'completed', 'failed', 'retryWaiting'].includes(String(value.phase))
     && isNonEmptyText(value.updatedAt)
+    && (value.timing === undefined || isProviderTiming(value.timing))
     && (['failed', 'retryWaiting'].includes(String(value.phase)) ? isLocalAgentError(value.error) : value.error === undefined)
     && (value.phase === 'retryWaiting' ? isNonEmptyText(value.retryAt) && Number.isFinite(Number(value.retryAt)) : value.retryAt === undefined);
+}
+
+function isDuration(value: unknown): boolean { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
+
+function isRunTiming(value: unknown): boolean {
+  return isExactRecord(value, ['runId', 'clockDomain', 'acceptedAt', 'coverage'], ['startedAt', 'firstResponseAt', 'firstResponseKind', 'firstResponseMs', 'firstTextAt', 'firstTextMs', 'settledAt', 'totalMs', 'responseElapsedMs'])
+    && ['runId', 'clockDomain', 'acceptedAt'].every(key => isNonEmptyText(value[key]))
+    && ['startedAt', 'firstResponseAt', 'firstTextAt', 'settledAt'].every(key => value[key] === undefined || isNonEmptyText(value[key]))
+    && ['firstResponseMs', 'firstTextMs', 'totalMs', 'responseElapsedMs'].every(key => value[key] === undefined || isDuration(value[key]))
+    && (value.firstResponseKind === undefined || ['text', 'tool'].includes(String(value.firstResponseKind)))
+    && ['complete', 'partial'].includes(String(value.coverage));
+}
+
+function isProviderTiming(value: unknown): boolean {
+  return isExactRecord(value, ['clockDomain', 'startedAt'], ['completedAt', 'durationMs', 'textSegments', 'firstContentAt', 'firstContentMs', 'firstContentKind', 'firstTextAt', 'firstTextMs'])
+    && ['clockDomain', 'startedAt'].every(key => isNonEmptyText(value[key]))
+    && ['completedAt', 'firstContentAt', 'firstTextAt'].every(key => value[key] === undefined || isNonEmptyText(value[key]))
+    && ['durationMs', 'firstContentMs', 'firstTextMs'].every(key => value[key] === undefined || isDuration(value[key]))
+    && (value.firstContentKind === undefined || ['text', 'tool', 'reasoning'].includes(String(value.firstContentKind)))
+    && (value.textSegments === undefined || isArrayOf(value.textSegments, item => isExactRecord(item, ['outputItemId', 'startedAt', 'characters'], ['outputIndex', 'endedAt', 'durationMs', 'outcome'])
+      && isIdentifier(item.outputItemId) && isNonEmptyText(item.startedAt) && isNaturalNumber(item.characters)
+      && (item.outputIndex === undefined || isNaturalNumber(item.outputIndex))
+      && (item.endedAt === undefined || isNonEmptyText(item.endedAt))
+      && (item.durationMs === undefined || isDuration(item.durationMs))
+      && (item.outcome === undefined || ['completed', 'interrupted'].includes(String(item.outcome)))));
 }
 
 function isFailureSnapshot(value: unknown): boolean {

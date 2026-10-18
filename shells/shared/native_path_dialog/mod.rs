@@ -14,6 +14,10 @@ mod windows;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathOptions {
+    #[serde(default)]
+    // Only macOS uses this to select a mode; Linux/Windows keep the mixed picker.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    kind: Option<String>,
     title: String,
     select_label: String,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -24,6 +28,13 @@ pub struct PathOptions {
     #[serde(default)]
     multiple: bool,
 }
+
+#[cfg(all(feature = "debug-control", target_os = "macos"))]
+pub use macos::debug_accessibility_command;
+#[cfg(all(feature = "debug-control", target_os = "macos"))]
+pub use macos::debug_capture;
+#[cfg(all(feature = "debug-control", target_os = "macos"))]
+pub use macos::debug_command;
 
 #[derive(Deserialize)]
 pub struct PathFilter {
@@ -66,10 +77,15 @@ pub async fn deepcode_pick_path(
         .run_on_main_thread(move || {
             #[cfg(windows)]
             let result = windows::pick(&parent, &options);
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", not(feature = "debug-control")))]
             let result = macos::pick(&parent, &options);
+            #[cfg(all(target_os = "macos", feature = "debug-control"))]
+            if let Err(error) = macos::begin(&parent, &options, sender.clone()) {
+                let _ = sender.send(Err(error));
+            }
             #[cfg(target_os = "linux")]
             let result = linux::pick(&parent, &options);
+            #[cfg(not(all(target_os = "macos", feature = "debug-control")))]
             let _ = sender.send(result);
         })
         .map_err(|error| error.to_string())?;

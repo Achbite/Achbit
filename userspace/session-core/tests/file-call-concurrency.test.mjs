@@ -189,3 +189,38 @@ for (const outcome of ['cancelled', 'indeterminate']) test(`cancel drains every 
     .map(event => event.callId).sort(), queued.map(event => event.callId).sort());
   assert.equal(events.some(event => event.type === 'tool.interrupted'), false);
 });
+
+test('separate reads overlap with four in flight and retain read/write barriers', async t => {
+  const release = gate(), observed = [], active = new Set();
+  let maxActive = 0, written = false;
+  t.after(() => release.resolve());
+  const { actor, journal, sessionId } = await setup(t, 'parallel-reads', [
+    ...['a', 'b', 'c', 'd', 'e'].map(path => ({ tool: 'fs_read', path })),
+    { path: 'a', content: 'new' }, { tool: 'fs_read', path: 'after-write' },
+  ], emptyKernel({ async execute(request) {
+    const { path } = request.input;
+    if (request.toolName === 'fs.write') { assert.equal(active.size, 0); written = true; }
+    else {
+      active.add(path); maxActive = Math.max(maxActive, active.size); observed.push(path);
+      if (path === 'after-write') assert.equal(written, true);
+      else { assert.equal(written, false); await release.promise; }
+      active.delete(path);
+    }
+    return completedExecutionReply(request, { content: path });
+  } }));
+  await waitUntil(() => observed.length === 4, 'first four reads are in flight');
+  assert.deepEqual(observed, ['a', 'b', 'c', 'd']); assert.equal(written, false);
+  release.resolve();
+  const final = await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.equal(maxActive, 4); assert.deepEqual(observed, ['a', 'b', 'c', 'd', 'e', 'after-write']);
+  const timing = final.runTimings[0];
+  assert.equal(timing.firstResponseKind, 'tool');
+  assert.ok(timing.firstTextMs >= timing.firstResponseMs);
+  assert.ok(timing.totalMs >= timing.firstTextMs);
+  assert.ok(timing.responseElapsedMs >= 0);
+  assert.equal(timing.coverage, 'complete');
+  const events = await readEvents(journal, sessionId);
+  assert.deepEqual(projectSession(loopSnapshot(sessionId, events).state), final);
+  assert.equal(final.providerAttempts.length, 2);
+  assert.ok(final.providerAttempts.every(attempt => attempt.timing.durationMs >= 0));
+});

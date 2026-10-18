@@ -55,6 +55,8 @@ run_required() {
   printf '[test] Rust workspace\n'
   cargo fmt --all -- --check
   cargo test --workspace
+  printf '[test] Debug 控制专用合同\n'
+  cargo test -p deepcode-kernel-daemon -p deepcode-cli --features deepcode-kernel-daemon/debug-control,deepcode-cli/debug-control debug
   printf '[test] 构建编排与程序发布\n'
   python3 -I -S ./scripts/tests/build-platforms.py
   printf '[test] GUI 资源发布\n'

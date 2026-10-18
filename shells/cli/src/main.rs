@@ -1,6 +1,8 @@
 #[path = "../../shared/conversation_input.rs"]
 mod conversation_input;
 // CLI retains its existing Chinese messages; TUI also uses the shared locale loader.
+#[cfg(feature = "debug-control")]
+mod debug;
 mod gui_attach;
 #[allow(dead_code)]
 #[path = "../../shared/i18n.rs"]
@@ -50,6 +52,19 @@ async fn main() {
         return;
     }
     let values: Vec<String> = env::args().skip(1).collect();
+    #[cfg(feature = "debug-control")]
+    if values.first().map(String::as_str) == Some("debug") {
+        match debug::run(&values[1..]).await {
+            Ok(()) => return,
+            Err(message) => {
+                eprintln!(
+                    "{}",
+                    json!({"ok":false,"error":"debug_cli_failed","message":message})
+                );
+                std::process::exit(EXIT_BAD_ARGS);
+            }
+        }
+    }
     if values.first().map(String::as_str) == Some("ssh") {
         std::process::exit(ssh::run(&values[1..]));
     }

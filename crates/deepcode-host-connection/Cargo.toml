@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+debug-control = []
+
 [dependencies]
 deepcode-kernel-abi.workspace = true
 serde.workspace = true

@@ -120,6 +120,7 @@ export interface AgentLoopDeps {
   commit(event: NewSessionEvent | readonly NewSessionEvent[] | ((current: LoopSnapshot) => readonly NewSessionEvent[])): Promise<LoopSnapshot>;
   takeQueuedInputs(runId: string): Promise<LoopSnapshot>;
   updateAssistantDraft(draft: AssistantDraftProjection | null): void;
+  recordVisibleResponse?(runId: string): Promise<void>;
   resetReasoning?(): void;
   updateReasoning?(requestId: string, runId: string, text: string, kind: 'text' | 'summary'): void;
   updateToolProgress?(callId: string, progress: ToolExecutionProgress): void;
@@ -887,8 +888,8 @@ async function performContextCompaction(
 }
 
 async function consumeTextProvider(request: ProviderRequest, deps: AgentLoopDeps, signal: AbortSignal) {
-  return withProviderAttempts(request, deps, signal, (attempt, onCompleted) => (
-    consumeTextAttempt(attempt, deps, signal, onCompleted)
+  return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
+    consumeTextAttempt(attempt, deps, signal, onCompleted, onEvent)
   ));
 }
 
@@ -897,6 +898,7 @@ async function consumeTextAttempt(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   onCompleted: () => void,
+  onEvent: (event: ProviderEvent) => void,
 ): Promise<{
   summary: string;
   completion: ProviderTurnCompletion;
@@ -919,6 +921,7 @@ async function consumeTextAttempt(
         'Provider 在 completed 之后继续发送文本事件。',
       );
     }
+    onEvent(event);
     activity.observe(event);
     switch (event.type) {
       case 'text.delta':
@@ -1049,8 +1052,8 @@ async function consumeProvider(
   signal: AbortSignal,
   controls: SessionCapabilities['controls'],
 ): Promise<ProviderTurn> {
-  return withProviderAttempts(request, deps, signal, (attempt, onCompleted) => (
-    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls)
+  return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
+    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls, onEvent)
   ));
 }
 
@@ -1062,6 +1065,7 @@ async function consumeProviderOutput(
   signal: AbortSignal,
   onCompleted: () => void,
   controls: SessionCapabilities['controls'],
+  onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
   deps = { ...deps, updateAssistantDraft: activity.updateDraft };
@@ -1094,6 +1098,7 @@ async function consumeProviderOutput(
         'Provider 在 completed 之后继续发送事件。',
       );
     }
+    onEvent(event);
     activity.observe(event);
     switch (event.type) {
       case 'tool.call.delta': {
@@ -1109,6 +1114,7 @@ async function consumeProviderOutput(
         break;
       }
       case 'text.delta': {
+        if (event.data.text.trim()) await deps.recordVisibleResponse?.(runId);
         deltas += event.data.text;
         if (event.data.outputIndex !== undefined) {
           if (orderedOutputItems.some((output) => output.outputIndex === event.data.outputIndex)) {
@@ -1153,7 +1159,10 @@ async function consumeProviderOutput(
         };
         orderedOutputItems.push(output);
         const completedDraftBlock = completedAssistantDraftBlock(request, output, toolCodec);
-        if (completedDraftBlock) completedDraftBlocks.push(completedDraftBlock);
+        if (completedDraftBlock) {
+          completedDraftBlocks.push(completedDraftBlock);
+          if (completedDraftBlock.kind !== 'providerHosted' && completedDraftBlock.content.trim()) await deps.recordVisibleResponse?.(runId);
+        }
         streamedTextByOutputIndex.delete(event.data.outputIndex);
         const blocks = assistantDraftBlocks(
           request,
@@ -1171,6 +1180,7 @@ async function consumeProviderOutput(
           );
         }
         completeMessage = event.data;
+        if (event.data.content.trim()) await deps.recordVisibleResponse?.(runId);
         break;
       case 'tool.call':
         aggregateCalls.push(event.data);
@@ -1655,7 +1665,7 @@ function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {
   const activity: ProviderActivityProjection = {
     purpose: request.purpose, phase: 'waitingResponse', startedAt: new Date().toISOString(),
   };
-  const publish = () => deps.updateAssistantDraft({ ...draft, activity: { ...activity } });
+  const publish = () => deps.updateAssistantDraft({ ...draft, providerAttemptId: request.providerAttemptId, activity: { ...activity } });
   publish();
   return {
     updateDraft(next) {
@@ -2093,6 +2103,7 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
 async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal): Promise<LoopResult | undefined> {
   let snapshot = await deps.readSnapshot();
   const pending = pendingToolRequests(snapshot.events, runId);
+  const isRead = (event: ToolRequestEvent) => event.payload.toolName === 'fs.read';
   const isFile = (event: ToolRequestEvent) => event.payload.toolName === 'fs.write' || event.payload.toolName === 'fs.edit';
   let enteredSegmentEnd = 0;
   try {
@@ -2101,6 +2112,7 @@ async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: 
       const first = pending[offset]!;
       let end = offset + 1;
       if (isFile(first)) while (end < pending.length && isFile(pending[end]!)) end += 1;
+      else if (isRead(first)) while (end < pending.length && isRead(pending[end]!)) end += 1;
       const segment = pending.slice(offset, end);
       const dependencies = new Map<string, string[]>();
       if (isFile(first)) {

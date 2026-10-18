@@ -19,22 +19,26 @@ from computer_use_package import assemble as assemble_computer_use, APP_NAME as 
 WINDOWS_COMPUTER_USE = 'DeepCode-Computer-Use.exe'
 
 
-def copy_js_package(source, target):
+def copy_js_package(source, target, debug=False):
     target.mkdir(parents=True)
     package = json.loads((source / 'package.json').read_text())
     runtime = {key: package[key] for key in ('name', 'version', 'license', 'type', 'main')}
     runtime['exports'] = {'.': './dist/index.js'}
     (target / 'package.json').write_text(json.dumps(runtime, indent=2) + '\n')
     for file in (source / 'dist').rglob('*.js'):
+        if not debug and 'debug' in file.relative_to(source / 'dist').parts:
+            continue
         destination = target / file.relative_to(source)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(file, destination)
 
 
 def shared(root, destination, dependency_list):
-    copy_js_package(root / 'userspace/session-core', destination / 'session-core')
+    debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
+    copy_js_package(root / 'userspace/session-core', destination / 'session-core', debug)
     copy_js_package(root / 'userspace/protocol', destination / 'node_modules/@deepcode/protocol')
-    shutil.copytree(root / 'userspace/gui/dist-deepcode-gui', destination / 'web-deepcode-gui')
+    gui_dist = root / '.build-cache/gui-debug' if debug else root / 'userspace/gui/dist-deepcode-gui'
+    shutil.copytree(gui_dist, destination / 'web-deepcode-gui')
     shutil.copytree(root / 'docs/product', destination / 'docs/product')
     shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
@@ -95,11 +99,13 @@ def tui_fonts(root, target):
 
 def assemble(args):
     root, stage = args.root, args.stage
+    debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
     version = json.loads((root / 'package.json').read_text())['version']
     macos = args.platform == 'macos-arm64'
     windows = args.platform == 'win64'
     identity = signing_identity() if macos else None
-    app = stage / 'DeepCode-GUI.app'
+    app_name = 'DeepCode-Debug.app' if debug else 'DeepCode-GUI.app'
+    app = stage / app_name
     binaries = app / 'Contents/MacOS' if macos else stage
     resources = app / 'Contents/Resources' if macos else stage
     binaries.mkdir(parents=True, exist_ok=True)
@@ -132,11 +138,13 @@ def assemble(args):
         for shell in ('cli', 'tui'):
             launcher = stage / f'deepcode-{shell}.bat'
             launcher.write_text('@echo off\nsetlocal\nset "DEEPCODE_RUNTIME_DIR=%~dp0"\nset "DEEPCODE_KERNEL_BIN=%~dp0deepcode-kernel.exe"\n"%~dp0deepcode-' + shell + '.exe" %*\nexit /b %errorlevel%\n')
-    metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME']}
+    metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME'], 'buildKind': 'debug' if debug else 'normal', 'debugControl': debug}
     (resources / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
     if macos:
         macos_tui_resources(root, resources)
         info = {'CFBundleDevelopmentRegion': 'en', 'CFBundleDisplayName': 'DeepCode-GUI', 'CFBundleExecutable': 'DeepCode-GUI', 'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': 'DeepCode-GUI', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version, 'LSMinimumSystemVersion': '12.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication'}
+        if debug:
+            info.update(CFBundleDisplayName='DeepCode Debug', CFBundleName='DeepCode Debug', CFBundleIdentifier='com.achbite.deepcode.debug')
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for shell in ('CLI', 'TUI'):
             launcher = stage / f'DeepCode-{shell}.command'
@@ -145,20 +153,31 @@ def assemble(args):
             launcher.write_text('''#!/usr/bin/env bash
 set -euo pipefail
 PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-APP_DIR="$PACKAGE_DIR/DeepCode-GUI.app/Contents"
+APP_DIR="$PACKAGE_DIR/''' + app_name + '''/Contents"
 export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"
 export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"
 ''' + command + '\n')
             launcher.chmod(0o755)
+        if debug:
+            launcher = stage / 'deepcode-debug'
+            launcher.write_text('#!/usr/bin/env bash\nset -euo pipefail\n'
+                'PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"\n'
+                'APP_DIR="$PACKAGE_DIR/DeepCode-Debug.app/Contents"\n'
+                'export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"\n'
+                'export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"\n'
+                'exec "$APP_DIR/MacOS/deepcode-cli" debug "$@"\n')
+            launcher.chmod(0o755)
         sign_app(app, identity, native_components=True)
         assemble_computer_use(root, args.native, stage, identity)
-    documentation = 'DeepCode-GUI.app/Contents/Resources/docs/' if macos else 'docs/'
-    (stage / 'README.md').write_text((root / 'docs/distribution.md').read_text().replace('(product/', '(' + documentation + 'product/'))
+    documentation = app_name + '/Contents/Resources/docs/' if macos else 'docs/'
+    distribution_doc = 'debug-control.md' if debug else 'distribution.md'
+    (stage / 'README.md').write_text((root / 'docs' / distribution_doc).read_text().replace('(product/', '(' + documentation + 'product/'))
 
 
 # Only program entries belong to the publisher. config/runtime/logs/sessions and
 # other user-created entries are never copied, removed or put into the archive.
 PROGRAM_ENTRIES = {
+    'DeepCode-Debug.app', 'DeepCode Debug Computer Use.app', 'deepcode-debug',
     COMPUTER_USE_APP, WINDOWS_COMPUTER_USE,
     'DeepCode.app', 'DeepCode-GUI.app', 'DeepCode', 'DeepCode.exe', 'DeepCode-GUI', 'DeepCode-GUI.exe',
     'DeepCode-CLI.command', 'DeepCode-TUI.command', 'deepcode', 'libexec',

@@ -43,6 +43,7 @@ export interface SessionState {
   agentContext?: SessionProjection['agentContext'];
   agentTasks: NonNullable<SessionProjection['agentTasks']>;
   agentChildren: NonNullable<SessionProjection['agentChildren']>;
+  runTimings: Record<string, NonNullable<SessionProjection['runTimings']>[number]>;
   providerAttempts: Record<string, NonNullable<SessionProjection['providerAttempts']>[number]>;
   failureSnapshots: Record<string, NonNullable<SessionProjection['failureSnapshot']>>;
   permissionOverrides: SessionProjection['permissionOverrides'];
@@ -114,7 +115,7 @@ export interface ProviderCallFactState {
 export function emptySessionState(sessionId: string): SessionState {
   return {
     agentTasks: [], agentChildren: [],
-    providerAttempts: {}, failureSnapshots: {},
+    runTimings: {}, providerAttempts: {}, failureSnapshots: {},
     permissionOverrides: {}, shellAuthorizations: [],
     modelSettings: null,
     sessionId,
@@ -195,6 +196,10 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.providerAttempts = { ...next.providerAttempts, [fact.providerAttemptId]: { ...structuredClone(fact), runId: event.runId, updatedAt: event.occurredAt } };
       break;
     }
+    case 'run.timing.updated':
+      assertCurrentRun(next, event.runId, 'run_timing_run_mismatch');
+      next.runTimings = { ...next.runTimings, [event.runId]: { ...structuredClone(event.payload), runId: event.runId } };
+      break;
     case 'run.failure.recorded':
       assertCurrentRun(next, event.runId, 'failure_snapshot_run_mismatch');
       if (event.payload.revision > previous.revision) throw new Error('failure_snapshot_revision_invalid');
@@ -1279,6 +1284,7 @@ export function projectSession(
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
     ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
+    ...(Object.keys(state.runTimings).length ? { runTimings: Object.values(state.runTimings).map(value => structuredClone(value)) } : {}),
     ...(Object.keys(state.providerAttempts).length ? { providerAttempts: Object.values(state.providerAttempts)
       .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
     ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),

@@ -1,3 +1,5 @@
+import { RunTiming } from './runTiming.js';
+import type { SessionObservationInput, SessionObservationSink } from './observation.js';
 import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
 import { agentPresets } from './agentConfiguration.js';
 import type { SessionOperation, JsonObject } from '@deepcode/protocol';
@@ -43,6 +45,7 @@ import {
 import { projectSession, reduceSession } from './reducer.js';
 
 export interface SessionActorOptions {
+  observation?: SessionObservationSink;
   agents?: AgentSessionRuntime;
   profileId?: string;
   initialEvents?: readonly SessionEvent[];
@@ -58,6 +61,8 @@ interface ActiveRun {
 const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
 
 export class SessionActor {
+  readonly #timing: RunTiming;
+  readonly #observation?: SessionObservationSink;
   readonly #journal: CommandJournalPort;
   readonly #composition: AgentComposition;
   readonly #capabilities: SessionCapabilityManager;
@@ -88,6 +93,8 @@ export class SessionActor {
     composition: AgentComposition,
     options: SessionActorOptions = {},
   ) {
+    this.#timing = new RunTiming(sessionId);
+    this.#observation = options.observation;
     this.#journal = journal;
     this.#composition = composition;
     this.#capabilities = new SessionCapabilityManager(composition.capabilities);
@@ -1125,6 +1132,11 @@ export class SessionActor {
     command: LoopCommand,
     signal = new AbortController().signal,
   ): Promise<void> {
+    await this.withWrite(async () => {
+      const current = await this.loadSnapshot();
+      const timing = this.#timing.started(command.runId);
+      if (timing) await this.appendEvents([timing], current);
+    });
     const snapshot = await this.loadSnapshot();
     await this.ensureProcesses(command.runId);
     const runner = this.#composition.runner ?? { run: runAgentLoop };
@@ -1194,10 +1206,21 @@ export class SessionActor {
             throw new Error('assistant_draft_run_identity_mismatch');
           }
           this.#assistantDraft = draft ? structuredClone(draft) : null;
+          if (draft) this.publishObservation({ kind: 'draft', sessionId: this.sessionId, draft });
+        },
+        recordVisibleResponse: async runId => {
+          await this.withWrite(async () => {
+            const current = await this.loadSnapshot();
+            const event = this.#timing.response(runId, 'text');
+            if (event) await this.appendEvents([event], current);
+          });
         },
         resetReasoning: () => this.liveReasoning.reset(),
         updateReasoning: (requestId, runId, text, kind) => this.liveReasoning.append(requestId, runId, text, kind),
-        updateToolProgress: (callId, progress) => this.#liveToolOutput.update(callId, progress),
+        updateToolProgress: (callId, progress) => {
+          this.#liveToolOutput.update(callId, progress);
+          this.publishObservation({ kind: 'toolProgress', sessionId: this.sessionId, runId: command.runId, callId, progress });
+        },
         nextId: this.#nextId,
       },
       signal,
@@ -1420,6 +1443,7 @@ export class SessionActor {
   }
 
   private async appendEvents(events: readonly NewSessionEvent[], current: LoopSnapshot): Promise<void> {
+    events = this.#timing.decorate(events);
     admitSessionEvents(current, events);
     const previousDraft = this.#assistantDraft;
     const closesDraft = current.state.run && closesAssistantDraft(events, current.state.run.runId);
@@ -1451,6 +1475,7 @@ export class SessionActor {
     reply: Omit<CommandReply, 'revision'>,
   ): Promise<CommandReply> {
     const current = await this.loadSnapshot();
+    events = this.#timing.decorate(events);
     admitSessionEvents(current, events, { input: command, reply });
     try {
       const committed = await this.#journal.commitCommand(command, events, reply);
@@ -1487,6 +1512,7 @@ export class SessionActor {
       if (!this.#initialEvents) for await (const event of this.#journal.read(this.sessionId)) events.push(event);
       this.#initialEvents = undefined;
       const snapshot = loopSnapshot(this.sessionId, events);
+      this.#timing.restore(Object.values(snapshot.state.runTimings));
       snapshot.state.publishedPermissions = this.#publishedPermissions;
       return this.#snapshot = snapshot;
     })();
@@ -1509,7 +1535,13 @@ export class SessionActor {
     }
   }
 
+  private publishObservation(input: SessionObservationInput): void {
+    try { this.#observation?.accept(input); }
+    catch (error) { try { this.#observation?.failed(this.sessionId, error); } catch { /* Observer failures never own business state. */ } }
+  }
+
   private async observe(event: SessionEvent): Promise<void> {
+    this.publishObservation({ kind: 'event', sessionId: this.sessionId, event });
     if (event.type.startsWith('wake.') || event.type === 'run.finishing' || event.type === 'run.settled') {
       this.restoreWakeTimers(await this.loadSnapshot());
     }

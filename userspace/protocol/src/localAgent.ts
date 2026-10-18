@@ -273,6 +273,45 @@ export interface ProviderAttemptFact {
   phase: 'started' | 'completed' | 'failed' | 'retryWaiting';
   error?: LocalAgentError;
   retryAt?: string;
+  timing?: ProviderAttemptTiming;
+}
+
+export interface ProviderTextSegmentTiming {
+  outputItemId: string;
+  outputIndex?: number;
+  startedAt: string;
+  endedAt?: string;
+  durationMs?: number;
+  characters: number;
+  outcome?: 'completed' | 'interrupted';
+}
+
+export interface ProviderAttemptTiming {
+  clockDomain: string;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  textSegments?: ProviderTextSegmentTiming[];
+  firstContentAt?: string;
+  firstContentMs?: number;
+  firstContentKind?: 'text' | 'tool' | 'reasoning';
+  firstTextAt?: string;
+  firstTextMs?: number;
+}
+
+export interface RunTimingFact {
+  clockDomain: string;
+  acceptedAt: string;
+  startedAt?: string;
+  firstResponseAt?: string;
+  firstResponseKind?: 'text' | 'tool';
+  firstResponseMs?: number;
+  firstTextAt?: string;
+  firstTextMs?: number;
+  settledAt?: string;
+  totalMs?: number;
+  responseElapsedMs?: number;
+  coverage: 'complete' | 'partial';
 }
 
 export interface RunFailureSnapshot {
@@ -926,6 +965,7 @@ export type SessionEvent =
   | (SessionEventBase & { type: 'approval.revoked'; runId: string; payload: { commandId: string; authorityId: string } })
   | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string } })
   | (SessionEventBase & { type: 'provider.attempt.updated'; runId: string; payload: ProviderAttemptFact })
+  | (SessionEventBase & { type: 'run.timing.updated'; runId: string; payload: RunTimingFact })
   | (SessionEventBase & { type: 'run.failure.recorded'; runId: string; payload: RunFailureSnapshot })
   | (SessionEventBase & {
       type: 'conversation.revised';
@@ -1377,6 +1417,7 @@ export type AssistantDraftBlockProjection =
 export interface AssistantDraftProjection {
   runId: string;
   turnId: string;
+  providerAttemptId?: string;
   /** Session orders these blocks. An empty list can still carry Provider activity. */
   blocks: AssistantDraftBlockProjection[];
   activity?: ProviderActivityProjection;
@@ -1649,6 +1690,7 @@ export interface SessionProjection {
   permissionOverrides: UserSettings;
   effectivePermissions: UserSettings | null;
   shellAuthorizations: ShellAuthorizationProjection[];
+  runTimings?: Array<RunTimingFact & { runId: string }>;
   providerAttempts?: Array<ProviderAttemptFact & { runId: string; updatedAt: string }>;
   failureSnapshot?: RunFailureSnapshot;
   modelSettings: SessionModelSettings | null;
@@ -2089,6 +2131,25 @@ export type AuthorityDecision =
     };
 
 interface ToolExecutionRecordBase {
+  /** Measured by the Kernel execution owner; absent spans are not zero. */
+  timing?: {
+    owner: 'kernel';
+    source: 'sessionRun';
+    clockDomain: string;
+    acceptToResultUs: number;
+    executor: {
+      coverage: 'measured' | 'notApplicable';
+      phase?: 'executor';
+      clockDomain?: string;
+      threadId?: string;
+      startedAt?: string;
+      completedAt?: string;
+      startOffsetUs?: number;
+      endOffsetUs?: number;
+      durationUs?: number;
+    };
+    resultStore: { coverage: 'notMeasured' };
+  };
   recordId: string;
   sessionId: string;
   runId: string;

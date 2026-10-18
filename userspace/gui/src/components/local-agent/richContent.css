@@ -152,3 +152,7 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-diff-binary small { display: block; margin-top: 10px; }
 .conversation-round > [hidden] { display: none; }
 .conversation-code pre, .conversation-code pre code, .conversation-code pre span { font-family: var(--dc-font-code); line-height: 1.6; }
+
+.conversation-process-heading { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; }
+.local-agent .conversation-process-heading .conversation-process-toggle { margin: 0; }
+.conversation-run-timing { color: var(--dc-muted); font-size: var(--dc-font-label); white-space: nowrap; font-variant-numeric: tabular-nums; }

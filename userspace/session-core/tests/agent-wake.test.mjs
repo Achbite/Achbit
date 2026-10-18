@@ -76,6 +76,44 @@ async function completed(service, sessionId) {
   return projection;
 }
 
+test('accepted child task records the parent tool first response before child start and preserves later text timing', async t => {
+  const ownerId = 'session:child-first-response';
+  const childStarted = Promise.withResolvers(), releaseChild = Promise.withResolvers();
+  t.after(() => releaseChild.resolve());
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
+    if (sessionId !== ownerId) {
+      childStarted.resolve(await service.snapshot(ownerId));
+      await releaseChild.promise;
+      yield answer(request, 'Child evidence.');
+    } else if (turn === 1) {
+      yield call(request, 'root:spawn', 'agent', { action: 'spawn', name: 'Inspector', task: 'Return the evidence.', delivery: 'wait' });
+    } else {
+      assert.equal(turn, 2);
+      yield answer(request, 'Parent report after child evidence.');
+    }
+    yield done(request);
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:child-first-response', 'Delegate the inspection.'));
+  const during = await childStarted.promise;
+  releaseChild.resolve();
+  const finished = await completed(fixture.service, ownerId);
+  const events = await readEvents(fixture.journal, ownerId);
+  const created = events.find(event => event.type === 'agent.task.created');
+  const started = events.find(event => event.type === 'agent.task.started');
+  const first = events.find(event => event.type === 'run.timing.updated' && event.payload.firstResponseAt);
+  assert.equal(first.payload.firstResponseKind, 'tool');
+  assert.ok(created.sequence < first.sequence && first.sequence < started.sequence,
+    'accepted tool response must be recorded before child execution, not after child submission');
+  assert.equal(during.runTimings[0].firstResponseAt, first.payload.firstResponseAt);
+  assert.equal(during.runTimings[0].firstTextAt, undefined, 'child text is not parent visible text');
+  const timing = finished.runTimings[0];
+  assert.equal(timing.firstResponseAt, first.payload.firstResponseAt);
+  assert.equal(timing.firstResponseKind, 'tool');
+  assert.ok(timing.firstTextMs > timing.firstResponseMs);
+  assert.ok(timing.responseElapsedMs >= timing.firstTextMs - timing.firstResponseMs);
+  assert.equal(timing.coverage, 'complete');
+});
+
 test('a child question interrupts synchronous delivery while an independent reminder still fires once', async t => {
   const ownerId = 'session:independent-wake';
   const question = 'Which station should I inspect?';

@@ -77,186 +77,201 @@ impl LocalAgentKernel {
         request: &LocalToolExecutionRequest,
         prepared: &mut PreparedEffect,
     ) -> Result<(), LocalAgentKernelError> {
-        let Some(workspace_root) = prepared.workspace_root.as_ref() else {
+        if prepared.workspace_root.is_none() {
             return Ok(());
-        };
-        let root = Path::new(workspace_root);
-        let mut files = FileAccessScope::default();
-        let mut project_roots = Vec::new();
+        }
         let working_directories = self
             .journal
             .run_workspace_binding_ids(&request.session_id, &request.run_id)?;
+        let mut bindings = Vec::new();
         for id in &request.workspace_bindings {
             let binding = self.resolver.resolve(id)?;
             if binding
                 .access
                 .owner_session_id()
                 .is_some_and(|owner| owner != request.session_id)
+                || (!working_directories.contains(id) && !binding.access.read_only())
             {
                 continue;
             }
-            // Catalog membership and message references never grant project access.
-            // Imported content is explicitly supplied read-only Session input.
-            if !working_directories.contains(id) && !binding.access.read_only() {
-                continue;
-            }
-            let path = resolve_path(Path::new(&binding.root)).map_err(file_error)?;
-            if matches!(binding.access, WorkspaceAccess::Project) {
-                project_roots.push(path.clone());
-            }
-            let bound = FileAccessScope::workspace(&path).map_err(file_error)?;
-            files.read.extend(bound.read);
-            files.read_only.extend(bound.read_only);
-            if matches!(binding.access, WorkspaceAccess::SessionWorkdir(_)) {
-                files.write.push(WorkspaceWriteTarget {
-                    path: path.clone(),
-                    directory: true,
-                });
-                files.home = Some(path.join("home"));
-            }
+            bindings.push(binding);
         }
-        let archive = self.session_output_directory(&request.session_id);
-        std::fs::create_dir_all(&archive).map_err(|error| {
-            LocalAgentKernelError::new("tool_output_directory_failed", error.to_string())
+        prepare_file_access(
+            prepared,
+            bindings,
+            self.session_output_directory(&request.session_id),
+            self.journal.file_authorizations(
+                &request.session_id,
+                &request.run_id,
+                &prepared.file_environment(),
+            )?,
+        )
+    }
+}
+
+pub(super) fn prepare_file_access(
+    prepared: &mut PreparedEffect,
+    bindings: Vec<ResolvedWorkspace>,
+    output_directory: PathBuf,
+    authorizations: Vec<Value>,
+) -> Result<(), LocalAgentKernelError> {
+    let Some(workspace_root) = prepared.workspace_root.as_ref() else {
+        return Ok(());
+    };
+    let root = Path::new(workspace_root);
+    let mut files = FileAccessScope::default();
+    let mut project_roots = Vec::new();
+    for binding in bindings {
+        let path = resolve_path(Path::new(&binding.root)).map_err(file_error)?;
+        if matches!(binding.access, WorkspaceAccess::Project) {
+            project_roots.push(path.clone());
+        }
+        let bound = FileAccessScope::workspace(&path).map_err(file_error)?;
+        files.read.extend(bound.read);
+        files.read_only.extend(bound.read_only);
+        if matches!(binding.access, WorkspaceAccess::SessionWorkdir(_)) {
+            files.write.push(WorkspaceWriteTarget {
+                path: path.clone(),
+                directory: true,
+            });
+            files.home = Some(path.join("home"));
+        }
+    }
+    let archive = output_directory;
+    std::fs::create_dir_all(&archive).map_err(|error| {
+        LocalAgentKernelError::new("tool_output_directory_failed", error.to_string())
+    })?;
+    files.read.push(archive);
+    // These roots only let programs start; a sandbox that cannot grant one
+    // skips it rather than refusing every Shell command.
+    let config = &prepared.generation.executor_config;
+    let mut best_effort = config.file_read_roots.clone();
+    if let Some(path) = config.execution_path.as_ref() {
+        best_effort
+            .extend(std::env::split_paths(path).filter(|path| path.is_absolute() && path.is_dir()));
+    }
+    if let Some(roots) = prepared
+        .permissions
+        .settings
+        .get("agent.permissions.runtimeReadRoots")
+    {
+        let roots: Vec<PathBuf> = serde_json::from_value(roots.clone()).map_err(|error| {
+            LocalAgentKernelError::new("runtime_read_roots_invalid", error.to_string())
         })?;
-        files.read.push(archive);
-        // These roots only let programs start; a sandbox that cannot grant one
-        // skips it rather than refusing every Shell command.
-        let config = &prepared.generation.executor_config;
-        let mut best_effort = config.file_read_roots.clone();
-        if let Some(path) = config.execution_path.as_ref() {
-            best_effort.extend(
-                std::env::split_paths(path).filter(|path| path.is_absolute() && path.is_dir()),
-            );
+        for path in roots {
+            best_effort.push(resolve_path(&path).map_err(file_error)?);
         }
-        if let Some(roots) = prepared
-            .permissions
-            .settings
-            .get("agent.permissions.runtimeReadRoots")
-        {
-            let roots: Vec<PathBuf> = serde_json::from_value(roots.clone()).map_err(|error| {
-                LocalAgentKernelError::new("runtime_read_roots_invalid", error.to_string())
+    }
+    if is_shell_tool(&prepared.operation) {
+        // HOME is redirected for workspace Shells: toolchains under the real home
+        // (rustup, pyenv, Volta, Scoop) stay readable through their variables.
+        best_effort.extend(
+            deepcode_kernel_runtime::shell_environment::toolchain_homes()
+                .into_iter()
+                .map(|(_, path)| path),
+        );
+        // One package cache shared by workspace Shells of every Session.
+        if let Some(cache) = config.shell_cache_root.as_ref() {
+            std::fs::create_dir_all(cache).map_err(|error| {
+                LocalAgentKernelError::new("shell_cache_unavailable", error.to_string())
             })?;
-            for path in roots {
-                best_effort.push(resolve_path(&path).map_err(file_error)?);
-            }
+            let cache = resolve_path(cache).map_err(file_error)?;
+            files.write.push(WorkspaceWriteTarget {
+                path: cache.clone(),
+                directory: true,
+            });
+            files.cache = Some(cache);
         }
-        if is_shell_tool(&prepared.operation) {
-            // HOME is redirected for workspace Shells: toolchains under the real home
-            // (rustup, pyenv, Volta, Scoop) stay readable through their variables.
-            best_effort.extend(
-                deepcode_kernel_runtime::shell_environment::toolchain_homes()
-                    .into_iter()
-                    .map(|(_, path)| path),
-            );
-            // One package cache shared by workspace Shells of every Session.
-            if let Some(cache) = config.shell_cache_root.as_ref() {
-                std::fs::create_dir_all(cache).map_err(|error| {
-                    LocalAgentKernelError::new("shell_cache_unavailable", error.to_string())
-                })?;
-                let cache = resolve_path(cache).map_err(file_error)?;
-                files.write.push(WorkspaceWriteTarget {
-                    path: cache.clone(),
-                    directory: true,
-                });
-                files.cache = Some(cache);
-            }
-        }
-        best_effort.sort();
-        best_effort.dedup();
-        files.read.extend(best_effort.iter().cloned());
-        files.best_effort_read = best_effort;
-        files.read.sort();
-        files.read.dedup();
-        files.read_only.sort();
-        files.read_only.dedup();
-        for grant in self.journal.file_authorizations(
-            &request.session_id,
-            &request.run_id,
-            &prepared.file_environment(),
-        )? {
-            let mut resources: RequestedFiles = serde_json::from_value(grant).map_err(|error| {
-                LocalAgentKernelError::new("file_authority_invalid", error.to_string())
-            })?;
-            resources.resolve()?;
-            // A resource later bound as a project follows that project's write policy.
-            resources.read.extend(resources.write.clone());
-            resources
-                .write
-                .retain(|path| !overlaps_project(path, &project_roots));
-            resources.apply(&mut files);
-        }
-        prepared.file_requests.resolve()?;
-        if !prepared.is_host_process() {
-            for path in &prepared.file_requests.write {
-                if overlaps_project(path, &project_roots)
-                    && (is_shell_tool(&prepared.operation) || !files.protects(path))
-                {
-                    return Err(LocalAgentKernelError::input("$.requestFileAccess.write", "workspaceWriteScope",
+    }
+    best_effort.sort();
+    best_effort.dedup();
+    files.read.extend(best_effort.iter().cloned());
+    files.best_effort_read = best_effort;
+    files.read.sort();
+    files.read.dedup();
+    files.read_only.sort();
+    files.read_only.dedup();
+    for grant in authorizations {
+        let mut resources: RequestedFiles = serde_json::from_value(grant).map_err(|error| {
+            LocalAgentKernelError::new("file_authority_invalid", error.to_string())
+        })?;
+        resources.resolve()?;
+        // A resource later bound as a project follows that project's write policy.
+        resources.read.extend(resources.write.clone());
+        resources
+            .write
+            .retain(|path| !overlaps_project(path, &project_roots));
+        resources.apply(&mut files);
+    }
+    prepared.file_requests.resolve()?;
+    if !prepared.is_host_process() {
+        for path in &prepared.file_requests.write {
+            if overlaps_project(path, &project_roots)
+                && (is_shell_tool(&prepared.operation) || !files.protects(path))
+            {
+                return Err(LocalAgentKernelError::input("$.requestFileAccess.write", "workspaceWriteScope",
                         "Project writes follow the current Plan writablePaths or workspace setting. Remove this project path from requestFileAccess; publish or extend the Plan when needed.", None));
-                }
             }
         }
-        if matches!(
-            prepared.scope,
-            PreparedEffectScope::WorkspaceRead | PreparedEffectScope::WorkspaceMutation
-        ) {
-            for target in &prepared.private_resolved_targets {
-                let path = PathBuf::from(target);
-                let in_project_scope = prepared
-                    .workspace_policy
-                    .as_ref()
-                    .is_some_and(|policy| path.starts_with(&policy.root));
-                if prepared.scope != PreparedEffectScope::WorkspaceRead
-                    && !in_project_scope
-                    && overlaps_project(&path, &project_roots)
-                {
-                    return Err(LocalAgentKernelError::input("$.workspaceId", "workspaceWriteScope",
+    }
+    if matches!(
+        prepared.scope,
+        PreparedEffectScope::WorkspaceRead | PreparedEffectScope::WorkspaceMutation
+    ) {
+        for target in &prepared.private_resolved_targets {
+            let path = PathBuf::from(target);
+            let in_project_scope = prepared
+                .workspace_policy
+                .as_ref()
+                .is_some_and(|policy| path.starts_with(&policy.root));
+            if prepared.scope != PreparedEffectScope::WorkspaceRead
+                && !in_project_scope
+                && overlaps_project(&path, &project_roots)
+            {
+                return Err(LocalAgentKernelError::input("$.workspaceId", "workspaceWriteScope",
                         "This target belongs to another bound project. Select that project's workspace handle so its write policy applies.", None));
+            }
+            if prepared.scope == PreparedEffectScope::WorkspaceRead {
+                if !files.read.iter().any(|root| covers(root, &path)) {
+                    prepared.file_requests.read.push(path);
                 }
-                if prepared.scope == PreparedEffectScope::WorkspaceRead {
-                    if !files.read.iter().any(|root| covers(root, &path)) {
-                        prepared.file_requests.read.push(path);
-                    }
-                } else if !in_project_scope || files.protects(&path) {
-                    prepared.file_requests.write.push(path);
-                } else if prepared.operation == "fs.delete" && path.is_dir() {
-                    // Deleting a project tree also deletes its otherwise read-only Git metadata.
-                    prepared.file_requests.write.extend(
-                        files
-                            .read_only
-                            .iter()
-                            .filter(|metadata| metadata.starts_with(&path))
-                            .cloned(),
-                    );
-                }
+            } else if !in_project_scope || files.protects(&path) {
+                prepared.file_requests.write.push(path);
+            } else if prepared.operation == "fs.delete" && path.is_dir() {
+                // Deleting a project tree also deletes its otherwise read-only Git metadata.
+                prepared.file_requests.write.extend(
+                    files
+                        .read_only
+                        .iter()
+                        .filter(|metadata| metadata.starts_with(&path))
+                        .cloned(),
+                );
             }
         }
-        if is_shell_tool(&prepared.operation)
-            && !files.read.iter().any(|allowed| covers(allowed, root))
-        {
-            // Selecting a referenced directory as cwd still needs an external read grant.
-            prepared.file_requests.read.push(root.to_path_buf());
-        }
-        prepared.git_write_requested = prepared
+    }
+    if is_shell_tool(&prepared.operation) && !files.read.iter().any(|allowed| covers(allowed, root))
+    {
+        // Selecting a referenced directory as cwd still needs an external read grant.
+        prepared.file_requests.read.push(root.to_path_buf());
+    }
+    prepared.git_write_requested = prepared
+        .file_requests
+        .write
+        .iter()
+        .any(|path| files.protects(path));
+    prepared.file_authority_required = prepared.git_write_requested
+        || prepared
+            .file_requests
+            .read
+            .iter()
+            .any(|path| !files.read.iter().any(|root| covers(root, path)))
+        || prepared
             .file_requests
             .write
             .iter()
-            .any(|path| files.protects(path));
-        prepared.file_authority_required = prepared.git_write_requested
-            || prepared
-                .file_requests
-                .read
-                .iter()
-                .any(|path| !files.read.iter().any(|root| covers(root, path)))
-            || prepared
-                .file_requests
-                .write
-                .iter()
-                .any(|path| !files.write.iter().any(|root| covers(&root.path, path)));
-        prepared.file_access = files;
-        Ok(())
-    }
+            .any(|path| !files.write.iter().any(|root| covers(&root.path, path)));
+    prepared.file_access = files;
+    Ok(())
 }
 
 impl PreparedEffect {

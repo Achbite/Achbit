@@ -19,6 +19,23 @@ pub struct UserDirectories {
 
 impl UserDirectories {
     pub fn resolve() -> io::Result<Self> {
+        // A directly launched Debug executable must not discover the stable Host.
+        // Explicit roots still select a particular isolated test instance.
+        #[cfg(feature = "debug-control")]
+        if std::env::var_os("DEEPCODE_USER_ROOT").is_none() {
+            let base = std::env::var_os("HOME").ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "HOME is required for Debug user directories",
+                )
+            })?;
+            let root = if cfg!(target_os = "macos") {
+                PathBuf::from(base).join("Library/Application Support/DeepCode-Debug")
+            } else {
+                PathBuf::from(base).join(".deepcode-debug")
+            };
+            return Ok(Self::isolated(&root));
+        }
         let mut directories = resolve_for(
             std::env::consts::OS,
             |key| std::env::var_os(key),

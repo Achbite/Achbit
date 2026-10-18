@@ -72,6 +72,64 @@ pub(crate) struct UsageStore {
     pub coverage_from: u64,
 }
 impl UsageStore {
+    /// Debug queries the original physical-attempt receipts, including failed and
+    /// auxiliary calls. Missing Provider usage stays null in these records.
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn debug_records(&self, filter: &Value) -> Result<Value, String> {
+        let db = self.db.lock().map_err(|_| "usage_store_lock_failed")?;
+        let mut query = db
+            .prepare(
+                "SELECT record FROM provider_usage
+            WHERE (?1 IS NULL OR session_id=?1)
+              AND (?2 IS NULL OR json_extract(record,'$.runId')=?2)
+              AND (?3 IS NULL OR json_extract(record,'$.providerAttemptId')=?3)
+            ORDER BY started_at,id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map(
+                params![
+                    filter["sessionId"].as_str(),
+                    filter["runId"].as_str(),
+                    filter["providerAttemptId"].as_str()
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut records = Vec::new();
+        let mut totals = Totals::default();
+        for row in rows {
+            let record: CallRecord = serde_json::from_str(&row.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            if filter["fromMs"]
+                .as_u64()
+                .is_some_and(|from| record.started_at < from)
+                || filter["toMs"]
+                    .as_u64()
+                    .is_some_and(|to| record.started_at >= to)
+                || filter["requestId"]
+                    .as_str()
+                    .is_some_and(|id| record.request_id.as_deref() != Some(id))
+                || filter["purpose"]
+                    .as_str()
+                    .is_some_and(|purpose| record.purpose != purpose)
+                || filter["model"].as_str().is_some_and(|model| {
+                    record.requested_model != model && record.actual_model.as_deref() != Some(model)
+                })
+                || filter["connectionId"]
+                    .as_str()
+                    .is_some_and(|id| record.connection_id != id)
+            {
+                continue;
+            }
+            totals.add(&record);
+            records.push(serde_json::to_value(record).map_err(|e| e.to_string())?);
+        }
+        Ok(
+            json!({"source":"kernelProviderUsage","records":records,"totals":totals,"coverageFrom":self.coverage_from,"totalsScope":"reported-usage-subtotal","unknownUsageAttempts":totals.calls-totals.reported_calls,"controllerUsage":{"coverage":"unavailable","reason":"external-controller"}}),
+        )
+    }
+
     pub fn open(path: &FsPath) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;

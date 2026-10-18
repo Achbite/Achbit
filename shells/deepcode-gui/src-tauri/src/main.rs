@@ -933,6 +933,10 @@ fn create_main_window(
         .resizable(true)
         .fullscreen(false);
 
+    #[cfg(feature = "debug-control")]
+    let builder = builder
+        .initialization_script_for_all_frames(native_browser::debug::initialization_script());
+
     #[cfg(target_os = "macos")]
     let builder = builder
         .decorations(true)

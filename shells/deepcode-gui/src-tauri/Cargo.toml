@@ -7,6 +7,10 @@ edition = "2021"
 license = "MIT"
 rust-version = "1.86"
 
+[features]
+default = []
+debug-control = ["deepcode-host-connection/debug-control", "objc2-web-kit/WKContentWorld", "objc2-web-kit/WKFrameInfo", "objc2-app-kit/NSApplication", "objc2-app-kit/block2", "objc2/exception", "objc2-app-kit/objc2-core-graphics", "dep:objc2-core-graphics"]
+
 [[bin]]
 name = "DeepCode-GUI"
 path = "src/main.rs"
@@ -40,6 +44,7 @@ windows-sys = { version = "0.61", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGWindow", "CGImage", "CGGeometry"], optional = true }
 block2 = "0.6"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "block2"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenPanel", "NSSavePanel", "NSWindow", "NSResponder", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
