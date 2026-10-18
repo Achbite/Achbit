@@ -164,7 +164,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
-          composerInteractionId={composer.pendingInteraction?.interactionId}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">

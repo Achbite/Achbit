@@ -1189,7 +1189,7 @@
 .local-agent__interaction-panel {
   flex: 1 1 auto;
   display: grid;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 70px;
   max-height: min(340px, 37dvh);
   overflow: hidden;
@@ -1211,6 +1211,9 @@
 }
 
 .local-agent__interaction-caption { display: inline-flex; align-items: center; gap: 9px; color: var(--dc-muted); font-size: var(--dc-font-body); }
+.local-agent__interaction-controls,
+.local-agent__interaction-navigation { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.local-agent__interaction-navigation span { min-width: 3ch; text-align: center; font-size: var(--dc-font-caption); font-variant-numeric: tabular-nums; color: var(--dc-muted); }
 .local-agent__interaction-prompt { padding: 0 0 14px; color: var(--dc-foreground-strong); font-size: var(--dc-font-body-large); line-height: var(--dc-line-body); overflow-wrap: anywhere; }
 .local-agent__interaction-prompt .conversation-markdown > :first-child { margin-top: 0; }
 .local-agent__interaction-prompt .conversation-markdown > :last-child { margin-bottom: 0; }
@@ -1276,7 +1279,8 @@
   overscroll-behavior: contain;
 }
 
-.local-agent .local-agent__interaction-close {
+.local-agent .local-agent__interaction-close,
+.local-agent .local-agent__interaction-navigation button {
   display: grid;
   width: 24px;
   height: 24px;
@@ -1291,7 +1295,8 @@
   font-size: calc(18px * var(--dc-ui-font-scale, 1));
 }
 
-.local-agent .local-agent__interaction-close:hover {
+.local-agent .local-agent__interaction-close:hover,
+.local-agent .local-agent__interaction-navigation button:hover:enabled {
   background: var(--dc-surface-hover);
   color: var(--dc-foreground);
 }
@@ -1452,6 +1457,45 @@
   z-index: 5;
   padding: 0 20px 13px;
   background: linear-gradient(to bottom, transparent, var(--dc-surface) 24px);
+}
+
+.local-agent__composer-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.local-agent__decision-switcher {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: min(760px, 100%);
+  margin: 0 auto 10px;
+}
+
+.local-agent .local-agent__decision-switcher > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dc-muted);
+  font: inherit;
+  font-size: var(--dc-font-body);
+  cursor: pointer;
+}
+
+.local-agent .local-agent__decision-switcher > button:hover {
+  background: var(--dc-surface-hover);
+}
+
+.local-agent .local-agent__decision-switcher > button[aria-pressed='true'] {
+  border-color: var(--dc-border);
+  background: var(--dc-surface-raised);
+  color: var(--dc-foreground-strong);
 }
 
 .local-agent__composer,
@@ -2372,8 +2416,6 @@
 .local-agent__host-rebind button { flex: 0 1 auto; max-width: 100%; margin-left: auto; white-space: normal; }
 
 /* Questions stay at their original transcript position while the Loop continues. */
-.local-agent .local-agent__question-link { display: inline-flex; align-items: center; gap: 8px; border: 0; padding: 6px 0; background: transparent; color: var(--dc-muted); font: inherit; cursor: pointer; }
-.local-agent .local-agent__question-link:hover { color: var(--dc-foreground); }
 .local-agent__composer--interaction > .local-agent__question-options { grid-column: 1 / -1; width: 100%; min-width: 0; max-height: min(240px, 28dvh); overflow: auto; margin: 0; }
 .local-agent__question {
   box-sizing: border-box;

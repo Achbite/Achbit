@@ -9,8 +9,8 @@ import { InteractionOptions } from './InteractionOptions';
 import { interactionResponseLabel } from './interactionPresentation';
 
 /** Answers identify the journal question, even while another Provider turn runs. */
-export function InteractionCard({ interaction, language, answerInComposer = false, onRespond, disabled = false }: {
-  interaction: InteractionProjection; language: UiLanguage; answerInComposer?: boolean;
+export function InteractionCard({ interaction, language, onRespond, disabled = false }: {
+  interaction: InteractionProjection; language: UiLanguage;
   onRespond?: (response: string, interactionId: string) => Promise<unknown>;
   disabled?: boolean;
 }) {
@@ -18,7 +18,7 @@ export function InteractionCard({ interaction, language, answerInComposer = fals
   const [text, setText] = useConversationRowState(`question:${interaction.interactionId}:draft`, '');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pending = interaction.status === 'pending' && !answerInComposer;
+  const pending = interaction.status === 'pending';
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     if (textareaRef.current) resizeReplyInput(textareaRef.current);
@@ -43,12 +43,6 @@ export function InteractionCard({ interaction, language, answerInComposer = fals
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setSending(false); }
   };
-  if (answerInComposer && interaction.status === 'pending') {
-    return <button type="button" className="local-agent__question-link" aria-controls="conversation-interaction"
-      onClick={() => document.getElementById('conversation-interaction')?.focus({ preventScroll: true })}>
-      <DeepCodeShellIcon name="question" size={16} />{t(language, 'agent.question.open')}
-    </button>;
-  }
   return <article className="local-agent__question" aria-label={t(language, 'agent.question.title')} aria-busy={sending}>
     <header>
       <span>{t(language, pending ? interaction.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question' : `agent.question.${interaction.status}`)}</span>

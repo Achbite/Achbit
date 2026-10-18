@@ -16,7 +16,7 @@ type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAdditio
   | 'pendingApproval' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'respondApproval' | 'projection'>;
 
 export function ComposerQuestionPrompt({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
-  const { pendingPlan, pendingScopeAddition, pendingInteraction, submitting, submitPlanDecision, respondInteraction, projection } = composer;
+  const { pendingPlan, pendingScopeAddition, pendingInteraction, interactionNavigation, submitting, submitPlanDecision, respondInteraction, projection } = composer;
   const confirmation = pendingInteraction?.kind === 'confirmation';
   const sendDecision = async (text: string) => {
     try { await respondInteraction(text, pendingInteraction?.interactionId); } catch { /* The shared store exposes the error. */ }
@@ -25,12 +25,6 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
       {(pendingPlan || pendingInteraction) && (
         <section id={pendingPlan ? undefined : 'conversation-interaction'} tabIndex={-1}
           className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
-          <div
-            className="local-agent__interaction-document-scroll"
-            tabIndex={0}
-            role="region"
-            aria-label={t(language, 'agent.interaction.details')}
-          >
             <header className="local-agent__interaction-panel-heading">
               <span className="local-agent__interaction-caption">
                 <DeepCodeShellIcon name={pendingPlan ? 'artifact' : 'question'} size={17} />
@@ -38,6 +32,17 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                   ? t(language, pendingScopeAddition ? 'agent.plan.reviewScope' : 'agent.plan.review')
                   : t(language, confirmation ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
               </span>
+              <div className="local-agent__interaction-controls">
+              {!pendingPlan && interactionNavigation && <div className="local-agent__interaction-navigation" role="group"
+                aria-label={t(language, 'agent.interaction.navigation')}>
+                <button type="button" aria-label={t(language, 'agent.interaction.previous')}
+                  title={t(language, 'agent.interaction.previous')} disabled={submitting || interactionNavigation.index === 0}
+                  onClick={interactionNavigation.previous}><DeepCodeShellIcon name="chevronLeft" size={15} /></button>
+                <span aria-live="polite">{interactionNavigation.index + 1}/{interactionNavigation.count}</span>
+                <button type="button" aria-label={t(language, 'agent.interaction.next')}
+                  title={t(language, 'agent.interaction.next')} disabled={submitting || interactionNavigation.index === interactionNavigation.count - 1}
+                  onClick={interactionNavigation.next}><DeepCodeShellIcon name="chevronRight" size={15} /></button>
+              </div>}
               {(pendingPlan || pendingInteraction?.allowFreeform) && <button
                 type="button"
                 className="local-agent__interaction-close"
@@ -48,7 +53,15 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                   ? void submitPlanDecision({ kind: 'cancel' })
                   : void sendDecision(t(language, 'agent.interaction.skip'))}
               ><DeepCodeShellIcon name="close" size={15} /></button>}
+              </div>
             </header>
+          <div
+            key={pendingInteraction?.interactionId}
+            className="local-agent__interaction-document-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label={t(language, 'agent.interaction.details')}
+          >
             <div className="local-agent__interaction-prompt">
               {pendingPlan
                 ? pendingScopeAddition ? <>

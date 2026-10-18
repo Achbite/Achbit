@@ -32,6 +32,18 @@ export function ConversationComposer({
   onEditBrowserReview,
 }: ConversationComposerProps) {
   const connections = useLocalAgentStore(state => state.connections);
+  const concurrentDecisionKey = composer.pendingApproval && (composer.pendingPlan || composer.pendingInteraction)
+    ? JSON.stringify([composer.conversationKey, composer.pendingApproval.approvalId,
+      composer.pendingPlan?.planId, composer.pendingPlan?.revision])
+    : null;
+  const [selectedTextDecision, setSelectedTextDecision] = useState<string | null>(null);
+  const showApproval = Boolean(composer.pendingApproval
+    && (!concurrentDecisionKey || selectedTextDecision !== concurrentDecisionKey));
+  // Select a view only. Both decisions and the answer draft stay in their existing owners.
+  const visibleComposer = showApproval
+    ? { ...composer, pendingPlan: null, pendingScopeAddition: null, pendingInteraction: null }
+    : { ...composer, pendingApproval: null };
+  const decisionContentId = useId();
   const {
     pendingPlan,
     pendingInteraction,
@@ -83,7 +95,7 @@ export function ConversationComposer({
     submitDraft,
     canSend,
     showStopAction,
-  } = composer;
+  } = visibleComposer;
   const regionData = { kind: 'composer' as const, draft, canSend, canStop: showStopAction, attachments: pendingFilesystemPaths };
   const regionActions = {
     updateDraft: (text: string) => updateDraft(text, text.length),
@@ -189,7 +201,21 @@ export function ConversationComposer({
           : (language === 'zh-CN' ? '未加入本轮' : 'Not applied to this run')}</strong>
         <span>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map((item) => item.displayName).join(', ')}` : ''}</span>
       </div>)}
-      <ComposerQuestionPrompt language={language} composer={composer} />
+      {concurrentDecisionKey && <div className="local-agent__decision-switcher" role="group"
+        aria-label={t(language, 'agent.decision.pending')}>
+        <button type="button" aria-pressed={showApproval} aria-controls={decisionContentId}
+          onClick={() => setSelectedTextDecision(null)}>
+          <DeepCodeShellIcon name="shield" size={16} />{t(language, 'agent.approval.toolPermission')}
+        </button>
+        <button type="button" aria-pressed={!showApproval} aria-controls={decisionContentId}
+          onClick={() => setSelectedTextDecision(concurrentDecisionKey)}>
+          <DeepCodeShellIcon name={composer.pendingPlan ? 'artifact' : 'question'} size={16} />
+          {t(language, composer.pendingPlan ? 'agent.plan.review'
+            : composer.pendingInteraction?.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
+        </button>
+      </div>}
+      <div id={decisionContentId} className="local-agent__composer-content">
+      <ComposerQuestionPrompt language={language} composer={visibleComposer} />
       <div
         className={`local-agent__composer local-agent__composer--${inputMode}`}
         data-press-feedback={pressFeedback ?? undefined}
@@ -207,7 +233,7 @@ export function ConversationComposer({
           playPressFeedback();
         }}
       >
-        <ComposerDecisionPanels language={language} composer={composer} />
+        <ComposerDecisionPanels language={language} composer={visibleComposer} />
         {!pendingApproval && <>
         {composer.editingMessage && !composer.textDecision && <>
           <div className="local-agent__message-edit-notice">
@@ -518,6 +544,7 @@ export function ConversationComposer({
           </div></UiRegion>
         </div>
         </>}
+      </div>
       </div>
       {!pendingPlan && !pendingInteraction && !pendingApproval && (
         <div className="local-agent__composer-hint">

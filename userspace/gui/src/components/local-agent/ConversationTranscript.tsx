@@ -48,7 +48,6 @@ interface ConversationTranscriptProps {
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   canEditMessage?: boolean;
   onEditMessage?: (message: SessionProjection['messages'][number]) => void;
-  composerInteractionId?: string;
 }
 
 export function ConversationTranscript({
@@ -69,7 +68,6 @@ export function ConversationTranscript({
   setUiActionError,
   canEditMessage = false,
   onEditMessage,
-  composerInteractionId,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
@@ -285,7 +283,7 @@ export function ConversationTranscript({
           onToggle={onPlanToggle}
         />
       ) : item.type === 'interaction' ? (
-        <InteractionCard interaction={item.value} language={language} answerInComposer={item.value.interactionId === composerInteractionId} />
+        <InteractionCard interaction={item.value} language={language} />
       ) : (
         <ToolActivityGroup
           activities={item.values}
