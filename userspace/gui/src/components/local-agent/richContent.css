@@ -42,12 +42,20 @@
 .conversation-code pre { margin: 0; padding: 8px 16px 16px; overflow: auto; white-space: pre; font: var(--dc-font-code-size, 12px)/var(--dc-line-code, 1.6) var(--dc-font-code); }
 .conversation-code pre code { padding: 0; background: transparent; font-size: inherit; }
 .conversation-table { min-width: 0; max-width: 100%; }
-/* Only rich blocks use the spare space on both sides of the centered reading column. */
+/* Wide content may use the spare space; short code keeps the reading column width. */
 @container conversation (min-width: 828px) {
-  .local-agent__message--assistant .conversation-markdown > :is(.conversation-table[data-wide='true'], .conversation-code) {
+  .local-agent__message--assistant .conversation-markdown > .conversation-table[data-wide='true'] {
     width: min(1080px, calc(100cqi - 48px));
     max-width: none;
     margin-inline: calc((100% - min(1080px, calc(100cqi - 48px))) / 2);
+  }
+  .local-agent__message--assistant .conversation-markdown > .conversation-code {
+    width: max-content;
+    min-width: 100%;
+    max-width: min(1080px, calc(100cqi - 48px));
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
   }
 }
 .conversation-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding-bottom: 6px; }
