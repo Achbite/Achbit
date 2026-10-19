@@ -13,7 +13,6 @@ import type {
   CommandReply,
   ConversationCommand,
   KernelPort,
-  PlanAuthority,
   PrepareRunRuntimeRequest,
   PreparedRunRuntime,
   PreparedToolDescriptor,

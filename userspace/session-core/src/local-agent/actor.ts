@@ -23,7 +23,6 @@ import type {
   ConversationCommand,
   InteractionProjection,
   NewSessionEvent,
-  PlanAuthority,
   RunSettlement,
   SessionEvent,
   SessionProjection,

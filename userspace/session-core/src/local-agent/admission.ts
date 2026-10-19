@@ -14,7 +14,7 @@ export function admitSessionEvents(
   events: readonly NewSessionEvent[],
   command?: { input: ConversationCommand; reply: Omit<CommandReply, 'revision'> },
 ): void {
-  if (command) admitCommandBatch(current, command.input, events, command.reply);
+  if (command) admitCommandBatch(command.input, events, command.reply);
   let snapshot = current;
   for (const event of events) {
     admitEvent(snapshot, event);
@@ -30,7 +30,7 @@ export function admitSessionEvents(
   }
 }
 
-function admitCommandBatch(current: LoopSnapshot, command: ConversationCommand, events: readonly NewSessionEvent[], reply: Omit<CommandReply, 'revision'>): void {
+function admitCommandBatch(command: ConversationCommand, events: readonly NewSessionEvent[], reply: Omit<CommandReply, 'revision'>): void {
   if (reply.sessionId !== command.sessionId || reply.commandId !== command.commandId
     || events.some((event) => event.sessionId !== command.sessionId)) throw new Error('session_command_identity_mismatch');
   if (reply.status === 'rejected') {

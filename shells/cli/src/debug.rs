@@ -399,8 +399,8 @@ pub(super) async fn run(values: &[String]) -> Result<(), String> {
                 .ok_or("GUI host list missing")?;
             let selected =
                 match params["guiHostId"].as_str() {
-                    Some(id) => Some(json!(id)),
-                    None if hosts.len() == 1 => Some(hosts[0].clone()),
+                    Some(id) => json!(id),
+                    None if hosts.len() == 1 => hosts[0].clone(),
                     None if hosts.is_empty() => return Err(
                         "Owned GUI process is not confirmed absent, but no GUI control endpoint is available".into(),
                     ),
@@ -409,9 +409,7 @@ pub(super) async fn run(values: &[String]) -> Result<(), String> {
                             .into(),
                     ),
                 };
-            if let Some(gui) = selected {
-                client.call("gui.stop",json!({"guiHostId":gui,"expectedPid":receipt["guiPid"],"expectedIdentity":connection.identity})).await?;
-            }
+            client.call("gui.stop",json!({"guiHostId":selected,"expectedPid":receipt["guiPid"],"expectedIdentity":connection.identity})).await?;
         }
         let response = client
             .http

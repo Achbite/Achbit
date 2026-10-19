@@ -450,16 +450,11 @@ pub(crate) async fn observe(
         let entries = SUBSCRIPTIONS
             .lock()
             .map_err(|_| "debug_observation_lock_failed")?;
-        if entries
+        entries
             .get(&request.subscription_id)
-            .is_none_or(|s| s.control_id != request.control_id)
-        {
-            return Err("debug_subscription_not_available".into());
-        }
-        Ok(entries
-            .get(&request.subscription_id)
-            .expect("validated subscription")
-            .clone())
+            .filter(|subscription| subscription.control_id == request.control_id)
+            .cloned()
+            .ok_or_else(|| "debug_subscription_not_available".into())
     })();
     let subscription = match result {
         Ok(s) => s,

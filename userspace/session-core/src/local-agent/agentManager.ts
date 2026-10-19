@@ -1,6 +1,6 @@
 import { CONVERSATION_COMMAND_VERSION, inheritAgentRecipe } from '@deepcode/protocol';
 import type {
-  AgentCapabilities, AgentChildProjection, AgentHostPort, AgentOperation, AgentTaskProjection,
+  AgentChildProjection, AgentHostPort, AgentOperation, AgentTaskProjection,
   CommandReply, JsonObject, SessionProjection,
 } from '@deepcode/protocol';
 import type { SessionActor } from './actor.js';
