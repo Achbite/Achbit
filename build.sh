@@ -15,7 +15,7 @@ STAGES=()
 usage() {
   cat <<'HELP'
 Usage: bash build.sh [-debug] [--stage STAGE]...
-  -debug              macOS Debug app/runtime/archive in bin/debug, without PKG.
+  -debug              Windows/macOS Debug runtime/archive in bin/debug, without installers.
   package (default)    Build every available platform; fail if none built.
   package-linux       Linux runtime for the container architecture.
   package-windows     Windows x64 runtime, ZIP and Setup (GNU cross toolchain + NSIS).
@@ -47,9 +47,12 @@ if [ "$DEEPCODE_BUILD_KIND" = debug ]; then
     printf 'Debug output is fixed at bin/debug; remove conflicting DEEPCODE_OUTPUT_DIR.\n' >&2; exit 2
   fi
   OUTPUT_DIR="$ROOT_DIR/bin/debug"
-  [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package-macos)
+  [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
   for stage in "${STAGES[@]}"; do
-    [ "$stage" = package-macos ] || { printf 'Debug stage is not supported: %s (use package-macos).\n' "$stage" >&2; exit 2; }
+    case "$stage" in
+      package|package-macos|package-windows) ;;
+      *) printf 'Debug stage is not supported: %s (use package-windows or package-macos).\n' "$stage" >&2; exit 2 ;;
+    esac
   done
 else
   [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
@@ -141,7 +144,11 @@ all=0
 add_platform() { local existing; for existing in "${platforms[@]:-}"; do [ "$existing" != "$1" ] || return 0; done; platforms+=("$1"); }
 for stage in "${STAGES[@]}"; do
   case "$stage" in
-    package) all=1; add_platform linux; add_platform windows; add_platform macos ;;
+    package)
+      all=1
+      [ "$DEEPCODE_BUILD_KIND" = debug ] || add_platform linux
+      add_platform windows; add_platform macos
+      ;;
     package-linux|package-windows|package-macos) add_platform "${stage#package-}" ;;
     ui) ui=1 ;;
     computer-use) computer_use=1 ;;

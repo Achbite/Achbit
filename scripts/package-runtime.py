@@ -115,6 +115,8 @@ def assemble(args):
     if windows:
         # macOS ships the executor as a separately signed App; Windows uses a sibling program.
         names['DeepCode-Computer-Use'] = WINDOWS_COMPUTER_USE.removesuffix('.exe')
+        if debug:
+            names['DeepCode-GUI'] = 'DeepCode-Debug'
     for source, target in names.items():
         destination = binaries / (target + suffix)
         if windows:
@@ -138,6 +140,8 @@ def assemble(args):
         for shell in ('cli', 'tui'):
             launcher = stage / f'deepcode-{shell}.bat'
             launcher.write_text('@echo off\nsetlocal\nset "DEEPCODE_RUNTIME_DIR=%~dp0"\nset "DEEPCODE_KERNEL_BIN=%~dp0deepcode-kernel.exe"\n"%~dp0deepcode-' + shell + '.exe" %*\nexit /b %errorlevel%\n')
+        if debug:
+            (stage / 'deepcode-debug.cmd').write_text('@echo off\nsetlocal\nset "DEEPCODE_RUNTIME_DIR=%~dp0"\nset "DEEPCODE_KERNEL_BIN=%~dp0deepcode-kernel.exe"\n"%~dp0deepcode-cli.exe" debug %*\nexit /b %errorlevel%\n')
     metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME'], 'buildKind': 'debug' if debug else 'normal', 'debugControl': debug}
     (resources / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
     if macos:
@@ -177,7 +181,7 @@ export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/deepcode-kernel"
 # Only program entries belong to the publisher. config/runtime/logs/sessions and
 # other user-created entries are never copied, removed or put into the archive.
 PROGRAM_ENTRIES = {
-    'DeepCode-Debug.app', 'DeepCode Debug Computer Use.app', 'deepcode-debug',
+    'DeepCode-Debug.app', 'DeepCode Debug Computer Use.app', 'deepcode-debug', 'DeepCode-Debug.exe', 'deepcode-debug.cmd',
     COMPUTER_USE_APP, WINDOWS_COMPUTER_USE,
     'DeepCode.app', 'DeepCode-GUI.app', 'DeepCode', 'DeepCode.exe', 'DeepCode-GUI', 'DeepCode-GUI.exe',
     'DeepCode-CLI.command', 'DeepCode-TUI.command', 'deepcode', 'libexec',

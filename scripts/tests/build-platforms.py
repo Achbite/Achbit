@@ -156,15 +156,28 @@ class BuildTests(unittest.TestCase):
         return subprocess.run(['bash', str(self.root / 'build.sh'), *arguments], env=self.environment,
                               text=True, capture_output=True, timeout=20)
 
-    def test_debug_uses_only_macos_and_preserves_normal_outputs(self):
+    def test_debug_uses_available_windows_and_macos_and_preserves_normal_outputs(self):
         self.environment.pop('DEEPCODE_OUTPUT_DIR')
         write(self.root, 'bin/macos-arm64/running-product', b'unchanged')
+        write(self.root, 'bin/win64/running-product', b'unchanged')
         result = self.build({'content': 'debug'}, '-debug')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / 'bin/debug/macos.txt').read_text(), 'debug')
+        self.assertEqual((self.root / 'bin/debug/windows.txt').read_text(), 'debug')
         self.assertEqual((self.root / 'bin/macos-arm64/running-product').read_bytes(), b'unchanged')
+        self.assertEqual((self.root / 'bin/win64/running-product').read_bytes(), b'unchanged')
         calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
         self.assertEqual([c['platform'] for c in calls if c['action'] == 'package'], ['macos'])
+        self.assertEqual([c['platform'] for c in calls if c['action'] == '--package'], ['windows'])
+        self.assertEqual(sum(c['action'] == '--shared' for c in calls), 1)
+
+    def test_debug_windows_build_needs_no_macos_host(self):
+        self.environment.pop('DEEPCODE_OUTPUT_DIR')
+        result = self.build({'check': {'macos': 3}}, '-debug', '--stage', 'package-windows')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.root / 'bin/debug/windows.txt').is_file())
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertFalse(any(c['platform'] in ('macos', 'linux') for c in calls))
 
     def test_debug_rejects_output_conflict_and_unsupported_stage(self):
         result = self.build({}, '-debug')
@@ -212,6 +225,40 @@ class BuildTests(unittest.TestCase):
         self.assertTrue(lock.is_dir())
         transaction = Path((lock / 'transaction').read_text().strip())
         self.assertTrue((transaction / 'shared/input.txt').is_file())
+
+
+class WindowsDebugPackageTests(unittest.TestCase):
+    def test_debug_and_normal_packages_have_distinct_executable_and_control_launcher(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-win-debug-') as directory:
+            root = Path(directory)
+            native, shared = root / 'native', root / 'shared'
+            shared.mkdir()
+            for name in ('deepcode-kernel-daemon', 'deepcode-first-party-provider', 'deepcode-host-web',
+                         'deepcode-cli', 'deepcode-tui', 'DeepCode-GUI', 'DeepCode-Computer-Use'):
+                write(native, name + '.exe', name.encode())
+            for name in ('node.exe', 'LICENSE', 'WebView2Loader.dll'):
+                write(root, name, name.encode())
+            def strip(command, **kwargs):
+                self.assertEqual(command[:3], ['x86_64-w64-mingw32-strip', '--strip-unneeded', '-o'])
+                shutil.copy2(command[4], command[3])
+            for kind in ('normal', 'debug'):
+                stage = root / kind
+                args = SimpleNamespace(root=ROOT, stage=stage, platform='win64', native=native, shared=shared,
+                                       node=root / 'node.exe', node_license=root / 'LICENSE', webview_loader=root / 'WebView2Loader.dll')
+                with patch.object(package.subprocess, 'run', side_effect=strip), patch.object(package, 'windows_tui_resources'), \
+                        patch.dict(os.environ, {'DEEPCODE_BUILD_KIND': kind, 'DEEPCODE_BUILD_TIME': 'fixture'}):
+                    package.assemble(args)
+                debug = kind == 'debug'
+                self.assertEqual((stage / 'DeepCode-Debug.exe').exists(), debug)
+                self.assertEqual((stage / 'DeepCode-GUI.exe').exists(), not debug)
+                self.assertEqual((stage / 'deepcode-debug.cmd').exists(), debug)
+                self.assertEqual(json.loads((stage / 'BUILDINFO.json').read_text())['debugControl'], debug)
+                if debug:
+                    launcher = (stage / 'deepcode-debug.cmd').read_text()
+                    self.assertIn('"%~dp0deepcode-cli.exe" debug %*', launcher)
+                    self.assertIn('exit /b %errorlevel%', launcher)
+                    self.assertIn('DeepCode-Debug.exe', package.PROGRAM_ENTRIES)
+                    self.assertIn('deepcode-debug.cmd', package.PROGRAM_ENTRIES)
 
 
 class NativeMacArgumentsTests(unittest.TestCase):
