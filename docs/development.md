@@ -41,13 +41,15 @@ A GUI resource update does not replace TUI, Session, Kernel, or native launchers
 
 ## Debug control for iteration
 
-Build the isolated macOS product through the same container/native packaging entrypoint:
+Build the isolated Windows or macOS product through the same container/native packaging entrypoint:
 
 ```bash
 bash ./build.sh -debug
+# Select Windows explicitly:
+bash ./build.sh -debug --stage package-windows
 ```
 
-The runnable package is `bin/debug/macos-arm64`, with its archive alongside it under `bin/debug`. It contains `DeepCode-Debug.app` and `deepcode-debug`, uses a distinct application identity and user root, and generates no PKG or global command. Other Debug target stages explicitly report unsupported. Normal macOS builds continue to publish `bin/macos-arm64` and their ordinary archive/PKG. Building either output does not update an already running application or Host.
+The default selects available Windows and macOS targets. Windows writes `bin/debug/win64` and a ZIP containing `DeepCode-Debug.exe` and `deepcode-debug.cmd`; macOS writes `bin/debug/macos-arm64` and its archive containing `DeepCode-Debug.app` and `deepcode-debug`. Both use a distinct application identity and user root and generate no installer or global command. Linux Debug stages explicitly report unsupported. Normal builds retain their ordinary output directories and installers. Building either output does not update an already running application or Host.
 
 Use the [Debug CLI guide](debug-control.md) to launch with an explicit test workspace and state root. Prefer direct CLI tool/UI actions for targeted tests and one pushed observation stream for Agent tasks. Ordinary Session timing and the execution-process duration display are not gated by the Debug build; only the external control and detailed query interfaces are.
 

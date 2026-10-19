@@ -4,11 +4,11 @@ The Debug CLI controls an isolated DeepCode development product. A controlling A
 
 ## Build and launch
 
-Run `bash ./build.sh -debug` through the repository's Docker build entrypoint. The supported Debug target is macOS on Apple Silicon; unsupported target stages fail explicitly. Native compilation and signing use the existing macOS packaging bridge.
+Run `bash ./build.sh -debug` through the repository's Docker build entrypoint to select available Windows x64 and macOS Apple Silicon targets. Use `--stage package-windows` or `--stage package-macos` to select one explicitly. Linux Debug stages fail explicitly. Windows uses the existing GNU cross toolchain; macOS native compilation and signing use the existing packaging bridge.
 
-The runnable package is `bin/debug/macos-arm64`, with an archive under `bin/debug`. It contains `DeepCode-Debug.app`, its runtime and the `deepcode-debug` launcher. Keep their relative paths intact. Debug produces no PKG and installs no global command. A normal macOS build retains `bin/macos-arm64`, its ordinary application and installer, and does not contain the Debug control interface.
+Windows produces `bin/debug/win64` and a ZIP under `bin/debug`, containing `DeepCode-Debug.exe`, its runtime and `deepcode-debug.cmd`. macOS produces `bin/debug/macos-arm64` and its archive, containing `DeepCode-Debug.app` and `deepcode-debug`. Keep their relative paths intact. Debug produces no Setup/PKG and installs no global command. Normal builds retain their ordinary output directories, applications and installers without the Debug control interface.
 
-The Debug app has a separate application identity and default user root, `~/Library/Application Support/DeepCode-Debug`. CLI launch requires an explicit independent state root and an existing test workspace:
+The Debug app has a separate application identity and default user root: `%LOCALAPPDATA%\DeepCode-Debug` on Windows, `~/Library/Application Support/DeepCode-Debug` on macOS. CLI launch requires an explicit independent state root and an existing test workspace:
 
 ```sh
 ./deepcode-debug launch --artifact . \
@@ -17,6 +17,8 @@ export DEEPCODE_USER_ROOT=/absolute/debug-state
 ./deepcode-debug inspect
 ./deepcode-debug --help
 ```
+
+In Windows PowerShell, use `.\deepcode-debug.cmd launch --artifact . --workspace 'E:\test-workspace' --state-root 'E:\debug-state'`, then `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'`. Use `.\deepcode-debug.cmd` for the following commands. WebView2 awaits asynchronous dispatch and captures the actual target viewport.
 
 Every connected command requires that state root, either through `--state-root` or the explicit environment variable. `launch --headless` starts only the Host. `inspect` reports the current instance and registered GUI hosts; GUI actions require an available GUI. Configure models in the independent product as needed; launch does not copy credentials from the ordinary product.
 
@@ -65,7 +67,9 @@ Inspection reports text/element truncation and each DOM control's supported acti
 
 ### Product-owned native file selectors
 
-Open the selector through the product's attachment or directory-selection UI. `surfaces inspect --target native-dialog` describes the active product-owned sheet and its actual accessibility nodes. `dialog.inspect` with `nodePath` can query an already observed subtree. A root query has a 512-node budget; `truncated` and `coverage` report partial observations, and individual attribute errors remain in `attributeErrors`.
+On Windows, the product-owned file picker runs in its own COM apartment so GUI inspection remains available. Inspection exposes actual UI Automation nodes, `nodePath`, supported actions and attribute errors. Use `dialog.press` with the published `Invoke` action, `dialog.setValue` with `value`, or `dialog.selectRow` for a selectable node. Include the observed `dialogId`; actions do not directly fabricate paths. The original picker completion publishes `nativeDialogs.lastResult` as `selected`, `cancelled` or `failed`. Capture covers only that picker. Native menu items are separately listed by `surfaces list`; `menu.select` takes the observed `itemPath`. System permission and external login windows remain outside this surface.
+
+On macOS, open the selector through the product's attachment or directory-selection UI. `surfaces inspect --target native-dialog` describes the active product-owned sheet and its actual accessibility nodes. On both platforms, `dialog.inspect` with `nodePath` can query an already observed subtree. A root query has a 512-node budget; `truncated` and `coverage` report partial observations, and individual attribute errors remain in `attributeErrors`. The following accessibility actions describe macOS:
 
 - `dialog.selectRow` takes the actual `collectionPath` of a list and `nodePath` of its direct row child, using writable `AXSelectedChildren`. For a directly selectable sidebar row, use its `nodePath` with writable `AXSelected`.
 - `dialog.press` takes `nodePath` and an optional published action, defaulting to `AXPress`. Select an item, then press the actual confirmation button. `AXOpen` can confirm a choice; it is not a directory-navigation shortcut.
@@ -83,6 +87,8 @@ The native completion callback is authoritative: `nativeDialogs.lastResult.statu
 ```
 
 Task submission installs its observation subscription before execution. Existing-task subscriptions cover future events, not a reconstructed history. The existing input queue still accepts `task message --session-id ... --text ...` while work is running; follow-up input reaches the next applicable Session request boundary. Use `task cancel --session-id ... --run-id ...` for explicit cancellation and `task respond --session-id ... --command JSON` for an existing decision's actual command schema.
+
+`--follow` prints the original terminal receipt and exits nonzero when the observed task's own `run.settled` reports failure. A normally closed observation stream does not establish task success.
 
 One `--follow` connection streams JSONL groups pushed by the target. It delivers the first visible text and text after tools at a complete fragment or the one-second aggregation window, with the preceding tool facts. Continuous tools accumulate until the default 100,000 estimated-token budget or 180-second age boundary. Necessary decisions and terminal state are delivered immediately. A smaller `--input-budget-tokens` on subscription/task submission limits groups to the receiver's available context. These estimates describe delivery size, not billed Provider usage.
 

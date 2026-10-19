@@ -1,8 +1,8 @@
 # DeepCode Debug CLI
 
-通过 `bash build.sh -debug` 构建 macOS Debug 版本。目录运行包和归档只写入 `bin/debug`，不生成 PKG，不安装全局命令。保持解压目录中的应用、启动器和 runtime 相对位置。
+通过 `bash build.sh -debug` 构建当前可用的 Windows/macOS Debug 版本；只构建 Windows 时使用 `bash build.sh -debug --stage package-windows`。目录运行包和归档只写入 `bin/debug`，不生成 Setup/PKG，不安装全局命令。保持解压目录中的应用、启动器和 runtime 相对位置。
 
-Debug 应用是 `DeepCode-Debug.app`，可运行目录是 `bin/debug/macos-arm64`。它的应用标识和默认用户目录独立于普通 DeepCode；直接打开时使用 `~/Library/Application Support/DeepCode-Debug`。CLI 控制必须显式指定独立状态目录与测试工作区。普通构建不包含这些控制接口，但普通对话计时和过程标题旁的用时展示不受 Debug 开关限制。其他 Debug 平台阶段明确报告不支持。
+Windows 应用为 `bin/debug/win64/DeepCode-Debug.exe`，启动器为 `deepcode-debug.cmd`，直接打开时使用 `%LOCALAPPDATA%\DeepCode-Debug`。macOS 应用是 `bin/debug/macos-arm64/DeepCode-Debug.app`，启动器为 `deepcode-debug`，直接打开时使用 `~/Library/Application Support/DeepCode-Debug`。应用标识和默认用户目录均独立于普通 DeepCode。CLI 控制必须显式指定独立状态目录与测试工作区。普通构建不包含这些控制接口，但普通对话计时和过程标题旁的用时展示不受 Debug 开关限制。Linux Debug 阶段明确报告不支持。
 
 ## 启动与接管
 
@@ -15,6 +15,16 @@ export DEEPCODE_USER_ROOT=/absolute/debug-state
 ./deepcode-debug inspect
 ./deepcode-debug --help
 ```
+
+Windows PowerShell 示例（后续命令使用 `deepcode-debug.cmd`）：
+
+```powershell
+.\deepcode-debug.cmd launch --artifact . --workspace 'E:\test-workspace' --state-root 'E:\debug-state'
+$env:DEEPCODE_USER_ROOT = 'E:\debug-state'
+.\deepcode-debug.cmd inspect
+```
+
+Windows GUI 使用 WebView2 等待异步动作完成并捕获目标视口；原生文件选择器通过 UI Automation 暴露实际 `nodePath`、可用动作和属性错误。`dialog.press` 使用已公布的 `Invoke`，`dialog.setValue` 传 `value`，`dialog.selectRow` 选择观察到的行；携带 `dialogId` 可校验对话框身份。选择/取消仍以 `nativeDialogs.lastResult` 的原生结果为准。截图仅覆盖本程序的选择器，系统权限或外部窗口不在此接口内。Windows 原生菜单使用 `surfaces list` 返回的 `itemPath` 和 `menu.select`。
 
 `launch` 启动独立 Host 和 GUI，返回实例、控制身份与目录。`--headless` 只启动 Host。已有实例使用 `attach --workspace ...` 接管；`detach` 结束控制但不等于取消任务，`stop` 关闭当前启动器拥有的 GUI 和 Host 并返回生命周期结果。模型设置在此独立实例中配置，不自动复制稳定版凭据。重新打包不更新正在运行的进程；新 GUI 也可能连接已有 Host，验证 Session、Kernel 或内置指导修改时应确认实际加载的进程。
 
@@ -74,6 +84,8 @@ GUI 启动最多等待 20 秒，确认进程仍在、控制端已注册、主工
 `observe --wait-ms ...` 最长等待下一次交付 180 秒；不带 `--follow` 时返回一次交付或超时状态，带 `--follow` 时沿同一连接继续接收。安静超时返回 `observation.wait_timeout`、当前状态及 `modelInput: false`，不取消任务，也不应唤醒一次模型分析。控制方无需频繁查询状态或把每个流式片段单独送给模型。观察失败明确报告，B 继续原任务；不自动重连或重放。运行中仍可通过 `task message --session-id ... --text ...` 沿原输入队列提交后续对话。
 
 子代理配置保存在各自 Session。先用 `task inspect --session-id SESSION_ID` 读取 `subagentSettings`，保留完整配置并修改需要的字段，再用 `task respond --session-id SESSION_ID --command @settings-change.json` 提交 `{"type":"session.subagent-settings.set","settings":完整配置对象}`。一次新接纳的保存也更新未来会话的默认值，但不改其他已有会话；重复命令不再次覆盖默认。关闭只阻止新的委派，已运行子任务继续。GUI 新会话草稿修改也保存为默认，创建本身仅复制配置。配置操作不发起 LLM 请求；启用后的模型提示鼓励在已授权任务内主动委派有用的独立工作。
+
+`--follow` 保留完整终态回执；观察对象自己的 `run.settled` 报告失败时，CLI 返回非零退出码。观察流正常结束不代表任务成功。
 
 ## 用量和耗时
 

@@ -18,7 +18,7 @@ Replace placeholders with verified paths and read the current Makefile/scripts b
 
 ## Isolated Debug iteration
 
-Use `bash ./build.sh -debug` through the project's container build entrypoint for the macOS Debug package. It writes the runnable directory and archive under `bin/debug`, with no PKG or global command installation. A normal macOS package uses `bash ./build.sh --stage package-macos` and the ordinary `bin/macos-arm64` path. Keep the two applications, Host processes and user roots distinct; the Debug CLI requires an explicit test workspace and state root. See `doc.read` with `name="debug-control.md"` for exact commands and platform support.
+Use `bash ./build.sh -debug` through the project's container build entrypoint for available Windows/macOS Debug packages, or select `--stage package-windows` / `--stage package-macos`. It writes the runnable directory and archive under `bin/debug`, with no Setup/PKG or global command installation. Normal packages use the same platform stages without `-debug` and retain their ordinary output paths. Keep the applications, Host processes and user roots distinct; the Debug CLI requires an explicit test workspace and state root. See `doc.read` with `name="debug-control.md"` for exact commands and platform support.
 
 Choose the smallest real execution path:
 
