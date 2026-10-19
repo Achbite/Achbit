@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import type { LlmProviderProfile, ModelConnection, UserSettings } from '@deepcode/protocol';
+import { decodeAgentSettings, type AgentSettings, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
+import { useLocalAgentStore } from '../../state/localAgentStore';
 import SubagentModelFields from '../shared/SubagentModelFields';
 import ToggleSwitch from '../shared/ToggleSwitch';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
@@ -12,34 +13,56 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
   mainProfileId: string | null;
   language: UiLanguage;
 }) {
-  const settings = useSettingsStore(state => state.effectiveSettings);
-  const loading = useSettingsStore(state => state.loading);
-  const [saving, setSaving] = useState(false);
+  const sessionId = useLocalAgentStore(state => state.sessionId);
+  const saved = useLocalAgentStore(state => state.projection?.subagentSettings);
+  const draft = useLocalAgentStore(state => state.draftSubagentSettings);
+  const defaults = useSettingsStore(state => state.effectiveSettings);
+  const defaultsLoading = useSettingsStore(state => state.loading);
+  const loading = useLocalAgentStore(state => state.loading || state.submitting);
+  const saving = useLocalAgentStore(state => state.subagentSettingsBusy);
+  const settings = sessionId ? saved : draft ?? subagentDefaults(defaults);
   const [error, setError] = useState<string | null>(null);
   useAutoDismiss(error, () => setError(null));
-  const save = async (patches: UserSettings) => {
+  const save = async (next: AgentSettings) => {
     if (saving || loading) return;
-    setSaving(true); setError(null);
+    setError(null);
     try {
-      const activation = await useSettingsStore.getState().patchUserSettingsBatch(patches);
-      if (!activation) setError(useSettingsStore.getState().errorMessage ?? t(language, 'settings.common.saveFailed'));
+      const saved = await useLocalAgentStore.getState().setSubagentSettings(next);
+      if (!saved) setError(useLocalAgentStore.getState().error ?? t(language, 'settings.common.saveFailed'));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setSaving(false); }
   };
   return <div className="deepcode-subagent-config">
-    <fieldset disabled={saving || loading}>
-      <label className="deepcode-subagent-config__toggle"><span>{t(language, 'settings.subagents.enabled')}</span>
-        <ToggleSwitch checked={settings['agent.subagents.enabled'] === true}
-          onChange={event => void save({ 'agent.subagents.enabled': event.target.checked })} />
+    {settings ? <fieldset disabled={saving || loading || (!sessionId && defaultsLoading)}>
+      <label className="deepcode-subagent-config__toggle"><span title={t(language, 'settings.subagents.activation')}>{t(language, 'settings.subagents.enabled')}</span>
+        <ToggleSwitch checked={settings.enabled}
+          onChange={event => void save({ ...settings, enabled: event.target.checked })} />
       </label>
       <SubagentModelFields profiles={profiles} connections={connections} mainProfileId={mainProfileId} language={language}
-        profileId={String(settings['agent.subagents.profileId'] ?? '')} reasoningEffort={String(settings['agent.subagents.reasoningEffort'] ?? '')}
-        onChange={patches => void save(patches)} />
+        profileId={settings.profileId} reasoningEffort={settings.reasoningEffort}
+        onChange={patches => void save({ ...settings, ...patches })} />
       <label className="deepcode-subagent-config__toggle"><span title={t(language, 'settings.subagents.fullConfigurationHelp')}>{t(language, 'settings.subagents.allowFullConfiguration')}</span>
-        <ToggleSwitch checked={settings['agent.subagents.allowFullConfiguration'] === true}
-          onChange={event => void save({ 'agent.subagents.allowFullConfiguration': event.target.checked })} />
+        <ToggleSwitch checked={settings.allowFullConfiguration}
+          onChange={event => void save({ ...settings, allowFullConfiguration: event.target.checked })} />
       </label>
-    </fieldset>
+    </fieldset> : <>
+      <p>{t(language, 'settings.subagents.unconfigured')}</p>
+      <button type="button" disabled={saving || loading || defaultsLoading}
+        onClick={() => void save(subagentDefaults(defaults))}>{t(language, 'settings.subagents.applyDefaults')}</button>
+    </>}
     {error && <p className="deepcode-session-model__error" role="alert">{error}</p>}
   </div>;
+}
+
+function subagentDefaults(settings: UserSettings): AgentSettings {
+  return decodeAgentSettings({
+    enabled: settings['agent.subagents.enabled'],
+    profileId: settings['agent.subagents.profileId'],
+    reasoningEffort: settings['agent.subagents.reasoningEffort'],
+    maxConcurrent: settings['agent.subagents.maxConcurrent'],
+    maxCallsPerRun: settings['agent.subagents.maxCallsPerRun'],
+    maxMembersPerSession: settings['agent.subagents.maxMembersPerSession'],
+    allowMemberAnalysis: settings['agent.subagents.allowMemberAnalysis'],
+    allowFullConfiguration: settings['agent.subagents.allowFullConfiguration'],
+    presets: settings['agent.subagents.presets'],
+  });
 }

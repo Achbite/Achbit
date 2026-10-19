@@ -12,6 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, WebviewUrl};
 #[cfg(windows)]
 mod control_indicator;
+#[cfg(feature = "debug-control")]
+pub mod debug;
 #[cfg(any(windows, test))]
 mod preview_image;
 mod services;
@@ -172,6 +174,8 @@ pub fn start(
 
 fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
     let mut line = String::new();
+    #[cfg(feature = "debug-control")]
+    let mut debug_shutdown = false;
     // Darwin can inherit the listener's nonblocking flag. Framed worker reads
     // use blocking I/O with deadlines, independently of the accept loop.
     let read = stream
@@ -184,8 +188,12 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
         if request.get("token").and_then(Value::as_str) != Some(token) {
             return Err("native_browser_connection_rejected".into());
         }
+        #[cfg(feature = "debug-control")]
+        {
+            debug_shutdown = request["input"]["action"] == "debug:shutdown";
+        }
         tauri::async_runtime::block_on(execute(
-            app,
+            app.clone(),
             request["binding"].clone(),
             request["input"].clone(),
         ))
@@ -198,6 +206,11 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
     if let Ok(mut encoded) = serde_json::to_vec(&envelope) {
         encoded.push(b'\n');
         let _ = stream.write_all(&encoded);
+    }
+    #[cfg(feature = "debug-control")]
+    if debug_shutdown && envelope["ok"] == true {
+        let _ = stream.flush();
+        app.exit(0);
     }
 }
 
@@ -218,6 +231,12 @@ pub async fn deepcode_browser_command(
     input: Value,
 ) -> Result<Value, String> {
     require_main(&webview)?;
+    if input["action"]
+        .as_str()
+        .is_some_and(|action| action.starts_with("debug:"))
+    {
+        return Err("Debug control requires the external operator connection.".into());
+    }
     if input["action"]
         .as_str()
         .is_some_and(|action| action.starts_with("computer:"))
@@ -402,6 +421,13 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
     let control_binding = binding.clone();
     let binding = checked_binding(&app, &binding)?;
     let action = string(&input, "action")?;
+    #[cfg(feature = "debug-control")]
+    if action.starts_with("debug:") {
+        if tool_request || session_id.is_some() {
+            return Err("Debug control is not a Provider tool.".into());
+        }
+        return debug::execute(app, input).await;
+    }
     if action == "controlPreview" {
         if tool_request {
             return Err("Preview frames belong to the GUI Host.".into());
@@ -580,6 +606,9 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                             || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
                     });
                 }
+                #[cfg(feature = "debug-control")]
+                let builder =
+                    builder.initialization_script_for_all_frames(debug::initialization_script());
                 let view = window
                     .add_child(
                         builder,

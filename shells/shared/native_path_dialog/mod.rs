@@ -4,16 +4,24 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[cfg(all(windows, feature = "debug-control"))]
+mod debug_windows;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, feature = "debug-control"))]
+pub use debug_windows::{capture as debug_capture, command as debug_command};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathOptions {
+    #[serde(default)]
+    // Only macOS uses this to select a mode; Linux/Windows keep the mixed picker.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    kind: Option<String>,
     title: String,
     select_label: String,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -24,6 +32,13 @@ pub struct PathOptions {
     #[serde(default)]
     multiple: bool,
 }
+
+#[cfg(all(feature = "debug-control", target_os = "macos"))]
+pub use macos::debug_accessibility_command;
+#[cfg(all(feature = "debug-control", target_os = "macos"))]
+pub use macos::debug_capture;
+#[cfg(all(feature = "debug-control", target_os = "macos"))]
+pub use macos::debug_command;
 
 #[derive(Deserialize)]
 pub struct PathFilter {
@@ -64,12 +79,21 @@ pub async fn deepcode_pick_path(
     let parent = window.clone();
     window
         .run_on_main_thread(move || {
-            #[cfg(windows)]
+            #[cfg(all(windows, not(feature = "debug-control")))]
             let result = windows::pick(&parent, &options);
-            #[cfg(target_os = "macos")]
+            #[cfg(all(windows, feature = "debug-control"))]
+            if let Err(error) = windows::begin(&parent, options, sender.clone()) {
+                let _ = sender.send(Err(error));
+            }
+            #[cfg(all(target_os = "macos", not(feature = "debug-control")))]
             let result = macos::pick(&parent, &options);
+            #[cfg(all(target_os = "macos", feature = "debug-control"))]
+            if let Err(error) = macos::begin(&parent, &options, sender.clone()) {
+                let _ = sender.send(Err(error));
+            }
             #[cfg(target_os = "linux")]
             let result = linux::pick(&parent, &options);
+            #[cfg(not(all(any(target_os = "macos", windows), feature = "debug-control")))]
             let _ = sender.send(result);
         })
         .map_err(|error| error.to_string())?;

@@ -23,8 +23,8 @@ pub use conversation::{
     directory_index_attach_command, directory_index_detach_command, focus_command,
     interaction_response_command, is_terminal_run_status, message_command,
     message_command_with_profile, message_command_with_profile_and_plugins, plan_cancel_command,
-    plan_confirm_command, plan_revision_command, ActivityProjection, AgentTaskStatus,
-    ApprovalProjection, ArtifactProjection, AssistantDraftBlockProjection,
+    plan_confirm_command, plan_revision_command, ActivityProjection, AgentSettings,
+    AgentTaskStatus, ApprovalProjection, ArtifactProjection, AssistantDraftBlockProjection,
     AssistantDraftProjection, AttachConversationDirectoryIndexRequest, CommandReply,
     ContextCompositionItem, ContextCompositionMessage, ContextCompositionMessageBlock,
     ContextCompositionPartitionProjection, ContextCompositionProjection, ContextCompositionTool,
@@ -571,12 +571,15 @@ fn decode_projection(value: Value) -> KernelClientResult<SessionProjection> {
 
 fn api_data(value: Value) -> KernelClientResult<Value> {
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
-        let message = value
-            .get("message")
-            .or_else(|| value.get("error"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown daemon error");
-        return Err(KernelClientError::Api(message.to_string()));
+        let code = value.get("error").and_then(Value::as_str);
+        let message = value.get("message").and_then(Value::as_str);
+        let detail = match (code, message) {
+            (Some(code), Some(message)) if code != message => format!("{code}: {message}"),
+            (_, Some(message)) => message.to_owned(),
+            (Some(code), None) => code.to_owned(),
+            (None, None) => "unknown daemon error".to_owned(),
+        };
+        return Err(KernelClientError::Api(detail));
     }
     Ok(value.get("data").cloned().unwrap_or(value))
 }
@@ -588,6 +591,28 @@ fn decode_api_data<T: DeserializeOwned>(value: Value) -> KernelClientResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_error_retains_code_and_original_message() {
+        let code = "agent_plugin_isolation_required";
+        let message =
+            "The selected policy prohibits Host CLI/MCP processes. No plugin process was started.";
+        let error = api_data(json!({"ok": false, "error": code, "message": message})).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("daemon returned error: {code}: {message}")
+        );
+        for envelope in [
+            json!({"ok": false, "error": code}),
+            json!({"ok": false, "message": code}),
+            json!({"ok": false, "error": code, "message": code}),
+        ] {
+            assert_eq!(
+                api_data(envelope).unwrap_err().to_string(),
+                format!("daemon returned error: {code}")
+            );
+        }
+    }
 
     #[test]
     fn health_requires_explicit_typed_status() {

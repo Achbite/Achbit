@@ -228,7 +228,7 @@ pub(crate) fn inherit_permissions(parent: &Value, patch: Option<&Value>) -> Resu
                 continue;
             }
             let levels: &[&str] = match key.as_str() {
-                "agent.permissions.workspaceMutation" => &["plan", "allow"],
+                "agent.permissions.workspaceMutation" => &["plan", "review", "allow"],
                 "agent.permissions.engineeringDecisions" => &["ask", "delegate"],
                 "agent.permissions.shell" => &["ask", "review", "allow"],
                 "agent.permissions.shellAccess" => &["workspace", "full"],

@@ -48,6 +48,18 @@ impl ProviderRuntimeBinding {
         }
     }
 
+    /// A permission review is self-contained. Never reuse main or earlier review affinity.
+    pub(crate) fn review_request_context(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> crate::provider_transport::CodexRequestContext {
+        crate::provider_transport::CodexRequestContext {
+            session_id: format!("{session_id}:review:{request_id}"),
+            turn_state: Default::default(),
+        }
+    }
+
     pub(crate) fn approval_reviewer(&self, effort: Option<&str>) -> Result<Self, String> {
         let mut binding = self.clone();
         binding.codex_turn_state = Default::default();
@@ -396,6 +408,19 @@ mod tests {
             codex_turn_state: Default::default(),
         };
         let reviewer = main.approval_reviewer(Some("low")).unwrap();
+        let plan_review = reviewer.review_request_context("session:model", "request:plan-review");
+        let shell_review = reviewer.review_request_context("session:model", "request:shell-review");
+        assert_ne!(plan_review.session_id, shell_review.session_id);
+        shell_review
+            .turn_state
+            .set(reqwest::header::HeaderValue::from_static("shell-only"))
+            .unwrap();
+        assert!(plan_review.turn_state.get().is_none());
+        assert!(reviewer
+            .review_request_context("session:model", "request:another-review")
+            .turn_state
+            .get()
+            .is_none());
         let main_context = main.codex_request_context("session:model");
         main_context
             .turn_state

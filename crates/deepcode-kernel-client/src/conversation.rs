@@ -52,6 +52,8 @@ impl ConversationCatalog {
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationSessionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_settings: Option<AgentSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recipe: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -61,6 +63,43 @@ pub struct CreateConversationSessionRequest {
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSettings {
+    pub enabled: bool,
+    pub profile_id: String,
+    pub reasoning_effort: String,
+    pub max_concurrent: u64,
+    pub max_calls_per_run: u64,
+    pub max_members_per_session: u64,
+    pub allow_member_analysis: bool,
+    pub allow_full_configuration: bool,
+    pub presets: String,
+}
+
+impl AgentSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.profile_id.trim() != self.profile_id
+            || self.profile_id.chars().any(char::is_control)
+            || !matches!(
+                self.reasoning_effort.as_str(),
+                "" | "low" | "medium" | "high" | "xhigh" | "max"
+            )
+            || [
+                self.max_concurrent,
+                self.max_calls_per_run,
+                self.max_members_per_session,
+            ]
+            .iter()
+            .any(|value| *value == 0 || *value > 9_007_199_254_740_991)
+            || !serde_json::from_str::<Value>(&self.presets).is_ok_and(|value| value.is_array())
+        {
+            return Err("subagent settings are invalid".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -120,7 +159,7 @@ pub struct DiagnosticSecondary {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderAttemptProjection {
     pub provider_request_id: String,
@@ -132,6 +171,52 @@ pub struct ProviderAttemptProjection {
     pub updated_at: String,
     pub error: Option<ConversationError>,
     pub retry_at: Option<String>,
+    pub timing: Option<ProviderAttemptTiming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAttemptTiming {
+    pub clock_domain: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub duration_ms: Option<f64>,
+    pub text_segments: Option<Vec<ProviderTextSegmentTiming>>,
+    pub first_content_at: Option<String>,
+    pub first_content_ms: Option<f64>,
+    pub first_content_kind: Option<String>,
+    pub first_text_at: Option<String>,
+    pub first_text_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderTextSegmentTiming {
+    pub output_item_id: String,
+    pub output_index: Option<u64>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub duration_ms: Option<f64>,
+    pub characters: u64,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunTimingProjection {
+    pub run_id: String,
+    pub clock_domain: String,
+    pub accepted_at: String,
+    pub started_at: Option<String>,
+    pub first_response_at: Option<String>,
+    pub first_response_kind: Option<String>,
+    pub first_response_ms: Option<f64>,
+    pub first_text_at: Option<String>,
+    pub first_text_ms: Option<f64>,
+    pub settled_at: Option<String>,
+    pub total_ms: Option<f64>,
+    pub response_elapsed_ms: Option<f64>,
+    pub coverage: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -215,6 +300,7 @@ pub struct SessionProjection {
     pub revision: u64,
     pub display: SessionDisplayProjection,
     pub model_settings: Option<SessionModelSettings>,
+    pub subagent_settings: Option<AgentSettings>,
     pub permission_overrides: Value,
     pub effective_permissions: Option<Value>,
     pub shell_authorizations: Vec<ShellAuthorizationProjection>,
@@ -239,6 +325,8 @@ pub struct SessionProjection {
     pub total_token_usage: TokenUsageProjection,
     pub token_usage_history: Vec<TokenUsageRoundProjection>,
     pub run: Option<RunProjection>,
+    #[serde(default)]
+    pub run_timings: Vec<RunTimingProjection>,
     pub activities: Vec<ActivityProjection>,
     #[serde(default)]
     pub file_change_rounds: Vec<FileChangeRound>,
@@ -431,6 +519,9 @@ impl SessionProjection {
         if self.schema_version != SESSION_PROJECTION_VERSION || self.session_id.is_empty() {
             return Err("shared Session projection identity is invalid".to_string());
         }
+        if let Some(settings) = &self.subagent_settings {
+            settings.validate()?;
+        }
         if self.agent_context.as_ref().is_some_and(|context| {
             [
                 &context.owner_session_id,
@@ -494,8 +585,47 @@ impl SessionProjection {
                 || matches!(attempt.phase.as_str(), "failed" | "retryWaiting")
                     != attempt.error.is_some()
                 || (attempt.phase == "retryWaiting") != attempt.retry_at.is_some()
+                || attempt.timing.as_ref().is_some_and(|timing| {
+                    timing.clock_domain.is_empty()
+                        || timing.started_at.is_empty()
+                        || invalid_durations(&[
+                            timing.duration_ms,
+                            timing.first_content_ms,
+                            timing.first_text_ms,
+                        ])
+                        || timing
+                            .first_content_kind
+                            .as_deref()
+                            .is_some_and(|kind| !matches!(kind, "text" | "tool" | "reasoning"))
+                        || timing.text_segments.iter().flatten().any(|segment| {
+                            segment.output_item_id.is_empty()
+                                || segment.started_at.is_empty()
+                                || invalid_durations(&[segment.duration_ms])
+                                || segment.outcome.as_deref().is_some_and(|outcome| {
+                                    !matches!(outcome, "completed" | "interrupted")
+                                })
+                        })
+                })
         }) {
             return Err("shared Provider attempt projection is invalid".into());
+        }
+        if self.run_timings.iter().any(|timing| {
+            timing.run_id.is_empty()
+                || timing.clock_domain.is_empty()
+                || timing.accepted_at.is_empty()
+                || !matches!(timing.coverage.as_str(), "complete" | "partial")
+                || timing
+                    .first_response_kind
+                    .as_deref()
+                    .is_some_and(|kind| !matches!(kind, "text" | "tool"))
+                || invalid_durations(&[
+                    timing.first_response_ms,
+                    timing.first_text_ms,
+                    timing.total_ms,
+                    timing.response_elapsed_ms,
+                ])
+        }) {
+            return Err("shared run timing projection is invalid".into());
         }
         let mut workspace_ids = HashSet::new();
         if self.workspace_bindings.iter().any(|binding| {
@@ -554,6 +684,10 @@ impl SessionProjection {
         if self.assistant_draft.as_ref().is_some_and(|draft| {
             draft.run_id.is_empty()
                 || draft.turn_id.is_empty()
+                || draft
+                    .provider_attempt_id
+                    .as_deref()
+                    .is_some_and(str::is_empty)
                 || draft.plan_preview.as_ref().is_some_and(|preview| {
                     preview.provider_call_id.is_empty()
                         || preview.title.encode_utf16().count() > 256
@@ -1619,6 +1753,7 @@ pub struct SourceCitation {
 pub struct AssistantDraftProjection {
     pub run_id: String,
     pub turn_id: String,
+    pub provider_attempt_id: Option<String>,
     pub blocks: Vec<AssistantDraftBlockProjection>,
     pub activity: Option<ProviderActivityProjection>,
     pub plan_preview: Option<PlanPreviewProjection>,
@@ -1876,6 +2011,9 @@ pub struct ExecutionPlanStep {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlanProjection {
+    pub review: Option<PlanReviewProjection>,
+    #[serde(default)]
+    pub workspace_requests: Vec<PlanWorkspaceRequest>,
     pub plan_id: String,
     pub revision: u64,
     pub run_id: String,
@@ -1901,7 +2039,27 @@ pub struct PlanRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanWorkspaceRequest {
+    pub workspace_id: String,
+    pub root_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanReviewProjection {
+    pub provider_request_id: String,
+    pub status: String,
+    pub decision: Option<String>,
+    pub reason: Option<String>,
+    pub error: Option<ConversationError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingPlanProjection {
+    pub review: Option<PlanReviewProjection>,
+    #[serde(default)]
+    pub workspace_requests: Vec<PlanWorkspaceRequest>,
     pub plan_id: String,
     pub revision: u64,
     pub run_id: String,
@@ -1917,6 +2075,15 @@ pub struct PendingPlanProjection {
     pub sequence: u64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl PendingPlanProjection {
+    pub fn is_model_reviewing(&self, run: Option<&RunProjection>) -> bool {
+        self.review
+            .as_ref()
+            .is_some_and(|review| review.status == "reviewing")
+            && run.is_some_and(|run| run.status == "running")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2564,7 +2731,9 @@ fn plan_response_command(
 }
 
 fn valid_plan_projection(plan: &PlanProjection) -> bool {
-    !plan.plan_id.is_empty()
+    valid_plan_review(plan.review.as_ref())
+        && valid_workspace_requests(&plan.workspace_requests)
+        && !plan.plan_id.is_empty()
         && plan.revision > 0
         && !plan.run_id.is_empty()
         && !plan.call_id.is_empty()
@@ -2587,7 +2756,9 @@ fn valid_plan_projection(plan: &PlanProjection) -> bool {
 }
 
 fn valid_pending_plan_projection(plan: &PendingPlanProjection) -> bool {
-    !plan.plan_id.is_empty()
+    valid_plan_review(plan.review.as_ref())
+        && valid_workspace_requests(&plan.workspace_requests)
+        && !plan.plan_id.is_empty()
         && plan.revision > 0
         && !plan.run_id.is_empty()
         && !plan.call_id.is_empty()
@@ -2600,6 +2771,34 @@ fn valid_pending_plan_projection(plan: &PendingPlanProjection) -> bool {
         && !plan.created_at.is_empty()
         && !plan.updated_at.is_empty()
         && valid_plan_body(&plan.steps, &plan.mutation_manifest)
+}
+
+fn valid_plan_review(review: Option<&PlanReviewProjection>) -> bool {
+    review.is_none_or(|review| {
+        !review.provider_request_id.is_empty()
+            && match review.status.as_str() {
+                "reviewing" => {
+                    review.decision.is_none() && review.reason.is_none() && review.error.is_none()
+                }
+                "completed" => {
+                    matches!(review.decision.as_deref(), Some("allow" | "deny" | "ask"))
+                        && review
+                            .reason
+                            .as_deref()
+                            .is_some_and(|reason| !reason.trim().is_empty())
+                }
+                _ => false,
+            }
+    })
+}
+
+fn valid_workspace_requests(requests: &[PlanWorkspaceRequest]) -> bool {
+    let mut ids = HashSet::new();
+    requests.iter().all(|request| {
+        !request.workspace_id.is_empty()
+            && !request.root_path.is_empty()
+            && ids.insert(&request.workspace_id)
+    })
 }
 
 fn valid_plan_body(steps: &[ExecutionPlanStep], operations: &[PlanOperation]) -> bool {
@@ -2720,6 +2919,13 @@ fn valid_media_type(value: &str) -> bool {
         })
 }
 
+fn invalid_durations(values: &[Option<f64>]) -> bool {
+    values
+        .iter()
+        .flatten()
+        .any(|value| !value.is_finite() || *value < 0.0)
+}
+
 fn valid_token_usage_fields(
     provider_call_count: u64,
     reported_call_count: u64,
@@ -2776,6 +2982,31 @@ fn is_normalized_logical_path(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_subagent_settings_decode_complete_snapshots_and_reject_invalid_fields() {
+        let settings = json!({"enabled":true,"profileId":"","reasoningEffort":"high",
+            "maxConcurrent":4,"maxCallsPerRun":8,"maxMembersPerSession":12,
+            "allowMemberAnalysis":true,"allowFullConfiguration":false,"presets":"[]"});
+        let mut value = projection_value();
+        value["subagentSettings"] = settings.clone();
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(projection.subagent_settings.unwrap()).unwrap(),
+            settings
+        );
+        value["subagentSettings"]["maxConcurrent"] = json!(0);
+        assert!(serde_json::from_value::<SessionProjection>(value.clone())
+            .unwrap()
+            .validate()
+            .is_err());
+        value["subagentSettings"] = settings;
+        value["subagentSettings"]["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+        let missing: SessionProjection = serde_json::from_value(projection_value()).unwrap();
+        assert!(missing.subagent_settings.is_none());
+    }
 
     #[test]
     fn pending_child_decisions_preserve_the_original_session_and_references() {
@@ -3131,6 +3362,63 @@ mod tests {
             }
         ]);
         value
+    }
+
+    #[test]
+    fn projection_preserves_session_provider_and_draft_timing_contract() {
+        let mut value = projection_value();
+        value["runTimings"] = json!([{
+            "runId":"run:test", "clockDomain":"session:clock", "acceptedAt":"2026-10-17T00:00:00Z",
+            "startedAt":"2026-10-17T00:00:00Z", "firstResponseAt":"2026-10-17T00:00:01Z",
+            "firstResponseKind":"tool", "firstResponseMs":1000.25,
+            "firstTextAt":"2026-10-17T00:00:02Z", "firstTextMs":2000.5,
+            "settledAt":"2026-10-17T00:00:03Z", "totalMs":3000.75,
+            "responseElapsedMs":2000.5, "coverage":"complete"
+        }]);
+        value["providerAttempts"] = json!([{
+            "providerRequestId":"request:test", "providerAttemptId":"attempt:test", "attempt":1,
+            "purpose":"agent", "phase":"completed", "runId":"run:test", "updatedAt":"2026-10-17T00:00:03Z",
+            "timing":{
+                "clockDomain":"provider:clock", "startedAt":"2026-10-17T00:00:00Z",
+                "completedAt":"2026-10-17T00:00:03Z", "durationMs":3000.5,
+                "firstContentAt":"2026-10-17T00:00:01Z", "firstContentMs":1000.25, "firstContentKind":"tool",
+                "firstTextAt":"2026-10-17T00:00:02Z", "firstTextMs":2000.25,
+                "textSegments":[{"outputItemId":"output:1", "outputIndex":1, "startedAt":"2026-10-17T00:00:02Z",
+                    "endedAt":"2026-10-17T00:00:03Z", "durationMs":1000.25, "characters":12, "outcome":"completed"}]
+            }
+        }]);
+        value["assistantDraft"] = json!({
+            "runId":"run:test", "turnId":"turn:test", "providerAttemptId":"attempt:test", "blocks":[]
+        });
+        let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+        projection.validate().unwrap();
+        assert_eq!(projection.run_timings[0].response_elapsed_ms, Some(2000.5));
+        assert_eq!(
+            projection.run_timings[0].first_response_kind.as_deref(),
+            Some("tool")
+        );
+        let timing = projection.provider_attempts[0].timing.as_ref().unwrap();
+        assert_eq!(timing.duration_ms, Some(3000.5));
+        assert_eq!(
+            timing.text_segments.as_ref().unwrap()[0].duration_ms,
+            Some(1000.25)
+        );
+        assert_eq!(
+            projection
+                .assistant_draft
+                .unwrap()
+                .provider_attempt_id
+                .as_deref(),
+            Some("attempt:test")
+        );
+        let mut unknown = value.clone();
+        unknown["providerAttempts"][0]["timing"]["inventedField"] = json!(1);
+        assert!(serde_json::from_value::<SessionProjection>(unknown).is_err());
+        value["runTimings"][0]["firstResponseMs"] = json!(-1);
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
     }
 
     #[test]

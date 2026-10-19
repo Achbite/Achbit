@@ -15,7 +15,6 @@
 .document-pdf__viewport { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; background: var(--dc-surface, var(--bg-app)); }
 .document-pdf .pdfViewer { padding: 12px 0; --page-margin: 0 auto 12px; }
 .document-pdf .pdfViewer .page { box-shadow: 0 2px 8px color-mix(in srgb, var(--dc-shadow-color) 12%, transparent); }
-.local-agent__resource-dialog:has(.document-preview) { width: min(1100px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); }
 .local-agent__resource-body:has(> .document-preview) { padding: 0; }
 .document-artifacts { display: grid; gap: 8px; }
 .conversation-artifact-shortcuts { display: none; margin: 12px 0; }

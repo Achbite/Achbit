@@ -91,6 +91,8 @@ class Provider(fixture.MockProviderHandler):
         state = self.provider_state
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
             ordinal, _, results = state.inspect(body)
             name = next(tool['function']['name'] for tool in body['tools']
                         if tool['function']['parameters'].get('properties', {}).get('action', {}).get('enum')

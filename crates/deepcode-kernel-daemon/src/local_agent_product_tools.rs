@@ -260,6 +260,10 @@ const SKILLS: &[ProductSkill] = &[
 
 const DOCS: &[(&str, &str)] = &[
     (
+        "debug-control.md",
+        include_str!("../../../docs/product/debug-control.md"),
+    ),
+    (
         "ui-plugins.md",
         include_str!("../../../docs/product/ui-plugins.md"),
     ),

@@ -41,17 +41,24 @@ export function useAgentComposer(
   const profiles = useLocalAgentStore((state) => state.profiles);
   const selectedProfileId = useLocalAgentStore((state) => state.selectedProfileId);
   const projection = useLocalAgentStore((state) => state.projection);
-  // Deferred questions stay answerable in their transcript cards while normal
-  // steering and cancellation remain available in the running composer.
-  const question = projection?.pendingInteraction ?? null;
-  const pendingInteraction = question?.mode === 'continue' && projection?.run?.status === 'running' ? null : question;
+  const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
+  // History keeps every question. Foreground answers only at the Session's
+  // user-input wait, never merely because unanswered questions exist.
+  const pendingInteractions = useMemo(() => projection?.run?.status === 'waiting'
+    && projection.run.waitingReason === 'userInput'
+    ? projection.interactions.filter(item => item.runId === projection.run?.runId && item.status === 'pending')
+    : [], [projection]);
+  const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
+  const interactionIndex = Math.max(0, pendingInteractions.findIndex(item => (
+    interactionSelection?.conversationKey === conversationKey && item.interactionId === interactionSelection.interactionId
+  )));
+  const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
   const pendingApproval = projection?.pendingApproval ?? null;
   const pendingPlan = projection?.pendingPlan ?? null;
   const pendingScopeAddition = pendingPlan ? planScopeAddition(projection?.plans.find((plan) => (
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
   )), pendingPlan) : null;
   const textDecision = Boolean(pendingPlan || pendingInteraction);
-  const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
   const [messageEdit, setMessageEdit] = useState<{ sessionId: string; message: ProjectionMessage; revision: number } | null>(null);
   const editingMessage = messageEdit?.sessionId === sessionId ? messageEdit : null;
   const composerStateKey = pendingPlan
@@ -61,6 +68,10 @@ export function useAgentComposer(
       : editingMessage ? `${conversationKey}:edit:${editingMessage.message.messageId}` : conversationKey;
   const loading = useLocalAgentStore((state) => state.loading);
   const submitting = useLocalAgentStore((state) => state.submitting);
+  const selectInteraction = (index: number) => {
+    const interaction = pendingInteractions[index];
+    if (interaction && !submitting) setInteractionSelection({ conversationKey, interactionId: interaction.interactionId });
+  };
   const catalogBusy = useLocalAgentStore((state) => state.catalogBusy);
   const error = useLocalAgentStore((state) => state.error);
   const clearError = useLocalAgentStore((state) => state.clearError);
@@ -689,6 +700,12 @@ export function useAgentComposer(
     pendingPlan,
     pendingScopeAddition,
     pendingInteraction,
+    interactionNavigation: pendingInteraction ? {
+      index: interactionIndex,
+      count: pendingInteractions.length,
+      previous: () => selectInteraction(interactionIndex - 1),
+      next: () => selectInteraction(interactionIndex + 1),
+    } : null,
     pendingApproval,
     projection,
     loading,

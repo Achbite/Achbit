@@ -14,6 +14,8 @@ Read resources with `skill.read`, name `deepcode-iteration`, and only the releva
 - [references/implementation-map.md](references/implementation-map.md): ownership, source entrypoints and plugin forms.
 - [references/update-modes.md](references/update-modes.md): edit/preview/update workflows and verification.
 
+For controlling and measuring an isolated DeepCode development build, prefer its Debug CLI. Read `doc.read` with `name="debug-control.md"` for launch, direct tool/UI actions, grouped observation and metrics. The control interface exists only in the explicit Debug build; ordinary conversation timing is also available in normal builds. Do not use the running stable product as the test target merely because it is already open.
+
 ## Implement at the owning layer
 
 Trace the input, producer, contract, consumer and state owner before editing. Session owns the single Loop, context, interactions and semantic projection; Kernel owns tools, permissions and execution facts; shells present shared results and collect input. Approved changes can span layers without another architecture decision. Present a concrete recommendation only when new evidence exposes an unresolved public contract or material behavior choice.
@@ -27,6 +29,8 @@ Use the project's container for dependencies, normal builds and tests after chec
 ## Make the change observable
 
 Choose the update path from the reference: Vite HMR, UI plugin replacement, application interface reload, the next model request, the next run, or a core process restart. Edit, let the appropriate update occur, then observe the same target and exercise the changed behavior. A successful build alone does not establish that the current window or process loaded it.
+
+Separate one action from a task trajectory. Direct tools and UI actions do not need an Agent Loop. For a task, consume the Debug CLI's pushed observation groups rather than repeatedly querying status or sending each token/tool fragment to the controlling model. Retain operation, call, attempt and run identities when querying the original results and measured durations.
 
 Run the existing required checks and focused validation appropriate to the change. Follow the project's test-change rules before changing test assets. Keep prototype, fixture, real Provider, native GUI and other-platform evidence distinct; respect manual acceptance retained by the user.
 

@@ -10,7 +10,7 @@ import type { AgentComposer } from './useAgentComposer';
 type PermissionRow = { key: string; label: string; values: readonly (readonly [string, string])[] };
 const askAllowDeny = [['ask', 'agent.permission.ask'], ['allow', 'agent.permission.allow'], ['deny', 'agent.permission.deny']] as const;
 const rows: PermissionRow[] = [
-  { key: 'agent.permissions.workspaceMutation', label: 'agent.permission.workspaceMutation', values: [['plan', 'agent.permission.ask'], ['allow', 'agent.permission.delegate']] },
+  { key: 'agent.permissions.workspaceMutation', label: 'agent.permission.workspaceMutation', values: [['plan', 'agent.permission.workspaceMutationPlan'], ['review', 'agent.permission.workspaceMutationReview'], ['allow', 'agent.permission.workspaceMutationAllow']] },
   { key: 'agent.permissions.engineeringDecisions', label: 'agent.permission.engineeringDecisions', values: [['ask', 'agent.permission.ask'], ['delegate', 'agent.permission.delegate']] },
   { key: 'agent.permissions.shell', label: 'agent.permission.shell', values: [['ask', 'agent.permission.ask'], ['review', 'agent.permission.review'], ['allow', 'agent.permission.allow']] },
   { key: 'agent.permissions.shellAccess', label: 'agent.permission.shellAccess', values: [['workspace', 'agent.permission.workspaceScope'], ['full', 'agent.permission.fullScope']] },

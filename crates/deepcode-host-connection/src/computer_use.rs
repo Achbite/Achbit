@@ -280,7 +280,13 @@ fn packaged_location(host_executable: &Path) -> Result<PathBuf, String> {
     return host_executable
         .parent()
         .and_then(|p| p.ancestors().nth(3))
-        .map(|root| root.join("DeepCode Computer Use.app"))
+        .map(|root| {
+            root.join(if cfg!(feature = "debug-control") {
+                "DeepCode Debug Computer Use.app"
+            } else {
+                "DeepCode Computer Use.app"
+            })
+        })
         .ok_or_else(|| "computer_component_package_path_invalid".into());
     #[cfg(windows)]
     return host_executable

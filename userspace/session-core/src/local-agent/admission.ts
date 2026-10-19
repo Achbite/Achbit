@@ -1,4 +1,4 @@
-import { decodeAgentCapabilities, isManagedProcessSnapshot } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@deepcode/protocol';
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
@@ -14,7 +14,7 @@ export function admitSessionEvents(
   events: readonly NewSessionEvent[],
   command?: { input: ConversationCommand; reply: Omit<CommandReply, 'revision'> },
 ): void {
-  if (command) admitCommandBatch(current, command.input, events, command.reply);
+  if (command) admitCommandBatch(command.input, events, command.reply);
   let snapshot = current;
   for (const event of events) {
     admitEvent(snapshot, event);
@@ -30,7 +30,7 @@ export function admitSessionEvents(
   }
 }
 
-function admitCommandBatch(current: LoopSnapshot, command: ConversationCommand, events: readonly NewSessionEvent[], reply: Omit<CommandReply, 'revision'>): void {
+function admitCommandBatch(command: ConversationCommand, events: readonly NewSessionEvent[], reply: Omit<CommandReply, 'revision'>): void {
   if (reply.sessionId !== command.sessionId || reply.commandId !== command.commandId
     || events.some((event) => event.sessionId !== command.sessionId)) throw new Error('session_command_identity_mismatch');
   if (reply.status === 'rejected') {
@@ -74,14 +74,16 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     throw new Error('session_event_run_not_active');
   }
   switch (event.type) {
-    case 'agent.delegation.changed':
-      if (typeof event.payload.enabled !== 'boolean' || state.agentDelegationEnabled === event.payload.enabled) throw new Error('agent_delegation_change_invalid');
+    case 'session.subagent-settings.updated':
+      decodeAgentSettings(event.payload.settings);
       break;
     case 'session.created':
       if (state.revision !== 0) throw new Error('session_creation_duplicate');
+      if (event.payload.subagentSettings) decodeAgentSettings(event.payload.subagentSettings);
       break;
     case 'run.started':
       decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
+      decodeContextManagementSettings(event.payload.runtimeSnapshot.contextManagement);
       if (state.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(state.run.status)) {
         throw new Error('session_run_already_active');
       }
@@ -146,7 +148,28 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       }
       break;
     }
+    case 'plan.review.requested': {
+      const plan = state.pendingPlan;
+      if (!plan || plan.planId !== event.payload.planId || plan.revision !== event.payload.revision
+        || plan.callId !== event.callId || plan.review?.status === 'reviewing') throw new Error('plan_review_not_pending');
+      break;
+    }
+    case 'plan.reviewed': {
+      const plan = state.pendingPlan;
+      const turn = state.providerTurns[event.payload.providerRequestId];
+      if (!plan || plan.planId !== event.payload.planId || plan.revision !== event.payload.revision
+        || plan.review?.providerRequestId !== event.payload.providerRequestId || plan.callId !== event.callId
+        || (!event.payload.error && (!turn || turn.purpose !== 'approvalReview' || turn.outcome !== 'completed'))
+        || (event.payload.error && event.payload.decision === 'allow')) throw new Error('plan_review_result_invalid');
+      break;
+    }
     case 'plan.confirmed':
+      if (event.payload.source === 'agent' && (state.publishedPermissions?.['agent.permissions.workspaceMutation']
+        ?? state.permissionOverrides['agent.permissions.workspaceMutation']
+        ?? state.runRuntimeSnapshots[event.runId]?.permissions['agent.permissions.workspaceMutation']) === 'review') {
+        const plan = state.plans.find(item => item.planId === event.payload.planId && item.revision === event.payload.revision);
+        if (plan?.review?.decision !== 'allow' || plan.review.error) throw new Error('plan_review_authority_missing');
+      }
       if (event.payload.source === 'sessionWorkdir' && event.payload.authorities.length) throw new Error('workdir_plan_authority_invalid');
       if (event.payload.source === 'parent' && (!state.agentContext || !event.payload.authorities.length
         || event.payload.authorities.some(authority => authority.sessionId === state.sessionId))) throw new Error('parent_plan_reference_missing');
@@ -177,7 +200,14 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         throw new Error('plan_invalidation_inactive');
       }
       break;
+    case 'context.compaction.scheduled':
+      if (events.some(item => (item.type === 'context.compaction.scheduled' || item.type === 'context.compaction.requested')
+        && item.payload.compactionId === event.payload.compactionId)) throw new Error('context_compaction_identity_duplicate');
+      break;
     case 'context.compaction.requested':
+      if (event.payload.trigger === 'agent' && !events.some(item => item.type === 'context.compaction.scheduled'
+        && item.payload.compactionId === event.payload.compactionId
+        && item.payload.focus === ('focus' in event.payload ? event.payload.focus : undefined))) throw new Error('context_compaction_schedule_missing');
       if (event.payload.coveredThroughSequence > state.revision) throw new Error('context_compaction_cutoff_invalid');
       if (events.some((item) => item.type === 'context.compaction.requested'
         && (item.payload.compactionId === event.payload.compactionId
@@ -202,7 +232,12 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       admitModelView(event.payload, events);
       const compaction = events.some((item) => item.type === 'context.compaction.requested'
         && item.runId === runId && item.payload.providerRequestId === event.payload.providerRequestId);
-      if (event.payload.purpose === 'approvalReview' && (!state.pendingApproval || event.payload.tools.length)) throw new Error('approval_review_context_invalid');
+      if (event.payload.purpose === 'approvalReview') {
+        const planReview = state.pendingPlan?.review?.status === 'reviewing'
+          && state.pendingPlan.review.providerRequestId === event.payload.providerRequestId;
+        if ((!state.pendingApproval && !planReview) || event.payload.tools.length
+          || (state.pendingApproval && planReview)) throw new Error('approval_review_context_invalid');
+      }
       if ((event.payload.purpose === 'contextCompaction') !== compaction) throw new Error('context_composition_purpose_mismatch');
       if (JSON.stringify(event.payload.workspaceBindings.map(binding => binding.itemId))
         !== JSON.stringify(requestResourceBindings(state.run?.workspaceBindings ?? [], events).map(binding => binding.workspaceId))) {

@@ -15,6 +15,8 @@ Paths are relative to the current DeepCode Git root. They are navigation hints, 
 | Provider and extension adapters | `crates/deepcode-kernel-daemon/src/`: `provider_transport.rs`, `llm_transport.rs`, `local_agent_plugins.rs`, `local_agent_mcp.rs` | Actual service ports; a crate name alone does not establish business ownership |
 | Shared contracts | `userspace/protocol/src/`, `contracts/agent-runtime/schema.json`, corresponding Rust interfaces | Current producers, decoders, reducer and shell consumers |
 | Browser and interface refresh | `shells/shared/native_browser/`, `browser_tools.rs` in the daemon, `userspace/gui/src/services/nativeBrowser.ts` and `interfaceReload.ts` | Page binding, visibility, service ownership and refresh results |
+| Debug build and CLI control | `build.sh`, `scripts/package-runtime.py`, `shells/cli/src/debug.rs`, daemon `debug_control.rs` / `debug_tools.rs` | Explicit build gate, separate output/data, current control attachment, existing Kernel/GUI execution ports |
+| Observation and duration queries | Session `src/debug/observations.ts`, `local-agent/runTiming.ts`, `providerAttempts.ts`; Kernel `local_agent_kernel/debug_operations.rs`; `shells/shared/native_browser/debug.rs` | Original facts and measured clock domains; grouped delivery is not a second Loop or execution store |
 
 ## Distinctions that matter
 

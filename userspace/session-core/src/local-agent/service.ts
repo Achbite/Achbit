@@ -1,10 +1,13 @@
-import { decodeAgentRecipe } from '@deepcode/protocol';
+import type { SessionObservationSink } from './observation.js';
+import { decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
+import { agentPresets } from './agentConfiguration.js';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
 import { loopSnapshot } from './loop.js';
 import type {
   AgentHostPort,
+  AgentSettings,
   SessionCreationInput,
   CommandJournalPort,
   CommandReply,
@@ -25,6 +28,13 @@ import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
+import { LoopFailure } from './loopFailure.js';
+
+function isMissingSession(error: unknown): boolean {
+  // HTTP Journal errors carry a code separate from their localized message.
+  return (error instanceof LoopFailure ? error.code : error instanceof Error ? error.message.split(':', 1)[0] : null)
+    === 'session_not_found';
+}
 
 export interface SessionCompositionFactory {
   create(input: {
@@ -42,7 +52,6 @@ export interface SessionServicePort extends ConversationPort {
   snapshot: SessionService['snapshot'];
   statuses: SessionService['statuses'];
   activity: SessionService['activity'];
-  delegationChanged: SessionService['delegationChanged'];
   contextComposition: SessionService['contextComposition'];
   read: SessionService['read'];
   replaceCapabilities: SessionService['replaceCapabilities'];
@@ -55,10 +64,11 @@ export type SessionServiceFactory = (input: {
   agentHost?: AgentHostPort;
   configurations?: SessionConfigurationRegistry;
   loops?: AgentLoopRegistry;
+  observation?: SessionObservationSink;
 }) => Promise<SessionServicePort>;
 
-export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations, loops }) => (
-  new SessionService(journal, compositions, agentHost, configurations, loops)
+export const createSessionService: SessionServiceFactory = async ({ journal, compositions, agentHost, configurations, loops, observation }) => (
+  new SessionService(journal, compositions, agentHost, configurations, loops, observation)
 );
 
 export class SessionDeletionError extends AggregateError {
@@ -78,44 +88,32 @@ export class SessionService implements ConversationPort {
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
   readonly #lifetime = new AbortController();
   #disposeTask?: Promise<void>;
-  #delegationNotifications: Promise<void> = Promise.resolve();
-  #delegationEnabled?: boolean;
-  readonly #initialDelegation: Promise<boolean | undefined>;
+  #defaultWrites: Promise<void> = Promise.resolve();
   readonly #agents?: AgentManager;
 
   constructor(
     readonly journal: CommandJournalPort,
     readonly compositions: SessionCompositionFactory,
-    agentHost?: AgentHostPort,
+    readonly agentHost?: AgentHostPort,
     readonly configurations = new SessionConfigurationRegistry(),
     readonly loops = new AgentLoopRegistry(),
+    readonly observation?: SessionObservationSink,
   ) {
-    // One bootstrap read per service lifetime; updates are delivered by Host.
-    this.#initialDelegation = agentHost ? agentHost.settings().then(settings => settings.enabled) : Promise.resolve(undefined);
-    void this.#initialDelegation.catch(() => undefined);
     if (agentHost) this.#agents = new AgentManager(agentHost, {
       withActor: (id, operation) => this.withActor(id, operation),
       read: id => this.agentManagement(id),
     }, configurations, loops);
   }
 
-  /** Ordered Host setting facts; this does not start a run or activate a new Actor. */
-  delegationChanged(enabled: boolean): Promise<void> {
-    this.assertOpen();
-    if (!this.#agents) return Promise.resolve();
-    this.#delegationEnabled = enabled;
-    const actors = [...this.#actors.values()];
-    const task = this.#delegationNotifications.then(async () => {
-      const results = await Promise.allSettled(actors.map(async actor => (await actor).delegationChanged(enabled)));
-      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-      if (errors.length) throw new AggregateError(errors, 'agent_delegation_notification_failed');
-    });
-    this.#delegationNotifications = task.catch(() => undefined);
-    return task;
-  }
-
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {
     this.assertOpen();
+    if (input.agentContext && !input.subagentSettings) throw new Error('agent_settings_missing');
+    const selectedSettings = input.subagentSettings ?? (this.agentHost ? await this.agentHost.settings() : undefined);
+    if (selectedSettings !== undefined) {
+      const subagentSettings = decodeAgentSettings(selectedSettings);
+      agentPresets(subagentSettings);
+      input = { ...input, subagentSettings };
+    }
     if (input.recipe) {
       const recipe = decodeAgentRecipe(input.recipe);
       if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
@@ -128,6 +126,7 @@ export class SessionService implements ConversationPort {
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
+        ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
         ...(input.recipe ? { recipe: input.recipe } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.profileId ? { profileId: input.profileId } : {}) },
@@ -135,6 +134,7 @@ export class SessionService implements ConversationPort {
     await this.journal.createSession({
       sessionId: input.sessionId,
       displayTitle: input.displayTitle,
+      ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
       ...(input.recipe ? { recipe: input.recipe } : {}),
       workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
       ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
@@ -153,6 +153,14 @@ export class SessionService implements ConversationPort {
     }
   }
 
+  private publishSubagentDefaults(settings: AgentSettings): Promise<void> {
+    const task = this.#defaultWrites.then(() => this.agentHost!.saveDefaults(structuredClone(settings)));
+    this.#defaultWrites = task.catch(() => undefined);
+    return task.catch(error => {
+      throw new Error(`subagent_defaults_update_failed: Session settings were saved; new-session defaults were not updated. Submit a new explicit settings command to try again. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    });
+  }
+
   async deleteSession(sessionId: string, options?: { unstartedOnly?: boolean }): Promise<{ deletedSessionIds: string[] }> {
     this.assertOpen();
     if (this.#deletingSessionIds.has(sessionId)) throw new Error('session_delete_in_progress');
@@ -165,7 +173,7 @@ export class SessionService implements ConversationPort {
       let events;
       try { events = await readSessionEvents(this.journal, id); }
       catch (error) {
-        if (!required && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') return;
+        if (!required && isMissingSession(error)) return;
         throw error;
       }
       if (!events.length) {
@@ -245,6 +253,7 @@ export class SessionService implements ConversationPort {
   }
 
   async submit(command: ConversationCommand): Promise<CommandReply> {
+    if (command.type === 'session.subagent-settings.set' && !this.agentHost) throw new Error('agent_settings_host_unavailable');
     if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
     return this.withActor(command.sessionId, async actor => {
       this.assertOpen();
@@ -260,7 +269,13 @@ export class SessionService implements ConversationPort {
         this.#submissions.set(command.sessionId, submissions);
       }
       submissions.add(pending);
-      try { return await pending; }
+      try {
+        const reply = await pending;
+        if (command.type === 'session.subagent-settings.set' && reply.status === 'accepted') {
+          await this.publishSubagentDefaults(command.settings);
+        }
+        return reply;
+      }
       finally {
         submissions.delete(pending);
         if (!submissions.size) this.#submissions.delete(command.sessionId);
@@ -288,7 +303,7 @@ export class SessionService implements ConversationPort {
         catch (error) {
           // A task reservation precedes child creation; failed creation can leave no Session.
           const started = parent.agentTasks?.some(task => task.agentSessionId === member.agentSessionId && task.childRunId);
-          if (!started && error instanceof Error && error.message.split(':', 1)[0] === 'session_not_found') continue;
+          if (!started && isMissingSession(error)) continue;
           throw error;
         }
         if (child.agentContext?.parentSessionId !== parent.sessionId
@@ -331,7 +346,7 @@ export class SessionService implements ConversationPort {
         // The current task/run owns its decision route; the creation tree still owns archival.
         if (child.run?.runId !== task.childRunId) continue;
         const lifecycle = this.#statusStates.get(child.sessionId)!.lifecycle;
-        const plan = lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
+        const plan = child.run.status === 'waiting' && lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
         const approval = lifecycle.pendingApproval?.runId === task.childRunId ? lifecycle.pendingApproval : null;
         const interactionIds = lifecycle.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
         if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,
@@ -420,6 +435,7 @@ export class SessionService implements ConversationPort {
       }
       await actor.dispose();
     }));
+    await this.#defaultWrites;
     this.#actors.clear();
     this.#statusStates.clear();
     const errors = results.flatMap((result) => (
@@ -519,14 +535,12 @@ export class SessionService implements ConversationPort {
     }
     const actor = new SessionActor(sessionId, this.journal, installed.composition, {
       initialEvents: events,
+      ...(this.observation ? { observation: this.observation } : {}),
       ...(this.#agents ? { agents: this.#agents.forSession(sessionId) } : {}),
       ...(profileId ? { profileId } : {}),
     });
     try {
       this.assertOpen();
-      const initialDelegation = await this.#initialDelegation;
-      const delegation = this.#delegationEnabled ?? initialDelegation;
-      if (delegation !== undefined) await actor.delegationChanged(delegation);
       await actor.recover(this.#lifetime.signal);
       this.assertOpen();
       return actor;

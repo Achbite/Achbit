@@ -55,6 +55,8 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   'agent.subagents.allowMemberAnalysis': true,
   'agent.subagents.allowFullConfiguration': true,
   'agent.subagents.presets': '[]',
+  'agent.contextManagement.enabled': false,
+  'agent.contextManagement.thresholdTokens': 500_000,
   'agent.responseLanguage': 'auto',
   'agent.windows.shell': 'auto',
   'agent.windows.gitBashPath': '',

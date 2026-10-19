@@ -32,6 +32,18 @@ export function ConversationComposer({
   onEditBrowserReview,
 }: ConversationComposerProps) {
   const connections = useLocalAgentStore(state => state.connections);
+  const concurrentDecisionKey = composer.pendingApproval && (composer.pendingPlan || composer.pendingInteraction)
+    ? JSON.stringify([composer.conversationKey, composer.pendingApproval.approvalId,
+      composer.pendingPlan?.planId, composer.pendingPlan?.revision])
+    : null;
+  const [selectedTextDecision, setSelectedTextDecision] = useState<string | null>(null);
+  const showApproval = Boolean(composer.pendingApproval
+    && (!concurrentDecisionKey || selectedTextDecision !== concurrentDecisionKey));
+  // Select a view only. Both decisions and the answer draft stay in their existing owners.
+  const visibleComposer = showApproval
+    ? { ...composer, pendingPlan: null, pendingScopeAddition: null, pendingInteraction: null }
+    : { ...composer, pendingApproval: null };
+  const decisionContentId = useId();
   const {
     pendingPlan,
     pendingInteraction,
@@ -83,7 +95,7 @@ export function ConversationComposer({
     submitDraft,
     canSend,
     showStopAction,
-  } = composer;
+  } = visibleComposer;
   const regionData = { kind: 'composer' as const, draft, canSend, canStop: showStopAction, attachments: pendingFilesystemPaths };
   const regionActions = {
     updateDraft: (text: string) => updateDraft(text, text.length),
@@ -91,6 +103,13 @@ export function ConversationComposer({
     stopRun: async () => { if (showStopAction) await cancelRun(); },
     pickAttachments: () => setAttachmentDialogOpen(true),
     addAttachments: composer.selectMessageAttachments,
+  };
+  const debugActions = {
+    submitDraft: { unavailableReason: canSend ? null : 'composer_cannot_send' },
+    stopRun: { unavailableReason: showStopAction ? null : 'composer_no_stoppable_run' },
+    updateDraft: { unavailableReason: null },
+    pickAttachments: { unavailableReason: null },
+    addAttachments: { unavailableReason: null },
   };
   const pickerId = useId();
   const commandMenuId = useId();
@@ -152,7 +171,7 @@ export function ConversationComposer({
   useAutoDismiss(uiActionError, onDismissUiActionError);
 
   return (
-    <UiRegion slot="composer.layout" data={regionData} actions={regionActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
+    <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
       ? ' local-agent__composer-shell--decision'
       : ''}`} onKeyDown={(event) => {
           if (composer.editingMessage && event.key === 'Escape' && !event.repeat
@@ -189,7 +208,21 @@ export function ConversationComposer({
           : (language === 'zh-CN' ? '未加入本轮' : 'Not applied to this run')}</strong>
         <span>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map((item) => item.displayName).join(', ')}` : ''}</span>
       </div>)}
-      <ComposerQuestionPrompt language={language} composer={composer} />
+      {concurrentDecisionKey && <div className="local-agent__decision-switcher" role="group"
+        aria-label={t(language, 'agent.decision.pending')}>
+        <button type="button" aria-pressed={showApproval} aria-controls={decisionContentId}
+          onClick={() => setSelectedTextDecision(null)}>
+          <DeepCodeShellIcon name="shield" size={16} />{t(language, 'agent.approval.toolPermission')}
+        </button>
+        <button type="button" aria-pressed={!showApproval} aria-controls={decisionContentId}
+          onClick={() => setSelectedTextDecision(concurrentDecisionKey)}>
+          <DeepCodeShellIcon name={composer.pendingPlan ? 'artifact' : 'question'} size={16} />
+          {t(language, composer.pendingPlan ? 'agent.plan.review'
+            : composer.pendingInteraction?.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
+        </button>
+      </div>}
+      <div id={decisionContentId} className="local-agent__composer-content">
+      <ComposerQuestionPrompt language={language} composer={visibleComposer} />
       <div
         className={`local-agent__composer local-agent__composer--${inputMode}`}
         data-press-feedback={pressFeedback ?? undefined}
@@ -207,7 +240,7 @@ export function ConversationComposer({
           playPressFeedback();
         }}
       >
-        <ComposerDecisionPanels language={language} composer={composer} />
+        <ComposerDecisionPanels language={language} composer={visibleComposer} />
         {!pendingApproval && <>
         {composer.editingMessage && !composer.textDecision && <>
           <div className="local-agent__message-edit-notice">
@@ -398,7 +431,7 @@ export function ConversationComposer({
           onPaste={composer.pasteText}
         />
         <div className="local-agent__composer-footer">
-          {!composer.textDecision && !composer.editingMessage && <UiRegion slot="composer.attachments" data={regionData} actions={regionActions}><div className="local-agent__composer-tools">
+          {!composer.textDecision && !composer.editingMessage && <UiRegion slot="composer.attachments" data={regionData} actions={regionActions} debugActions={debugActions}><div className="local-agent__composer-tools">
             <div ref={attachmentControlRef} className="local-agent__attachment-control">
               <button
                 type="button"
@@ -458,7 +491,7 @@ export function ConversationComposer({
             </div>
             <ComposerPermissionControl language={language} composer={composer} />
           </div></UiRegion>}
-          <UiRegion slot="composer.actions" data={regionData} actions={regionActions}><div className="local-agent__composer-actions">
+          <UiRegion slot="composer.actions" data={regionData} actions={regionActions} debugActions={debugActions}><div className="local-agent__composer-actions">
             {!composer.textDecision && !composer.editingMessage && <SessionModelSelector
               key={composer.conversationKey}
               language={language}
@@ -518,6 +551,7 @@ export function ConversationComposer({
           </div></UiRegion>
         </div>
         </>}
+      </div>
       </div>
       {!pendingPlan && !pendingInteraction && !pendingApproval && (
         <div className="local-agent__composer-hint">

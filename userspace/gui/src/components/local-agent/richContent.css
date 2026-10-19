@@ -34,20 +34,28 @@
 @media (hover: none) {
   .conversation-code .conversation-copy-button { opacity: 1; pointer-events: auto; }
 }
-.conversation-copy-hint, .local-agent__message-action-hint { position: absolute; z-index: 3; top: 50%; right: calc(100% + 6px); transform: translateY(-50%); width: max-content; padding: 3px 6px; border: 1px solid var(--dc-border); border-radius: 5px; background: var(--dc-surface); color: var(--dc-muted); box-shadow: 0 2px 6px color-mix(in srgb, var(--dc-shadow-color) 6.67%, transparent); font-size: calc(11px * var(--dc-ui-font-scale, 1)); font-weight: 400; line-height: 1.4; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
-.conversation-copy-button:hover .conversation-copy-hint, .conversation-copy-button:focus-visible .conversation-copy-hint,
-.local-agent__message-actions button:hover .local-agent__message-action-hint, .local-agent__message-actions button:focus-visible .local-agent__message-action-hint { opacity: 1; }
-.local-agent__message-actions :is(.conversation-copy-hint, .local-agent__message-action-hint) { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; transform: none; }
+.conversation-copy-hint { position: absolute; z-index: 3; top: 50%; right: calc(100% + 6px); transform: translateY(-50%); width: max-content; padding: 3px 6px; border: 1px solid var(--dc-border); border-radius: 5px; background: var(--dc-surface); color: var(--dc-muted); box-shadow: 0 2px 6px color-mix(in srgb, var(--dc-shadow-color) 6.67%, transparent); font-size: calc(11px * var(--dc-ui-font-scale, 1)); font-weight: 400; line-height: 1.4; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.conversation-copy-button:hover .conversation-copy-hint,
+.conversation-copy-button:focus-visible .conversation-copy-hint { opacity: 1; }
+.local-agent__message-actions .conversation-copy-hint { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; transform: none; }
 .conversation-copy-error { display: block; padding: 0 10px 6px; color: var(--dc-danger); }
 .conversation-code pre { margin: 0; padding: 8px 16px 16px; overflow: auto; white-space: pre; font: var(--dc-font-code-size, 12px)/var(--dc-line-code, 1.6) var(--dc-font-code); }
 .conversation-code pre code { padding: 0; background: transparent; font-size: inherit; }
 .conversation-table { min-width: 0; max-width: 100%; }
-/* Only rich blocks use the spare space on both sides of the centered reading column. */
+/* Wide content may use the spare space; short code keeps the reading column width. */
 @container conversation (min-width: 828px) {
-  .local-agent__message--assistant .conversation-markdown > :is(.conversation-table[data-wide='true'], .conversation-code) {
+  .local-agent__message--assistant .conversation-markdown > .conversation-table[data-wide='true'] {
     width: min(1080px, calc(100cqi - 48px));
     max-width: none;
     margin-inline: calc((100% - min(1080px, calc(100cqi - 48px))) / 2);
+  }
+  .local-agent__message--assistant .conversation-markdown > .conversation-code {
+    width: max-content;
+    min-width: 100%;
+    max-width: min(1080px, calc(100cqi - 48px));
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
   }
 }
 .conversation-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding-bottom: 6px; }
@@ -152,3 +160,7 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-diff-binary small { display: block; margin-top: 10px; }
 .conversation-round > [hidden] { display: none; }
 .conversation-code pre, .conversation-code pre code, .conversation-code pre span { font-family: var(--dc-font-code); line-height: 1.6; }
+
+.conversation-process-heading { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; }
+.local-agent .conversation-process-heading .conversation-process-toggle { margin: 0; }
+.conversation-run-timing { color: var(--dc-muted); font-size: var(--dc-font-label); white-space: nowrap; font-variant-numeric: tabular-nums; }

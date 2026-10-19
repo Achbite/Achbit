@@ -38,10 +38,12 @@ import {
 } from '@deepcode/protocol';
 
 export interface SessionState {
+  subagentSettings?: SessionProjection['subagentSettings'];
   recipe?: SessionProjection['recipe'];
   agentContext?: SessionProjection['agentContext'];
   agentTasks: NonNullable<SessionProjection['agentTasks']>;
   agentChildren: NonNullable<SessionProjection['agentChildren']>;
+  runTimings: Record<string, NonNullable<SessionProjection['runTimings']>[number]>;
   providerAttempts: Record<string, NonNullable<SessionProjection['providerAttempts']>[number]>;
   failureSnapshots: Record<string, NonNullable<SessionProjection['failureSnapshot']>>;
   permissionOverrides: SessionProjection['permissionOverrides'];
@@ -61,7 +63,6 @@ export interface SessionState {
   interactions: SessionProjection['interactions'];
   pendingApprovals: NonNullable<SessionProjection['pendingApprovals']>;
   pendingApproval: SessionProjection['pendingApproval'];
-  agentDelegationEnabled: boolean | null;
   plans: SessionProjection['plans'];
   activePlanRef: SessionProjection['activePlanRef'];
   pendingPlan: SessionProjection['pendingPlan'];
@@ -93,7 +94,7 @@ export interface ProviderTurnState {
   providerRequestId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
   providerRuntimeRef: string;
-  outcome: 'completed' | 'failed' | 'indeterminate';
+  outcome: 'completed' | 'failed' | 'cancelled' | 'indeterminate';
   orderedCallIds?: string[];
   reasoningContent?: string;
   reasoningSignature?: string;
@@ -114,7 +115,7 @@ export interface ProviderCallFactState {
 export function emptySessionState(sessionId: string): SessionState {
   return {
     agentTasks: [], agentChildren: [],
-    providerAttempts: {}, failureSnapshots: {},
+    runTimings: {}, providerAttempts: {}, failureSnapshots: {},
     permissionOverrides: {}, shellAuthorizations: [],
     modelSettings: null,
     sessionId,
@@ -130,7 +131,6 @@ export function emptySessionState(sessionId: string): SessionState {
     interactions: [],
     pendingApprovals: [],
     pendingApproval: null,
-    agentDelegationEnabled: null,
     plans: [],
     activePlanRef: null,
     pendingPlan: null,
@@ -181,9 +181,6 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
   }, lifecycleEvent) : null;
 
   switch (event.type) {
-    case 'agent.delegation.changed':
-      next.agentDelegationEnabled = event.payload.enabled;
-      break;
     case 'provider.attempt.updated': {
       assertRunningRun(next, event.runId, 'provider_attempt_run_not_active');
       const fact = event.payload;
@@ -199,6 +196,10 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.providerAttempts = { ...next.providerAttempts, [fact.providerAttemptId]: { ...structuredClone(fact), runId: event.runId, updatedAt: event.occurredAt } };
       break;
     }
+    case 'run.timing.updated':
+      assertCurrentRun(next, event.runId, 'run_timing_run_mismatch');
+      next.runTimings = { ...next.runTimings, [event.runId]: { ...structuredClone(event.payload), runId: event.runId } };
+      break;
     case 'run.failure.recorded':
       assertCurrentRun(next, event.runId, 'failure_snapshot_run_mismatch');
       if (event.payload.revision > previous.revision) throw new Error('failure_snapshot_revision_invalid');
@@ -261,7 +262,11 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
     case 'session.model-settings.updated':
       next.modelSettings = { ...event.payload.settings };
       break;
+    case 'session.subagent-settings.updated':
+      next.subagentSettings = structuredClone(event.payload.settings);
+      break;
     case 'session.created':
+      if (event.payload.subagentSettings) next.subagentSettings = structuredClone(event.payload.subagentSettings);
       if (event.payload.recipe) next.recipe = structuredClone(event.payload.recipe);
       next.permissionOverrides = structuredClone(event.payload.recipe?.permissions ?? {});
       if (event.payload.agentContext) next.agentContext = structuredClone(event.payload.agentContext);
@@ -272,6 +277,15 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       next.sessionDirectoryIndexes = [];
       next.workspaceBindings = effectiveWorkspaceBindings(next);
       break;
+    case 'session.workspaces.updated': {
+      next.creationWorkspaceBindings = structuredClone(event.payload.baseBindings);
+      next.workspaceBindings = effectiveWorkspaceBindings(next);
+      if (JSON.stringify(next.workspaceBindings) !== JSON.stringify(event.payload.workspaceBindings)) throw new Error('session_workspace_bindings_mismatch');
+      if (next.run && ['running', 'waiting'].includes(next.run.status)) {
+        next.run = { ...next.run, workspaceBindings: structuredClone(next.workspaceBindings) };
+      }
+      break;
+    }
     case 'session.directory-index.attached':
       next.sessionDirectoryIndexes = [...next.sessionDirectoryIndexes];
       if (next.workspaceBindings.some((binding) => (
@@ -279,6 +293,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       ))) throw new Error('session_directory_index_duplicate');
       next.sessionDirectoryIndexes.push({ ...event.payload.workspaceBinding });
       next.workspaceBindings = effectiveWorkspaceBindings(next);
+      if (next.run && ['running', 'waiting'].includes(next.run.status)) {
+        next.run = { ...next.run, workspaceBindings: structuredClone(next.workspaceBindings) };
+      }
       break;
     case 'session.directory-index.detached': {
       const before = next.sessionDirectoryIndexes.length;
@@ -289,6 +306,9 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         throw new Error('session_directory_index_missing');
       }
       next.workspaceBindings = effectiveWorkspaceBindings(next);
+      if (next.run && ['running', 'waiting'].includes(next.run.status)) {
+        next.run = { ...next.run, workspaceBindings: structuredClone(next.workspaceBindings) };
+      }
       break;
     }
     case 'run.started':
@@ -504,6 +524,16 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
       };
       break;
     }
+    case 'plan.review.requested':
+      updatePlan(next, event.payload.planId, event.payload.revision, plan => ({ ...plan,
+        review: { status: 'reviewing', providerRequestId: event.payload.providerRequestId }, updatedAt: event.occurredAt }));
+      break;
+    case 'plan.reviewed':
+      updatePlan(next, event.payload.planId, event.payload.revision, plan => ({ ...plan,
+        review: { status: 'completed', providerRequestId: event.payload.providerRequestId,
+          decision: event.payload.decision, reason: event.payload.reason,
+          ...(event.payload.error ? { error: structuredClone(event.payload.error) } : {}) }, updatedAt: event.occurredAt }));
+      break;
     case 'plan.confirmed':
       if (
         !next.pendingPlan
@@ -697,6 +727,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         ...next.activities[toolActivityId(event.callId)],
         inputRejection: structuredClone(event.payload.rejection.error),
       };
+      delete next.activities[toolActivityId(event.callId)].tool;
       break;
     }
     case 'process.updated': {
@@ -812,6 +843,8 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
           },
         };
       }
+      break;
+    case 'context.compaction.scheduled':
       break;
     case 'context.compaction.requested':
       assertRunningRun(next, event.runId, 'context_compaction_run_not_active');
@@ -963,7 +996,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
                   }
                 : {}),
             }
-          : { error: { ...event.payload.error } }),
+          : event.payload.outcome === 'cancelled' ? {} : { error: { ...event.payload.error } }),
         sequence: event.sequence,
       };
       if (settlement.outcome === 'completed') {
@@ -1274,10 +1307,12 @@ export function projectSession(
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
   return {
+    ...(state.subagentSettings ? { subagentSettings: structuredClone(state.subagentSettings) } : {}),
     ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
     ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
+    ...(Object.keys(state.runTimings).length ? { runTimings: Object.values(state.runTimings).map(value => structuredClone(value)) } : {}),
     ...(Object.keys(state.providerAttempts).length ? { providerAttempts: Object.values(state.providerAttempts)
       .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
     ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),
@@ -1343,10 +1378,10 @@ function effectiveWorkspaceBindings(state: Pick<
   SessionState,
   'creationWorkspaceBindings' | 'sessionDirectoryIndexes'
 >): WorkspaceBindingDisplay[] {
-  return [
-    ...state.creationWorkspaceBindings.map((binding) => ({ ...binding })),
-    ...state.sessionDirectoryIndexes.map((binding) => ({ ...binding })),
-  ];
+  return [...new Map([
+    ...state.creationWorkspaceBindings,
+    ...state.sessionDirectoryIndexes,
+  ].map(binding => [binding.workspaceId, { ...binding }])).values()];
 }
 
 function cloneRun(run: NonNullable<SessionProjection['run']>): NonNullable<SessionProjection['run']> {
@@ -1794,6 +1829,7 @@ function projectPlan(
       ...(step.verification ? { verification: [...step.verification] } : {}),
     })),
     mutationManifest: event.payload.mutationManifest.map((operation) => ({ ...operation })),
+    ...(event.payload.workspaceRequests?.length ? { workspaceRequests: structuredClone(event.payload.workspaceRequests) } : {}),
     status: 'published',
     sequence: event.sequence,
     createdAt: event.occurredAt,
@@ -1839,6 +1875,8 @@ function clonePlanProjection(
       ...(step.verification ? { verification: [...step.verification] } : {}),
     })),
     mutationManifest: plan.mutationManifest.map((operation) => ({ ...operation })),
+    ...(plan.workspaceRequests ? { workspaceRequests: structuredClone(plan.workspaceRequests) } : {}),
+    ...(plan.review ? { review: structuredClone(plan.review) } : {}),
   };
 }
 
@@ -1862,6 +1900,9 @@ function updatePlan(
   if (index < 0) throw new Error('plan_revision_missing');
   state.plans = [...state.plans];
   state.plans[index] = update(planFor(state, planId, revision));
+  if (state.plans[index].status === 'published' && samePlanRef(state.pendingPlan, { planId, revision })) {
+    state.pendingPlan = { ...clonePlanProjection(state.plans[index]), status: 'published', responseMode: 'confirmReviseOrCancel' };
+  }
 }
 
 function assertPendingPlan(

@@ -28,6 +28,8 @@ class Provider(fixture.MockProviderHandler):
         state = self.provider_state
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
             lane = next((lane for message in reversed(body['messages']) if message.get('role') == 'user'
                          for lane in ['COMPOSE_CHILD', 'COMPOSE_RESUME', 'COMPOSE_ROOT', 'PERMISSION_ROOT',
                                       'PERMISSION_CONTINUE', 'PERMISSION_CHILD', 'PERMISSION_CHILD_RESUME']
@@ -52,7 +54,8 @@ class Provider(fixture.MockProviderHandler):
             ordinal = state.ordinals.get(lane, 0) + 1
             state.ordinals[lane] = ordinal
             state.requests.append(body)
-            if lane == 'PERMISSION_CHILD' and ordinal >= 4 or lane == 'PERMISSION_CHILD_RESUME':
+            if lane == 'PERMISSION_CHILD' and ordinal >= 3 or lane == 'PERMISSION_CHILD_RESUME':
+                require('plan.publish' in names, 'Tightening permission did not restore the Plan tool')
                 instructions = '\n'.join(fixture.message_text(message.get('content'))
                                          for message in body['messages'] if message.get('role') in ('system', 'developer'))
                 require('it is confirmed automatically' not in instructions, 'Child Provider received stale automatic Plan instructions')
@@ -115,7 +118,7 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('tightening-complete')
             elif lane == 'PERMISSION_CONTINUE':
                 if ordinal == 1:
-                    call('continue-child', 'agent', dict(action='send', agentId=child, text='PERMISSION_CHILD_RESUME'))
+                    call('continue-child', 'agent', dict(action='assign', agentId=child, task='PERMISSION_CHILD_RESUME'))
                 elif ordinal == 2:
                     call('wait-child', 'agent', dict(action='wait', taskIds=[results['continue-child']['taskId']]))
                 else:
@@ -123,26 +126,22 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('tightening-restored')
             elif lane == 'PERMISSION_CHILD':
                 if ordinal == 1:
-                    call('automatic-plan', 'plan.publish', dict(title='Initial delegated write scope', summary='Use inherited permission.',
-                         steps=[dict(stepId='write', title='Write', details='Write the reports.')],
-                         mutationManifest=[dict(workspace='primary', operation='fs.write', target=path)
-                                           for path in ['before-tightening.txt', 'after-tightening.txt']]))
-                elif ordinal == 2:
+                    require('plan.publish' not in names, 'Plan-off permission exposed a Plan approval tool')
                     call('before-tightening', 'fs.write', dict(path='before-tightening.txt', content='inherited write\n'))
-                elif ordinal == 3:
+                elif ordinal == 2:
                     require(results['before-tightening']['outcome'] == 'completed', json.dumps(results))
                     call('pause', 'interaction.request', dict(mode='wait', kind='question', prompt='Await parent permission change.', allowFreeform=True))
-                elif ordinal == 4:
+                elif ordinal == 3:
                     call('after-tightening', 'fs.write', dict(path='after-tightening.txt', content='must not exist'))
-                elif ordinal == 5:
+                elif ordinal == 4:
                     require('plan_scope_required' in json.dumps(results['after-tightening']), json.dumps(results))
                     call('new-plan', 'plan.publish', dict(title='Request a new write', summary='The parent withdrew automatic permission.',
                          steps=[dict(stepId='request', title='Write after confirmation', details='Await the user.')],
                          mutationManifest=[dict(workspace='primary', operation='fs.write', target='after-user-plan.txt')]))
-                elif ordinal == 6:
+                elif ordinal == 5:
                     call('user-authorized', 'fs.write', dict(path='after-user-plan.txt', content='explicit user permission\n'))
                 else:
-                    require(ordinal == 7 and results['user-authorized']['outcome'] == 'completed', json.dumps(results))
+                    require(ordinal == 6 and results['user-authorized']['outcome'] == 'completed', json.dumps(results))
                     self._send_text('active-child-restricted')
             elif lane == 'PERMISSION_CHILD_RESUME':
                 if ordinal == 1:
@@ -190,7 +189,6 @@ def run():
         profile_file.write_text(json.dumps(profiles), encoding='utf-8')
         trace = root / 'drivers.jsonl'
         module = root / 'session-extension.mjs'
-        fault = root / 'fail-publication'
         reads = root / 'journal-reads.jsonl'
         lost_ack = root / 'lose-journal-ack'
         module.write_text('import { appendFileSync, existsSync, unlinkSync } from "node:fs";\n'
@@ -207,9 +205,7 @@ def run():
             + 'validate(p){if(typeof p.label!=="string")throw Error("label_required");},create({label}){return {\n'
             + 'async run(...args){appendFileSync(' + json.dumps(str(trace))
             + ',JSON.stringify({label,sessionId:args[0].state.sessionId})+"\\n");return runAgentLoop(...args);}};}\n}]) });'
-            + 'const deliver=service.delegationChanged.bind(service);service.delegationChanged=async enabled=>{if(existsSync('
-            + json.dumps(str(fault)) + ')){unlinkSync(' + json.dumps(str(fault))
-            + ');throw Error("fixture_publication_failed");}await deliver(enabled);};return service;};\n', encoding='utf-8')
+            + 'return service;};\n', encoding='utf-8')
         previous_module = os.environ.get('DEEPCODE_SESSION_SERVICE_MODULE')
         os.environ['DEEPCODE_SESSION_SERVICE_MODULE'] = str(module)
         recipe = dict(profileId='e2e-main', runner=dict(id='fixture-driver', parameters=dict(label='root')),
@@ -230,12 +226,24 @@ def run():
             return subprocess.run(command, cwd=fixture.ROOT, env=fixture.shell_environment(daemon),
                                   capture_output=True, text=True, timeout=45)
 
-        def settings(enabled, expected=True):
+        def settings(enabled):
             response = fixture.api_envelope(daemon.base_url, '/api/user-settings', token=daemon.token,
                                            method='PATCH', body={'patches': {'agent.subagents.enabled': enabled}})
-            require(response['ok'] is expected, json.dumps(response))
-            if not expected:
-                require(response['error'] == 'settings_publication_pending', json.dumps(response))
+            require(response['ok'] is True, json.dumps(response))
+
+        def session_settings(sid, enabled, label):
+            current = fixture.projection(daemon, sid)['subagentSettings']
+            changed = dict(current, enabled=enabled)
+            response = fixture.api_json(daemon.base_url, f'/api/conversation/sessions/{sid}/commands',
+                token=daemon.token, method='POST', body={
+                    'schemaVersion': fixture.COMMAND_VERSION, 'type': 'session.subagent-settings.set',
+                    'sessionId': sid, 'commandId': f'subagent-settings:{label}', 'settings': changed})
+            require(response['status'] == 'accepted', json.dumps(response))
+            require(fixture.projection(daemon, sid)['subagentSettings'] == changed,
+                    'Session did not persist its complete subagent configuration')
+            defaults = fixture.api_json(daemon.base_url, '/api/user-settings', token=daemon.token)['settings']
+            require(all(defaults[f'agent.subagents.{key}'] == value for key, value in changed.items()),
+                    'Session configuration did not become the complete new-session defaults')
 
         try:
             daemon.start()
@@ -301,16 +309,19 @@ def run():
                 finally:
                     settings_path.rmdir()
                     settings_path.write_bytes(saved_bytes)
-                fault.write_text('fail before delivery')
-                settings(False, expected=False)
-                saved = json.loads((daemon.config_root / 'config/user/local/settings/user-settings.json').read_text())
-                require(saved['agent.subagents.enabled'] is False, 'Failed delivery lost the durable desired state')
                 settings(False)
                 for sid in (parent, child):
-                    changes = [event['payload']['enabled'] for event in events(daemon)
-                               if event['sessionId'] == sid and event['type'] == 'agent.delegation.changed']
-                    require(changes[-1] is False, 'Same-value retry did not publish to every active Actor')
-                settings(True)
+                    require(fixture.projection(daemon, sid)['subagentSettings']['enabled'] is True,
+                            'Changing new-session defaults altered an existing Session')
+                future = fixture.api_json(daemon.base_url, '/api/conversation/sessions', token=daemon.token,
+                    method='POST', body={'workspacePaths': [str(workspace)]})
+                require(fixture.projection(daemon, future['sessionId'])['subagentSettings']['enabled'] is False,
+                        'New Session did not copy current defaults')
+                session_settings(parent, False, 'disable-parent')
+                require(fixture.projection(daemon, child)['subagentSettings']['enabled'] is True
+                        and fixture.projection(daemon, child)['run']['status'] == 'waiting',
+                        'Disabling the parent changed or cancelled its waiting child')
+                session_settings(parent, True, 'enable-parent')
                 require((workspace / 'before-tightening.txt').read_text() == 'inherited write\n', 'Initial parent permission was not inherited')
                 lost_ack.write_text('drop response after the parent permission commit')
                 update = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
@@ -339,16 +350,14 @@ def run():
                 if running.poll() is None:
                     running.kill()
                     running.communicate(timeout=10)
-            fault.write_text('fail before restart')
-            settings(False, expected=False)
+            session_settings(parent, False, 'disable-before-restart')
             daemon.shutdown()
             daemon.start()
             for sid in (parent, child):
                 fixture.cli(daemon, sid, '/permissions ' + json.dumps({'agent.permissions.engineeringDecisions': 'ask'}))
-                changes = [event['payload']['enabled'] for event in events(daemon)
-                           if event['sessionId'] == sid and event['type'] == 'agent.delegation.changed']
-                require(changes[-1] is False, 'Restart did not publish persisted settings before Actor recovery')
-            settings(True)
+                require(fixture.projection(daemon, sid)['subagentSettings']['enabled'] is (sid == child),
+                        'Restart overwrote Session-specific subagent settings')
+            session_settings(parent, True, 'enable-after-restart')
             resumed = fixture.cli(daemon, parent, 'PERMISSION_CONTINUE')
             state.assert_healthy()
             require('tightening-restored' in resumed.stdout, resumed.stdout)
@@ -370,7 +379,7 @@ def run():
             require(denied.returncode != 0 and 'agent_plugin_isolation_required' in denied.stdout + denied.stderr, denied.stdout + denied.stderr)
             require(not marker.exists(), 'MCP process started before policy admission')
             require(len(state.requests) == count, 'Invalid composition reached Provider')
-            print('[agent-composition-cli] PASS: root/child drivers, model choices, restart, parent Plan scope, active/continued child tightening and prompts, settings retry/restart, lost parent commit acknowledgement, write publications, Host denial, MCP pre-start denial')
+            print('[agent-composition-cli] PASS: root/child drivers, model choices, restart, parent Plan scope, active/continued child tightening and prompts, Session settings/default isolation and restart, lost parent commit acknowledgement, write publications, Host denial, MCP pre-start denial')
         except BaseException:
             print(daemon.log_tail())
             if state.failure:

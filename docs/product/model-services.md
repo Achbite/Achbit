@@ -1,6 +1,6 @@
 # Connections, models and usage
 
-Settings → Models & services groups **API connections** and **Coding Plans**. A connection owns its endpoint and credential reference; model profiles point to it and retain independent model and context settings. Connection details open directly into configuration. Saving one model leaves the others intact. The model last used for a submitted task remains the default for new conversations. Reasoning effort is chosen in the conversation selector and remembered per model; new conversations inherit that choice. A running request keeps its captured connection/model configuration.
+Settings → Models & services groups **API connections** and **Coding Plans**. A connection owns its endpoint and credential reference; model profiles point to it and retain independent model and context settings. Connection details open directly into configuration. For an existing model, switches and selections save immediately, and numeric fields save on Enter. Text edits and new model/connection creation retain an explicit save/create action. Updating a choice does not submit unconfirmed text or remount the model editor; saving one model leaves the others intact. The model last used for a submitted task remains the default for new conversations. Reasoning effort is chosen in the conversation selector and remembered per model; new conversations inherit that choice. A running request keeps its captured connection/model configuration.
 
 The execution approval model has separate provider/model and reasoning selections. Leaving the model blank uses the conversation model; leaving reasoning blank uses that model's captured effort. The review runs with independent, compact context and the selected model's configured output budget. Saved changes apply to the next run. It reviews execution access, not Plan confirmations or user questions. Chrome review receives matching recorded page and element facts from structured snapshots, including all UIDs referenced by the prepared operation. These facts supplement the existing review context; they neither authorize the action nor guarantee an allow decision. The standard effort choices are low, medium, high, xhigh and max; provider-specific choices follow the adapter's supported settings.
 
@@ -11,6 +11,41 @@ Codex requests use the existing Session ID as their stable `session-id` header a
 Ordinary turns append messages and tool results. Background process updates append snapshots at model-request boundaries rather than rewriting the original tool result. Plugin activation changes the supplied tool catalog and can reduce prefix reuse; a new screenshot also adds uncached input. A conversation's total cache ratio therefore need not match its last request's ratio. The GUI total adds the current session and all descendant Agent sessions, including closed members, with each session counted once across repeated tasks. It divides accumulated cached input tokens by accumulated input tokens. Current-context estimates remain scoped to the last settled Agent request; own-session usage and cost reports retain their separate scopes. Missing usage remains unavailable or partial.
 
 `/focus <task>` summarizes prior work before starting the supplied task. The summary request shares the conversation composer, retains current tool definitions, and appends its summarization instruction. Session rejects any tool call without executing it or committing a checkpoint. For DeepSeek Responses summaries containing only function tools, the transport keeps automatic tool selection: `tool_choice: none` changes the provider's input rendering and breaks reuse of the normal conversation prefix. Codex, other adapters and summaries containing hosted tools retain API-side prohibition with `tool_choice: none` (Anthropic uses its object form). Approval reviews retain an empty tool catalog. An adapter that cannot prohibit calls with retained definitions reports an error; the Ollama adapter currently has that limitation. Only a successful summary commits a context checkpoint. Later Agent requests use the checkpoint and subsequent facts, while the original journal remains available. Compression changes the prefix by design; continuing from the smaller context can build cache reuse again.
+
+## Context management
+
+Settings > Agent behavior controls automatic compaction. It is **off by default**, with a configurable **500000-token** soft threshold. The switch saves immediately; confirm the numeric threshold with Enter rather than a separate Save button. Settings are captured for the next run. The threshold counts estimated current input, including cached tokens and schemas, not accumulated billing usage. Automatic checks run before a new run's first Agent request and at task completion with no pending input, questions or child work; they do not interrupt a task merely because it passes the threshold. Capacity-pressure compaction remains active and reserves output space. The shared summary path above also applies to automatic and parent-requested compaction, including adapter restrictions, recorded usage and error behavior. The original journal remains readable through `session.read`; check excerpt truncation rather than assuming every call returns an entire historical record.
+
+### Child context configuration
+
+Call `agent` with `action: "models"` for the available operation and contribution schemas. Creating a child requires no context-specific arguments: its context budget and compaction rules inherit from the parent's effective run configuration. The child receives the assigned task, not the parent's conversation history. Retained instances keep their captured rules on later assignments. Where full configuration is enabled, the following overrides are optional, and unspecified parameters retain inherited values:
+
+- `context: {id: "journal", parameters: {maxTokens: ...}}`: context budget including output reserve. The effective budget cannot exceed the selected model's window and must leave room for its configured output.
+- `loop.compaction: {id: "summary", parameters: {...}}`: `enabled` controls automatic task-boundary management; `thresholdTokens` sets its positive-integer soft threshold. `pressureRatio` optionally starts capacity-pressure compaction at a fraction of the effective context budget (greater than zero and at most one; default one).
+- Turning `enabled` off does not disable capacity-pressure compaction. There is no requirement to override either contribution or to match a prescribed child size.
+
+For example, only when a smaller child context is useful:
+
+```json
+{
+  "action": "spawn",
+  "name": "Review",
+  "task": "Review the selected module and report concrete findings.",
+  "delivery": "async",
+  "context": {"id": "journal", "parameters": {"maxTokens": 200000}},
+  "loop": {"compaction": {"id": "summary", "parameters": {"enabled": true, "thresholdTokens": 100000}}}
+}
+```
+
+To request compaction of an existing child, use its returned exact ID:
+
+```json
+{"action": "compact", "agentId": "<returned child session ID>", "focus": "Preserve unresolved findings and their evidence references."}
+```
+
+`focus` is optional. The result reports a `compactionId`, `status: "scheduled"` and `boundary: "nextModelBoundary"` or `"nextRun"`. Session waits for the child's current model/tool work and required decisions; an idle child's request stays in its journal until it receives another task. This action does not launch work or grant permissions and remains a management operation when new delegation is disabled. Only a later successful checkpoint establishes completed compaction. Use current file/tool reads for present state; `session.read` retrieves historical evidence.
+
+## Quota
 
 Quota is a timestamped response from the provider, not an estimate from local tokens. Its windows retain the supplied reset time and used percentage. A failed refresh displays its error. Subscription fees and subscription usage are not counted as metered API cost.
 

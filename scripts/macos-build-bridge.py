@@ -45,7 +45,8 @@ def request_host(operation, shared=None, output=None, timeout=3600):
         raise RuntimeError('Mac host bridge is not running; prepare it with make shell on the host.')
     worker = json.loads(WORKER.read_text())
     directory = Path(tempfile.mkdtemp(prefix='request-', dir=BRIDGE))
-    request = {'workerId': worker['workerId'], 'operation': operation}
+    request = {'workerId': worker['workerId'], 'operation': operation,
+               'buildKind': os.environ.get('DEEPCODE_BUILD_KIND', 'normal')}
     # Forward the public identity selector explicitly; credentials stay in the host keychain.
     if 'DEEPCODE_MACOS_SIGN_IDENTITY' in os.environ:
         request['signingIdentity'] = os.environ['DEEPCODE_MACOS_SIGN_IDENTITY']
@@ -190,6 +191,7 @@ def serve(container_id):
                     else:
                         arguments = ['bash', str(PACKAGER)]
                         environment = os.environ.copy()
+                        environment['DEEPCODE_BUILD_KIND'] = request.get('buildKind', 'normal')
                         if 'signingIdentity' in request:
                             environment['DEEPCODE_MACOS_SIGN_IDENTITY'] = request['signingIdentity']
                         if operation == 'check':

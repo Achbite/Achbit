@@ -19,6 +19,13 @@ pub struct UserDirectories {
 
 impl UserDirectories {
     pub fn resolve() -> io::Result<Self> {
+        // A directly launched Debug executable must not discover the stable Host.
+        // Explicit roots still select a particular isolated test instance.
+        #[cfg(feature = "debug-control")]
+        if std::env::var_os("DEEPCODE_USER_ROOT").is_none() {
+            let root = debug_root_for(std::env::consts::OS, |key| std::env::var_os(key))?;
+            return Ok(Self::isolated(&root));
+        }
         let mut directories = resolve_for(
             std::env::consts::OS,
             |key| std::env::var_os(key),
@@ -65,6 +72,22 @@ impl UserDirectories {
         }
         command.env("DEEPCODE_LOG_DIR", &self.log_dir);
     }
+}
+
+#[cfg(feature = "debug-control")]
+fn debug_root_for(platform: &str, env: impl Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
+    let (key, suffix) = match platform {
+        "windows" => ("LOCALAPPDATA", "DeepCode-Debug"),
+        "macos" => ("HOME", "Library/Application Support/DeepCode-Debug"),
+        _ => ("HOME", ".deepcode-debug"),
+    };
+    let base = env(key).filter(|value| !value.is_empty()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{key} is required for Debug user directories"),
+        )
+    })?;
+    Ok(PathBuf::from(base).join(suffix))
 }
 
 fn resolve_for(
@@ -143,6 +166,20 @@ fn resolve_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "debug-control")]
+    #[test]
+    fn debug_windows_root_does_not_require_home_or_share_normal_data() {
+        let local = PathBuf::from("C:/Users/example/AppData/Local");
+        let root = debug_root_for("windows", |key| {
+            (key == "LOCALAPPDATA").then(|| local.clone().into_os_string())
+        })
+        .unwrap();
+        assert_eq!(root, local.join("DeepCode-Debug"));
+        assert_ne!(root, local.join("DeepCode"));
+        assert!(debug_root_for("windows", |_| None).is_err());
+        assert!(debug_root_for("windows", |_| Some(OsString::new())).is_err());
+    }
 
     #[test]
     fn platform_locations_separate_persistent_discardable_and_roaming_data() {

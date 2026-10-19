@@ -16,7 +16,7 @@ type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAdditio
   | 'pendingApproval' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'respondApproval' | 'projection'>;
 
 export function ComposerQuestionPrompt({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
-  const { pendingPlan, pendingScopeAddition, pendingInteraction, submitting, submitPlanDecision, respondInteraction, projection } = composer;
+  const { pendingPlan, pendingScopeAddition, pendingInteraction, interactionNavigation, submitting, submitPlanDecision, respondInteraction, projection } = composer;
   const confirmation = pendingInteraction?.kind === 'confirmation';
   const sendDecision = async (text: string) => {
     try { await respondInteraction(text, pendingInteraction?.interactionId); } catch { /* The shared store exposes the error. */ }
@@ -25,12 +25,6 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
       {(pendingPlan || pendingInteraction) && (
         <section id={pendingPlan ? undefined : 'conversation-interaction'} tabIndex={-1}
           className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
-          <div
-            className="local-agent__interaction-document-scroll"
-            tabIndex={0}
-            role="region"
-            aria-label={t(language, 'agent.interaction.details')}
-          >
             <header className="local-agent__interaction-panel-heading">
               <span className="local-agent__interaction-caption">
                 <DeepCodeShellIcon name={pendingPlan ? 'artifact' : 'question'} size={17} />
@@ -38,6 +32,17 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                   ? t(language, pendingScopeAddition ? 'agent.plan.reviewScope' : 'agent.plan.review')
                   : t(language, confirmation ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
               </span>
+              <div className="local-agent__interaction-controls">
+              {!pendingPlan && interactionNavigation && <div className="local-agent__interaction-navigation" role="group"
+                aria-label={t(language, 'agent.interaction.navigation')}>
+                <button type="button" aria-label={t(language, 'agent.interaction.previous')}
+                  title={t(language, 'agent.interaction.previous')} disabled={submitting || interactionNavigation.index === 0}
+                  onClick={interactionNavigation.previous}><DeepCodeShellIcon name="chevronLeft" size={15} /></button>
+                <span aria-live="polite">{interactionNavigation.index + 1}/{interactionNavigation.count}</span>
+                <button type="button" aria-label={t(language, 'agent.interaction.next')}
+                  title={t(language, 'agent.interaction.next')} disabled={submitting || interactionNavigation.index === interactionNavigation.count - 1}
+                  onClick={interactionNavigation.next}><DeepCodeShellIcon name="chevronRight" size={15} /></button>
+              </div>}
               {(pendingPlan || pendingInteraction?.allowFreeform) && <button
                 type="button"
                 className="local-agent__interaction-close"
@@ -48,7 +53,15 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                   ? void submitPlanDecision({ kind: 'cancel' })
                   : void sendDecision(t(language, 'agent.interaction.skip'))}
               ><DeepCodeShellIcon name="close" size={15} /></button>}
+              </div>
             </header>
+          <div
+            key={pendingInteraction?.interactionId}
+            className="local-agent__interaction-document-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label={t(language, 'agent.interaction.details')}
+          >
             <div className="local-agent__interaction-prompt">
               {pendingPlan
                 ? pendingScopeAddition ? <>
@@ -83,6 +96,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const offeredScopes = pendingApproval?.preview.authorizationScopes ?? [];
   const approvalScope = isShellAuthorizationScope(proposedScope) && offeredScopes.includes(proposedScope) ? proposedScope : undefined;
   const sessionScope = approvalScope && sessionAuthorizationScope(approvalScope);
+  const hostApproval = proposedScope === 'runHostShell' || pendingApproval?.preview.operation?.executionScope === 'host';
+  const primaryScope = hostApproval ? undefined : approvalScope;
   const approvalRef = useRef<HTMLElement>(null);
   const sessionBrowser = pendingApproval?.preview.authorizationScope === 'sessionBrowser';
   const runCommand = pendingApproval?.preview.authorizationScopes?.includes('runCommand');
@@ -94,6 +109,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const [ruleSaved, setRuleSaved] = useState(false);
   const [ruleError, setRuleError] = useState<string | null>(null);
   const reviewing = pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running';
+  const reviewingPlan = pendingPlan?.review?.status === 'reviewing'
+    && projection?.effectivePermissions?.['agent.permissions.workspaceMutation'] === 'review';
   useLayoutEffect(() => { setRuleSaved(false); setRuleError(null); }, [pendingApproval?.approvalId]);
   const saveRule = async () => {
     if (!pendingApproval?.preview.authorizationContext) return;
@@ -124,17 +141,35 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   };
   return (
     <>
-      {pendingPlan ? (
+      {pendingPlan ? reviewingPlan ? <section className="local-agent__auto-review" aria-label={t(language, 'agent.plan.reviewing')}>
+          <header><span className="local-agent__auto-review-spinner" aria-hidden="true" /><strong role="status">{t(language, 'agent.plan.reviewing')}</strong>
+            <button type="button" disabled={submitting} onClick={() => void setPermissions({ 'agent.permissions.workspaceMutation': 'plan' }).catch(() => {})}>{t(language, 'agent.permission.takeOver')}</button>
+          </header>
+        </section> : (
+          <>
+            {pendingPlan.review?.status === 'completed' && pendingPlan.review.decision && pendingPlan.review.reason
+              && <ApprovalReviewReason language={language} review={{ decision: pendingPlan.review.decision, reason: pendingPlan.review.reason }} />}
+            {Boolean(pendingPlan.workspaceRequests?.length) && <section className="local-agent__decision" aria-label={language === 'zh-CN' ? '工作区权限' : 'Workspace access'}>
+              <header className="local-agent__decision-heading"><DeepCodeShellIcon name="shield" /><strong>{t(language, 'agent.plan.workspaceRequest')}</strong></header>
+              <ul>{pendingPlan.workspaceRequests!.map(request => <li key={request.workspaceId}><code>{request.rootPath}</code></li>)}</ul>
+            </section>}
             <ol className="local-agent__interaction-options">
               <li>
                 <button type="button" disabled={submitting}
                   title={pendingScopeAddition ? t(language, 'agent.plan.continuePhases') : undefined}
                   onClick={() => void submitPlanDecision({ kind: 'confirm' })}>
                   <span className="local-agent__interaction-option-marker" aria-hidden="true">1</span>
-                  <span className="local-agent__interaction-option-copy"><b>{t(language, pendingScopeAddition ? 'agent.plan.confirmScope' : 'agent.plan.confirm')}</b></span>
+                  <span className="local-agent__interaction-option-copy"><b>{pendingPlan.workspaceRequests?.length ? t(language, 'agent.plan.confirmWorkspace') : t(language, pendingScopeAddition ? 'agent.plan.confirmScope' : 'agent.plan.confirm')}</b></span>
                 </button>
               </li>
+              {Boolean(pendingPlan.workspaceRequests?.length) && <li>
+                <button type="button" disabled={submitting} onClick={() => void submitPlanDecision({ kind: 'cancel' })}>
+                  <span className="local-agent__interaction-option-marker" aria-hidden="true">2</span>
+                  <span className="local-agent__interaction-option-copy"><b>{t(language, 'agent.plan.cancelWorkspace')}</b></span>
+                </button>
+              </li>}
             </ol>
+          </>
       ) : pendingInteraction && <InteractionOptions options={pendingInteraction.options} disabled={submitting}
         onAnswer={response => { void sendDecision(response); }} />}
       {reviewing && pendingApproval && <section className="local-agent__auto-review" aria-label={t(language, 'agent.permission.reviewing')}>
@@ -159,7 +194,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             if (event.key === 'Escape' || (event.key === 'Enter' && event.target === approvalRef.current)) {
               event.preventDefault();
               event.stopPropagation();
-              void answerApproval(event.key === 'Escape' ? 'deny' : 'allow', event.key === 'Enter' ? approvalScope : undefined);
+              void answerApproval(event.key === 'Escape' ? 'deny' : 'allow', event.key === 'Enter' ? primaryScope : undefined);
             }
           }}
         >
@@ -199,6 +234,11 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             </details>
           ) : <span />}
           <div className="local-agent__decision-actions">
+            {hostApproval && offeredScopes.includes('runHostShell') && <button type="button"
+              className="local-agent__decision-session" disabled={submitting || reviewing}
+              title={t(language, 'agent.permission.scope.runHostShell')}
+              onClick={() => void answerApproval('allow', 'runHostShell')}
+            >{t(language, 'agent.permission.scope.runHostShell')}</button>}
             {sessionScope && offeredScopes.includes(sessionScope) && <button
               type="button"
               className="local-agent__decision-session"
@@ -216,12 +256,12 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             <button
               type="button"
               className="local-agent__decision-allow"
-              aria-label={t(language, sessionBrowser ? 'agent.approval.allowSession' : approvalScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}
-              title={approvalScope ? t(language, `agent.permission.scope.${approvalScope}`) : undefined}
+              aria-label={t(language, sessionBrowser ? 'agent.approval.allowSession' : hostApproval ? 'agent.approval.allowOnce' : primaryScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}
+              title={primaryScope ? t(language, `agent.permission.scope.${primaryScope}`) : undefined}
               aria-keyshortcuts="Enter"
               disabled={submitting || reviewing}
-              onClick={() => void answerApproval('allow', approvalScope)}
-            ><span>{t(language, sessionBrowser ? 'agent.approval.allowSession' : approvalScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}</span><kbd aria-hidden="true">↵</kbd></button>
+              onClick={() => void answerApproval('allow', primaryScope)}
+            ><span>{t(language, sessionBrowser ? 'agent.approval.allowSession' : hostApproval ? 'agent.approval.allowOnce' : primaryScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}</span><kbd aria-hidden="true">↵</kbd></button>
           </div>
           </div>
         </section>

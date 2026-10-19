@@ -37,6 +37,13 @@ class TestAgentManager extends AgentManager {
       async withActor(id, operation) {
         const actor = await lookup(id);
         return operation({ ...actor, agentSnapshot: () => actor.snapshot(),
+          async contextConfiguration() {
+            return (await actor.snapshot()).recipe?.configuration ?? {
+              context: { id: 'journal', parameters: { maxTokens: 100_000 } },
+              compaction: { id: 'summary', parameters: { enabled: false, thresholdTokens: 500_000 } },
+              controls: { id: 'standard' },
+            };
+          },
           async submit(command, beforeRunStart) {
             const reply = await actor.submit(command);
             if (reply.status !== 'rejected' && command.type === 'message.submit' && beforeRunStart) {
@@ -57,6 +64,8 @@ class TestAgentManager extends AgentManager {
 
 const ALL_AGENT_CAPS = { messaging: true, continuation: true, delegation: true };
 const NO_AGENT_CAPS = { messaging: false, continuation: false, delegation: false };
+const AGENT_SETTINGS = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
+  maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' };
 
 test('compact statuses share canonical lifecycle transitions without full journal reads', async (t) => {
   const sessionId = 'session:compact-lifecycle', runId = 'run:compact-lifecycle';
@@ -393,6 +402,14 @@ test('subagent model command overrides agree with the public schema', async () =
       assert.throws(() => decodeSessionControlCall('call:model-selection', 'agent', invalid));
     }
   }
+  const assignment = { action: 'assign', agentId: 'session:member', task: 'Follow up in the original Session.' };
+  assert.equal(validate(assignment), true, JSON.stringify(validate.errors));
+  assert.deepEqual(decodeSessionControlCall('call:assign', 'agent', assignment).operation, assignment);
+  for (const invalid of [{ ...assignment, task: '' }, { ...assignment, profileId: 'profile:other' },
+    { action: 'assign', agentId: 'session:member', text: 'Not the task field.' }]) {
+    assert.equal(validate(invalid), false);
+    assert.throws(() => decodeSessionControlCall('call:invalid-assign', 'agent', invalid));
+  }
   assert.equal(validate({ action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }), false);
   assert.throws(() => decodeSessionControlCall('call:send-model', 'agent',
     { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
@@ -429,6 +446,7 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
         parentRunId: 'run:owner-bound', parentCallId: 'call:member' },
       runRuntimeSnapshots: { 'run:member-bound': memberRuntime },
       run: { runId: 'run:member-bound', status: 'running', workspaceBindings: [], profileId: 'profile:member-bound', reasoningEffort: 'low' } });
+    for (const state of states.values()) state.subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: Boolean(item.operation), ...item.settings };
     const actors = new Map([...states.keys()].map(sessionId => [sessionId, { sessionId,
       async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
       async snapshot() { return projectSession(states.get(sessionId)); },
@@ -501,16 +519,22 @@ test('subagent models discovery uses the Host port without starting children', a
   host.createSession = async () => { throw new Error('discovery_must_not_create_child'); };
   const manager = new TestAgentManager(host, async sessionId => ({
     async agentCapabilities() { return capabilities; },
-    async snapshot() { return { sessionId, agentContext: { capabilities, ownerSessionId: 'session:owner',
-      parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
-      run: { runId: 'run:models', status: 'running' } }; },
+    async snapshot() {
+      if (sessionId === 'session:owner') return { sessionId, run: { runId: 'run:owner', status: 'running' },
+        agentChildren: [{ agentSessionId: 'session:member', displayName: 'Member', capabilities, closed: false }],
+        agentTasks: [{ taskId: 'agent-task:models', agentSessionId: 'session:member', capabilities, displayName: 'Member',
+          text: 'Discover models.', delivery: 'async', parentRunId: 'run:owner', childRunId: 'run:models', status: 'running' }] };
+      return { sessionId, subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:configured' }, agentContext: { capabilities, ownerSessionId: 'session:owner',
+        parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
+        run: { runId: 'run:models', status: 'running' } };
+    },
   }));
   try {
     const discovered = await manager.execute('session:member', 'run:models', 'call:models',
       { action: 'models' }, new AbortController().signal);
     assert.deepEqual(discovered.models, models);
     assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
-      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false,
+      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false, coordinator: false,
     }));
     assert.equal(discovered.parentAgentId, 'session:owner');
     assert.deepEqual(discovered.agents, []);
@@ -528,9 +552,13 @@ test('an idle member preparation failure cannot reuse its previous successful ru
   const sessionId = 'session:member-reuse', runId = 'run:parent-current', childId = 'session:existing-member';
   const runtime = runtimeSnapshot(runId);
   let state = { ...emptySessionState(sessionId),
+    subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:member' },
     run: { runId, status: 'running', workspaceBindings: [], profileId: runtime.provider.profileId },
     runRuntimeSnapshots: { [runId]: runtime },
-    agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }] };
+    agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }],
+    agentTasks: [{ taskId: 'agent-task:original', agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS,
+      text: 'Original task.', delivery: 'async', parentRunId: 'run:parent-previous', childRunId: 'run:previous-success',
+      status: 'completed', result: { outcome: 'completed', content: 'Original evidence.', finalMessageId: 'message:original' } }] };
   const facts = [], resultReads = [];
   const parent = { sessionId,
     async agentCapabilities() { return runtime.agentCapabilities; },
@@ -566,7 +594,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
   }, async id => { assert.ok(id === sessionId || id === childId); return id === sessionId ? parent : child; });
   t.after(() => manager.dispose());
   const signal = new AbortController().signal;
-  const first = await manager.execute(sessionId, runId, 'call:prepare-failure', { action: 'send', agentId: childId, text: 'First follow-up.' }, signal);
+  const first = await manager.execute(sessionId, runId, 'call:prepare-failure', { action: 'assign', agentId: childId, task: 'First follow-up.' }, signal);
   const failed = state.agentTasks.find(task => task.taskId === first.taskId);
   assert.equal(failed.status, 'failed');
   assert.deepEqual(failed.result, { outcome: 'failed', error: prepareError });
@@ -575,7 +603,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
   assert.equal(state.agentChildren[0].closed, false);
   assert.equal(facts.some(event => event.type === 'agent.closed'), false);
 
-  const second = await manager.execute(sessionId, runId, 'call:prepare-success', { action: 'send', agentId: childId, text: 'Next follow-up.' }, signal);
+  const second = await manager.execute(sessionId, runId, 'call:prepare-success', { action: 'assign', agentId: childId, task: 'Next follow-up.' }, signal);
   await manager.forSession(sessionId).wait(runId, signal);
   const completed = state.agentTasks.find(task => task.taskId === second.taskId);
   assert.equal(completed.status, 'completed');
@@ -590,8 +618,8 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   const ownerId = 'session:unified-owner';
   const states = new Map(), actors = new Map(), facts = [], submissions = [], results = new Map();
   let sequence = 0, allowChildDelegation = true, configuredProfile = '';
-  const initialize = (sessionId, agentContext) => {
-    states.set(sessionId, { ...emptySessionState(sessionId), ...(agentContext ? { agentContext } : {}) });
+  const initialize = (sessionId, agentContext, subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: true }) => {
+    states.set(sessionId, { ...emptySessionState(sessionId), subagentSettings: structuredClone(subagentSettings), ...(agentContext ? { agentContext } : {}) });
     const actor = { sessionId,
       async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
       async snapshot() { return projectSession(states.get(sessionId)); },
@@ -642,7 +670,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     async models() { return ['profile:owner', 'profile:selected-child', 'profile:new-global-default'].map(profileId => ({
       profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     })); },
-    async createSession(input) { return await initialize(input.sessionId, input.agentContext).snapshot(); },
+    async createSession(input) { return await initialize(input.sessionId, input.agentContext, input.subagentSettings).snapshot(); },
   }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
   t.after(() => manager.dispose());
   const signal = new AbortController().signal;
@@ -650,7 +678,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     `call:${++sequence}`, operation, signal);
   const spawn = (sessionId, extra = {}) => execute(sessionId,
     { action: 'spawn', name: 'Researcher', task: 'Inspect the evidence.', delivery: 'async', ...extra });
-  const first = await spawn(ownerId, { preset: 'collaboration' });
+  const first = await spawn(ownerId, { preset: 'collaboration', capabilities: { delegation: true } });
   const firstId = first.agentId;
   const firstRunId = states.get(firstId).run.runId;
   assert.deepEqual(states.get(firstId).agentContext.capabilities, ALL_AGENT_CAPS);
@@ -675,7 +703,10 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   await manager.forSession(ownerId).wait(ownerRunId, signal);
 
   configuredProfile = 'profile:new-global-default';
-  const continued = await execute(ownerId, { action: 'send', agentId: nestedId, text: 'Continue the shared task.' });
+  states.get(ownerId).subagentSettings.enabled = false;
+  await assert.rejects(execute(ownerId, { action: 'assign', agentId: nestedId, task: 'Disabled assignment.' }), /agent_disabled/);
+  states.get(ownerId).subagentSettings.enabled = true;
+  const continued = await execute(ownerId, { action: 'assign', agentId: nestedId, task: 'Continue the shared task.' });
   assert.equal(submissions.at(-1).profileId, undefined);
   assert.equal(submissions.at(-1).reasoningEffortOverride, undefined);
   assert.deepEqual(states.get(nestedId).modelSettings, { profileId: 'profile:selected-child', reasoningEffortOverride: 'max' });
@@ -692,12 +723,14 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, true);
   assert.equal(facts.some(event => event.type === 'agent.closed' && event.sessionId === ownerId && event.payload.agentSessionId === nestedId), false);
   allowChildDelegation = false;
+  states.get(ownerId).subagentSettings.allowMemberAnalysis = false;
   await assert.rejects(spawn(ownerId, { capabilities: { delegation: true } }), /agent_capability_not_grantable/);
   const limited = await spawn(ownerId, { preset: 'collaboration' });
   assert.deepEqual(states.get(limited.agentId).agentContext.capabilities, { ...ALL_AGENT_CAPS, delegation: false });
   finish(limited.agentId);
   await manager.forSession(ownerId).wait(ownerRunId, signal);
   allowChildDelegation = true;
+  states.get(ownerId).subagentSettings.allowMemberAnalysis = true;
   const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
   await assert.rejects(execute(restricted.agentId, { action: 'send', agentId: limited.agentId, text: 'Peer message is unavailable.' }), /agent_messaging_disabled/);
   await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_capability_not_grantable/);
@@ -1018,7 +1051,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
   const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
     runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
   assert.deepEqual(limitedMember.request.tools.filter(tool => tool.name !== 'agent'), member.request.tools.filter(tool => tool.name !== 'agent'));
-  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /permitted contacts/u);
+  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /Coordinate directly with teammates/u);
   assert.doesNotMatch(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /spawns|presets|configuration/u);
   assert.deepEqual(agentOperationDefinitions({ ...ALL_AGENT_CAPS, delegation: false }).map(operation => operation.action), ['models', 'send']);
   assert.deepEqual(limitedMember.request.messages, discovered.request.messages);
@@ -3204,15 +3237,56 @@ test('completed Provider cancellation preserves pure cancellation and independen
     await waitUntil(() => completed, 'Provider completion observed before cancellation');
     await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
       commandId: 'command:cancel', sessionId, runId });
-    const result = await waitForProjection(actor, value => ['failed', 'indeterminate'].includes(value.run?.status));
-    assert.equal(result.run.status, kind === 'cancel' ? 'indeterminate' : 'failed');
-    if (kind === 'cancel') assert.equal(result.terminalError.code, 'provider_turn_outcome_unknown');
+    const result = await waitForProjection(actor, value => ['failed', 'cancelled'].includes(value.run?.status));
+    assert.equal(result.run.status, kind === 'cancel' ? 'cancelled' : 'failed');
+    if (kind === 'cancel') {
+      assert.equal(result.terminalError, null);
+      assert.equal(result.failureSnapshot ?? null, null);
+      assert.equal(singleEvent(await readEvents(journal, sessionId), 'provider.turn.settled').payload.outcome, 'cancelled');
+    }
     if (kind === 'failure') assert.deepEqual(result.terminalError, { code: failure.code, message: failure.message });
     if (kind === 'secondary') assert.deepEqual(result.terminalError.diagnostics.secondary,
       [{ code: failure.code, message: failure.message }]);
     assert.equal(sends, 1);
     assert.equal(preparation.released.length, 1);
   });
+});
+
+test('stopping an active Provider cancels its turn and Run without executing incomplete calls or creating a failure snapshot', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:ordinary-provider-stop';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const started = Promise.withResolvers();
+  const preparation = fakeRunPreparation({ tools: [{ toolBindingRef: 'binding:stop-read', name: 'fs.read',
+    description: 'Read.', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    origin: 'coreBuiltin', availability: 'callable', possibleEffects: ['workspaceRead'] }] });
+  const actor = actorWith(journal, sessionId, { async *stream(request, signal) {
+    yield providerEvent(request.requestId, 'tool.call', { callId: 'call:unfinished-read', name: 'fs_read', input: { path: 'fixture.txt' } });
+    started.resolve(request.runId);
+    await waitForAbort(signal);
+    throw signal.reason;
+  } }, emptyKernel({ async execute() { assert.fail('an unfinished Provider turn must not execute its tools'); } }), preparation.port, 'ordinary-stop');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Begin inspection.'));
+  const runId = await started.promise;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:stop' });
+  const state = await actor.snapshot();
+  assert.equal(state.run.status, 'cancelled');
+  assert.equal(state.terminalError, null);
+  assert.equal(state.failureSnapshot ?? null, null);
+  const events = await readEvents(journal, sessionId);
+  const terminal = singleEvent(events, 'provider.turn.settled');
+  assert.equal(terminal.payload.outcome, 'cancelled');
+  assert.equal('error' in terminal.payload, false);
+  assert.equal(events.some(event => event.type === 'tool.requested'), false);
+  assert.equal(events.some(event => event.type === 'run.failure.snapshot'), false);
+  assert.ok(singleEvent(events, 'run.runtime.released').sequence < singleEvent(events, 'run.settled').sequence);
+  assert.equal(preparation.released.length, 1);
+  const { readFile } = await import('node:fs/promises');
+  const { default: Ajv } = await import('ajv/dist/2020.js');
+  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
+  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/ProviderTurnSettledPayload' });
+  assert.equal(validate(terminal.payload), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...terminal.payload, error: { code: 'not-an-error', message: 'A normal stop has no error.' } }), false);
 });
 
 test('Provider HTTP cancellation does not replace an independent error or secondary cleanup failure', async () => {
@@ -3310,7 +3384,7 @@ test('Session service owns Host activity through background completion', async (
 test('deletion remains available while an unloadable actor rolls back cleanly', async () => {
   const baseJournal = new InMemoryCommandJournal();
   const sessionId = 'session:delete-unloadable';
-  await createSession(baseJournal, sessionId);
+  await baseJournal.createSession({ sessionId, displayTitle: 'Unloadable', workspaceBindings: [], recipe: { runner: { id: 'fixture-unavailable' } } });
   let recoveryStartedResolve;
   let releaseRecoveryResolve;
   const recoveryStarted = new Promise((resolve) => { recoveryStartedResolve = resolve; });
@@ -3321,6 +3395,7 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
   const service = new SessionService(journal, {
     async create() {
       recoveryStartedResolve();
+      await releaseRecovery;
       return {
         composition: {
               provider: { async *stream() { throw new Error('unexpected_provider_turn'); } },
@@ -3330,13 +3405,13 @@ test('deletion remains available while an unloadable actor rolls back cleanly', 
         },
       };
     },
-  }, { async settings() { await releaseRecovery; throw Error('fixture_recovery_failed'); } });
+  });
 
   const snapshot = service.submit(messageCommand(sessionId, 'command:open-for-delete', 'Start explicitly.'));
   await recoveryStarted;
   const deletion = service.deleteSession(sessionId);
   releaseRecoveryResolve();
-  await assert.rejects(snapshot, /fixture_recovery_failed/u);
+  await assert.rejects(snapshot, /agent_loop_unavailable:fixture-unavailable/u);
   await deletion;
   assert.equal(disposeCount, 1);
   await assert.rejects(async () => {
@@ -3366,6 +3441,59 @@ test('family deletion rejects an unreadable journal and preserves its data', asy
     assert.deepEqual(after, before);
   } finally {
     await service.dispose();
+  }
+});
+
+for (const started of [false, true]) test(`missing child Journal errors retain their code across HTTP (started=${started})`, async t => {
+  const base = new InMemoryCommandJournal(), ownerId = 'session:missing-child-owner', childId = 'session:missing-child';
+  await createSession(base, ownerId);
+  const original = { code: 'agent_permission_not_grantable', message: 'Child cannot widen parent permissions.' };
+  let actor, recorded = false;
+  actor = actorWith(base, ownerId, { async *stream(request) {
+    if (!recorded) {
+      recorded = true;
+      await actor.recordAgentEvents([
+        { type: 'agent.task.created', sessionId: ownerId, runId: request.runId, callId: 'call:child', payload: {
+          taskId: 'task:missing-child', agentSessionId: childId, capabilities: NO_AGENT_CAPS, createsAgent: true,
+          displayName: 'Child', text: 'Attempt a child task.', delivery: 'async',
+        } },
+        ...(started ? [{ type: 'agent.task.started', sessionId: ownerId, runId: request.runId, payload: {
+          taskId: 'task:missing-child', childRunId: 'run:missing-child',
+        } }] : []),
+        { type: 'agent.task.completed', sessionId: ownerId, runId: request.runId, payload: {
+          taskId: 'task:missing-child', result: { outcome: 'failed', error: original },
+        } },
+      ]);
+    }
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Parent continues after the rejected child task.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'missing-child');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(ownerId, 'command:missing-child', 'Run.'));
+  const before = await waitForProjection(actor, value => value.run?.status === 'completed');
+  await actor.dispose();
+  let code = 'journal_read_failed';
+  const http = new HttpCommandJournal({ apiBase: 'http://fixture', serviceToken: 'fixture', fetchImpl: async url => {
+    assert.ok(new URL(url).pathname.includes(encodeURIComponent(childId)));
+    return Response.json({ ok: false, error: code, message: 'Session 不存在。' });
+  } });
+  const journal = forwardingJournal(base, (id, after) => id === childId ? http.read(id, after) : base.read(id, after));
+  journal.readAgentLifecycle = id => id === childId ? http.readAgentLifecycle(id) : base.readAgentLifecycle(id);
+  const service = new SessionService(journal, { async create() { throw new Error('read_must_not_open_actor'); } });
+  t.after(() => service.dispose());
+  const expectError = error => error instanceof LoopFailure && error.code === code && error.message === 'Session 不存在。';
+  await assert.rejects(service.snapshot(ownerId), expectError, 'Unrelated read errors must not be hidden by their message');
+  await assert.rejects(service.deleteSession(ownerId), expectError);
+  assert.ok((await readEvents(base, ownerId)).length > 0, 'A failed read must not delete the parent');
+  code = 'session_not_found';
+  if (started) {
+    await assert.rejects(service.snapshot(ownerId), expectError, 'A started child cannot silently disappear');
+  } else {
+    const after = await service.snapshot(ownerId);
+    assert.deepEqual(after.run, before.run);
+    assert.deepEqual(after.agentTasks[0].result.error, original, 'The child permission failure must remain recorded');
+    assert.deepEqual(after.totalTokenUsage, after.tokenUsage);
+    assert.deepEqual(await service.deleteSession(ownerId), { deletedSessionIds: [ownerId] });
   }
 });
 
@@ -5326,7 +5454,7 @@ test('the real Session bridge persists model commands and passes effort through 
   for (const type of ['message.submit', 'context.focus']) {
     const reply = await send('submit', { command: { schemaVersion: 'deepcode.command.v3', type, commandId: `command:${type}`, sessionId, [type === 'message.submit' ? 'text' : 'task']: 'Inspect source.', reasoningEffortOverride: 'low' } });
     assert.equal(reply.ok, false);
-    assert.match(JSON.stringify(reply.error), /fixture_prepare_boundary/);
+    assert.deepEqual(reply.error, { code: 'fixture_prepare_boundary', message: 'Preparation reached; no Provider is started.' });
   }
   assert.deepEqual(prepared.map((request) => [request.profileId, request.reasoningEffortOverride]), [['profile:wire', 'low'], ['profile:wire', 'low']]);
   const heldSessionId = 'session:bridge-held';
@@ -5341,7 +5469,7 @@ test('the real Session bridge persists model commands and passes effort through 
   releaseHeldPreparation();
   const heldReply = JSON.parse((await frames.next()).value);
   assert.equal(heldReply.requestId, 'bridge-held');
-  assert.match(JSON.stringify(heldReply.error), /fixture_prepare_boundary/);
+  assert.deepEqual(heldReply.error, { code: 'fixture_prepare_boundary', message: 'Preparation reached; no Provider is started.' });
   assert.equal((await send('shutdown', {})).ok, true);
   await once(child, 'exit');
   assert.equal(child.exitCode, 0, stderr);
@@ -5608,9 +5736,12 @@ for (const outcome of ['failed', 'cancelled']) test(`an unfinished plan preview 
   const streaming = await waitForProjection(actor, (p) => p.assistantDraft?.planPreview?.title === 'Unfinished');
   if (outcome === 'cancelled') await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId: streaming.run.runId, commandId: 'command:cancel-preview' });
   else release();
-  // An interrupted Provider with no terminal receipt keeps the existing unknown-outcome contract.
-  const settled = await waitForProjection(actor, (p) => p.run?.status === (outcome === 'cancelled' ? 'indeterminate' : 'failed'));
-  if (outcome === 'cancelled') assert.equal(settled.terminalError.code, 'provider_turn_outcome_unknown');
+  // An intentional stop cancels the draft; unrelated Provider failures remain errors.
+  const settled = await waitForProjection(actor, (p) => p.run?.status === outcome);
+  if (outcome === 'cancelled') {
+    assert.equal(settled.terminalError, null);
+    assert.equal(settled.failureSnapshot ?? null, null);
+  }
   else assert.equal(settled.terminalError.code, 'fixture_provider_failed');
   assert.equal(settled.assistantDraft, null);
   assert.equal(settled.pendingPlan, null);
@@ -5751,14 +5882,20 @@ test('mixed Plan batches are rejected before any effect and can be corrected to 
   }
 });
 
-test('transient provider attempts keep one request, discard partial output, and execute no partial tools', async (t) => {
+for (const failure of [
+  { code: 'provider_transport_failed', message: 'Connection reset.', diagnostics: {
+    source: 'providerTransport', phase: 'send', category: 'network', retryable: true,
+    isConnect: true, isTimeout: false, causes: [{ message: 'Connection reset by peer', kind: 'ConnectionReset', osCode: 104 }],
+  } },
+  { code: 'provider_stream_read_failed', message: 'Provider stream interrupted.', diagnostics: {
+    source: 'providerTransport', phase: 'responseBody', category: 'network', retryable: true,
+    isConnect: false, isTimeout: false, isBody: false,
+    causes: [{ message: 'unexpected EOF during chunk size line', kind: 'UnexpectedEof' }],
+  } },
+]) test(`transient ${failure.code} attempts keep one request, discard partial output, and execute no partial tools`, async (t) => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:network-retry';
   await createSession(journal, sessionId, [workspaceBinding]);
   const requests = [];
-  const failure = { code: 'provider_transport_failed', message: 'Connection reset.', diagnostics: {
-    source: 'providerTransport', phase: 'send', category: 'network', retryable: true,
-    isConnect: true, isTimeout: false, causes: [{ message: 'Connection reset by peer', kind: 'ConnectionReset', osCode: 104 }],
-  } };
   const actor = actorWith(journal, sessionId, { async *stream(request) {
     requests.push(structuredClone(request));
     if (requests.length === 1) {

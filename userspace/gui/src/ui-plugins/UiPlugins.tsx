@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useLayoutEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -139,6 +140,7 @@ export function UiPluginSlotView({
   onConnectionChanged,
   regions,
   actions,
+  debugActions,
 }: {
   slot: Exclude<UiPluginSlot, 'theme'>;
   input: UiPluginInput;
@@ -147,6 +149,7 @@ export function UiPluginSlotView({
   onConnectionChanged?(): Promise<void>;
   regions?: Record<string, React.ReactNode>;
   actions?: UiViewActions;
+  debugActions?: import('../debug/registry').DebugActionStates;
 }) {
   const context = useContext(Context);
   const { entries } = useUiPlugins();
@@ -163,6 +166,7 @@ export function UiPluginSlotView({
   const latestInput = useRef(input);
   latestInput.current = input;
   const liveActions = useRef(actions); liveActions.current = actions;
+  const liveDebugActions = useRef(debugActions); liveDebugActions.current = debugActions;
   const names = Object.keys(regions ?? {}).join('|');
   const regionHosts = useMemo(() => Object.fromEntries(context && typeof document !== 'undefined' && names ? names.split('|').map(name => {
     const host = document.createElement('div'); host.style.display = 'contents'; host.dataset.uiRegion = name;
@@ -171,6 +175,16 @@ export function UiPluginSlotView({
   const portals = Object.entries(regions ?? {}).flatMap(([name, child]) => regionHosts[name] ? [createPortal(child, regionHosts[name], name)] : []);
   const positions = useRef<Array<{ element: HTMLElement; top: number; left: number }>>([]);
   const retiredView = useRef<Promise<void>>(Promise.resolve());
+  const debugId = useId();
+  useLayoutEffect(() => {
+    if (typeof __DEEPCODE_DEBUG__ === 'undefined' || !__DEEPCODE_DEBUG__) return;
+    return window.__DEEPCODE_DEBUG_UI__?.register(debugId, {
+      slot, pluginId: entry?.manifest?.id ?? null,
+      read: () => latestInput.current,
+      actions: () => (liveActions.current ?? {}) as Record<string, (...args: never[]) => unknown>,
+      actionStates: () => liveDebugActions.current ?? {},
+    });
+  }, [debugId, slot, entry?.manifest?.id]);
 
   useLayoutEffect(() => {
     const root = container.current;
@@ -236,7 +250,14 @@ export function UiPluginSlotView({
           } : {}),
         };
         scope.onDispose(() => { Object.values(regionHosts).forEach(host => host.remove()); });
-        const view = renderer(root, value, viewScope);
+        const debugStartedAt = typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__ ? performance.now() : 0;
+        let view: UiPluginView;
+        try { view = renderer(root, value, viewScope); }
+        catch (error) {
+          if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'failed');
+          throw error;
+        }
+        if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'completed');
         if (!view || typeof view.update !== 'function' || typeof view.dispose !== 'function')
           throw new Error('UI renderer must return update and dispose functions.');
         mounted.current = view;
@@ -272,9 +293,12 @@ export function UiPluginSlotView({
 
   useLayoutEffect(() => {
     if (!mounted.current || !entry || !context) return;
+    const debugStartedAt = typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__ ? performance.now() : 0;
     try {
       mounted.current.update(input);
+      if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'completed');
     } catch (error) {
+      if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'failed');
       context.runtime.report(entry, error);
     }
   }, [input, entry, context?.runtime]);

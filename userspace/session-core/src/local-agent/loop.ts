@@ -2,12 +2,15 @@ import { permissionSettings, providerRuntimeForPurpose } from '@deepcode/protoco
 import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
+import { preparePlanReview } from './planReview.js';
 import type {
   AgentOperation,
+  ContextCompositionReceipt,
   SessionOperation,
   AssistantDraftBlockProjection,
   AssistantDraftProjection,
   JsonObject,
+  KernelPort,
   LocalAgentError,
   ModelInteractionRequest,
   NewSessionEvent,
@@ -46,6 +49,8 @@ import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
 import {
   pendingContextCompaction,
+  scheduledContextCompaction,
+  automaticCompactionCutoff,
   type ContextCompactionRequestEvent,
 } from './compaction.js';
 import { errorFact, LoopFailure, ProviderCompletedFailure, ProviderReportedFailure } from './loopFailure.js';
@@ -56,6 +61,7 @@ import {
 } from './providerToolCodec.js';
 import { recoverSession, type SessionState } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { runInputMessageEvent } from './contextComposer.js';
 import { requestResourceBindings } from './workspaceBindings.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { PlanPreviewBuffer } from './planPreview.js';
@@ -120,6 +126,7 @@ export interface AgentLoopDeps {
   commit(event: NewSessionEvent | readonly NewSessionEvent[] | ((current: LoopSnapshot) => readonly NewSessionEvent[])): Promise<LoopSnapshot>;
   takeQueuedInputs(runId: string): Promise<LoopSnapshot>;
   updateAssistantDraft(draft: AssistantDraftProjection | null): void;
+  recordVisibleResponse?(runId: string): Promise<void>;
   resetReasoning?(): void;
   updateReasoning?(requestId: string, runId: string, text: string, kind: 'text' | 'summary'): void;
   updateToolProgress?(callId: string, progress: ToolExecutionProgress): void;
@@ -328,6 +335,16 @@ export async function runAgentLoop(
     nextTurn: while (true) {
       throwIfAborted(signal);
       snapshot = await deps.readSnapshot();
+      if (snapshot.state.pendingPlan?.review?.status === 'reviewing') {
+        await reviewPendingPlan(deps, snapshot.state.pendingPlan, signal);
+        snapshot = await deps.readSnapshot();
+      }
+      if (snapshot.state.pendingPlan) {
+        const plan = snapshot.state.pendingPlan;
+        if (snapshot.state.run?.status !== 'waiting') await commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
+          payload: { reason: 'plan', detail: plan.title } });
+        return { status: 'waiting', runId, reason: 'plan', planId: plan.planId };
+      }
       const waiting = pendingControlWait(snapshot.events, runId);
       if (waiting) {
         const wait = controlWait(waiting.payload.result)!;
@@ -381,11 +398,22 @@ export async function runAgentLoop(
           workspaceBindings: runWorkspaceBindings(snapshot, runId),
           providerRequestId: deps.nextId('provider-request'),
         }, signal);
+        const contextBudget = Math.min(capabilities.context.windowTokens(runtime), runtime.provider.contextWindowTokens);
+        if (!Number.isSafeInteger(contextBudget) || contextBudget <= runtime.provider.maxOutputTokens) {
+          throw new LoopFailure('context_budget_invalid', '上下文预算必须为正整数，并为模型输出保留空间。');
+        }
+        const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, preparedProviderRequest.receipt,
+          capabilities, 'nextRun', deps.nextId);
+        if (boundaryCompaction) {
+          await commit(boundaryCompaction);
+          continue;
+        }
         const pressureCutoff = capabilities.compaction.pressureCutoff(
           snapshot,
           runId,
           preparedProviderRequest.receipt,
           runtime,
+          contextBudget,
         );
         if (pressureCutoff !== null) {
           throwIfAborted(signal);
@@ -402,7 +430,7 @@ export async function runAgentLoop(
           });
           continue;
         }
-        if (capabilities.compaction.estimateInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= runtime.provider.contextWindowTokens) {
+        if (capabilities.compaction.estimateInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= contextBudget) {
           throw new LoopFailure('context_input_budget_exceeded', '当前输入与工具定义加上输出预留已达到上下文预算；没有可继续压缩的历史。原始输入与资源保持完整。');
         }
         throwIfAborted(signal);
@@ -560,13 +588,29 @@ export async function runAgentLoop(
             };
           }
           case 'plan': {
-            const fact = capabilities.controls.publishPlan(
-              snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
-              runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
-            );
-            const admission = fact.type === 'plan.published'
-              ? await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
-                runId, mutationManifest: fact.payload.mutationManifest }) : undefined;
+            let fact: NewSessionEvent = runRuntimeSnapshot(snapshot, runId).permissions['agent.permissions.workspaceMutation'] === 'allow'
+              ? { type: 'session.control.rejected', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                payload: { providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLAN_PUBLISH, input: { ...turn.draft },
+                  error: { code: 'plan_disabled', message: 'Plan is off. Continue authorized work without publishing a Plan; execution permissions remain separate.' } } }
+              : capabilities.controls.publishPlan(
+                snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
+                runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
+              );
+            let admission: Awaited<ReturnType<KernelPort['planAdmission']>> | undefined;
+            if (fact.type === 'plan.published') {
+              try {
+                admission = await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId,
+                  runId, mutationManifest: fact.payload.mutationManifest });
+                if (admission.workspaceRequests?.length) {
+                  fact = { ...fact, payload: { ...fact.payload, workspaceRequests: admission.workspaceRequests } };
+                }
+              } catch (error) {
+                if (!(error instanceof LoopFailure) || error.code !== 'plan_workspace_binding_invalid') throw error;
+                fact = { type: 'session.control.rejected', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
+                  payload: { providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLAN_PUBLISH,
+                    input: { ...turn.draft }, error: errorFact(error) } };
+              }
+            }
             throwIfAborted(signal);
             // Publish the Plan and its admission together. Shells must never
             // observe an automatically accepted Plan as a pending user decision.
@@ -574,13 +618,17 @@ export async function runAgentLoop(
               ...orderedProviderCallFacts(turn.completion, [fact]),
               providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
               ...completionDerivedFacts,
-              ...(fact.type !== 'plan.published' || !admission ? [] : admission.source !== 'user'
+              ...(fact.type !== 'plan.published' || !admission ? [] : admission.source === 'review'
+                ? [{ type: 'plan.review.requested' as const, sessionId: current.state.sessionId, runId, callId: fact.callId,
+                  payload: { planId: fact.payload.planId, revision: fact.payload.revision, providerRequestId: deps.nextId('provider-request') } }]
+                : admission.source !== 'user'
                 ? confirmationFacts(current.state, { ...fact.payload, runId, callId: fact.callId },
                   deps.nextId('plan-admission'), admission.source, deps.nextId, admission.authorities)
                 : [{ type: 'run.waiting' as const, sessionId: current.state.sessionId, runId,
                   payload: { reason: 'plan' as const, detail: fact.payload.title } }]),
             ]);
             if (fact.type !== 'plan.published') break;
+            if (admission?.source === 'review') continue nextTurn;
             if (snapshot.state.pendingPlan) return { status: 'waiting', runId, reason: 'plan', planId: fact.payload.planId };
             break;
           }
@@ -604,18 +652,33 @@ export async function runAgentLoop(
               continue nextTurn;
             }
             const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
+            await commit(answerFacts);
+            const canCompact = !snapshot.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
+              && latestAgentEvidenceSequence(snapshot.events, runId) === agentEvidenceRevision
+              && !snapshot.state.queuedInputs.some(input => input.runId === runId)
+              && !snapshot.state.interactions.some(item => item.runId === runId && item.status === 'pending');
+            if (canCompact && (capabilities.compaction.settings(runtime).enabled || scheduledContextCompaction(snapshot.events))) {
+              const completedContext = await capabilities.context.prepare({
+                sessionId: snapshot.state.sessionId, runId, runtime, events: snapshot.events,
+                responseConstraint: 'normal', workspaceBindings: runWorkspaceBindings(snapshot, runId),
+                providerRequestId: deps.nextId('provider-request'),
+              }, signal);
+              const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, completedContext.receipt,
+                capabilities, 'idle', deps.nextId);
+              if (boundaryCompaction) {
+                await commit(boundaryCompaction);
+                await performContextCompaction(snapshot, pendingContextCompaction(snapshot.events, runId)!, runId, deps, signal, commit);
+              }
+            }
             let deferForAgents = false;
             await commit((current) => {
               deferForAgents = current.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
                 || latestAgentEvidenceSequence(current.events, runId) !== agentEvidenceRevision;
-              if (deferForAgents) return answerFacts;
-              return [...answerFacts, ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
-                : current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
-                  type: 'run.waiting', sessionId: current.state.sessionId, runId,
-                  payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
-                } as const] : [{
-                  type: 'run.finishing', sessionId: current.state.sessionId, runId, payload: settlement,
-                } as const])];
+              if (deferForAgents || current.state.queuedInputs.some(input => input.runId === runId)) return [];
+              return current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
+                type: 'run.waiting', sessionId: current.state.sessionId, runId,
+                payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
+              }] : [{ type: 'run.finishing', sessionId: current.state.sessionId, runId, payload: settlement }];
             });
             if (deferForAgents) {
               await lease.release();
@@ -731,6 +794,17 @@ export async function runAgentLoop(
       }
       return finishingResult(runId, { outcome: 'failed', error: failure });
     }
+    // Intentional cancellation is a local terminal outcome, not a failed generation.
+    // Only the exact abort reason qualifies; independent errors and cleanup failures keep their facts.
+    if (userCancelled && requestError === signal.reason && !releaseFailed) {
+      if (pendingProvider) {
+        await commit(providerTurnTerminalEvent(snapshot.state.sessionId, runId, pendingProvider,
+          providerRuntimeForPurpose(runRuntimeSnapshot(snapshot, runId), pendingProvider.purpose).providerRuntimeRef,
+          { outcome: 'cancelled' }));
+        snapshot = await deps.readSnapshot();
+      }
+      return await cancelRun(snapshot, { type: 'cancel', runId }, deps, commit);
+    }
     const unknownTurn = pendingProvider;
     if (unknownTurn && !hasSettlement(snapshot.events, runId)) {
       const cause = localAgentError(error);
@@ -770,11 +844,6 @@ export async function runAgentLoop(
       && !(error instanceof LoopFailure && error.code === 'tool_cancel_cleanup_failed')
     ) {
       return { status: 'suspended', runId };
-    }
-    if (userCancelled
-      && !releaseFailed
-      && !(error instanceof LoopFailure && error.code === 'tool_cancel_cleanup_failed')) {
-      return await cancelRun(snapshot, { type: 'cancel', runId }, deps, commit);
     }
     const failure = localAgentError(error);
     if (!hasSettlement(snapshot.events, runId)) {
@@ -821,6 +890,26 @@ class ToolViewRetirementFailure extends AggregateError {
   constructor(error: unknown) {
     super([error], 'tool_view_retire_failed');
   }
+}
+
+function boundaryCompactionEvent(
+  snapshot: LoopSnapshot, runId: string, runtime: RunRuntimeSnapshot, receipt: ContextCompositionReceipt,
+  capabilities: SessionCapabilities, boundary: 'nextRun' | 'idle', nextId: (kind: string) => string,
+): Extract<NewSessionEvent, { type: 'context.compaction.requested' }> | null {
+  const scheduled = scheduledContextCompaction(snapshot.events);
+  const input = runInputMessageEvent(snapshot.events, runId);
+  if (!input) return null;
+  const firstRequest = !snapshot.state.contextCompositions.some(item => item.runId === runId && item.purpose === 'agent');
+  const cutoff = scheduled
+    ? boundary === 'nextRun' && scheduled.sequence < input.sequence ? input.sequence - 1 : snapshot.state.revision
+    : boundary === 'idle' || firstRequest
+      ? automaticCompactionCutoff(snapshot, runId, receipt, runtime, capabilities.compaction.settings(runtime), boundary) : null;
+  if (cutoff === null) return null;
+  const focus = scheduled ? scheduled.payload.focus : boundary === 'nextRun' ? input.payload.content : undefined;
+  return { type: 'context.compaction.requested', sessionId: snapshot.state.sessionId, runId,
+    payload: { compactionId: scheduled?.payload.compactionId ?? nextId('compaction'),
+      providerRequestId: nextId('provider-request'), trigger: scheduled ? 'agent' : 'automatic',
+      coveredThroughSequence: cutoff, ...(focus ? { focus } : {}) } };
 }
 
 async function performContextCompaction(
@@ -887,8 +976,8 @@ async function performContextCompaction(
 }
 
 async function consumeTextProvider(request: ProviderRequest, deps: AgentLoopDeps, signal: AbortSignal) {
-  return withProviderAttempts(request, deps, signal, (attempt, onCompleted) => (
-    consumeTextAttempt(attempt, deps, signal, onCompleted)
+  return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
+    consumeTextAttempt(attempt, deps, signal, onCompleted, onEvent)
   ));
 }
 
@@ -897,6 +986,7 @@ async function consumeTextAttempt(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   onCompleted: () => void,
+  onEvent: (event: ProviderEvent) => void,
 ): Promise<{
   summary: string;
   completion: ProviderTurnCompletion;
@@ -919,6 +1009,7 @@ async function consumeTextAttempt(
         'Provider 在 completed 之后继续发送文本事件。',
       );
     }
+    onEvent(event);
     activity.observe(event);
     switch (event.type) {
       case 'text.delta':
@@ -981,6 +1072,7 @@ async function consumeTextAttempt(
         throw new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
     }
   }
+  throwIfAborted(signal);
   if (!completed) {
     throw new LoopFailure('provider_stream_incomplete', '文本决策请求 Provider 流未产生完成事件。');
   }
@@ -1049,8 +1141,8 @@ async function consumeProvider(
   signal: AbortSignal,
   controls: SessionCapabilities['controls'],
 ): Promise<ProviderTurn> {
-  return withProviderAttempts(request, deps, signal, (attempt, onCompleted) => (
-    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls)
+  return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
+    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls, onEvent)
   ));
 }
 
@@ -1062,6 +1154,7 @@ async function consumeProviderOutput(
   signal: AbortSignal,
   onCompleted: () => void,
   controls: SessionCapabilities['controls'],
+  onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
   deps = { ...deps, updateAssistantDraft: activity.updateDraft };
@@ -1094,6 +1187,7 @@ async function consumeProviderOutput(
         'Provider 在 completed 之后继续发送事件。',
       );
     }
+    onEvent(event);
     activity.observe(event);
     switch (event.type) {
       case 'tool.call.delta': {
@@ -1109,6 +1203,7 @@ async function consumeProviderOutput(
         break;
       }
       case 'text.delta': {
+        if (event.data.text.trim()) await deps.recordVisibleResponse?.(runId);
         deltas += event.data.text;
         if (event.data.outputIndex !== undefined) {
           if (orderedOutputItems.some((output) => output.outputIndex === event.data.outputIndex)) {
@@ -1153,7 +1248,10 @@ async function consumeProviderOutput(
         };
         orderedOutputItems.push(output);
         const completedDraftBlock = completedAssistantDraftBlock(request, output, toolCodec);
-        if (completedDraftBlock) completedDraftBlocks.push(completedDraftBlock);
+        if (completedDraftBlock) {
+          completedDraftBlocks.push(completedDraftBlock);
+          if (completedDraftBlock.kind !== 'providerHosted' && completedDraftBlock.content.trim()) await deps.recordVisibleResponse?.(runId);
+        }
         streamedTextByOutputIndex.delete(event.data.outputIndex);
         const blocks = assistantDraftBlocks(
           request,
@@ -1171,6 +1269,7 @@ async function consumeProviderOutput(
           );
         }
         completeMessage = event.data;
+        if (event.data.content.trim()) await deps.recordVisibleResponse?.(runId);
         break;
       case 'tool.call':
         aggregateCalls.push(event.data);
@@ -1187,6 +1286,7 @@ async function consumeProviderOutput(
         throw new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
     }
   }
+  throwIfAborted(signal);
   if (!completed) throw new LoopFailure('provider_stream_incomplete', 'Provider 流未产生完成事件。');
   if (
     orderedOutputItems.length > 0
@@ -1271,10 +1371,11 @@ async function consumeProviderOutput(
     block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
       || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
       || block.name === SESSION_CONTROL_SESSION
-      || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall' || block.input.action !== 'spawn' || block.input.delivery !== 'async'
+      || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall'
+        || !(block.input.action === 'send' || block.input.action === 'assign' || block.input.action === 'spawn' && block.input.delivery === 'async')
         || inputBlocks.some(other => other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE))
   )) && inputBlocks.length > 1
-    ? '该控制调用需要独占一轮；仅多个异步 agent spawn 可以与一个 todo.update 一起提交。本批次未执行。'
+    ? '该控制调用需要独占一轮；异步 agent spawn、assign 和 send 可以与一个 todo.update 一起提交。本批次未执行。'
     : inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE).length > 1
       ? '每个 Provider turn 最多包含一个 todo.update；本批次未执行，请合并步骤更新。'
       : undefined;
@@ -1655,7 +1756,7 @@ function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {
   const activity: ProviderActivityProjection = {
     purpose: request.purpose, phase: 'waitingResponse', startedAt: new Date().toISOString(),
   };
-  const publish = () => deps.updateAssistantDraft({ ...draft, activity: { ...activity } });
+  const publish = () => deps.updateAssistantDraft({ ...draft, providerAttemptId: request.providerAttemptId, activity: { ...activity } });
   publish();
   return {
     updateDraft(next) {
@@ -2002,6 +2103,51 @@ function executionRequest(snapshot: LoopSnapshot, requestEvent: ToolRequestEvent
   };
 }
 
+async function reviewPendingPlan(deps: AgentLoopDeps, plan: NonNullable<SessionState['pendingPlan']>, signal: AbortSignal): Promise<void> {
+  let snapshot = await deps.readSnapshot();
+  const requestId = plan.review!.providerRequestId;
+  const runtime = runRuntimeSnapshot(snapshot, plan.runId);
+  let review: ReturnType<typeof preparePlanReview> | undefined;
+  let reviewError: LocalAgentError | undefined;
+  let verdict: ReturnType<typeof decodeApprovalReview>;
+  try {
+    if (runtime.permissions['agent.permissions.workspaceMutation'] !== 'review') {
+      throw new LoopFailure('plan_review_policy_changed', '审批方式已变化，未发起计划审批请求。');
+    }
+    review = preparePlanReview(snapshot, runtime, plan, requestId);
+    snapshot = await deps.commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId: plan.runId, payload: review.receipt });
+    const result = await consumeTextProvider(review.request, deps, signal);
+    snapshot = await deps.commit([providerTurnSettledEvent(snapshot.state.sessionId, plan.runId, result.completion),
+      ...(result.contextUsage ? [{ type: 'context.updated' as const, sessionId: snapshot.state.sessionId, runId: plan.runId, payload: result.contextUsage }] : [])]);
+    verdict = decodeApprovalReview(result.summary);
+    if (verdict.decision === 'allow') {
+      const admitted = await deps.composition.kernel.planAdmission({ sessionId: snapshot.state.sessionId, runId: plan.runId, mutationManifest: plan.mutationManifest });
+      if (admitted.source !== 'review') verdict = { decision: 'ask', reason: '计划范围或审批方式已变化，需要人工确认。' };
+    }
+  } catch (error) {
+    if (signal.aborted) throw error;
+    reviewError = errorFact(error);
+    snapshot = await deps.readSnapshot();
+    if (review && !snapshot.state.providerTurns[requestId]) snapshot = await deps.commit({ type: 'provider.turn.settled',
+      sessionId: snapshot.state.sessionId, runId: plan.runId, payload: { providerRequestId: requestId,
+        purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: reviewError } });
+    verdict = { decision: reviewError.code === 'plan_workspace_binding_invalid' ? 'deny' : 'ask',
+      reason: `计划审批未完成。${reviewError.code}：${reviewError.message}` };
+  }
+  await deps.commit(current => {
+    if (current.state.pendingPlan?.planId !== plan.planId || current.state.pendingPlan.revision !== plan.revision) return [];
+    const mode = runRuntimeSnapshot(current, plan.runId).permissions['agent.permissions.workspaceMutation'];
+    const result = mode === 'review' ? verdict : { decision: 'ask' as const, reason: '审批方式已变化，需要人工确认。' };
+    const events: NewSessionEvent[] = [{ type: 'plan.reviewed', sessionId: current.state.sessionId, runId: plan.runId, callId: plan.callId,
+      payload: { planId: plan.planId, revision: plan.revision, providerRequestId: requestId, ...result, ...(reviewError ? { error: reviewError } : {}) } }];
+    if (result.decision === 'allow') events.push(...confirmationFacts(current.state, plan, deps.nextId('plan-review-decision'), 'agent', deps.nextId));
+    else if (result.decision === 'deny') events.push({ type: 'plan.cancelled', sessionId: current.state.sessionId, runId: plan.runId, callId: plan.callId,
+      payload: { planId: plan.planId, revision: plan.revision, commandId: deps.nextId('plan-review-denial') } });
+    else events.push({ type: 'run.waiting', sessionId: current.state.sessionId, runId: plan.runId, payload: { reason: 'plan', detail: result.reason } });
+    return events;
+  });
+}
+
 async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEvent, reply: ToolExecutionReply,
   signal: AbortSignal): Promise<'terminal' | 'approval' | 'retry'> {
   const runId = requestEvent.runId;
@@ -2017,6 +2163,12 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
     return 'terminal';
   }
   if (reply.status === 'approvalRequired') {
+    const previous = latestApproval(snapshot.events, runId, requestEvent.callId);
+    if (previous.resolved && (!reply.preview.revalidation
+      || reply.preview.revalidation.authorityId !== previous.resolved.payload.authorityId)) {
+      throw new LoopFailure('approval_no_progress',
+        '同一操作已有审批决定，但 Kernel 再次要求审批且未提供对应授权失效原因；未重复审查或执行。');
+    }
     const approvalId = deps.nextId('approval');
     await commit({ type: 'approval.requested', sessionId: snapshot.state.sessionId, runId,
       callId: requestEvent.callId, payload: { approvalId, preview: reply.preview } });
@@ -2093,6 +2245,7 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
 async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal): Promise<LoopResult | undefined> {
   let snapshot = await deps.readSnapshot();
   const pending = pendingToolRequests(snapshot.events, runId);
+  const isRead = (event: ToolRequestEvent) => event.payload.toolName === 'fs.read';
   const isFile = (event: ToolRequestEvent) => event.payload.toolName === 'fs.write' || event.payload.toolName === 'fs.edit';
   let enteredSegmentEnd = 0;
   try {
@@ -2101,6 +2254,7 @@ async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: 
       const first = pending[offset]!;
       let end = offset + 1;
       if (isFile(first)) while (end < pending.length && isFile(pending[end]!)) end += 1;
+      else if (isRead(first)) while (end < pending.length && isRead(pending[end]!)) end += 1;
       const segment = pending.slice(offset, end);
       const dependencies = new Map<string, string[]>();
       if (isFile(first)) {
@@ -2683,7 +2837,7 @@ export function providerTurnTerminalEvent(
   runId: string,
   composition: SessionState['contextCompositions'][number],
   providerRuntimeRef: string,
-  settlement: Extract<RunSettlement, { outcome: 'failed' | 'indeterminate' }>,
+  settlement: Extract<RunSettlement, { outcome: 'failed' | 'indeterminate' | 'cancelled' }>,
 ): NewSessionEvent {
   return {
     type: 'provider.turn.settled',
@@ -2693,8 +2847,8 @@ export function providerTurnTerminalEvent(
       providerRequestId: composition.providerRequestId,
       purpose: composition.purpose,
       providerRuntimeRef,
-      outcome: settlement.outcome,
-      error: { ...settlement.error },
+      ...settlement,
+      ...('error' in settlement ? { error: { ...settlement.error } } : {}),
     },
   };
 }
@@ -2757,7 +2911,7 @@ function runWorkspaceBindings(
 ): WorkspaceBindingDisplay[] {
   const run = snapshot.state.run;
   if (!run || run.runId !== runId) {
-    throw new LoopFailure('run_workspace_snapshot_missing', '当前 run 缺少冻结的目录索引快照。');
+    throw new LoopFailure('run_workspace_snapshot_missing', '当前 run 缺少已记录的工作区绑定。');
   }
   return requestResourceBindings(run.workspaceBindings, snapshot.events);
 }

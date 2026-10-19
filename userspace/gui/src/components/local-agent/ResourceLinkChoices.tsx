@@ -1,4 +1,3 @@
-import React from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import ModalDialog from '../shared/ModalDialog';
 import type { ResolvedLocalTarget } from './resourceLinks';

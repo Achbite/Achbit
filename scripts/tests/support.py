@@ -393,10 +393,12 @@ class ProviderState:
         self.workspace = workspace
         self.requests: list[dict[str, Any]] = []
         self.responses_requests: list[dict[str, Any]] = []
+        self.title_requests: list[dict[str, Any]] = []
         self.failure: BaseException | None = None
 
     def record_failure(self, error: BaseException) -> None:
-        self.failure = error
+        if self.failure is None:
+            self.failure = error
 
     def assert_healthy(self) -> None:
         if self.failure is not None:
@@ -440,7 +442,8 @@ class ProviderState:
                 names["plan"] = function["name"]
             elif "items" in properties and "status" in properties["items"].get("items", {}).get("properties", {}):
                 names["progress"] = function["name"]
-        require({"read", "edit", "write", "bash", "plan", "progress"} <= names.keys(), f"缺少本次工具目录：{names}")
+        require({"read", "edit", "write", "bash", "progress"} <= names.keys(), f"缺少本次工具目录：{names}")
+        # Plan is deliberately absent when the conversation's Plan mode is off.
         return ordinal, names, results
 
 
@@ -460,6 +463,37 @@ class MockProviderHandler(http.server.BaseHTTPRequestHandler):
     @property
     def provider_state(self) -> ProviderState:
         return self.server.provider_state  # type: ignore[attr-defined]
+
+    def respond_to_title(self, body: dict[str, Any]) -> bool:
+        """Serve the separate title request without consuming an Agent turn."""
+        messages = body.get("messages", body.get("input", []))
+        if not isinstance(messages, list) or not messages:
+            return False
+        content = messages[0].get("content", "")
+        text = content if isinstance(content, str) else "".join(part.get("text", "") for part in content)
+        if not text.startswith("Name this conversation from the user's first message."):
+            return False
+        require(len(messages) == 2 and messages[0]["role"] == "system"
+                and messages[1]["role"] == "user" and not body.get("tools") and body.get("stream") is True,
+                "Invalid auxiliary title request")
+        require(self.path.endswith(("/chat/completions", "/responses")), "Unexpected title endpoint")
+        self.provider_state.title_requests.append(body)
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("connection", "close")
+        self.end_headers()
+        title = "Local chain validation"
+        if self.path.endswith("/responses"):
+            self._send_payload({"type": "response.output_text.delta", "output_index": 0, "delta": title})
+            self._send_payload({"type": "response.output_item.done", "output_index": 0, "item": {
+                "type": "message", "id": "fixture-title", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": title}],
+            }})
+            self._send_payload({"type": "response.completed", "response": {}})
+            self.close_connection = True
+        else:
+            self._send_text(title)
+        return True
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         parsed = urllib.parse.urlparse(self.path)

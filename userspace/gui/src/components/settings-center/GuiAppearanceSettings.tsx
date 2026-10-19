@@ -5,11 +5,10 @@ import { useSettingsSearchTarget } from './settingsSearch';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { useSettingsHelp } from './SettingsHelp';
 import React from 'react';
-import { t, type UiLanguage } from '../../i18n';
+import type { UiLanguage } from '../../i18n';
 import {
   useSettingsStore,
   type SettingDefinition,
-  type SettingSource,
 } from '../../state/settingsStore';
 import {
   GUI_ACCENT_COLORS,
@@ -33,18 +32,10 @@ function optionLabel(definition: SettingDefinition, value: string): string {
 
 interface AppearanceSettingHeaderProps {
   definition: SettingDefinition;
-  source: SettingSource;
-  language: UiLanguage;
-  disabled: boolean;
-  onReset: () => void;
 }
 
 const AppearanceSettingHeader: React.FC<AppearanceSettingHeaderProps> = ({
   definition,
-  source,
-  language,
-  disabled,
-  onReset,
 }) => {
   const target = useSettingsSearchTarget(definition.key);
   const { helpId, helpEvents, help } = useSettingsHelp(definition.description);
@@ -57,16 +48,6 @@ const AppearanceSettingHeader: React.FC<AppearanceSettingHeaderProps> = ({
       </div>
 
     </div>
-    {source === 'user' && (
-      <button
-        className="settings-field__reset"
-        type="button"
-        disabled={disabled}
-        onClick={onReset}
-      >
-        {t(language, 'settings.reset')}
-      </button>
-    )}
   </div>
 );
 };
@@ -76,17 +57,13 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
   language,
 }) => {
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
-  const sources = useSettingsStore((state) => state.sources);
   const loading = useSettingsStore((state) => state.loading);
   const patchUserSetting = useSettingsStore((state) => state.patchUserSetting);
   const patchUserSettingsBatch = useSettingsStore((state) => state.patchUserSettingsBatch);
-  const resetUserSetting = useSettingsStore((state) => state.resetUserSetting);
   const themeDefinition = definitions.find((definition) => definition.key === 'gui.colorTheme');
   const accentDefinition = definitions.find((definition) => definition.key === 'gui.accentColor');
   const theme = normalizeGuiThemePreference(effectiveSettings['gui.colorTheme']);
   const accent = normalizeGuiAccentColor(effectiveSettings['gui.accentColor']);
-  const themeSource = themeDefinition ? sources[themeDefinition.key] ?? 'default' : 'default';
-  const accentSource = accentDefinition ? sources[accentDefinition.key] ?? 'default' : 'default';
   const themeDisabled = loading;
   const accentDisabled = loading;
   if (!themeDefinition && !accentDefinition) return null;
@@ -109,17 +86,10 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
   return (
     <>
     <div className="settings-card settings-appearance">
-      <h3 className="settings-card__title">{t(language, 'settings.gui.appearance')}</h3>
       <div className="settings-appearance__body">
         {themeDefinition && (
           <section className="settings-appearance__setting">
-            <AppearanceSettingHeader
-              definition={themeDefinition}
-              source={themeSource}
-              language={language}
-              disabled={themeDisabled}
-              onReset={() => void resetUserSetting(themeDefinition.key)}
-            />
+            <AppearanceSettingHeader definition={themeDefinition} />
             <div
               className="settings-theme-grid"
               role="group"
@@ -146,13 +116,7 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
         )}
         {accentDefinition && (
         <section className="settings-appearance__setting">
-            <AppearanceSettingHeader
-              definition={accentDefinition}
-              source={accentSource}
-              language={language}
-              disabled={accentDisabled}
-              onReset={() => void resetUserSetting(accentDefinition.key)}
-            />
+            <AppearanceSettingHeader definition={accentDefinition} />
             <div
               className="settings-accent-options"
               role="group"

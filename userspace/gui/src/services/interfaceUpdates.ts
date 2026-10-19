@@ -12,7 +12,9 @@ export function reportInterfaceLoadError(error: unknown) {
   publish({ ...state, error: error instanceof Error ? error.message : String(error) });
 }
 export function interfaceResourcesChanged(loaded: readonly string[], next: readonly string[]): boolean {
-  return loaded.length !== next.length || [...loaded].sort().some((value, index) => value !== [...next].sort()[index]);
+  if (loaded.length !== next.length) return true;
+  const sortedNext = [...next].sort();
+  return [...loaded].sort().some((value, index) => value !== sortedNext[index]);
 }
 function resources(document: Document): string[] {
   return Array.from(document.querySelectorAll('script[type="module"][src], link[rel="stylesheet"][href]'))

@@ -45,7 +45,7 @@ export function permissionSettings(settings: UserSettings): UserSettings {
 export function validatePermissionPatches(value: unknown): asserts value is Record<string, UserSettingValue> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('permission_settings_invalid');
   const choices: Record<string, readonly string[]> = {
-    'agent.permissions.workspaceMutation': ['plan', 'allow'],
+    'agent.permissions.workspaceMutation': ['plan', 'review', 'allow'],
     'agent.permissions.engineeringDecisions': ['ask', 'delegate'],
     'agent.permissions.shell': ['ask', 'review', 'allow'],
     'agent.permissions.shellAccess': ['workspace', 'full'],

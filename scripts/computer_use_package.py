@@ -51,7 +51,8 @@ def update_windows(native, destination, strip='x86_64-w64-mingw32-strip'):
 
 
 def assemble(root, native, destination, identity):
-    app = destination / APP_NAME
+    debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
+    app = destination / ('DeepCode Debug Computer Use.app' if debug else APP_NAME)
     binaries = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
     binaries.mkdir(parents=True)
@@ -62,6 +63,9 @@ def assemble(root, native, destination, identity):
         CFBundleName='DeepCode Computer Use', CFBundleDisplayName='DeepCode Computer Use', CFBundlePackageType='APPL',
         CFBundleInfoDictionaryVersion='6.0', CFBundleVersion=version, CFBundleShortVersionString=version,
         LSMinimumSystemVersion='15.2', LSUIElement=True, NSHighResolutionCapable=True, NSPrincipalClass='NSApplication')
+    if debug:
+        info.update(CFBundleIdentifier='com.achbite.deepcode.debug.computer-use',
+                    CFBundleName='DeepCode Debug Computer Use', CFBundleDisplayName='DeepCode Debug Computer Use')
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     shutil.copytree(root / 'plugins/computer-use/native/resources', resources, dirs_exist_ok=True)
     (resources / 'BUILDINFO.json').write_text(json.dumps(dict(version=version,

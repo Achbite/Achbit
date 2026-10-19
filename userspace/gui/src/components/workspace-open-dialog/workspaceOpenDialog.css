@@ -97,14 +97,6 @@
 .ws-open-dialog__btn--primary:hover:not(:disabled) {
   background: var(--dc-accent);
 }
-.ws-open-dialog__btn--secondary {
-  background: var(--dc-accent-soft);
-  border-color: var(--dc-accent-soft);
-  color: var(--dc-foreground-strong);
-}
-.ws-open-dialog__btn--secondary:hover:not(:disabled) {
-  background: var(--dc-accent-soft);
-}
 .ws-open-dialog__toggle {
   display: flex;
   gap: 4px;
@@ -212,15 +204,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.ws-open-dialog__entry-tag {
-  background: var(--dc-warning-soft);
-  color: var(--dc-warning);
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 
 .ws-open-dialog__footer {

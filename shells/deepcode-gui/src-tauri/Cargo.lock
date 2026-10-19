@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "deepcode-gui-tauri-shell"
-version = "0.6.50"
+version = "0.6.55"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -734,6 +734,7 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "objc2-foundation",
  "objc2-web-kit",
  "serde",
@@ -749,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "deepcode-host-connection"
-version = "0.6.50"
+version = "0.6.55"
 dependencies = [
  "base64 0.22.1",
  "deepcode-kernel-abi",
@@ -761,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "deepcode-kernel-abi"
-version = "0.6.50"
+version = "0.6.55"
 dependencies = [
  "serde",
  "serde_json",
@@ -2313,6 +2314,7 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 

@@ -1,5 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import { restoredInterfaceView, useInterfaceReloadView, registerInterfaceReloadView } from '../../services/interfaceReload';
+import { takeRestoredInterfaceView, useInterfaceReloadView, registerInterfaceReloadView } from '../../services/interfaceReload';
 import { createPortal } from 'react-dom';
 import { UI_ICON_ROLES } from '../../icons/registry';
 import { SettingsSearchContext, SettingsSearchTargets, matchesSettingsQuery, type SettingsSearchEntry } from './settingsSearch';
@@ -33,13 +33,13 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   const [interaction] = useState(createInteractionFocus);
   useEffect(() => () => interaction.clearReveal(), [interaction]);
   const [activeKey, setActiveKey] = useState<SettingsKey>(
-    () => restoredInterfaceView<SettingsKey>('settingsPage', 'gui'),
+    () => takeRestoredInterfaceView<SettingsKey>('settingsPage', 'general'),
   );
   const [searchEntries, setSearchEntries] = useState<Record<string, SettingsSearchEntry[]>>({});
   const register = useCallback((owner: string, entries: SettingsSearchEntry[]) => setSearchEntries((current) => ({ ...current, [owner]: entries })), []);
   const scrollRef = useRef<HTMLElement>(null);
   useEffect(() => registerInterfaceReloadView('settingsScroll', () => scrollRef.current?.scrollTop ?? 0), []);
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = restoredInterfaceView('settingsScroll', 0); }, []);
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = takeRestoredInterfaceView('settingsScroll', 0); }, []);
   const targets = useRef(new Map<string, HTMLElement>());
   const pendingTarget = useRef<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,6 +73,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   const navigate = (key: SettingsKey, target?: string) => {
     interaction.clearReveal();
     pendingTarget.current = target ?? null;
+    if (key !== activeKey && scrollRef.current) scrollRef.current.scrollTop = 0;
     setActiveKey(key); setSearchQuery('');
     setVisited((current) => current.includes(key) ? current : [...current, key]);
   };

@@ -5,39 +5,26 @@ import { useSettingsSearchTarget } from './settingsSearch';
 import { useSettingsHelp } from './SettingsHelp';
 import React, { useEffect, useState } from 'react';
 import { DEFAULT_USER_SETTINGS, type UserSettingValue } from '@deepcode/protocol';
-import { useSettingsStore, type SettingDefinition, type SettingSource } from '../../state/settingsStore';
+import { useSettingsStore, type SettingDefinition } from '../../state/settingsStore';
 import { parseSettingDraft, reconcileSettingDraft } from './settingDraft';
 import { t, type UiLanguage } from '../../i18n';
 
 interface SettingsFieldProps {
   definition: SettingDefinition;
   value: UserSettingValue | undefined;
-  source: SettingSource;
   language: UiLanguage;
   disabled?: boolean;
   compact?: boolean;
   onChange: (key: string, value: UserSettingValue) => Promise<unknown>;
-  onReset?: (key: string) => Promise<unknown>;
-}
-
-function sourceLabel(source: SettingSource, language: UiLanguage): string {
-  switch (source) {
-    case 'user':
-      return t(language, 'settings.source.user');
-    default:
-      return t(language, 'settings.source.default');
-  }
 }
 
 const SettingsField: React.FC<SettingsFieldProps> = ({
   definition,
   value,
-  source,
   language,
   disabled = false,
   compact = false,
   onChange,
-  onReset,
 }) => {
   const targetRef = useSettingsSearchTarget(definition.key);
   const { helpId, helpEvents, help } = useSettingsHelp(definition.description);
@@ -73,8 +60,11 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
   };
   const edit = (text: string) => { setDraft((current) => ({ ...current, text })); setError(null); };
   const onEditorKeyDown = (event: React.KeyboardEvent) => {
-    if (!event.nativeEvent.isComposing && event.key === 'Enter' && (definition.control !== 'textarea' || event.metaKey || event.ctrlKey)) {
-      event.preventDefault(); event.stopPropagation(); if (dirty && !saving) save();
+    if (!event.nativeEvent.isComposing && event.key === 'Escape' && definition.control === 'number') {
+      event.preventDefault(); event.stopPropagation(); setDraft({ saved: savedText, text: savedText }); setError(null); return;
+    }
+    if (!event.nativeEvent.isComposing && !event.repeat && event.key === 'Enter' && (definition.control !== 'textarea' || event.metaKey || event.ctrlKey)) {
+      event.preventDefault(); event.stopPropagation(); if (dirty && !disabled && !saving) save();
     }
   };
 
@@ -96,6 +86,7 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
           className="settings-field__input"
           aria-label={definition.label} aria-describedby={helpId}
           type="number"
+          title={t(language, 'settings.edit.confirmNumber')}
           value={draft.text}
           disabled={disabled || saving}
           onChange={(event) => edit(event.target.value)}
@@ -157,31 +148,16 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
       <div className="settings-field__main">
         <div className="settings-field__title-row">
           <span className="settings-field__label">{definition.label}</span>
-          {!compact && (
-            <span className={`settings-field__source settings-field__source--${source}`}>
-              {sourceLabel(source, language)}
-            </span>
-          )}
         </div>
 
       </div>
       <div className="settings-field__control" aria-busy={saving}>
         {renderControl()}
-        {editable && <div className="settings-field__edit-actions">
-          <button type="button" className="settings-button" disabled={disabled || saving || !dirty} onClick={save}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
-          {dirty && <button type="button" className="settings-field__reset" disabled={saving} onClick={() => { setDraft({ saved: savedText, text: savedText }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>}
+        {editable && definition.control !== 'number' && dirty && <div className="settings-field__edit-actions">
+          <button type="button" className="settings-button" disabled={disabled || saving} onClick={save}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
+          <button type="button" className="settings-field__discard" disabled={saving} onClick={() => { setDraft({ saved: savedText, text: savedText }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>
         </div>}
         {error && <p className="settings-error" role="alert">{error}</p>}
-        {onReset && source === 'user' && (
-          <button
-            className="settings-field__reset"
-            type="button"
-            disabled={disabled || saving}
-            onClick={() => void perform(async () => { const result = await onReset(definition.key); if (result !== null && result !== false) { const next = String(useSettingsStore.getState().effectiveSettings[definition.key] ?? defaultValue ?? ''); setDraft({ saved: next, text: next }); } return result; })}
-          >
-            {t(language, 'settings.reset')}
-          </button>
-        )}
       </div>
     </div>
   );

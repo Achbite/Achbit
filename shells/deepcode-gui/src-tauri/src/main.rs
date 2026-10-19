@@ -927,11 +927,19 @@ fn create_main_window(
         .data_directory(ssh_gui::webview_directory(target))
         .initialization_script(initialization_script)
         .on_navigation(trusted_app_navigation)
-        .title("DeepCode-GUI")
+        .title(if cfg!(feature = "debug-control") {
+            "DeepCode-Debug"
+        } else {
+            "DeepCode-GUI"
+        })
         .inner_size(1500.0, 920.0)
         .min_inner_size(1120.0, 720.0)
         .resizable(true)
         .fullscreen(false);
+
+    #[cfg(feature = "debug-control")]
+    let builder = builder
+        .initialization_script_for_all_frames(native_browser::debug::initialization_script());
 
     #[cfg(target_os = "macos")]
     let builder = builder

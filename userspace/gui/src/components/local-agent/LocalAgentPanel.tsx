@@ -120,6 +120,10 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           project: activeProject ? { id: activeProject.id, title: activeProject.title } : null,
           reader: { visible: resourcePreview.visible, expanded: resourcePreview.expanded,
             treeVisible: resourcePreview.treeVisible, canOpen: !!sessionId },
+        }} debugActions={{
+          toggleReader: { unavailableReason: sessionId ? null : 'reader_session_required' },
+          toggleReaderExpanded: { unavailableReason: resourcePreview.visible ? null : 'reader_not_visible' },
+          toggleTree: { unavailableReason: null },
         }} actions={{
           toggleReader: () => { if (sessionId) resourcePreview.toggle(); },
           toggleReaderExpanded: () => { if (resourcePreview.visible) resourcePreview.expand(); },
@@ -164,7 +168,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
-          composerInteractionId={composer.pendingInteraction?.interactionId}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">

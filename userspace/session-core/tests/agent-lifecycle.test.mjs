@@ -38,7 +38,7 @@ test('settled children release Actors; management and history reads stay cold; c
           if (rootTurn === 2) {
             memberId = (await service.snapshot(ownerId)).agentChildren[0].agentSessionId;
             assert.equal(disposed.get(memberId), 1, 'result delivery releases the child composition before the next request');
-            input = { action: 'send', agentId: memberId, text: 'Task body continuation.' };
+            input = { action: 'assign', agentId: memberId, task: 'Task body continuation.' };
           }
           if (rootTurn === 3) input = { action: 'wait' };
           if (rootTurn === 4) {
@@ -53,7 +53,7 @@ test('settled children release Actors; management and history reads stay cold; c
     } };
   } }, {
     async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
-      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true }; },
+      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' }; },
     async models() { return [{ profileId: 'profile:default', name: 'Default', model: 'fixture-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] }]; },
     async createSession(input) { return service.createSession(input); },
   });
