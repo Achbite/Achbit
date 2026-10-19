@@ -154,8 +154,8 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
       <div className="settings-field__control" aria-busy={saving}>
         {renderControl()}
         {editable && definition.control !== 'number' && dirty && <div className="settings-field__edit-actions">
-          <button type="button" className="settings-button" disabled={disabled || saving || !dirty} onClick={save}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
-          {dirty && <button type="button" className="settings-field__discard" disabled={saving} onClick={() => { setDraft({ saved: savedText, text: savedText }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>}
+          <button type="button" className="settings-button" disabled={disabled || saving} onClick={save}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
+          <button type="button" className="settings-field__discard" disabled={saving} onClick={() => { setDraft({ saved: savedText, text: savedText }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>
         </div>}
         {error && <p className="settings-error" role="alert">{error}</p>}
       </div>

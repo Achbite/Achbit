@@ -34,10 +34,10 @@
 @media (hover: none) {
   .conversation-code .conversation-copy-button { opacity: 1; pointer-events: auto; }
 }
-.conversation-copy-hint, .local-agent__message-action-hint { position: absolute; z-index: 3; top: 50%; right: calc(100% + 6px); transform: translateY(-50%); width: max-content; padding: 3px 6px; border: 1px solid var(--dc-border); border-radius: 5px; background: var(--dc-surface); color: var(--dc-muted); box-shadow: 0 2px 6px color-mix(in srgb, var(--dc-shadow-color) 6.67%, transparent); font-size: calc(11px * var(--dc-ui-font-scale, 1)); font-weight: 400; line-height: 1.4; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
-.conversation-copy-button:hover .conversation-copy-hint, .conversation-copy-button:focus-visible .conversation-copy-hint,
-.local-agent__message-actions button:hover .local-agent__message-action-hint, .local-agent__message-actions button:focus-visible .local-agent__message-action-hint { opacity: 1; }
-.local-agent__message-actions :is(.conversation-copy-hint, .local-agent__message-action-hint) { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; transform: none; }
+.conversation-copy-hint { position: absolute; z-index: 3; top: 50%; right: calc(100% + 6px); transform: translateY(-50%); width: max-content; padding: 3px 6px; border: 1px solid var(--dc-border); border-radius: 5px; background: var(--dc-surface); color: var(--dc-muted); box-shadow: 0 2px 6px color-mix(in srgb, var(--dc-shadow-color) 6.67%, transparent); font-size: calc(11px * var(--dc-ui-font-scale, 1)); font-weight: 400; line-height: 1.4; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.conversation-copy-button:hover .conversation-copy-hint,
+.conversation-copy-button:focus-visible .conversation-copy-hint { opacity: 1; }
+.local-agent__message-actions .conversation-copy-hint { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; transform: none; }
 .conversation-copy-error { display: block; padding: 0 10px 6px; color: var(--dc-danger); }
 .conversation-code pre { margin: 0; padding: 8px 16px 16px; overflow: auto; white-space: pre; font: var(--dc-font-code-size, 12px)/var(--dc-line-code, 1.6) var(--dc-font-code); }
 .conversation-code pre code { padding: 0; background: transparent; font-size: inherit; }
