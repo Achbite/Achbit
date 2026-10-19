@@ -16,6 +16,10 @@ import '../../src/components/shared/focus.css';
 
 installPaletteDefaults();
 const plan = { planId: 'plan:preview', revision: 1, title: '内置浏览器交互渲染测试页', steps: [], mutationManifest: [] };
+const reviewedPlan = { ...plan, review: { status: 'completed', decision: 'ask',
+  reason: '计划需要修改工作区中的文件，但当前用户要求尚未明确允许这些改动。请核对修改范围后决定是否继续。\n审核说明应完整展示，确认、取消和修改意见应继续针对同一份计划。' } };
+const workspacePlan = { ...reviewedPlan, workspaceRequests: [{ workspaceId: 'workspace:additional',
+  rootPath: '/projects/团队共享工作区/待确认的计划与验收资料/本轮允许访问的目录' }] };
 const question = { interactionId: 'question:preview', prompt: '测试页使用哪种布局？\n\n' + Array.from({ length: 20 }, (_, index) => `第 ${index + 1} 项：检查长问题独立滚动，保留按钮选项和文字反馈区域。`).join('\n\n'), allowFreeform: true, options: [
   { id: 'compact', label: '紧凑布局', description: '按钮、开关和输入放在同一区域' },
   { id: 'grouped', label: '分组布局', description: '按交互类型分区排列' },
@@ -58,12 +62,17 @@ function Preview() {
     setMode(next); setResult('');
     const interactions = next === 'questions' ? Array.from({ length: 5 }, (_, index) => numberedQuestion(index))
       : next === 'interaction' ? [questionFact(question, 0)] : next === 'concurrent' ? [questionFact(scopeQuestion, 0)] : [];
+    const pendingPlan = next === 'plan' ? plan : next === 'plan-reviewed' ? reviewedPlan
+      : next === 'plan-workspace' ? workspacePlan
+      : next === 'plan-review' ? { ...plan, review: { status: 'reviewing' } } : null;
     useLocalAgentStore.setState({ projection: { ...useLocalAgentStore.getState().projection,
-      run: next === 'review' || next === 'questions' ? { runId: 'run:preview', status: 'running' }
+      run: next === 'review' || next === 'questions' || next === 'plan-review' ? { runId: 'run:preview', status: 'running' }
+        : pendingPlan ? { runId: 'run:preview', status: 'waiting', waitingReason: 'plan' }
         : next === 'interaction' ? { runId: 'run:preview', status: 'waiting', waitingReason: 'userInput' }
         : next === 'concurrent' ? { runId: 'run:preview', status: 'waiting', waitingReason: 'approval' } : null,
       pendingApproval: next === 'review' ? review : next === 'approval' ? approval : next === 'concurrent' ? buildApproval : null,
-      pendingPlan: next === 'plan' ? plan : null,
+      pendingPlan,
+      effectivePermissions: { 'agent.permissions.workspaceMutation': next === 'plan-review' || next === 'plan-reviewed' ? 'review' : 'plan' },
       interactions, pendingInteraction: interactions[0] ?? null,
     } as never });
   };
@@ -80,7 +89,21 @@ function Preview() {
       setResult(value); return accepted();
     };
     useLocalAgentStore.setState({
-      setPermissions: async () => { useLocalAgentStore.setState({ projection: { ...useLocalAgentStore.getState().projection, run: null, pendingApproval: { ...review, preview: { ...review.preview, approvalReviewer: 'user' } } } as never }); return accepted(); },
+      setPermissions: async patches => {
+        const projection = useLocalAgentStore.getState().projection!;
+        if (projection.pendingPlan && patches['agent.permissions.workspaceMutation'] === 'plan') {
+          useLocalAgentStore.setState({ projection: { ...projection,
+            effectivePermissions: { ...projection.effectivePermissions, ...patches },
+            run: { ...projection.run, runId: 'run:preview', status: 'waiting', waitingReason: 'plan' },
+          } as never });
+          setResult('计划审核：改为人工确认');
+        } else {
+          useLocalAgentStore.setState({ projection: { ...projection, run: null,
+            pendingApproval: { ...review, preview: { ...review.preview, approvalReviewer: 'user' } },
+          } as never });
+        }
+        return accepted();
+      },
       respondApproval: async (decision) => {
         const projection = useLocalAgentStore.getState().projection!;
         useLocalAgentStore.setState({ projection: { ...projection, pendingApproval: null,
@@ -117,7 +140,9 @@ function Preview() {
   return <>
     <style>{`*{box-sizing:border-box}html,body,#root{margin:0;min-height:100%;font-family:var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}.fixture-toolbar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:16px 24px;max-width:920px;margin:auto;font-size:14px}.fixture-toolbar select,.fixture-toolbar button{font:inherit}.fixture-main{height:calc(100dvh - 190px);min-height:380px;width:100%;max-width:960px;margin:0 auto;display:flex;flex-direction:column;overflow:hidden}.fixture-context{flex:1;min-height:0;overflow:auto;padding:24px 44px;color:var(--dc-muted);font-size:14px}.fixture-context strong{display:block;color:var(--dc-foreground);font-size:18px;margin-bottom:18px}.fixture-result{max-width:800px;margin:16px auto;font-size:14px}.local-agent__composer-shell{width:100%;flex-shrink:0}.fixture-context article{margin:20px 0}`}</style>
     <nav className="fixture-toolbar"><span>输入区检查</span><select aria-label="检查模式" value={mode} onChange={(e) => setDecision(e.target.value)}>
-      <option value="message">普通输入</option><option value="approval">权限确认</option><option value="review">自动审核</option><option value="plan">Plan 确认</option><option value="interaction">方案选择</option><option value="concurrent">问题与权限并存</option><option value="questions">执行中多个问题</option>
+      <option value="message">普通输入</option><option value="approval">权限确认</option><option value="review">工具自动审核</option><option value="plan">Plan 确认</option>
+      <option value="plan-reviewed">审核后人工确认</option><option value="plan-workspace">工作区授权确认</option><option value="plan-review">计划自动审核</option>
+      <option value="interaction">方案选择</option><option value="concurrent">问题与权限并存</option><option value="questions">执行中多个问题</option>
     </select><select aria-label="配色模式" defaultValue="light" onChange={(e) => { document.documentElement.dataset.theme = e.target.value; }}><option value="light">浅色</option><option value="dark">深色</option></select>
       <button onClick={() => setCompact(value => !value)}>{compact ? '恢复宽度' : '窄面板'}</button>
     </nav>

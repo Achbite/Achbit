@@ -2153,6 +2153,12 @@
   grid-column: 1 / -1;
 }
 
+/* Plan review details occupy their own rows above the answer controls. */
+.local-agent__composer--plan > :is(.local-agent__approval-review-reason, .local-agent__auto-review, .local-agent__decision) {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
 .local-agent__decision-input-mark {
   display: grid;
   width: 32px;
