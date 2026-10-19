@@ -873,7 +873,7 @@ export type ContextCompositionReceipt = ContextCompositionMetadata & (
       additions: ContextModelViewContribution[];
     };
   }
-  | { purpose: 'approvalReview'; modelView?: never }
+  | { purpose: 'approvalReview'; modelView?: never; reviewInput?: { instructions: string; content: string } }
 );
 
 interface ContextCompositionProjectionBase {
@@ -956,6 +956,10 @@ export interface ShellAuthorizationProjection {
 
 export interface EffectPreview {
   approvalReviewer?: 'user' | 'agent';
+  /** Kernel-selected applicable policy; never inferred from effect labels by a reviewer. */
+  reviewPolicy?: JsonObject;
+  /** Why a previously supplied authority cannot authorize the newly prepared operation. */
+  revalidation?: { authorityId: string; reason: 'revoked' | 'scopeChanged' | 'reviewUnavailable' };
   /** Exact Kernel-prepared operation; the agent's reason is not execution authority. */
   operation?: { toolName: string; arguments: JsonObject; workspaceRoot?: string; executionScope?: string };
   authorizationScopes?: ShellAuthorizationScope[];

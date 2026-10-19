@@ -54,6 +54,7 @@ export function preparePlanReview(snapshot: LoopSnapshot, runtime: RunRuntimeSna
     workspaceBindings: requestResourceBindings(snapshot.state.run.workspaceBindings, snapshot.events),
     messages: contributions.map(item => item.message), tools: [], hostedTools: [],
   };
-  return { request, receipt: buildContextCompositionReceipt(requestId, 'approvalReview', 'answerOnly', contributions,
-    [], [], [], new Map(), [], runtime, request.workspaceBindings, snapshot.events) };
+  return { request, receipt: { ...buildContextCompositionReceipt(requestId, 'approvalReview', 'answerOnly', contributions,
+    [], [], [], new Map(), [], runtime, request.workspaceBindings, snapshot.events),
+    reviewInput: { instructions: PLAN_REVIEW_INSTRUCTIONS, content } } };
 }

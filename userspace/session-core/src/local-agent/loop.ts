@@ -2163,6 +2163,12 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
     return 'terminal';
   }
   if (reply.status === 'approvalRequired') {
+    const previous = latestApproval(snapshot.events, runId, requestEvent.callId);
+    if (previous.resolved && (!reply.preview.revalidation
+      || reply.preview.revalidation.authorityId !== previous.resolved.payload.authorityId)) {
+      throw new LoopFailure('approval_no_progress',
+        '同一操作已有审批决定，但 Kernel 再次要求审批且未提供对应授权失效原因；未重复审查或执行。');
+    }
     const approvalId = deps.nextId('approval');
     await commit({ type: 'approval.requested', sessionId: snapshot.state.sessionId, runId,
       callId: requestEvent.callId, payload: { approvalId, preview: reply.preview } });

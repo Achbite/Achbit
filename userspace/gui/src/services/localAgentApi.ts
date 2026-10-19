@@ -932,7 +932,7 @@ function isApproval(value: unknown): boolean {
 
 function isEffectPreview(value: unknown): boolean {
   const effects = ['localRead', 'workspaceRead', 'workspaceMutation', 'process', 'network', 'external'];
-  return isExactRecord(value, ['summary', 'effects', 'logicalTargets'], ['authorizationScope', 'authorizationContext', 'authorizationScopes', 'approvalReviewer', 'review', 'fileAccess', 'operation'])
+  return isExactRecord(value, ['summary', 'effects', 'logicalTargets'], ['authorizationScope', 'authorizationContext', 'authorizationScopes', 'approvalReviewer', 'review', 'fileAccess', 'operation', 'reviewPolicy', 'revalidation'])
     && (value.operation === undefined || isExactRecord(value.operation, ['toolName', 'arguments'], ['workspaceRoot', 'executionScope'])
       && isNonEmptyText(value.operation.toolName) && isRecord(value.operation.arguments)
       && (value.operation.workspaceRoot === undefined || isNonEmptyText(value.operation.workspaceRoot))
@@ -943,6 +943,10 @@ function isEffectPreview(value: unknown): boolean {
     && (value.authorizationScopes === undefined || isArrayOf(value.authorizationScopes, scope => isShellAuthorizationScope(scope)))
     && (value.approvalReviewer === undefined || ['user', 'agent'].includes(String(value.approvalReviewer)))
     && (value.review === undefined || isApprovalReview(value.review))
+    && (value.reviewPolicy === undefined || isRecord(value.reviewPolicy))
+    && (value.revalidation === undefined || isExactRecord(value.revalidation, ['authorityId', 'reason'])
+      && isNonEmptyText(value.revalidation.authorityId)
+      && ['revoked', 'scopeChanged', 'reviewUnavailable'].includes(String(value.revalidation.reason)))
     && isNonEmptyText(value.summary)
     && Array.isArray(value.effects)
     && value.effects.every((effect) => effects.includes(String(effect)))

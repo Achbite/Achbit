@@ -2636,7 +2636,7 @@ fn validate_new_event(
                     "tools",
                     "partitions",
                 ],
-                &["kernelCatalogSnapshotRef", "modelView"],
+                &["kernelCatalogSnapshotRef", "modelView", "reviewInput"],
             )?;
             validate_id(
                 "providerRequestId",
@@ -2672,6 +2672,17 @@ fn validate_new_event(
             validate_context_partitions(payload.get("partitions").expect("validated partitions"))?;
             if let Some(view) = payload.get("modelView") {
                 validate_context_model_view(view)?;
+            }
+            if let Some(input) = payload.get("reviewInput") {
+                exact_object(input, &["instructions", "content"], &[])?;
+                let instructions = required_string(input, "instructions")?;
+                let content = required_string(input, "content")?;
+                if payload["purpose"] != "approvalReview"
+                    || instructions.chars().count() + content.chars().count() > 18000
+                {
+                    return Err(LocalAgentStoreError::new("approval_review_input_invalid",
+                        "Approval input must belong to an independent review and fit its input budget."));
+                }
             }
         }
         "provider.turn.settled" => {

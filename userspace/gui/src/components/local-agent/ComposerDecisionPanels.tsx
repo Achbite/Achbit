@@ -96,6 +96,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const offeredScopes = pendingApproval?.preview.authorizationScopes ?? [];
   const approvalScope = isShellAuthorizationScope(proposedScope) && offeredScopes.includes(proposedScope) ? proposedScope : undefined;
   const sessionScope = approvalScope && sessionAuthorizationScope(approvalScope);
+  const hostApproval = proposedScope === 'runHostShell' || pendingApproval?.preview.operation?.executionScope === 'host';
+  const primaryScope = hostApproval ? undefined : approvalScope;
   const approvalRef = useRef<HTMLElement>(null);
   const sessionBrowser = pendingApproval?.preview.authorizationScope === 'sessionBrowser';
   const runCommand = pendingApproval?.preview.authorizationScopes?.includes('runCommand');
@@ -192,7 +194,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             if (event.key === 'Escape' || (event.key === 'Enter' && event.target === approvalRef.current)) {
               event.preventDefault();
               event.stopPropagation();
-              void answerApproval(event.key === 'Escape' ? 'deny' : 'allow', event.key === 'Enter' ? approvalScope : undefined);
+              void answerApproval(event.key === 'Escape' ? 'deny' : 'allow', event.key === 'Enter' ? primaryScope : undefined);
             }
           }}
         >
@@ -232,6 +234,11 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             </details>
           ) : <span />}
           <div className="local-agent__decision-actions">
+            {hostApproval && offeredScopes.includes('runHostShell') && <button type="button"
+              className="local-agent__decision-session" disabled={submitting || reviewing}
+              title={t(language, 'agent.permission.scope.runHostShell')}
+              onClick={() => void answerApproval('allow', 'runHostShell')}
+            >{t(language, 'agent.permission.scope.runHostShell')}</button>}
             {sessionScope && offeredScopes.includes(sessionScope) && <button
               type="button"
               className="local-agent__decision-session"
@@ -249,12 +256,12 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             <button
               type="button"
               className="local-agent__decision-allow"
-              aria-label={t(language, sessionBrowser ? 'agent.approval.allowSession' : approvalScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}
-              title={approvalScope ? t(language, `agent.permission.scope.${approvalScope}`) : undefined}
+              aria-label={t(language, sessionBrowser ? 'agent.approval.allowSession' : hostApproval ? 'agent.approval.allowOnce' : primaryScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}
+              title={primaryScope ? t(language, `agent.permission.scope.${primaryScope}`) : undefined}
               aria-keyshortcuts="Enter"
               disabled={submitting || reviewing}
-              onClick={() => void answerApproval('allow', approvalScope)}
-            ><span>{t(language, sessionBrowser ? 'agent.approval.allowSession' : approvalScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}</span><kbd aria-hidden="true">↵</kbd></button>
+              onClick={() => void answerApproval('allow', primaryScope)}
+            ><span>{t(language, sessionBrowser ? 'agent.approval.allowSession' : hostApproval ? 'agent.approval.allowOnce' : primaryScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}</span><kbd aria-hidden="true">↵</kbd></button>
           </div>
           </div>
         </section>

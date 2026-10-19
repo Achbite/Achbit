@@ -57,6 +57,7 @@ test('approval review retains original user constraints without main-model summa
   assert.deepEqual(request.workspaceBindings, [workspaceBinding, attachment]);
   assert.deepEqual(receipt.workspaceBindings, request.workspaceBindings.map(binding => ({ itemId: binding.workspaceId, label: binding.displayName })));
   assert.throws(() => prepareApprovalReview(snapshot, runtime, { ...approval, runId: 'run:other' }, 'provider:wrong'), /approval_review_run_mismatch/);
+  assert.deepEqual(receipt.reviewInput, { instructions: request.messages[0].content, content: request.messages[1].content });
   const input = JSON.parse(request.messages[1].content);
   assert.deepEqual(input.userMessages, [
     { messageId: 'message:current', content: 'Run make check.' },
@@ -758,7 +759,8 @@ for (const nextMode of ['ask', 'allow']) for (const malformed of [false, true]) 
     if (mode === 'allow' || mode === 'review' && request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
     return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
-        approvalReviewer: mode === 'review' ? 'agent' : 'user', authorizationContext: context } };
+        approvalReviewer: mode === 'review' ? 'agent' : 'user', authorizationContext: context,
+        ...(request.nonWorkspaceAuthority ? { revalidation: { authorityId: request.nonWorkspaceAuthority.authorityId, reason: 'revoked' } } : {}) } };
   } }), preparation.port, 'change');
   t.after(() => { releaseReview(); actor.dispose(); });
   await actor.submit(messageCommand(sessionId, 'command:start', 'Run make check.'));

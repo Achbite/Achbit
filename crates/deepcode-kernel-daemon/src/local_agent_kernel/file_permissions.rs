@@ -290,13 +290,17 @@ impl PreparedEffect {
         if self.scope == PreparedEffectScope::Network {
             return Some(json!({"networkEnvironment":{"kind":"networkTools"}}));
         }
-        if self.file_requests.is_empty() && self.network_request.is_none() {
+        // Host execution already carries the host user's network access. Keep the
+        // original request in the ToolRecord, but do not mint a second sandbox
+        // network binding that was never part of the actual execution boundary.
+        let sandbox_network = self.network_request.is_some() && !self.is_host_process();
+        if self.file_requests.is_empty() && !sandbox_network {
             return self.command_authorization_context();
         }
         let mut context = self
             .command_authorization_context()
             .unwrap_or_else(|| json!({"toolName":self.operation}));
-        if self.network_request.is_some() {
+        if sandbox_network {
             context["networkEnvironment"] = self.file_environment();
         }
         context["fileEnvironment"] = self.file_environment();

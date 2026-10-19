@@ -27,4 +27,6 @@ deepcode-cli read --session 'session:...' --view messages --before 120
 deepcode-cli read --session 'session:...' --view tools --record 'record:...'
 ```
 
+For an independent approval request, `view=context` with its exact `providerRequestId` also returns the recorded bounded `reviewInput`, review decision and execution approval resolution when present. The list view omits review bodies. These are the materials actually sent to the reviewer, not a reconstruction from the current code; older records without a captured input remain without one. Approval resolution is not proof of execution: use the linked call's ToolRecord for its actual outcome.
+
 Input cache hit rate is `cacheReadInputTokens / inputTokens`; output tokens do not belong in the denominator. The context indicator describes the last settled request; the GUI total indicator divides cumulative cached input tokens by cumulative input tokens across this session and all descendant Agent sessions, including closed members and counting each session once across continued tasks. The own-session usage returned by a session query remains a separate scope. Different ratios across scopes are expected. If Provider usage is unavailable, retain the unavailable state instead of treating it as zero.

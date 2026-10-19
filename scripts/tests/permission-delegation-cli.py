@@ -61,6 +61,10 @@ class Provider(fixture.MockProviderHandler):
                 review = json.loads(body['messages'][-1]['content'])
                 require(review['operation']['arguments']['command'] == COMMAND, 'Review did not receive the actual command')
                 require(review['grant'] == 'thisCallOnly', 'Review changed the permission lifetime')
+                require(review['reviewPolicy']['subject'] == 'shell' and review['reviewPolicy']['mode'] == 'review',
+                        'Review did not receive the applicable Kernel Shell policy')
+                require('networkEnvironment' not in review['requestedAccess']['environment'],
+                        'Host network metadata created a second authorization binding')
                 self._send_text(json.dumps({'decision': 'allow', 'reason': 'The user requested this exact file operation in the delegated environment.'}))
                 return
             ordinal, names, results = state.inspect(body)
@@ -69,6 +73,7 @@ class Provider(fixture.MockProviderHandler):
                     require(results['first']['outcome'] == 'completed', results['first'])
                 self._send_tool_calls([('first' if ordinal == 1 else 'repeat', names['bash'], {
                     'command': COMMAND, 'requestHostPermission': 'Write the file explicitly requested by the user.',
+                    'requestNetworkPermission': 'Retain the redundant network request from the original Host approval regression.',
                 })])
             else:
                 require(results['repeat']['outcome'] == 'completed', results['repeat'])
@@ -117,6 +122,8 @@ def check_mode(mode):
                     'SELECT event_type,payload_json FROM session_events WHERE session_id=? ORDER BY sequence', (session,))]
             decisions = [payload for kind, payload in events if kind == 'approval.resolved']
             if mode == 'review':
+                reviews = [payload for kind, payload in events if kind == 'context.composed' and payload['purpose'] == 'approvalReview']
+                require(len(reviews) == 2 and all('reviewInput' in item for item in reviews), 'Exact review inputs were not retained')
                 require(len(decisions) == 2 and all(decision['source'] == 'agent' and 'authorizationScope' not in decision for decision in decisions), 'Delegation did not remain limited to each call')
             elif mode == 'ask':
                 require(len(decisions) == 1 and decisions[0]['source'] == 'user' and decisions[0]['authorizationScope'] == 'runCommand', 'Exact run grant was not reused')

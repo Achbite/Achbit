@@ -721,6 +721,7 @@
     "agent.approval.targets": "目标",
     "agent.approval.deny": "拒绝",
     "agent.approval.allow": "允许",
+    "agent.approval.allowOnce": "仅允许本次",
     "agent.approval.allowRun": "允许本轮",
     "agent.approval.allowSession": "允许本会话",
     "agent.composer.placeholder.plan": "或输入修改意见…",

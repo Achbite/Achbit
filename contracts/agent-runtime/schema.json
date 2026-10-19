@@ -4134,6 +4134,10 @@
         "messages": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionMessage"}},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionItem"}},
         "tools": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionTool"}},
+        "reviewInput": {
+          "type": "object", "additionalProperties": false, "required": ["instructions", "content"],
+          "properties": {"instructions": {"type": "string", "minLength": 1, "maxLength": 18000}, "content": {"type": "string", "minLength": 1, "maxLength": 18000}}
+        },
         "modelView": {
           "type": "object",
           "additionalProperties": false,
@@ -4152,7 +4156,7 @@
         "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"}
       },
       "if": {"properties": {"purpose": {"enum": ["agent", "contextCompaction"]}}},
-      "then": {"required": ["modelView"]},
+      "then": {"required": ["modelView"], "not": {"required": ["reviewInput"]}},
       "else": {"not": {"required": ["modelView"]}}
     },
     "ContextModelViewContribution": {
@@ -4264,6 +4268,11 @@
         },
         "logicalTargets": {"type": "array", "items": {"type": "string"}},
         "approvalReviewer": {"enum": ["user", "agent"]},
+        "reviewPolicy": {"$ref": "#/$defs/JsonObject"},
+        "revalidation": {
+          "type": "object", "additionalProperties": false, "required": ["authorityId", "reason"],
+          "properties": {"authorityId": {"$ref": "#/$defs/Id"}, "reason": {"enum": ["revoked", "scopeChanged", "reviewUnavailable"]}}
+        },
         "operation": {
           "type": "object",
           "additionalProperties": false,

@@ -3069,13 +3069,14 @@ test('pending approvals replace ordinary input while preserving its draft for re
     pendingApproval: { ...composer.pendingApproval, preview: runPreview },
   }, uiActionError: null }));
   assert.match(run, /title="本会话允许 Host Shell"[^>]*>允许本会话<\/button>/);
-  assert.match(run, /aria-label="允许本轮" title="本次任务允许 Host Shell" aria-keyshortcuts="Enter"/);
+  assert.match(run, /aria-label="仅允许本次" aria-keyshortcuts="Enter"/);
+  assert.match(run, /title="本次任务允许 Host Shell"[^>]*>本次任务允许 Host Shell<\/button>/);
   assert.doesNotMatch(run, /<option value="(?:runCommand|sessionHostShell)"/);
   const perCall = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', composer: { ...composer,
     pendingApproval: { ...composer.pendingApproval, preview: { ...runPreview, authorizationScopes: [] } },
   }, uiActionError: null }));
   assert.doesNotMatch(perCall, /允许本轮|允许本会话/);
-  assert.match(perCall, /aria-label="允许" aria-keyshortcuts="Enter"/);
+  assert.match(perCall, /aria-label="仅允许本次" aria-keyshortcuts="Enter"/);
   const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
   const wire = projectSession(emptySessionState('session:browser-wire'));
   wire.pendingApproval = { ...composer.pendingApproval, runId: 'run:browser', callId: 'call:browser', sequence: 3,
@@ -3084,6 +3085,12 @@ test('pending approvals replace ordinary input while preserving its draft for re
   assert.deepEqual(await decodeGuiProjection(wire), wire, 'explicit scope survives the strict GUI wire decoder');
   wire.pendingApproval.preview = runPreview;
   assert.deepEqual(await decodeGuiProjection(wire), wire, 'run grant and Kernel context survive the GUI decoder');
+  wire.pendingApproval.preview = { ...runPreview, reviewPolicy: { subject: 'shell', mode: 'ask', reviewGrant: 'thisCallOnly' },
+    revalidation: { authorityId: 'authority:previous', reason: 'revoked' } };
+  assert.deepEqual(await decodeGuiProjection(wire), wire, 'Kernel policy and revalidation facts survive the strict GUI decoder');
+  const invalidRevalidation = structuredClone(wire);
+  invalidRevalidation.pendingApproval.preview.revalidation.reason = 'invented';
+  await assert.rejects(decodeGuiProjection(invalidRevalidation), /conversation_projection_invalid/);
   const invalidScope = structuredClone(wire);
   invalidScope.pendingApproval.preview.authorizationScope = 'unknown';
   await assert.rejects(decodeGuiProjection(invalidScope), /conversation_projection_invalid/);

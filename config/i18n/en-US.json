@@ -721,6 +721,7 @@
     "agent.approval.targets": "Targets",
     "agent.approval.deny": "Deny",
     "agent.approval.allow": "Allow",
+    "agent.approval.allowOnce": "Allow once",
     "agent.approval.allowRun": "Allow this turn",
     "agent.approval.allowSession": "Allow this conversation",
     "agent.composer.placeholder.plan": "Or suggest changes…",
