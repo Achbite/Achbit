@@ -151,15 +151,44 @@ impl IFileDialogControlEvents_Impl for SelectionEvents_Impl {
     }
 }
 
+#[cfg(not(feature = "debug-control"))]
 pub(super) fn pick(
     parent: &tauri::Window,
+    options: &PathOptions,
+) -> Result<Option<Vec<PathBuf>>, String> {
+    let hwnd = parent.hwnd().map_err(|error| error.to_string())?;
+    pick_window(hwnd, options)
+}
+
+#[cfg(feature = "debug-control")]
+pub(super) fn begin(
+    parent: &tauri::Window,
+    options: PathOptions,
+    reply: std::sync::mpsc::SyncSender<Result<Option<Vec<PathBuf>>, String>>,
+) -> Result<(), String> {
+    let hwnd = parent.hwnd().map_err(|error| error.to_string())?.0 as isize;
+    // Show owns a modal STA loop. Keep the GUI event loop available for Debug
+    // inspection; only this worker owns and releases its COM dialog objects.
+    std::thread::Builder::new()
+        .name("debug-path-dialog".into())
+        .spawn(move || {
+            let result = pick_window(windows::Win32::Foundation::HWND(hwnd as *mut _), &options);
+            let _ = reply.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn pick_window(
+    hwnd: windows::Win32::Foundation::HWND,
     options: &PathOptions,
 ) -> Result<Option<Vec<PathBuf>>, String> {
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
         .ok()
         .map_err(|error| error.to_string())?;
     let _apartment = ComApartment;
-    let hwnd = parent.hwnd().map_err(|error| error.to_string())?;
+    #[cfg(feature = "debug-control")]
+    let dialog_id = super::debug_windows::opened(hwnd, &options.title)?;
     let run = || -> windows::core::Result<Option<Vec<PathBuf>>> {
         unsafe {
             let dialog: IFileOpenDialog =
@@ -227,5 +256,8 @@ pub(super) fn pick(
             item_paths(&dialog.GetResults()?).map(Some)
         }
     };
-    run().map_err(|error| error.to_string())
+    let result = run().map_err(|error| error.to_string());
+    #[cfg(feature = "debug-control")]
+    super::debug_windows::completed(&dialog_id, &result);
+    result
 }

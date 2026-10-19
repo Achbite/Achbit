@@ -13,6 +13,7 @@ import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ReasoningHistory } from './ReasoningDetails';
 import { PlanPreviewCard } from './PlanPreviewCard';
 import ProviderStageStatus from './ProviderStageStatus';
+import { RunTiming } from './RunTiming';
 import { SourceReferences } from './SourceReferences';
 import { BufferedMarkdown, MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import PlanCard from './PlanCard';
@@ -47,7 +48,6 @@ interface ConversationTranscriptProps {
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   canEditMessage?: boolean;
   onEditMessage?: (message: SessionProjection['messages'][number]) => void;
-  composerInteractionId?: string;
 }
 
 export function ConversationTranscript({
@@ -68,7 +68,6 @@ export function ConversationTranscript({
   setUiActionError,
   canEditMessage = false,
   onEditMessage,
-  composerInteractionId,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
@@ -284,7 +283,7 @@ export function ConversationTranscript({
           onToggle={onPlanToggle}
         />
       ) : item.type === 'interaction' ? (
-        <InteractionCard interaction={item.value} language={language} answerInComposer={item.value.interactionId === composerInteractionId} />
+        <InteractionCard interaction={item.value} language={language} />
       ) : (
         <ToolActivityGroup
           activities={item.values}
@@ -396,6 +395,7 @@ export function ConversationTranscript({
         const current = projection?.run?.runId === round.runId;
         const displaySettled = displaySettledRunIds.has(round.runId);
         const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
+        const timing = projection?.runTimings?.find(timing => timing.runId === round.runId);
         const rows = round.rows.map((row) => ({
           key: row.key,
           process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
@@ -407,9 +407,10 @@ export function ConversationTranscript({
         if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
         if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
         const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
+        const hasFileChanges = changeActivities.some(activity => activity.tool?.fileChanges?.length);
         return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
-          displaySettled={displaySettled} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
-          {changeActivities.some(activity => activity.tool?.fileChanges?.length) && <FileChanges activities={changeActivities} />}
+          displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
+          {hasFileChanges ? <FileChanges activities={changeActivities} /> : null}
         </ConversationRoundView>;
       })}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
@@ -426,9 +427,10 @@ function samePlanReference(
   return reference?.planId === plan.planId && reference.revision === plan.revision;
 }
 
-function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, onToggleProcess, rows, children }: {
+function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, timing, onToggleProcess, rows, children }: {
   language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
   displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
+  timing: NonNullable<SessionProjection['runTimings']>[number] | undefined;
   rows: Array<{ key: string; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
@@ -441,14 +443,14 @@ function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, dis
   const firstProcess = rows.find(row => row.process)?.key;
   return <section className="conversation-round">
     {rows.map(row => <React.Fragment key={row.key}>
-      {displaySettled && row.key === firstProcess && <button className="conversation-process-toggle" type="button"
+      {displaySettled && row.key === firstProcess && <div className="conversation-process-heading"><button className="conversation-process-toggle" type="button"
         data-conversation-anchor={`${roundKey}:disclosure`} aria-expanded={expanded} onClick={(event) => {
         onToggleProcess(event.currentTarget);
         setDisclosure({ displaySettled, open: !expanded });
       }}>
         <DeepCodeShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
         <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
-      </button>}
+      </button><RunTiming timing={timing} language={language} /></div>}
       <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} hidden={row.process && !expanded && !row.required}
         eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
     </React.Fragment>)}

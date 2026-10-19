@@ -8,8 +8,9 @@ import type { SessionCapabilities } from './plugins.js';
 
 export function createSessionCapabilities(): SessionCapabilities {
   return {
-    context: { prepare: buildAgentProviderRequest },
+    context: { prepare: buildAgentProviderRequest, windowTokens: runtime => runtime.provider.contextWindowTokens },
     compaction: {
+      settings: runtime => runtime.contextManagement,
       prepare: prepareContextCompaction,
       pressureCutoff: pressureCompactionCutoff,
       estimateInput: estimateContextInput,

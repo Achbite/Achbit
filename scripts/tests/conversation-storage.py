@@ -26,6 +26,8 @@ class ProviderHandler(fixture.MockProviderHandler):
         try:
             require(self.path.endswith("/chat/completions"), "Unexpected Provider endpoint")
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            if self.respond_to_title(body):
+                return
             self.provider_state.requests.append(body)
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")

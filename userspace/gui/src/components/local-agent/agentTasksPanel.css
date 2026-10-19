@@ -26,8 +26,6 @@
 .agent-tasks__toolbar > svg { width:16px; height:16px; flex:none; color:var(--dc-muted); }
 .agent-tasks__identity { display:flex; align-items:center; gap:6px; flex:1 1 45%; min-width:0; }
 .local-agent .agent-tasks__identity button { min-width:0; min-height:28px; padding:3px 2px; text-align:left; }
-.local-agent__reader .agent-tasks__identity-name { flex:1 1 auto; font-weight:600; color:var(--dc-foreground); }
-.local-agent__reader .agent-tasks__identity-id { flex:0 1 100px; color:var(--dc-muted); font-size:11px; }
 .agent-tasks__identity span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; user-select:text; }
 .agent-tasks__model { display:flex; align-items:center; justify-content:flex-end; flex:1 1 45%; min-width:0; color:var(--dc-muted); white-space:nowrap; }
 .agent-tasks__model > span { min-width:0; overflow:hidden; text-overflow:ellipsis; user-select:text; }

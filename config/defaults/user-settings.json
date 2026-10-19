@@ -3,6 +3,8 @@
   "workbench.styleTokenOverrides": "{}",
   "agent.permissions.workspaceMutation": "plan",
   "agent.responseLanguage": "auto",
+  "agent.contextManagement.enabled": false,
+  "agent.contextManagement.thresholdTokens": 500000,
   "agent.permissions.engineeringDecisions": "ask",
   "agent.permissions.networkRead": "allow",
   "agent.permissions.external": "ask",

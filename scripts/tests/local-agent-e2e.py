@@ -49,6 +49,7 @@ class ProviderState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requests: list[dict[str, Any]] = []
+        self.title_requests: list[dict[str, Any]] = []
         self._requests_by_id: dict[str, dict[str, Any]] = {}
         self._failures: list[str] = []
         self._old_wire_name: str | None = None
@@ -304,6 +305,8 @@ class MockProviderHandler(fixture.MockProviderHandler):
             fixture.require(0 < length <= 8 * 1024 * 1024, "Provider 请求长度无效")
             body = json.loads(self.rfile.read(length))
             fixture.require(isinstance(body, dict), "Provider body 不是对象")
+            if self.respond_to_title(body):
+                return
             ordinal = self.provider_state.register(body)
             wire_names = self.provider_state.inspect(ordinal, body)
 
@@ -1165,6 +1168,7 @@ def main() -> None:
                 cursor = next_byte
             fixture.require(len(segments) > 1 and "".join(segments) == LONG_INPUT, "分页读取未完整保留 Unicode 原文")
             assert_provider_count_stable(provider, 4)
+            fixture.require(len(provider.title_requests) == 1, "标题请求未独立处理或在重启后重复生成")
             assert_shells_read_projection(daemon_two, session_id, final_revision)
             path_id = urllib.parse.quote(session_id, safe="")
             original_references = recovered["messages"][0]["filesystemReferences"]

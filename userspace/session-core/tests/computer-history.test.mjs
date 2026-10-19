@@ -4,10 +4,71 @@ import { loopSnapshot, projectSession } from '../dist/index.js';
 import { projectComputerActivity } from '../dist/local-agent/computerActivity.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
+import { decodeGuiProjection } from '../../gui/tests/gui-projection-contract.mjs';
 import { actorWith, createSession, fakeRunPreparation, emptyKernel, completedExecutionReply, failedExecutionReply,
   providerEvent, messageCommand, waitForProjection, readEvents, workspaceBinding } from './local-agent-fixtures.mjs';
 
 const image = id => ({ artifactId: id, label: 'Observation.png', uri: `artifact://${id}`, contentMode: 'fixed', contentType: 'image/png' });
+
+test('computer input rejection clears provisional tool details without blocking later messages and approvals', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:computer-input-rejected';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const input = { action: 'listWindows', app: 'com.google.Chrome' };
+  const error = { code: 'tool_input_invalid', message: 'Invalid computer control parameters.',
+    issues: [{ path: '$.windowId', rule: 'required', message: 'A window identifier is required.' }] };
+  const preparation = fakeRunPreparation({ contextWindowTokens: 65536, tools: [{
+    toolBindingRef: 'binding:computer', name: 'computer.control', description: 'Control the desktop.',
+    inputSchema: { type: 'object' }, possibleEffects: ['external'], availability: 'callable', origin: 'coreBuiltin',
+  }] });
+  let turns = 0, rejectedCalls = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (++turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:invalid', name: 'computer_control', input });
+    else if (turns === 2) {
+      yield providerEvent(request.requestId, 'text.delta', { text: 'The parameters were rejected; request permission for the next action.' });
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'native:status', name: 'computer_control', input: { action: 'status' } });
+    } else {
+      assert.equal(turns, 3);
+      yield providerEvent(request.requestId, 'text.delta', { text: 'The approved action completed.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    if (request.input.action === 'listWindows') {
+      rejectedCalls++;
+      const rejection = Object.fromEntries(['sessionId', 'runId', 'extensionGenerationRef', 'kernelCatalogSnapshotRef',
+        'toolBindingRef', 'callId', 'attemptId', 'toolName', 'input'].map(key => [key, request[key]]));
+      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+        callId: request.callId, status: 'inputRejected', rejection: { ...rejection, rejectedAt: '2026-10-17T00:00:00Z', error } };
+    }
+    if (!request.nonWorkspaceAuthority) return {
+      schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      callId: request.callId, status: 'approvalRequired', approvalId: 'approval:computer',
+      preview: { summary: 'Use the desktop', effects: ['external'], logicalTargets: ['computer:desktop'] },
+    };
+    return completedExecutionReply(request, { status: 'ready' });
+  } }), preparation.port, 'computer-rejected');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Inspect the desktop.'));
+  const waiting = await waitForProjection(actor, value => value.pendingApproval !== null);
+  const events = await readEvents(journal, sessionId);
+  const rejectedIndex = events.findIndex(event => event.type === 'tool.input-rejected');
+  const before = projectSession(loopSnapshot(sessionId, events.slice(0, rejectedIndex)).state);
+  assert.deepEqual(before.activities.find(activity => activity.status === 'requested').tool.computer.input, input);
+  const rejected = projectSession(loopSnapshot(sessionId, events.slice(0, rejectedIndex + 1)).state);
+  await decodeGuiProjection(rejected);
+  const activity = rejected.activities.find(activity => activity.status === 'rejected');
+  assert.equal(activity.tool, undefined);
+  assert.deepEqual(activity.inputRejection, error);
+  await decodeGuiProjection(waiting);
+  assert.ok(waiting.narratives.some(item => item.content.includes('parameters were rejected')));
+  const approval = waiting.pendingApproval;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', commandId: 'command:allow', sessionId,
+    runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'allow' });
+  const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
+  await decodeGuiProjection(completed);
+  assert.ok(completed.messages.some(item => item.content === 'The approved action completed.'));
+  assert.deepEqual(completed.activities.find(item => item.status === 'rejected').inputRejection, error);
+  assert.equal(rejectedCalls, 1, 'later approval must not replay the rejected call');
+});
 
 test('computer history replays exact input observations, archived images and dispatched failures after run release', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:computer-history';

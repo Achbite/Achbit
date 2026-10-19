@@ -52,6 +52,8 @@ struct CallRecord {
     provider_attempt_id: Option<String>,
     purpose: String,
     started_at: u64,
+    completed_at: Option<u64>,
+    duration_ms: Option<f64>,
     billing_mode: String,
     requested_model: String,
     actual_model: Option<String>,
@@ -70,6 +72,64 @@ pub(crate) struct UsageStore {
     pub coverage_from: u64,
 }
 impl UsageStore {
+    /// Debug queries the original physical-attempt receipts, including failed and
+    /// auxiliary calls. Missing Provider usage stays null in these records.
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn debug_records(&self, filter: &Value) -> Result<Value, String> {
+        let db = self.db.lock().map_err(|_| "usage_store_lock_failed")?;
+        let mut query = db
+            .prepare(
+                "SELECT record FROM provider_usage
+            WHERE (?1 IS NULL OR session_id=?1)
+              AND (?2 IS NULL OR json_extract(record,'$.runId')=?2)
+              AND (?3 IS NULL OR json_extract(record,'$.providerAttemptId')=?3)
+            ORDER BY started_at,id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map(
+                params![
+                    filter["sessionId"].as_str(),
+                    filter["runId"].as_str(),
+                    filter["providerAttemptId"].as_str()
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut records = Vec::new();
+        let mut totals = Totals::default();
+        for row in rows {
+            let record: CallRecord = serde_json::from_str(&row.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            if filter["fromMs"]
+                .as_u64()
+                .is_some_and(|from| record.started_at < from)
+                || filter["toMs"]
+                    .as_u64()
+                    .is_some_and(|to| record.started_at >= to)
+                || filter["requestId"]
+                    .as_str()
+                    .is_some_and(|id| record.request_id.as_deref() != Some(id))
+                || filter["purpose"]
+                    .as_str()
+                    .is_some_and(|purpose| record.purpose != purpose)
+                || filter["model"].as_str().is_some_and(|model| {
+                    record.requested_model != model && record.actual_model.as_deref() != Some(model)
+                })
+                || filter["connectionId"]
+                    .as_str()
+                    .is_some_and(|id| record.connection_id != id)
+            {
+                continue;
+            }
+            totals.add(&record);
+            records.push(serde_json::to_value(record).map_err(|e| e.to_string())?);
+        }
+        Ok(
+            json!({"source":"kernelProviderUsage","records":records,"totals":totals,"coverageFrom":self.coverage_from,"totalsScope":"reported-usage-subtotal","unknownUsageAttempts":totals.calls-totals.reported_calls,"controllerUsage":{"coverage":"unavailable","reason":"external-controller"}}),
+        )
+    }
+
     pub fn open(path: &FsPath) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -107,6 +167,7 @@ impl UsageStore {
         identity: &Value,
     ) -> Result<UsageCall, String> {
         // A physical HTTP attempt is counted once. Retrying creates another attempt, not another Session fact.
+        let started = std::time::Instant::now();
         let record = CallRecord {
             id: new_runtime_ref("usage")?,
             connection_id: profile.connection.id.clone(),
@@ -117,6 +178,8 @@ impl UsageStore {
             provider_attempt_id: identity["providerAttemptId"].as_str().map(str::to_owned),
             purpose: identity["purpose"].as_str().unwrap_or("probe").into(),
             started_at: crate::model_auth::now_ms(),
+            completed_at: None,
+            duration_ms: None,
             billing_mode: profile.connection.billing_mode.clone(),
             requested_model: profile.model.clone(),
             actual_model: None,
@@ -131,6 +194,7 @@ impl UsageStore {
         };
         self.save(&record)?;
         Ok(UsageCall {
+            started,
             store: self.clone(),
             record,
             adapter_id: profile.connection.adapter_id.clone(),
@@ -226,6 +290,7 @@ impl UsageStore {
 }
 
 pub(crate) struct UsageCall {
+    started: std::time::Instant,
     store: Arc<UsageStore>,
     record: CallRecord,
     adapter_id: String,
@@ -234,6 +299,15 @@ pub(crate) struct UsageCall {
     observed: Option<ObservedUsage>,
 }
 impl UsageCall {
+    /// Called only by an owner that observed the request end; Drop never invents completion.
+    pub fn finish_timing(&mut self) -> Result<(), String> {
+        if self.record.completed_at.is_none() {
+            self.record.completed_at = Some(crate::model_auth::now_ms());
+            self.record.duration_ms = Some(self.started.elapsed().as_secs_f64() * 1000.0);
+        }
+        self.store.save(&self.record)
+    }
+
     pub fn observe(&mut self, observed: ObservedUsage) -> Result<(), String> {
         if self.observed.as_ref() == Some(&observed) {
             return Ok(());

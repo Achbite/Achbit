@@ -1,6 +1,8 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { pdfDocumentAssets } from './vite.pdf';
+import { rename } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 function deepcodeGuiDevelopmentEntry(): Plugin {
   return {
@@ -18,6 +20,7 @@ function deepcodeGuiDevelopmentEntry(): Plugin {
 }
 
 export default defineConfig(({ command }) => {
+  const debug = process.env.DEEPCODE_BUILD_KIND === 'debug';
   const host = process.env.DEEPCODE_HOST ?? '127.0.0.1';
   const hostPort = process.env.DEEPCODE_HOST_PORT ?? '31245';
   const devPort = Number(process.env.DEEPCODE_GUI_DEV_PORT ?? '5174');
@@ -45,10 +48,21 @@ export default defineConfig(({ command }) => {
     },
   };
   return {
-    plugins: [deepcodeGuiDevelopmentEntry(), react(), pdfDocumentAssets()],
+    plugins: [deepcodeGuiDevelopmentEntry(), react(), pdfDocumentAssets(), {
+      name: 'deepcode-build-kind',
+      transformIndexHtml: {
+        order: 'pre',
+        handler: () => debug ? [{ tag: 'script', attrs: { type: 'module', src: '/src/debug/install.ts' }, injectTo: 'head' }] : [],
+      },
+      async writeBundle(options) {
+        if (!options.dir) throw new Error('GUI output directory is required.');
+        await rename(resolve(options.dir, 'deepcode-gui.html'), resolve(options.dir, 'index.html'));
+      },
+    }],
+    define: { __DEEPCODE_DEBUG__: JSON.stringify(debug) },
     base: './',
     build: {
-      outDir: 'dist-deepcode-gui',
+      outDir: debug ? '../../.build-cache/gui-debug' : 'dist-deepcode-gui',
       emptyOutDir: true,
       chunkSizeWarningLimit: 650,
       rollupOptions: {

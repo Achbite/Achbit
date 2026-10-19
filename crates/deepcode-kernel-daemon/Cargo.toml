@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 description = "DeepCode Kernel daemon that owns runtime, provider transport, and localhost API."
 
+[features]
+debug-control = ["deepcode-host-connection/debug-control"]
+
 [dependencies]
 axum.workspace = true
 deepcode-kernel-abi.workspace = true

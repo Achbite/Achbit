@@ -134,6 +134,8 @@ const SETTING_DEFINITION_SCHEMAS: SettingDefinitionSchema[] = [
   { key: 'gui.usageWidget.currency', group: 'gui', control: 'select', options: ['USD', 'CNY'] },
   { key: 'gui.usageWidget.enabled', group: 'gui', control: 'boolean' },
   { key: 'gui.usageWidget.visibility', group: 'gui', control: 'select', options: ['summary', 'collapsed', 'hidden'] },
+  { key: 'agent.contextManagement.enabled', group: 'agent', control: 'boolean' },
+  { key: 'agent.contextManagement.thresholdTokens', group: 'agent', control: 'number' },
   { key: 'agent.windows.shell', group: 'agent', control: 'select', options: ['auto', 'powershell7', 'windowsPowerShell', 'gitBash'] },
   { key: 'agent.windows.gitBashPath', group: 'agent', control: 'text' },
   {
@@ -356,7 +358,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     });
   };
 
-  const applyUserSettingsPatch = async (
+  const performUserSettingsPatch = async (
     patches: Record<string, UserSettingValue>,
     fallbackError: string,
   ): Promise<UserSettingsActivation | null> => {
@@ -398,6 +400,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       });
     }
     return result.data.activation;
+  };
+
+  // Serialize writes and their canonical readback so quick changes cannot publish stale snapshots.
+  let pendingWrite = Promise.resolve();
+  const applyUserSettingsPatch = (patches: Record<string, UserSettingValue>, error: string) => {
+    const captured = structuredClone(patches);
+    const result = pendingWrite.then(() => performUserSettingsPatch(captured, error));
+    pendingWrite = result.then(() => undefined, () => undefined);
+    return result;
   };
 
   return {

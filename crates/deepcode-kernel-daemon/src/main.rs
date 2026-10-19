@@ -9,6 +9,10 @@ mod container_tools;
 mod conversation_api;
 mod conversation_catalog;
 mod conversation_resources;
+#[cfg(feature = "debug-control")]
+mod debug_control;
+#[cfg(feature = "debug-control")]
+mod debug_tools;
 mod host_connection;
 mod host_inspection;
 mod host_lifecycle;

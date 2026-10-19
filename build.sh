@@ -8,12 +8,14 @@ CONTAINER_NAME="${CONTAINER_NAME:-deepcode-dev}"
 WORKDIR_IN_CTNR="${WORKDIR_IN_CTNR:-/workspace}"
 OUTPUT_DIR="${DEEPCODE_OUTPUT_DIR:-$ROOT_DIR/bin}"
 [[ "$OUTPUT_DIR" = /* ]] || OUTPUT_DIR="$ROOT_DIR/$OUTPUT_DIR"
+export DEEPCODE_BUILD_KIND=normal
 export DEEPCODE_BUILD_COMMIT="${DEEPCODE_BUILD_COMMIT:-$(deepcode_source_commit "$ROOT_DIR")}"
 export DEEPCODE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STAGES=()
 usage() {
   cat <<'HELP'
-Usage: bash build.sh [--stage STAGE]...
+Usage: bash build.sh [-debug] [--stage STAGE]...
+  -debug              Windows/macOS Debug runtime/archive in bin/debug, without installers.
   package (default)    Build every available platform; fail if none built.
   package-linux       Linux runtime for the container architecture.
   package-windows     Windows x64 runtime, ZIP and Setup (GNU cross toolchain + NSIS).
@@ -34,12 +36,27 @@ HELP
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -debug) export DEEPCODE_BUILD_KIND=debug; shift ;;
     --stage) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; STAGES+=("$2"); shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
-[ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
+if [ "$DEEPCODE_BUILD_KIND" = debug ]; then
+  if [ -n "${DEEPCODE_OUTPUT_DIR+x}" ] && [ "$OUTPUT_DIR" != "$ROOT_DIR/bin/debug" ]; then
+    printf 'Debug output is fixed at bin/debug; remove conflicting DEEPCODE_OUTPUT_DIR.\n' >&2; exit 2
+  fi
+  OUTPUT_DIR="$ROOT_DIR/bin/debug"
+  [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
+  for stage in "${STAGES[@]}"; do
+    case "$stage" in
+      package|package-macos|package-windows) ;;
+      *) printf 'Debug stage is not supported: %s (use package-windows or package-macos).\n' "$stage" >&2; exit 2 ;;
+    esac
+  done
+else
+  [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
+fi
 IN_CONTAINER=0
 [ ! -f /.dockerenv ] || IN_CONTAINER=1
 if [ "$IN_CONTAINER" -eq 0 ]; then
@@ -104,7 +121,7 @@ container_step() {
     bash "$ROOT_DIR/scripts/build-platforms.sh" "$@"
   else
     local name
-    local environment=(-e DEEPCODE_BUILD_COMMIT -e DEEPCODE_BUILD_TIME)
+    local environment=(-e DEEPCODE_BUILD_COMMIT -e DEEPCODE_BUILD_TIME -e DEEPCODE_BUILD_KIND)
     for name in PNPM_STORE_DIR DEEPCODE_WINDOWS_NODE_BIN DEEPCODE_NODE_LICENSE DEEPCODE_DISABLE_SCCACHE; do
       [ -z "${!name+x}" ] || environment+=(-e "$name")
     done
@@ -127,7 +144,11 @@ all=0
 add_platform() { local existing; for existing in "${platforms[@]:-}"; do [ "$existing" != "$1" ] || return 0; done; platforms+=("$1"); }
 for stage in "${STAGES[@]}"; do
   case "$stage" in
-    package) all=1; add_platform linux; add_platform windows; add_platform macos ;;
+    package)
+      all=1
+      [ "$DEEPCODE_BUILD_KIND" = debug ] || add_platform linux
+      add_platform windows; add_platform macos
+      ;;
     package-linux|package-windows|package-macos) add_platform "${stage#package-}" ;;
     ui) ui=1 ;;
     computer-use) computer_use=1 ;;

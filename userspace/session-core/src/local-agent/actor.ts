@@ -1,4 +1,7 @@
-import { decodeAgentCapabilities, isLlmReasoningEffort } from '@deepcode/protocol';
+import { RunTiming } from './runTiming.js';
+import type { SessionObservationInput, SessionObservationSink } from './observation.js';
+import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
+import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
 import type { SessionOperation, JsonObject } from '@deepcode/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
@@ -11,6 +14,7 @@ import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
+import { appendResourceBindings, directoryBindingEvents } from './workspaceBindings.js';
 import type {
   AssistantDraftProjection,
   AgentTaskResult,
@@ -19,7 +23,6 @@ import type {
   ConversationCommand,
   InteractionProjection,
   NewSessionEvent,
-  PlanAuthority,
   RunSettlement,
   SessionEvent,
   SessionProjection,
@@ -42,6 +45,7 @@ import {
 import { projectSession, reduceSession } from './reducer.js';
 
 export interface SessionActorOptions {
+  observation?: SessionObservationSink;
   agents?: AgentSessionRuntime;
   profileId?: string;
   initialEvents?: readonly SessionEvent[];
@@ -57,6 +61,8 @@ interface ActiveRun {
 const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
 
 export class SessionActor {
+  readonly #timing: RunTiming;
+  readonly #observation?: SessionObservationSink;
   readonly #journal: CommandJournalPort;
   readonly #composition: AgentComposition;
   readonly #capabilities: SessionCapabilityManager;
@@ -87,6 +93,8 @@ export class SessionActor {
     composition: AgentComposition,
     options: SessionActorOptions = {},
   ) {
+    this.#timing = new RunTiming(sessionId);
+    this.#observation = options.observation;
     this.#journal = journal;
     this.#composition = composition;
     this.#capabilities = new SessionCapabilityManager(composition.capabilities);
@@ -137,6 +145,36 @@ export class SessionActor {
     return decodeAgentCapabilities(runtime.agentCapabilities);
   }
 
+  /** Freeze inherited context rules from the caller's actual run, not later global defaults. */
+  async contextConfiguration(runId: string): Promise<import('@deepcode/protocol').AgentConfiguration> {
+    const snapshot = await this.loadSnapshot();
+    const runtime = snapshot.state.runRuntimeSnapshots[runId];
+    if (!runtime) throw new Error('run_runtime_snapshot_missing');
+    const configuration = structuredClone(snapshot.state.recipe?.configuration ?? DEFAULT_AGENT_CONFIGURATION);
+    const lease = this.#capabilities.acquire();
+    try {
+      if (configuration.context.id === 'journal') configuration.context.parameters = {
+        ...configuration.context.parameters, maxTokens: lease.implementation.context.windowTokens(runtime),
+      };
+      if (configuration.compaction.id === 'summary') configuration.compaction.parameters = {
+        ...configuration.compaction.parameters, ...lease.implementation.compaction.settings(runtime),
+      };
+      return configuration;
+    } finally { await lease.release(); }
+  }
+
+  async requestContextCompaction(requestedBySessionId: string, focus?: string): Promise<JsonObject> {
+    return this.withWrite(async () => {
+      this.assertOperational();
+      const snapshot = await this.loadSnapshot();
+      const compactionId = this.#nextId('compaction');
+      await this.appendEvents([{ type: 'context.compaction.scheduled', sessionId: this.sessionId,
+        payload: { compactionId, requestedBySessionId, ...(focus ? { focus } : {}) } }], snapshot);
+      return { compactionId, status: 'scheduled',
+        boundary: snapshot.state.run && !isTerminal(snapshot.state.run.status) ? 'nextModelBoundary' : 'nextRun' };
+    });
+  }
+
   async snapshot(): Promise<SessionProjection> {
     const projection = projectSession((await this.loadSnapshot()).state, this.#assistantDraft);
     for (const activity of projection.activities) {
@@ -149,9 +187,9 @@ export class SessionActor {
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
-  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
     const state = (await this.loadSnapshot()).state;
-    return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, agentContext: state.agentContext,
+    return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, subagentSettings: state.subagentSettings, agentContext: state.agentContext,
       agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
       environment: state.run ? state.runRuntimeSnapshots[state.run.runId]?.environment : undefined });
   }
@@ -346,15 +384,6 @@ export class SessionActor {
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
   }
 
-  async delegationChanged(enabled: boolean): Promise<void> {
-    if (!this.#agents) return;
-    await this.enqueue(() => this.withWrite(async () => {
-      const current = await this.loadSnapshot();
-      if (current.state.agentDelegationEnabled === enabled) return;
-      await this.appendEvents([{ type: 'agent.delegation.changed', sessionId: this.sessionId, payload: { enabled } }], current);
-    }));
-  }
-
   /** Trusted operator entry; never exposed through the model's callable catalog. */
   async replaceCapabilities(implementation: SessionCapabilities): Promise<void> {
     if (this.#disposed) throw new Error('session_actor_disposed');
@@ -391,6 +420,10 @@ export class SessionActor {
         return await this.handleRevoke(command);
       case 'session.model-settings.set':
         return await this.handleModelSettings(command);
+      case 'session.subagent-settings.set':
+        return await this.handleSubagentSettings(command);
+      case 'session.workspaces.set':
+        return await this.handleWorkspaceBindings(command);
       case 'session.directory-index.attach':
         return await this.handleDirectoryIndexAttach(command);
       case 'session.directory-index.detach':
@@ -464,24 +497,36 @@ export class SessionActor {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }
+    const mode = command.patches['agent.permissions.workspaceMutation'];
+    if (mode === 'allow') {
+      const pending = snapshot.state.pendingPlan;
+      if (pending) events.push({ type: 'plan.cancelled', sessionId: this.sessionId, runId: pending.runId, callId: pending.callId,
+        payload: { planId: pending.planId, revision: pending.revision, commandId: command.commandId } });
+      const active = snapshot.state.activePlanRef;
+      const plan = active && snapshot.state.plans.find(item => item.planId === active.planId && item.revision === active.revision);
+      if (plan && snapshot.state.run?.runId === plan.runId && !isTerminal(snapshot.state.run.status)) events.push({
+        type: 'plan.invalidated', sessionId: this.sessionId, runId: plan.runId,
+        payload: { planId: plan.planId, revision: plan.revision, sourceFactRef: command.commandId, reason: 'Plan 已关闭。' } });
+    }
     const reply = await this.commitCommand(command, events, acceptedReply(command));
-    let planConfirmed = false;
-    if (snapshot.state.pendingPlan && command.patches['agent.permissions.workspaceMutation'] === 'allow') {
+    let reviewStarted = false;
+    if (mode === 'review' && snapshot.state.pendingPlan && snapshot.state.pendingPlan.review?.status !== 'reviewing') {
       const plan = snapshot.state.pendingPlan;
-      const admission = await this.#composition.kernel.planAdmission({ sessionId: this.sessionId,
-        runId: plan.runId, mutationManifest: plan.mutationManifest });
-      if (admission.source !== 'user') {
+      const admission = await this.#composition.kernel.planAdmission({ sessionId: this.sessionId, runId: plan.runId, mutationManifest: plan.mutationManifest });
+      if (admission.source === 'review') {
         await this.withWrite(async () => {
           const current = await this.loadSnapshot();
-          await this.appendEvents(confirmationFacts(current.state, plan, command.commandId,
-            admission.source, this.#nextId, admission.authorities), current);
+          if (current.state.pendingPlan?.planId !== plan.planId || current.state.pendingPlan.revision !== plan.revision) return;
+          await this.appendEvents([{ type: 'plan.review.requested', sessionId: this.sessionId, runId: plan.runId, callId: plan.callId,
+            payload: { planId: plan.planId, revision: plan.revision, providerRequestId: this.#nextId('provider-request') } }], current);
+          reviewStarted = true;
         });
-        planConfirmed = true;
       }
     }
+    const resumePlan = Boolean(snapshot.state.pendingPlan && (mode === 'allow' || reviewStarted));
+    if (resumePlan && snapshot.state.run?.status === 'waiting' && this.#active && snapshot.state.pendingPlan?.review?.status !== 'reviewing') await this.#active.task;
     if (!this.#active && snapshot.state.run?.status === 'waiting'
-      && (snapshot.state.run.waitingReason === 'approval'
-        || planConfirmed)) {
+      && (snapshot.state.run.waitingReason === 'approval' || resumePlan)) {
       this.startLoop({ type: 'resume', runId: snapshot.state.run.runId });
     }
     return reply;
@@ -507,6 +552,46 @@ export class SessionActor {
       type: 'session.model-settings.updated', sessionId: this.sessionId,
       payload: { commandId: command.commandId, settings: { ...command.settings } },
     }], acceptedReply(command));
+  }
+
+  private async handleSubagentSettings(
+    command: Extract<ConversationCommand, { type: 'session.subagent-settings.set' }>,
+  ): Promise<CommandReply> {
+    let settings;
+    try {
+      settings = decodeAgentSettings(command.settings);
+      agentPresets(settings);
+    } catch (error) {
+      return this.recordRejection(command, 'agent_settings_invalid', error instanceof Error ? error.message : String(error));
+    }
+    return this.commitCommand(command, [{ type: 'session.subagent-settings.updated', sessionId: this.sessionId,
+      payload: { commandId: command.commandId, settings } }], acceptedReply(command));
+  }
+
+  private async handleWorkspaceBindings(
+    command: Extract<ConversationCommand, { type: 'session.workspaces.set' }>,
+  ): Promise<CommandReply> {
+    if (!Array.isArray(command.workspaceBindings) || !command.workspaceBindings.every(validWorkspaceBinding)
+      || new Set(command.workspaceBindings.map(binding => binding.workspaceId)).size !== command.workspaceBindings.length) {
+      return this.recordRejection(command, 'session_workspace_bindings_invalid', '工作区目录无效。');
+    }
+    const snapshot = await this.loadSnapshot();
+    if (JSON.stringify(command.workspaceBindings) === JSON.stringify(snapshot.state.creationWorkspaceBindings)) {
+      return this.commitCommand(command, [], acceptedReply(command));
+    }
+    const workspaceBindings = [...new Map([...command.workspaceBindings, ...snapshot.state.sessionDirectoryIndexes]
+      .map(binding => [binding.workspaceId, { ...binding }])).values()];
+    const events: NewSessionEvent[] = [{ type: 'session.workspaces.updated', sessionId: this.sessionId,
+      payload: { commandId: command.commandId, baseBindings: structuredClone(command.workspaceBindings), workspaceBindings } }];
+    const active = snapshot.state.activePlanRef;
+    const plan = active && snapshot.state.plans.find(candidate => candidate.planId === active.planId && candidate.revision === active.revision);
+    if (plan && snapshot.state.run && ['running', 'waiting'].includes(snapshot.state.run.status)
+      && plan.runId === snapshot.state.run.runId
+      && plan.mutationManifest.some(operation => !workspaceBindings.some(binding => binding.workspaceId === operation.workspaceId))) {
+      events.push({ type: 'plan.invalidated', sessionId: this.sessionId, runId: plan.runId,
+        payload: { planId: plan.planId, revision: plan.revision, reason: '工作区目录已移除。', sourceFactRef: command.commandId } });
+    }
+    return this.commitCommand(command, events, acceptedReply(command));
   }
 
   private async handleDirectoryIndexAttach(
@@ -737,7 +822,8 @@ export class SessionActor {
       ? command.reasoningEffortOverride
       : before.state.modelSettings && profileId === before.state.modelSettings.profileId
         ? before.state.modelSettings.reasoningEffortOverride : null;
-    const runWorkspaceBindings = before.state.workspaceBindings.map(binding => ({ ...binding }));
+    const directoryReferences = command.filesystemReferences?.filter(reference => reference.kind === 'directory') ?? [];
+    const runWorkspaceBindings = appendResourceBindings(before.state.workspaceBindings, directoryReferences);
     const prepared = await this.#composition.runPreparation.prepare({
       sessionId: this.sessionId,
       runId,
@@ -757,9 +843,6 @@ export class SessionActor {
       : prepared.runtimeSnapshot;
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
-      ...(this.#agents && typeof runtimeSnapshot.agentDelegationEnabled === 'boolean'
-        && before.state.agentDelegationEnabled !== runtimeSnapshot.agentDelegationEnabled
-        ? [{ type: 'agent.delegation.changed' as const, sessionId: this.sessionId, payload: { enabled: runtimeSnapshot.agentDelegationEnabled } }] : []),
       {
         type: 'session.model-settings.updated',
         sessionId: this.sessionId,
@@ -799,6 +882,7 @@ export class SessionActor {
             : {}),
         },
       },
+      ...directoryBindingEvents(this.sessionId, command.commandId, before.state.workspaceBindings, directoryReferences),
       {
         type: 'run.started',
         sessionId: this.sessionId,
@@ -983,20 +1067,28 @@ export class SessionActor {
   ): Promise<CommandReply> {
     const snapshot = await this.loadSnapshot();
     const plan = snapshot.state.pendingPlan;
+    const mode = snapshot.state.publishedPermissions?.['agent.permissions.workspaceMutation']
+      ?? snapshot.state.permissionOverrides['agent.permissions.workspaceMutation']
+      ?? snapshot.state.runRuntimeSnapshots[command.runId]?.permissions['agent.permissions.workspaceMutation'];
+    const manualTakeover = mode === 'plan' && plan?.review?.status === 'reviewing'
+      && snapshot.state.run?.status === 'running' && this.#active?.runId === command.runId;
     if (
       !plan
       || plan.planId !== command.planId
       || plan.revision !== command.revision
       || plan.runId !== command.runId
       || snapshot.state.run?.runId !== command.runId
-      || snapshot.state.run.status !== 'waiting'
-      || snapshot.state.run.waitingReason !== 'plan'
+      || !manualTakeover && (snapshot.state.run.status !== 'waiting' || snapshot.state.run.waitingReason !== 'plan')
     ) {
       return await this.recordRejection(
         command,
         'plan_not_pending',
         '该 Plan 已关闭、已变化或不属于当前运行。',
       );
+    }
+    if (command.response.kind === 'confirm' && plan.workspaceRequests?.some(request =>
+      !snapshot.state.workspaceBindings.some(binding => binding.workspaceId === request.workspaceId))) {
+      return this.recordRejection(command, 'plan_workspace_binding_required', '请先确认将所列目录加入工作区。');
     }
     if (command.response.kind === 'requestRevision' && !command.response.text.trim()) {
       return await this.recordRejection(
@@ -1055,7 +1147,7 @@ export class SessionActor {
       } else {
         await this.runLoop({ type: 'cancel', runId: command.runId });
       }
-    } else {
+    } else if (!manualTakeover) {
       if (this.#active) await this.#active.task;
       this.startLoop({ type: 'resume', runId: command.runId });
     }
@@ -1120,6 +1212,11 @@ export class SessionActor {
     command: LoopCommand,
     signal = new AbortController().signal,
   ): Promise<void> {
+    await this.withWrite(async () => {
+      const current = await this.loadSnapshot();
+      const timing = this.#timing.started(command.runId);
+      if (timing) await this.appendEvents([timing], current);
+    });
     const snapshot = await this.loadSnapshot();
     await this.ensureProcesses(command.runId);
     const runner = this.#composition.runner ?? { run: runAgentLoop };
@@ -1181,6 +1278,12 @@ export class SessionActor {
               ...(input.filesystemReferences.length ? { filesystemReferences: input.filesystemReferences } : {}),
               ...(input.pluginSelections.length ? { pluginSelections: input.pluginSelections } : {}) },
           }]));
+          let bindings = current.state.workspaceBindings;
+          for (const input of queued) {
+            const directories = input.filesystemReferences.filter(reference => reference.kind === 'directory');
+            events.push(...directoryBindingEvents(this.sessionId, input.commandId, bindings, directories));
+            bindings = appendResourceBindings(bindings, directories);
+          }
           if (events.length) await this.appendEvents(events, current);
           return await this.loadSnapshot();
         }),
@@ -1189,10 +1292,21 @@ export class SessionActor {
             throw new Error('assistant_draft_run_identity_mismatch');
           }
           this.#assistantDraft = draft ? structuredClone(draft) : null;
+          if (draft) this.publishObservation({ kind: 'draft', sessionId: this.sessionId, draft });
+        },
+        recordVisibleResponse: async runId => {
+          await this.withWrite(async () => {
+            const current = await this.loadSnapshot();
+            const event = this.#timing.response(runId, 'text');
+            if (event) await this.appendEvents([event], current);
+          });
         },
         resetReasoning: () => this.liveReasoning.reset(),
         updateReasoning: (requestId, runId, text, kind) => this.liveReasoning.append(requestId, runId, text, kind),
-        updateToolProgress: (callId, progress) => this.#liveToolOutput.update(callId, progress),
+        updateToolProgress: (callId, progress) => {
+          this.#liveToolOutput.update(callId, progress);
+          this.publishObservation({ kind: 'toolProgress', sessionId: this.sessionId, runId: command.runId, callId, progress });
+        },
         nextId: this.#nextId,
       },
       signal,
@@ -1415,6 +1529,8 @@ export class SessionActor {
   }
 
   private async appendEvents(events: readonly NewSessionEvent[], current: LoopSnapshot): Promise<void> {
+    if (!events.length) return;
+    events = this.#timing.decorate(events);
     admitSessionEvents(current, events);
     const previousDraft = this.#assistantDraft;
     const closesDraft = current.state.run && closesAssistantDraft(events, current.state.run.runId);
@@ -1446,6 +1562,7 @@ export class SessionActor {
     reply: Omit<CommandReply, 'revision'>,
   ): Promise<CommandReply> {
     const current = await this.loadSnapshot();
+    events = this.#timing.decorate(events);
     admitSessionEvents(current, events, { input: command, reply });
     try {
       const committed = await this.#journal.commitCommand(command, events, reply);
@@ -1482,6 +1599,7 @@ export class SessionActor {
       if (!this.#initialEvents) for await (const event of this.#journal.read(this.sessionId)) events.push(event);
       this.#initialEvents = undefined;
       const snapshot = loopSnapshot(this.sessionId, events);
+      this.#timing.restore(Object.values(snapshot.state.runTimings));
       snapshot.state.publishedPermissions = this.#publishedPermissions;
       return this.#snapshot = snapshot;
     })();
@@ -1504,7 +1622,13 @@ export class SessionActor {
     }
   }
 
+  private publishObservation(input: SessionObservationInput): void {
+    try { this.#observation?.accept(input); }
+    catch (error) { try { this.#observation?.failed(this.sessionId, error); } catch { /* Observer failures never own business state. */ } }
+  }
+
   private async observe(event: SessionEvent): Promise<void> {
+    this.publishObservation({ kind: 'event', sessionId: this.sessionId, event });
     if (event.type.startsWith('wake.') || event.type === 'run.finishing' || event.type === 'run.settled') {
       this.restoreWakeTimers(await this.loadSnapshot());
     }

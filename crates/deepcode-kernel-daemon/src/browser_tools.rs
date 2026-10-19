@@ -118,6 +118,14 @@ pub(crate) fn call(binding: &Value, input: &Value) -> Result<Value, NativeError>
     exchange(&endpoint, binding, input)
 }
 
+#[cfg(feature = "debug-control")]
+pub(crate) fn debug_hosts() -> Result<Vec<String>, String> {
+    let endpoints = ENDPOINTS
+        .lock()
+        .map_err(|_| "native_browser_registry_unavailable")?;
+    Ok(endpoints.keys().cloned().collect())
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostStatus {

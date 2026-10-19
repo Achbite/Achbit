@@ -7,18 +7,20 @@ import { useConversationRowState } from './ConversationVirtualRow';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { InteractionOptions } from './InteractionOptions';
 import { interactionResponseLabel } from './interactionPresentation';
+import { submitReplyOnEnter } from './replyKeyboard';
 
 /** Answers identify the journal question, even while another Provider turn runs. */
-export function InteractionCard({ interaction, language, answerInComposer = false, onRespond, disabled = false }: {
-  interaction: InteractionProjection; language: UiLanguage; answerInComposer?: boolean;
+export function InteractionCard({ interaction, language, onRespond, disabled = false }: {
+  interaction: InteractionProjection; language: UiLanguage;
   onRespond?: (response: string, interactionId: string) => Promise<unknown>;
   disabled?: boolean;
 }) {
   const respond = useLocalAgentStore(state => state.respondInteraction);
   const [text, setText] = useConversationRowState(`question:${interaction.interactionId}:draft`, '');
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const pending = interaction.status === 'pending' && !answerInComposer;
+  const pending = interaction.status === 'pending';
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     if (textareaRef.current) resizeReplyInput(textareaRef.current);
@@ -37,18 +39,13 @@ export function InteractionCard({ interaction, language, answerInComposer = fals
     return () => observer.disconnect();
   }, [pending, interaction.allowFreeform]);
   const answer = async (response: string) => {
-    if (!pending || sending || disabled || !response.trim()) return;
+    if (!pending || sendingRef.current || disabled || !response.trim()) return;
+    sendingRef.current = true;
     setSending(true); setError(null);
     try { await (onRespond ?? respond)(response, interaction.interactionId); setText(''); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setSending(false); }
+    finally { sendingRef.current = false; setSending(false); }
   };
-  if (answerInComposer && interaction.status === 'pending') {
-    return <button type="button" className="local-agent__question-link" aria-controls="conversation-interaction"
-      onClick={() => document.getElementById('conversation-interaction')?.focus({ preventScroll: true })}>
-      <DeepCodeShellIcon name="question" size={16} />{t(language, 'agent.question.open')}
-    </button>;
-  }
   return <article className="local-agent__question" aria-label={t(language, 'agent.question.title')} aria-busy={sending}>
     <header>
       <span>{t(language, pending ? interaction.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question' : `agent.question.${interaction.status}`)}</span>
@@ -61,7 +58,7 @@ export function InteractionCard({ interaction, language, answerInComposer = fals
       {interaction.allowFreeform && <form className="local-agent__question-form" onSubmit={event => { event.preventDefault(); void answer(text); }}>
         <span className="local-agent__question-input-mark" aria-hidden="true"><DeepCodeShellIcon name="compose" size={16} /></span>
         <textarea ref={textareaRef} aria-label={t(language, 'agent.question.answer')} placeholder={t(language, 'agent.composer.placeholder.interaction')} value={text} disabled={sending || disabled}
-          onChange={event => setText(event.target.value)} rows={1} />
+          onChange={event => setText(event.target.value)} onKeyDown={submitReplyOnEnter} rows={1} />
         <button type="submit" disabled={sending || disabled || !text.trim()}>{t(language, 'agent.question.answer')}</button>
       </form>}
     </>}

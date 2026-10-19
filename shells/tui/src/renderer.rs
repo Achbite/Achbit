@@ -209,9 +209,18 @@ fn decision_lines(
             interaction.prompt.clone(),
         )
     } else if let Some(plan) = &projection.pending_plan {
+        let reviewing = plan.is_model_reviewing(projection.run.as_ref());
         (
-            language.text("tui.planDetailsHint"),
-            language.text("tui.planActions").to_owned(),
+            language.text(if reviewing {
+                "agent.plan.reviewing"
+            } else {
+                "tui.planDetailsHint"
+            }),
+            if reviewing {
+                String::new()
+            } else {
+                language.text("tui.planActions").to_owned()
+            },
             plan.title.clone(),
         )
     } else {
@@ -2678,6 +2687,31 @@ fn cache_coverage_label(language: Language, usage: &TokenUsageProjection) -> &'s
 fn render_plan_plain(language: Language, output: &mut String, plan: &PendingPlanProjection) {
     output.push_str(&language.format("tui.pendingPlanTitle", &[format!("{}", plan.revision)]));
     render_plan_body_plain(language, output, &plan.title, &plan.summary, &plan.steps);
+    if plan
+        .review
+        .as_ref()
+        .is_some_and(|review| review.status == "reviewing")
+    {
+        output.push_str(language.text("agent.plan.reviewing"));
+        return;
+    }
+    if let Some(reason) = plan
+        .review
+        .as_ref()
+        .and_then(|review| review.reason.as_deref())
+    {
+        output.push_str(&format!("{reason}\n"));
+    }
+    if !plan.workspace_requests.is_empty() {
+        output.push_str(language.text("agent.plan.workspaceRequest"));
+        for request in &plan.workspace_requests {
+            output.push_str(&format!("\n{}", request.root_path));
+        }
+        output.push_str(&format!(
+            "\n{}\n",
+            language.text("agent.plan.confirmWorkspace")
+        ));
+    }
     output.push_str(language.text("tui.planResponseHint"));
 }
 

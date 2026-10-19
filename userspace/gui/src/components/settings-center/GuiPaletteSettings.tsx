@@ -5,10 +5,10 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { normalizeGuiAccentColor, normalizeGuiThemePreference, resolveGuiTheme, type GuiResolvedTheme } from '../../theme/deepcodeGuiTheme';
 import {
   PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, isPaletteColor,
-  paletteColor, paletteToken, resetPaletteTheme, type PaletteOverrides,
+  paletteColor, paletteToken, type PaletteOverrides,
 } from '../../theme/palette';
 import UiIcon from '../../icons/registry';
-import { reconcileSettingDraft } from './settingDraft';
+import { reconcileSettingDraft, reconcileJsonSettingDraft } from './settingDraft';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
 
 export default function GuiPaletteSettings({ language }: { language: UiLanguage }) {
@@ -25,7 +25,10 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
   const target = useSettingsSearchTarget(PALETTE_SETTING);
   useSettingsSearchEntries('palette', [{ id: PALETTE_SETTING, category: 'gui',
     title: t(language, 'settings.palette.title'), keywords: t(language, 'settings.palette.keywords') }]);
-  useEffect(() => setDraft((current) => reconcileSettingDraft(current, encoded)), [encoded]);
+  useEffect(() => setDraft(current => {
+    try { return reconcileJsonSettingDraft(current, encoded); }
+    catch { return reconcileSettingDraft(current, encoded); } // Invalid saved JSON remains visible below.
+  }), [encoded]);
 
   const accent = normalizeGuiAccentColor(settings['gui.accentColor']);
   const dirty = draft.text !== encoded;
@@ -42,7 +45,7 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
     setDraft((current) => ({ ...current, text: JSON.stringify({ ...JSON.parse(current.text), [key]: color }) }));
     setError(null);
   };
-  const save = async (next: string) => {
+  const save = async (next: string, confirmedKeys?: readonly string[]) => {
     setSaving(true); setError(null);
     try {
       decodePaletteOverrides(next);
@@ -51,9 +54,16 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
         : await state.patchUserSetting(PALETTE_SETTING, next);
       if (activation === null) throw new Error(useSettingsStore.getState().errorMessage ?? t(language, 'settings.edit.failed'));
       const canonical = String(useSettingsStore.getState().effectiveSettings[PALETTE_SETTING] ?? '{}');
-      setDraft({ saved: canonical, text: canonical });
+      setDraft(current => confirmedKeys ? reconcileJsonSettingDraft(current, canonical, confirmedKeys)
+        : { saved: canonical, text: canonical });
     } catch (reason) { setError(String(reason)); }
     finally { setSaving(false); }
+  };
+  const chooseColor = async (key: string, color: string) => {
+    try {
+      const current = decodePaletteOverrides(String(useSettingsStore.getState().effectiveSettings[PALETTE_SETTING] ?? '{}'));
+      await save(JSON.stringify({ ...current, [key]: color }), [key]);
+    } catch (reason) { setError(String(reason)); }
   };
   const label = (field: typeof PALETTE_FIELDS[number]) => t(language, `settings.palette.fields.${field}`);
   const color = (field: typeof PALETTE_FIELDS[number]) => paletteColor(values ?? {}, theme, field, accent);
@@ -71,10 +81,6 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
           {t(language, `settings.palette.${value}`)}
         </button>)}
       </div>
-      <button type="button" className="settings-field__reset" disabled={disabled}
-        onClick={() => void save(values ? JSON.stringify(resetPaletteTheme(values, theme)) : '{}')}>
-        {t(language, configError ? 'settings.palette.resetAll' : 'settings.palette.resetTheme')}
-      </button>
     </div>
     {values && <>
       <div className="settings-palette__preview" aria-label={t(language, 'settings.palette.preview')}
@@ -96,7 +102,7 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
             <div className="settings-palette__color-control">
               <input type="color" value={previewColor(field).slice(0, 7)} disabled={disabled}
                 aria-label={`${label(field)} — ${t(language, 'settings.palette.picker')}`}
-                onChange={(event) => edit(key, event.target.value + (value.length === 9 ? value.slice(7) : ''))} />
+                onChange={event => void chooseColor(key, event.target.value + (value.length === 9 ? value.slice(7) : ''))} />
               <input type="text" value={value} spellCheck={false} autoComplete="off" disabled={disabled}
                 aria-label={`${label(field)} — HEX`} aria-invalid={!valid} maxLength={9}
                 onChange={(event) => edit(key, event.target.value)}
@@ -105,12 +111,12 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
           </div>;
         })}
       </div>
-      <div className="settings-palette__actions">
+      {dirty && <div className="settings-palette__actions">
         <button type="button" className="settings-button" disabled={disabled || !dirty}
           onClick={() => { setDraft({ saved: encoded, text: encoded }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>
         <button type="button" className="settings-button settings-button--primary" disabled={disabled || !dirty}
           onClick={() => void save(draft.text)}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
-      </div>
+      </div>}
     </>}
     {(configError || error) && <p className="settings-error" role="alert">{configError || error}</p>}
   </details>;

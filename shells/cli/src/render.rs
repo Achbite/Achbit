@@ -316,7 +316,24 @@ impl CliRenderState {
                 )?;
                 self.plans.insert(key, plan.status.clone());
             }
-            writeln!(out, "输入 /reply 1 或 /reply 确认；输入 /reply <意见> 请求修订；普通消息继续排队；显式运行 `deepcode-cli cancel-plan --session {}` 取消。", projection.session_id)?;
+            if plan.is_model_reviewing(projection.run.as_ref()) {
+                writeln!(out, "正在独立审批计划。")?;
+            } else {
+                if let Some(reason) = plan
+                    .review
+                    .as_ref()
+                    .and_then(|review| review.reason.as_deref())
+                {
+                    writeln!(out, "计划审批：{reason}")?;
+                }
+                if !plan.workspace_requests.is_empty() {
+                    writeln!(out, "工作区权限：将以下目录加入工作区并确认计划？")?;
+                    for request in &plan.workspace_requests {
+                        writeln!(out, "  {}", request.root_path)?;
+                    }
+                }
+                writeln!(out, "输入 /reply 1 或 /reply 确认；输入 /reply <意见> 请求修订；普通消息继续排队；显式运行 `deepcode-cli cancel-plan --session {}` 取消。", projection.session_id)?;
+            }
         }
         if let Some(interaction) = projection.pending_interaction.as_ref() {
             render_interaction(out, interaction)?;

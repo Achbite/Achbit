@@ -14,7 +14,6 @@ import GuiAppearanceSettings from '../GuiAppearanceSettings';
 import SettingsField from '../SettingsField';
 import WorkspaceSandboxSettings from './WorkspaceSandboxSettings';
 import DocumentEnvironmentSettings from './DocumentEnvironmentSettings';
-import FileOpeningSettings, { FILE_READING_KEYS } from './FileOpeningSettings';
 import CommandDenylistSettings from './CommandDenylistSettings';
 
 interface RuntimeProps {
@@ -24,15 +23,18 @@ interface RuntimeProps {
 }
 
 const APPEARANCE_KEYS = ['gui.colorTheme', 'gui.accentColor'] as const;
-const INTERFACE_KEYS = [
+const GENERAL_KEYS = [
   'workbench.language',
   'gui.navigationDensity',
   'gui.showContextRail',
+  'gui.showReasoning',
   'gui.usageWidget.enabled',
   'gui.usageWidget.visibility',
   'gui.usageWidget.currency',
-  'gui.showReasoning',
+  'gui.defaultFileOpen',
+  'gui.showRuntimeFiles',
 ] as const;
+const CONTEXT_MANAGEMENT_KEYS = ['agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens'] as const;
 const AGENT_INSTRUCTION_KEYS = ['agent.systemPrompt'] as const;
 const AGENT_RESPONSE_KEYS = ['agent.responseLanguage'] as const;
 const AGENT_SHELL_KEYS = ['agent.windows.shell', 'agent.windows.gitBashPath'] as const;
@@ -70,9 +72,9 @@ function definitionsFor(
 export function settingsSearchDefinitions(language: ReturnType<typeof normalizeUiLanguage>, os: unknown) {
   const available = [...guiDefinitions(), ...agentSettingDefinitions()];
   const groups = {
-    general: ['workbench.language', ...FILE_READING_KEYS],
-    gui: [...APPEARANCE_KEYS, ...INTERFACE_KEYS.filter((key) => key !== 'workbench.language')],
-    agent: [...AGENT_INSTRUCTION_KEYS, ...AGENT_RESPONSE_KEYS],
+    general: GENERAL_KEYS,
+    gui: APPEARANCE_KEYS,
+    agent: [...AGENT_RESPONSE_KEYS, ...CONTEXT_MANAGEMENT_KEYS, ...AGENT_INSTRUCTION_KEYS],
     environment: [...(os === 'windows' ? AGENT_SHELL_KEYS : []), 'agent.documents.pythonPath'],
     permissions: AGENT_PERMISSION_KEYS,
     llm: AGENT_WEB_KEYS,
@@ -86,19 +88,17 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   category = 'appearance',
 }) => {
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
-  const sources = useSettingsStore((state) => state.sources);
   const loading = useSettingsStore((state) => state.loading);
   const errorMessage = useSettingsStore((state) => state.errorMessage);
   const storePath = useSettingsStore((state) => state.storePath);
   const patchUserSetting = useSettingsStore((state) => state.patchUserSetting);
-  const resetUserSetting = useSettingsStore((state) => state.resetUserSetting);
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const appearance = useMemo(
     () => definitionsFor(APPEARANCE_KEYS, guiDefinitions(), language),
     [language],
   );
   const preferences = useMemo(
-    () => definitionsFor(category === 'general' ? ['workbench.language'] : category === 'appearance' ? INTERFACE_KEYS.filter((key) => key !== 'workbench.language') : [], guiDefinitions(), language),
+    () => definitionsFor(category === 'general' ? GENERAL_KEYS : [], guiDefinitions(), language),
     [category, language],
   );
   const onChange = (key: string, value: UserSettingValue) => {
@@ -108,23 +108,19 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   return (
     <div>
       <h2 className="settings-title">{category === 'general' ? (language === 'zh-CN' ? '通用' : 'General') : category === 'about' ? (language === 'zh-CN' ? '关于 DeepCode' : 'About DeepCode') : t(language, 'settings.gui.title')}</h2>
-      {category === 'general' && <FileOpeningSettings language={language} />}
       {category === 'appearance' && <GuiAppearanceSettings definitions={appearance} language={language} />}
       {preferences.length > 0 && (
         <div className="settings-card">
-          <h3 className="settings-card__title">{t(language, 'settings.gui.preferences')}</h3>
           <div className="settings-card__body">
             {preferences.map((definition) => (
               <SettingsField
                 key={definition.key}
                 definition={definition}
                 value={effectiveSettings[definition.key]}
-                source={sources[definition.key] ?? 'default'}
                 language={language}
                 disabled={loading}
                 compact
                 onChange={onChange}
-                onReset={(key) => resetUserSetting(key)}
               />
             ))}
           </div>
@@ -164,11 +160,9 @@ interface AgentSettingsSectionProps {
 
 export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ category = 'agent' }) => {
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
-  const sources = useSettingsStore((state) => state.sources);
   const loading = useSettingsStore((state) => state.loading);
   const errorMessage = useSettingsStore((state) => state.errorMessage);
   const patchUserSetting = useSettingsStore((state) => state.patchUserSetting);
-  const resetUserSetting = useSettingsStore((state) => state.resetUserSetting);
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const available = useMemo(() => agentSettingDefinitions(), []);
   const environment = useSettingsStore((state) => state.environment);
@@ -178,6 +172,10 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
   const chinese = language === 'zh-CN';
   const response = useMemo(
     () => definitionsFor(AGENT_RESPONSE_KEYS, available, language),
+    [available, language],
+  );
+  const contextManagement = useMemo(
+    () => definitionsFor(CONTEXT_MANAGEMENT_KEYS, available, language),
     [available, language],
   );
   const instructions = useMemo(
@@ -206,12 +204,10 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
               key={definition.key}
               definition={definition}
               value={effectiveSettings[definition.key]}
-              source={sources[definition.key] ?? 'default'}
               language={language}
               disabled={loading}
               compact
               onChange={onChange}
-              onReset={(key) => resetUserSetting(key)}
             />
           ))}
           {extra}
@@ -223,7 +219,7 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
   return (
     <div>
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
-      {category === 'agent' && renderCard(null, response)}
+      {category === 'agent' && renderCard(null, [...response, ...contextManagement, ...instructions])}
       {category === 'environment' && environment?.os === 'windows' && renderCard('Windows Shell', shellSettings)}
       {category === 'environment' && <DocumentEnvironmentSettings language={language} />}
       {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
@@ -244,7 +240,6 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
         </div>
       </div>}
 
-      {category === 'agent' && renderCard(t(language, 'settings.agent.instructions'), instructions)}
       {category === 'permissions' && renderCard(null, permissions, <>
         <CommandDenylistSettings language={language} />
         <CommandRuleSettings language={language} />

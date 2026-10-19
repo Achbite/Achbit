@@ -36,6 +36,8 @@ class Provider(fixture.MockProviderHandler):
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
             ordinal, names, results = self.provider_state.inspect(body)
             self.send_response(200)
             self.send_header('content-type', 'text/event-stream')
@@ -119,6 +121,8 @@ class ShutdownProvider(fixture.MockProviderHandler):
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
             ordinal, names, _ = self.provider_state.inspect(body)
             require(ordinal == 1, 'Shutdown must cancel the active Shell before another model call')
             self.send_response(200)

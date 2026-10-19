@@ -34,11 +34,25 @@ class Provider(fixture.MockProviderHandler):
         state = self.provider_state
         try:
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            messages = body.get('messages', [])
+            if messages and messages[0].get('content', '').startswith('Name this conversation from the user'):
+                # Auxiliary title requests are not Agent turns and have no tool catalog.
+                require(len(messages) == 2 and messages[0]['role'] == 'system' and messages[1]['role'] == 'user'
+                        and not body.get('tools'), 'Invalid auxiliary title request')
+                self.send_response(200)
+                self.send_header('content-type', 'text/event-stream')
+                self.send_header('connection', 'close')
+                self.end_headers()
+                self._send_text('File access validation')
+                return
             ordinal, names, results = state.inspect(body)
             self.send_response(200)
             self.send_header('content-type', 'text/event-stream')
             self.send_header('connection', 'close')
             self.end_headers()
+            if getattr(state, 'workspace_mode', None):
+                self.workspace_turn(ordinal, names, results)
+                return
             if getattr(state, 'reference_mode', False):
                 state.reference_requests.append(body)
                 self.reference_turn(len(state.reference_requests), names, results)
@@ -84,6 +98,30 @@ class Provider(fixture.MockProviderHandler):
             state.record_failure(error)
             self.close_connection = True
 
+    def workspace_turn(self, ordinal, names, results):
+        state = self.provider_state
+        if state.workspace_mode == 'project' and ordinal == 1:
+            state.workspace_started.set()
+            require(state.workspace_release.wait(30), 'Project update did not release the original request')
+            self._send_tool_calls([('old-project-read', names['read'], {'path': '.git/HEAD'})])
+            return
+        step = ordinal - (1 if state.workspace_mode == 'project' else 0)
+        if step == 1:
+            if state.workspace_mode == 'project':
+                require(results['old-project-read']['outcome'] == 'completed', results)
+            self._send_tool_calls([('workspace-plan', names['plan'], {
+                'title': 'Write supplied workspace result', 'summary': 'Modify only the declared file.',
+                'steps': [{'stepId': 'write', 'title': 'Write', 'details': 'Write after the workspace and Plan are admitted.'}],
+                'mutationManifest': [{'operation': 'fs.write', 'workspace': 'workspace3', 'target': state.workspace_file}],
+            })])
+        elif step == 2:
+            self._send_tool_calls([('workspace-write', names['write'], {'workspace': 'workspace3', 'path': state.workspace_file, 'content': 'workspace-authorized'})])
+        elif step == 3:
+            require(results['workspace-write']['outcome'] == 'completed', results)
+            self._send_text('workspace-permission-complete')
+        else:
+            raise AssertionError(f'Unexpected workspace request {ordinal}')
+
     def reference_turn(self, ordinal, names, results):
         state = self.provider_state
         if ordinal == 1:
@@ -103,13 +141,19 @@ class Provider(fixture.MockProviderHandler):
             state.project_reference = next(ref for ref in refs if ref['displayName'] == 'referenced-src')
             directory = next(ref for ref in refs if ref['displayName'] == 'reference-folder')
             require(directory['workspace'] == state.external_reference['workspace'], 'File and parent directory lost their shared address identity')
-            self._send_tool_calls([('reference-denied', names['read'], {'workspace': directory['workspace'], 'path': 'target.txt'})])
+            self._send_tool_calls([('reference-read', names['read'], {'workspace': directory['workspace'], 'path': 'target.txt'})])
         elif ordinal == 3:
-            require(results['reference-denied']['outcome'] == 'denied', results)
-            ref = state.external_reference
-            self._send_tool_calls([('reference-read', names['read'], {'workspace': ref['workspace'], 'path': ref['path']})])
-        elif ordinal == 4:
             require(results['reference-read']['outcome'] == 'completed' and results['reference-read']['output']['content'] == 'original-reference', results)
+            ref, inside = state.external_reference, state.project_reference
+            self._send_tool_calls([('reference-plan', names['plan'], {
+                'title': 'Update the added projects', 'summary': 'Write only the two requested results after approval.',
+                'steps': [{'stepId': 'write', 'title': 'Write results', 'details': 'Modify the supplied file and add the project result.'}],
+                'mutationManifest': [
+                    {'operation': 'fs.write', 'workspace': ref['workspace'], 'target': ref['path']},
+                    {'operation': 'fs.write', 'workspace': inside['workspace'], 'target': 'result.txt'},
+                ],
+            })])
+        elif ordinal == 4:
             ref, inside = state.external_reference, state.project_reference
             self._send_tool_calls([
                 ('reference-write', names['write'], {'workspace': ref['workspace'], 'path': ref['path'], 'content': 'modified-original'}),
@@ -119,6 +163,8 @@ class Provider(fixture.MockProviderHandler):
             require(results['reference-write']['outcome'] == 'completed', results)
             require(results['project-reference-write']['outcome'] == 'completed', results)
             self._send_text('reference-targets-complete')
+        elif ordinal == 6:
+            self._send_text('reference-bindings-retained')
         else:
             raise AssertionError(f'Unexpected reference request {ordinal}')
 
@@ -135,6 +181,7 @@ def check_queued_reference_targets(daemon, state, root, workspace):
     state.reference_started = threading.Event()
     state.reference_release = threading.Event()
     session = fixture.create_session(daemon, workspace)['sessionId']
+    fixture.cli(daemon, session, '/permissions ' + json.dumps({'agent.permissions.workspaceMutation': 'plan'}))
     endpoint = f'/api/conversation/sessions/{session}'
     def submit(command_id, text, **extra):
         reply = fixture.api_json(daemon.base_url, endpoint + '/commands', token=daemon.token, method='POST', body={
@@ -150,28 +197,114 @@ def check_queued_reference_targets(daemon, state, root, workspace):
         references = fixture.api_json(daemon.base_url, endpoint + '/filesystem-references/resolve', token=daemon.token, method='POST', body={
             'references': [{'path': str(outside), 'kind': 'directory'}, {'path': str(target), 'kind': 'file'}, {'path': str(inside), 'kind': 'directory'}],
         })
+        require(fixture.projection(daemon, session)['workspaceBindings'] == before['workspaceBindings'], 'Merely selecting resources created bindings before submission')
         submit('command:reference-targets', 'Read and modify these targets.', runId=run_id, filesystemReferences=references)
         queued = fixture.projection(daemon, session)
         require(len(queued['queuedInputs']) == 1 and queued['run']['workspaceBindings'] == before['run']['workspaceBindings'], 'References changed the project working directories')
         state.reference_release.set()
-        fixture.wait_until(lambda: fixture.projection(daemon, session).get('pendingApproval'), 20, 'Referenced external directory was read without approval')
-        pending = fixture.projection(daemon, session)['pendingApproval']
-        require(pending['preview']['fileAccess']['read'] == [str(target.resolve())], pending)
-        require(target.read_text() == 'original-reference', 'Unapproved reference changed')
-        fixture.cli(daemon, session, '/reply 2', expected=5)
-        fixture.cli(daemon, session, '/reply 5', expected=5)
-        require(target.read_text() == 'original-reference', 'Read approval allowed a write to the reference')
-        pending = fixture.projection(daemon, session)['pendingApproval']
-        require(pending['preview']['fileAccess']['write'] == [str(target.resolve())], pending)
+        fixture.wait_until(lambda: fixture.projection(daemon, session).get('pendingPlan'), 20, 'Added-directory Plan did not reach normal confirmation')
+        waiting = fixture.projection(daemon, session)
+        require(waiting['pendingApproval'] is None, 'A formal project read was treated as an outside reference')
+        expected = {binding['workspaceId'] for binding in before['run']['workspaceBindings']} | {reference['workspaceId'] for reference in references if reference['kind'] == 'directory'}
+        require({binding['workspaceId'] for binding in waiting['run']['workspaceBindings']} == expected, 'Consumed directories were not formally bound to the same run')
+        require(target.read_text() == 'original-reference' and not (inside / 'result.txt').exists(), 'Directory binding bypassed Plan confirmation')
         fixture.cli(daemon, session, '/reply 1')
         completed = fixture.wait_completed(daemon, state, session, 'reference-targets-complete')
-        require(completed['run']['runId'] == run_id and completed['run']['workspaceBindings'] == before['run']['workspaceBindings'], 'References replaced the Run or its working directories')
+        require(completed['run']['runId'] == run_id, 'Adding directories replaced the active Run')
+        require({binding['workspaceId'] for binding in completed['workspaceBindings']} == expected, 'New directory bindings were not retained in Session')
         require(target.read_text() == 'modified-original', 'Approved write did not modify the original file')
-        require((inside / 'result.txt').read_text() == 'project-write', 'Project subdirectory did not use project write policy')
+        require((inside / 'result.txt').read_text() == 'project-write', 'Project subdirectory did not use its approved scope')
+        fixture.cli(daemon, session, 'Verify the retained directory bindings in the next run.')
+        later = fixture.wait_completed(daemon, state, session, 'reference-bindings-retained')
+        require(later['run']['runId'] != run_id and {binding['workspaceId'] for binding in later['run']['workspaceBindings']} == expected, 'The next run lost added directory bindings')
         state.assert_healthy()
-        print('[file-access-cli] PASS: same-run directory/file references, fixed project roots, denied read, separate read/write approval and original-target modification')
+        print('[file-access-cli] PASS: same-run directory binding, unchanged in-flight prefix, normal Plan confirmation, real writes and next-run retention')
     finally:
         state.reference_release.set()
+
+
+def check_project_workspace_and_permission(daemon, server, root, workspace):
+    def api(path, body, method='POST'):
+        return fixture.api_json(daemon.base_url, '/api/conversation/' + path, token=daemon.token, method=method, body=body)
+    def project(title):
+        catalog = api('projects', {'title': title, 'workspacePaths': [str(workspace)]})
+        return next(item['id'] for item in catalog['projects'] if item['title'] == title)
+    def session(project_id):
+        return api('sessions', {'projectId': project_id})['sessionId']
+    def ids(sid):
+        return {item['workspaceId'] for item in fixture.projection(daemon, sid)['workspaceBindings']}
+    def submit(sid, command_id, **fields):
+        return api(f'sessions/{sid}/commands', {'schemaVersion': fixture.COMMAND_VERSION,
+            'sessionId': sid, 'commandId': command_id, **fields})
+    def state_for(mode, filename):
+        state = fixture.ProviderState(workspace)
+        state.workspace_mode, state.workspace_file = mode, filename
+        state.workspace_started, state.workspace_release = threading.Event(), threading.Event()
+        server.provider_state = state
+        return state
+
+    shared, other = project('Shared workspace fixture'), project('Unrelated project fixture')
+    active, peer, unrelated = session(shared), session(shared), session(other)
+    added = root / 'inflight-added'
+    added.mkdir()
+    original_peer, original_other = ids(peer), ids(unrelated)
+    fixture.cli(daemon, active, '/permissions ' + json.dumps({'agent.permissions.workspaceMutation': 'plan'}))
+    state = state_for('project', 'result.txt')
+    try:
+        require(submit(active, 'command:project-start', type='message.submit', text='Use the project workspace.')['status'] == 'accepted', 'Task was not accepted')
+        require(state.workspace_started.wait(20), 'Initial request was not held')
+        original_run = fixture.projection(daemon, active)['run']
+        api(f'projects/{shared}', {'workspacePaths': [str(workspace), str(added)]}, 'PATCH')
+        changed = ids(peer) - original_peer
+        require(len(changed) == 1 and changed <= ids(active), 'Project change did not synchronize all existing project sessions')
+        require(ids(unrelated) == original_other, 'Workspace change leaked into another project')
+        require(fixture.projection(daemon, peer)['run'] is None, 'Metadata synchronization started an idle Agent')
+        require(fixture.projection(daemon, active)['run']['runId'] == original_run['runId'], 'Project update replaced the run')
+        state.workspace_release.set()
+        fixture.wait_until(lambda: fixture.projection(daemon, active).get('pendingPlan'), 20, 'Project-added directory Plan did not reach confirmation')
+        waiting = fixture.projection(daemon, active)
+        require(not waiting['pendingPlan'].get('workspaceRequests'), 'An already bound project directory asked to be added again')
+        require(not (added / 'result.txt').exists(), 'Binding bypassed the Plan')
+        fixture.cli(daemon, active, '/reply 1')
+        complete = fixture.wait_completed(daemon, state, active, 'workspace-permission-complete')
+        require((added / 'result.txt').read_text() == 'workspace-authorized', 'Approved project write did not execute')
+        ended_bindings = complete['run']['workspaceBindings']
+        api(f'projects/{shared}', {'workspacePaths': [str(workspace)]}, 'PATCH')
+        require(not (changed & ids(peer)) and not (changed & ids(active)), 'Removed project directory remained in base bindings')
+        require(fixture.projection(daemon, active)['run']['workspaceBindings'] == ended_bindings, 'Removal rewrote a completed run')
+        state.assert_healthy()
+    finally:
+        state.workspace_release.set()
+
+    candidate = root / 'permission-candidate'
+    candidate.mkdir()
+    target = candidate / 'target.txt'
+    target.write_text('unchanged')
+    for decision in ('cancel', 'confirm'):
+        state = state_for('permission', 'target.txt')
+        sid = session(shared)
+        fixture.cli(daemon, sid, '/permissions ' + json.dumps({'agent.permissions.workspaceMutation': 'plan'}))
+        references = api(f'sessions/{sid}/filesystem-references/resolve', {'references': [{'kind': 'file', 'path': str(target)}]})
+        requested_id = references[0]['workspaceId']
+        require(submit(sid, f'command:permission-{decision}', type='message.submit', text='Modify the supplied file.', filesystemReferences=references)['status'] == 'accepted', 'File task was not accepted')
+        fixture.wait_until(lambda: fixture.projection(daemon, sid).get('pendingPlan'), 20, 'Missing workspace did not produce a user decision')
+        waiting = fixture.projection(daemon, sid)
+        plan = waiting['pendingPlan']
+        require(plan['workspaceRequests'] == [{'workspaceId': requested_id, 'rootPath': str(candidate.resolve())}], 'Permission request lost its actual path')
+        require(requested_id not in ids(sid) and requested_id not in ids(peer), 'Unconfirmed request expanded bindings')
+        require(target.read_text() == 'unchanged', 'Permission request changed the target before approval')
+        if decision == 'cancel':
+            require(submit(sid, 'command:cancel-workspace', type='plan.respond', runId=plan['runId'], planId=plan['planId'], revision=plan['revision'], response={'kind': 'cancel'})['status'] == 'accepted', 'Cancellation rejected')
+            fixture.wait_until(lambda: fixture.projection(daemon, sid)['run']['status'] == 'cancelled', 20, 'Cancelled Plan did not settle')
+            require(requested_id not in ids(peer) and target.read_text() == 'unchanged', 'Cancelling granted workspace access')
+        else:
+            fixture.cli(daemon, sid, '/reply 1')
+            fixture.wait_completed(daemon, state, sid, 'workspace-permission-complete')
+            require(requested_id in ids(sid) and requested_id in ids(peer), 'Explicit permission did not synchronize project sessions')
+            require(requested_id not in ids(unrelated), 'Permission changed another project')
+            require(target.read_text() == 'workspace-authorized', 'Explicitly approved write was not executed')
+        state.assert_healthy()
+    print('[file-access-cli] PASS: project-wide existing-session sync, in-flight request preservation, removal, known-directory permission prompt, cancel and explicit confirmation')
 
 
 def check_resource_tree(daemon, session, workspace):
@@ -280,6 +413,7 @@ def main():
             state = fixture.ProviderState(workspace)
             server.provider_state = state
             check_queued_reference_targets(daemon, state, root, workspace)
+            check_project_workspace_and_permission(daemon, server, root, workspace)
             daemon.shutdown()
             print('[file-access-cli] PASS: exact external file, shared fs/Shell grant, child-process isolation, external/Git write approval, private temp, turn expiry, session reuse and revocation')
         except BaseException:

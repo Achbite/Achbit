@@ -333,7 +333,10 @@ export function ResourcePreview({
   const readerData = { kind: 'reader' as const, tabs: preview.tabs.map(tab => ({ id: tab.id, title: tabName(tab, language) })),
     activeId: preview.activeId, visible: preview.visible, expanded: preview.expanded, treeVisible: preview.treeVisible };
   const readerActions = { toggleTree: preview.toggleTree, toggleReaderExpanded: preview.expand,
-    selectReaderTab: (id: string) => { if (preview.tabs.some(tab => tab.id === id)) preview.selectTab(id); } };
+    selectReaderTab: (id: string) => {
+      if (!preview.tabs.some(tab => tab.id === id)) throw new Error('reader_tab_unavailable');
+      preview.selectTab(id);
+    } };
   const tabsId = useId();
   const workspace = useRef<HTMLDivElement>(null);
   const treeWidth = usePaneWidth('fileTreeWidth', PANE_GEOMETRY.fileTree, workspace);

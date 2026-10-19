@@ -39,6 +39,22 @@ For a separate worktree, also pass its `CONTAINER_NAME`. Select `bin/win64` or t
 
 A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#更新与功能配置).
 
+## Debug control for iteration
+
+Build the isolated Windows or macOS product through the same container/native packaging entrypoint:
+
+```bash
+bash ./build.sh -debug
+# Select Windows explicitly:
+bash ./build.sh -debug --stage package-windows
+```
+
+The default selects available Windows and macOS targets. Windows writes `bin/debug/win64` and a ZIP containing `DeepCode-Debug.exe` and `deepcode-debug.cmd`; macOS writes `bin/debug/macos-arm64` and its archive containing `DeepCode-Debug.app` and `deepcode-debug`. Both use a distinct application identity and user root and generate no installer or global command. Linux Debug stages explicitly report unsupported. Normal builds retain their ordinary output directories and installers. Building either output does not update an already running application or Host.
+
+Use the [Debug CLI guide](debug-control.md) to launch with an explicit test workspace and state root. Prefer direct CLI tool/UI actions for targeted tests and one pushed observation stream for Agent tasks. Ordinary Session timing and the execution-process duration display are not gated by the Debug build; only the external control and detailed query interfaces are.
+
+DeepCode can read the [English product guide](product/debug-control.md) through `doc.read` with `name="debug-control.md"`; `deepcode-iteration` links the workflow to that document. Built-in Skills/references and the `doc.read` document list are embedded by `local_agent_product_tools.rs`, while packaging also copies `docs/product` into runtime resources. A new Markdown file is not automatically a readable built-in document: update the existing manifest when adding an entry, then rebuild/restart the owning Host. Keep long-lived guidance separate from task receipts.
+
 ## Checks
 
 Run these inside the development container:

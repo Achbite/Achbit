@@ -475,6 +475,9 @@ mod tests {
                     Some(crate::conversation_catalog::ConversationSessionRecord {
                         id: "session:existing".into(),
                         title: "Existing conversation".into(),
+                        title_source: Some(
+                            crate::conversation_catalog::ConversationTitleSource::Initial,
+                        ),
                         workspace_bindings: vec![],
                         project_id: None,
                         profile_id: None,

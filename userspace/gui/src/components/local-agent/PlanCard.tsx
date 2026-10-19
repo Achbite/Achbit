@@ -7,6 +7,7 @@ import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { PlanDocument } from './PlanDocument';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { planOperationDetail, planScopeAddition } from './planReview';
+import { ApprovalReviewReason } from './ApprovalReviewReason';
 
 interface PlanCardProps {
   plan: PlanProjection;
@@ -40,8 +41,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
     }
   }, [plan.status]);
 
-  const status = t(language, plan.status === 'confirmed' && plan.confirmationSource === 'parent' ? 'agent.plan.confirmedByParent'
-    : plan.status === 'confirmed' && plan.confirmationSource === 'agent' ? 'agent.plan.confirmedByAgent' : `agent.plan.status.${plan.status}`);
+  const status = t(language, plan.review?.decision === 'deny' ? 'agent.plan.reviewDenied'
+    : plan.status === 'confirmed' && plan.confirmationSource === 'parent' ? 'agent.plan.confirmedByParent'
+    : plan.status === 'confirmed' && plan.confirmationSource === 'agent' && plan.review?.decision === 'allow' ? 'agent.plan.confirmedByAgent' : `agent.plan.status.${plan.status}`);
   const addition = planScopeAddition(previousPlan, plan);
   const stepCount = t(language, 'agent.plan.stepCount', { count: plan.steps.length });
 
@@ -102,6 +104,8 @@ const PlanCard: React.FC<PlanCardProps> = ({
 export function PlanCardContent({ plan, previousPlan, workspaceBindings = [], language }: Omit<PlanCardProps, 'active' | 'onToggle'>) {
   const addition = planScopeAddition(previousPlan, plan);
   const document = <PlanDocument title={plan.title} summary={plan.summary} steps={plan.steps} language={language}>
+      {plan.review?.status === 'completed' && plan.review.decision && plan.review.reason
+        && <ApprovalReviewReason language={language} review={{ decision: plan.review.decision, reason: plan.review.reason }} />}
       {plan.mutationManifest.length > 0 && (
         <details className="local-agent__plan-manifest">
           <summary>{t(language, 'agent.plan.mutationManifest', { count: plan.mutationManifest.length })}</summary>

@@ -43,12 +43,6 @@ pub(crate) struct SessionServiceProcess {
     next_request: Arc<AtomicU64>,
 }
 
-/// Enqueue while the Host holds its settings transition; wait only after releasing it.
-pub(crate) struct PendingSessionResponse {
-    receiver: mpsc::Receiver<SessionReply>,
-    deadline: Instant,
-}
-
 impl std::fmt::Debug for SessionServiceProcess {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("SessionServiceProcess")
@@ -108,7 +102,19 @@ impl SessionServiceProcess {
         let stdout_reader = std::thread::spawn(move || {
             let mut stdout = BufReader::new(stdout);
             loop {
-                let response = read_response(&mut stdout).and_then(decode_response);
+                let encoded = read_response(&mut stdout);
+                #[cfg(feature = "debug-control")]
+                if let Ok(ref bytes) = encoded {
+                    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+                        if value.get("type").and_then(Value::as_str) == Some("debug.observation") {
+                            if let Ok(mut pending) = reader_responses.lock() {
+                                pending.deliver_debug_observation(value);
+                            }
+                            continue;
+                        }
+                    }
+                }
+                let response = encoded.and_then(decode_response);
                 let Ok(mut pending) = reader_responses.lock() else {
                     break;
                 };
@@ -193,31 +199,97 @@ impl SessionServiceProcess {
         self.request_with_timeout(operation, data, REQUEST_TIMEOUT)
     }
 
-    pub(crate) fn enqueue(
+    /// Register before submitting a task. The stdout reader delivers events without polling.
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn debug_subscribe(
         &self,
-        operation: &str,
-        data: Value,
-    ) -> Result<PendingSessionResponse, SessionServiceError> {
-        let request_id = format!("host:{}", self.next_request.fetch_add(1, Ordering::Relaxed));
-        let receiver = self
-            .process
-            .lock()
-            .map_err(|_| transport_lock_error())?
-            .begin_request(&request_id, operation, data)?;
-        Ok(PendingSessionResponse {
-            receiver,
-            deadline: Instant::now() + REQUEST_TIMEOUT,
-        })
+        session_id: &str,
+        run_id: Option<&str>,
+        input_budget_tokens: Option<u64>,
+    ) -> Result<(String, tokio::sync::mpsc::Receiver<Value>), SessionServiceError> {
+        let id = format!(
+            "observation:{}",
+            self.next_request.fetch_add(1, Ordering::Relaxed)
+        );
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let responses = Arc::clone(
+            &self
+                .process
+                .lock()
+                .map_err(|_| transport_lock_error())?
+                .responses,
+        );
+        responses.lock().map_err(|_| transport_lock_error())?.debug_observers.insert(id.clone(), DebugObserver {
+            sender: Some(sender), status: json!({"subscriptionId":id,"status":"active","coverage":"complete","lastDeliveredSequence":0}),
+        });
+        let mut data = json!({"subscriptionId":id,"sessionId":session_id});
+        if let Some(run_id) = run_id {
+            data["runId"] = json!(run_id);
+        }
+        if let Some(budget) = input_budget_tokens {
+            data["inputBudgetTokens"] = json!(budget);
+        }
+        if let Err(error) = self.request("debug.subscribe", data) {
+            responses
+                .lock()
+                .map_err(|_| transport_lock_error())?
+                .debug_observers
+                .remove(&id);
+            return Err(error);
+        }
+        Ok((id, receiver))
     }
 
-    pub(crate) fn receive(
-        &self,
-        pending: PendingSessionResponse,
-    ) -> Result<Value, SessionServiceError> {
-        self.receive_response(
-            pending.receiver,
-            pending.deadline.saturating_duration_since(Instant::now()),
-        )
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn debug_unsubscribe(&self, id: &str) -> Result<Value, SessionServiceError> {
+        let reply = self.request("debug.unsubscribe", json!({"subscriptionId":id}));
+        let responses = Arc::clone(
+            &self
+                .process
+                .lock()
+                .map_err(|_| transport_lock_error())?
+                .responses,
+        );
+        if let Some(observer) = responses
+            .lock()
+            .map_err(|_| transport_lock_error())?
+            .debug_observers
+            .get_mut(id)
+        {
+            observer.sender = None;
+            if observer.status["status"] != "failed" {
+                observer.status["status"] = json!("closed");
+            }
+        }
+        reply
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn debug_observation_status(&self, id: &str) -> Result<Value, SessionServiceError> {
+        let responses = Arc::clone(
+            &self
+                .process
+                .lock()
+                .map_err(|_| transport_lock_error())?
+                .responses,
+        );
+        let transport = responses
+            .lock()
+            .map_err(|_| transport_lock_error())?
+            .debug_observers
+            .get(id)
+            .map(|o| o.status.clone());
+        if transport
+            .as_ref()
+            .is_some_and(|value| value["status"] == "failed")
+        {
+            return Ok(transport.expect("present"));
+        }
+        let mut status = self.request("debug.observationStatus", json!({"subscriptionId":id}))?;
+        if let Some(transport) = transport {
+            status["transport"] = transport;
+        }
+        Ok(status)
     }
 
     fn request_with_timeout(
@@ -316,11 +388,73 @@ enum SessionReply {
 struct PendingResponses {
     requests: HashMap<String, mpsc::Sender<SessionReply>>,
     terminal_error: Option<SessionServiceError>,
+    #[cfg(feature = "debug-control")]
+    debug_observers: HashMap<String, DebugObserver>,
+}
+
+#[cfg(feature = "debug-control")]
+struct DebugObserver {
+    sender: Option<tokio::sync::mpsc::Sender<Value>>,
+    status: Value,
 }
 
 impl PendingResponses {
+    #[cfg(feature = "debug-control")]
+    fn deliver_debug_observation(&mut self, value: Value) {
+        let Some(id) = value.get("subscriptionId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(observer) = self.debug_observers.get_mut(id) else {
+            return;
+        };
+        let Some(sender) = observer.sender.as_ref() else {
+            return;
+        };
+        let sequence = value.get("sequence").and_then(Value::as_u64);
+        if value["protocolVersion"] != PROTOCOL_VERSION || sequence.is_none() {
+            observer.status["status"] = json!("failed");
+            observer.status["coverage"] = json!("partial");
+            observer.status["error"] = json!({"code":"observation_frame_invalid","message":"Observation frame identity is invalid."});
+            observer.sender = None;
+            return;
+        }
+        let terminal = matches!(
+            value.get("status").and_then(Value::as_str),
+            Some("settled" | "failed")
+        );
+        let terminal_status = value["status"].clone();
+        let terminal_error = value["error"].clone();
+        match sender.try_send(value) {
+            Ok(()) => {
+                observer.status["lastDeliveredSequence"] = json!(sequence);
+                if terminal {
+                    observer.status["status"] = terminal_status;
+                    observer.sender = None;
+                    if !terminal_error.is_null() {
+                        observer.status["error"] = terminal_error;
+                        observer.status["coverage"] = json!("partial");
+                    }
+                }
+            }
+            Err(error) => {
+                observer.status["status"] = json!("failed");
+                observer.status["coverage"] = json!("partial");
+                observer.status["error"] = json!({"code":"observation_receiver_unavailable","message":error.to_string(),
+                    "missingRange":{"fromObservationSequence":sequence,"through":"unknown"},"notificationDelivered":false});
+                observer.sender = None;
+            }
+        }
+    }
     fn fail(&mut self, error: SessionServiceError) -> SessionServiceError {
         let error = self.terminal_error.get_or_insert(error).clone();
+        #[cfg(feature = "debug-control")]
+        for observer in self.debug_observers.values_mut() {
+            if observer.sender.take().is_some() {
+                observer.status["status"] = json!("failed");
+                observer.status["coverage"] = json!("partial");
+                observer.status["error"] = json!({"code":error.code,"message":error.message,"missingRange":{"through":"unknown"},"notificationDelivered":false});
+            }
+        }
         for (_, sender) in self.requests.drain() {
             let _ = sender.send(SessionReply::TransportFailure(error.clone()));
         }
@@ -690,7 +824,11 @@ fn decode_response(
 fn resolve_bridge() -> Result<PathBuf, SessionServiceError> {
     runtime_file(
         "DEEPCODE_SESSION_BRIDGE",
-        "session-core/dist/sessionServiceBridge.js",
+        if cfg!(feature = "debug-control") {
+            "session-core/dist/debug/sessionServiceBridge.js"
+        } else {
+            "session-core/dist/sessionServiceBridge.js"
+        },
     )
 }
 
@@ -750,6 +888,65 @@ fn process_wait_error(error: std::io::Error) -> SessionServiceError {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[cfg(feature = "debug-control")]
+    #[test]
+    fn active_observations_share_ipc_without_becoming_request_replies() {
+        let child = spawn_owned_host_process(Command::new("node").arg("-e").arg(r#"
+const input = require('node:readline').createInterface({ input: process.stdin });
+function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
+input.on('line', line => {
+  const request = JSON.parse(line);
+  if (request.operation === 'health') reply(request, { state: 'ready' });
+  else if (request.operation === 'debug.subscribe') {
+    reply(request, { status: 'active' });
+    setImmediate(() => process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', type: 'debug.observation', subscriptionId: request.data.subscriptionId, sequence: 1, status: 'active', items: [{kind:'text',text:'First response.'}] }) + '\n'));
+  } else if (request.operation === 'debug.unsubscribe') reply(request, { status: 'closed' });
+  else if (request.operation === 'shutdown') { reply(request, {}); input.close(); process.stdin.destroy(); }
+});
+"#).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())).unwrap();
+        let service = SessionServiceProcess::from_process(child).unwrap();
+        let (id, mut receiver) = service
+            .debug_subscribe("session:test", None, Some(4096))
+            .unwrap();
+        let observed = receiver
+            .blocking_recv()
+            .expect("unsolicited pushed observation");
+        assert_eq!(observed["items"][0]["text"], "First response.");
+        assert_eq!(
+            service.request("health", json!({})).unwrap()["state"],
+            "ready"
+        );
+        service.debug_unsubscribe(&id).unwrap();
+        assert!(receiver.blocking_recv().is_none());
+        service.shutdown().unwrap();
+    }
+
+    #[cfg(feature = "debug-control")]
+    #[test]
+    fn slow_observation_consumers_fail_only_their_subscription() {
+        let mut pending = PendingResponses::default();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        pending.debug_observers.insert(
+            "sub".into(),
+            DebugObserver {
+                sender: Some(sender),
+                status: json!({"status":"active"}),
+            },
+        );
+        for sequence in 1..=2 {
+            pending.deliver_debug_observation(json!({"protocolVersion":PROTOCOL_VERSION,"type":"debug.observation","subscriptionId":"sub","sequence":sequence}));
+        }
+        assert!(pending.terminal_error.is_none());
+        let status = &pending.debug_observers["sub"].status;
+        assert_eq!(status["status"], "failed");
+        assert_eq!(
+            status["error"]["missingRange"]["fromObservationSequence"],
+            2
+        );
+        assert_eq!(receiver.blocking_recv().unwrap()["sequence"], 1);
+        assert!(receiver.blocking_recv().is_none());
+    }
 
     #[test]
     fn partial_deletion_response_preserves_original_error_and_structured_details() {

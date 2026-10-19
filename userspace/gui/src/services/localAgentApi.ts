@@ -3,9 +3,10 @@ import { isProcessActivity } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { validatePermissionPatches } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
-import { decodeAgentContext, decodeAgentRecipe } from '@deepcode/protocol';
+import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
 import type {
   AssistantDraftBlockProjection,
+  AgentSettings,
   CommandReply,
   ConversationCatalog,
   ConversationCatalogManagement,
@@ -67,6 +68,7 @@ export async function createLocalAgentSession(
     workspacePaths?: string[];
     projectId?: string;
     profileId?: string;
+    subagentSettings?: AgentSettings;
   },
   signal?: AbortSignal,
 ): Promise<SessionProjection> {
@@ -93,9 +95,10 @@ export async function getConversationCatalog(
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
   const value = await request<unknown>(`${API_BASE}/conversation/statuses`, { signal });
   if (!Array.isArray(value) || !value.every((item) => (
-    isExactRecord(item, ['sessionId', 'revision', 'run'])
+    isExactRecord(item, ['sessionId', 'revision', 'run'], ['title'])
     && isIdentifier(item.sessionId)
     && Number.isSafeInteger(item.revision) && Number(item.revision) >= 1
+    && (item.title === undefined || typeof item.title === 'string')
     && (item.run === null || (
       isExactRecord(item.run, ['runId', 'status'], ['waitingReason'])
       && isIdentifier(item.run.runId)
@@ -373,13 +376,15 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals'])
+    ], ['fileChangeRounds', 'providerAttempts', 'runTimings', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    || (value.subagentSettings !== undefined && !isAgentSettings(value.subagentSettings))
     || (value.recipe !== undefined && !isAgentRecipe(value.recipe))
     || (value.agentContext !== undefined && !isAgentContext(value.agentContext))
     || (value.agentTasks !== undefined && !isArrayOf(value.agentTasks, isAgentTask))
     || (value.agentChildren !== undefined && !isArrayOf(value.agentChildren, isAgentChild))
     || (value.pendingAgentDecisions !== undefined && !isArrayOf(value.pendingAgentDecisions, isPendingAgentDecision))
     || (value.providerAttempts !== undefined && !isArrayOf(value.providerAttempts, isProviderAttempt))
+    || (value.runTimings !== undefined && !isArrayOf(value.runTimings, isRunTiming))
     || (value.failureSnapshot !== undefined && !isFailureSnapshot(value.failureSnapshot))
     || (value.fileChangeRounds !== undefined && !isArrayOf(value.fileChangeRounds, (round) => isRecord(round) && isIdentifier(round.runId) && isArrayOf(round.recordIds, isIdentifier)))
     || value.schemaVersion !== SESSION_PROJECTION_VERSION
@@ -818,10 +823,11 @@ function isAssistantDraft(value: unknown): boolean {
   if (!isExactRecord(
     value,
     ['runId', 'turnId', 'blocks'],
-    ['activity', 'planPreview'],
+    ['activity', 'planPreview', 'providerAttemptId'],
   )
     || !isIdentifier(value.runId)
     || !isIdentifier(value.turnId)
+    || value.providerAttemptId !== undefined && !isIdentifier(value.providerAttemptId)
     || !isArrayOf(value.blocks, isAssistantDraftBlock)
     || value.activity !== undefined && !isProviderActivity(value.activity)
     || value.planPreview !== undefined && !isPlanPreview(value.planPreview)
@@ -926,7 +932,7 @@ function isApproval(value: unknown): boolean {
 
 function isEffectPreview(value: unknown): boolean {
   const effects = ['localRead', 'workspaceRead', 'workspaceMutation', 'process', 'network', 'external'];
-  return isExactRecord(value, ['summary', 'effects', 'logicalTargets'], ['authorizationScope', 'authorizationContext', 'authorizationScopes', 'approvalReviewer', 'review', 'fileAccess', 'operation'])
+  return isExactRecord(value, ['summary', 'effects', 'logicalTargets'], ['authorizationScope', 'authorizationContext', 'authorizationScopes', 'approvalReviewer', 'review', 'fileAccess', 'operation', 'reviewPolicy', 'revalidation'])
     && (value.operation === undefined || isExactRecord(value.operation, ['toolName', 'arguments'], ['workspaceRoot', 'executionScope'])
       && isNonEmptyText(value.operation.toolName) && isRecord(value.operation.arguments)
       && (value.operation.workspaceRoot === undefined || isNonEmptyText(value.operation.workspaceRoot))
@@ -937,6 +943,10 @@ function isEffectPreview(value: unknown): boolean {
     && (value.authorizationScopes === undefined || isArrayOf(value.authorizationScopes, scope => isShellAuthorizationScope(scope)))
     && (value.approvalReviewer === undefined || ['user', 'agent'].includes(String(value.approvalReviewer)))
     && (value.review === undefined || isApprovalReview(value.review))
+    && (value.reviewPolicy === undefined || isRecord(value.reviewPolicy))
+    && (value.revalidation === undefined || isExactRecord(value.revalidation, ['authorityId', 'reason'])
+      && isNonEmptyText(value.revalidation.authorityId)
+      && ['revoked', 'scopeChanged', 'reviewUnavailable'].includes(String(value.revalidation.reason)))
     && isNonEmptyText(value.summary)
     && Array.isArray(value.effects)
     && value.effects.every((effect) => effects.includes(String(effect)))
@@ -972,18 +982,26 @@ function isPlanProjection(value: unknown): value is Record<string, unknown> & {
   planId: string;
   revision: number;
 } {
-  return isExactRecord(value, PLAN_FIELDS, ['decisionId', 'confirmationSource'])
+  return isExactRecord(value, PLAN_FIELDS, ['decisionId', 'confirmationSource', 'workspaceRequests', 'review'])
     && isPlanProjectionFields(value);
 }
 
 function isPendingPlan(value: unknown): boolean {
-  return isExactRecord(value, [...PLAN_FIELDS, 'responseMode'], ['decisionId', 'confirmationSource'])
+  return isExactRecord(value, [...PLAN_FIELDS, 'responseMode'], ['decisionId', 'confirmationSource', 'workspaceRequests', 'review'])
     && isPlanProjectionFields(value)
     && value.status === 'published'
     && value.responseMode === 'confirmReviseOrCancel';
 }
 
 function isPlanProjectionFields(value: Record<string, unknown>): boolean {
+  if (value.review !== undefined && (!isExactRecord(value.review, ['providerRequestId', 'status'], ['decision', 'reason', 'error'])
+    || !isIdentifier(value.review.providerRequestId) || !['reviewing', 'completed'].includes(String(value.review.status))
+    || value.review.status === 'completed' && (!['allow', 'deny', 'ask'].includes(String(value.review.decision)) || !isNonEmptyText(value.review.reason))
+    || value.review.error !== undefined && !isLocalAgentError(value.review.error))) return false;
+  if (value.workspaceRequests !== undefined && (!Array.isArray(value.workspaceRequests) || !value.workspaceRequests.length
+    || !value.workspaceRequests.every(request => isExactRecord(request, ['workspaceId', 'rootPath'])
+      && isIdentifier(request.workspaceId) && isNonEmptyText(request.rootPath))
+    || new Set(value.workspaceRequests.map(request => request.workspaceId)).size !== value.workspaceRequests.length)) return false;
   if (value.confirmationSource !== undefined && !['user', 'agent', 'parent', 'sessionWorkdir'].includes(String(value.confirmationSource))) return false;
   if (
     !isIdentifier(value.planId)
@@ -1357,6 +1375,10 @@ function isReasoningEffort(value: unknown): boolean {
   return isLlmReasoningEffort(value);
 }
 
+function isAgentSettings(value: unknown): boolean {
+  try { decodeAgentSettings(value); return true; } catch { return false; }
+}
+
 function isModelSettings(value: unknown): boolean {
   return isExactRecord(value, ['profileId', 'reasoningEffortOverride']) && isIdentifier(value.profileId)
     && (value.reasoningEffortOverride === null || isReasoningEffort(value.reasoningEffortOverride));
@@ -1596,14 +1618,40 @@ export async function readFileChange(sessionId: string, recordId: string, index:
 }
 
 function isProviderAttempt(value: unknown): boolean {
-  return isExactRecord(value, ['providerRequestId', 'providerAttemptId', 'attempt', 'purpose', 'phase', 'runId', 'updatedAt'], ['error', 'retryAt'])
+  return isExactRecord(value, ['providerRequestId', 'providerAttemptId', 'attempt', 'purpose', 'phase', 'runId', 'updatedAt'], ['error', 'retryAt', 'timing'])
     && ['providerRequestId', 'providerAttemptId', 'runId'].every((key) => isIdentifier(value[key]))
     && Number.isInteger(value.attempt) && Number(value.attempt) >= 1 && Number(value.attempt) <= 5
     && ['agent', 'contextCompaction', 'approvalReview'].includes(String(value.purpose))
     && ['started', 'completed', 'failed', 'retryWaiting'].includes(String(value.phase))
     && isNonEmptyText(value.updatedAt)
+    && (value.timing === undefined || isProviderTiming(value.timing))
     && (['failed', 'retryWaiting'].includes(String(value.phase)) ? isLocalAgentError(value.error) : value.error === undefined)
     && (value.phase === 'retryWaiting' ? isNonEmptyText(value.retryAt) && Number.isFinite(Number(value.retryAt)) : value.retryAt === undefined);
+}
+
+function isDuration(value: unknown): boolean { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
+
+function isRunTiming(value: unknown): boolean {
+  return isExactRecord(value, ['runId', 'clockDomain', 'acceptedAt', 'coverage'], ['startedAt', 'firstResponseAt', 'firstResponseKind', 'firstResponseMs', 'firstTextAt', 'firstTextMs', 'settledAt', 'totalMs', 'responseElapsedMs'])
+    && ['runId', 'clockDomain', 'acceptedAt'].every(key => isNonEmptyText(value[key]))
+    && ['startedAt', 'firstResponseAt', 'firstTextAt', 'settledAt'].every(key => value[key] === undefined || isNonEmptyText(value[key]))
+    && ['firstResponseMs', 'firstTextMs', 'totalMs', 'responseElapsedMs'].every(key => value[key] === undefined || isDuration(value[key]))
+    && (value.firstResponseKind === undefined || ['text', 'tool'].includes(String(value.firstResponseKind)))
+    && ['complete', 'partial'].includes(String(value.coverage));
+}
+
+function isProviderTiming(value: unknown): boolean {
+  return isExactRecord(value, ['clockDomain', 'startedAt'], ['completedAt', 'durationMs', 'textSegments', 'firstContentAt', 'firstContentMs', 'firstContentKind', 'firstTextAt', 'firstTextMs'])
+    && ['clockDomain', 'startedAt'].every(key => isNonEmptyText(value[key]))
+    && ['completedAt', 'firstContentAt', 'firstTextAt'].every(key => value[key] === undefined || isNonEmptyText(value[key]))
+    && ['durationMs', 'firstContentMs', 'firstTextMs'].every(key => value[key] === undefined || isDuration(value[key]))
+    && (value.firstContentKind === undefined || ['text', 'tool', 'reasoning'].includes(String(value.firstContentKind)))
+    && (value.textSegments === undefined || isArrayOf(value.textSegments, item => isExactRecord(item, ['outputItemId', 'startedAt', 'characters'], ['outputIndex', 'endedAt', 'durationMs', 'outcome'])
+      && isIdentifier(item.outputItemId) && isNonEmptyText(item.startedAt) && isNaturalNumber(item.characters)
+      && (item.outputIndex === undefined || isNaturalNumber(item.outputIndex))
+      && (item.endedAt === undefined || isNonEmptyText(item.endedAt))
+      && (item.durationMs === undefined || isDuration(item.durationMs))
+      && (item.outcome === undefined || ['completed', 'interrupted'].includes(String(item.outcome)))));
 }
 
 function isFailureSnapshot(value: unknown): boolean {

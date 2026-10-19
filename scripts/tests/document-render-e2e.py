@@ -26,8 +26,10 @@ MARKDOWN = "# 文档报告\n\n清晰的 **Markdown** 正文。\n\n| 格式 | 用
 
 
 class State:
-    calls = 0
-    failure = None
+    def __init__(self):
+        self.calls = 0
+        self.failure = None
+        self.title_requests = []
 
     def record_failure(self, error):
         self.failure = error
@@ -41,6 +43,8 @@ class Handler(fixture.MockProviderHandler):
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            if self.respond_to_title(body):
+                return
             state = self.provider_state
             state.calls += 1
             functions = [entry["function"] for entry in body["tools"]]
@@ -145,6 +149,7 @@ def main():
             session = fixture.create_session(daemon, workspace)
             fixture.cli(daemon, session["sessionId"], "请将报告排版为 HTML、PDF 和 Markdown。")
             state.assert_healthy()
+            require(state.calls == 3 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
             verify_resources(daemon, fixture.projection(daemon, session["sessionId"]), workspace)
             print("[documents-e2e] PASS: actual CLI, built-in Skill, HTML/PDF/Markdown tools, artifacts, resource bytes, and continuation after a read failure (fixture Provider)", flush=True)
             if args.preview_port:

@@ -101,7 +101,7 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   for (const event of candidates) {
     const item = view === 'reasoning' && event.type === 'provider.turn.settled'
       ? reasoningReadItem(event, query.providerRequestId ? query.offset ?? 0 : null)
-      : readItem(event, view === 'summary', events);
+      : readItem(event, view === 'summary', events, Boolean(query.providerRequestId));
     const itemBytes = encoder.encode(JSON.stringify(item)).byteLength;
     if (result.items.length >= limit || (result.items.length > 0 && size + itemBytes > MAX_PAGE_BYTES)) {
       result.nextBefore = Number(result.items.at(-1)!.sequence);
@@ -115,7 +115,7 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   return result;
 }
 
-function readItem(event: SessionEvent, summary: boolean, events: readonly SessionEvent[]): JsonObject {
+function readItem(event: SessionEvent, summary: boolean, events: readonly SessionEvent[], detail = false): JsonObject {
   const base = { sequence: event.sequence, eventId: event.eventId, type: event.type, runId: 'runId' in event ? event.runId ?? null : null };
   if (event.type === 'message.committed' || event.type === 'narrative.committed') {
     return { ...base, role: event.type === 'message.committed' ? event.payload.role : 'assistant', ...textExcerpt(event.payload.content, 12 * 1024) };
@@ -131,13 +131,22 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
     };
   }
   if (event.type === 'context.composed') {
-    // Keep context structure and usage; native reasoning and instruction bodies
-    // are not part of this product transcript view.
-    const { modelView: _modelView, ...receipt } = event.payload;
+    // Main-Agent bodies/native reasoning remain private to their existing views.
+    // Exact review inputs are bounded evidence, available only for a named request.
+    const { modelView: _modelView, ...withInput } = event.payload;
+    const { reviewInput, ...receipt } = withInput as typeof withInput & { reviewInput?: { instructions: string; content: string } };
+    const review = events.find(candidate => (candidate.type === 'approval.reviewed' || candidate.type === 'plan.reviewed')
+      && candidate.payload.providerRequestId === receipt.providerRequestId);
+    const resolution = review?.type === 'approval.reviewed'
+      ? events.find(candidate => candidate.type === 'approval.resolved' && candidate.payload.approvalId === review.payload.approvalId)
+      : undefined;
     const usage = events.find((candidate) => candidate.type === 'context.updated'
       && candidate.payload.providerRequestId === receipt.providerRequestId);
     return { ...base, providerRequestId: receipt.providerRequestId,
       data: textExcerpt(JSON.stringify(receipt), 20 * 1024),
+      ...(detail && reviewInput ? { reviewInput } : {}),
+      ...(detail && review ? { review: { sequence: review.sequence, ...review.payload } } : {}),
+      ...(detail && resolution ? { resolution: { sequence: resolution.sequence, ...resolution.payload } } : {}),
       usage: usage ? textExcerpt(JSON.stringify(usage.payload), 4000) : null };
   }
   return { ...base, data: textExcerpt(JSON.stringify(event.payload), 12 * 1024) };

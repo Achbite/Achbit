@@ -38,7 +38,7 @@ pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Js
 }
 
 fn setting_activates_at_next_run(key: &str) -> bool {
-    // Delegation admission reads the current settings; existing children keep their binding.
+    // These are defaults read once when Session creates a new conversation.
     if key.starts_with("agent.subagents.") {
         return false;
     }
@@ -49,6 +49,7 @@ fn setting_activates_at_next_run(key: &str) -> bool {
         || key.starts_with("agent.documents.")
         || key == "agent.systemPrompt"
         || key.starts_with("agent.approvalReview.")
+        || key.starts_with("agent.contextManagement.")
         || key.starts_with("agent.permissions.")
         || key.starts_with("agent.windows.")
         || key == "agent.environmentRevision"
@@ -91,17 +92,6 @@ pub(crate) async fn user_settings_patch(
 }
 
 fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> {
-    // Serialize the complete publication, including its acknowledgement. This
-    // lock is independent of run preparation, so IPC can commit Actor facts.
-    let _publication = match state.local_agent.settings_publication.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return ApiResponse::error(
-                "settings_publication_lock_failed",
-                "Settings publication lock is poisoned.",
-            )
-        }
-    };
     let _runtime_transition = match state.local_agent.runtime_transition() {
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
@@ -178,22 +168,6 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
             return ApiResponse::error("write_settings_failed", error);
         }
         gui.user_settings = next_settings.clone();
-    }
-    // The persisted setting is the durable desired state. Every publication
-    // delivers it, including retries of an identical value after a lost/failed
-    // acknowledgement. New Session processes bootstrap it before opening Actors.
-    // Do not infer delivery from equality with the already-persisted value.
-    drop(_runtime_transition);
-    let delivery = state
-        .session_service
-        .enqueue(
-            "delegationChanged",
-            json!({"enabled": next_settings["agent.subagents.enabled"] == true}),
-        )
-        .and_then(|pending| state.session_service.receive(pending));
-    if let Err(error) = delivery {
-        return ApiResponse::error("settings_publication_pending",
-            format!("Settings were saved; Session publication is pending. Retry the settings update to deliver it: {}", error.message));
     }
     ApiResponse::ok(json!({
         "settings": next_settings,
@@ -332,6 +306,8 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.subagents.allowMemberAnalysis": true,
         "agent.subagents.allowFullConfiguration": true,
         "agent.subagents.presets": "[]",
+        "agent.contextManagement.enabled": false,
+        "agent.contextManagement.thresholdTokens": 500_000,
         "agent.responseLanguage": "auto",
         "agent.windows.shell": "auto",
         "agent.windows.gitBashPath": "",
@@ -378,6 +354,7 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
     }
     for key in [
         "agent.subagents.enabled",
+        "agent.contextManagement.enabled",
         "agent.subagents.allowMemberAnalysis",
         "agent.subagents.allowFullConfiguration",
     ] {
@@ -387,6 +364,7 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
     }
     for key in [
         "agent.subagents.maxConcurrent",
+        "agent.contextManagement.thresholdTokens",
         "agent.subagents.maxCallsPerRun",
         "agent.subagents.maxMembersPerSession",
     ] {
@@ -486,8 +464,10 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
         }
     }
     if let Some(value) = settings.get("agent.permissions.workspaceMutation") {
-        if !matches!(value.as_str(), Some("plan" | "allow")) {
-            return Err("agent.permissions.workspaceMutation 必须是 plan 或 allow。".to_string());
+        if !matches!(value.as_str(), Some("plan" | "review" | "allow")) {
+            return Err(
+                "agent.permissions.workspaceMutation 必须是 plan、review 或 allow。".to_string(),
+            );
         }
     }
     if let Some(value) = settings.get("agent.permissions.engineeringDecisions") {
@@ -507,6 +487,49 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod context_management_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_context_defaults_and_next_run_validation() {
+        let defaults = default_user_settings();
+        let bundled: Value =
+            serde_json::from_str(include_str!("../../../config/defaults/user-settings.json"))
+                .unwrap();
+        for key in [
+            "agent.contextManagement.enabled",
+            "agent.contextManagement.thresholdTokens",
+        ] {
+            assert_eq!(defaults[key], bundled[key]);
+            assert!(setting_activates_at_next_run(key));
+        }
+        assert_eq!(defaults["agent.contextManagement.enabled"], false);
+        assert_eq!(defaults["agent.contextManagement.thresholdTokens"], 500_000);
+        validate_agent_runtime_settings(&defaults).unwrap();
+        let mut configured = defaults.clone();
+        configured["agent.contextManagement.enabled"] = json!(true);
+        configured["agent.contextManagement.thresholdTokens"] = json!(250_000);
+        validate_agent_runtime_settings(&configured).unwrap();
+        for invalid in [json!(0), json!(-1), json!(1.5), json!("500k")] {
+            configured["agent.contextManagement.thresholdTokens"] = invalid;
+            assert!(validate_agent_runtime_settings(&configured).is_err());
+        }
+        configured["agent.contextManagement.thresholdTokens"] = json!(500_000);
+        configured["agent.contextManagement.enabled"] = json!("true");
+        assert!(validate_agent_runtime_settings(&configured).is_err());
+        merge_object(
+            &mut configured,
+            &json!({"agent.contextManagement.enabled": null, "agent.contextManagement.thresholdTokens": null}),
+        );
+        validate_agent_runtime_settings(&configured).unwrap();
+        assert!(configured.get("agent.contextManagement.enabled").is_none());
+        assert!(configured
+            .get("agent.contextManagement.thresholdTokens")
+            .is_none());
+    }
 }
 
 /// The persisted run receives the same permission defaults as Kernel admission.

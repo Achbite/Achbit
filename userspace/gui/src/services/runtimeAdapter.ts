@@ -65,9 +65,10 @@ export interface NativePathSelection {
 
 export async function pickNativePaths(options: NativePathOptions): Promise<NativePathSelection[] | null> {
   if (!hasNativePathPicker()) throw new Error('native_path_picker_unavailable');
-  if (options.kind === 'path') {
+  if (options.kind === 'path' || (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__)) {
     return tauriInvoke()!<NativePathSelection[] | null>('deepcode_pick_path', { options: {
       title: options.title,
+      kind: options.kind,
       selectLabel: options.selectLabel ?? 'Select',
       cancelLabel: options.cancelLabel ?? 'Cancel',
       defaultPath: options.defaultPath,

@@ -101,6 +101,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     throw new LoopFailure('tool_result_missing', `调用 ${openCall.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
+  const planEnabled = input.runtime.permissions['agent.permissions.workspaceMutation'] !== 'allow';
   const hasPluginDiscovery = input.runtime.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable');
   const hasAgentTools = input.runtime.agentToolsEnabled === true
     && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
@@ -126,7 +127,8 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities).filter(tool => tool.name === SESSION_CONTROL_AGENT
+  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities)
+    .filter(tool => planEnabled || tool.name !== SESSION_CONTROL_PLAN_PUBLISH).filter(tool => tool.name === SESSION_CONTROL_AGENT
     ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
       ? hasPluginDiscovery : (hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
     .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
@@ -176,7 +178,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools),
+      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled),
     },
   });
   if (hasWorkspaceBindings) instructions.push({
@@ -328,7 +330,8 @@ export function messagesFromJournal(
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
-  const retainedDelegation = events.findLast(event => event.type === 'agent.delegation.changed');
+  const retainedDelegation = events.findLast(event => event.type === 'session.subagent-settings.updated'
+    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
   const retainedDelegationId = retainedDelegation ? `agent-delegation:${retainedDelegation.sequence}` : undefined;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
@@ -514,6 +517,10 @@ export function messagesFromJournal(
         },
       });
     } else if (event.type === 'plan.cancelled') {
+      const reviewed = events.findLast(item => item.type === 'plan.reviewed'
+        && item.payload.planId === event.payload.planId && item.payload.revision === event.payload.revision);
+      const disabled = events.some(item => item.type === 'session.permissions.updated'
+        && item.payload.commandId === event.payload.commandId && item.payload.patches['agent.permissions.workspaceMutation'] === 'allow');
       messages.push({
         contributionId: `plan-cancel-result:${event.payload.planId}:${event.payload.revision}`,
         contributionKind: 'journalMessages',
@@ -524,6 +531,8 @@ export function messagesFromJournal(
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
           content: JSON.stringify({
             response: { kind: 'cancel' },
+            ...(reviewed?.type === 'plan.reviewed' ? { review: { decision: reviewed.payload.decision, reason: reviewed.payload.reason } } : {}),
+            ...(disabled ? { nextAction: 'Plan is off. Continue authorized work directly; execution permissions remain separate.' } : {}),
             planId: event.payload.planId,
             revision: event.payload.revision,
           }),
@@ -632,14 +641,15 @@ export function messagesFromJournal(
     } else if (event.type === 'wake.triggered') {
       pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
-    } else if (event.type === 'agent.delegation.changed') {
+    } else if (event.type === 'session.subagent-settings.updated'
+      || event.type === 'session.created' && event.payload.subagentSettings !== undefined) {
       // Settings can change while tools run. Deliver the ordered notice at the
       // next request boundary without splitting a provider call/result group.
       pendingAgentEvidence.push({
         contributionId: `agent-delegation:${event.sequence}`, contributionKind: 'journalMessages',
         label: 'Delegation status', sourceSequence: event.sequence,
-        message: { role: 'user', content: event.payload.enabled
-          ? 'Runtime setting changed: new agent delegation is enabled. Delegate only when useful.'
+        message: { role: 'user', content: (event.type === 'session.created' ? event.payload.subagentSettings!.enabled : event.payload.settings.enabled)
+          ? 'Runtime setting changed: new agent delegation is enabled for this Session. Proactively delegate independent work; use collaboration for communicating teammates. Supply context and scope, assign shared-file ownership, resolve disagreements and verify results. Follow the agent tool operations.'
           : 'Runtime setting changed: stop delegating new tasks. Existing tasks may continue; you may message running agents, wait for results, cancel or close them. New spawns and new tasks for idle agents are rejected locally.' },
       });
     } else if (event.type === 'agent.message.received') {

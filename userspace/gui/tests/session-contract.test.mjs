@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SessionService, loopSnapshot } from '../../session-core/dist/index.js';
 import { assertRuntimeContract } from '../../session-core/tests/support/runtimeContract.mjs';
+import { DEFAULT_USER_SETTINGS } from '../../protocol/dist/index.js';
 import {
   decodeGuiProjection,
+  findReactElement,
   inputCacheMetric,
   lastCallInputCacheMetric,
   loadGuiModelStore,
@@ -1702,6 +1704,37 @@ test('cached navigation displays immediately and another session read cannot blo
   assert.equal(requests, 4, 'an aborted late response was not installed in the recent-session cache');
 });
 
+test('navigation refreshes the catalog for an externally created session and preserves read errors', async (t) => {
+  const journal = new InMemoryCommandJournal();
+  const sessionId = 'session:external';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const actor = actorWith(journal, sessionId, { async *stream() {} }, emptyKernel(), fakeRunPreparation().port, 'external');
+  t.after(() => actor.dispose());
+  const projection = await actor.snapshot();
+  const store = await loadGuiModelStore(t);
+  const paths = [];
+  let failCatalog = false;
+  installGuiFetch(t, async url => {
+    paths.push(url.pathname);
+    if (url.pathname === '/api/conversation/catalog') {
+      if (failCatalog) throw new Error('catalog read interrupted');
+      return Response.json({ ok: true, data: { projects: [], sessions: [{ id: sessionId, title: 'External conversation',
+        workspaceBindings: [workspaceBinding], createdAt: '2026-10-18T00:00:00Z', updatedAt: '2026-10-18T00:00:00Z' }] } });
+    }
+    assert.match(url.pathname, /\/projection$/);
+    return Response.json({ ok: true, data: projection });
+  });
+  await store.getState().activateSession(sessionId);
+  assert.equal(store.getState().projection.sessionId, sessionId);
+  assert.equal(store.getState().loading, false);
+  assert.equal(paths.length, 2);
+  failCatalog = true;
+  await store.getState().activateSession('session:unavailable');
+  assert.match(store.getState().error, /catalog read interrupted/);
+  assert.equal(store.getState().sessionId, sessionId);
+  assert.deepEqual(store.getState().projection, projection);
+});
+
 test('continuous conversation keeps every message anchor while mounting nearby content', async (t) => {
   const { conversationNavigation } = await loadGuiModule(t, '/src/components/local-agent/conversationWindow.ts');
   const rows = Array.from({ length: 75 }, (_, index) => ({
@@ -2113,6 +2146,21 @@ test('Plan documents and previews render Markdown entities, code names and verif
   } }));
   assert.ok(initialDecision.includes('ObjectPool&lt;T,N&gt;'));
   assert.ok(initialDecision.includes('确认执行'));
+  const workspaceDecision = renderToStaticMarkup(createElement(Decision, { language: 'zh-CN', composer: {
+    pendingPlan: { ...plan, workspaceRequests: [{ workspaceId: 'workspace:join-private', rootPath: '/projects/benchmark' }] },
+    pendingScopeAddition: null, submitting: false,
+  } }));
+  assert.ok(workspaceDecision.includes('将以下目录加入工作区？'));
+  assert.ok(workspaceDecision.includes('/projects/benchmark'));
+  assert.ok(workspaceDecision.includes('加入工作区并确认计划'));
+  assert.ok(workspaceDecision.includes('不加入并取消计划'));
+  assert.equal(workspaceDecision.includes('workspace:join-private'), false);
+  const workspaceEnglish = renderToStaticMarkup(createElement(Decision, { language: 'en-US', composer: {
+    pendingPlan: { ...plan, workspaceRequests: [{ workspaceId: 'workspace:join-private', rootPath: '/projects/benchmark' }] },
+    pendingScopeAddition: null, submitting: false,
+  } }));
+  assert.ok(workspaceEnglish.includes('Add folders and confirm Plan'));
+  assert.ok(workspaceEnglish.includes('Cancel without adding folders'));
   assert.equal(initialDecision.includes('互斥访问'), false, 'the complete Plan body belongs only to its document card');
   const prompt = '保留 **容器环境** 吗？\n\n- 保留 `Dockerfile`\n- 删除演示产物';
   const question = renderToStaticMarkup(createElement(Decision, { language: 'zh-CN', composer: {
@@ -2421,6 +2469,83 @@ test('unchanged status snapshots do not publish redundant GUI state updates', as
   assert.equal(store.getState().statusError, null, 'a successful refresh clears only its previous status error');
   assert.equal(store.getState().error, 'Retained command failure');
   assert.equal(publications, 2);
+});
+
+test('background titles use the existing status refresh independently of Session revision', async (t) => {
+  const summary = { id: 'session:title', title: '新对话', workspaceBindings: [],
+    createdAt: '2026-10-18', updatedAt: '2026-10-18' };
+  let statuses = [{ sessionId: summary.id, revision: 1, run: null }];
+  let requests = 0;
+  installGuiFetch(t, async (url) => {
+    assert.equal(url.pathname, '/api/conversation/statuses');
+    requests += 1;
+    return Response.json({ ok: true, data: statuses });
+  });
+  const store = await loadGuiModelStore(t);
+  store.setState({ catalog: { projects: [], sessions: [summary] } });
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '新对话', 'missing title does not invent a replacement');
+  statuses = [{ ...statuses[0], title: '修复会话标题' },
+    { sessionId: 'session:uncatalogued', revision: 1, run: null, title: 'Not a new catalog entry' }];
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
+  assert.equal(store.getState().catalog.sessions.length, 1);
+  assert.equal(store.getState().sessionStatuses[summary.id].revision, 1);
+  let publications = 0;
+  const unsubscribe = store.subscribe(() => { publications += 1; });
+  t.after(unsubscribe);
+  await store.getState().refresh();
+  assert.equal(publications, 0, 'unchanged title and status do not republish the catalog');
+  statuses = [{ sessionId: summary.id, revision: 1, run: null }];
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
+  statuses = [{ ...statuses[0], title: 7 }];
+  await store.getState().refresh();
+  assert.equal(store.getState().statusError, 'conversation_statuses_invalid');
+  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
+  assert.equal(requests, 5, 'each existing refresh makes only its status request');
+});
+
+test('background title replies do not overwrite a concurrent manual rename', async (t) => {
+  const summary = { id: 'session:rename', title: '新对话', workspaceBindings: [],
+    createdAt: '2026-10-18', updatedAt: '2026-10-18' };
+  let releaseStatus, releaseRename;
+  let deferStatus = true, deferRename = false;
+  let statusTitle = '模型标题';
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname === '/api/conversation/statuses') {
+      const result = { ok: true, data: [{ sessionId: summary.id, revision: 2,
+        run: { runId: 'run:title', status: 'completed' }, title: statusTitle }] };
+      if (deferStatus) await new Promise(resolve => { releaseStatus = resolve; });
+      return Response.json(result);
+    }
+    assert.equal(url.pathname, `/api/conversation/sessions/${encodeURIComponent(summary.id)}`);
+    assert.equal(init.method, 'PATCH');
+    const { title } = JSON.parse(init.body);
+    if (deferRename) await new Promise(resolve => { releaseRename = resolve; });
+    return Response.json({ ok: true, data: { projects: [], sessions: [{ ...summary, title }] } });
+  });
+  const store = await loadGuiModelStore(t);
+  store.setState({ catalog: { projects: [], sessions: [summary] } });
+  const oldRefresh = store.getState().refresh();
+  await waitUntil(() => releaseStatus, 'status request started');
+  await store.getState().updateSession(summary.id, { title: '用户标题' });
+  releaseStatus();
+  await oldRefresh;
+  assert.equal(store.getState().catalog.sessions[0].title, '用户标题');
+  assert.equal(store.getState().sessionStatuses[summary.id].run.status, 'completed', 'late status still carries valid run facts');
+
+  deferStatus = false;
+  deferRename = true;
+  const renaming = store.getState().updateSession(summary.id, { title: '用户再次改名' });
+  await waitUntil(() => releaseRename, 'rename request started');
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '用户标题', 'pending rename owns the title mutation');
+  releaseRename();
+  await renaming;
+  statusTitle = '用户再次改名';
+  await store.getState().refresh();
+  assert.equal(store.getState().catalog.sessions[0].title, '用户再次改名');
 });
 
 test('round change totals use first before and final after, without summing repeated edits', async (t) => {
@@ -2944,13 +3069,14 @@ test('pending approvals replace ordinary input while preserving its draft for re
     pendingApproval: { ...composer.pendingApproval, preview: runPreview },
   }, uiActionError: null }));
   assert.match(run, /title="本会话允许 Host Shell"[^>]*>允许本会话<\/button>/);
-  assert.match(run, /aria-label="允许本轮" title="本次任务允许 Host Shell" aria-keyshortcuts="Enter"/);
+  assert.match(run, /aria-label="仅允许本次" aria-keyshortcuts="Enter"/);
+  assert.match(run, /title="本次任务允许 Host Shell"[^>]*>本次任务允许 Host Shell<\/button>/);
   assert.doesNotMatch(run, /<option value="(?:runCommand|sessionHostShell)"/);
   const perCall = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', composer: { ...composer,
     pendingApproval: { ...composer.pendingApproval, preview: { ...runPreview, authorizationScopes: [] } },
   }, uiActionError: null }));
   assert.doesNotMatch(perCall, /允许本轮|允许本会话/);
-  assert.match(perCall, /aria-label="允许" aria-keyshortcuts="Enter"/);
+  assert.match(perCall, /aria-label="仅允许本次" aria-keyshortcuts="Enter"/);
   const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
   const wire = projectSession(emptySessionState('session:browser-wire'));
   wire.pendingApproval = { ...composer.pendingApproval, runId: 'run:browser', callId: 'call:browser', sequence: 3,
@@ -2959,6 +3085,12 @@ test('pending approvals replace ordinary input while preserving its draft for re
   assert.deepEqual(await decodeGuiProjection(wire), wire, 'explicit scope survives the strict GUI wire decoder');
   wire.pendingApproval.preview = runPreview;
   assert.deepEqual(await decodeGuiProjection(wire), wire, 'run grant and Kernel context survive the GUI decoder');
+  wire.pendingApproval.preview = { ...runPreview, reviewPolicy: { subject: 'shell', mode: 'ask', reviewGrant: 'thisCallOnly' },
+    revalidation: { authorityId: 'authority:previous', reason: 'revoked' } };
+  assert.deepEqual(await decodeGuiProjection(wire), wire, 'Kernel policy and revalidation facts survive the strict GUI decoder');
+  const invalidRevalidation = structuredClone(wire);
+  invalidRevalidation.pendingApproval.preview.revalidation.reason = 'invented';
+  await assert.rejects(decodeGuiProjection(invalidRevalidation), /conversation_projection_invalid/);
   const invalidScope = structuredClone(wire);
   invalidScope.pendingApproval.preview.authorizationScope = 'unknown';
   await assert.rejects(decodeGuiProjection(invalidScope), /conversation_projection_invalid/);
@@ -4725,6 +4857,19 @@ test('failure details count retries within each model request and retain source 
   assert.match(html, /6 个模型请求，发送 6 次/);
   assert.match(html, /权限审查/);
   assert.doesNotMatch(html, /重试 6 次/);
+  for (const language of ['zh-CN', 'en-US']) {
+    const cancelled = renderToStaticMarkup(createElement(RunFailureDetails, { language, onError() {}, projection: {
+      sessionId: 'session:cancelled', run: { runId: 'run:cancelled', status: 'cancelled' }, terminalError: null,
+      providerAttempts: [{ ...attempts[0], phase: 'failed', error: { code: 'agent_loop_failed', message: 'user_cancelled' } }],
+    } }));
+    assert.equal(cancelled, '', 'normal cancellation does not create an error or recovery panel');
+    const cleanupFailure = renderToStaticMarkup(createElement(RunFailureDetails, { language, onError() {}, projection: {
+      sessionId: 'session:cleanup', run: { runId: 'run:cleanup', status: 'releaseFailed' }, providerAttempts: [],
+      terminalError: { code: 'cleanup_failed', message: 'Original cleanup failure',
+        diagnostics: { source: 'session', phase: 'loop', category: 'internal', retryable: false, causes: [], stopReason: 'user_cancelled' } },
+    } }));
+    assert.match(cleanupFailure, /Original cleanup failure/u);
+  }
   const source = renderToStaticMarkup(createElement(SourceReferences, { language: 'zh-CN', references: {
     citations: [{ title: 'Actual documentation', url: 'https://example.test/docs' }], unresolved: true,
   } }));
@@ -4910,4 +5055,135 @@ test('continuous actions include permissions and Agent events, separated only by
   assert.deepEqual(items.map(item => item.type), ['narrative', 'toolGroup', 'narrative', 'toolGroup']);
   assert.deepEqual(items[1].values.map(activity => activity.kind), ['tool', 'approval', 'tool', 'agent']);
   assert.deepEqual(projection, original);
+});
+
+const subagentFixture = () => ({ enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
+  maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' });
+const userSettingsWithSubagents = settings => ({ ...DEFAULT_USER_SETTINGS,
+  ...Object.fromEntries(Object.entries(settings).map(([key, value]) => [`agent.subagents.${key}`, value])) });
+
+test('subagent quick settings save the active Session, retain other Sessions and reconcile partial failures', async t => {
+  const journal = new InMemoryCommandJournal(), actors = new Map();
+  const initial = subagentFixture();
+  for (const sessionId of ['session:settings-a', 'session:settings-b']) {
+    await createSession(journal, sessionId);
+    const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('settings must not call Provider'); } }, emptyKernel(), fakeRunPreparation().port, sessionId);
+    actors.set(sessionId, actor);
+    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.subagent-settings.set', sessionId,
+      commandId: `${sessionId}:initial-settings`, settings: initial });
+  }
+  t.after(() => Promise.all([...actors.values()].map(actor => actor.dispose())));
+  let defaults = initial, failure = null;
+  const commands = [];
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname === '/api/user-settings') {
+      assert.equal(init.method ?? 'GET', 'GET', 'the GUI must not independently patch global defaults');
+      const settings = userSettingsWithSubagents(defaults);
+      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, overriddenKeys: [], storePath: 'fixture' } });
+    }
+    const sessionId = decodeURIComponent(url.pathname.split('/')[4]);
+    const actor = actors.get(sessionId);
+    assert.ok(actor, `unexpected request ${url.pathname}`);
+    if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: await actor.snapshot() });
+    assert.ok(url.pathname.endsWith('/commands'));
+    const command = JSON.parse(init.body);
+    commands.push(command);
+    if (failure === 'before') return Response.json({ ok: false, error: 'fixture_session_write_failed' }, { status: 500 });
+    const reply = await actor.submit(command);
+    if (failure === 'after') return Response.json({ ok: false, error: 'fixture_defaults_write_failed', message: 'Session saved; defaults write failed' }, { status: 500 });
+    defaults = command.settings; // The Host owns the default update after accepting this command.
+    return Response.json({ ok: true, data: reply });
+  });
+  const [{ useLocalAgentStore: store }, { useSettingsStore }, { default: Quick }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/state/settingsStore.ts', '/src/components/local-agent/SubagentQuickSettings.tsx',
+  ]);
+  const React = await import('react'), { renderToStaticMarkup } = await import('react-dom/server');
+  const render = () => {
+    Object.assign(store.getInitialState(), store.getState());
+    Object.assign(useSettingsStore.getInitialState(), useSettingsStore.getState());
+    let tree;
+    function Probe() { tree = Quick({ language: 'en-US', profiles: [], connections: [], mainProfileId: null }); return tree; }
+    const html = renderToStaticMarkup(React.createElement(Probe));
+    return { tree, html };
+  };
+  store.setState({ sessionId: 'session:settings-a', projection: await actors.get('session:settings-a').snapshot() });
+  const enabledLabel = findReactElement(render().tree, node => node.type === 'label' && node.props.children[0].props.children === 'Enable subagents');
+  findReactElement(enabledLabel, node => node.props.checked === true).props.onChange({ target: { checked: false } });
+  await waitUntil(() => !store.getState().subagentSettingsBusy);
+  assert.equal(store.getState().projection.subagentSettings.enabled, false);
+  assert.equal((await actors.get('session:settings-b').snapshot()).subagentSettings.enabled, true);
+  assert.equal(defaults.enabled, false, 'future Sessions receive the newly saved default');
+  assert.equal(commands[0].type, 'session.subagent-settings.set');
+  assert.equal(commands[0].sessionId, 'session:settings-a');
+  assert.deepEqual(commands[0].settings, { ...initial, enabled: false });
+  findReactElement(render().tree, node => node.props.profileId !== undefined && node.props.mainProfileId !== undefined)
+    .props.onChange({ profileId: 'profile:chosen', reasoningEffort: 'low' });
+  await waitUntil(() => !store.getState().subagentSettingsBusy);
+  const fullLabel = findReactElement(render().tree, node => node.type === 'label' && node.props.children[0].props.children === 'Allow agents to fully configure subagents');
+  findReactElement(fullLabel, node => node.props.checked === false).props.onChange({ target: { checked: true } });
+  await waitUntil(() => !store.getState().subagentSettingsBusy);
+  const saved = { ...initial, enabled: false, profileId: 'profile:chosen', reasoningEffort: 'low', allowFullConfiguration: true };
+  assert.deepEqual(store.getState().projection.subagentSettings, saved);
+  assert.deepEqual((await actors.get('session:settings-b').snapshot()).subagentSettings, initial);
+  failure = 'before';
+  assert.equal(await store.getState().setSubagentSettings({ ...saved, enabled: true }), false);
+  assert.deepEqual(store.getState().projection.subagentSettings, saved);
+  assert.match(store.getState().error, /fixture_session_write_failed/);
+  failure = 'after';
+  assert.equal(await store.getState().setSubagentSettings({ ...saved, enabled: true }), false);
+  assert.equal(store.getState().projection.subagentSettings.enabled, true, 'a successful Session write remains visible when saving defaults fails');
+  assert.match(store.getState().error, /Session saved; defaults write failed/);
+  const projection = await actors.get('session:settings-a').snapshot();
+  assert.deepEqual((await decodeGuiProjection(projection)).subagentSettings, projection.subagentSettings);
+  await assert.rejects(decodeGuiProjection({ ...projection, subagentSettings: { ...saved, maxConcurrent: 0 } }), /conversation_projection_invalid/);
+  const { subagentSettings: _settings, ...unconfigured } = projection;
+  assert.equal((await decodeGuiProjection(unconfigured)).subagentSettings, undefined);
+  store.setState({ projection: unconfigured });
+  const missing = render();
+  assert.match(missing.html, /Subagents have not been configured/);
+  assert.doesNotMatch(missing.html, /role="switch"/, 'defaults must not appear as saved Session facts');
+});
+
+test('subagent draft edits update future defaults without starting a Session and travel with later Session creation', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:subagent-draft';
+  const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('fixture stops before Provider'); } }, emptyKernel(), fakeRunPreparation().port, 'draft');
+  t.after(() => actor.dispose());
+  const draft = { ...subagentFixture(), profileId: 'profile:draft', reasoningEffort: 'high' };
+  let creation, defaults = subagentFixture();
+  const calls = [];
+  installGuiFetch(t, async (url, init) => {
+    calls.push(url.pathname);
+    if (url.pathname === '/api/conversation/sessions') {
+      creation = JSON.parse(init.body);
+      await journal.createSession({ sessionId, displayTitle: 'Draft', workspaceBindings: [], subagentSettings: creation.subagentSettings });
+      return Response.json({ ok: true, data: await actor.snapshot() });
+    }
+    if (url.pathname === '/api/user-settings') {
+      if (init.method === 'PATCH') {
+        const { patches } = JSON.parse(init.body);
+        assert.deepEqual(patches, Object.fromEntries(Object.entries(draft).map(([key, value]) => [`agent.subagents.${key}`, value])));
+        defaults = { ...draft };
+        return Response.json({ ok: true, data: { settings: userSettingsWithSubagents(defaults), changedKeys: Object.keys(patches), activation: 'nextRun' } });
+      }
+      assert.equal(init.method ?? 'GET', 'GET');
+      const settings = userSettingsWithSubagents(defaults);
+      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, overriddenKeys: [], storePath: 'fixture' } });
+    }
+    if (url.pathname === '/api/conversation/catalog') return Response.json({ ok: true, data: { projects: [], sessions: [] } });
+    if (url.pathname.endsWith('/commands')) return Response.json({ ok: false, error: 'fixture_message_not_submitted' }, { status: 500 });
+    throw new Error(`unexpected request ${url.pathname}`);
+  });
+  const store = await loadGuiModelStore(t);
+  const profile = { id: 'profile:main', name: 'Main', enabled: true, thinking: 'disabled' };
+  store.setState({ profiles: [profile], selectedProfileId: profile.id, draftProjectId: 'project:chosen' });
+  assert.equal(await store.getState().setSubagentSettings(draft), true);
+  assert.equal(store.getState().sessionId, null);
+  assert.deepEqual(calls, ['/api/user-settings', '/api/user-settings'], 'editing saves and refreshes defaults without creating a Session or Loop');
+  assert.deepEqual(defaults, draft);
+  await assert.rejects(store.getState().sendMessage('Start after configuring.'), /fixture_message_not_submitted/);
+  assert.deepEqual(creation, { projectId: 'project:chosen', subagentSettings: draft });
+  assert.deepEqual(store.getState().projection.subagentSettings, draft);
+  assert.equal(store.getState().draftSubagentSettings, null);
+  store.getState().startNewSession();
+  assert.equal(store.getState().draftSubagentSettings, null, 'a new draft does not reuse an earlier explicit override');
 });

@@ -1,7 +1,9 @@
-import { decodeAgentContext, isLlmReasoningEffort } from '@deepcode/protocol';
+import type { SessionObservationSink } from './local-agent/observation.js';
+import { LoopFailure } from './local-agent/loopFailure.js';
+import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
-import type { ConversationCommand } from '@deepcode/protocol';
+import type { ConversationCommand, CommandJournalPort } from '@deepcode/protocol';
 import { responseFrames } from './responseFrames.js';
 import {
   CONVERSATION_COMMAND_VERSION,
@@ -22,6 +24,7 @@ import { createSessionService, SessionDeletionError, type SessionServiceFactory,
 
 declare const process: {
   env: Record<string, string | undefined>;
+  argv: string[];
   exitCode?: number;
   stdin: AsyncIterable<unknown>;
   stdout: {
@@ -35,11 +38,18 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 type BridgeRequest = {
   protocolVersion: typeof LOCAL_AGENT_PROTOCOL_VERSION;
   requestId: string;
-  operation: 'health' | 'delegationChanged' | 'activity' | 'createSession' | 'deleteSession' | 'submit' | 'snapshot' | 'statuses' | 'contextComposition' | 'read' | 'shutdown';
+  operation: string;
   data: Record<string, unknown>;
 };
 
-async function main(): Promise<void> {
+export interface BridgeExtension {
+  observation?: SessionObservationSink;
+  operations: readonly string[];
+  dispatch(service: SessionServicePort, operation: string, data: Record<string, unknown>, journal: CommandJournalPort): Promise<unknown>;
+  dispose(): void;
+}
+export async function startSessionServiceBridge(extensionFactory?: (send: (value: unknown) => Promise<void>) => BridgeExtension): Promise<void> {
+  const extension = extensionFactory?.(writeFrame);
   const apiBase = requiredEnvironment('DEEPCODE_LOCAL_AGENT_API_BASE');
   const serviceToken = requiredEnvironment('DEEPCODE_LOCAL_AGENT_TOKEN');
   const journal = new HttpCommandJournal({ apiBase, serviceToken });
@@ -53,6 +63,7 @@ async function main(): Promise<void> {
   const factory = await loadSessionServiceFactory();
   const candidate: unknown = await factory({
     journal,
+    ...(extension?.observation ? { observation: extension.observation } : {}),
     agentHost: new HttpAgentHostPort({ apiBase, serviceToken }),
     compositions: {
       create: async () => ({
@@ -79,14 +90,15 @@ async function main(): Promise<void> {
   const pending = new Set<Promise<void>>();
   try {
     for await (const line of readLines()) {
-      const request = decodeRequest(line);
+      const request = decodeRequest(line, extension?.operations);
       if (request.operation === 'shutdown') {
         shutdownRequest = request;
         break;
       }
       const task = (async () => {
         try {
-          const data = await dispatch(service, request);
+          const data = extension?.operations.includes(request.operation)
+            ? await extension.dispatch(service, request.operation, request.data, journal) : await dispatch(service, request);
           await writeFrame({
             protocolVersion: LOCAL_AGENT_PROTOCOL_VERSION,
             requestId: request.requestId, ok: true, data,
@@ -102,6 +114,7 @@ async function main(): Promise<void> {
       void task.finally(() => pending.delete(task)).catch(() => undefined);
     }
   } finally {
+    extension?.dispose();
     await Promise.allSettled(pending);
     await service.dispose();
     await outputTail;
@@ -118,10 +131,6 @@ async function dispatch(
   request: BridgeRequest,
 ): Promise<unknown> {
   switch (request.operation) {
-    case 'delegationChanged':
-      if (typeof request.data.enabled !== 'boolean') throw new Error('agent_delegation_status_invalid');
-      await service.delegationChanged(request.data.enabled);
-      return { recorded: true };
     case 'activity':
       return await service.activity();
     case 'health':
@@ -131,6 +140,7 @@ async function dispatch(
         sessionId: requiredString(request.data, 'sessionId'),
         displayTitle: requiredString(request.data, 'displayTitle'),
         workspaceBindings: decodeWorkspaceBindings(request.data.workspaceBindings),
+        ...(request.data.subagentSettings !== undefined ? { subagentSettings: decodeAgentSettings(request.data.subagentSettings) } : {}),
         ...(request.data.recipe !== undefined ? { recipe: decodeAgentRecipe(request.data.recipe) } : {}),
         ...(request.data.agentContext ? { agentContext: decodeAgentContext(request.data.agentContext) } : {}),
         ...(optionalString(request.data, 'profileId')
@@ -163,6 +173,7 @@ async function dispatch(
       );
     case 'shutdown':
       return { stopped: true };
+    default: throw new Error('session_service_operation_invalid');
   }
 }
 
@@ -182,7 +193,7 @@ function assertSessionServicePort(value: unknown): asserts value is SessionServi
   if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
   const methods = [
     'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'activity',
-    'contextComposition', 'read', 'replaceCapabilities', 'delegationChanged', 'dispose',
+    'contextComposition', 'read', 'replaceCapabilities', 'dispose',
   ] as const satisfies readonly (keyof SessionServicePort)[];
   for (const method of methods) {
     if (typeof value[method] !== 'function') throw new Error(`session_service_port_invalid:${method}`);
@@ -205,6 +216,9 @@ function decodeCommand(value: unknown): ConversationCommand {
       if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'runId', 'authorityId'])
         || !validId(value.runId) || !validId(value.authorityId)) throw new Error('conversation_command_invalid');
       return value as unknown as ConversationCommand;
+    case 'session.subagent-settings.set':
+      if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'settings'])) throw new Error('conversation_command_invalid');
+      return { ...value, settings: decodeAgentSettings(value.settings) } as unknown as ConversationCommand;
     case 'session.model-settings.set':
       if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'settings'])
         || !isRecord(value.settings)
@@ -214,6 +228,9 @@ function decodeCommand(value: unknown): ConversationCommand {
         throw new Error('conversation_command_invalid');
       }
       return value as unknown as ConversationCommand;
+    case 'session.workspaces.set':
+      if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'workspaceBindings'])) throw new Error('conversation_command_invalid');
+      return { ...value, workspaceBindings: decodeWorkspaceBindings(value.workspaceBindings) } as unknown as ConversationCommand;
     case 'session.directory-index.attach':
       if (
         !hasExactKeys(value, [
@@ -463,7 +480,7 @@ function validId(value: unknown): value is string {
     && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
-function decodeRequest(encoded: string): BridgeRequest {
+function decodeRequest(encoded: string, extensionOperations: readonly string[] = []): BridgeRequest {
   let value: unknown;
   try {
     value = JSON.parse(encoded) as unknown;
@@ -475,7 +492,7 @@ function decodeRequest(encoded: string): BridgeRequest {
     || value.protocolVersion !== LOCAL_AGENT_PROTOCOL_VERSION
     || typeof value.requestId !== 'string'
     || !value.requestId
-    || !['health', 'delegationChanged', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown'].includes(String(value.operation))
+    || !['health', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown', ...extensionOperations].includes(String(value.operation))
     || !isRecord(value.data)
   ) {
     throw new Error('session_service_request_invalid');
@@ -535,9 +552,8 @@ function writeLine(encoded: string): Promise<void> {
 function bridgeError(error: unknown): { code: string; message: string; details?: SessionDeletionError['details'] } {
   const message = error instanceof Error ? error.message : String(error);
   const [candidate] = message.split(':', 1);
-  const code = candidate && /^[a-z][a-z0-9_.-]{0,127}$/u.test(candidate)
-    ? candidate
-    : 'session_service_failed';
+  const code = error instanceof LoopFailure ? error.code
+    : candidate && /^[a-z][a-z0-9_.-]{0,127}$/u.test(candidate) ? candidate : 'session_service_failed';
   return { code, message, ...(error instanceof SessionDeletionError ? { details: error.details } : {}) };
 }
 
@@ -606,11 +622,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-void main().catch((error) => {
+export function reportBridgeFailure(error: unknown): void {
   process.exitCode = 1;
   const diagnostic = {
     ...bridgeError(error),
     ...(error instanceof AggregateError ? { causes: error.errors.map(bridgeError) } : {}),
   };
   process.stderr.write(`[session-service] ${JSON.stringify(diagnostic)}\n`);
-});
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void startSessionServiceBridge().catch(reportBridgeFailure);
+}

@@ -1,5 +1,5 @@
-import { decodeAgentRecipe, decodeAgentConfiguration, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@deepcode/protocol';
-import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentOperation, AgentSettings, UserSettings } from '@deepcode/protocol';
+import { decodeAgentRecipe, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@deepcode/protocol';
+import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentSettings, UserSettings } from '@deepcode/protocol';
 
 export const DEFAULT_AGENT_CONFIGURATION: AgentConfiguration = {
   context: { id: 'journal' }, compaction: { id: 'summary' }, controls: { id: 'standard' },
@@ -9,16 +9,12 @@ export interface AgentPreset extends AgentRecipe {
   id: string;
   name: string;
   capabilities: AgentCapabilities;
-  profileId?: string;
-  reasoningEffort?: import('@deepcode/protocol').LlmReasoningEffort;
-  configuration?: AgentConfiguration;
-  permissions?: UserSettings;
 }
 
 export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const builtins: AgentPreset[] = [
     { id: 'analysis', name: 'Analysis', capabilities: { messaging: 'parent', continuation: true, delegation: false } },
-    { id: 'collaboration', name: 'Collaboration', capabilities: { messaging: true, continuation: true, delegation: true } },
+    { id: 'collaboration', name: 'Collaboration', capabilities: { messaging: true, continuation: true, delegation: false } },
   ];
   const stored: unknown = JSON.parse(settings.presets ?? '[]');
   if (!Array.isArray(stored)) throw new Error('agent_presets_invalid');
@@ -31,11 +27,9 @@ export function agentPresets(settings: AgentSettings): AgentPreset[] {
       || item.profileId !== undefined && (typeof item.profileId !== 'string' || !item.profileId.trim())
       || item.reasoningEffort !== undefined && !isLlmReasoningEffort(item.reasoningEffort)) throw new Error('agent_presets_invalid');
     const { id: _id, name: _name, capabilities: _capabilities, ...recipe } = item;
-    decodeAgentRecipe(recipe);
+    const decodedRecipe = decodeAgentRecipe(recipe);
     ids.add(item.id);
-    if (item.permissions !== undefined) validatePermissionPatches(item.permissions);
-    builtins.push({ ...item, capabilities: decodeAgentCapabilities(item.capabilities),
-      ...(item.configuration ? { configuration: decodeAgentConfiguration(item.configuration) } : {}) });
+    builtins.push({ id: item.id, name: item.name, ...decodedRecipe, capabilities: decodeAgentCapabilities(item.capabilities) });
   }
   return builtins;
 }
@@ -66,5 +60,3 @@ export function agentPermissionPatches(...patches: Array<UserSettings | undefine
   }
   return Object.keys(permissions).length ? permissions : undefined;
 }
-
-export type AgentSpawn = Extract<AgentOperation, { action: 'spawn' }>;

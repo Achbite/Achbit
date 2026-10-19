@@ -1,5 +1,7 @@
 import type {
   ContextCompositionPartitionKind,
+  ContextManagementSettings,
+  RunRuntimeSnapshot,
   KernelPort,
   ModelMessage,
   ProviderPort,
@@ -24,11 +26,13 @@ export interface ContextMessageContribution {
 /** Implementations are selected together for one logical request, including retries. */
 export interface SessionCapabilities {
   readonly context: {
+    readonly windowTokens: (runtime: RunRuntimeSnapshot) => number;
     readonly prepare: (
       input: Parameters<typeof buildAgentProviderRequest>[0], signal: AbortSignal,
     ) => ReturnType<typeof buildAgentProviderRequest>;
   };
   readonly compaction: {
+    readonly settings: (runtime: RunRuntimeSnapshot) => ContextManagementSettings;
     readonly prepare: (
       input: Parameters<typeof prepareContextCompaction>[0], signal: AbortSignal,
     ) => ReturnType<typeof prepareContextCompaction> | Promise<ReturnType<typeof prepareContextCompaction>>;

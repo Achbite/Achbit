@@ -9,6 +9,7 @@ import { getLlmProfiles, getModelConnections, patchModelConnections, queryModelU
 import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useSettingsSearchEntries } from '../settingsSearch';
+import { useSettingsHelp } from '../SettingsHelp';
 import { AgentSettingsSection } from './CategorizedSettingsSections';
 import ModelEditor from '../model-services/ModelEditor';
 import SubscriptionAuth from '../model-services/SubscriptionAuth';
@@ -23,6 +24,7 @@ type Page = { kind: 'list' } | { kind: 'usage'; connectionId?: string } | { kind
 
 function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProviderProfile[]; connections: ModelConnection[] }) {
   const { language } = useModelLanguage();
+  const { helpId, helpEvents, help } = useSettingsHelp(t(language, 'settings.approvalReview.description'));
   const selected = useSettingsStore(state => String(state.effectiveSettings['agent.approvalReview.profileId'] ?? ''));
   const effort = useSettingsStore(state => String(state.effectiveSettings['agent.approvalReview.reasoningEffort'] ?? ''));
   const [saving, setSaving] = useState(false);
@@ -41,7 +43,7 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
     finally { setSaving(false); }
   };
   return <details className="model-editor model-divider">
-    <summary><strong>{t(language, 'settings.approvalReview.title')}</strong>
+    <summary aria-describedby={helpId} {...helpEvents}>{help}<strong>{t(language, 'settings.approvalReview.title')}</strong>
       <span>{selected ? profile?.name ?? t(language, 'settings.approvalReview.unavailable') : t(language, 'settings.approvalReview.conversationModel')}
         {effort ? ` · ${t(language, `settings.llm.effort.${effort}`)}` : ''}</span></summary>
     <div className="model-form-grid model-reviewer-settings">
@@ -67,7 +69,6 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
         </NativeSelect>
       </label>
       {unsupportedEffort && <p className="model-wide" role="alert">{t(language, 'settings.approvalReview.effortUnavailable')}</p>}
-      <p className="model-wide">{t(language, 'settings.approvalReview.description')}</p>
       {error && <div className="settings-error model-wide" role="alert">{error}</div>}
     </div>
   </details>;
@@ -127,7 +128,7 @@ function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onSave
       {mode === 'subscription' && <SubscriptionAuth connection={current} onChanged={() => onSaved()} />}
       <UiSettingsContributions slot="settings.connection.detail" onConnectionChanged={() => onSaved()} input={{ kind: 'settings.connection', connection: current, locale: language, theme }} />
       <div className="model-heading model-divider"><h3>{text('模型', 'Models')}</h3><button disabled={!!newProfile} onClick={() => setNewProfile(newModel(draft, adapter))}>{text('添加模型', 'Add model')}</button></div>
-      {models.map(profile => <ModelEditor key={`${profile.id}:${JSON.stringify(profile)}`} profile={profile} adapter={adapter} defaultId={defaultId} onSaved={() => onSaved()} />)}
+      {models.map(profile => <ModelEditor key={profile.id} profile={profile} adapter={adapter} defaultId={defaultId} onSaved={() => onSaved()} />)}
       {newProfile && <ModelEditor key={newProfile.id} profile={newProfile} adapter={adapter} onSaved={async () => { await onSaved(); setNewProfile(null); }} onRemove={() => setNewProfile(null)} />}
       <div className="model-actions model-divider"><button onClick={() => void onSaved()}>{text('重新加载', 'Reload')}</button><button className="model-danger model-push" disabled={busy || models.length > 0} onClick={async () => {
         setBusy(true); try { data(await patchModelConnections({ removeConnectionId: draft.id })); await onSaved(); onBack(); } catch (e) { setError(message(e)); } finally { setBusy(false); }
