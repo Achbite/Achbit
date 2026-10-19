@@ -4,12 +4,16 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[cfg(all(windows, feature = "debug-control"))]
+mod debug_windows;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, feature = "debug-control"))]
+pub use debug_windows::{capture as debug_capture, command as debug_command};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,8 +79,12 @@ pub async fn deepcode_pick_path(
     let parent = window.clone();
     window
         .run_on_main_thread(move || {
-            #[cfg(windows)]
+            #[cfg(all(windows, not(feature = "debug-control")))]
             let result = windows::pick(&parent, &options);
+            #[cfg(all(windows, feature = "debug-control"))]
+            if let Err(error) = windows::begin(&parent, options, sender.clone()) {
+                let _ = sender.send(Err(error));
+            }
             #[cfg(all(target_os = "macos", not(feature = "debug-control")))]
             let result = macos::pick(&parent, &options);
             #[cfg(all(target_os = "macos", feature = "debug-control"))]
@@ -85,7 +93,7 @@ pub async fn deepcode_pick_path(
             }
             #[cfg(target_os = "linux")]
             let result = linux::pick(&parent, &options);
-            #[cfg(not(all(target_os = "macos", feature = "debug-control")))]
+            #[cfg(not(all(any(target_os = "macos", windows), feature = "debug-control")))]
             let _ = sender.send(result);
         })
         .map_err(|error| error.to_string())?;

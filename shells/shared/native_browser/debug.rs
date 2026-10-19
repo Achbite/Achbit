@@ -238,13 +238,7 @@ async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String>
     use objc2::{msg_send, runtime::AnyObject, MainThreadOnly};
     use objc2_foundation::{NSError, NSString};
     use objc2_web_kit::{WKContentWorld, WKWebView};
-    let script = if request["name"] == "readiness" {
-        // Native registration precedes page-script initialization. Report the
-        // actual lifecycle state without invoking an unavailable action bridge.
-        "return JSON.stringify({ok:true,value:{readyState:document.readyState,bridgeLoaded:!!window.__DEEPCODE_DEBUG_DOM__,hostStatus:document.querySelector('[data-host-status]')?.getAttribute('data-host-status')??null,components:window.__DEEPCODE_DEBUG_UI__?.list().map(({slot})=>({slot}))??[]}});".to_string()
-    } else {
-        format!("try {{ if (!window.__DEEPCODE_DEBUG_DOM__) throw Error('debug_bridge_not_loaded'); return JSON.stringify({{ok:true,value:await window.__DEEPCODE_DEBUG_DOM__.dispatch({request})}}); }} catch(error) {{ return JSON.stringify({{ok:false,error:String(error)}}); }}")
-    };
+    let script = dispatch_script(&request);
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
         let webview = &*(platform.inner() as *const WKWebView);
@@ -255,18 +249,7 @@ async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String>
                 Err("debug_script_returned_no_result".to_string())
             } else {
                 let text: *mut NSString = msg_send![value, description];
-                serde_json::from_str::<Value>(&(*text).to_string())
-                    .map_err(|error| error.to_string())
-                    .and_then(|response| {
-                        if response["ok"] == true {
-                            Ok(response["value"].clone())
-                        } else {
-                            Err(response["error"]
-                                .as_str()
-                                .unwrap_or("debug_script_response_invalid")
-                                .to_owned())
-                        }
-                    })
+                decode_dispatch(&(*text).to_string())
             };
             let _ = tx.send(result);
         });
@@ -286,12 +269,105 @@ async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String>
     .await
     .map_err(|error| error.to_string())?
 }
-#[cfg(not(target_os = "macos"))]
+
+#[cfg(any(target_os = "macos", windows))]
+fn dispatch_script(request: &Value) -> String {
+    if request["name"] == "readiness" {
+        // Native registration precedes page-script initialization. Report the
+        // actual lifecycle state without invoking an unavailable action bridge.
+        "return JSON.stringify({ok:true,value:{readyState:document.readyState,bridgeLoaded:!!window.__DEEPCODE_DEBUG_DOM__,hostStatus:document.querySelector('[data-host-status]')?.getAttribute('data-host-status')??null,components:window.__DEEPCODE_DEBUG_UI__?.list().map(({slot})=>({slot}))??[]}});".to_string()
+    } else {
+        format!("try {{ if (!window.__DEEPCODE_DEBUG_DOM__) throw Error('debug_bridge_not_loaded'); return JSON.stringify({{ok:true,value:await window.__DEEPCODE_DEBUG_DOM__.dispatch({request})}}); }} catch(error) {{ return JSON.stringify({{ok:false,error:String(error)}}); }}")
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn decode_dispatch(text: &str) -> Result<Value, String> {
+    let response: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    if response["ok"] == true {
+        Ok(response["value"].clone())
+    } else {
+        Err(response["error"]
+            .as_str()
+            .unwrap_or("debug_script_response_invalid")
+            .to_owned())
+    }
+}
+
+#[cfg(windows)]
+async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String> {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows::core::HSTRING;
+    // ExecuteScript returns a Promise object before an async action settles.
+    // Runtime.evaluate awaits that same invocation; timeout never replays it.
+    let params = json!({"expression":format!("(async()=>{{{}}})()", dispatch_script(&request)),"awaitPromise":true,"returnByValue":true}).to_string();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    view.with_webview(move |platform| {
+        let failed = tx.clone();
+        let started = (|| -> windows::core::Result<()> {
+            unsafe {
+                let webview = platform.controller().CoreWebView2()?;
+                let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                    move |status, text| {
+                        let result = status.map_err(|error| error.to_string()).and_then(|()| {
+                            let response: Value =
+                                serde_json::from_str(&text).map_err(|error| error.to_string())?;
+                            if response.get("exceptionDetails").is_some() {
+                                return Err(format!(
+                                    "debug_script_exception: {}",
+                                    response["exceptionDetails"]
+                                ));
+                            }
+                            decode_dispatch(
+                                response["result"]["value"]
+                                    .as_str()
+                                    .ok_or("debug_script_returned_no_result")?,
+                            )
+                        });
+                        let _ = tx.send(result);
+                        Ok(())
+                    },
+                ));
+                webview.CallDevToolsProtocolMethod(
+                    &HSTRING::from("Runtime.evaluate"),
+                    &HSTRING::from(params),
+                    &handler,
+                )
+            }
+        })();
+        if let Err(error) = started {
+            let _ = failed.send(Err(error.to_string()));
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(Duration::from_secs(30))
+            .map_err(|error| format!("debug_ui_response_timeout: {error}"))?
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn dispatch(_view: tauri::Webview, _request: Value) -> Result<Value, String> {
     Err("debug_platform_not_supported".into())
 }
 
 async fn dialogs(app: &tauri::AppHandle, name: &str, args: Value) -> Result<Value, String> {
+    #[cfg(windows)]
+    {
+        let parent = app
+            .get_window("main")
+            .ok_or("debug_window_not_found")?
+            .hwnd()
+            .map_err(|error| error.to_string())?
+            .0 as isize;
+        let name = name.to_string();
+        return tauri::async_runtime::spawn_blocking(move || {
+            crate::native_path_dialog::debug_command(&name, &args, parent)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     #[cfg(target_os = "macos")]
     {
         let name = name.to_string();
@@ -325,7 +401,7 @@ async fn dialogs(app: &tauri::AppHandle, name: &str, args: Value) -> Result<Valu
         .await
         .map_err(|error| error.to_string())?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (app, name, args);
         Err("debug_platform_not_supported".into())
@@ -337,6 +413,19 @@ async fn snapshot(app: &tauri::AppHandle, view: tauri::Webview, id: &str) -> Res
     let directory = directory(app).join("captures");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let path = directory.join(format!("{id}.png"));
+    #[cfg(windows)]
+    {
+        let native_path = path.clone();
+        if let Some(mut native) = tauri::async_runtime::spawn_blocking(move || {
+            crate::native_path_dialog::debug_capture(&native_path)
+        })
+        .await
+        .map_err(|error| error.to_string())??
+        {
+            native["durationMs"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+            return Ok(native);
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let native_path = path.clone();
@@ -458,6 +547,13 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         let (id, frame) = target(&input)?;
         if id == "native-dialog" {
             return dialogs(&app, "inspect", input["args"].clone()).await;
+        }
+        if action == "debug:ready" && app.get_webview(&id).is_none() {
+            // The native endpoint is registered before the main WebView exists.
+            // This is a startup state, not a failed action to retry.
+            return Ok(
+                json!({"surfaceStatus":"not-created","readyState":null,"bridgeLoaded":false,"hostStatus":null,"components":[]}),
+            );
         }
         let view = app.get_webview(&id).ok_or("debug_surface_not_found")?;
         let name = match action {
