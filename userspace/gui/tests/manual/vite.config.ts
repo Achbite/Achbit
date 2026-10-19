@@ -9,6 +9,7 @@ export default defineConfig({
       typography: fileURLToPath(new URL('./typography.html', import.meta.url)),
       reader: fileURLToPath(new URL('./reader.html', import.meta.url)),
       approvalModel: fileURLToPath(new URL('./approval-model.html', import.meta.url)),
+      contextSettings: fileURLToPath(new URL('./context-settings.html', import.meta.url)),
       composer: fileURLToPath(new URL('./composer.html', import.meta.url)),
       imageReview: fileURLToPath(new URL('./image-review.html', import.meta.url)),
       followModel: fileURLToPath(new URL('./follow-model.html', import.meta.url)),

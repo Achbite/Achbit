@@ -1,6 +1,6 @@
 dialog.app-modal.usage-widget-settings { height: fit-content; max-height: calc(100vh - 32px); margin: auto; width: min(400px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--dc-border); border-radius: 14px; color: var(--dc-foreground); background: var(--dc-surface-raised); font: 13px var(--dc-font-ui); }
-.usage-widget-settings form { padding: 20px; }
-.usage-widget-settings header, .usage-widget-settings__row, .usage-widget-settings footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.usage-widget-settings__body { padding: 20px; }
+.usage-widget-settings header, .usage-widget-settings__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .usage-widget-settings header { margin-bottom: 18px; font-size: 15px; }
 .usage-widget-settings__row { margin: 16px 0; }
 .usage-widget-settings p { color: var(--dc-muted); font-size: 12px; line-height: 1.6; }
@@ -9,6 +9,5 @@ dialog.app-modal.usage-widget-settings { height: fit-content; max-height: calc(1
 .usage-widget-settings button { cursor: pointer; }
 .usage-widget-settings button:disabled { cursor: default; opacity: .6; }
 .usage-widget-settings header button { padding: 2px 7px; border: 0; background: transparent; font-size: 20px; }
-.usage-widget-settings footer { justify-content: flex-end; margin-top: 22px; }
 
 dialog.app-modal.usage-widget-settings::backdrop { background: #0005; }

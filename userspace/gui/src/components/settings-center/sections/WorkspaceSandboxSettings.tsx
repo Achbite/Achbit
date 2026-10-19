@@ -27,7 +27,6 @@ export default function WorkspaceSandboxSettings({ chinese }: { chinese: boolean
         </div>
         {environment?.os === 'windows' && !sandbox?.available && <button className="settings-button" disabled={pending} onClick={() => void initialize()}>{pending ? (chinese ? '正在检查…' : 'Checking…') : (chinese ? '检查 Windows 支持' : 'Check Windows support')}</button>}
       </div>
-      {environment?.os === 'windows' && !sandbox?.available && <p className="settings-field__description">{chinese ? 'Windows 使用系统隔离能力限制工作区命令的文件访问。检查失败时会显示具体原因。' : 'Windows uses system isolation to restrict file access for workspace commands. If the check fails, its reason is shown here.'}</p>}
       {error && <p className="settings-error" role="alert">{error}</p>}
     </div>
   </section>;

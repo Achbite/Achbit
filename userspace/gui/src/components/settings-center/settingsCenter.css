@@ -362,7 +362,6 @@
   font-size: calc(14px * var(--dc-ui-font-scale, 1));
 }
 
-.settings-field__source,
 .settings-source-note {
   display: inline-flex;
   align-items: center;
@@ -376,17 +375,10 @@
   white-space: nowrap;
 }
 
-.settings-field__source--workspace,
 .settings-source-note {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--dc-warning) 35%, transparent);
   background: color-mix(in srgb, var(--dc-warning) 8%, transparent);
-}
-
-.settings-field__source--user {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--dc-success) 35%, transparent);
-  background: color-mix(in srgb, var(--dc-success) 8%, transparent);
 }
 
 .settings-field__key,
@@ -444,7 +436,7 @@
   accent-color: var(--dc-foreground);
 }
 
-.settings-field__reset,
+.settings-field__discard,
 .settings-action-button {
   min-height: 30px;
   border: 1px solid var(--line);
@@ -456,20 +448,20 @@
   cursor: pointer;
 }
 
-.settings-field__reset:hover,
+.settings-field__discard:hover,
 .settings-action-button:hover {
   border-color: var(--dc-border-strong);
   background: color-mix(in srgb, var(--dc-foreground) 10%, transparent);
   color: var(--text-strong);
 }
 
-.settings-field__reset:disabled,
+.settings-field__discard:disabled,
 .settings-action-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
 
-.settings-field__reset:disabled:hover,
+.settings-field__discard:disabled:hover,
 .settings-action-button:disabled:hover {
   border-color: var(--line);
   background: color-mix(in srgb, var(--dc-foreground) 6%, transparent);
@@ -791,9 +783,8 @@
 .settings-command-rule summary, .settings-command-rule pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 
 /* A single row language for the settings pages; status warnings keep their semantics. */
-.settings-field__source { border:0; border-radius:0; padding:0; background:transparent; color:var(--dc-muted); }
-.settings-field__reset { border-color:transparent; background:transparent; }
-.settings-field__reset:hover:not(:disabled) { background:var(--dc-surface-hover); }
+.settings-field__discard { border-color:transparent; background:transparent; }
+.settings-field__discard:hover:not(:disabled) { background:var(--dc-surface-hover); }
 .settings-field__select { border-color:transparent; background:transparent; }
 .settings-field__select:hover:not(:disabled) { background:var(--dc-surface-hover); }
 /* Keep the native menu and keyboard handling, without the macOS focus bezel. */
