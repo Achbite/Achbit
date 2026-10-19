@@ -3210,15 +3210,56 @@ test('completed Provider cancellation preserves pure cancellation and independen
     await waitUntil(() => completed, 'Provider completion observed before cancellation');
     await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
       commandId: 'command:cancel', sessionId, runId });
-    const result = await waitForProjection(actor, value => ['failed', 'indeterminate'].includes(value.run?.status));
-    assert.equal(result.run.status, kind === 'cancel' ? 'indeterminate' : 'failed');
-    if (kind === 'cancel') assert.equal(result.terminalError.code, 'provider_turn_outcome_unknown');
+    const result = await waitForProjection(actor, value => ['failed', 'cancelled'].includes(value.run?.status));
+    assert.equal(result.run.status, kind === 'cancel' ? 'cancelled' : 'failed');
+    if (kind === 'cancel') {
+      assert.equal(result.terminalError, null);
+      assert.equal(result.failureSnapshot ?? null, null);
+      assert.equal(singleEvent(await readEvents(journal, sessionId), 'provider.turn.settled').payload.outcome, 'cancelled');
+    }
     if (kind === 'failure') assert.deepEqual(result.terminalError, { code: failure.code, message: failure.message });
     if (kind === 'secondary') assert.deepEqual(result.terminalError.diagnostics.secondary,
       [{ code: failure.code, message: failure.message }]);
     assert.equal(sends, 1);
     assert.equal(preparation.released.length, 1);
   });
+});
+
+test('stopping an active Provider cancels its turn and Run without executing incomplete calls or creating a failure snapshot', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:ordinary-provider-stop';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const started = Promise.withResolvers();
+  const preparation = fakeRunPreparation({ tools: [{ toolBindingRef: 'binding:stop-read', name: 'fs.read',
+    description: 'Read.', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    origin: 'coreBuiltin', availability: 'callable', possibleEffects: ['workspaceRead'] }] });
+  const actor = actorWith(journal, sessionId, { async *stream(request, signal) {
+    yield providerEvent(request.requestId, 'tool.call', { callId: 'call:unfinished-read', name: 'fs_read', input: { path: 'fixture.txt' } });
+    started.resolve(request.runId);
+    await waitForAbort(signal);
+    throw signal.reason;
+  } }, emptyKernel({ async execute() { assert.fail('an unfinished Provider turn must not execute its tools'); } }), preparation.port, 'ordinary-stop');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Begin inspection.'));
+  const runId = await started.promise;
+  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:stop' });
+  const state = await actor.snapshot();
+  assert.equal(state.run.status, 'cancelled');
+  assert.equal(state.terminalError, null);
+  assert.equal(state.failureSnapshot ?? null, null);
+  const events = await readEvents(journal, sessionId);
+  const terminal = singleEvent(events, 'provider.turn.settled');
+  assert.equal(terminal.payload.outcome, 'cancelled');
+  assert.equal('error' in terminal.payload, false);
+  assert.equal(events.some(event => event.type === 'tool.requested'), false);
+  assert.equal(events.some(event => event.type === 'run.failure.snapshot'), false);
+  assert.ok(singleEvent(events, 'run.runtime.released').sequence < singleEvent(events, 'run.settled').sequence);
+  assert.equal(preparation.released.length, 1);
+  const { readFile } = await import('node:fs/promises');
+  const { default: Ajv } = await import('ajv/dist/2020.js');
+  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
+  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/ProviderTurnSettledPayload' });
+  assert.equal(validate(terminal.payload), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...terminal.payload, error: { code: 'not-an-error', message: 'A normal stop has no error.' } }), false);
 });
 
 test('Provider HTTP cancellation does not replace an independent error or secondary cleanup failure', async () => {
@@ -5668,9 +5709,12 @@ for (const outcome of ['failed', 'cancelled']) test(`an unfinished plan preview 
   const streaming = await waitForProjection(actor, (p) => p.assistantDraft?.planPreview?.title === 'Unfinished');
   if (outcome === 'cancelled') await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId: streaming.run.runId, commandId: 'command:cancel-preview' });
   else release();
-  // An interrupted Provider with no terminal receipt keeps the existing unknown-outcome contract.
-  const settled = await waitForProjection(actor, (p) => p.run?.status === (outcome === 'cancelled' ? 'indeterminate' : 'failed'));
-  if (outcome === 'cancelled') assert.equal(settled.terminalError.code, 'provider_turn_outcome_unknown');
+  // An intentional stop cancels the draft; unrelated Provider failures remain errors.
+  const settled = await waitForProjection(actor, (p) => p.run?.status === outcome);
+  if (outcome === 'cancelled') {
+    assert.equal(settled.terminalError, null);
+    assert.equal(settled.failureSnapshot ?? null, null);
+  }
   else assert.equal(settled.terminalError.code, 'fixture_provider_failed');
   assert.equal(settled.assistantDraft, null);
   assert.equal(settled.pendingPlan, null);

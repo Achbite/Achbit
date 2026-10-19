@@ -2822,6 +2822,18 @@ fn validate_new_event(
                         )?;
                     }
                 }
+                "cancelled" => {
+                    exact_object(
+                        payload,
+                        &[
+                            "providerRequestId",
+                            "purpose",
+                            "providerRuntimeRef",
+                            "outcome",
+                        ],
+                        &[],
+                    )?;
+                }
                 "failed" | "indeterminate" => {
                     exact_object(
                         payload,
@@ -5677,6 +5689,26 @@ mod tests {
                 "plugins": []
             }
         })
+    }
+
+    #[test]
+    fn cancelled_provider_turn_has_no_error_or_completed_call_facts() {
+        let event = json!({"type":"provider.turn.settled", "sessionId":"session:cancel",
+            "runId":"run:cancel", "payload":{"providerRequestId":"request:cancel", "purpose":"agent",
+            "providerRuntimeRef":"provider-runtime:cancel", "outcome":"cancelled"}});
+        validate_new_event(&event, false).unwrap();
+        let mut invalid = event.clone();
+        invalid["payload"]["error"] = json!({"code":"cancelled", "message":"Not a failure"});
+        assert!(validate_new_event(&invalid, false).is_err());
+        let mut invalid = event.clone();
+        invalid["payload"]["orderedCallIds"] = json!([]);
+        assert!(validate_new_event(&invalid, false).is_err());
+        let mut failed = event;
+        failed["payload"]["outcome"] = json!("failed");
+        assert!(validate_new_event(&failed, false).is_err());
+        failed["payload"]["error"] =
+            json!({"code":"provider_failed", "message":"Original failure"});
+        validate_new_event(&failed, false).unwrap();
     }
 
     #[test]

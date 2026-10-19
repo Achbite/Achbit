@@ -4850,6 +4850,19 @@ test('failure details count retries within each model request and retain source 
   assert.match(html, /6 个模型请求，发送 6 次/);
   assert.match(html, /权限审查/);
   assert.doesNotMatch(html, /重试 6 次/);
+  for (const language of ['zh-CN', 'en-US']) {
+    const cancelled = renderToStaticMarkup(createElement(RunFailureDetails, { language, onError() {}, projection: {
+      sessionId: 'session:cancelled', run: { runId: 'run:cancelled', status: 'cancelled' }, terminalError: null,
+      providerAttempts: [{ ...attempts[0], phase: 'failed', error: { code: 'agent_loop_failed', message: 'user_cancelled' } }],
+    } }));
+    assert.equal(cancelled, '', 'normal cancellation does not create an error or recovery panel');
+    const cleanupFailure = renderToStaticMarkup(createElement(RunFailureDetails, { language, onError() {}, projection: {
+      sessionId: 'session:cleanup', run: { runId: 'run:cleanup', status: 'releaseFailed' }, providerAttempts: [],
+      terminalError: { code: 'cleanup_failed', message: 'Original cleanup failure',
+        diagnostics: { source: 'session', phase: 'loop', category: 'internal', retryable: false, causes: [], stopReason: 'user_cancelled' } },
+    } }));
+    assert.match(cleanupFailure, /Original cleanup failure/u);
+  }
   const source = renderToStaticMarkup(createElement(SourceReferences, { language: 'zh-CN', references: {
     citations: [{ title: 'Actual documentation', url: 'https://example.test/docs' }], unresolved: true,
   } }));

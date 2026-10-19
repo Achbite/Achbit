@@ -1763,6 +1763,16 @@
     "ProviderTurnSettledPayload": {
       "oneOf": [
         {
+          "type": "object", "additionalProperties": false,
+          "required": ["providerRequestId", "purpose", "providerRuntimeRef", "outcome"],
+          "properties": {
+            "providerRequestId": {"$ref": "#/$defs/Id"},
+            "purpose": {"enum": ["agent", "contextCompaction", "approvalReview"]},
+            "providerRuntimeRef": {"$ref": "#/$defs/Id"},
+            "outcome": {"const": "cancelled"}
+          }
+        },
+        {
           "type": "object",
           "additionalProperties": false,
           "required": ["providerRequestId", "purpose", "providerRuntimeRef", "outcome", "orderedCallIds"],

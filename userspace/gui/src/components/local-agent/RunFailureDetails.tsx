@@ -59,7 +59,6 @@ export function RunFailureDetails({ projection, language, onError }: {
   const snapshot = projection.failureSnapshot;
   const requests = groupProviderAttempts((projection.providerAttempts ?? [])
     .filter(attempt => snapshot?.providerAttemptIds.includes(attempt.providerAttemptId)));
-  const cancelled = error.diagnostics?.stopReason === 'user_cancelled';
   const continueTask = async (inNewSession: boolean) => {
     setBusy(true);
     try {
@@ -77,7 +76,7 @@ export function RunFailureDetails({ projection, language, onError }: {
     finally { setBusy(false); }
   };
   return <article className="local-agent__terminal-error">
-    <p>{cancelled ? (zh ? '已收到取消请求，本次生成未完成。' : 'Cancelled. This generation did not finish.') : error.code === 'plan_incomplete'
+    <p>{error.code === 'plan_incomplete'
       ? (zh ? '本次运行已停止，计划仍有未完成的步骤。' : 'The run stopped with unfinished plan steps.') : error.message}</p>
     <ErrorDetails error={error} language={language} />
     {snapshot && <details><summary>{zh ? '失败时的状态' : 'State at failure'}</summary>

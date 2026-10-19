@@ -346,14 +346,17 @@ for (const malformedFirst of [false, true]) test(`cancelling an independent revi
   const running = await actor.snapshot();
   await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId,
     commandId: 'command:cancel-review', runId: running.run.runId });
-  const stopped = await waitForProjection(actor, state => state.run?.status === 'indeterminate');
+  const stopped = await waitForProjection(actor, state => state.run?.status === 'cancelled');
+  assert.equal(stopped.terminalError, null);
+  assert.equal(stopped.failureSnapshot ?? null, null);
   assert.equal(stopped.pendingApproval, null);
   assert.equal(executions, 0);
   const events = await readEvents(journal, sessionId);
   assert.equal(reviews, malformedFirst ? 2 : 1);
   const review = events.filter(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview').at(-1);
   assert.equal(review.payload.providerRuntimeRef, 'provider-runtime:reviewer');
-  assert.equal(review.payload.outcome, 'indeterminate');
+  assert.equal(review.payload.outcome, 'cancelled');
+  assert.equal('error' in review.payload, false);
   assert.equal(events.some(event => event.type === 'approval.resolved'), false);
   assert.equal(preparation.released.length, 1);
 });

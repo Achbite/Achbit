@@ -764,6 +764,17 @@ export async function runAgentLoop(
       }
       return finishingResult(runId, { outcome: 'failed', error: failure });
     }
+    // Intentional cancellation is a local terminal outcome, not a failed generation.
+    // Only the exact abort reason qualifies; independent errors and cleanup failures keep their facts.
+    if (userCancelled && requestError === signal.reason && !releaseFailed) {
+      if (pendingProvider) {
+        await commit(providerTurnTerminalEvent(snapshot.state.sessionId, runId, pendingProvider,
+          providerRuntimeForPurpose(runRuntimeSnapshot(snapshot, runId), pendingProvider.purpose).providerRuntimeRef,
+          { outcome: 'cancelled' }));
+        snapshot = await deps.readSnapshot();
+      }
+      return await cancelRun(snapshot, { type: 'cancel', runId }, deps, commit);
+    }
     const unknownTurn = pendingProvider;
     if (unknownTurn && !hasSettlement(snapshot.events, runId)) {
       const cause = localAgentError(error);
@@ -803,11 +814,6 @@ export async function runAgentLoop(
       && !(error instanceof LoopFailure && error.code === 'tool_cancel_cleanup_failed')
     ) {
       return { status: 'suspended', runId };
-    }
-    if (userCancelled
-      && !releaseFailed
-      && !(error instanceof LoopFailure && error.code === 'tool_cancel_cleanup_failed')) {
-      return await cancelRun(snapshot, { type: 'cancel', runId }, deps, commit);
     }
     const failure = localAgentError(error);
     if (!hasSettlement(snapshot.events, runId)) {
@@ -1016,6 +1022,7 @@ async function consumeTextAttempt(
         throw new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
     }
   }
+  throwIfAborted(signal);
   if (!completed) {
     throw new LoopFailure('provider_stream_incomplete', '文本决策请求 Provider 流未产生完成事件。');
   }
@@ -1229,6 +1236,7 @@ async function consumeProviderOutput(
         throw new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
     }
   }
+  throwIfAborted(signal);
   if (!completed) throw new LoopFailure('provider_stream_incomplete', 'Provider 流未产生完成事件。');
   if (
     orderedOutputItems.length > 0
@@ -2772,7 +2780,7 @@ export function providerTurnTerminalEvent(
   runId: string,
   composition: SessionState['contextCompositions'][number],
   providerRuntimeRef: string,
-  settlement: Extract<RunSettlement, { outcome: 'failed' | 'indeterminate' }>,
+  settlement: Extract<RunSettlement, { outcome: 'failed' | 'indeterminate' | 'cancelled' }>,
 ): NewSessionEvent {
   return {
     type: 'provider.turn.settled',
@@ -2782,8 +2790,8 @@ export function providerTurnTerminalEvent(
       providerRequestId: composition.providerRequestId,
       purpose: composition.purpose,
       providerRuntimeRef,
-      outcome: settlement.outcome,
-      error: { ...settlement.error },
+      ...settlement,
+      ...('error' in settlement ? { error: { ...settlement.error } } : {}),
     },
   };
 }

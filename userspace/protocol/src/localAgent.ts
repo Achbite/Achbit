@@ -688,6 +688,7 @@ export type ProviderTurnSettlement = {
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
   providerRuntimeRef: string;
 } & (
+  | { outcome: 'cancelled' }
   | {
       outcome: 'completed';
       orderedCallIds: string[];

@@ -94,7 +94,7 @@ export interface ProviderTurnState {
   providerRequestId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
   providerRuntimeRef: string;
-  outcome: 'completed' | 'failed' | 'indeterminate';
+  outcome: 'completed' | 'failed' | 'cancelled' | 'indeterminate';
   orderedCallIds?: string[];
   reasoningContent?: string;
   reasoningSignature?: string;
@@ -994,7 +994,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
                   }
                 : {}),
             }
-          : { error: { ...event.payload.error } }),
+          : event.payload.outcome === 'cancelled' ? {} : { error: { ...event.payload.error } }),
         sequence: event.sequence,
       };
       if (settlement.outcome === 'completed') {
