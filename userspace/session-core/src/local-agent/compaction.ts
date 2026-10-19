@@ -1,5 +1,6 @@
 import type {
   ContextCompositionReceipt,
+  ContextManagementSettings,
   ProviderRequest,
   RunRuntimeSnapshot,
   SessionEvent,
@@ -23,7 +24,7 @@ export interface PreparedContextCompaction {
 
 const COMPACTION_INSTRUCTIONS = `Summarize the supplied conversation into a factual handoff for continuing the user's task.
 Preserve the user's goal, confirmed decisions and plans, constraints, unresolved questions, necessary identifiers, paths, commands, errors, completed and pending work, and relevant tool results.
-Separate facts, inferences, and unknowns. Do not answer the task, call tools, or take action. Return only the concise Markdown summary; omit internal runtime phases, repeated progress snapshots, repetitive logs, and obsolete details.`;
+Separate facts, inferences, and unknowns. Keep exact evidence references and note which conclusions were superseded; historical observations are not refreshed state. Do not answer the task, call tools, or take action. Return only the concise Markdown summary; omit internal runtime phases, repeated progress snapshots, repetitive logs, and obsolete details.`;
 
 export function prepareContextCompaction(input: {
   sessionId: string;
@@ -81,9 +82,10 @@ export function pressureCompactionCutoff(
   runId: string,
   currentReceipt: ContextCompositionReceipt,
   runtime: RunRuntimeSnapshot,
+  budget = runtime.provider.contextWindowTokens,
 ): number | null {
   const latestCheckpoint = [...snapshot.events].reverse().find((event): event is Extract<SessionEvent, { type: 'context.compacted' }> => event.type === 'context.compacted');
-  if (estimateContextInput(snapshot, currentReceipt, runtime) + runtime.provider.maxOutputTokens < runtime.provider.contextWindowTokens) return null;
+  if (estimateContextInput(snapshot, currentReceipt, runtime) + runtime.provider.maxOutputTokens < budget) return null;
   const input = runInputMessageEvent(snapshot.events, runId);
   if (!input) return null;
   const coveredThrough = latestCheckpoint?.payload.coveredThroughSequence ?? 0;
@@ -103,6 +105,30 @@ export function pressureCompactionCutoff(
     && closesModelContextPrefix(event)
   ));
   return sameRunProgress ? sameRunCutoff : null;
+}
+
+export function scheduledContextCompaction(events: readonly SessionEvent[]): Extract<SessionEvent, { type: 'context.compaction.scheduled' }> | undefined {
+  const started = new Set(events.flatMap(event => event.type === 'context.compaction.requested' ? [event.payload.compactionId] : []));
+  return events.find((event): event is Extract<SessionEvent, { type: 'context.compaction.scheduled' }> =>
+    event.type === 'context.compaction.scheduled' && !started.has(event.payload.compactionId));
+}
+
+export function automaticCompactionCutoff(
+  snapshot: { events: readonly SessionEvent[]; state: SessionState },
+  runId: string,
+  receipt: ContextCompositionReceipt,
+  runtime: RunRuntimeSnapshot,
+  settings: ContextManagementSettings,
+  boundary: 'nextRun' | 'idle',
+): number | null {
+  if (!settings.enabled || estimateContextInput(snapshot, receipt, runtime) < settings.thresholdTokens) return null;
+  const input = runInputMessageEvent(snapshot.events, runId);
+  if (!input) return null;
+  const cutoff = boundary === 'nextRun' ? input.sequence - 1 : snapshot.state.revision;
+  const checkpoint = snapshot.events.findLast(event => event.type === 'context.compacted');
+  const coveredThrough = checkpoint?.payload.coveredThroughSequence ?? 0;
+  return snapshot.events.some(event => event.sequence > coveredThrough && event.sequence <= cutoff
+    && (event.type === 'message.committed' || event.type === 'narrative.committed' || event.type === 'tool.completed')) ? cutoff : null;
 }
 
 function closesModelContextPrefix(event: SessionEvent): boolean {

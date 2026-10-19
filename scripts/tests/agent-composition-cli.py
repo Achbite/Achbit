@@ -118,7 +118,7 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('tightening-complete')
             elif lane == 'PERMISSION_CONTINUE':
                 if ordinal == 1:
-                    call('continue-child', 'agent', dict(action='send', agentId=child, text='PERMISSION_CHILD_RESUME'))
+                    call('continue-child', 'agent', dict(action='assign', agentId=child, task='PERMISSION_CHILD_RESUME'))
                 elif ordinal == 2:
                     call('wait-child', 'agent', dict(action='wait', taskIds=[results['continue-child']['taskId']]))
                 else:

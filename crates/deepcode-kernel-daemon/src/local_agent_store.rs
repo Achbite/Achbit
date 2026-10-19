@@ -1495,6 +1495,7 @@ fn validate_new_event(
         "wake.cancelled",
         "wake.triggered",
         "agent.message.received",
+        "context.compaction.scheduled",
         "context.compaction.requested",
         "context.compacted",
         "context.composed",
@@ -1529,6 +1530,7 @@ fn validate_new_event(
             | "message.committed"
             | "message.feedback.updated"
             | "agent.closed"
+            | "context.compaction.scheduled"
     );
     let needs_call = matches!(
         event_type,
@@ -2477,6 +2479,28 @@ fn validate_new_event(
             required_string(error, "code")?;
             required_string(error, "message")?;
         }
+        "context.compaction.scheduled" => {
+            let payload = &event["payload"];
+            exact_object(
+                payload,
+                &["compactionId", "requestedBySessionId"],
+                &["focus"],
+            )?;
+            validate_id("compactionId", required_string(payload, "compactionId")?)?;
+            validate_id(
+                "requestedBySessionId",
+                required_string(payload, "requestedBySessionId")?,
+            )?;
+            if payload.get("focus").is_some() {
+                validate_focus_text(required_string(payload, "focus")?)?;
+            }
+            if event.get("runId").is_some() || event.get("callId").is_some() {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    "Scheduled compaction is a Session request, not a running call.",
+                ));
+            }
+        }
         "context.compaction.requested" => {
             let payload = event.get("payload").expect("validated payload");
             let trigger = required_string(payload, "trigger")?;
@@ -2496,6 +2520,27 @@ fn validate_new_event(
                         return Err(LocalAgentStoreError::new(
                             "session_event_invalid",
                             "Pressure compaction 不能携带 callId。",
+                        ));
+                    }
+                }
+                "automatic" | "agent" => {
+                    exact_object(
+                        payload,
+                        &[
+                            "compactionId",
+                            "providerRequestId",
+                            "trigger",
+                            "coveredThroughSequence",
+                        ],
+                        &["focus"],
+                    )?;
+                    if payload.get("focus").is_some() {
+                        validate_focus_text(required_string(payload, "focus")?)?;
+                    }
+                    if event.get("callId").is_some() {
+                        return Err(LocalAgentStoreError::new(
+                            "session_event_invalid",
+                            "Context compaction cannot carry callId.",
                         ));
                     }
                 }
@@ -2555,7 +2600,7 @@ fn validate_new_event(
             )?;
             if !matches!(
                 required_string(payload, "trigger")?,
-                "pressure" | "userFocus"
+                "pressure" | "userFocus" | "automatic" | "agent"
             ) {
                 return Err(LocalAgentStoreError::new(
                     "session_event_invalid",
@@ -4749,6 +4794,7 @@ fn validate_run_runtime_snapshot(
             "environment",
             "permissions",
             "agentCapabilities",
+            "contextManagement",
         ],
         &[
             "approvalReviewer",
@@ -4757,6 +4803,18 @@ fn validate_run_runtime_snapshot(
         ],
     )?;
     validate_agent_capabilities(&value["agentCapabilities"])?;
+    let context = &value["contextManagement"];
+    exact_object(context, &["enabled", "thresholdTokens"], &[])?;
+    if !context["enabled"].is_boolean()
+        || context["thresholdTokens"]
+            .as_u64()
+            .is_none_or(|n| n == 0 || n > 9_007_199_254_740_991)
+    {
+        return Err(LocalAgentStoreError::new(
+            "context_management_settings_invalid",
+            "Context management requires a boolean switch and a positive integer threshold.",
+        ));
+    }
     if value
         .get("agentToolsEnabled")
         .is_some_and(|enabled| !enabled.is_boolean())
@@ -5658,6 +5716,7 @@ mod tests {
         json!({
             "agentCapabilities": {"messaging":true,"continuation":true,"delegation":true},
             "permissions": crate::settings_api::permission_settings(&json!({})),
+            "contextManagement": {"enabled": false, "thresholdTokens": 500_000},
             "runRuntimeSnapshotRef": "run-runtime:test",
             "extensionGenerationRef": "extension-generation:test",
             "kernelCatalogSnapshotRef": "kernel-catalog:test",

@@ -56,6 +56,7 @@ export function fakeRunPreparation(options = {}) {
           permissions: options.permissions,
           profileId: request.profileId ?? options.profileId ?? 'profile:default',
           contextWindowTokens: options.contextWindowTokens,
+          contextManagement: options.contextManagement,
           maxOutputTokens: options.maxOutputTokens,
           apiSurface: options.apiSurface,
           hostedWebSearch: options.hostedWebSearch,
@@ -112,6 +113,7 @@ export function runtimeSnapshot(runId, options = {}) {
     }));
   return {
     agentCapabilities: structuredClone(options.agentCapabilities ?? { messaging: true, continuation: true, delegation: true }),
+    contextManagement: structuredClone(options.contextManagement ?? { enabled: false, thresholdTokens: 500_000 }),
     runRuntimeSnapshotRef: `runtime-snapshot:${runId}`,
     permissions: { ...PERMISSION_DEFAULTS, ...options.permissions },
     extensionGenerationRef: 'extension-generation:g1',

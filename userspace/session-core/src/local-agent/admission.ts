@@ -1,4 +1,4 @@
-import { decodeAgentCapabilities, decodeAgentSettings, isManagedProcessSnapshot } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@deepcode/protocol';
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
 import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
@@ -83,6 +83,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     case 'run.started':
       decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
+      decodeContextManagementSettings(event.payload.runtimeSnapshot.contextManagement);
       if (state.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(state.run.status)) {
         throw new Error('session_run_already_active');
       }
@@ -199,7 +200,14 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         throw new Error('plan_invalidation_inactive');
       }
       break;
+    case 'context.compaction.scheduled':
+      if (events.some(item => (item.type === 'context.compaction.scheduled' || item.type === 'context.compaction.requested')
+        && item.payload.compactionId === event.payload.compactionId)) throw new Error('context_compaction_identity_duplicate');
+      break;
     case 'context.compaction.requested':
+      if (event.payload.trigger === 'agent' && !events.some(item => item.type === 'context.compaction.scheduled'
+        && item.payload.compactionId === event.payload.compactionId
+        && item.payload.focus === ('focus' in event.payload ? event.payload.focus : undefined))) throw new Error('context_compaction_schedule_missing');
       if (event.payload.coveredThroughSequence > state.revision) throw new Error('context_compaction_cutoff_invalid');
       if (events.some((item) => item.type === 'context.compaction.requested'
         && (item.payload.compactionId === event.payload.compactionId

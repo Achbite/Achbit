@@ -18,7 +18,7 @@ export interface AgentPreset extends AgentRecipe {
 export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const builtins: AgentPreset[] = [
     { id: 'analysis', name: 'Analysis', capabilities: { messaging: 'parent', continuation: true, delegation: false } },
-    { id: 'collaboration', name: 'Collaboration', capabilities: { messaging: true, continuation: true, delegation: true } },
+    { id: 'collaboration', name: 'Collaboration', capabilities: { messaging: true, continuation: true, delegation: false } },
   ];
   const stored: unknown = JSON.parse(settings.presets ?? '[]');
   if (!Array.isArray(stored)) throw new Error('agent_presets_invalid');

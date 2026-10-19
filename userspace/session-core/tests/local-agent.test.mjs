@@ -37,6 +37,13 @@ class TestAgentManager extends AgentManager {
       async withActor(id, operation) {
         const actor = await lookup(id);
         return operation({ ...actor, agentSnapshot: () => actor.snapshot(),
+          async contextConfiguration() {
+            return (await actor.snapshot()).recipe?.configuration ?? {
+              context: { id: 'journal', parameters: { maxTokens: 100_000 } },
+              compaction: { id: 'summary', parameters: { enabled: false, thresholdTokens: 500_000 } },
+              controls: { id: 'standard' },
+            };
+          },
           async submit(command, beforeRunStart) {
             const reply = await actor.submit(command);
             if (reply.status !== 'rejected' && command.type === 'message.submit' && beforeRunStart) {
@@ -395,6 +402,14 @@ test('subagent model command overrides agree with the public schema', async () =
       assert.throws(() => decodeSessionControlCall('call:model-selection', 'agent', invalid));
     }
   }
+  const assignment = { action: 'assign', agentId: 'session:member', task: 'Follow up in the original Session.' };
+  assert.equal(validate(assignment), true, JSON.stringify(validate.errors));
+  assert.deepEqual(decodeSessionControlCall('call:assign', 'agent', assignment).operation, assignment);
+  for (const invalid of [{ ...assignment, task: '' }, { ...assignment, profileId: 'profile:other' },
+    { action: 'assign', agentId: 'session:member', text: 'Not the task field.' }]) {
+    assert.equal(validate(invalid), false);
+    assert.throws(() => decodeSessionControlCall('call:invalid-assign', 'agent', invalid));
+  }
   assert.equal(validate({ action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }), false);
   assert.throws(() => decodeSessionControlCall('call:send-model', 'agent',
     { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
@@ -504,16 +519,22 @@ test('subagent models discovery uses the Host port without starting children', a
   host.createSession = async () => { throw new Error('discovery_must_not_create_child'); };
   const manager = new TestAgentManager(host, async sessionId => ({
     async agentCapabilities() { return capabilities; },
-    async snapshot() { return { sessionId, subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:configured' }, agentContext: { capabilities, ownerSessionId: 'session:owner',
-      parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
-      run: { runId: 'run:models', status: 'running' } }; },
+    async snapshot() {
+      if (sessionId === 'session:owner') return { sessionId, run: { runId: 'run:owner', status: 'running' },
+        agentChildren: [{ agentSessionId: 'session:member', displayName: 'Member', capabilities, closed: false }],
+        agentTasks: [{ taskId: 'agent-task:models', agentSessionId: 'session:member', capabilities, displayName: 'Member',
+          text: 'Discover models.', delivery: 'async', parentRunId: 'run:owner', childRunId: 'run:models', status: 'running' }] };
+      return { sessionId, subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:configured' }, agentContext: { capabilities, ownerSessionId: 'session:owner',
+        parentSessionId: 'session:owner', parentRunId: 'run:owner', parentCallId: 'call:member' },
+        run: { runId: 'run:models', status: 'running' } };
+    },
   }));
   try {
     const discovered = await manager.execute('session:member', 'run:models', 'call:models',
       { action: 'models' }, new AbortController().signal);
     assert.deepEqual(discovered.models, models);
     assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
-      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false,
+      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false, coordinator: false,
     }));
     assert.equal(discovered.parentAgentId, 'session:owner');
     assert.deepEqual(discovered.agents, []);
@@ -534,7 +555,10 @@ test('an idle member preparation failure cannot reuse its previous successful ru
     subagentSettings: { ...AGENT_SETTINGS, profileId: 'profile:member' },
     run: { runId, status: 'running', workspaceBindings: [], profileId: runtime.provider.profileId },
     runRuntimeSnapshots: { [runId]: runtime },
-    agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }] };
+    agentChildren: [{ agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS, closed: false }],
+    agentTasks: [{ taskId: 'agent-task:original', agentSessionId: childId, displayName: 'Researcher', capabilities: ALL_AGENT_CAPS,
+      text: 'Original task.', delivery: 'async', parentRunId: 'run:parent-previous', childRunId: 'run:previous-success',
+      status: 'completed', result: { outcome: 'completed', content: 'Original evidence.', finalMessageId: 'message:original' } }] };
   const facts = [], resultReads = [];
   const parent = { sessionId,
     async agentCapabilities() { return runtime.agentCapabilities; },
@@ -570,7 +594,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
   }, async id => { assert.ok(id === sessionId || id === childId); return id === sessionId ? parent : child; });
   t.after(() => manager.dispose());
   const signal = new AbortController().signal;
-  const first = await manager.execute(sessionId, runId, 'call:prepare-failure', { action: 'send', agentId: childId, text: 'First follow-up.' }, signal);
+  const first = await manager.execute(sessionId, runId, 'call:prepare-failure', { action: 'assign', agentId: childId, task: 'First follow-up.' }, signal);
   const failed = state.agentTasks.find(task => task.taskId === first.taskId);
   assert.equal(failed.status, 'failed');
   assert.deepEqual(failed.result, { outcome: 'failed', error: prepareError });
@@ -579,7 +603,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
   assert.equal(state.agentChildren[0].closed, false);
   assert.equal(facts.some(event => event.type === 'agent.closed'), false);
 
-  const second = await manager.execute(sessionId, runId, 'call:prepare-success', { action: 'send', agentId: childId, text: 'Next follow-up.' }, signal);
+  const second = await manager.execute(sessionId, runId, 'call:prepare-success', { action: 'assign', agentId: childId, task: 'Next follow-up.' }, signal);
   await manager.forSession(sessionId).wait(runId, signal);
   const completed = state.agentTasks.find(task => task.taskId === second.taskId);
   assert.equal(completed.status, 'completed');
@@ -654,7 +678,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     `call:${++sequence}`, operation, signal);
   const spawn = (sessionId, extra = {}) => execute(sessionId,
     { action: 'spawn', name: 'Researcher', task: 'Inspect the evidence.', delivery: 'async', ...extra });
-  const first = await spawn(ownerId, { preset: 'collaboration' });
+  const first = await spawn(ownerId, { preset: 'collaboration', capabilities: { delegation: true } });
   const firstId = first.agentId;
   const firstRunId = states.get(firstId).run.runId;
   assert.deepEqual(states.get(firstId).agentContext.capabilities, ALL_AGENT_CAPS);
@@ -679,7 +703,10 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   await manager.forSession(ownerId).wait(ownerRunId, signal);
 
   configuredProfile = 'profile:new-global-default';
-  const continued = await execute(ownerId, { action: 'send', agentId: nestedId, text: 'Continue the shared task.' });
+  states.get(ownerId).subagentSettings.enabled = false;
+  await assert.rejects(execute(ownerId, { action: 'assign', agentId: nestedId, task: 'Disabled assignment.' }), /agent_disabled/);
+  states.get(ownerId).subagentSettings.enabled = true;
+  const continued = await execute(ownerId, { action: 'assign', agentId: nestedId, task: 'Continue the shared task.' });
   assert.equal(submissions.at(-1).profileId, undefined);
   assert.equal(submissions.at(-1).reasoningEffortOverride, undefined);
   assert.deepEqual(states.get(nestedId).modelSettings, { profileId: 'profile:selected-child', reasoningEffortOverride: 'max' });
@@ -1024,7 +1051,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
   const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
     runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
   assert.deepEqual(limitedMember.request.tools.filter(tool => tool.name !== 'agent'), member.request.tools.filter(tool => tool.name !== 'agent'));
-  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /permitted contacts/u);
+  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /Coordinate directly with teammates/u);
   assert.doesNotMatch(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /spawns|presets|configuration/u);
   assert.deepEqual(agentOperationDefinitions({ ...ALL_AGENT_CAPS, delegation: false }).map(operation => operation.action), ['models', 'send']);
   assert.deepEqual(limitedMember.request.messages, discovered.request.messages);

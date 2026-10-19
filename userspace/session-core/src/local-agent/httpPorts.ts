@@ -1,4 +1,4 @@
-import { permissionSettings, decodeAgentCapabilities, decodeAgentSettings, decodeAgentModelParameters, isLlmReasoningEffort } from '@deepcode/protocol';
+import { permissionSettings, decodeAgentCapabilities, decodeAgentSettings, decodeAgentModelParameters, decodeContextManagementSettings, isLlmReasoningEffort } from '@deepcode/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
 import { isLocalAgentErrorValue } from '@deepcode/protocol';
 import type {
@@ -493,6 +493,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'selectedPlugins',
       'environment',
       'agentCapabilities',
+      'contextManagement',
     ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
@@ -556,6 +557,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       };
       return {
         runtimeSnapshot: Object.freeze({
+          contextManagement: decodeContextManagementSettings(value.contextManagement),
           agentCapabilities,
           ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true } : {}),
           runRuntimeSnapshotRef: `run-runtime:${request.sessionId}:${request.runId}`,

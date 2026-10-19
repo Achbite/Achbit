@@ -62,7 +62,7 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
       { profileId: 'profile:default', name: 'Default', model: 'fixture-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] },
       { profileId: 'profile:chosen', name: 'Chosen model', model: 'chosen-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['high'] },
     ]; },
-    async createSession(input) { return service.createSession(input); },
+    async createSession(input) { await options.beforeCreate?.(input); return service.createSession(input); },
   }, options.configurations, options.loops);
   t.after(() => service.dispose());
   if (!options.reopen) await service.createSession({ sessionId: ownerId, displayTitle: 'Wake owner', workspaceBindings: [workspaceBinding], ...(options.recipe ? { recipe: options.recipe } : {}) });
@@ -306,8 +306,8 @@ test('a retained child continues across parent runs with its original Session, m
       else if (parentRuns === 2 && runTurn === 1) yield call(request, 'retained:models', 'agent', { action: 'models' });
       else if (parentRuns === 2 && runTurn === 2) {
         const result = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
-        assert.deepEqual(result.agents, [{ agentId: childId, name: 'Frontend', status: 'completed', acceptsTasks: true }]);
-        yield call(request, 'retained:send', 'agent', { action: 'send', agentId: childId, text: 'Continue the frontend review.' });
+        assert.deepEqual(result.agents, [{ agentId: childId, name: 'Frontend', status: 'completed', acceptsMessages: false, acceptsTasks: true }]);
+        yield call(request, 'retained:send', 'agent', { action: 'assign', agentId: childId, task: 'Continue the frontend review.' });
       } else if (parentRuns === 2 && !textOf(request).includes('Second frontend observation.')) {
         yield call(request, `retained:wait:${runTurn}`, 'agent', { action: 'wait' });
       } else yield answer(request, `Parent round ${parentRuns} is complete.`);
@@ -577,23 +577,30 @@ test('an ancestor continuing a descendant routes its Plan by the current task wi
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
     if (sessionId === ownerId) {
       if (turn === 1) yield call(request, 'root:create-member', 'agent', { action: 'spawn', preset: 'collaboration',
-        name: 'Coordinator', task: 'Create a reusable writer and obtain its initial report.', delivery: 'wait' });
+        capabilities: { delegation: true }, name: 'Coordinator', task: 'Create a reusable writer and obtain its initial report.', delivery: 'wait' });
       else if (turn === 2) {
         memberId = (await service.snapshot(ownerId)).agentChildren[0].agentSessionId;
         descendantId = (await service.snapshot(memberId)).agentChildren[0].agentSessionId;
-        yield call(request, 'root:continue-descendant', 'agent', { action: 'send', agentId: descendantId,
-          text: 'Publish the new report scope for user confirmation.' });
+        yield call(request, 'root:continue-descendant', 'agent', { action: 'assign', agentId: descendantId,
+          task: 'Publish the new report scope for user confirmation.' });
       } else if (!textOf(request).includes('The descendant report is confirmed.')) {
         yield call(request, `root:wait:${turn}`, 'agent', { action: 'wait' });
       } else yield answer(request, 'The descendant continuation is complete.');
     } else {
       const creation = (await readEvents(fixture.journal, sessionId))[0];
       if (creation.payload.agentContext.parentSessionId === ownerId) {
-        if (turn === 1) yield call(request, 'member:create-writer', 'agent', { action: 'spawn', preset: 'collaboration',
+        if (turn === 1) yield call(request, 'member:create-writer', 'agent', { action: 'spawn', preset: 'analysis',
           name: 'Writer', task: 'Return an initial report.', delivery: 'wait' });
         else yield answer(request, 'The reusable writer is ready.');
       } else if (turn === 1) yield answer(request, 'Initial writer report.');
-      else if (turn === 2) yield call(request, 'descendant:plan', 'plan_publish', writePlan);
+      else if (turn === 2) yield call(request, 'descendant:contacts', 'agent', { action: 'models' });
+      else if (turn === 3) {
+        const contacts = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+        assert.equal(contacts.parentAgentId, ownerId);
+        assert.equal(contacts.coordinatorAgentId, ownerId);
+        yield call(request, 'descendant:owner-message', 'agent', { action: 'send', agentId: contacts.parentAgentId,
+          text: 'Current task owner verified.' });
+      } else if (turn === 4) yield call(request, 'descendant:plan', 'plan_publish', writePlan);
       else yield answer(request, 'The descendant report is confirmed.');
     }
     yield done(request);
@@ -893,33 +900,48 @@ test('an answer arriving with a peer message is committed before the next Loop r
   assert.ok(events.find(event => event.type === 'run.settled').sequence > first.sequence);
 });
 
-test('a permitted peer wakes a dormant instance without changing lineage or its saved configuration', async t => {
+test('peer messages never reassign dormant instances; the coordinator explicitly continues their original configuration', async t => {
   const ownerId = 'session:peer-wake';
-  let northId, northFinished;
-  const northReady = new Promise(resolve => { northFinished = resolve; });
+  let northId, southId, decisionSent = false;
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal, service }) {
     if (sessionId === ownerId) {
       if (turn === 1) {
         yield call(request, 'peer:north', 'agent', { action: 'spawn', preset: 'collaboration', name: 'North', task: 'Return your first finding.', delivery: 'async',
           loop: { controls: { id: 'standard', parameters: { optionalTools: [] } } } });
-        yield call(request, 'peer:south', 'agent', { action: 'spawn', preset: 'collaboration', name: 'South', task: 'Review North.', delivery: 'async' });
-      } else if (!(await service.snapshot(ownerId)).agentTasks.every(task => task.status === 'completed')) {
-        yield call(request, `peer:wait:${turn}`, 'agent', { action: 'wait' });
-      } else yield answer(request, 'Both peer tasks are complete.');
+        yield call(request, 'peer:south', 'agent', { action: 'spawn', preset: 'collaboration', capabilities: { delegation: true },
+          name: 'South', task: 'Review North.', delivery: 'async' });
+      } else {
+        const current = await service.snapshot(ownerId);
+        if (textOf(request).includes('Please assign North again.') && current.agentTasks.length === 2) {
+          yield call(request, 'peer:assign', 'agent', { action: 'assign', agentId: northId, task: 'Review the second observation.' });
+        } else if (textOf(request).includes('North follow-up finding.') && !decisionSent) {
+          decisionSent = true;
+          yield call(request, 'peer:decision', 'agent', { action: 'send', agentId: southId, text: 'North follow-up accepted.' });
+        } else if (current.agentTasks.every(task => task.status === 'completed')) yield answer(request, 'Both peer tasks are complete.');
+        else yield call(request, `peer:wait:${turn}`, 'agent', { action: 'wait' });
+      }
     } else {
       const name = (await readEvents(journal, sessionId))[0].payload.displayTitle;
       if (name === 'North') {
         northId = sessionId;
         assert.equal(request.tools.some(tool => tool.name === 'todo_update'), false);
         yield answer(request, turn === 1 ? 'North first finding.' : 'North follow-up finding.');
-        if (turn === 1) northFinished();
-      } else if (turn === 1) {
-        await northReady;
-        await waitUntil(async () => (await service.snapshot(northId)).run?.status === 'completed', 'North dormant');
-        yield call(request, 'peer:send', 'agent', { action: 'send', agentId: northId, text: 'Review the second observation.' });
-      } else if (!textOf(request).includes('North follow-up finding.')) {
-        yield call(request, `peer:south-wait:${turn}`, 'agent', { action: 'wait' });
-      } else yield answer(request, 'South reviewed the follow-up.');
+      } else {
+        southId = sessionId;
+        if (turn === 1) {
+          await waitUntil(async () => northId && (await service.snapshot(northId)).run?.status === 'completed', 'North dormant');
+          yield call(request, 'peer:send', 'agent', { action: 'send', agentId: northId, text: 'Review the second observation.' });
+        } else if (turn === 2) {
+          assert.match(textOf(request), /agent_message_target_inactive/u);
+          yield call(request, 'peer:forbidden-assign', 'agent', { action: 'assign', agentId: northId, task: 'Must remain coordinator-owned.' });
+        } else if (turn === 3) {
+          assert.match(textOf(request), /agent_coordinator_required/u);
+          assert.equal(((await service.snapshot(northId)).agentTasks ?? []).length, 0);
+          assert.equal((await readEvents(journal, northId)).filter(event => event.type === 'run.started').length, 1);
+          yield call(request, 'peer:request-owner', 'agent', { action: 'send', agentId: ownerId, text: 'Please assign North again.' });
+        } else if (textOf(request).includes('North follow-up accepted.')) yield answer(request, 'South reviewed the follow-up.');
+        else yield call(request, `peer:south-wait:${turn}`, 'session', { action: 'wait' });
+      }
     }
     yield done(request);
   });
@@ -934,10 +956,248 @@ test('a permitted peer wakes a dormant instance without changing lineage or its 
   assert.equal(northEvents.filter(event => event.type === 'session.created').length, 1);
   assert.equal(northEvents.filter(event => event.type === 'run.started').length, 2);
   assert.equal(northEvents.filter(event => event.type === 'session.permissions.updated').length, 0);
-  const southId = parent.agentChildren.find(value => value.agentSessionId !== northId).agentSessionId;
+  assert.equal(parent.agentTasks.filter(task => task.agentSessionId === northId).length, 2);
   const south = await fixture.service.snapshot(southId);
-  assert.equal(south.agentTasks[0].agentSessionId, northId);
-  assert.deepEqual(south.agentChildren ?? [], [], 'the task sender does not acquire archival ownership');
+  assert.deepEqual(south.agentTasks ?? [], [], 'a peer does not acquire task ownership');
+  assert.deepEqual(south.agentChildren ?? [], [], 'a peer does not acquire archival ownership');
+});
+
+test('parallel collaborators exchange protocol proposals and consume one coordinator decision in independent contexts', async t => {
+  const ownerId = 'session:protocol-coordinator';
+  const entered = new Set(), ids = new Map(), escalated = new Set();
+  let decisionSent = false;
+  const decision = 'Use the optional field. Server is the single proto writer.';
+  const incoming = request => request.messages.filter(message => message.role === 'user').flatMap(message => {
+    try { const value = JSON.parse(message.content); return value.type === 'agent.message' ? [value] : []; }
+    catch { return []; }
+  });
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal, service }) {
+    assert.ok(turn < 15, 'collaboration must make progress rather than repeatedly poll');
+    const messages = incoming(request);
+    if (sessionId === ownerId) {
+      if (turn === 1) {
+        for (const name of ['Client', 'Server']) yield call(request, `protocol:spawn:${name}`, 'agent', {
+          action: 'spawn', preset: 'collaboration', name, delivery: 'async',
+          task: `${name.toLowerCase()}_private_scope_note: implement your side and discuss the proto with your teammate. Escalate disagreement.`,
+        });
+      } else if (messages.filter(message => message.text.startsWith('Protocol disagreement:')).length === 2 && !decisionSent) {
+        assert.equal((await service.snapshot(ownerId)).agentTasks.filter(task => task.status === 'running').length, 2);
+        decisionSent = true;
+        for (const agentId of ids.values()) yield call(request, `protocol:decision:${agentId}`, 'agent', { action: 'send', agentId, text: decision });
+      } else if ((await service.snapshot(ownerId)).agentTasks.every(task => task.status === 'completed')) {
+        yield answer(request, 'Client and Server integrated the same protocol decision.');
+      } else yield call(request, `protocol:wait:${turn}`, 'agent', { action: 'wait' });
+    } else {
+      const name = (await readEvents(journal, sessionId))[0].payload.displayTitle;
+      const peer = name === 'Client' ? 'Server' : 'Client';
+      ids.set(name, sessionId);
+      assert.equal(textOf(request).includes('PRIVATE_ROOT_NOT_DELEGATED'), false);
+      assert.equal(textOf(request).includes(`${peer.toLowerCase()}_private_scope_note`), false);
+      if (turn === 1) {
+        entered.add(sessionId);
+        await waitUntil(() => entered.size === 2, 'both child Provider calls overlap');
+        yield call(request, `protocol:contacts:${name}`, 'agent', { action: 'models' });
+      } else if (turn === 2) {
+        const contacts = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+        assert.equal(contacts.parentAgentId, ownerId);
+        assert.equal(contacts.coordinatorAgentId, ownerId);
+        assert.equal(contacts.operations.some(operation => ['spawn', 'assign', 'close'].includes(operation.action)), false);
+        const target = contacts.agents.find(agent => agent.name === peer);
+        assert.ok(target.acceptsMessages);
+        assert.equal(target.acceptsTasks, false);
+        yield call(request, `protocol:proposal:${name}`, 'agent', { action: 'send', agentId: target.agentId,
+          text: `${name} proposes ${name === 'Client' ? 'required' : 'optional'} field.` });
+      } else if (messages.some(message => message.text.startsWith(`${peer} proposes`)) && !escalated.has(sessionId)) {
+        escalated.add(sessionId);
+        yield call(request, `protocol:escalate:${name}`, 'agent', { action: 'send', agentId: ownerId,
+          text: `Protocol disagreement: ${name} and ${peer} differ on required versus optional; please decide and name one writer.` });
+      } else if (messages.some(message => message.agentId === ownerId && message.text === decision)) {
+        assert.ok(messages.some(message => message.agentId === ids.get(peer)));
+        yield answer(request, `${name} implemented the optional field; evidence: its interface check.`);
+      } else yield call(request, `protocol:await:${name}:${turn}`, 'session', { action: 'wait' });
+    }
+    yield done(request);
+  }, { settings: { maxConcurrent: 2 } });
+  await fixture.service.submit(messageCommand(ownerId, 'command:protocol', 'PRIVATE_ROOT_NOT_DELEGATED: coordinate the two implementations.'));
+  const parent = await completed(fixture.service, ownerId);
+  assert.equal(entered.size, 2);
+  assert.equal(parent.agentTasks.length, 2);
+  assert.ok(parent.agentTasks.every(task => task.result.content.includes('implemented the optional field')));
+  for (const childId of ids.values()) {
+    const child = await fixture.service.snapshot(childId);
+    assert.deepEqual(child.agentContext.capabilities, { messaging: true, continuation: true, delegation: false });
+    assert.deepEqual(child.agentTasks ?? [], []);
+    assert.equal(fixture.releases.get(childId), 1);
+    const messages = (await readEvents(fixture.journal, childId)).filter(event => event.type === 'agent.message.received');
+    assert.equal(messages.filter(event => event.payload.sourceSessionId === ownerId && event.payload.text === decision).length, 1);
+    assert.equal(messages.filter(event => event.payload.sourceSessionId !== ownerId).length, 1);
+  }
+  assert.equal((await readEvents(fixture.journal, ownerId)).some(event => event.type === 'session.control.rejected'), false);
+});
+
+test('a creating ancestor cannot cancel or close a descendant now assigned by the coordinator', async t => {
+  const ownerId = 'session:current-task-management';
+  let ancestorId, descendantId, released = false;
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal, service }) {
+    assert.ok(turn < 14);
+    if (sessionId === ownerId) {
+      if (turn === 1) yield call(request, 'management:ancestor', 'agent', { action: 'spawn', preset: 'collaboration',
+        capabilities: { delegation: true }, name: 'Ancestor', task: 'Create a child and finish the initial task.', delivery: 'wait' });
+      else if (turn === 2) {
+        for (const agentId of [descendantId, ancestorId]) yield call(request, `management:assign:${agentId}`, 'agent', {
+          action: 'assign', agentId, task: 'Continue under the root coordinator.',
+        });
+      } else if (textOf(request).includes('Current ownership checks completed.') && !released) {
+        released = true;
+        yield call(request, 'management:finish', 'agent', { action: 'send', agentId: descendantId, text: 'Coordinator permits task completion.' });
+      } else if ((await service.snapshot(ownerId)).agentTasks.every(task => task.status === 'completed')) yield answer(request, 'Ownership preserved.');
+      else yield call(request, `management:wait:${turn}`, 'agent', { action: 'wait' });
+    } else if ((await readEvents(journal, sessionId))[0].payload.displayTitle === 'Ancestor') {
+      ancestorId = sessionId;
+      if (turn === 1) yield call(request, 'management:descendant', 'agent', { action: 'spawn', preset: 'collaboration',
+        name: 'Descendant', task: 'Return initial evidence.', delivery: 'wait' });
+      else if (turn === 2) yield answer(request, 'Initial ancestor work complete.');
+      else if (turn === 3) {
+        const root = await service.snapshot(ownerId);
+        const task = root.agentTasks.find(task => task.agentSessionId === descendantId && task.status === 'running');
+        yield call(request, 'management:forbidden-cancel', 'agent', { action: 'cancel', taskId: task.taskId });
+      } else if (turn === 4) {
+        assert.match(textOf(request), /agent_task_not_owned/u);
+        yield call(request, 'management:forbidden-close', 'agent', { action: 'close', agentId: descendantId });
+      } else if (turn === 5) {
+        assert.match(textOf(request), /agent_coordinator_required/u);
+        assert.equal((await service.snapshot(descendantId)).run.status, 'running');
+        yield call(request, 'management:report', 'agent', { action: 'send', agentId: ownerId, text: 'Current ownership checks completed.' });
+      } else yield answer(request, 'Ancestor follow-up complete.');
+    } else {
+      descendantId = sessionId;
+      if (turn === 1) yield answer(request, 'Initial descendant evidence.');
+      else if (textOf(request).includes('Coordinator permits task completion.')) yield answer(request, 'Descendant follow-up complete.');
+      else yield call(request, `management:child-wait:${turn}`, 'session', { action: 'wait' });
+    }
+    yield done(request);
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:management', 'Continue retained members under the main coordinator.'));
+  const result = await completed(fixture.service, ownerId);
+  assert.equal(result.agentTasks.length, 3);
+  assert.ok(result.agentTasks.every(task => task.status === 'completed'));
+  const ancestor = await fixture.service.snapshot(ancestorId);
+  assert.equal(ancestor.agentChildren[0].closed, false);
+  assert.equal((await readEvents(fixture.journal, descendantId)).some(event => event.type === 'run.settled' && event.payload.outcome === 'cancelled'), false);
+});
+
+test('close rejects an active member and its idle archival ancestor without implicit cancellation or partial closure', async t => {
+  const ownerId = 'session:idle-close';
+  let ancestorId, leafId, closed = false;
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal, service }) {
+    assert.ok(turn < 14);
+    if (sessionId === ownerId) {
+      if (turn === 1) yield call(request, 'idle-close:create', 'agent', { action: 'spawn', preset: 'collaboration',
+        capabilities: { delegation: true }, name: 'Ancestor', task: 'Create a retained child and finish.', delivery: 'wait' });
+      else if (turn === 2) yield call(request, 'idle-close:assign', 'agent', { action: 'assign', agentId: leafId, task: 'Wait for a reply, then finish.' });
+      else if (turn === 3) yield call(request, 'idle-close:active', 'agent', { action: 'close', agentId: leafId });
+      else if (turn === 4) {
+        assert.match(textOf(request), /agent_child_not_idle/u);
+        yield call(request, 'idle-close:ancestor', 'agent', { action: 'close', agentId: ancestorId });
+      } else if (turn === 5) {
+        const rejections = (await readEvents(journal, ownerId)).filter(event => event.type === 'session.control.rejected');
+        assert.equal(rejections.length, 2);
+        assert.ok(rejections.every(event => event.payload.error.code === 'agent_child_not_idle'));
+        for (const id of [ownerId, ancestorId, leafId]) {
+          const history = await readEvents(journal, id);
+          assert.equal(history.some(event => event.type === 'agent.closed'), false);
+          assert.equal(history.some(event => event.type === 'run.settled' && event.payload.outcome === 'cancelled'), false);
+        }
+        assert.equal((await service.snapshot(leafId)).run.status, 'running');
+        yield call(request, 'idle-close:reply', 'agent', { action: 'send', agentId: leafId, text: 'Finish with your final evidence now.' });
+      } else if (!(await service.snapshot(ownerId)).agentTasks.every(task => task.status === 'completed')) {
+        yield call(request, `idle-close:wait:${turn}`, 'agent', { action: 'wait' });
+      } else if (!closed) {
+        closed = true;
+        yield call(request, 'idle-close:finished', 'agent', { action: 'close', agentId: ancestorId });
+      } else yield answer(request, 'The whole idle subtree is closed without cancelling completed work.');
+    } else if ((await readEvents(journal, sessionId))[0].payload.displayTitle === 'Ancestor') {
+      ancestorId = sessionId;
+      if (turn === 1) yield call(request, 'idle-close:leaf', 'agent', { action: 'spawn', preset: 'collaboration',
+        name: 'Leaf', task: 'Return the initial result.', delivery: 'wait' });
+      else yield answer(request, 'Initial ancestor result.');
+    } else {
+      leafId = sessionId;
+      if (turn === 1) yield answer(request, 'Initial leaf result.');
+      else if (textOf(request).includes('Finish with your final evidence now.')) yield answer(request, 'Final leaf evidence.');
+      else yield call(request, `idle-close:leaf-wait:${turn}`, 'session', { action: 'wait' });
+    }
+    yield done(request);
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:idle-close', 'Close retained members only after their actual task results.'));
+  const root = await completed(fixture.service, ownerId);
+  assert.ok(root.agentTasks.every(task => task.status === 'completed'));
+  assert.ok(root.agentChildren.every(child => child.closed));
+  assert.ok((await fixture.service.snapshot(ancestorId)).agentChildren.every(child => child.closed));
+  const leafEvents = await readEvents(fixture.journal, leafId);
+  assert.equal(leafEvents.filter(event => event.type === 'run.settled').length, 2);
+  assert.ok(leafEvents.filter(event => event.type === 'run.settled').every(event => event.payload.outcome === 'completed'));
+});
+
+test('business messages bypass an unrelated child creation admission without reading its unstarted reservation', async t => {
+  const ownerId = 'session:message-during-admission';
+  const creation = Promise.withResolvers(), releaseCreation = Promise.withResolvers();
+  t.after(() => releaseCreation.resolve());
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal }) {
+    if (sessionId === ownerId) {
+      if (turn === 1) {
+        yield call(request, 'admission:active', 'agent', { action: 'spawn', preset: 'collaboration', name: 'Active', task: 'Send your update.', delivery: 'async' });
+        yield call(request, 'admission:slow', 'agent', { action: 'spawn', name: 'Slow', task: 'Return evidence.', delivery: 'async' });
+      } else yield answer(request, 'All evidence received.');
+    } else if ((await readEvents(journal, sessionId))[0].payload.displayTitle === 'Active' && turn === 1) {
+      await creation.promise;
+      yield call(request, 'admission:message', 'agent', { action: 'send', agentId: ownerId, text: 'Message while another child is being prepared.' });
+    } else yield answer(request, 'Child evidence.');
+    yield done(request);
+  }, { async beforeCreate(input) {
+    if (input.displayTitle === 'Slow') { creation.resolve(); await releaseCreation.promise; }
+  } });
+  await fixture.service.submit(messageCommand(ownerId, 'command:admission-message', 'Delegate two tracks.'));
+  await creation.promise;
+  await waitUntil(async () => (await readEvents(fixture.journal, ownerId)).some(event => event.type === 'agent.message.received'),
+    'message must arrive before the creation gate is released');
+  releaseCreation.resolve();
+  assert.equal((await completed(fixture.service, ownerId)).agentTasks.length, 2);
+});
+
+test('parent cancellation drains both a peer-message wait and a pending child Plan', async t => {
+  const ownerId = 'session:cancel-collaboration';
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, journal }) {
+    if (sessionId === ownerId) {
+      if (turn === 1) {
+        for (const name of ['Waiting peer', 'Plan writer']) yield call(request, `cancel:spawn:${name}`, 'agent', {
+          action: 'spawn', preset: 'collaboration', name, task: 'Wait for coordination.', delivery: 'async',
+        });
+      } else yield call(request, `cancel:wait:${turn}`, 'agent', { action: 'wait' });
+    } else if ((await readEvents(journal, sessionId))[0].payload.displayTitle === 'Plan writer') {
+      yield call(request, 'cancel:child-plan', 'plan_publish', writePlan);
+    } else yield call(request, 'cancel:peer-wait', 'session', { action: 'wait' });
+    yield done(request);
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:cancel-collaboration', 'Coordinate two workers.'));
+  await waitUntil(async () => (await fixture.service.snapshot(ownerId)).pendingAgentDecisions?.some(item => item.plan), 'child Plan pending');
+  const before = await fixture.service.snapshot(ownerId);
+  const waitingPeer = before.agentChildren.find(child => child.displayName === 'Waiting peer').agentSessionId;
+  await waitUntil(async () => (await readEvents(fixture.journal, waitingPeer)).some(event => event.type === 'session.control.completed'), 'peer waiting for a message');
+  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId: ownerId,
+    commandId: 'command:cancel-both', runId: before.run.runId })).status, 'accepted');
+  const after = await fixture.service.snapshot(ownerId);
+  assert.equal(after.run.status, 'cancelled');
+  assert.ok(after.agentTasks.every(task => task.status === 'cancelled'));
+  assert.deepEqual(after.pendingAgentDecisions ?? [], []);
+  for (const sessionId of [ownerId, ...before.agentChildren.map(child => child.agentSessionId)]) {
+    const child = await fixture.service.snapshot(sessionId);
+    assert.equal(child.run.status, 'cancelled');
+    assert.equal(child.pendingPlan, null);
+    assert.equal(fixture.releases.get(sessionId), 1);
+    const events = await readEvents(fixture.journal, sessionId);
+    assert.ok(events.find(event => event.type === 'run.runtime.released').sequence < events.find(event => event.type === 'run.settled').sequence);
+  }
 });
 
 test('nested spawn input errors return correction results before a valid child task starts', async t => {
@@ -1178,7 +1438,7 @@ test('Session settings isolate peers, update future defaults, survive reopen and
   const ownerId = 'session:settings-b';
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
     if (sessionId === ownerId && turn === 1) {
-      assert.match(textOf(request), /Proactively delegate useful independent work/u);
+      assert.match(textOf(request), /Proactively delegate independent work; use collaboration/u);
       yield call(request, 'settings:spawn', 'agent', { action: 'spawn', name: 'Inspector', task: 'Inspect independently.', delivery: 'wait' });
     } else yield answer(request, 'Independent evidence.');
     yield done(request);
@@ -1272,9 +1532,9 @@ test('total usage includes nested and closed Agents once and updates without a p
     if (sessionId === ownerId) {
       usage = { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 50, cacheMissInputTokens: 50 };
       if (turn === 1) yield call(request, 'usage:spawn', 'agent', { action: 'spawn', preset: 'collaboration',
-        name: 'Usage child', task: 'Delegate one detail, then report.', delivery: 'async' });
+        capabilities: { delegation: true }, name: 'Usage child', task: 'Delegate one detail, then report.', delivery: 'async' });
       else if (turn === 2) { rootWaiting = true; await rootGate; yield answer(request, 'Initial work complete.'); }
-      else if (turn === 3) yield call(request, 'usage:continue', 'agent', { action: 'send', agentId: childId, text: 'One follow-up.' });
+      else if (turn === 3) yield call(request, 'usage:continue', 'agent', { action: 'assign', agentId: childId, task: 'One follow-up.' });
       else if (turn === 4) yield call(request, 'usage:wait', 'agent', { action: 'wait' });
       else if (turn === 5) yield call(request, 'usage:close', 'agent', { action: 'close', agentId: childId });
       else yield answer(request, 'Archived work complete.');

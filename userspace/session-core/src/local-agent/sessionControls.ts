@@ -217,7 +217,7 @@ export interface PlanScopeExtension {
 
 /** Detailed contracts are returned by discovery, leaving the provider tool prefix stable. */
 export function agentOperationDefinitions({ messaging, delegation, continuation }: AgentCapabilities,
-  options: { fullConfiguration?: boolean; presetIds?: string[]; profileIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean } = {}): JsonObject[] {
+  options: { fullConfiguration?: boolean; presetIds?: string[]; profileIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean; coordinator?: boolean } = {}): JsonObject[] {
   const operation = (action: string, description: string, properties: JsonObject = {}, required: string[] = []): JsonObject => ({
     action, description, inputSchema: { type: 'object', additionalProperties: false,
       required: ['action', ...required], properties: { action: { type: 'string', const: action }, ...properties } },
@@ -225,9 +225,9 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
   const id = { type: 'string', minLength: 1 };
   return [
     operation('models', 'Discover available operations and model profiles.'),
-    ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async returns immediately; wait pauses until a result or incoming message. Results arrive once, here or as a later message.', {
+    ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Context budget and compaction rules inherit from the parent; override only when useful. doc.read model-services.md has examples.', {
       task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
-      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'Optional defaults. Both built-in presets keep the instance for later tasks. Combine capabilities and Loop choices for a task-specific agent; a preset does not define a fixed agent type.' },
+      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'analysis contacts its task owner; collaboration also contacts teammates. Neither delegates further by default. Both retain the instance. Combine capabilities and Loop choices; a preset does not define a fixed agent type.' },
       capabilities: { type: 'object', additionalProperties: false, properties: {
         messaging: { enum: messaging === true ? [false, 'parent', true] : messaging === 'parent' ? [false, 'parent'] : [false], description: 'false: no messages; parent: only the parent; true: the related team.' },
         continuation: { type: 'boolean', ...(!continuation ? { const: false } : {}), description: 'Accept follow-up tasks in the same Session.' },
@@ -235,10 +235,10 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
       } },
       profileId: { ...id, ...(options.profileIds ? { enum: options.profileIds } : {}), description: 'Use a model allowed by the returned preset rules; omit to follow the selected preset.' },
       ...(options.fullConfiguration ? { reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Override using an effort supported by the selected model.' },
-        context: { type: 'object', description: 'Select a returned context contribution by id and its supported parameters.' } } : {}),
+        context: { type: 'object', description: 'Optional context override. journal.parameters.maxTokens caps context including output reserve; omit to inherit.' } } : {}),
       loop: { type: 'object', additionalProperties: false, properties: {
         controls: { type: 'object', description: 'A returned controls contribution id and its supported parameters.' },
-        compaction: { type: 'object', description: 'A returned compaction contribution id and its supported parameters.' },
+        compaction: { type: 'object', description: 'Optional compaction override. summary.parameters supports enabled, thresholdTokens and pressureRatio; omitted values inherit.' },
       } },
       permissions: { type: 'object', description: 'Optional restrictions of inherited agent.permissions settings. Cannot grant new authority or approve a Plan.' },
       runner: { type: 'object', description: 'Select an installed Loop driver from runners by id and parameters. Presets are defaults, not fixed agent types.' },
@@ -248,13 +248,19 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         requireIsolatedProcesses: { type: 'boolean', description: 'Require usable Shell isolation and prohibit Host/external execution routes.' },
       } },
     }, ['task', 'name', 'delivery'])] : []),
-    ...(messaging || delegation ? [operation('send', 'Send a message or continue a permitted agent in its existing Session.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
+    ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
+    ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
+      operation('assign', 'Coordinator only: asynchronously assign a new task to an idle retained agent, preserving its Session, model and configuration. Use send for an active task.',
+        { agentId: id, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
+    ] : []),
     ...(delegation ? [
+      operation('compact', 'Request child context compaction at its next safe model boundary, or before its next task if idle. Does not start work or interrupt tools.',
+        { agentId: id, focus: { ...id, description: 'Optional focus for preserving relevant existing facts.' } }, ['agentId']),
       operation('wait', 'Pause for child results or incoming messages. Returns completed task IDs; result content is delivered separately once.', {
         taskIds: { type: 'array', minItems: 1, uniqueItems: true, items: id, description: 'Omit to wait for current tasks.' },
       }),
-      operation('cancel', 'Cancel a child task.', { taskId: id }, ['taskId']),
-      operation('close', 'Close a child agent.', { agentId: id }, ['agentId']),
+      operation('cancel', 'Cancel a task owned by your current run or its active descendants; not a peer or ancestor task.', { taskId: id }, ['taskId']),
+      ...(options.coordinator !== false ? [operation('close', 'Coordinator only: close an idle retained agent you will not reuse. Active work in it or its descendants is rejected without cancellation; wait for final task results or explicitly cancel first. Completed tasks already release execution.', { agentId: id }, ['agentId'])] : []),
     ] : []),
   ];
 }
@@ -271,9 +277,9 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     {
       name: SESSION_CONTROL_AGENT,
       description: capabilities && !capabilities.delegation
-        ? capabilities.messaging === 'parent' ? 'Contact your parent. Call action=models for your contact and exact operations. Submit each operation alone.'
-          : 'Exchange messages with permitted contacts. Call action=models for contacts and exact operations. Submit each operation alone.'
-        : 'When enabled, proactively delegate scoped work at task planning or as independent work emerges: separate investigations, context-heavy exploration, implementation with distinct ownership, or independent review. No user reminder is needed. Keep short or tightly coupled work direct. Give each task necessary context, a clear scope and expected evidence; continue independent work and verify results. Follow the latest delegation status: disabling blocks new tasks, while existing tasks may continue, exchange messages or be cancelled. Call action=models for exact operations, presets and configuration. Multiple async spawns may share a turn with todo.update; submit other operations alone.',
+        ? capabilities.messaging === 'parent' ? 'Contact your current task owner. Call action=models for contacts and operations. Send findings, questions or scope needs; messages do not grant permissions or start tasks. Use session wait for a needed reply; return a final answer when done. Retaining the Session needs no active wait.'
+          : 'Coordinate directly with teammates. Agree on shared interfaces and one writer per shared file; send unresolved disagreements or scope needs to the coordinator. Messages are not agreement or permission. Use session wait for needed replies; finish with a final answer and evidence, not an indefinite wait. Call action=models for contacts and operations. Multiple messages may share a turn.'
+        : 'When enabled, proactively delegate independent work asynchronously with necessary context, scope and expected evidence. No user reminder is needed. Use collaboration for communicating teammates; give shared files one writer, resolve disagreements and verify results. Await final task results; completed tasks release execution without close. Keep short or tightly coupled work direct and continue independent work. Call action=models for operations and configuration. Disabling blocks new tasks, not existing work. Async spawns, assignments and messages may share a turn with todo.update; submit compact, wait, cancel, close and discovery alone.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
@@ -456,6 +462,13 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
     case 'send':
       assertExactKeys(input, ['action', 'agentId', 'text']);
       return { action: 'send', agentId: requiredIdentifier(input.agentId, 'agentId'), text: requiredText(input.text, 'text') };
+    case 'compact':
+      assertExactKeys(input, ['action', 'agentId', 'focus'], ['focus']);
+      return { action: 'compact', agentId: requiredIdentifier(input.agentId, 'agentId'),
+        ...(input.focus !== undefined ? { focus: requiredText(input.focus, 'focus') } : {}) };
+    case 'assign':
+      assertExactKeys(input, ['action', 'agentId', 'task']);
+      return { action: 'assign', agentId: requiredIdentifier(input.agentId, 'agentId'), task: requiredText(input.task, 'task') };
     case 'wait': {
       assertExactKeys(input, ['action', 'taskIds'], ['taskIds']);
       if (input.taskIds === undefined) return { action: 'wait' };

@@ -183,6 +183,8 @@ export type AgentOperation =
       workspaceSandbox?: AgentRecipe['workspaceSandbox'];
       context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
+  | { action: 'compact'; agentId: string; focus?: string }
+  | { action: 'assign'; agentId: string; task: string }
   | { action: 'wait'; taskIds?: string[] }
   | { action: 'cancel'; taskId: string }
   | { action: 'close'; agentId: string };
@@ -908,7 +910,22 @@ export interface TodoListProjection {
   updatedAt: string;
 }
 
-export type ContextCompactionTrigger = 'pressure' | 'userFocus';
+export interface ContextManagementSettings {
+  enabled: boolean;
+  thresholdTokens: number;
+}
+
+export function decodeContextManagementSettings(value: unknown): ContextManagementSettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('context_management_settings_invalid');
+  const item = value as Record<string, unknown>;
+  if (Object.keys(item).length !== 2 || typeof item.enabled !== 'boolean'
+    || !Number.isSafeInteger(item.thresholdTokens) || Number(item.thresholdTokens) <= 0) {
+    throw new Error('context_management_settings_invalid');
+  }
+  return { enabled: item.enabled, thresholdTokens: Number(item.thresholdTokens) };
+}
+
+export type ContextCompactionTrigger = 'pressure' | 'userFocus' | 'automatic' | 'agent';
 
 export type ContextCompactionRequestPayload = {
   compactionId: string;
@@ -916,6 +933,8 @@ export type ContextCompactionRequestPayload = {
   coveredThroughSequence: number;
 } & (
   | { trigger: 'pressure' }
+  | { trigger: 'automatic'; focus?: string }
+  | { trigger: 'agent'; focus?: string }
   | { trigger: 'userFocus'; focus: string; commandId: string }
 );
 
@@ -1245,6 +1264,10 @@ export type SessionEvent =
         input: JsonObject;
         error: LocalAgentError;
       };
+    })
+  | (SessionEventBase & {
+      type: 'context.compaction.scheduled';
+      payload: { compactionId: string; requestedBySessionId: string; focus?: string };
     })
   | (SessionEventBase & {
       type: 'context.compaction.requested';
@@ -1989,6 +2012,7 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  contextManagement: ContextManagementSettings;
   agentCapabilities: AgentCapabilities;
   agentToolsEnabled?: boolean;
   permissions: UserSettings;

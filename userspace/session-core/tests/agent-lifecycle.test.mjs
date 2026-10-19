@@ -38,7 +38,7 @@ test('settled children release Actors; management and history reads stay cold; c
           if (rootTurn === 2) {
             memberId = (await service.snapshot(ownerId)).agentChildren[0].agentSessionId;
             assert.equal(disposed.get(memberId), 1, 'result delivery releases the child composition before the next request');
-            input = { action: 'send', agentId: memberId, text: 'Task body continuation.' };
+            input = { action: 'assign', agentId: memberId, task: 'Task body continuation.' };
           }
           if (rootTurn === 3) input = { action: 'wait' };
           if (rootTurn === 4) {

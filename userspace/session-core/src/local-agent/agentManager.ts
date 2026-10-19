@@ -8,7 +8,7 @@ import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js'
 import { agentOperationDefinitions } from './sessionControls.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
 import type { ControlWait } from './sessionWake.js';
-import { agentPresets, agentPermissionPatches, resolveAgentCapabilities, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
+import { agentPresets, agentPermissionPatches, resolveAgentCapabilities } from './agentConfiguration.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
 
@@ -83,21 +83,27 @@ export class AgentManager {
         const profileIds = [...new Set([settings.profileId || owner.run?.profileId,
           ...presets.map(preset => preset.profileId)].filter((id): id is string => Boolean(id)))];
         const canSpawn = settings.enabled && capabilities.delegation && (!caller.agentContext || settings.allowMemberAnalysis);
-        const operations = agentOperationDefinitions(capabilities, { fullConfiguration, canSpawn,
+        const operations = agentOperationDefinitions(capabilities, { fullConfiguration, canSpawn, coordinator: !caller.agentContext,
           allowChildDelegation: settings.allowMemberAnalysis,
           presetIds: presets.map(preset => preset.id), ...(!fullConfiguration ? { profileIds } : {}) });
         const models = canSpawn ? (await abortable(this.host.models(), signal))
           .filter(model => fullConfiguration || profileIds.includes(model.profileId)) : [];
-        const family = capabilities.messaging === true || capabilities.delegation ? await this.family(owner) : [];
-        const managed = new Set((await this.family(caller)).map(item => item.sessionId));
+        const family = await this.family(owner);
+        const managed = activeTaskSessions(family, caller.sessionId, runId);
+        const parentId = caller.agentContext ? taskOwner(family, caller.sessionId, runId).sessionId : undefined;
         const contacts = family.flatMap(item => item.agentChildren ?? [])
           .filter(child => child.agentSessionId !== caller.sessionId && !child.closed
-            && (managed.has(child.agentSessionId) || capabilities.messaging === true && child.capabilities.messaging === true))
-          .map(child => ({ agentId: child.agentSessionId, name: child.displayName,
-            status: family.find(item => item.sessionId === child.agentSessionId)?.run?.status ?? 'idle',
-            acceptsTasks: child.capabilities.continuation }));
-        return { operations,
-          ...(caller.agentContext ? { parentAgentId: caller.agentContext.parentSessionId } : {}),
+            && (!caller.agentContext || managed.has(child.agentSessionId) || child.agentSessionId === parentId
+              || capabilities.messaging === true && child.capabilities.messaging === true))
+          .map(child => {
+            const target = family.find(item => item.sessionId === child.agentSessionId);
+            const active = target?.run && ['running', 'waiting'].includes(target.run.status);
+            return { agentId: child.agentSessionId, name: child.displayName,
+              status: target?.run?.status ?? 'idle', acceptsMessages: Boolean(active),
+              acceptsTasks: !caller.agentContext && canSpawn && child.capabilities.continuation && (!target?.run || terminal(target.run.status)) };
+          });
+        return { operations, coordinatorAgentId: ownerId,
+          ...(parentId ? { parentAgentId: parentId } : {}),
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
             defaultProfileId: settings.profileId || owner.run?.profileId,
@@ -120,7 +126,32 @@ export class AgentManager {
         return { taskId: task.taskId, agentId: task.agentSessionId };
       }
       case 'send':
-        return await abortable(this.admit(sessionId, runId, () => this.send(caller, runId, callId, operation.agentId, operation.text, signal)), signal);
+        // A message does not reserve a task and must not wait behind creation or cleanup.
+        return await abortable(this.send(caller, runId, operation.agentId, operation.text, signal), signal);
+      case 'compact': {
+        const ownerId = caller.agentContext?.ownerSessionId ?? sessionId;
+        const family = await this.family(await this.snapshot(ownerId));
+        const managed = activeTaskSessions(family, sessionId, runId);
+        const child = family.flatMap(item => item.agentChildren).find(item => item.agentSessionId === operation.agentId && !item.closed);
+        if (!child || child.agentSessionId === sessionId
+          || caller.agentContext && !managed.has(child.agentSessionId)) throw new Error('agent_child_not_owned');
+        return await abortable(this.sessions.withActor(child.agentSessionId, async actor => ({ agentId: child.agentSessionId,
+          ...await actor.requestContextCompaction(sessionId, operation.focus) })), signal);
+      }
+      case 'assign': {
+        if (caller.agentContext) throw new Error('agent_coordinator_required');
+        return await abortable(this.admit(sessionId, runId, async () => {
+          signal.throwIfAborted();
+          const family = await this.family(await this.snapshot(sessionId));
+          const child = family.flatMap(item => item.agentChildren).find(item => item.agentSessionId === operation.agentId && !item.closed);
+          if (!child) throw new Error('agent_child_not_open');
+          const target = family.find(item => item.sessionId === operation.agentId);
+          if (!target || target.run && !terminal(target.run.status)) throw new Error('agent_child_not_idle');
+          const task = await this.start(caller, runId, callId, { action: 'spawn', name: child.displayName,
+            task: operation.task, delivery: 'async' }, signal, child);
+          return { taskId: task.taskId, agentId: task.agentSessionId };
+        }), signal);
+      }
       case 'wait': {
         const projection = await this.snapshot(sessionId);
         const tasks = (projection.agentTasks ?? []).filter(task => task.parentRunId === runId);
@@ -132,16 +163,20 @@ export class AgentManager {
       case 'cancel': {
         return await abortable(this.admit(sessionId, runId, async () => {
           signal.throwIfAborted();
-          const family = await this.family(await this.snapshot(sessionId));
-          const parent = family.find(item => item.agentTasks?.some(task => task.taskId === operation.taskId));
-          const task = parent?.agentTasks?.find(item => item.taskId === operation.taskId);
-          if (!parent || !task) throw new Error('agent_task_not_owned');
+          const ownerId = caller.agentContext?.ownerSessionId ?? sessionId;
+          const family = await this.family(await this.snapshot(ownerId));
+          const managed = activeTaskSessions(family, sessionId, runId);
+          const parent = family.find(item => managed.has(item.sessionId)
+            && item.agentTasks.some(task => task.taskId === operation.taskId && task.parentRunId === item.run?.runId));
+          const task = parent?.agentTasks.find(item => item.taskId === operation.taskId);
+          if (!parent || !task || task.agentSessionId === sessionId) throw new Error('agent_task_not_owned');
           await this.cancelTask(parent.sessionId, task);
           return { taskId: task.taskId, outcome: (await this.sessions.read(parent.sessionId)).agentTasks
             .find(item => item.taskId === task.taskId)!.status };
         }), signal);
       }
       case 'close':
+        if (caller.agentContext) throw new Error('agent_coordinator_required');
         return await abortable(this.admit(sessionId, runId, async () => {
           signal.throwIfAborted();
           await this.close(caller, operation.agentId);
@@ -155,6 +190,7 @@ export class AgentManager {
     existingChild?: AgentChildProjection): Promise<AgentTaskProjection> {
     signal.throwIfAborted();
     caller = await this.snapshot(caller.sessionId);
+    if (caller.run?.runId !== runId || caller.run.status !== 'running') throw new Error('agent_caller_run_not_active');
     if (!caller.subagentSettings) throw new Error('agent_settings_missing');
     const settings = caller.subagentSettings;
     if (!settings.enabled) throw new Error('agent_disabled');
@@ -164,7 +200,10 @@ export class AgentManager {
     const presets = agentPresets(settings);
     const preset = presets.find(item => item.id === (operation.preset ?? 'analysis'));
     if (!preset) throw new Error('agent_preset_unavailable');
-    const configuration = !existingChild ? this.configurations.resolve(preset.configuration ?? caller.recipe?.configuration ?? DEFAULT_AGENT_CONFIGURATION,
+    const inheritedConfiguration = !existingChild
+      ? await this.sessions.withActor(caller.sessionId, actor => actor.contextConfiguration(runId)) : undefined;
+    const configuration = !existingChild ? this.configurations.resolve(
+      this.configurations.resolve(inheritedConfiguration, preset.configuration ?? {}, true),
       { ...operation.loop, ...(operation.context ? { context: operation.context } : {}) }, settings.allowFullConfiguration === true) : undefined;
     const permissions = !existingChild ? agentPermissionPatches(preset.permissions, operation.permissions) : undefined;
     let modelSelection: { profileId: string; reasoningEffortOverride: import('@deepcode/protocol').LlmReasoningEffort | null } | undefined;
@@ -281,7 +320,7 @@ export class AgentManager {
     return task;
   }
 
-  private async send(caller: AgentSnapshot, runId: string, callId: string, targetId: string, text: string, signal: AbortSignal): Promise<JsonObject> {
+  private async send(caller: AgentSnapshot, runId: string, targetId: string, text: string, signal: AbortSignal): Promise<JsonObject> {
     signal.throwIfAborted();
     caller = await this.snapshot(caller.sessionId);
     if (targetId === caller.sessionId) throw new Error('agent_message_self');
@@ -291,13 +330,16 @@ export class AgentManager {
     const family = await this.family(owner);
     const snapshot = family.find(item => item.sessionId === targetId);
     if (!snapshot) throw new Error('agent_message_target_not_related');
-    const managesTarget = (await this.family(caller)).some(item => item.sessionId === targetId);
+    if (caller.run?.runId !== runId || caller.run.status !== 'running') throw new Error('agent_caller_run_not_active');
+    const managesTarget = !caller.agentContext || activeTaskSessions(family, caller.sessionId, runId).has(targetId);
     const callerCapabilities = await this.sessions.withActor(caller.sessionId, actor => actor.agentCapabilities(runId));
     if (!managesTarget && !callerCapabilities.messaging) throw new Error('agent_messaging_disabled');
-    if (!managesTarget && callerCapabilities.messaging === 'parent' && caller.agentContext?.parentSessionId !== targetId) {
+    if (!managesTarget && callerCapabilities.messaging === 'parent'
+      && taskOwner(family, caller.sessionId, runId).sessionId !== targetId) {
       throw new Error('agent_message_target_not_parent');
     }
-    if (!managesTarget && snapshot.agentContext?.capabilities.messaging === 'parent' && snapshot.agentContext.parentSessionId !== caller.sessionId) {
+    if (!managesTarget && snapshot.agentContext?.capabilities.messaging === 'parent' && snapshot.run
+      && !terminal(snapshot.run.status) && taskOwner(family, targetId, snapshot.run.runId).sessionId !== caller.sessionId) {
       throw new Error('agent_message_source_not_parent');
     }
     if (!managesTarget && snapshot.agentContext?.capabilities.messaging === false) throw new Error('agent_message_target_unavailable');
@@ -306,17 +348,14 @@ export class AgentManager {
     if (snapshot.run && ['running', 'waiting'].includes(snapshot.run.status)) {
       const targetRunId = snapshot.run.runId;
       await this.sessions.withActor(targetId, async target => {
+        signal.throwIfAborted();
         if (!managesTarget && !(await target.agentCapabilities(targetRunId)).messaging) throw new Error('agent_message_target_unavailable');
         await target.recordAgentEvents([{ type: 'agent.message.received', sessionId: targetId, runId: targetRunId,
           payload: { sourceSessionId: caller.sessionId, text } }]);
       });
       return { agentId: targetId, delivered: true };
     }
-    const child = relation;
-    if (!child || !child.capabilities.continuation) throw new Error('agent_message_target_not_continuable');
-    const task = await this.start(caller, runId, callId, { action: 'spawn', name: child.displayName,
-      task: text, delivery: 'async' }, signal, child);
-    return { taskId: task.taskId, agentId: targetId };
+    throw new LoopFailure('agent_message_target_inactive', '消息未发送：目标没有可接收消息的活动任务。请由主会话使用 assign 显式续派；send 不会创建任务。');
   }
 
   private async family(root: AgentManagementSnapshot | AgentSnapshot): Promise<AgentManagementSnapshot[]> {
@@ -327,8 +366,8 @@ export class AgentManager {
       visited.add(parent.sessionId);
       result.push({ ...parent, agentTasks: parent.agentTasks ?? [], agentChildren: parent.agentChildren ?? [] });
       for (const child of parent.agentChildren ?? []) {
-        // A failed creation is an archived task fact, not an existing Session.
-        if (child.closed && !(parent.agentTasks ?? []).some(task => task.agentSessionId === child.agentSessionId && task.childRunId)) continue;
+        // A reservation is visible before Session creation. Only started children have a usable run identity.
+        if (!(parent.agentTasks ?? []).some(task => task.agentSessionId === child.agentSessionId && task.childRunId)) continue;
         const projection = await this.sessions.read(child.agentSessionId);
         if (projection.agentContext?.parentSessionId !== parent.sessionId
           || projection.agentContext.ownerSessionId !== (root.agentContext?.ownerSessionId ?? root.sessionId)) {
@@ -347,14 +386,16 @@ export class AgentManager {
     if (!parent) throw new Error('agent_child_not_open');
     const target = family.find(item => item.sessionId === targetId);
     if (!target) throw new Error('agent_child_missing');
+    const subtree = await this.family(target);
+    const ids = new Set(subtree.map(item => item.sessionId));
+    const owner = await this.sessions.read(caller.agentContext?.ownerSessionId ?? caller.sessionId);
+    const activeTask = (await this.family(owner)).some(item => item.agentTasks.some(task => ids.has(task.agentSessionId) && task.status === 'running'));
+    // Check the whole archival subtree before closing any member. Close never implies cancellation.
+    if (activeTask || subtree.some(item => item.run && !terminal(item.run.status))) {
+      throw new LoopFailure('agent_child_not_idle', '成员或其后代仍有活动任务，未关闭或取消任何任务。请先等待最终任务结果；需要停止工作时显式 cancel。若成员正在等回复，请先 send 回复。');
+    }
     for (const child of target.agentChildren ?? []) {
       if (!child.closed) await this.close(target, child.agentSessionId);
-    }
-    const owner = await this.sessions.read(caller.agentContext?.ownerSessionId ?? caller.sessionId);
-    for (const taskOwner of await this.family(owner)) {
-      for (const task of taskOwner.agentTasks ?? []) {
-        if (task.agentSessionId === targetId && task.status === 'running') await this.cancelTask(taskOwner.sessionId, task);
-      }
     }
     const current = await this.sessions.read(parent.sessionId);
     if (current.agentChildren?.find(child => child.agentSessionId === targetId)?.closed) return;
@@ -476,6 +517,33 @@ export class AgentManager {
     this.#admissions = result.then(() => undefined, () => undefined);
     return result;
   }
+}
+
+/** Current task ownership is separate from immutable creation/archival lineage. */
+function taskOwner(family: readonly AgentManagementSnapshot[], childId: string, childRunId: string): AgentManagementSnapshot {
+  const parents = family.filter(parent => parent.run && !terminal(parent.run.status)
+    && parent.agentTasks.some(task => task.status === 'running' && task.parentRunId === parent.run!.runId
+      && task.agentSessionId === childId && task.childRunId === childRunId));
+  if (parents.length !== 1) throw new Error(parents.length ? 'agent_task_owner_ambiguous' : 'agent_task_owner_missing');
+  return parents[0]!;
+}
+
+function activeTaskSessions(family: readonly AgentManagementSnapshot[], sessionId: string, runId: string): Set<string> {
+  const result = new Set<string>();
+  const visit = (id: string, run: string) => {
+    if (result.has(id)) throw new Error('agent_task_lineage_cycle');
+    result.add(id);
+    const current = family.find(item => item.sessionId === id);
+    if (!current || current.run?.runId !== run) throw new Error('agent_task_run_mismatch');
+    for (const task of current.agentTasks) {
+      if (task.parentRunId !== run || task.status !== 'running' || !task.childRunId) continue;
+      const child = family.find(item => item.sessionId === task.agentSessionId);
+      // A child can have settled just before its result reaches the task owner.
+      if (child?.run?.runId === task.childRunId && !terminal(child.run.status)) visit(child.sessionId, task.childRunId);
+    }
+  };
+  visit(sessionId, runId);
+  return result;
 }
 
 function id(kind: string): string { return `${kind}:${crypto.randomUUID()}`; }

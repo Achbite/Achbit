@@ -18,11 +18,6 @@ export interface SessionContribution<K extends Kind = Kind> {
 }
 
 const OPTIONAL_CONTROLS = [SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT];
-const emptySchema = { type: 'object', additionalProperties: false, properties: {} };
-function empty(parameters: JsonObject): void {
-  if (Object.keys(parameters).length) throw new Error('agent_contribution_parameters_invalid');
-}
-
 /** Host-installed contributions, with one catalog for admission, discovery and restoration. */
 export class SessionConfigurationRegistry {
   readonly #entries = new Map<string, SessionContribution>();
@@ -58,7 +53,9 @@ export class SessionConfigurationRegistry {
           || Object.keys(override.parameters ?? {}).some(key => !definition.basicParameters?.includes(key)))) {
           throw new Error('agent_full_configuration_required');
         }
-        result[kind] = structuredClone(override);
+        result[kind] = override.id === result[kind].id
+          ? { id: override.id, parameters: { ...result[kind].parameters, ...structuredClone(override.parameters) } }
+          : structuredClone(override);
       }
       this.definition(kind, result[kind]).validate(result[kind].parameters ?? {});
     }
@@ -86,7 +83,7 @@ export class SessionConfigurationRegistry {
       const compaction = build('compaction');
       return { controls, compaction: { ...compaction,
           prepare: (input, signal) => compaction.prepare({ ...input, optionalControlTools: controls.optionalTools }, signal) },
-        context: { prepare: (input, signal) => context.prepare({ ...input, optionalControlTools: controls.optionalTools }, signal) }, dispose };
+        context: { ...context, prepare: (input, signal) => context.prepare({ ...input, optionalControlTools: controls.optionalTools }, signal) }, dispose };
     } catch (error) {
       try { await dispose(); }
       catch (cleanup) { throw new AggregateError([error, cleanup], 'session_contributions_initialization_failed'); }
@@ -104,23 +101,37 @@ export class SessionConfigurationRegistry {
 export function builtinSessionContributions(): SessionContribution[] {
   return [
     { kind: 'context', id: 'journal', description: 'The Session journal and its stable recorded model views.',
-      parametersSchema: emptySchema, validate: empty,
-      create: () => ({ implementation: { prepare: buildAgentProviderRequest } }) },
-    { kind: 'compaction', id: 'summary', description: 'Summarize context at the model context limit.',
       parametersSchema: { type: 'object', additionalProperties: false, properties: {
-        pressureRatio: { type: 'number', exclusiveMinimum: 0, maximum: 1, description: 'Fraction of the context window at which compaction starts. Default 1.' },
+        maxTokens: { type: 'integer', minimum: 1, description: 'Optional context budget including output reserve; capped by the selected model window. Omit to inherit.' },
       } },
       validate(parameters) {
-        if (Object.keys(parameters).some(key => key !== 'pressureRatio') || parameters.pressureRatio !== undefined
+        if (Object.keys(parameters).some(key => key !== 'maxTokens') || parameters.maxTokens !== undefined
+          && (!Number.isSafeInteger(parameters.maxTokens) || Number(parameters.maxTokens) <= 0)) throw new Error('agent_context_parameters_invalid');
+      },
+      create: parameters => ({ implementation: { prepare: buildAgentProviderRequest,
+        windowTokens: runtime => Math.min(runtime.provider.contextWindowTokens, Number(parameters.maxTokens ?? runtime.provider.contextWindowTokens)),
+      } }) },
+    { kind: 'compaction', id: 'summary', description: 'Summarize at the context budget; optional automatic management at task boundaries.',
+      parametersSchema: { type: 'object', additionalProperties: false, properties: {
+        pressureRatio: { type: 'number', exclusiveMinimum: 0, maximum: 1, description: 'Fraction of the context budget for capacity-pressure compaction. Default 1.' },
+        enabled: { type: 'boolean', description: 'Automatic task-boundary compaction. Omit to inherit.' },
+        thresholdTokens: { type: 'integer', minimum: 1, description: 'Automatic compaction soft threshold in tokens, including cached input. Omit to inherit.' },
+      } },
+      validate(parameters) {
+        if (Object.keys(parameters).some(key => !['pressureRatio', 'enabled', 'thresholdTokens'].includes(key))
+          || parameters.enabled !== undefined && typeof parameters.enabled !== 'boolean'
+          || parameters.thresholdTokens !== undefined && (!Number.isSafeInteger(parameters.thresholdTokens) || Number(parameters.thresholdTokens) <= 0)
+          || parameters.pressureRatio !== undefined
           && (typeof parameters.pressureRatio !== 'number' || !Number.isFinite(parameters.pressureRatio)
             || parameters.pressureRatio <= 0 || parameters.pressureRatio > 1)) throw new Error('agent_compaction_parameters_invalid');
       },
       create(parameters) {
         const compaction = createSessionCapabilities().compaction;
         return { implementation: { ...compaction,
-          pressureCutoff: (snapshot, runId, receipt, runtime) => compaction.pressureCutoff(snapshot, runId, receipt,
-            { ...runtime, provider: { ...runtime.provider,
-              contextWindowTokens: Math.floor(runtime.provider.contextWindowTokens * Number(parameters.pressureRatio ?? 1)) } }),
+          settings: runtime => ({ enabled: parameters.enabled as boolean ?? runtime.contextManagement.enabled,
+            thresholdTokens: parameters.thresholdTokens as number ?? runtime.contextManagement.thresholdTokens }),
+          pressureCutoff: (snapshot, runId, receipt, runtime, budget = runtime.provider.contextWindowTokens) => compaction.pressureCutoff(snapshot, runId, receipt,
+            runtime, Math.floor(budget * Number(parameters.pressureRatio ?? 1))),
         } };
       } },
     { kind: 'controls', id: 'standard', description: 'Use the shared Loop controls; optional progress, waiting and delivery tools can be selected.',

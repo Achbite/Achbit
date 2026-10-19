@@ -648,6 +648,10 @@ impl LocalAgentRuntime {
             "selectedPlugins": selected_plugins,
             "environment": environment,
             "agentCapabilities": agent_capabilities,
+            "contextManagement": {
+                "enabled": settings.get("agent.contextManagement.enabled").and_then(Value::as_bool).unwrap_or(false),
+                "thresholdTokens": settings.get("agent.contextManagement.thresholdTokens").and_then(Value::as_u64).unwrap_or(500_000),
+            },
         });
         // Handler availability is stable; delegation settings belong to Session.
         response["agentToolsEnabled"] = json!(true);

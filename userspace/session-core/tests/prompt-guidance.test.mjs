@@ -25,9 +25,9 @@ test('core guidance supports autonomous work while retaining evidence and execut
 test('delegation guidance describes opportunities, direct work and context needed by the child', () => {
   const agent = sessionControlToolDefinitions(capabilities).find(tool => tool.name === 'agent');
   assert.ok(agent);
-  for (const phrase of ['When enabled', 'No user reminder is needed', 'context-heavy exploration',
-    'independent review', 'short or tightly coupled', 'continue independent work',
-    'verify results', 'disabling blocks new tasks', 'action=models']) {
+  for (const phrase of ['When enabled', 'No user reminder is needed', 'independent work asynchronously',
+    'Use collaboration', 'shared files one writer', 'resolve disagreements', 'short or tightly coupled',
+    'continue independent work', 'verify results', 'Await final task results', 'release execution without close', 'Disabling blocks new tasks', 'action=models']) {
     assert.ok(agent.description.includes(phrase), phrase);
   }
   const operations = agentOperationDefinitions(capabilities, { fullConfiguration: true });
@@ -36,13 +36,22 @@ test('delegation guidance describes opportunities, direct work and context neede
   assert.match(spawn.inputSchema.properties.delivery.description, /async.*overlap.*wait.*depends/u);
   assert.match(spawn.inputSchema.properties.preset.description, /does not define a fixed agent type/u);
   assert.match(spawn.inputSchema.properties.permissions.description, /Cannot grant new authority/u);
-  assert.equal(agentOperationDefinitions(capabilities, { canSpawn: false }).some(operation => operation.action === 'spawn'), false);
+  const disabled = agentOperationDefinitions(capabilities, { canSpawn: false });
+  assert.equal(disabled.some(operation => ['spawn', 'assign'].includes(operation.action)), false);
+  assert.ok(disabled.some(operation => operation.action === 'send'));
+  assert.ok(operations.some(operation => operation.action === 'assign'));
+  const member = agentOperationDefinitions(capabilities, { coordinator: false });
+  assert.equal(member.some(operation => ['assign', 'close'].includes(operation.action)), false);
+  assert.match(operations.find(operation => operation.action === 'send').description, /not agreement.*Does not start tasks/u);
+  assert.match(operations.find(operation => operation.action === 'close').description, /idle retained agent.*rejected without cancellation.*final task results/u);
+  const peer = sessionControlToolDefinitions({ messaging: true, delegation: false, continuation: true }).find(tool => tool.name === 'agent');
+  assert.match(peer.description, /final answer and evidence, not an indefinite wait/u);
 });
 
 test('messaging-only agents receive contact guidance instead of encouragement to delegate', () => {
   const restricted = { messaging: 'parent', delegation: false, continuation: false };
   const agent = sessionControlToolDefinitions(restricted).find(tool => tool.name === 'agent');
-  assert.match(agent.description, /Contact your parent/u);
+  assert.match(agent.description, /Contact your current task owner/u);
   assert.doesNotMatch(agent.description, /proactively delegate/u);
   const operations = agentOperationDefinitions(restricted);
   assert.equal(operations.some(operation => operation.action === 'spawn'), false);

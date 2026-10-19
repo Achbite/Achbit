@@ -3920,6 +3920,7 @@ mod attempt_control_tests {
                 "runtimeSnapshot":{
                     "agentCapabilities":{"messaging":true,"continuation":true,"delegation":true},
                     "permissions":crate::settings_api::permission_settings(&json!({})),
+                    "contextManagement":{"enabled":false,"thresholdTokens":500_000},
                     "runRuntimeSnapshotRef":"runtime:test", "extensionGenerationRef":"extension:test",
                     "kernelCatalogSnapshotRef":catalog["kernelCatalogSnapshotRef"],
                     "provider":{"providerRuntimeRef":"provider:test", "profileId":"profile:test", "contextWindowTokens":4096, "maxOutputTokens":512, "apiSurface":"chatCompletions", "hostedWebSearch":"none"},

@@ -844,6 +844,8 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
         };
       }
       break;
+    case 'context.compaction.scheduled':
+      break;
     case 'context.compaction.requested':
       assertRunningRun(next, event.runId, 'context_compaction_run_not_active');
       break;

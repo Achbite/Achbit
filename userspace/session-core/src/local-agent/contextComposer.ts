@@ -649,7 +649,7 @@ export function messagesFromJournal(
         contributionId: `agent-delegation:${event.sequence}`, contributionKind: 'journalMessages',
         label: 'Delegation status', sourceSequence: event.sequence,
         message: { role: 'user', content: (event.type === 'session.created' ? event.payload.subagentSettings!.enabled : event.payload.settings.enabled)
-          ? 'Runtime setting changed: new agent delegation is enabled for this Session. Proactively delegate useful independent work: separate investigation tracks, context-heavy exploration or independent review. No additional user request is needed. Use agent models for available operations and configuration; follow the agent tool guidance to scope tasks, continue independent work and integrate verified results.'
+          ? 'Runtime setting changed: new agent delegation is enabled for this Session. Proactively delegate independent work; use collaboration for communicating teammates. Supply context and scope, assign shared-file ownership, resolve disagreements and verify results. Follow the agent tool operations.'
           : 'Runtime setting changed: stop delegating new tasks. Existing tasks may continue; you may message running agents, wait for results, cancel or close them. New spawns and new tasks for idle agents are rejected locally.' },
       });
     } else if (event.type === 'agent.message.received') {

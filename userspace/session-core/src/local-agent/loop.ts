@@ -5,6 +5,7 @@ import { withProviderAttempts } from './providerAttempts.js';
 import { preparePlanReview } from './planReview.js';
 import type {
   AgentOperation,
+  ContextCompositionReceipt,
   SessionOperation,
   AssistantDraftBlockProjection,
   AssistantDraftProjection,
@@ -48,6 +49,8 @@ import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
 import {
   pendingContextCompaction,
+  scheduledContextCompaction,
+  automaticCompactionCutoff,
   type ContextCompactionRequestEvent,
 } from './compaction.js';
 import { errorFact, LoopFailure, ProviderCompletedFailure, ProviderReportedFailure } from './loopFailure.js';
@@ -58,6 +61,7 @@ import {
 } from './providerToolCodec.js';
 import { recoverSession, type SessionState } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { runInputMessageEvent } from './contextComposer.js';
 import { requestResourceBindings } from './workspaceBindings.js';
 import { providerTextStreamId } from './streamIdentity.js';
 import { PlanPreviewBuffer } from './planPreview.js';
@@ -394,11 +398,22 @@ export async function runAgentLoop(
           workspaceBindings: runWorkspaceBindings(snapshot, runId),
           providerRequestId: deps.nextId('provider-request'),
         }, signal);
+        const contextBudget = Math.min(capabilities.context.windowTokens(runtime), runtime.provider.contextWindowTokens);
+        if (!Number.isSafeInteger(contextBudget) || contextBudget <= runtime.provider.maxOutputTokens) {
+          throw new LoopFailure('context_budget_invalid', '上下文预算必须为正整数，并为模型输出保留空间。');
+        }
+        const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, preparedProviderRequest.receipt,
+          capabilities, 'nextRun', deps.nextId);
+        if (boundaryCompaction) {
+          await commit(boundaryCompaction);
+          continue;
+        }
         const pressureCutoff = capabilities.compaction.pressureCutoff(
           snapshot,
           runId,
           preparedProviderRequest.receipt,
           runtime,
+          contextBudget,
         );
         if (pressureCutoff !== null) {
           throwIfAborted(signal);
@@ -415,7 +430,7 @@ export async function runAgentLoop(
           });
           continue;
         }
-        if (capabilities.compaction.estimateInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= runtime.provider.contextWindowTokens) {
+        if (capabilities.compaction.estimateInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= contextBudget) {
           throw new LoopFailure('context_input_budget_exceeded', '当前输入与工具定义加上输出预留已达到上下文预算；没有可继续压缩的历史。原始输入与资源保持完整。');
         }
         throwIfAborted(signal);
@@ -637,18 +652,33 @@ export async function runAgentLoop(
               continue nextTurn;
             }
             const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
+            await commit(answerFacts);
+            const canCompact = !snapshot.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
+              && latestAgentEvidenceSequence(snapshot.events, runId) === agentEvidenceRevision
+              && !snapshot.state.queuedInputs.some(input => input.runId === runId)
+              && !snapshot.state.interactions.some(item => item.runId === runId && item.status === 'pending');
+            if (canCompact && (capabilities.compaction.settings(runtime).enabled || scheduledContextCompaction(snapshot.events))) {
+              const completedContext = await capabilities.context.prepare({
+                sessionId: snapshot.state.sessionId, runId, runtime, events: snapshot.events,
+                responseConstraint: 'normal', workspaceBindings: runWorkspaceBindings(snapshot, runId),
+                providerRequestId: deps.nextId('provider-request'),
+              }, signal);
+              const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, completedContext.receipt,
+                capabilities, 'idle', deps.nextId);
+              if (boundaryCompaction) {
+                await commit(boundaryCompaction);
+                await performContextCompaction(snapshot, pendingContextCompaction(snapshot.events, runId)!, runId, deps, signal, commit);
+              }
+            }
             let deferForAgents = false;
             await commit((current) => {
               deferForAgents = current.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
                 || latestAgentEvidenceSequence(current.events, runId) !== agentEvidenceRevision;
-              if (deferForAgents) return answerFacts;
-              return [...answerFacts, ...(current.state.queuedInputs.some((input) => input.runId === runId) ? []
-                : current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
-                  type: 'run.waiting', sessionId: current.state.sessionId, runId,
-                  payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
-                } as const] : [{
-                  type: 'run.finishing', sessionId: current.state.sessionId, runId, payload: settlement,
-                } as const])];
+              if (deferForAgents || current.state.queuedInputs.some(input => input.runId === runId)) return [];
+              return current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
+                type: 'run.waiting', sessionId: current.state.sessionId, runId,
+                payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' },
+              }] : [{ type: 'run.finishing', sessionId: current.state.sessionId, runId, payload: settlement }];
             });
             if (deferForAgents) {
               await lease.release();
@@ -860,6 +890,26 @@ class ToolViewRetirementFailure extends AggregateError {
   constructor(error: unknown) {
     super([error], 'tool_view_retire_failed');
   }
+}
+
+function boundaryCompactionEvent(
+  snapshot: LoopSnapshot, runId: string, runtime: RunRuntimeSnapshot, receipt: ContextCompositionReceipt,
+  capabilities: SessionCapabilities, boundary: 'nextRun' | 'idle', nextId: (kind: string) => string,
+): Extract<NewSessionEvent, { type: 'context.compaction.requested' }> | null {
+  const scheduled = scheduledContextCompaction(snapshot.events);
+  const input = runInputMessageEvent(snapshot.events, runId);
+  if (!input) return null;
+  const firstRequest = !snapshot.state.contextCompositions.some(item => item.runId === runId && item.purpose === 'agent');
+  const cutoff = scheduled
+    ? boundary === 'nextRun' && scheduled.sequence < input.sequence ? input.sequence - 1 : snapshot.state.revision
+    : boundary === 'idle' || firstRequest
+      ? automaticCompactionCutoff(snapshot, runId, receipt, runtime, capabilities.compaction.settings(runtime), boundary) : null;
+  if (cutoff === null) return null;
+  const focus = scheduled ? scheduled.payload.focus : boundary === 'nextRun' ? input.payload.content : undefined;
+  return { type: 'context.compaction.requested', sessionId: snapshot.state.sessionId, runId,
+    payload: { compactionId: scheduled?.payload.compactionId ?? nextId('compaction'),
+      providerRequestId: nextId('provider-request'), trigger: scheduled ? 'agent' : 'automatic',
+      coveredThroughSequence: cutoff, ...(focus ? { focus } : {}) } };
 }
 
 async function performContextCompaction(
@@ -1321,10 +1371,11 @@ async function consumeProviderOutput(
     block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
       || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
       || block.name === SESSION_CONTROL_SESSION
-      || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall' || block.input.action !== 'spawn' || block.input.delivery !== 'async'
+      || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall'
+        || !(block.input.action === 'send' || block.input.action === 'assign' || block.input.action === 'spawn' && block.input.delivery === 'async')
         || inputBlocks.some(other => other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE))
   )) && inputBlocks.length > 1
-    ? '该控制调用需要独占一轮；仅多个异步 agent spawn 可以与一个 todo.update 一起提交。本批次未执行。'
+    ? '该控制调用需要独占一轮；异步 agent spawn、assign 和 send 可以与一个 todo.update 一起提交。本批次未执行。'
     : inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE).length > 1
       ? '每个 Provider turn 最多包含一个 todo.update；本批次未执行，请合并步骤更新。'
       : undefined;

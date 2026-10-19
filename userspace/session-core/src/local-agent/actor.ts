@@ -1,7 +1,7 @@
 import { RunTiming } from './runTiming.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
 import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
-import { agentPresets } from './agentConfiguration.js';
+import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
 import type { SessionOperation, JsonObject } from '@deepcode/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
@@ -144,6 +144,36 @@ export class SessionActor {
     const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
     return decodeAgentCapabilities(runtime.agentCapabilities);
+  }
+
+  /** Freeze inherited context rules from the caller's actual run, not later global defaults. */
+  async contextConfiguration(runId: string): Promise<import('@deepcode/protocol').AgentConfiguration> {
+    const snapshot = await this.loadSnapshot();
+    const runtime = snapshot.state.runRuntimeSnapshots[runId];
+    if (!runtime) throw new Error('run_runtime_snapshot_missing');
+    const configuration = structuredClone(snapshot.state.recipe?.configuration ?? DEFAULT_AGENT_CONFIGURATION);
+    const lease = this.#capabilities.acquire();
+    try {
+      if (configuration.context.id === 'journal') configuration.context.parameters = {
+        ...configuration.context.parameters, maxTokens: lease.implementation.context.windowTokens(runtime),
+      };
+      if (configuration.compaction.id === 'summary') configuration.compaction.parameters = {
+        ...configuration.compaction.parameters, ...lease.implementation.compaction.settings(runtime),
+      };
+      return configuration;
+    } finally { await lease.release(); }
+  }
+
+  async requestContextCompaction(requestedBySessionId: string, focus?: string): Promise<JsonObject> {
+    return this.withWrite(async () => {
+      this.assertOperational();
+      const snapshot = await this.loadSnapshot();
+      const compactionId = this.#nextId('compaction');
+      await this.appendEvents([{ type: 'context.compaction.scheduled', sessionId: this.sessionId,
+        payload: { compactionId, requestedBySessionId, ...(focus ? { focus } : {}) } }], snapshot);
+      return { compactionId, status: 'scheduled',
+        boundary: snapshot.state.run && !isTerminal(snapshot.state.run.status) ? 'nextModelBoundary' : 'nextRun' };
+    });
   }
 
   async snapshot(): Promise<SessionProjection> {

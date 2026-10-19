@@ -90,7 +90,10 @@ class State(fixture.ProviderState):
                    if message.get('role') == 'tool'}
         if 'models' in results:
             operations = {operation['action'] for operation in results['models']['operations']}
-            require(operations == {'models', 'spawn', 'send', 'wait', 'cancel', 'close'},
+            expected = {'models', 'spawn', 'send', 'compact', 'wait', 'cancel'}
+            if not lane.startswith('MEMBER_'):
+                expected |= {'assign', 'close'}
+            require(operations == expected,
                     f'{lane}: discovered agent operations are incorrect: {sorted(operations)}')
         return lane, ordinal, names, results, sid
 
@@ -141,10 +144,10 @@ class Provider(fixture.MockProviderHandler):
                     agent('close-reader', action='close', agentId=results['analyze']['agentId'])
                 elif ordinal == 4:
                     require(results['close-reader']['closed'] is True, 'Explicit reader cleanup failed')
-                    agent('spawn', action='spawn', preset='collaboration', task='MEMBER_INITIAL', name='Collaborator', delivery='wait')
+                    agent('spawn', action='spawn', preset='collaboration', capabilities=dict(delegation=True), task='MEMBER_INITIAL', name='Collaborator', delivery='wait')
                 elif ordinal == 5:
                     require(results['spawn']['outcome'] == 'completed' and results['spawn']['content'] == 'member-initial-complete', 'Member result missing')
-                    agent('send', action='send', agentId=results['spawn']['agentId'], text='MEMBER_FOLLOWUP')
+                    agent('send', action='assign', agentId=results['spawn']['agentId'], task='MEMBER_FOLLOWUP')
                 elif ordinal == 6:
                     require(results['send']['agentId'] == results['spawn']['agentId'], 'Follow-up replaced the persistent member')
                     agent('wait-member', action='wait', taskIds=[results['send']['taskId']])
