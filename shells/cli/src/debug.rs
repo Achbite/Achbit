@@ -198,7 +198,30 @@ fn gui_process_definitely_absent(pid: u64) -> bool {
         let result = unsafe { libc::kill(pid, 0) };
         result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0},
+            System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+        };
+        let Ok(pid) = u32::try_from(pid) else {
+            return false;
+        };
+        if pid == 0 {
+            return false;
+        }
+        unsafe {
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if handle.is_null() {
+                return std::io::Error::last_os_error().raw_os_error()
+                    == Some(ERROR_INVALID_PARAMETER as i32);
+            }
+            let exited = WaitForSingleObject(handle, 0) == WAIT_OBJECT_0;
+            CloseHandle(handle);
+            exited
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false
@@ -268,7 +291,7 @@ impl Client {
                     .write_all(&line)
                     .map_err(|e| e.to_string())?;
                 std::io::stdout().flush().map_err(|e| e.to_string())?;
-                if frame["status"] == "failed" || frame["state"]["status"] == "failed" {
+                if observation_failed(&frame) {
                     return Err(format!("Observation failed: {frame}"));
                 }
             }
@@ -278,6 +301,19 @@ impl Client {
         }
         Ok(())
     }
+}
+fn observation_failed(frame: &Value) -> bool {
+    frame["status"] == "failed"
+        || frame["state"]["status"] == "failed"
+        || frame["items"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["eventType"] == "run.settled"
+                    && item["payload"]["outcome"] == "failed"
+                    && item
+                        .get("sourceSessionId")
+                        .is_none_or(|source| *source == frame["sessionId"])
+            })
+        })
 }
 async fn decode(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
@@ -491,16 +527,10 @@ async fn wait_for_gui(client: &Client, gui: &mut Child, control: &Value) -> Resu
 }
 
 async fn launch(args: &Args, root: &Path) -> Result<(), String> {
-    let artifact = PathBuf::from(args.required("artifact")?)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let app = if artifact.extension().is_some_and(|x| x == "app") {
-        artifact.clone()
-    } else {
-        artifact.join("DeepCode-Debug.app")
-    };
-    let resources = app.join("Contents/Resources");
-    let binaries = app.join("Contents/MacOS");
+    // Keep the ordinary absolute path for the packaged Node entrypoint. Rust's
+    // canonicalize adds a Windows verbatim prefix which Node's loader rejects.
+    let artifact = std::path::absolute(args.required("artifact")?).map_err(|e| e.to_string())?;
+    let (resources, kernel, gui_binary) = artifact_paths(&artifact, std::env::consts::OS)?;
     let metadata: Value = serde_json::from_slice(
         &fs::read(resources.join("BUILDINFO.json")).map_err(|e| e.to_string())?,
     )
@@ -522,7 +552,9 @@ async fn launch(args: &Args, root: &Path) -> Result<(), String> {
         return Err("A Host already exists in this root; use attach explicitly".into());
     }
     dirs.create().map_err(|e| e.to_string())?;
-    configure(root, &resources, &binaries.join("deepcode-kernel"));
+    #[cfg(windows)]
+    isolate_launcher_streams()?;
+    configure(root, &resources, &kernel);
     let host = KernelBootstrap::connect(KernelBootstrapOptions::new(None).persistent(true))
         .await
         .map_err(|e| e.to_string())?;
@@ -547,7 +579,7 @@ async fn launch(args: &Args, root: &Path) -> Result<(), String> {
         let started = Instant::now();
         let log = File::create(dirs.log_dir.join("debug-gui.log")).map_err(|e| e.to_string())?;
         let mut gui = deepcode_host_connection::process::spawn_independent_shell(
-            Command::new(binaries.join("DeepCode-GUI"))
+            Command::new(gui_binary)
                 .current_dir(&workspace)
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
@@ -576,9 +608,78 @@ async fn launch(args: &Args, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn isolate_launcher_streams() -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{
+        SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    };
+    // A controller may supply inheritable pipes. The long-lived Host and GUI
+    // have explicit log streams, but CreateProcess also inherits other marked
+    // handles. Keep this CLI's pipes from delaying EOF after launch has exited.
+    for handle in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
+        if !handle.is_null()
+            && handle != INVALID_HANDLE_VALUE
+            && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0
+        {
+            return Err(format!(
+                "Could not isolate Debug launcher streams: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn artifact_paths(artifact: &Path, platform: &str) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    match platform {
+        "windows" => Ok((
+            artifact.to_path_buf(),
+            artifact.join("deepcode-kernel.exe"),
+            artifact.join("DeepCode-Debug.exe"),
+        )),
+        "macos" => {
+            let app = if artifact.extension().is_some_and(|x| x == "app") {
+                artifact.to_path_buf()
+            } else {
+                artifact.join("DeepCode-Debug.app")
+            };
+            Ok((
+                app.join("Contents/Resources"),
+                app.join("Contents/MacOS/deepcode-kernel"),
+                app.join("Contents/MacOS/DeepCode-GUI"),
+            ))
+        }
+        _ => Err(format!("Debug launch is not supported on {platform}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_artifact_paths_select_the_platform_package() {
+        let root = Path::new("package with spaces");
+        assert_eq!(
+            artifact_paths(root, "windows").unwrap(),
+            (
+                root.to_path_buf(),
+                root.join("deepcode-kernel.exe"),
+                root.join("DeepCode-Debug.exe")
+            )
+        );
+        let mac = root.join("DeepCode-Debug.app");
+        assert_eq!(
+            artifact_paths(root, "macos").unwrap(),
+            artifact_paths(&mac, "macos").unwrap()
+        );
+        assert!(artifact_paths(root, "linux").is_err());
+    }
     #[test]
     fn debug_partial_observation_is_not_a_successful_command() {
         assert!(command_failed(
@@ -591,6 +692,23 @@ mod tests {
             "tools.call",
             &json!({"status":"approvalRequired"})
         ));
+    }
+    #[test]
+    fn debug_observation_preserves_the_observed_tasks_failure() {
+        assert!(observation_failed(&json!({"status":"failed"})));
+        let mut frame = json!({"sessionId":"parent","status":"settled","items":[
+            {"eventType":"run.settled","payload":{"outcome":"failed"}}
+        ]});
+        assert!(observation_failed(&frame));
+        frame["items"][0]["sourceSessionId"] = json!("child");
+        assert!(!observation_failed(&frame));
+        frame["items"][0]["sourceSessionId"] = json!("parent");
+        assert!(observation_failed(&frame));
+        frame["items"][0]["payload"]["outcome"] = json!("completed");
+        assert!(!observation_failed(&frame));
+        frame["items"][0] =
+            json!({"eventType":"tool.call.completed","payload":{"outcome":"failed"}});
+        assert!(!observation_failed(&frame));
     }
     #[test]
     fn debug_gui_ready_requires_loaded_workbench_and_connected_host() {
@@ -651,14 +769,20 @@ mod tests {
         result["cleanupComplete"] = json!(true);
         assert!(validate_shutdown(&result, &identity('b')).is_err());
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn gui_absence_requires_os_confirmation_after_process_exit() {
         assert!(!gui_process_definitely_absent(
             u64::from(std::process::id())
         ));
+        #[cfg(unix)]
         let mut child = Command::new("/bin/sh")
             .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "exit", "0"])
             .spawn()
             .unwrap();
         let pid = child.id();

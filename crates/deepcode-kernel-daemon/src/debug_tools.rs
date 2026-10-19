@@ -152,11 +152,30 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         serde_json::from_value(environment["shell"].clone()).map_err(|e| e.to_string())?;
     config.execution_path = Some(string(&environment, "executionPath")?.into());
     config.file_read_roots = plugins.file_read_roots();
+    #[cfg(target_os = "macos")]
     if let Some(commands) = environment["commandPaths"].as_object() {
         for path in commands.values().filter_map(Value::as_str) {
             config
                 .file_read_roots
                 .push(Path::new(path).canonicalize().map_err(|e| e.to_string())?);
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Match ordinary native runs: Windows execution aliases need not be
+        // readable files. Grant only the existing runtime's recognized roots.
+        let command_paths = environment["commandPaths"]
+            .as_object()
+            .into_iter()
+            .flat_map(|commands| commands.values());
+        for path in command_paths.chain(std::iter::once(&environment["shell"]["executable"])) {
+            if let Some(path) = path.as_str() {
+                config.file_read_roots.extend(
+                    deepcode_kernel_runtime::shell_environment::windows_runtime_read_roots(
+                        Path::new(path),
+                    ),
+                );
+            }
         }
     }
     let enable_web = deepcode_kernel_runtime::executors::web_search_availability(&config)
