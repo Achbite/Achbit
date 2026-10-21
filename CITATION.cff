@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use DeepCode in research, prototypes, or technical writing, please cite it using this metadata."
 title: "DeepCode"
 type: software
-version: 0.6.55
+version: 0.6.58
 authors:
   - name: "DeepCode Team"
 year: 2026
