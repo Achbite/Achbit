@@ -210,6 +210,12 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/provider-usage`);
   }
 
+  async readResources(sessionId: string, recordIds: readonly string[] = []): Promise<import('@deepcode/protocol').ResourceJournalRead> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/resources`, {
+      method: 'POST', body: JSON.stringify({ recordIds }),
+    });
+  }
+
   async readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null> {
     return await this.json(
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,

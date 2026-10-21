@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ResourceTreeMenu, type AttachTreeResource } from './ResourceTreeMenu';
 import { asyncDataLoaderFeature, hotkeysCoreFeature, type ItemInstance } from '@headless-tree/core';
 import { useTree } from '@headless-tree/react';
 import { useConversationHost } from './ConversationHost';
@@ -12,10 +13,30 @@ import { UiRegion } from '../../ui-plugins/UiRegion';
 
 type Node = { name: string; parentId?: string; entry?: ResourceEntry; children?: ResourceEntry[]; error?: string };
 
-export function ResourceTree({ sessionId, language, openTarget, visible, activeTarget }: { sessionId: string; language: UiLanguage; visible: boolean; activeTarget?: ReaderTarget; openTarget(target: ReaderTarget): void }) {
+type ResourceTreeProps = { sessionId: string; language: UiLanguage; visible: boolean; activeTarget?: ReaderTarget; openTarget(target: ReaderTarget): void; onAttach?: AttachTreeResource };
+
+export function ResourceTree(props: ResourceTreeProps) {
+  const [opened, setOpened] = useState(props.visible);
+  useEffect(() => { if (props.visible) setOpened(true); }, [props.visible]);
+  // Lazily create the loader on first use; keep it afterwards so hiding Reader
+  // does not discard folder expansion, filtering or focus state.
+  return opened || props.visible ? <ResourceTreeContents {...props} /> : null;
+}
+
+function ResourceTreeContents({ sessionId, language, openTarget, visible, activeTarget, onAttach }: ResourceTreeProps) {
   const { resources } = useConversationHost();
   const chinese = language === 'zh-CN';
   const [filter, setFilter] = useState('');
+  const [menu, setMenu] = useState<{ entry: ResourceEntry; x: number; y: number } | null>(null);
+  const [actionError, setActionError] = useState('');
+  const menuAnchor = useRef<HTMLElement | null>(null);
+  const treeAnchor = useRef<HTMLElement | null>(null);
+  const closeMenu = useCallback(() => { setMenu(null); menuAnchor.current?.focus(); }, []);
+  const openMenu = (entry: ResourceEntry | undefined, anchor: HTMLElement, x: number, y: number) => {
+    if (!entry) return;
+    menuAnchor.current = anchor; setActionError(''); setMenu({ entry, x, y });
+  };
+  useEffect(() => { setMenu(null); setActionError(''); }, [sessionId, visible]);
   const showRuntime = useSettingsStore(state => state.effectiveSettings['gui.showRuntimeFiles'] === true);
   const [watchError, setWatchError] = useState('');
   const setShowRuntime = async (visible: boolean) => {
@@ -101,7 +122,7 @@ export function ResourceTree({ sessionId, language, openTarget, visible, activeT
     },
     features: [asyncDataLoaderFeature, hotkeysCoreFeature],
   });
-  useEffect(() => { void tree.getRootItem().invalidateChildrenIds(true); }, [projectionKey, tree]);
+  useEffect(() => { if (visible) void tree.getRootItem().invalidateChildrenIds(true); }, [projectionKey, visible, tree]);
   const targetReference: ResourceReference | undefined = activeTarget?.kind === 'workspace'
     ? { workspaceId: activeTarget.workspaceId, logicalPath: activeTarget.logicalPath }
     : activeTarget?.kind === 'resource' ? activeTarget.resource : undefined;
@@ -178,7 +199,10 @@ export function ResourceTree({ sessionId, language, openTarget, visible, activeT
     if (!item) throw new Error('resource_tree_item_unavailable');
     return item;
   };
-  return <aside className="resource-tree" hidden={!visible} aria-label={chinese ? '文件树' : 'File tree'}>
+  return <aside ref={treeAnchor} className="resource-tree" hidden={!visible} aria-label={chinese ? '文件树' : 'File tree'}>
+    {actionError && <p className="local-agent__resource-error" role="alert">{actionError}</p>}
+    {visible && menu && <ResourceTreeMenu {...menu} sessionId={sessionId} language={language}
+      onOpen={() => open(menu.entry)} onAttach={onAttach} onClose={closeMenu} onError={setActionError} />}
     <UiRegion slot="reader.tree" data={{ kind: 'resourceTree', visible, filter, showRuntime, watchError,
       selectedId: selected ?? null, items: displayed.map(item => {
         const data = item.getItemData();
@@ -195,6 +219,13 @@ export function ResourceTree({ sessionId, language, openTarget, visible, activeT
         if (expanded) item.expand(); else item.collapse();
       },
       openTreeItem: id => open(displayedItem(id).getItemData().entry),
+      openTreeItemMenu: id => {
+        const focused = document.activeElement;
+        const anchor = rows.current.get(id) ?? (focused instanceof HTMLElement && treeAnchor.current?.contains(focused) ? focused : treeAnchor.current);
+        if (!anchor) throw new Error('resource_tree_item_unavailable');
+        const rect = anchor.getBoundingClientRect();
+        openMenu(displayedItem(id).getItemData().entry, anchor, rect.left, rect.bottom);
+      },
     }}>
     <label className="resource-tree__filter"><DeepCodeShellIcon name="search" /><input value={filter} onChange={event => setFilter(event.target.value)} placeholder={chinese ? '筛选已加载文件…' : 'Filter loaded files…'} aria-label={chinese ? '筛选文件' : 'Filter files'} /></label>
     {watchError && <p className="local-agent__resource-error" role="alert">{watchError}</p>}
@@ -202,6 +233,13 @@ export function ResourceTree({ sessionId, language, openTarget, visible, activeT
       {displayed.map(item => {
         const data = item.getItemData();
         return <button key={item.getId()} {...item.getProps()} aria-current={item.getId() === selected ? 'true' : undefined} type="button" title={data.error ?? data.entry?.resource.logicalPath ?? data.name}
+          onContextMenu={event => { if (data.entry) { event.preventDefault(); event.stopPropagation(); openMenu(data.entry, event.currentTarget, event.clientX, event.clientY); } }}
+          onKeyDownCapture={event => {
+            if ((event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') && data.entry) {
+              event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect();
+              openMenu(data.entry, event.currentTarget, rect.left, rect.bottom);
+            }
+          }}
           className={`resource-tree__item${item.getId() === selected ? ' is-selected' : ''}${data.entry?.category ? ' is-root' : ''}`}
           style={{ paddingLeft: 8 + item.getItemMeta().level * 12 }}>
           <DeepCodeShellIcon name={item.isFolder() ? (item.isExpanded() ? 'chevronDown' : 'chevronRight') : 'artifact'} />

@@ -244,8 +244,15 @@ pub(crate) async fn conversation_resource_read(
         change: body.change.clone(),
         logical_path: body.logical_path.clone(),
     };
+    let records: Vec<String> = resource
+        .change
+        .iter()
+        .map(|change| change.record_id.clone())
+        .collect();
     let projection =
-        match crate::conversation_resources::resource_projection(&state, &session_id).await {
+        match crate::conversation_resources::resource_projection(&state, &session_id, &records)
+            .await
+        {
             Ok(value) => value,
             Err(error) => return error.into_response(),
         };
@@ -600,8 +607,8 @@ pub(crate) async fn conversation_change_read(
 ) -> Json<ApiResponse> {
     let projection = match request_service(
         state.session_service,
-        "snapshot",
-        json!({ "sessionId": session_id }),
+        "resourceSnapshot",
+        json!({ "sessionId": session_id, "recordIds": [&body.record_id] }),
     )
     .await
     {

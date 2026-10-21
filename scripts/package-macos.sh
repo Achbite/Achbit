@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 [ "$(uname -s)/$(uname -m)" = Darwin/arm64 ] || { printf 'macOS native packaging requires a Darwin/arm64 executor. Use build.sh to select the host bridge.\n' >&2; exit 1; }
 CARGO="${DEEPCODE_MACOS_CARGO:-$(command -v cargo || printf '%s/bin/cargo' "${CARGO_HOME:-$HOME/.cargo}")}"
 NODE="${DEEPCODE_MACOS_NODE_BIN:-$(command -v node)}"
+runtime_only=0
+if [ "${1:-}" = --runtime ]; then runtime_only=1; shift; fi
 command -v "$CARGO" >/dev/null || { printf 'Set DEEPCODE_MACOS_CARGO to the installed cargo executable.\n' >&2; exit 1; }
 # A TUI-only native component for isolated verification or subsequent assembly.
 # Full App assembly below remains the owner of package signing and publication.
@@ -26,7 +28,7 @@ if [ "${1:-}" = --computer-use ]; then
   exit 0
 fi
 for tool in xcrun codesign strip python3; do command -v "$tool" >/dev/null; done
-[ "${DEEPCODE_BUILD_KIND:-normal}" = debug ] || command -v pkgbuild >/dev/null
+if [ "$runtime_only" -eq 0 ] && [ "${DEEPCODE_BUILD_KIND:-normal}" != debug ]; then command -v pkgbuild >/dev/null; fi
 xcrun --find clang >/dev/null
 xcrun --sdk macosx --show-sdk-path >/dev/null
 [ -x "$NODE" ] || { printf 'Set DEEPCODE_MACOS_NODE_BIN to the installed Node runtime.\n' >&2; exit 1; }
@@ -50,6 +52,10 @@ export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/mac
 STAGE="$(mktemp -d "$(dirname "$SHARED")/macos-arm64.XXXXXX")"
 trap 'rm -rf -- "$STAGE"' EXIT
 python3 scripts/package-runtime.py assemble --root "$ROOT_DIR" --platform macos-arm64 --stage "$STAGE" --shared "$SHARED" --native "$CARGO_TARGET_DIR/release" --node "$NODE" --node-license "$NODE_LICENSE"
+if [ "$runtime_only" -eq 1 ]; then
+  python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64"
+  exit 0
+fi
 VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
 if [ "${DEEPCODE_BUILD_KIND:-normal}" = debug ]; then
   python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64" "$OUTPUT/DeepCode-Debug-$VERSION-macos-arm64.tar.gz"

@@ -299,6 +299,7 @@ export function forwardingJournal(delegate, read) {
     readAgentLifecycle: sessionId => delegate.readAgentLifecycle(sessionId),
     readRunLifecycle: (sessionId, afterSequence) => delegate.readRunLifecycle(sessionId, afterSequence),
     readProviderUsage: sessionId => delegate.readProviderUsage(sessionId),
+    readResources: (sessionId, recordIds) => delegate.readResources(sessionId, recordIds),
     readCommand: (sessionId, commandId) => delegate.readCommand(sessionId, commandId),
     commitCommand: (command, events, reply) => delegate.commitCommand(command, events, reply),
   };

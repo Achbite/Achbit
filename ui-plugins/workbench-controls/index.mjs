@@ -89,6 +89,13 @@ export default {
             if (item.kind === 'directory') scope.actions.setTreeItemExpanded(item.id, !item.expanded);
             else scope.actions.openTreeItem(item.id);
           });
+          const openMenu = event => {
+            if (!scope.actions.openTreeItemMenu) return;
+            event.preventDefault(); event.stopPropagation(); row.focus();
+            scope.actions.openTreeItemMenu(item.id);
+          };
+          row.oncontextmenu = openMenu;
+          row.onkeydown = event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openMenu(event); };
           row.style.paddingLeft = `${8 + item.depth * 12}px`;
           row.disabled = item.kind === 'unavailable';
           row.title = item.error ?? item.name;

@@ -71,10 +71,21 @@ impl LocalAgentJournal {
         verify_session_store(&connection)?;
         let mut permissions = KernelPermissionModel::default();
         {
-            let mut statement = connection.prepare("SELECT session_id,event_type,payload_json,run_id,call_id,sequence FROM session_events ORDER BY rowid")
-                .map_err(sql_error("permission_model_restore_failed"))?;
+            let observed_types = encode_json(
+                &json!(KernelPermissionModel::observed_event_types().collect::<Vec<_>>()),
+                "permission_model_restore_failed",
+            )?;
+            // Do not allocate/decode historical model contexts and tool outputs
+            // merely to discard them. The live model owns the event selection;
+            // rowid retains cross-session causality. Keep corrupt JSON in the
+            // result so the original decoder still reports startup failures.
+            let mut statement = connection.prepare(
+                "SELECT session_id,event_type,payload_json,run_id,call_id,sequence FROM session_events
+                 WHERE event_type IN (SELECT value FROM json_each(?1)) OR NOT json_valid(payload_json)
+                 ORDER BY rowid",
+            ).map_err(sql_error("permission_model_restore_failed"))?;
             let rows = statement
-                .query_map([], |row| {
+                .query_map([observed_types], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -88,8 +99,9 @@ impl LocalAgentJournal {
             for row in rows {
                 let (session, kind, payload, run, call, sequence) =
                     row.map_err(sql_error("permission_model_restore_failed"))?;
-                let event = json!({"sessionId":session,"type":kind,"payload":decode_json(&payload, "permission_model_restore_failed")?,
+                let mut event = json!({"sessionId":session,"type":kind,
                     "runId":run,"callId":call,"sequence":sequence});
+                event["payload"] = decode_json(&payload, "permission_model_restore_failed")?;
                 if KernelPermissionModel::observes(&event) {
                     permissions.restore(&event)?;
                 }
@@ -339,8 +351,10 @@ impl LocalAgentJournal {
                 "sequence": sequence,
                 "occurredAt": occurred_at,
                 "type": event_type,
-                "payload": decode_json(&payload, "session_event_corrupt")?,
             });
+            // The decoded payload is already owned. json!(payload) would serialize
+            // it into another Value, copying the entire historical context again.
+            event["payload"] = decode_json(&payload, "session_event_corrupt")?;
             if let Some(run_id) = run_id {
                 event["runId"] = json!(run_id);
             }
@@ -350,6 +364,91 @@ impl LocalAgentJournal {
             events.push(event);
         }
         Ok(events)
+    }
+
+    /// Resource field projection only. Membership, grants and edited visibility
+    /// are reduced by Session using the same rules as its full projection.
+    pub(crate) fn read_resources(
+        &self,
+        session_id: &str,
+        record_ids: &[String],
+    ) -> Result<Value, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let record_ids = serde_json::to_string(record_ids).map_err(|error| {
+            LocalAgentStoreError::new("session_resource_query_invalid", error.to_string())
+        })?;
+        let connection = self.lock()?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT (SELECT COALESCE(MAX(sequence),0) FROM session_events WHERE session_id=?1)
+                 FROM sessions WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
+        // Never materialize model context or unrelated tool outputs. Requested
+        // records remain intact for Session's canonical detail decoder.
+        let mut statement = connection.prepare(
+            "SELECT sequence,event_type,run_id,call_id,
+             CASE
+               WHEN event_type='session.created' THEN json_object('workspaceBindings',json_extract(payload_json,'$.workspaceBindings'))
+               WHEN event_type='session.workspaces.updated' THEN json_object('baseBindings',json_extract(payload_json,'$.baseBindings'),
+                 'workspaceBindings',json_extract(payload_json,'$.workspaceBindings'))
+               WHEN event_type='session.directory-index.attached' THEN json_object('workspaceBinding',json_extract(payload_json,'$.workspaceBinding'))
+               WHEN event_type='session.directory-index.detached' THEN json_object('workspaceId',json_extract(payload_json,'$.workspaceId'))
+               WHEN event_type='message.committed' THEN json_object('filesystemReferences',coalesce(json_extract(payload_json,'$.filesystemReferences'),json('[]')))
+               WHEN event_type='approval.requested' THEN json_object('approvalId',json_extract(payload_json,'$.approvalId'),
+                 'preview',json_patch(json_object('summary',json_extract(payload_json,'$.preview.summary')),
+                   CASE WHEN json_type(payload_json,'$.preview.authorizationContext') IS NULL THEN '{}'
+                   ELSE json_object('authorizationContext',json_extract(payload_json,'$.preview.authorizationContext')) END))
+               WHEN event_type='approval.resolved' THEN json_patch(json_object('approvalId',json_extract(payload_json,'$.approvalId'),
+                 'decision',json_extract(payload_json,'$.decision'),'authorityId',json_extract(payload_json,'$.authorityId')),
+                   CASE WHEN json_type(payload_json,'$.authorizationScope') IS NULL THEN '{}'
+                   ELSE json_object('authorizationScope',json_extract(payload_json,'$.authorizationScope')) END)
+               WHEN event_type='approval.revoked' THEN json_object('authorityId',json_extract(payload_json,'$.authorityId'))
+               WHEN event_type='conversation.revised' THEN json_object('fromSequence',json_extract(payload_json,'$.fromSequence'),
+                 'throughSequence',json_extract(payload_json,'$.throughSequence'))
+               WHEN event_type='tool.completed' AND json_array_length(?2)>0 THEN
+                 CASE WHEN json_extract(payload_json,'$.record.recordId') IN (SELECT value FROM json_each(?2)) THEN payload_json ELSE '{}' END
+               WHEN event_type='process.updated' THEN json_object('job',json_object('callId',json_extract(payload_json,'$.job.callId')))
+               ELSE '{}'
+             END
+             FROM session_events WHERE session_id=?1 AND sequence<=?3 AND
+               (event_type IN ('session.created','session.workspaces.updated','session.directory-index.attached','session.directory-index.detached',
+                 'message.committed','approval.requested','approval.resolved','approval.revoked','run.settled','conversation.revised',
+                 'tool.completed','tool.input-rejected','tool.not-executed')
+                OR (json_array_length(?2)>0 AND event_type='process.updated')) ORDER BY sequence",
+        ).map_err(sql_error("session_resource_read_prepare_failed"))?;
+        let rows = statement
+            .query_map(params![session_id, record_ids, revision], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql_error("session_resource_read_failed"))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (sequence, kind, run_id, call_id, payload) =
+                row.map_err(sql_error("session_resource_read_failed"))?;
+            let mut event = json!({"sessionId":session_id,"sequence":sequence,"type":kind});
+            event["payload"] = decode_json(&payload, "session_event_corrupt")?;
+            if let Some(run_id) = run_id {
+                event["runId"] = json!(run_id);
+            }
+            if let Some(call_id) = call_id {
+                event["callId"] = json!(call_id);
+            }
+            events.push(event);
+        }
+        let mut result = json!({"sessionId":session_id,"revision":revision});
+        result["events"] = Value::Array(events);
+        Ok(result)
     }
 
     /// Project journal fields only. Run status semantics belong to Session.
@@ -1038,9 +1137,15 @@ impl LocalAgentJournal {
         session_id: &str,
         descendants: bool,
     ) -> Result<Value, LocalAgentStoreError> {
-        Ok(
-            json!({"value": value, "permissions": self.permission_model()?.publication(session_id, descendants)}),
-        )
+        let permissions = self
+            .permission_model()?
+            .publication(session_id, descendants);
+        // Move the journal result into its envelope; do not deep-copy large
+        // event arrays through json!'s Serialize implementation for Value.
+        Ok(Value::Object(Map::from_iter([
+            ("value".into(), value),
+            ("permissions".into(), permissions),
+        ])))
     }
 
     pub(crate) fn event_publication(
@@ -1056,7 +1161,10 @@ impl LocalAgentJournal {
         }) {
             return self.publication(value, required_string(event, "sessionId")?, true);
         }
-        Ok(json!({"value": value, "permissions": {}}))
+        Ok(Value::Object(Map::from_iter([
+            ("value".into(), value),
+            ("permissions".into(), Value::Object(Map::new())),
+        ])))
     }
 
     pub(crate) fn effective_permissions(
@@ -2293,7 +2401,7 @@ fn validate_new_event(
             exact_object(
                 payload,
                 &["approvalId", "providerRequestId", "decision", "reason"],
-                &[],
+                &["error"],
             )?;
             validate_id("approvalId", required_string(payload, "approvalId")?)?;
             validate_id(
@@ -2310,6 +2418,9 @@ fn validate_new_event(
                 ));
             }
             required_string(payload, "reason")?;
+            if let Some(error) = payload.get("error") {
+                validate_local_agent_error(error)?;
+            }
         }
         "plan.confirmed" => {
             let payload = event.get("payload").expect("validated payload");
@@ -5762,6 +5873,94 @@ mod tests {
     }
 
     #[test]
+    fn history_read_preserves_payloads_cursor_and_corrupt_journal_errors() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let session_id = "session:owned-history";
+        let created = journal
+            .create_session(session_id, "History", &json!([]), None, None)
+            .unwrap();
+        let committed = journal
+            .append(&json!({
+                "type": "message.committed", "sessionId": session_id,
+                "payload": {"messageId": "message:history", "role": "user",
+                    "content": "历史 \\\"quoted\\\"\n".repeat(1024)}
+            }))
+            .unwrap();
+        assert_eq!(
+            journal.read_events(session_id, 0).unwrap(),
+            vec![created, committed.clone()]
+        );
+        assert_eq!(journal.read_events(session_id, 1).unwrap(), vec![committed]);
+        assert!(journal.read_events(session_id, 2).unwrap().is_empty());
+        assert_eq!(
+            journal.read_events("session:missing", 0).unwrap_err().code,
+            "session_not_found"
+        );
+        // A later read still consults the journal, including corruption without
+        // a revision change. Optimization must not turn this into a cached success.
+        {
+            let connection = journal.lock().unwrap();
+            connection
+                .execute_batch("PRAGMA ignore_check_constraints = ON;")
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE session_events SET payload_json='{' WHERE session_id=?1 AND sequence=2",
+                    [session_id],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            journal.read_events(session_id, 0).unwrap_err().code,
+            "session_event_corrupt"
+        );
+    }
+
+    #[test]
+    fn journal_publication_moves_owned_payload_without_changing_envelope() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let session_id = "session:publication-move";
+        let created = journal
+            .create_session(session_id, "Publication", &json!([]), None, None)
+            .unwrap();
+        let permissions = journal
+            .permission_model()
+            .unwrap()
+            .publication(session_id, true);
+        // Exercise both bootstrap and ordinary event publication. Pointer
+        // identity verifies the intended ownership transfer, not a timing budget.
+        for bootstrap in [false, true] {
+            let payload = json!([{"body": "nested history payload".repeat(1024),
+                "values": [null, true, 123, {"text": "原始记录"}]}]);
+            let expected = payload.clone();
+            let body = payload[0]["body"].as_str().unwrap().as_ptr();
+            let events = if bootstrap {
+                vec![created.clone()]
+            } else {
+                vec![]
+            };
+            let publication = journal.event_publication(payload, &events).unwrap();
+            assert_eq!(publication["value"], expected);
+            assert_eq!(
+                publication["value"][0]["body"].as_str().unwrap().as_ptr(),
+                body,
+                "an owned journal payload must not be deeply serialized again"
+            );
+            assert_eq!(
+                publication["permissions"],
+                if bootstrap {
+                    permissions.clone()
+                } else {
+                    json!({})
+                }
+            );
+            assert_eq!(publication.as_object().unwrap().len(), 2);
+        }
+    }
+
+    #[test]
     fn cancelled_provider_turn_has_no_error_or_completed_call_facts() {
         let event = json!({"type":"provider.turn.settled", "sessionId":"session:cancel",
             "runId":"run:cancel", "payload":{"providerRequestId":"request:cancel", "purpose":"agent",
@@ -6131,6 +6330,93 @@ mod tests {
                 .code,
             "session_not_found"
         );
+    }
+
+    #[test]
+    fn resource_read_selects_fields_and_requested_records_without_context_bodies() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let id = "session:resource-fields";
+        journal
+            .create_session(id, "Resource fields", &json!([]), None, None)
+            .unwrap();
+        // This adapter test exercises stored JSON field selection; Session tests
+        // separately validate resource lifecycle semantics against full replay.
+        let wanted = json!({"record":{"recordId":"record:wanted","input":{"body":"selected input"},
+            "output":{"fileChanges":[{"path":"a.txt"}],"body":"selected output"}}});
+        let rows = [
+            (
+                "message.committed",
+                json!({"content":"MESSAGE_BODY_NOT_NEEDED","filesystemReferences":[]}),
+            ),
+            ("tool.completed", wanted.clone()),
+            (
+                "tool.completed",
+                json!({"record":{"recordId":"record:other","output":{"body":"UNRELATED_TOOL_BODY"}}}),
+            ),
+            (
+                "context.composed",
+                json!({"messages":"CONTEXT_BODY_NOT_NEEDED".repeat(1024)}),
+            ),
+            (
+                "approval.requested",
+                json!({"approvalId":"approval:files","preview":{"summary":"Read files", "authorizationContext":{"fileAccess":{"read":["/reference"],"write":[]}},"unrelated":"PREVIEW_BODY_NOT_NEEDED"}}),
+            ),
+        ];
+        {
+            let connection = journal.lock().unwrap();
+            for (index, (kind, payload)) in rows.iter().enumerate() {
+                connection.execute("INSERT INTO session_events(session_id,sequence,event_id,event_type,run_id,call_id,payload_json,occurred_at)
+                    VALUES (?1,?2,?3,?4,'run:resource','call:resource',?5,'now')",
+                    params![id,index as i64+2,format!("event:resource:{index}"),kind,payload.to_string()]).unwrap();
+            }
+        }
+        let roots = journal.read_resources(id, &[]).unwrap();
+        assert_eq!(roots["revision"], 6);
+        assert_eq!(roots["events"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            roots["events"][1]["payload"]["filesystemReferences"],
+            json!([])
+        );
+        assert_eq!(roots["events"][2]["payload"], json!({}));
+        assert_eq!(
+            roots["events"][4]["payload"]["preview"]["authorizationContext"]["fileAccess"]["read"],
+            json!(["/reference"])
+        );
+        let selected = journal
+            .read_resources(id, &["record:wanted".into()])
+            .unwrap();
+        assert_eq!(selected["events"][2]["payload"], wanted);
+        assert_eq!(selected["events"][3]["payload"], json!({}));
+        for marker in [
+            "MESSAGE_BODY_NOT_NEEDED",
+            "UNRELATED_TOOL_BODY",
+            "CONTEXT_BODY_NOT_NEEDED",
+            "PREVIEW_BODY_NOT_NEEDED",
+        ] {
+            assert!(!selected.to_string().contains(marker));
+        }
+        assert_eq!(
+            journal
+                .read_resources("session:missing", &[])
+                .unwrap_err()
+                .code,
+            "session_not_found"
+        );
+        {
+            let connection = journal.lock().unwrap();
+            connection
+                .execute_batch("PRAGMA ignore_check_constraints=ON;")
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE session_events SET payload_json='{' WHERE session_id=?1 AND sequence=2",
+                    [id],
+                )
+                .unwrap();
+        }
+        let error = journal.read_resources(id, &[]).unwrap_err();
+        assert_eq!(error.code, "session_resource_read_failed");
+        assert!(error.message.contains("malformed JSON"));
     }
 
     #[test]
@@ -6683,6 +6969,69 @@ mod tests {
                 .settings["agent.permissions.shellAccess"],
             "workspace"
         );
+    }
+
+    #[test]
+    fn startup_permission_replay_preserves_history_and_reports_unobserved_corruption() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let id = "session:startup";
+        journal
+            .create_session(id, "Startup", &json!([]), None, None)
+            .unwrap();
+        let message = journal
+            .append(&json!({"type":"message.committed", "sessionId":id,
+                "payload":{"messageId":"message:large", "role":"user",
+                    "content":"历史正文 \\\"quoted\\\"\n".repeat(8192)}}))
+            .unwrap();
+        let permissions = journal
+            .append(&json!({"type":"session.permissions.updated", "sessionId":id,
+                "payload":{"commandId":"command:permissions", "patches":{
+                    "agent.permissions.shell":"ask", "agent.permissions.workspaceMutation":"plan"}}}))
+            .unwrap();
+        let history = journal.read_events(id, 0).unwrap();
+        let expected = journal.effective_permissions(id).unwrap().settings.clone();
+        assert!(!KernelPermissionModel::observes(&message));
+        assert!(KernelPermissionModel::observes(&permissions));
+        for kind in KernelPermissionModel::observed_event_types() {
+            assert!(KernelPermissionModel::observes(&json!({"type":kind})));
+        }
+        drop(journal);
+        let restored = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(
+            restored.effective_permissions(id).unwrap().settings,
+            expected
+        );
+        assert_eq!(restored.read_events(id, 0).unwrap(), history);
+        drop(restored);
+
+        // Filtering is not permission to hide corrupt history: both ignored
+        // bodies and permission events must retain the original decoder error.
+        let connection = Connection::open(store.path()).unwrap();
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints=ON;")
+            .unwrap();
+        for event in [&message, &permissions] {
+            let sequence = event["sequence"].as_i64().unwrap();
+            connection
+                .execute(
+                    "UPDATE session_events SET payload_json='{' WHERE session_id=?1 AND sequence=?2",
+                    params![id, sequence],
+                )
+                .unwrap();
+            let error = LocalAgentJournal::open(&store.path())
+                .err()
+                .expect("corrupt history must fail startup");
+            let original = decode_json("{", "permission_model_restore_failed").unwrap_err();
+            assert_eq!(error.code, original.code);
+            assert_eq!(error.message, original.message);
+            connection
+                .execute(
+                    "UPDATE session_events SET payload_json=?3 WHERE session_id=?1 AND sequence=?2",
+                    params![id, sequence, event["payload"].to_string()],
+                )
+                .unwrap();
+        }
     }
 
     #[test]

@@ -21,6 +21,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import DeepCodeConversationShell from './DeepCodeConversationShell';
 import DeepCodeSidebar from './DeepCodeSidebar';
+import SidebarMenu from './SidebarMenu';
 import { useReadRunMarkers } from './useReadRunMarkers';
 import { useSidebarOrder } from './useSidebarOrder';
 import DeepCodeTaskPanel from './DeepCodeTaskPanel';
@@ -198,8 +199,10 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
       setProjectMenu(null);
       setSessionMenu(null);
     };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
     window.addEventListener('pointerdown', close);
-    return () => window.removeEventListener('pointerdown', close);
+    window.addEventListener('keydown', escape);
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', escape); };
   }, [projectCreateMenu, projectMenu, sessionMenu]);
 
   const createPrimarySession = () => {
@@ -217,8 +220,8 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
     setSessionMenu(null);
     setProjectMenu(null);
     setProjectCreateMenu((current) => current ? null : ({
-      x: Math.max(8, Math.min(rect.right - 218, window.innerWidth - 226)),
-      y: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 110)),
+      x: rect.left,
+      y: rect.bottom + 6,
     }));
   };
 
@@ -230,7 +233,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
     event.stopPropagation();
     setProjectCreateMenu(null);
     setSessionMenu(null);
-    setProjectMenu(positioned(event, project, 204, 160));
+    setProjectMenu(positioned(event, project));
   };
 
   const openSessionMenu = (
@@ -241,8 +244,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
     event.stopPropagation();
     setProjectCreateMenu(null);
     setProjectMenu(null);
-    const height = 166 + Math.min(catalog.projects.length, 6) * 32;
-    setSessionMenu(positioned(event, session, 218, height));
+    setSessionMenu(positioned(event, session));
   };
 
   const submitTextDialog = async (event: React.FormEvent) => {
@@ -413,12 +415,10 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
       }} />
 
       {projectCreateMenu && (
-        <div
+        <SidebarMenu
           id="deepcode-project-create-menu"
           className="deepcode-gui-project-create-menu"
-          style={{ left: projectCreateMenu.x, top: projectCreateMenu.y }}
-          role="menu"
-          onPointerDown={(event) => event.stopPropagation()}
+          x={projectCreateMenu.x} y={projectCreateMenu.y}
         >
           <button
             type="button"
@@ -446,15 +446,13 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
             <DeepCodeShellIcon name="folder" />
             <span>{t(language, 'deepcodeGui.project.fromFolder')}</span>
           </button>
-        </div>
+        </SidebarMenu>
       )}
 
       {sessionMenu && (
-        <div
+        <SidebarMenu
           className="deepcode-gui-session-context-menu"
-          style={{ left: sessionMenu.x, top: sessionMenu.y }}
-          role="menu"
-          onPointerDown={(event) => event.stopPropagation()}
+          x={sessionMenu.x} y={sessionMenu.y}
         >
           <div className="deepcode-gui-session-context-menu__title">
             {sessionMenu.value.title || t(language, 'agent.session.newTitle')}
@@ -530,15 +528,13 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
           >
             {t(language, 'deepcodeGui.session.copyId')}
           </button>
-        </div>
+        </SidebarMenu>
       )}
 
       {projectMenu && (
-        <div
+        <SidebarMenu
           className="deepcode-gui-session-context-menu"
-          style={{ left: projectMenu.x, top: projectMenu.y }}
-          role="menu"
-          onPointerDown={(event) => event.stopPropagation()}
+          x={projectMenu.x} y={projectMenu.y}
         >
           <div className="deepcode-gui-session-context-menu__title">{projectMenu.value.title}</div>
           <button
@@ -574,7 +570,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
           >
             {t(language, 'deepcodeGui.project.delete')}
           </button>
-        </div>
+        </SidebarMenu>
       )}
 
       {textDialog && (
@@ -748,16 +744,14 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
 function positioned<T>(
   event: React.MouseEvent<HTMLElement>,
   value: T,
-  width: number,
-  height: number,
 ): PositionedMenu<T> {
   const rect = event.currentTarget.getBoundingClientRect();
   const rawX = event.clientX || rect.right;
   const rawY = event.clientY || rect.bottom;
   return {
     value,
-    x: Math.max(8, Math.min(rawX, window.innerWidth - width - 8)),
-    y: Math.max(8, Math.min(rawY, window.innerHeight - height - 8)),
+    x: rawX,
+    y: rawY,
   };
 }
 

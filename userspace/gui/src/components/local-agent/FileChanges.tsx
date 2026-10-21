@@ -1,7 +1,7 @@
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { requestReader } from './readerState';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ActivityProjection } from '@deepcode/protocol';
 import { useConversationHost, useConversationTheme } from './ConversationHost';
 import { loadCodeLanguage } from './codeLanguage';
@@ -10,10 +10,11 @@ import { useConversationRowState } from './ConversationVirtualRow';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
-import { changedFiles, readRoundChange, readChangeStatistics, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
+import { changedFiles, displayedChangedFiles, readRoundChange, readChangeStatistics, previewChangedLines, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
+import type { ChangePreview } from './fileChangeLineCounts';
 export { roundChangeActivities } from './fileChangeSummary';
 
-export function FileChanges({ activities, compact = false }: { activities: ActivityProjection[]; compact?: boolean }) {
+export function FileChanges({ activities, compact = false, inlineDiff = false }: { activities: ActivityProjection[]; compact?: boolean; inlineDiff?: boolean }) {
   const language = useUiLanguage();
   const { readChange } = useConversationHost();
   const sessionId = useConversationSessionId();
@@ -25,19 +26,23 @@ export function FileChanges({ activities, compact = false }: { activities: Activ
     if (previousView.current.compact !== compact) setExpanded(!compact);
     previousView.current = { sessionId, compact };
   }, [sessionId, compact, setShowAll, setExpanded]);
-  const all = changedFiles(activities);
-  const signature = JSON.stringify(all.map((file) => [file.key, file.changes.map((entry) => [entry.recordId, entry.index])]));
+  const all = useMemo(() => changedFiles(activities), [activities]);
+  const signature = JSON.stringify([sessionId, all.map((file) => [file.key, file.changes.map((entry) => [entry.recordId, entry.index])])]);
   const [statistics, setStatistics] = useState<{ signature: string; files: Map<string, FileChangeStatistics>; errors: Map<string, string> }>({ signature: '', files: new Map(), errors: new Map() });
+  const displayed = displayedChangedFiles(all, compact, expanded, showAll);
+  const displayedSignature = JSON.stringify(displayed.map(file => file.key));
   useEffect(() => {
-    if (!sessionId || !all.length) return;
+    if (inlineDiff || !sessionId || !displayed.length) return;
     const controller = new AbortController();
-    const files = new Map<string, FileChangeStatistics>();
-    const errors = new Map<string, string>();
+    const files = new Map<string, FileChangeStatistics>(statistics.signature === signature ? statistics.files : []);
+    const errors = new Map<string, string>(statistics.signature === signature ? statistics.errors : []);
     setStatistics({ signature, files, errors });
     void (async () => {
-      for (const file of all) {
+      for (const file of displayed) {
+        if (files.has(file.key)) continue;
         try {
           files.set(file.key, await readChangeStatistics(readChange, sessionId, file, controller.signal));
+          errors.delete(file.path);
         } catch (error) {
           if (controller.signal.aborted) return;
           errors.set(file.path, error instanceof Error ? error.message : String(error));
@@ -47,12 +52,15 @@ export function FileChanges({ activities, compact = false }: { activities: Activ
       }
     })();
     return () => controller.abort();
-  }, [sessionId, signature, readChange]);
+  }, [sessionId, signature, displayedSignature, readChange, inlineDiff]);
   const counts = statistics.signature === signature ? statistics.files : new Map<string, FileChangeStatistics>();
   const binaryCount = [...counts.values()].filter((value) => value.kind === 'binary').length;
   const total = counts.size === all.length && counts.size > binaryCount ? [...counts.values()].reduce((total, value) => value.kind === 'text' ? ({ added: total.added + value.counts.added, removed: total.removed + value.counts.removed }) : total, { added: 0, removed: 0 }) : null;
   if (!all.length || !sessionId) return null;
-  const entries = (compact || showAll ? all : all.slice(0, 3)).map((file) => {
+  if (inlineDiff) return <section className="conversation-changes conversation-changes--inline">
+    {all.map(file => <InlineFileChange key={file.key} sessionId={sessionId} file={file} />)}
+  </section>;
+  const entries = displayed.map((file) => {
     const statistic = counts.get(file.key);
     return <div className="conversation-change-row" key={file.key}>
       <button type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId, { kind: 'diff', file })}>
@@ -72,6 +80,50 @@ export function FileChanges({ activities, compact = false }: { activities: Activ
       {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><summary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</summary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
     </div>}
   </section>;
+}
+
+function InlineFileChange({ sessionId, file }: { sessionId: string; file: ChangedFile }) {
+  const language = useUiLanguage();
+  const { readChange } = useConversationHost();
+  const [state, setState] = useState<{ preview?: ChangePreview; binary?: boolean; error?: string }>({});
+  const revision = JSON.stringify(file.changes.map(({ recordId, index }) => [recordId, index]));
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({});
+    void readRoundChange(readChange, sessionId, file, controller.signal)
+      .then(change => previewChangedLines(change.before, change.after, controller.signal))
+      .then(preview => { if (!controller.signal.aborted) setState({ preview }); })
+      .catch(error => {
+        if (!controller.signal.aborted) setState(isBinaryFileChange(error) ? { binary: true } : { error: String(error) });
+      });
+    return () => controller.abort();
+  }, [readChange, sessionId, file.key, revision]);
+  const latest = file.changes.at(-1)!.change;
+  return <div className="conversation-change-row">
+    <button type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId,
+      latest.after.exists ? { kind: 'workspace', workspaceId: latest.workspaceId, logicalPath: file.path } : { kind: 'diff', file })}>
+      <span>{file.path}</span>{state.preview && <DiffCounts counts={state.preview.counts} />}
+    </button>
+    {state.error ? <p className="conversation-inline-notice" role="alert">{state.error}</p>
+      : state.binary ? <p className="conversation-inline-notice">{t(language, 'changes.binaryDescription')}</p>
+      : !state.preview ? <p className="conversation-inline-notice" role="status">{t(language, 'changes.loading')}</p>
+      : <>
+        <div className="conversation-inline-code" aria-label={t(language, 'changes.diffTitle', { path: file.path })}>
+          {state.preview.hunks.map((hunk, index) => {
+            let oldLine = hunk.oldStart, newLine = hunk.newStart;
+            return <div key={index}>
+              <div className="conversation-inline-hunk">@@ -{hunk.oldStart} +{hunk.newStart} @@</div>
+              {hunk.lines.map((line, lineIndex) => <div key={lineIndex} className={`conversation-inline-line${line[0] === '+' ? ' is-added' : line[0] === '-' ? ' is-removed' : ''}`}>
+                <span className="conversation-inline-number">{line[0] !== '+' ? oldLine++ : ''}</span>
+                <span className="conversation-inline-number">{line[0] !== '-' ? newLine++ : ''}</span>
+                <code>{line}</code>
+              </div>)}
+            </div>;
+          })}
+        </div>
+        {state.preview.truncated && <p className="conversation-inline-notice">{language === 'zh-CN' ? '仅显示部分变更' : 'Showing part of the changes'}</p>}
+      </>}
+  </div>;
 }
 
 export function FileChangePreview({ sessionId, file }: { sessionId: string; file: ChangedFile }) {

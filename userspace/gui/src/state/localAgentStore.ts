@@ -208,8 +208,18 @@ const store = create<LocalAgentState>((set, get) => ({
     initialization = (async () => {
       set({ loading: true, error: null, errorSource: null });
       try {
-        const [catalog, pluginCatalog, profileResult] = await Promise.all([
-          getConversationCatalog(),
+        // Publish navigation as soon as its own request is ready. Plugin discovery
+        // and model configuration must not gate history or a restored conversation.
+        const [, pluginCatalog, profileResult] = await Promise.all([
+          getConversationCatalog().then(async (catalog) => {
+            set({ catalog });
+            if (currentGeneration === generation) {
+              set({ loading: false });
+              const restored = takeRestoredInterfaceView<{ sessionId: string | null; draftProjectId: string | null } | null>('conversation', null);
+              if (restored?.sessionId && catalog.sessions.some(item => item.id === restored.sessionId)) await get().activateSession(restored.sessionId);
+              else if (restored?.draftProjectId && catalog.projects.some(item => item.id === restored.draftProjectId)) set({ draftProjectId: restored.draftProjectId });
+            }
+          }),
           getPluginCatalog(),
           getLlmProfiles(),
         ]);
@@ -220,8 +230,8 @@ const store = create<LocalAgentState>((set, get) => ({
           profiles,
           profileResult.ok ? profileResult.data?.defaultProfileId : undefined,
         );
-        // Catalog readiness is independent of navigation during startup.
-        set({ catalog, pluginCatalog, profiles, connections: profileResult.data?.connections ?? [], defaultProfileId });
+        // The catalog request and later catalog operations own navigation data.
+        set({ pluginCatalog, profiles, connections: profileResult.data?.connections ?? [], defaultProfileId });
         void get().refresh();
         if (currentGeneration !== generation) {
           set({
@@ -239,22 +249,16 @@ const store = create<LocalAgentState>((set, get) => ({
           return;
         }
         set({
-          catalog,
-          pluginCatalog,
-          profiles,
-          defaultProfileId,
           selectedProfileId: defaultProfileId,
           reasoningEffortOverride: profiles.find(profile => profile.id === defaultProfileId)?.reasoningEffort ?? null,
           sessionId: null,
           projection: null,
-          draftProjectId: null,
+          draftProjectId: get().draftProjectId,
           loading: false,
           error: profileResult.ok ? null : (profileResult.message ?? 'llm_profiles_unavailable'),
           errorSource: profileResult.ok ? null : 'profiles',
         });
-        const restored = takeRestoredInterfaceView<{ sessionId: string | null; draftProjectId: string | null } | null>('conversation', null);
-        if (restored?.sessionId && catalog.sessions.some(item => item.id === restored.sessionId)) await get().activateSession(restored.sessionId);
-        else if (restored?.draftProjectId && catalog.projects.some(item => item.id === restored.draftProjectId)) set({ draftProjectId: restored.draftProjectId });
+
       } catch (error) {
         if (currentGeneration === generation) {
           set({

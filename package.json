@@ -1,6 +1,6 @@
 {
   "name": "deepcode",
-  "version": "0.6.55",
+  "version": "0.6.58",
   "license": "MIT",
   "private": true,
   "description": "DeepCode - 轻量级 AI Agent 代码工作台",
@@ -11,6 +11,7 @@
     "dev:kernel:build-only": "cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-host-web",
     "tauri:dev:deepcode-gui": "bash scripts/dev-deepcode-gui.sh",
     "build": "bash ./build.sh",
+    "package": "bash ./build.sh --stage package",
     "build:ui": "bash ./build.sh --stage ui",
     "build:kernel": "bash ./build.sh --stage daemon",
     "start": "pnpm tauri:dev:deepcode-gui",

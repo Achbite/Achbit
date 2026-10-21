@@ -6,6 +6,7 @@ import { UiRegion } from '../../ui-plugins/UiRegion';
 import { AgentConversationPage } from './AgentTasksPanel';
 import SshConnection from '../../deepcode-gui/layout/SshConnection';
 import { ResourceTree } from './ResourceTree';
+import type { AttachTreeResource } from './ResourceTreeMenu';
 import { FileChangePreview } from './FileChanges';
 import { resourceKey, type ResourceReference } from '../../services/conversationResources';
 import { restoredInterfaceView, takeRestoredInterfaceView, useInterfaceReloadView } from '../../services/interfaceReload';
@@ -14,7 +15,8 @@ import { nextEnabledIndex } from '../shared/keyboardNavigation';
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import { createPortal } from 'react-dom';
-import { useId, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { useId, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { revealActiveReaderTab } from './readerTabVisibility';
 import { useConversationHost } from './ConversationHost';
 import type { SourcePosition } from './resourceLinks';
 import { t, type UiLanguage } from '../../i18n';
@@ -316,11 +318,13 @@ export function ResourcePreview({
   preview,
   tabsTarget,
   onReview,
+  onAttach,
 }: {
   language: UiLanguage;
   preview: ReturnType<typeof useResourcePreview>;
   tabsTarget?: HTMLElement | null;
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
+  onAttach?: AttachTreeResource;
 }) {
   const chinese = language === 'zh-CN';
   const activeTarget = preview.tabs.find(tab => tab.id === preview.activeId)?.target;
@@ -338,12 +342,22 @@ export function ResourcePreview({
       preview.selectTab(id);
     } };
   const tabsId = useId();
+  const tabsList = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const list = tabsList.current;
+    if (!list || !preview.visible) return;
+    revealActiveReaderTab(list);
+    const observer = new ResizeObserver(() => revealActiveReaderTab(list));
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [preview.activeId, preview.visible, preview.expanded, tabsTarget]);
   const workspace = useRef<HTMLDivElement>(null);
   const treeWidth = usePaneWidth('fileTreeWidth', PANE_GEOMETRY.fileTree, workspace);
   const tabs = (
         <header className="reader-tabs">
           <div
             className="reader-tabs__list"
+            ref={tabsList}
             role="tablist"
             aria-label={chinese ? '打开的预览' : 'Open previews'}
           >
@@ -468,7 +482,7 @@ export function ResourcePreview({
           {preview.visible && preview.treeVisible && <ResizeHandle className="reader-tree-resize" label={chinese ? '调整文件树宽度' : 'Resize file tree'}
             value={treeWidth.width} min={treeWidth.min} max={treeWidth.max} step={PANE_GEOMETRY.fileTree.step}
             direction={-1} onResize={treeWidth.setWidth} />}
-          <ResourceTree key={activeSessionId} sessionId={activeSessionId} visible={preview.visible && preview.treeVisible} activeTarget={activeTarget} language={language} openTarget={target => openFileTarget(activeSessionId, target)} /></div>}
+          <ResourceTree key={activeSessionId} sessionId={activeSessionId} visible={preview.visible && preview.treeVisible} activeTarget={activeTarget} language={language} openTarget={target => openFileTarget(activeSessionId, target)} onAttach={onAttach} /></div>}
         </UiRegion></div>
       </aside>
     </>
@@ -640,18 +654,28 @@ function ReaderDocument({
   const reference = targetResource(target);
   const referenceId = reference && resourceKey(reference);
   const [watchError, setWatchError] = useState('');
+  const [watchReady, setWatchReady] = useState(false);
+  const [watchAttempt, setWatchAttempt] = useState(0);
   useEffect(() => {
     if (!reference) return;
     const controller = new AbortController();
+    setWatchReady(false);
+    setState({ status: 'loading' });
     setWatchError('');
     // Keep the subscription for the lifetime of the open tab. Its ready event
     // starts the first read after the watch is installed, closing the read/watch gap.
-    void host.resources.watchResources(sessionId, [reference], controller.signal, () => setRevision(value => value + 1))
-      .catch(error => { if (!controller.signal.aborted) setWatchError(String(error)); });
+    void host.resources.watchResources(sessionId, [reference], controller.signal, () => {
+      setWatchReady(true); setRevision(value => value + 1);
+    }).catch(error => {
+      if (!controller.signal.aborted) {
+        setWatchReady(false); setWatchError(String(error));
+        setState(current => current.status === 'loading' ? { status: 'error', error: String(error) } : current);
+      }
+    });
     return () => controller.abort();
-  }, [sessionId, referenceId, host]);
+  }, [sessionId, referenceId, host, watchAttempt]);
   useEffect(() => {
-    if (reference && revision === 0) return;
+    if (reference && !watchReady) return;
     const controller = new AbortController();
     setState({ status: 'loading' });
     void (async () => {
@@ -706,7 +730,7 @@ function ReaderDocument({
     return () => controller.abort();
   // Reselecting the same file may create a new target object; only its resource
   // identity/location or an explicit revision changes the content being read.
-  }, [sessionId, key, host, path, startByte, sourceLine, revision]);
+  }, [sessionId, key, host, path, startByte, sourceLine, revision, watchReady]);
   useEffect(() => {
     if (scroll.current) scroll.current.scrollTop = sourceLine ? 0 : readViewState(key + ':scroll', 0);
   }, [key, state.status, sourceLine]);
@@ -765,8 +789,10 @@ function ReaderDocument({
         )}
         <button
           className="reader-icon-button"
-          disabled={state.status === 'loading'}
-          onClick={() => setRevision((value) => value + 1)}
+          onClick={() => {
+            if (reference) { setWatchReady(false); setWatchAttempt(value => value + 1); }
+            else setRevision(value => value + 1);
+          }}
           aria-label={chinese ? '重新读取' : 'Reload'}
           title={chinese ? '重新读取' : 'Reload'}
         >

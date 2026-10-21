@@ -995,7 +995,7 @@ export type SessionEvent =
   | (SessionEventBase & { type: 'session.permissions.updated'; payload: { commandId: string; patches: UserSettings } })
   | (SessionEventBase & { type: 'session.subagent-settings.updated'; payload: { commandId: string; settings: AgentSettings } })
   | (SessionEventBase & { type: 'approval.revoked'; runId: string; payload: { commandId: string; authorityId: string } })
-  | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string } })
+  | (SessionEventBase & { type: 'approval.reviewed'; runId: string; callId: string; payload: { approvalId: string; providerRequestId: string; decision: 'allow' | 'deny' | 'ask'; reason: string; error?: LocalAgentError } })
   | (SessionEventBase & { type: 'provider.attempt.updated'; runId: string; payload: ProviderAttemptFact })
   | (SessionEventBase & { type: 'run.timing.updated'; runId: string; payload: RunTimingFact })
   | (SessionEventBase & { type: 'run.failure.recorded'; runId: string; payload: RunFailureSnapshot })
@@ -1790,6 +1790,7 @@ export interface ConversationPort {
   submit(command: ConversationCommand): Promise<CommandReply>;
   /** Read persisted history or a live snapshot without opening an Actor or writing events. */
   snapshot(sessionId: string): Promise<SessionProjection>;
+  resourceSnapshot(sessionId: string, recordIds?: readonly string[]): Promise<SessionResourceProjection>;
   /** Read sidebar status without resuming a conversation. */
   statuses(sessionIds: readonly string[]): Promise<ConversationSessionStatus[]>;
   contextComposition(sessionId: string, providerRequestId: string): Promise<ContextCompositionProjection>;
@@ -2400,6 +2401,38 @@ export interface ProviderUsageRead {
   events: ProviderUsageEvent[];
 }
 
+/** Resource reads project journal fields before transport; Session still owns their lifecycle. */
+export type ResourceJournalEvent =
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.created' }>, 'workspaceBindings'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.workspaces.updated' }>, 'baseBindings' | 'workspaceBindings'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.directory-index.attached' }>, 'workspaceBinding'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.directory-index.detached' }>, 'workspaceId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'message.committed' }>, 'filesystemReferences'>
+  | (RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.requested' }>, 'approvalId'>
+      & { payload: { preview: Pick<EffectPreview, 'summary' | 'authorizationContext'> } })
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.resolved' }>, 'approvalId' | 'decision' | 'authorizationScope' | 'authorityId'>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'approval.revoked' }>, 'authorityId'>
+  | (RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.completed' }>> & { payload: { record?: ToolExecutionRecord } })
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'tool.input-rejected' | 'tool.not-executed' }>>
+  | (RunLifecycleEventFields<Extract<SessionEvent, { type: 'process.updated' }>> & { payload: { job: Pick<ManagedProcessSnapshot, 'callId'> } })
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'run.settled' }>>
+  | RunLifecycleEventFields<Extract<SessionEvent, { type: 'conversation.revised' }>, 'fromSequence' | 'throughSequence'>;
+
+export interface ResourceJournalRead {
+  sessionId: string;
+  revision: number;
+  events: ResourceJournalEvent[];
+}
+
+export interface SessionResourceProjection {
+  sessionId: string;
+  revision: number;
+  workspaceBindings: WorkspaceBindingDisplay[];
+  messages: Array<Pick<SessionProjection['messages'][number], 'filesystemReferences'>>;
+  shellAuthorizations: SessionProjection['shellAuthorizations'];
+  activities: Array<{ tool: Pick<NonNullable<ActivityProjection['tool']>, 'recordId' | 'fileChanges'> }>;
+}
+
 export interface JournalPort {
   append(event: NewSessionEvent): Promise<SessionEvent>;
   appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]>;
@@ -2407,6 +2440,7 @@ export interface JournalPort {
   readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
   readAgentLifecycle(sessionId: string): Promise<AgentLifecycleRead>;
   readProviderUsage(sessionId: string): Promise<ProviderUsageRead>;
+  readResources(sessionId: string, recordIds?: readonly string[]): Promise<ResourceJournalRead>;
 }
 
 export interface StoredCommand {

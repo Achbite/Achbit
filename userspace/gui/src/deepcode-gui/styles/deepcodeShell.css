@@ -811,7 +811,11 @@
   position: fixed;
   z-index: 180;
   width: 218px;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   border: 1px solid var(--dc-border);
   border-radius: 12px;

@@ -40,7 +40,7 @@ pub(crate) struct ResourceReference {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ChangeReference {
-    record_id: String,
+    pub(crate) record_id: String,
     index: usize,
 }
 
@@ -71,6 +71,7 @@ fn managed_descendant_workdir(
 pub(crate) async fn resource_projection(
     state: &AppState,
     session_id: &str,
+    record_ids: &[String],
 ) -> Result<Value, ResourceError> {
     if !valid_id(session_id) {
         return Err(ApiResponse::error(
@@ -80,8 +81,8 @@ pub(crate) async fn resource_projection(
     }
     request_service(
         state.session_service.clone(),
-        "snapshot",
-        json!({"sessionId":session_id}),
+        "resourceSnapshot",
+        json!({"sessionId":session_id,"recordIds":record_ids}),
     )
     .await
     .map_err(session_service_error)
@@ -268,7 +269,7 @@ pub(crate) async fn conversation_resource_roots(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
-    let projection = match resource_projection(&state, &session_id).await {
+    let projection = match resource_projection(&state, &session_id, &[]).await {
         Ok(value) => value,
         Err(error) => return error,
     };
@@ -392,7 +393,12 @@ pub(crate) async fn conversation_resource_list(
     Path(session_id): Path<String>,
     Json(resource): Json<ResourceReference>,
 ) -> Json<ApiResponse> {
-    let projection = match resource_projection(&state, &session_id).await {
+    let records: Vec<String> = resource
+        .change
+        .iter()
+        .map(|change| change.record_id.clone())
+        .collect();
+    let projection = match resource_projection(&state, &session_id, &records).await {
         Ok(value) => value,
         Err(error) => return error,
     };
@@ -438,19 +444,28 @@ pub(crate) async fn conversation_resources_watch(
     Path(session_id): Path<String>,
     Json(body): Json<WatchResourcesRequest>,
 ) -> Response {
-    let projection = match resource_projection(&state, &session_id).await {
+    let records: Vec<String> = body
+        .resources
+        .iter()
+        .filter_map(|resource| resource.change.as_ref())
+        .map(|change| change.record_id.clone())
+        .collect();
+    let projection = match resource_projection(&state, &session_id, &records).await {
         Ok(value) => value,
         Err(error) => return error.into_response(),
     };
-    let paths = match body
-        .resources
-        .iter()
-        .map(|resource| resolve_resource(&state, &session_id, &projection, resource))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(paths) => paths,
-        Err(error) => return error.into_response(),
-    };
+    let mut paths = Vec::new();
+    let mut indices = Vec::new();
+    let mut failures = Vec::new();
+    for (index, resource) in body.resources.iter().enumerate() {
+        match resolve_resource(&state, &session_id, &projection, resource) {
+            Ok(path) => {
+                paths.push(path);
+                indices.push(index);
+            }
+            Err(error) => failures.push(json!({"indices":[index],"error":error.0})),
+        }
+    }
     let directories: Vec<bool> = paths.iter().map(|path| path.is_dir()).collect();
     let mut watch = match FileWatch::new(&paths) {
         Ok(watch) => watch,
@@ -459,7 +474,10 @@ pub(crate) async fn conversation_resources_watch(
         }
     };
     let stream = async_stream::stream! {
-        yield Ok::<_, Infallible>(Event::default().event("ready").data("{}"));
+        yield Ok::<_, Infallible>(Event::default().event("ready").data(json!({"indices":indices}).to_string()));
+        for failure in failures {
+            yield Ok(Event::default().event("resourceError").data(failure.to_string()));
+        }
         while let Some(change) = watch.next().await {
             let mut changes = vec![change];
             while let Ok(change) = watch.changes.try_recv() { changes.push(change); }
@@ -468,7 +486,7 @@ pub(crate) async fn conversation_resources_watch(
             for change in changes {
                 match change {
                     Ok(changed) => for (index, path) in paths.iter().enumerate() {
-                        if changed.iter().any(|change| change == path || (directories[index] && change.parent() == Some(path.as_path()))) { affected.insert(index); }
+                        if changed.iter().any(|change| change == path || (directories[index] && change.parent() == Some(path.as_path()))) { affected.insert(indices[index]); }
                     },
                     Err(message) => { error = Some(message); break; }
                 }

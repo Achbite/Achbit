@@ -10,6 +10,7 @@ import { planOperationDetail } from './planReview';
 import { ApprovalOperationDetails } from './ApprovalOperationDetails';
 import { ApprovalReviewReason } from './ApprovalReviewReason';
 import { InteractionOptions } from './InteractionOptions';
+import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
 import type { LocalAgentState } from '../../state/localAgentStore';
 
 type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAddition' | 'pendingInteraction'
@@ -108,9 +109,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const [ruleDecision, setRuleDecision] = useState<'allow' | 'ask' | 'deny'>('allow');
   const [ruleSaved, setRuleSaved] = useState(false);
   const [ruleError, setRuleError] = useState<string | null>(null);
-  const reviewing = pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running';
-  const reviewingPlan = pendingPlan?.review?.status === 'reviewing'
-    && projection?.effectivePermissions?.['agent.permissions.workspaceMutation'] === 'review';
+  const reviewing = isAutomaticApproval(pendingApproval, projection?.run);
+  const reviewingPlan = isAutomaticPlanReview(pendingPlan, projection?.effectivePermissions);
   useLayoutEffect(() => { setRuleSaved(false); setRuleError(null); }, [pendingApproval?.approvalId]);
   const saveRule = async () => {
     if (!pendingApproval?.preview.authorizationContext) return;

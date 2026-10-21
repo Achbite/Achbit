@@ -53,6 +53,8 @@ Skip the signing command on Windows and Linux. `main` contains the stable source
 
 **Inside the container (`/workspace`):**
 
+For daily development, run `bash ./build.sh` (or `pnpm build`). It compiles and updates the development host's complete runnable product in `bin/`, including current native programs, Session code and GUI resources, without creating archives or installers. On macOS, open `bin/macos-arm64/DeepCode-GUI.app` after the build. Docker uses the host platform supplied by `make shell`; Windows/WSL selects `bin/win64`, and Linux selects its container architecture. To build and package every available platform, explicitly run `bash ./build.sh --stage package` (or `pnpm package`). Select a single distribution package below:
+
 | Target | Command | Output in the checkout |
 | --- | --- | --- |
 | macOS Apple Silicon | `bash ./build.sh --stage package-macos` | `bin/macos-arm64/` |
@@ -61,7 +63,7 @@ Skip the signing command on Windows and Linux. `main` contains the stable source
 
 Shared TypeScript, GUI resources, Linux programs, and Windows cross-compilation run in Docker. macOS native compilation and signing run on the Mac through the build bridge. Packaging also creates versioned archives in `bin/`, plus a macOS PKG or Windows Setup where applicable.
 
-After a successful build, run `exit` to leave the container. **Back on the host**, launch your package:
+After a successful runtime build or packaging, run `exit` to leave the container. **Back on the host**, launch your product:
 
 ```bash
 # macOS

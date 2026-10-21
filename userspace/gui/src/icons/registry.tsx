@@ -9,6 +9,7 @@ export const UI_ICON_GLYPHS = {
   expand: <><path d="M14 4h6v6M20 4l-7 7M4 14v6h6M4 20l7-7"/></>,
   collapse: <><path d="M20 4l-7 7m0-6v6h6M4 20l7-7m-6 0h6v6"/></>,
   refresh: <><path d="M20 7v5h-5M19 12a7 7 0 1 0-1.5 5M20 12a8 8 0 0 0-2-6"/></>,
+  network: <><path d="M3 8a14 14 0 0 1 18 0M6 12a9 9 0 0 1 12 0M9 16a4.5 4.5 0 0 1 6 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></>,
   code: <><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></>,
   download: <><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></>,
   info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7" r="1" fill="currentColor" stroke="none"/></>,

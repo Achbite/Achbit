@@ -560,6 +560,10 @@ function timelineReferencesAreValid(
   plans: Array<{ planId: string; revision: number }>,
   activities: Array<Record<string, unknown>>,
 ): boolean {
+  const messagesById = new Map(messages.map(message => [message.messageId, message]));
+  const narrativesById = new Map(narratives.map(narrative => [narrative.narrativeId, narrative]));
+  const plansByReference = new Set(plans.map(planReferenceKey));
+  const activitiesById = new Map(activities.map(activity => [activity.activityId, activity]));
   const timelineIds = new Set<string>();
   const messageIds = new Set<string>();
   const narrativeIds = new Set<string>();
@@ -576,22 +580,15 @@ function timelineReferencesAreValid(
     switch (item.kind) {
       case 'message': {
         const messageId = item.messageId as string;
-        return addUnique(messageIds, messageId)
-          && messages.some((message) => (
-            message.messageId === messageId
-            && ['user', 'assistant'].includes(String(message.role))
-            && (message.role === 'assistant'
-              ? isStreamId(item.streamId)
-              : item.streamId === undefined)
-          ));
+        const message = messagesById.get(messageId);
+        return addUnique(messageIds, messageId) && Boolean(message)
+          && ['user', 'assistant'].includes(String(message!.role))
+          && (message!.role === 'assistant' ? isStreamId(item.streamId) : item.streamId === undefined);
       }
       case 'narrative': {
         const narrativeId = item.narrativeId as string;
         return addUnique(narrativeIds, narrativeId)
-          && narratives.some((narrative) => (
-            narrative.narrativeId === narrativeId
-            && narrative.providerRequestId === item.providerRequestId
-          ));
+          && narrativesById.get(narrativeId)?.providerRequestId === item.providerRequestId;
       }
       case 'plan': {
         const reference = planReferenceKey({
@@ -599,17 +596,15 @@ function timelineReferencesAreValid(
           revision: item.revision as number,
         });
         return addUnique(planRefs, reference)
-          && plans.some((plan) => planReferenceKey(plan) === reference);
+          && plansByReference.has(reference);
       }
       case 'toolGroup':
-        return (item.activityIds as string[]).every((activityId) => (
-          addUnique(activityIds, activityId)
-          && activities.some((activity) => (
-            activity.activityId === activityId
-            && ['tool', 'providerHosted', 'approval', 'interaction', 'agent'].includes(String(activity.kind))
-            && (item.providerRequestId !== undefined || activity.kind === 'agent')
-          ))
-        ));
+        return (item.activityIds as string[]).every((activityId) => {
+          const activity = activitiesById.get(activityId);
+          return addUnique(activityIds, activityId) && Boolean(activity)
+            && ['tool', 'providerHosted', 'approval', 'interaction', 'agent'].includes(String(activity!.kind))
+            && (item.providerRequestId !== undefined || activity!.kind === 'agent');
+        });
       default:
         return false;
     }

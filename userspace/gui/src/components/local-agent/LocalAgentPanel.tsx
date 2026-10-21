@@ -15,6 +15,8 @@ import { useAgentComposer } from './useAgentComposer';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { useDisplayedConversation } from './ConversationDisplayProvider';
 import { ConversationComposer } from './ConversationComposer';
+import { ComposerDecisionPanels } from './ComposerDecisionPanels';
+import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
 import { ConversationTranscript } from './ConversationTranscript';
 import { ConversationLayoutCache } from './conversationVirtualizer';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
@@ -103,6 +105,11 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   });
   const { bodyRef, bodyHandlers, showJumpToLatest, scrollToLatest } = viewport;
   const composer = useAgentComposer(language, viewport.setLatestFollowMode);
+  const automaticApproval = isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run) ? projection!.pendingApproval : null;
+  const automaticPlan = isAutomaticPlanReview(projection?.pendingPlan ?? null, projection?.effectivePermissions) ? projection!.pendingPlan : null;
+  const automaticReview = automaticApproval || automaticPlan ? <ComposerDecisionPanels language={language} composer={{
+    ...composer, pendingApproval: automaticApproval, pendingPlan: automaticPlan, pendingInteraction: null, pendingScopeAddition: null,
+  }} /> : null;
   const resourcePreview = useResourcePreview(sessionId, readerNavigation);
   const activeReader = resourcePreview.tabs.find(tab => tab.id === resourcePreview.activeId)?.target;
   const activeAgent = resourcePreview.visible && activeReader?.kind === 'agent' ? activeReader : null;
@@ -168,6 +175,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
+          automaticReview={automaticReview}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">
@@ -196,7 +204,11 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         uiActionError={uiActionError}
         onDismissUiActionError={() => setUiActionError(null)}
       />
-      <ResourcePreview language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview} />
+      <ResourcePreview language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview}
+        onAttach={async selections => {
+          if (useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
+          await composer.selectMessageAttachments(selections);
+        }} />
       {projection && hostReady && <AgentPlanReview key={sessionId} decisions={projection.pendingAgentDecisions ?? []}
         language={language} refresh={refresh} />}
       {onReaderLayoutChange && <div ref={setConversationBounds} className="local-agent__conversation-overlay-bounds" aria-hidden="true" />}

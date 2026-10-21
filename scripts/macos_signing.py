@@ -30,7 +30,7 @@ def signing_identity():
 
 
 def require_same_identity(app, identity):
-    """An assets-only update must not silently switch the installed app's signer."""
+    """An in-place product update must not silently switch the existing app's signer."""
     with tempfile.TemporaryDirectory(prefix='deepcode-signing-') as directory:
         prefix = Path(directory) / 'certificate-'
         subprocess.run(['codesign', '--display', f'--extract-certificates={prefix}', str(app)],
@@ -38,7 +38,7 @@ def require_same_identity(app, identity):
         leaf = Path(str(prefix) + '0')
         if not leaf.is_file() or hashlib.sha1(leaf.read_bytes()).hexdigest().upper() != identity:
             raise ValueError('The installed App uses a different signing identity. '
-                             'Use a full macOS package to change signing identities before updating only its UI.')
+                             'Use explicit full macOS packaging to change signing identities.')
 
 
 def sign_app(app, identity, *, native_components=False):

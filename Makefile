@@ -25,6 +25,9 @@ DEEPCODE_RUSTUP_DIST_SERVER ?= https://mirrors.ustc.edu.cn/rust-static
 DEEPCODE_RUSTUP_UPDATE_ROOT ?= https://mirrors.ustc.edu.cn/rust-static/rustup
 UNAME_R := $(shell uname -r 2>/dev/null)
 IS_WSL := $(findstring Microsoft,$(UNAME_R))$(findstring microsoft,$(UNAME_R))
+ifneq ($(IS_WSL),)
+DEEPCODE_BUILD_HOST_OS := Windows_NT
+endif
 DEEPCODE_DOCKER_NET_ENV_PASSTHROUGH ?= auto
 DEEPCODE_CONTAINER_CARGO_TARGET_DIR ?= $(WORKDIR_IN_CTNR)/target
 DEEPCODE_CONTAINER_TMPDIR ?= /tmp/deepcode-build
@@ -107,14 +110,15 @@ RUN_ARGS := \
 	-e PATH=/root/.local/share/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	$(NETWORK_ENV_ARGS)
 
-.PHONY: help docker-info branch-audit branch-hooks shell build ui ui-update native-gui dev-deepcode-gui reset-dev clean package-macos _validate_config _print_image _ensure_image _ensure_container
+.PHONY: help docker-info branch-audit branch-hooks shell build package ui ui-update native-gui dev-deepcode-gui reset-dev clean package-macos _validate_config _print_image _ensure_image _ensure_container
 
 # Environment settings are forwarded to the sole build orchestrator.
 export CONTAINER_NAME WORKDIR_IN_CTNR
 
 help:
 	@echo "make shell / docker-info / reset-dev: 当前 worktree 的 Docker 环境；Mac 自动准备宿主打包通道"
-	@echo "make build: 一次共享构建，尝试全部可用平台"
+	@echo "make build: 编译并更新本机可运行目录；macOS 更新 bin/macos-arm64，不生成安装器或压缩包"
+	@echo "make package: 编译并打包全部可用平台，生成运行目录、压缩包及安装器"
 	@echo "make package-macos: Docker 共享构建 + 宿主 Darwin 编译/组装，支持容器内 build.sh 发起"
 	@echo "make ui: 单 GUI 资源到 bin/ui/web-deepcode-gui"
 	@echo "make ui-update UI_PACKAGE=bin/macos-arm64: 完整替换本地包 GUI"
@@ -233,6 +237,9 @@ shell: _ensure_container
 
 build:
 	@bash ./build.sh
+
+package:
+	@bash ./build.sh --stage package
 
 ui:
 	@bash ./build.sh --stage ui

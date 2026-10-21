@@ -38,27 +38,35 @@ pub(crate) struct KernelPermissionModel {
 }
 
 impl KernelPermissionModel {
+    const PERMISSION_EVENT_TYPES: &'static [&'static str] = &[
+        "session.created",
+        "run.started",
+        "session.permissions.updated",
+        "approval.requested",
+        "approval.resolved",
+        "plan.review.requested",
+        "plan.reviewed",
+        "plan.cancelled",
+        "plan.invalidated",
+        "run.finishing",
+        "plan.confirmed",
+    ];
+
+    pub(crate) fn observed_event_types() -> impl Iterator<Item = &'static str> {
+        Self::PERMISSION_EVENT_TYPES
+            .iter()
+            .chain(crate::local_agent_authorities::KernelAuthorityModel::EVENT_TYPES)
+            .copied()
+    }
+
     pub(crate) fn observes(event: &Value) -> bool {
         Self::observes_permissions(event)
             || crate::local_agent_authorities::KernelAuthorityModel::observes(event)
     }
     fn observes_permissions(event: &Value) -> bool {
-        matches!(
-            event["type"].as_str(),
-            Some(
-                "session.created"
-                    | "run.started"
-                    | "session.permissions.updated"
-                    | "approval.requested"
-                    | "approval.resolved"
-                    | "plan.review.requested"
-                    | "plan.reviewed"
-                    | "plan.cancelled"
-                    | "plan.invalidated"
-                    | "run.finishing"
-                    | "plan.confirmed"
-            )
-        )
+        event["type"]
+            .as_str()
+            .is_some_and(|kind| Self::PERMISSION_EVENT_TYPES.contains(&kind))
     }
 
     pub(crate) fn apply(&mut self, event: &Value) -> Result<(), LocalAgentStoreError> {

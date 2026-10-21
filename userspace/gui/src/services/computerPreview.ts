@@ -4,7 +4,14 @@ export function computerPreviewSources(platform: string) {
   return { desktop: /Mac|Win/.test(platform), browser: /Mac|Win/.test(platform) };
 }
 
-export interface PreviewFrame { sequence: number; capturedAt: string; width: number; height: number; dataUrl: string }
+export interface PreviewFrame { sequence: number; capturedAt: string; width: number; height: number; dataUrl: string; contentKind?: 'image' | 'viewport' }
+
+/** Browser thumbnails have their own bounds, never a new operating viewport. */
+export function previewFrameConstraints(frame: PreviewFrame | undefined, width: number, maxHeight: number) {
+  if (!frame?.contentKind) return { width, maxHeight };
+  const height = Math.min(240, maxHeight);
+  return { width: frame.contentKind === 'image' ? Math.min(width, height * frame.width / frame.height) : width, maxHeight: height };
+}
 export interface DesktopPreviewTarget { windowId: number; generation: number; pid: number; app: string; title: string; width: number; height: number }
 export interface BrowserPreviewTarget { previewId: string; url: string; hostInstanceId: string; windowLabel: string; sessionId: string }
 export interface ComputerPreview<T = DesktopPreviewTarget> {

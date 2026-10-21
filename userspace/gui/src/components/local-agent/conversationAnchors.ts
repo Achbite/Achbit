@@ -9,10 +9,11 @@ export class ConversationAnchors {
   read(body: HTMLElement) {
     if (body !== this.body || !this.snapshot) {
       this.body = body;
-      const nodes = [...body.querySelectorAll<HTMLElement>('[data-conversation-anchor]')];
+      const nodes = [...body.querySelectorAll<HTMLElement>('[data-conversation-anchor], [data-conversation-disclosure]')];
       this.snapshot = {
-        nodes: nodes.filter(node => !node.hidden),
-        byKey: new Map(nodes.map(node => [node.dataset.conversationAnchor!, node])),
+        // Nested controls are explicit click anchors, not independently ordered rows.
+        nodes: nodes.filter(node => !node.hidden && node.dataset.conversationAnchor),
+        byKey: new Map(nodes.map(node => [node.dataset.conversationDisclosure ?? node.dataset.conversationAnchor!, node])),
       };
     }
     return this.snapshot;

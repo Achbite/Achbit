@@ -10,6 +10,7 @@ import { shouldSubmitComposerKey } from './composerKeyboard';
 import { composerCommands, parseComposerCommand, suggestComposerCommands, type ComposerCommand } from './composerCommands';
 import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
+import { foregroundApproval, foregroundPlan } from './composerDecisions';
 import { isLongPastedText } from '../../services/pastedText';
 import { cloneComposerState, composerStateIsEmpty, emptyComposerState, submitComposerState, type ComposerState } from './composerSubmission';
 
@@ -53,8 +54,8 @@ export function useAgentComposer(
     interactionSelection?.conversationKey === conversationKey && item.interactionId === interactionSelection.interactionId
   )));
   const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
-  const pendingApproval = projection?.pendingApproval ?? null;
-  const pendingPlan = projection?.pendingPlan ?? null;
+  const pendingApproval = foregroundApproval(projection?.pendingApproval ?? null, projection?.run);
+  const pendingPlan = foregroundPlan(projection?.pendingPlan ?? null, projection?.effectivePermissions);
   const pendingScopeAddition = pendingPlan ? planScopeAddition(projection?.plans.find((plan) => (
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
   )), pendingPlan) : null;

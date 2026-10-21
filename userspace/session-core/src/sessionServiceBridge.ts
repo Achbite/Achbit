@@ -158,6 +158,11 @@ async function dispatch(
     }
     case 'snapshot':
       return await service.snapshot(requiredString(request.data, 'sessionId'));
+    case 'resourceSnapshot': {
+      const recordIds = request.data.recordIds ?? [];
+      if (!Array.isArray(recordIds) || !recordIds.every(validId)) throw new Error('session_resource_query_invalid');
+      return await service.resourceSnapshot(requiredString(request.data, 'sessionId'), recordIds);
+    }
     case 'statuses': {
       const { sessionIds } = request.data;
       if (!Array.isArray(sessionIds) || !sessionIds.every(validId)) {
@@ -192,7 +197,7 @@ async function loadSessionServiceFactory(): Promise<SessionServiceFactory> {
 function assertSessionServicePort(value: unknown): asserts value is SessionServicePort {
   if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
   const methods = [
-    'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'activity',
+    'createSession', 'deleteSession', 'submit', 'snapshot', 'resourceSnapshot', 'statuses', 'activity',
     'contextComposition', 'read', 'replaceCapabilities', 'dispose',
   ] as const satisfies readonly (keyof SessionServicePort)[];
   for (const method of methods) {
@@ -492,7 +497,7 @@ function decodeRequest(encoded: string, extensionOperations: readonly string[] =
     || value.protocolVersion !== LOCAL_AGENT_PROTOCOL_VERSION
     || typeof value.requestId !== 'string'
     || !value.requestId
-    || !['health', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'statuses', 'contextComposition', 'read', 'shutdown', ...extensionOperations].includes(String(value.operation))
+    || !['health', 'activity', 'createSession', 'deleteSession', 'submit', 'snapshot', 'resourceSnapshot', 'statuses', 'contextComposition', 'read', 'shutdown', ...extensionOperations].includes(String(value.operation))
     || !isRecord(value.data)
   ) {
     throw new Error('session_service_request_invalid');

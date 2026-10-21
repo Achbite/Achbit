@@ -82,15 +82,17 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   const candidates = events.filter((event) => {
     if (event.sequence >= (query.before ?? Infinity)) return false;
     switch (view) {
-      case 'summary': return event.type === 'tool.completed' || event.type === 'tool.not-executed';
+      case 'summary': return isToolHistory(event);
       case 'messages': return event.type === 'message.committed' || event.type === 'narrative.committed';
       case 'tools': return event.type === 'tool.completed'
         ? !query.recordId || event.payload.record.recordId === query.recordId
-        : event.type === 'tool.not-executed' && !query.recordId;
+        : isToolHistory(event) && !query.recordId;
       case 'plans': return event.type.startsWith('plan.') || event.type.startsWith('todo.');
       case 'reasoning': return event.type === 'provider.turn.settled' && event.payload.outcome === 'completed'
         && (!query.providerRequestId || event.payload.providerRequestId === query.providerRequestId);
-      case 'context': return event.type === 'context.composed'
+      case 'context': return (event.type === 'context.composed'
+        || event.type === 'approval.reviewed' && !events.some(candidate => candidate.type === 'context.composed'
+          && candidate.payload.providerRequestId === event.payload.providerRequestId))
         && (!query.providerRequestId || event.payload.providerRequestId === query.providerRequestId);
     }
   }).reverse();
@@ -115,12 +117,52 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   return result;
 }
 
+function rejectedProviderCalls(event: SessionEvent) {
+  if (event.type !== 'provider.turn.settled' || event.payload.outcome !== 'completed') return [];
+  return [
+    ...(event.payload.toolCallInputs ?? []).filter(call => call.error),
+    ...(event.payload.orderedOutputBlocks ?? []).flatMap(block => block.kind === 'toolCallRejected'
+      ? [{ callId: block.callId, providerCallId: block.providerCallId, toolName: block.toolName,
+        arguments: typeof block.item.arguments === 'string' ? block.item.arguments : JSON.stringify(block.item), error: block.error }] : []),
+  ];
+}
+
+function isToolHistory(event: SessionEvent): boolean {
+  return ['tool.completed', 'tool.not-executed', 'tool.input-rejected', 'session.control.rejected', 'approval.reviewed'].includes(event.type)
+    || rejectedProviderCalls(event).length > 0;
+}
+
 function readItem(event: SessionEvent, summary: boolean, events: readonly SessionEvent[], detail = false): JsonObject {
   const base = { sequence: event.sequence, eventId: event.eventId, type: event.type, runId: 'runId' in event ? event.runId ?? null : null };
   if (event.type === 'message.committed' || event.type === 'narrative.committed') {
     return { ...base, role: event.type === 'message.committed' ? event.payload.role : 'assistant', ...textExcerpt(event.payload.content, 12 * 1024) };
   }
   if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
+  if (event.type === 'session.control.rejected') return { ...base, callId: event.callId,
+    providerCallId: event.payload.providerCallId, toolName: event.payload.toolName, outcome: 'rejected', executed: false,
+    input: textExcerpt(JSON.stringify(event.payload.input), summary ? 600 : 4000),
+    error: textExcerpt(JSON.stringify(event.payload.error), 4000) };
+  if (event.type === 'provider.turn.settled') {
+    const calls = rejectedProviderCalls(event).map(call => ({ ...call, outcome: 'rejected', executed: false }));
+    // Keep a turn's siblings together: a sequence cursor must not skip same-event rejections.
+    return { ...base, providerRequestId: event.payload.providerRequestId, providerOutcome: event.payload.outcome,
+      rejectedCallCount: calls.length, rejectedCalls: textExcerpt(JSON.stringify(calls), summary ? 6000 : 12000) };
+  }
+  if (event.type === 'tool.input-rejected') {
+    const rejection = event.payload.rejection;
+    return { ...base, callId: event.callId, toolName: rejection.toolName, outcome: 'rejected', executed: false,
+      input: textExcerpt(JSON.stringify(rejection.input), summary ? 600 : 4000),
+      error: textExcerpt(JSON.stringify(rejection.error), 4000), rejectedAt: rejection.rejectedAt };
+  }
+  if (event.type === 'approval.reviewed') {
+    const composed = events.some(candidate => candidate.type === 'context.composed'
+      && candidate.payload.providerRequestId === event.payload.providerRequestId);
+    const resolution = events.find(candidate => candidate.type === 'approval.resolved'
+      && candidate.payload.approvalId === event.payload.approvalId);
+    return { ...base, callId: event.callId, providerRequestId: event.payload.providerRequestId,
+      contextPrepared: composed, review: { ...event.payload },
+      resolution: resolution ? { sequence: resolution.sequence, ...resolution.payload } : null };
+  }
   if (event.type === 'tool.completed') {
     const record = event.payload.record;
     return {

@@ -103,6 +103,11 @@ export class AgentManager {
               acceptsTasks: !caller.agentContext && canSpawn && child.capabilities.continuation && (!target?.run || terminal(target.run.status)) };
           });
         return { operations, coordinatorAgentId: ownerId,
+          capacity: {
+            concurrentTasks: { used: family.flatMap(item => item.agentTasks ?? []).filter(task => task.status === 'running').length, limit: settings.maxConcurrent },
+            openMembers: { used: family.flatMap(item => item.agentChildren ?? []).filter(child => !child.closed).length, limit: settings.maxMembersPerSession },
+            callsThisRun: { used: (caller.agentTasks ?? []).filter(task => task.parentRunId === runId).length, limit: settings.maxCallsPerRun },
+          },
           ...(parentId ? { parentAgentId: parentId } : {}),
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
@@ -240,12 +245,12 @@ export class AgentManager {
     }
     const capabilities = existingChild?.capabilities ?? resolveAgentCapabilities(preset, operation.capabilities, callerCapabilities, settings.allowMemberAnalysis);
     if (existingChild && (!existingChild.capabilities.continuation || existingChild.closed)) throw new Error('agent_child_not_continuable');
-    if ((caller.agentTasks ?? []).filter(task => task.parentRunId === runId).length >= settings.maxCallsPerRun) throw new Error('agent_run_call_limit');
+    if ((caller.agentTasks ?? []).filter(task => task.parentRunId === runId).length >= settings.maxCallsPerRun) throw new LoopFailure('agent_run_call_limit', 'agent_run_call_limit');
     const family = await this.family(owner);
-    if (family.flatMap(item => item.agentTasks ?? []).filter(task => task.status === 'running').length >= settings.maxConcurrent) throw new Error('agent_concurrency_limit');
+    if (family.flatMap(item => item.agentTasks ?? []).filter(task => task.status === 'running').length >= settings.maxConcurrent) throw new LoopFailure('agent_concurrency_limit', 'agent_concurrency_limit');
     if (!existingChild
       && family.flatMap(item => item.agentChildren ?? []).filter(child => !child.closed).length
-        >= settings.maxMembersPerSession) throw new Error('agent_continuation_limit');
+        >= settings.maxMembersPerSession) throw new LoopFailure('agent_continuation_limit', 'agent_continuation_limit');
 
     const task: AgentTaskProjection = {
       taskId: id('agent-task'), agentSessionId: existingChild?.agentSessionId ?? id('session'),

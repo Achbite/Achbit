@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | conversation.header | conversationHeader | sessionId、title、project、reader | toggleReader、toggleReaderExpanded、toggleTree |
 | settings.navigation | settingsNavigation | pages、activePage、searchQuery | selectSettingsPage、setSettingsSearch |
-| reader.tree | resourceTree | items、filter、showRuntime、selectedId、watchError、visible | setTreeFilter、setTreeRuntimeVisible、setTreeItemExpanded、openTreeItem |
+| reader.tree | resourceTree | items、filter、showRuntime、selectedId、watchError、visible | setTreeFilter、setTreeRuntimeVisible、setTreeItemExpanded、openTreeItem、openTreeItemMenu |
 
 `conversation.header` 的 `heading` 与 `reader` 是两个可挂载的现有区域；示例自绘标题，并调用 `scope.regions.mount('reader', container)` 保留已有 Reader tabs 和控制按钮。可以挂载 `heading` 保留原标题。
 

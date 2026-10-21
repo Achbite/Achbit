@@ -1296,9 +1296,35 @@ pub(crate) async fn local_agent_events_read(
             state
                 .local_agent
                 .journal
-                .publication(json!(events), &session_id, true)
+                .publication(Value::Array(events), &session_id, true)
         }) {
         Ok(events) => ApiResponse::ok(events),
+        Err(error) => store_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReadResourceJournalRequest {
+    #[serde(default)]
+    record_ids: Vec<String>,
+}
+
+pub(crate) async fn local_agent_resources_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<ReadResourceJournalRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state
+        .local_agent
+        .journal
+        .read_resources(&session_id, &body.record_ids)
+    {
+        Ok(read) => ApiResponse::ok(read),
         Err(error) => store_error(error),
     }
 }

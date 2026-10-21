@@ -77,6 +77,11 @@ pub(crate) fn working_indicator(app: &TuiApp, tick: usize) -> Option<String> {
                     .map(|tool| tool.operation.as_str())
                     .unwrap_or(&activity.label)
             ));
+            // The status line is redrawn even when a quiet command publishes no
+            // output or journal event; do not rebuild the entire transcript to tick.
+            if let Some(elapsed) = tool_progress_details(language, activity).first() {
+                label.push_str(&format!(" · {elapsed}"));
+            }
         }
     }
     Some(language.format(
@@ -507,28 +512,59 @@ fn push_activity_summary(
             Style::default().fg(Color::Red),
         )));
     }
-    if activity.status == "active" {
-        if let Some(output) = &activity.live_output {
-            for line in output
-                .stdout
-                .lines()
-                .rev()
-                .take(3)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-            {
-                lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::DarkGray),
-                )));
+    if matches!(activity.status.as_str(), "requested" | "active" | "waiting") {
+        if let Some(command) = activity.tool.as_ref().and_then(|tool| {
+            tool.shell
+                .as_ref()
+                .map(|shell| shell.command.as_str())
+                .or_else(|| {
+                    tool.process
+                        .as_ref()
+                        .map(|process| process.command.as_str())
+                })
+        }) {
+            lines.push(Line::from(format!(
+                "  $ {}",
+                clipped(command.lines().next().unwrap_or(""), 120)
+            )));
+        }
+        let output = activity.live_output.as_ref().or_else(|| {
+            activity
+                .tool
+                .as_ref()
+                .and_then(|tool| tool.process.as_ref())
+                .map(|process| &process.output)
+        });
+        if let Some(output) = output {
+            for (label, text, color) in [
+                ("stdout", &output.stdout, Color::DarkGray),
+                ("stderr", &output.stderr, Color::Yellow),
+            ] {
+                let tail = text
+                    .split(['\r', '\n'])
+                    .filter(|line| !line.is_empty())
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>();
+                if !tail.is_empty() {
+                    lines.push(Line::from(format!("  {label}:")));
+                    for line in tail.into_iter().rev() {
+                        lines.push(Line::from(Span::styled(
+                            format!("    {}", clipped(line, 120)),
+                            Style::default().fg(color),
+                        )));
+                    }
+                }
             }
-            if let Some(line) = output.stderr.lines().last() {
-                lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::Yellow),
-                )));
-            }
+        }
+        if activity.status == "active"
+            && output.is_none_or(|output| output.stdout.is_empty() && output.stderr.is_empty())
+        {
+            lines.push(Line::from(if language == Language::ZhCn {
+                "  尚无输出"
+            } else {
+                "  No output yet"
+            }));
         }
     }
     lines.push(Line::from(Span::styled(
@@ -663,6 +699,39 @@ mod layout_tests {
         assert!(!terminal.contains("执行中"));
         assert!(!terminal.contains("实时输出"));
         assert!(!terminal.contains("已执行"));
+    }
+
+    #[test]
+    fn quiet_shell_shows_command_and_tail_without_a_terminal_record() {
+        let mut activity: ActivityProjection = serde_json::from_value(serde_json::json!({
+            "activityId":"tool:quiet", "kind":"tool", "status":"active", "label":"bash",
+            "runId":"run:test", "callId":"call:quiet", "sequence":1, "startedAt":"1",
+            "tool":{"operation":"bash","resources":[],"shell":{"command":"sleep 120", "cwd":".","executionScope":"workspace","terminal":false}}
+        })).unwrap();
+        let render = |activity: &ActivityProjection| {
+            let mut lines = Vec::new();
+            push_activity_summary(Language::ZhCn, &mut lines, activity);
+            lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let quiet = render(&activity);
+        assert!(quiet.contains("$ sleep 120"));
+        assert!(quiet.contains("尚无输出"));
+        assert!(quiet.contains("/tool tool:quiet"));
+        assert!(tool_progress_details(Language::ZhCn, &activity)[0].contains("已执行"));
+        activity.live_output = Some(serde_json::from_value(serde_json::json!({
+            "stdout":"hidden\n10%\r20%\r30%\n", "stderr":"diagnostic\n", "stdoutBytes":24,"stderrBytes":11,"truncated":false
+        })).unwrap());
+        let live = render(&activity);
+        assert!(!live.contains("hidden"));
+        assert!(live.contains("30%"));
+        assert!(live.contains("stderr:"));
+        let mut detail = String::new();
+        render_activity_plain(Language::ZhCn, &mut detail, &activity);
+        assert!(detail.contains("hidden"));
     }
 
     #[test]
@@ -1058,7 +1127,7 @@ impl Renderer {
         }
         output.push_str("────────────────────────────────────────\n");
         if let Some(detail) = app.detail_preview() {
-            output.push_str(detail);
+            output.push_str(&detail);
             output.push('\n');
         }
         if let Some(resource) = app.resource_preview() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One invocation prepares shared assets once, then builds the selected native targets.
+# Update the local runnable product by default; distribution packaging is explicit.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT_DIR"
@@ -16,7 +16,10 @@ usage() {
   cat <<'HELP'
 Usage: bash build.sh [-debug] [--stage STAGE]...
   -debug              Windows/macOS Debug runtime/archive in bin/debug, without installers.
-  package (default)    Build every available platform; fail if none built.
+  runtime (default)    Compile and update the development host's runnable product in bin/.
+  runtime-macos | runtime-windows | runtime-linux  Update one runtime without archives/installers.
+  code                 Compile only shared TypeScript, GUI resources and Linux Rust code in Docker.
+  package              Build and package every available platform; fail if none built.
   package-linux       Linux runtime for the container architecture.
   package-windows     Windows x64 runtime, ZIP and Setup (GNU cross toolchain + NSIS).
   package-macos       macOS arm64 runtime, archive and PKG; Docker delegates to its Mac host.
@@ -31,6 +34,10 @@ Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, DEEPCODE_OUTPUT_DIR,
   DEEPCODE_MACOS_SIGN_IDENTITY (default: DeepCode Local Development).
 Tools must already be installed. Package stages use a fresh staging directory;
 Cargo/pnpm caches are retained. User data in existing output directories is retained.
+Runtime builds include current native programs and shared resources; macOS Apps are signed.
+The host platform is supplied to Docker by make shell (DEEPCODE_BUILD_HOST_OS).
+The explicit code stage retains compiler outputs without updating bin/.
+Full packaging: bash build.sh --stage package
 On Mac, make shell prepares the host bridge before entering Docker.
 HELP
 }
@@ -55,7 +62,7 @@ if [ "$DEEPCODE_BUILD_KIND" = debug ]; then
     esac
   done
 else
-  [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
+  [ "${#STAGES[@]}" -gt 0 ] || STAGES=(runtime)
 fi
 IN_CONTAINER=0
 [ ! -f /.dockerenv ] || IN_CONTAINER=1
@@ -65,7 +72,7 @@ if [ "$IN_CONTAINER" -eq 0 ]; then
   [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")" = true ] || { printf 'Container is not running; use make shell.\n' >&2; exit 1; }
 fi
 case "$OUTPUT_DIR/" in "$ROOT_DIR/"*) ;; *) printf 'Output must be inside the mounted worktree.\n' >&2; exit 2 ;; esac
-mkdir -p "$OUTPUT_DIR" "$ROOT_DIR/.build-cache"
+mkdir -p "$ROOT_DIR/.build-cache"
 BUILD_LOCK="$ROOT_DIR/.build-cache/build.lock"
 mkdir "$BUILD_LOCK" 2>/dev/null || { printf 'Another build owns %s; wait for it to finish.\n' "$BUILD_LOCK" >&2; exit 1; }
 TRANSACTION="$(mktemp -d "$ROOT_DIR/.build-cache/package.XXXXXX")"
@@ -110,8 +117,12 @@ macos_step() {
     printf 'No macOS build host is registered for this worktree.\n'; return 3
   elif [ "$1" = check ]; then
     bash "$ROOT_DIR/scripts/package-macos.sh" --check
+  elif [ "$1" = check-runtime ]; then
+    bash "$ROOT_DIR/scripts/package-macos.sh" --runtime --check
   elif [ "$1" = computer-use ]; then
     bash "$ROOT_DIR/scripts/package-macos.sh" --computer-use "$OUTPUT_DIR"
+  elif [ "$1" = runtime ]; then
+    bash "$ROOT_DIR/scripts/package-macos.sh" --runtime "$TRANSACTION/shared" "$OUTPUT_DIR"
   else
     bash "$ROOT_DIR/scripts/package-macos.sh" "$TRANSACTION/shared" "$OUTPUT_DIR"
   fi
@@ -136,14 +147,43 @@ else
   CONTAINER_OUTPUT="$(container_path "$OUTPUT_DIR")"
 fi
 platforms=()
+package_platforms=()
 native_stages=()
+code=0
 ui=0
 computer_use=0
 computer_use_windows=0
 all=0
-add_platform() { local existing; for existing in "${platforms[@]:-}"; do [ "$existing" != "$1" ] || return 0; done; platforms+=("$1"); }
+add_platform() {
+  [ "${2:-package}" != package ] || package_platforms+=("$1")
+  local existing
+  for existing in "${platforms[@]:-}"; do [ "$existing" != "$1" ] || return 0; done
+  platforms+=("$1")
+}
+package_selected() {
+  local selected
+  for selected in "${package_platforms[@]:-}"; do [ "$selected" != "$1" ] || return 0; done
+  return 1
+}
+local_platform() {
+  local build_host_os="${DEEPCODE_BUILD_HOST_OS:-$(uname -s)}"
+  case "$build_host_os" in
+    Darwin) printf 'macos\n' ;;
+    Windows_NT|MINGW*|MSYS*|CYGWIN*) printf 'windows\n' ;;
+    Linux)
+      if [ -n "${WSL_DISTRO_NAME:-}" ]; then printf 'windows\n'; else printf 'linux\n'; fi
+      ;;
+    *) printf 'Unsupported development host: %s\n' "$build_host_os" >&2; return 2 ;;
+  esac
+}
 for stage in "${STAGES[@]}"; do
   case "$stage" in
+    runtime)
+      selected_platform="$(local_platform)"
+      add_platform "$selected_platform" runtime
+      ;;
+    runtime-linux|runtime-windows|runtime-macos) add_platform "${stage#runtime-}" runtime ;;
+    code) code=1 ;;
     package)
       all=1
       [ "$DEEPCODE_BUILD_KIND" = debug ] || add_platform linux
@@ -160,15 +200,17 @@ done
 available=()
 for platform in "${platforms[@]:-}"; do
   [ -n "$platform" ] || continue
+  check_action=check-runtime
+  if package_selected "$platform"; then check_action=check; fi
   if [ "$platform" = macos ]; then
-    check=(macos_step check)
+    check=(macos_step "$check_action")
   else
-    check=(container_step --check "$platform")
+    check=(container_step "--$check_action" "$platform")
   fi
   current_stage="check-$platform"
   if reason="$("${check[@]}" 2>&1)"; then
     available+=("$platform")
-    [ "$platform" != macos ] || printf '==[build][host]== macOS arm64 packaging available\n'
+    [ "$platform" != macos ] || printf '==[build][host]== macOS arm64 build host available\n'
   else
     check_status=$?
     if [ "$all" -eq 1 ] && { [ "$platform" != macos ] || [ "$check_status" -eq 3 ]; }; then
@@ -183,6 +225,14 @@ done
 if [ "$ui" -eq 1 ] || [ "${#available[@]}" -gt 0 ]; then
   current_stage=shared
   container_step --shared "$SHARED_DIR"
+elif [ "$code" -eq 1 ]; then
+  current_stage=shared
+  container_step --compile-shared
+fi
+if [ "$code" -eq 1 ]; then
+  current_stage=code
+  container_step --native code
+  built_platforms+=(code)
 fi
 if [ "$ui" -eq 1 ]; then
   python3 "$ROOT_DIR/scripts/update-ui.py" --assets "$TRANSACTION/shared/web-deepcode-gui" --output "$OUTPUT_DIR/ui/web-deepcode-gui"
@@ -193,6 +243,7 @@ for stage in "${native_stages[@]:-}"; do
   [ -z "$stage" ] || container_step --native "$stage"
 done
 built=0
+runtime_built=0
 if [ "$computer_use" -eq 1 ]; then
   current_stage=computer-use
   macos_step computer-use --shared "$TRANSACTION/shared" --output "$OUTPUT_DIR"
@@ -207,14 +258,21 @@ for platform in "${available[@]:-}"; do
   [ -n "$platform" ] || continue
   phase_start=$SECONDS
   current_stage="$platform"
-  printf '==[build][platform][START]== %s\n' "$platform"
+  operation=runtime
+  if package_selected "$platform"; then operation=package; fi
+  printf '==[build][platform][START]== %s mode=%s\n' "$platform" "$operation"
   if [ "$platform" = macos ]; then
-    macos_step package --shared "$TRANSACTION/shared" --output "$OUTPUT_DIR"
+    macos_step "$operation" --shared "$TRANSACTION/shared" --output "$OUTPUT_DIR"
   else
-    container_step --package "$platform" "$SHARED_DIR" "$CONTAINER_OUTPUT"
+    container_step "--$operation" "$platform" "$SHARED_DIR" "$CONTAINER_OUTPUT"
   fi
-  built=$((built + 1))
+  runtime_built=$((runtime_built + 1))
+  if [ "$operation" = package ]; then built=$((built + 1)); fi
   built_platforms+=("$platform")
   printf '==[build][platform][DONE]== %s seconds=%s\n' "$platform" "$((SECONDS - phase_start))"
 done
-printf '==[build][DONE]== packages=%s updated="%s" skipped="%s" seconds=%s output=%s\n' "$built" "${built_platforms[*]:-none}" "${skipped_platforms[*]:-none}" "$((SECONDS - started))" "$OUTPUT_DIR"
+printf '==[build][DONE]== runtimes=%s packages=%s updated="%s" skipped="%s" seconds=%s' "$runtime_built" "$built" "${built_platforms[*]:-none}" "${skipped_platforms[*]:-none}" "$((SECONDS - started))"
+if [ "$runtime_built" -gt 0 ] || [ "$ui" -eq 1 ] || [ "$computer_use" -eq 1 ] || [ "$computer_use_windows" -eq 1 ]; then
+  printf ' output=%s' "$OUTPUT_DIR"
+fi
+printf '\n'

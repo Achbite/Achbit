@@ -23,7 +23,8 @@ import type {
 import { SessionActor } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { combineTokenUsage, projectSession, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { combineTokenUsage, projectSession, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
@@ -84,6 +85,7 @@ export class SessionService implements ConversationPort {
   readonly #actorUsers = new Map<string, number>();
   readonly #retirements = new Map<string, Promise<void>>();
   readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
+  readonly #historyReads = new Map<string, Promise<SessionProjection>>();
   readonly #deletingSessionIds = new Set<string>();
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
   readonly #lifetime = new AbortController();
@@ -288,6 +290,12 @@ export class SessionService implements ConversationPort {
     await this.withActor(sessionId, actor => actor.replaceCapabilities(implementation));
   }
 
+  async resourceSnapshot(sessionId: string, recordIds: readonly string[] = []): Promise<import('@deepcode/protocol').SessionResourceProjection> {
+    const read = await this.journal.readResources(sessionId, recordIds);
+    if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+    return projectSessionResources(read, recordIds, projectResourceTool);
+  }
+
   async snapshot(sessionId: string): Promise<SessionProjection> {
     const projection = await this.ownSnapshot(sessionId);
     const ownerSessionId = projection.agentContext?.ownerSessionId ?? sessionId;
@@ -324,12 +332,19 @@ export class SessionService implements ConversationPort {
   private async ownSnapshot(sessionId: string): Promise<SessionProjection> {
     if (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
     const live = this.#actors.get(sessionId);
-    return live ? await this.withActor(sessionId, actor => actor.snapshot())
-      : await (async () => {
-        const events = await readSessionEvents(this.journal, sessionId);
-        if (!events.length) throw new Error('session_not_found');
-        return projectSession(recoverSession(sessionId, events));
+    if (live) return await this.withActor(sessionId, actor => actor.snapshot());
+    let pending = this.#historyReads.get(sessionId);
+    if (!pending) {
+      pending = (async () => {
+        // Coalesce overlapping Reader roots/watch/read requests only. Once this
+        // read finishes the next request returns to the journal, preserving read
+        // errors and malformed-history diagnostics rather than trusting old data.
+        return projectSession(recoverSession(sessionId, await readSessionEvents(this.journal, sessionId)));
       })();
+      this.#historyReads.set(sessionId, pending);
+    }
+    try { return structuredClone(await pending); }
+    finally { if (this.#historyReads.get(sessionId) === pending) this.#historyReads.delete(sessionId); }
   }
 
   private async agentDecisionRoutes(parent: Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks'>): Promise<PendingAgentDecision[]> {
