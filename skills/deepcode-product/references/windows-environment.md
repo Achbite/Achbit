@@ -1,15 +1,17 @@
-# Windows execution environment and troubleshooting
+# Windows troubleshooting
 
-First distinguish tool startup, shell syntax, the project toolchain, service availability and the executed program. A nonzero exit code may be a valid test failure; failure alone is not a reason to switch environments.
+Use the recorded target, shell dialect and original error before changing anything.
 
-- Native Windows automatic selection prefers PowerShell 7 (`pwsh.exe`), then Windows PowerShell 5.1 if PowerShell 7 is absent. An explicit PowerShell 7 choice reports absence instead of selecting a different shell. Git Bash is opt-in; System32 `bash.exe` is a WSL launcher, not Git Bash.
-- Write commands in the dialect recorded in the stable environment context. PowerShell 5.1 does not support `&&` or `||`. Capture `$LASTEXITCODE` immediately after a native program and explicitly `exit` with it when reporting that program's result. PowerShell and Bash scripts are not translated into one another.
-- `powershell_unavailable`: the selected shell is absent or its path is invalid. Suggest installing PowerShell 7 or choosing an installed shell in Manage workspace > Runtime shell, then refreshing the environment. Installation, PATH changes and environment selection require the user's decision.
-- A PowerShell 5.1 syntax error can often be corrected using valid 5.1 syntax. Recommend PowerShell 7 when the project requires newer features, rather than recommending an upgrade for every failure.
-- Projects requiring Linux commands, POSIX scripts or a Linux toolchain are candidates for an explicit WSL project environment. Confirm the distribution and project path; do not switch to WSL merely because a Bash command failed.
-- Finding Docker, Git or another command does not establish service readiness. Preserve the original Docker daemon connection error. PowerShell 7 and WSL do not automatically start services.
-- `*_workspace_sandbox_unavailable`: the selected backend is unavailable; inspect `workspaceSandbox.reason` in the stable environment context. Use **Check Windows support / 检查 Windows 支持** in Execution environment settings to run the native LPAC support probe. This checks a real child process and its token; it does not initialize an administrator account or dedicated sandbox user. Linux/WSL2 requires Bubblewrap and namespace support. This is not a syntax failure, and installing PowerShell 7 does not fix it. Preserve the original probe or startup error. If host scope is needed, obtain the existing external/Plan authorization for that scope. Filesystem tools retain their own workspace and Plan boundaries.
+| Symptom | Next check |
+| --- | --- |
+| Command not found | Prepared PATH and selected shell; this is not an inventory of installed software |
+| PowerShell syntax failure | PowerShell 5.1 has no `&&` / `||`; use valid syntax and preserve native `$LASTEXITCODE` |
+| `powershell_unavailable` | Selected executable/path; choose or install a shell only with authorization |
+| Docker connection failure | Socket/access and actual daemon error; changing shells does not start Docker |
+| `*_workspace_sandbox_unavailable` | `workspaceSandbox.reason`; Settings → Execution environment → Check Windows support |
+| Linux/WSL sandbox failure | Bubblewrap and namespace support; WSL1 is not supported |
+| Missing GUI output | Read the matching tool result before concluding nothing executed |
 
-Basic execution facts refresh at a new run boundary; active and restored runs keep their prepared facts. An explicit environment refresh also refreshes Host tool paths. The developer-command list is an observation, not a service health check, and does not contain credentials.
+Automatic native selection prefers PowerShell 7, then Windows PowerShell. Explicit choices do not fall back. Git Bash is opt-in; `System32/bash.exe` is a WSL launcher. For a project requiring Linux, select an explicit WSL distribution and installed Linux Kernel rather than translating commands by guesswork.
 
-For DeepCode product issues, trace tool records, the Session journal and projection to the first incorrect fact. Missing UI output does not prove that a command never ran. A startup error must not produce invented stdout, exit codes or success state. Read the deepcode-session Skill when conversation queries are needed. Do not directly edit session databases, relax Plans, uninstall plugins or reinstall the product as a generic remedy.
+New runs capture configuration; explicit environment refresh updates Host paths. Do not reinstall the product, edit Session databases, relax permissions or switch to Host execution as a generic remedy. See `doc.read` → `execution-environments.md` for configuration.

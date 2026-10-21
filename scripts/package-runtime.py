@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 import zipfile
 
-from macos_signing import sign_app, signing_identity
+from macos_signing import require_same_identity, sign_app, signing_identity
 from computer_use_package import assemble as assemble_computer_use, APP_NAME as COMPUTER_USE_APP
 
 # The GUI Host resolves this name next to DeepCode-GUI.exe.
@@ -193,7 +193,14 @@ PROGRAM_ENTRIES = {
 }
 
 
-def publish(stage, destination, archive, installer=None):
+def publish(stage, destination, archive=None, installer=None):
+    if archive is None:
+        existing_apps = [destination / app.name for app in stage.glob('*.app')
+                         if (destination / app.name).exists()]
+        if existing_apps:
+            identity = signing_identity()
+            for app in existing_apps:
+                require_same_identity(app, identity)
     destination.mkdir(parents=True, exist_ok=True)
     # Windows locks mapped images. Detect this before replacing any entries.
     if destination.name == 'win64':
@@ -206,16 +213,18 @@ def publish(stage, destination, archive, installer=None):
     previous.mkdir()
     published = False
     try:
-        packaged = temporary / archive.name
-        if archive.suffix == '.zip':
-            with zipfile.ZipFile(packaged, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as output:
-                for file in sorted(stage.rglob('*')):
-                    if file.is_file():
-                        output.write(file, str(Path(destination.name) / file.relative_to(stage)))
-        else:
-            with tarfile.open(packaged, 'w:gz', compresslevel=6) as output:
-                output.add(stage, arcname=destination.name)
-        artifacts = [(packaged, archive)]
+        artifacts = []
+        if archive is not None:
+            packaged = temporary / archive.name
+            if archive.suffix == '.zip':
+                with zipfile.ZipFile(packaged, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as output:
+                    for file in sorted(stage.rglob('*')):
+                        if file.is_file():
+                            output.write(file, str(Path(destination.name) / file.relative_to(stage)))
+            else:
+                with tarfile.open(packaged, 'w:gz', compresslevel=6) as output:
+                    output.add(stage, arcname=destination.name)
+            artifacts.append((packaged, archive))
         if installer is not None:
             artifacts.append((installer, destination.parent / installer.name))
         previous_artifacts = temporary / 'artifacts'
@@ -253,7 +262,9 @@ def publish(stage, destination, archive, installer=None):
             shutil.rmtree(temporary)
         else:
             print(f'Original program files retained at {previous}', file=sys.stderr)
-    print(f'Published {destination}\nArchive {archive} ({archive.stat().st_size:,} bytes)')
+    print(f'Published {destination}')
+    if archive is not None:
+        print(f'Archive {archive} ({archive.stat().st_size:,} bytes)')
     if installer is not None:
         print(f'Installer {destination.parent / installer.name}')
 
@@ -271,8 +282,9 @@ def main():
     assembly.add_argument('--platform', required=True)
     assembly.add_argument('--webview-loader', type=Path)
     publication = sub.add_parser('publish')
-    for name in ('stage', 'destination', 'archive'):
+    for name in ('stage', 'destination'):
         publication.add_argument(name, type=Path)
+    publication.add_argument('archive', type=Path, nargs='?')
     publication.add_argument('--installer', type=Path)
     args = parser.parse_args()
     if args.action == 'shared':

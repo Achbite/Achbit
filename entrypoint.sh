@@ -45,7 +45,8 @@ done
 cat <<'TIP'
 [entrypoint] ----------------------------------------------
 [entrypoint]  容器已就绪。常用命令（项目根目录直接调用）：
-[entrypoint]    bash ./build.sh   构建容器支持的平台；macOS 包请从宿主入口调用
+[entrypoint]    bash ./build.sh                  编译并更新本机可运行目录，不生成安装器或压缩包
+[entrypoint]    bash ./build.sh --stage package  打包全部可用平台；macOS 经宿主构建通道执行
 [entrypoint]    bash ./test.sh    运行 required 登记检查
 [entrypoint]    pnpm install （首次或 lockfile 变更时）
 [entrypoint] ----------------------------------------------

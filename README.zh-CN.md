@@ -53,6 +53,8 @@ Windows 和 Linux 跳过签名命令。`main` 为稳定源码，`dev-main` 为�
 
 **在容器内（`/workspace`）执行：**
 
+日常开发使用 `bash ./build.sh`（或 `pnpm build`），编译并更新开发宿主平台在 `bin/` 下的完整可运行目录，包含最新原生程序、Session 代码与 GUI 资源，不生成安装器或压缩包。macOS 构建完成后直接打开 `bin/macos-arm64/DeepCode-GUI.app`。容器使用 `make shell` 传入的宿主平台；Windows/WSL 更新 `bin/win64`，Linux 使用容器架构。全平台分发打包需明确执行 `bash ./build.sh --stage package`（或 `pnpm package`）。单平台分发打包使用下列命令：
+
 | 目标平台 | 命令 | 当前源码目录中的输出 |
 | --- | --- | --- |
 | macOS Apple Silicon | `bash ./build.sh --stage package-macos` | `bin/macos-arm64/` |
@@ -61,7 +63,7 @@ Windows 和 Linux 跳过签名命令。`main` 为稳定源码，`dev-main` 为�
 
 共享 TypeScript、GUI 资源、Linux 程序和 Windows 交叉编译在 Docker 中完成；macOS 原生编译与签名经构建通道交给 Mac 宿主机。打包还会在 `bin/` 生成带版本号的压缩包，并为对应平台生成 macOS PKG 或 Windows Setup。
 
-构建成功后执行 `exit` 退出容器，**回到宿主机**启动程序包：
+构建可运行目录或打包成功后执行 `exit` 退出容器，**回到宿主机**启动程序：
 
 ```bash
 # macOS

@@ -1,32 +1,34 @@
-# Session queries
+# Session query quick reference
 
-Use the complete `sessionId`, such as `session:...`. The default view is `summary`. Items are ordered by event sequence, with the latest page returned first. `revision` is the journal sequence at read time; `sequence`, `eventId` and `recordId` identify evidence.
+Call `session.read` with the complete supplied `sessionId`. Start with `view: summary`; reading does not resume execution. Queries cover the current configuration root only.
 
-| View | Contents | Optional selectors |
+| View | Use | Selectors |
 | --- | --- | --- |
-| summary | Persisted state, last request/reply, Todo, Plan, cumulative usage and recent tools | limit |
-| messages | User, assistant and progress messages | before, limit |
-| tools | Tool inputs, outputs, errors and record IDs | recordId, before, limit |
-| plans | Plan and Todo events | before, limit |
-| context | Input structure and per-request usage | providerRequestId, before, limit |
-| reasoning | Recorded reasoning pages, when available | providerRequestId, offset, limit |
-| images | Archived image references | imageIds, before, limit |
+| `summary` | Persisted run, last messages, Todo/Plan, usage and recent tools | `limit` |
+| `messages` | User/assistant/progress messages | `before`, `limit` |
+| `tools` | Results, rejections and review decisions | `recordId`, `before`, `limit` |
+| `plans` | Plan/Todo events | `before`, `limit` |
+| `context` | Request structure/usage; exact review evidence | `providerRequestId`, `before`, `limit` |
+| `reasoning` | Available recorded reasoning pages | `providerRequestId`, `offset`, `limit` |
+| `images` | Archived image references | `imageIds` or pagination |
+| `resources` | Managed workdir listing or bounded text | Exact returned `resource`, `startLine` / `startByte` |
 
-`before` is an exclusive backward cursor. Pass `nextBefore` to the next read; null means there are no earlier matching events. `limit` ranges from 1 to 50. Text excerpts report `truncated` and their original `totalBytes`. An excerpt is not the complete text and cannot establish that omitted content does not exist. `recordId` is for the tools view; `providerRequestId` selects context or reasoning. Queries cover only the current configuration root.
+Pages return newest matching events first, ordered within a page. Pass the exclusive `nextBefore` cursor for older results; null ends pagination. `limit` is 1–50. Check `truncated` and `totalBytes`; an excerpt is not a complete record. Retain sequence and record/request IDs to narrow follow-up reads rather than repeatedly scanning history.
 
-For images, omit `imageIds` to list references without loading pixels. To inspect earlier pictures in the current conversation, call `session.read` with `view: "images"` and the exact `referenceId` or `artifactId` values needed in `imageIds`. Include all images needed for a visual comparison. The selected pixels enter one successful Agent request, then only their archived references remain; `imageIds: []` releases the current selection. Do not combine `imageIds` with pagination. Image-list pages keep images from the same source message together. Historical references remain readable after their pixels leave the current input.
+For review details, query `context` with the exact `providerRequestId`. Recorded `reviewInput`, decision and resolution are not reconstructed from current code. `contextPrepared: false` means preparation failed before calling the reviewer. Approval does not prove execution; check the linked tool result.
 
-For the current installation, use the `runtimeExecutables.cli` path in the run's execution context when present. Otherwise locate `deepcode-cli` on the prepared PATH and verify the result. Do not guess an application bundle name or treat an absent PATH entry as proof that the CLI is not installed. Reading or executing an installation path still uses the ordinary execution-permission flow.
+For current-session images, list references first, then pass exact returned IDs in `imageIds` to load pixels for one successful request. Include comparison images together; `imageIds: []` releases them. Do not combine image selection with pagination. Arbitrary archived files are not necessarily entries in that image list.
 
-The CLI uses the same read-only interface and returns JSON:
+For managed files, list `resources` and use its exact returned references, not guessed storage paths. Historical evidence does not establish current filesystem/process state.
+
+## CLI alternative
+
+Use a verified installed CLI path from the run context or prepared PATH; do not guess an application bundle.
 
 ```sh
 deepcode-cli read --session 'session:...'
-deepcode-cli read --session 'session:...' --view tools --limit 5
 deepcode-cli read --session 'session:...' --view messages --before 120
 deepcode-cli read --session 'session:...' --view tools --record 'record:...'
 ```
 
-For an independent approval request, `view=context` with its exact `providerRequestId` also returns the recorded bounded `reviewInput`, review decision and execution approval resolution when present. The list view omits review bodies. These are the materials actually sent to the reviewer, not a reconstruction from the current code; older records without a captured input remain without one. Approval resolution is not proof of execution: use the linked call's ToolRecord for its actual outcome.
-
-Input cache hit rate is `cacheReadInputTokens / inputTokens`; output tokens do not belong in the denominator. The context indicator describes the last settled request; the GUI total indicator divides cumulative cached input tokens by cumulative input tokens across this session and all descendant Agent sessions, including closed members and counting each session once across continued tasks. The own-session usage returned by a session query remains a separate scope. Different ratios across scopes are expected. If Provider usage is unavailable, retain the unavailable state instead of treating it as zero.
+`session_not_found` means absent from this configuration root. Ask for the correct ID/export rather than scanning unrelated user data or editing databases. For usage comparisons, distinguish own-session, descendant-inclusive and last-request scopes; missing usage is not zero.

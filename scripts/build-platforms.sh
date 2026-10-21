@@ -31,7 +31,7 @@ check_platform() {
       ;;
     windows)
       require x86_64-w64-mingw32-gcc; require x86_64-w64-mingw32-g++; require x86_64-w64-mingw32-strip
-      [ "${DEEPCODE_BUILD_KIND:-normal}" = debug ] || require makensis
+      if [ "${2:-package}" = package ] && [ "${DEEPCODE_BUILD_KIND:-normal}" != debug ]; then require makensis; fi
       [ -d "$(rustc --print target-libdir --target "$WINDOWS_TARGET")" ] || { printf 'Rust Windows GNU target is not installed.\n' >&2; exit 1; }
       [ -f "${DEEPCODE_WINDOWS_NODE_BIN}" ]
       ;;
@@ -46,18 +46,21 @@ configure_cache() {
 }
 case "${1:-}" in
   --check) check_platform "$2" ;;
-  --shared)
-    destination="$2"
+  --check-runtime) check_platform "$2" runtime ;;
+  --compile-shared|--shared)
     started=$SECONDS
     printf '==[build][shared][START]== dependencies, TypeScript, GUI\n'
     pnpm --store-dir "${PNPM_STORE_DIR}" install --frozen-lockfile
     pnpm build:userspace-shared
     pnpm --filter @deepcode/client typecheck
     pnpm --filter @deepcode/client build:web
-    mkdir -p "$destination"
-    dependencies="$(dirname "$destination")/dependencies.json"
-    pnpm --filter @deepcode/client --filter @deepcode/session-core --filter @deepcode/chrome-devtools-runtime list --prod --depth Infinity --json > "$dependencies"
-    python3 scripts/package-runtime.py shared "$ROOT_DIR" "$destination" "$dependencies"
+    if [ "$1" = --shared ]; then
+      destination="$2"
+      mkdir -p "$destination"
+      dependencies="$(dirname "$destination")/dependencies.json"
+      pnpm --filter @deepcode/client --filter @deepcode/session-core --filter @deepcode/chrome-devtools-runtime list --prod --depth Infinity --json > "$dependencies"
+      python3 scripts/package-runtime.py shared "$ROOT_DIR" "$destination" "$dependencies"
+    fi
     printf '==[build][shared][DONE]== seconds=%s\n' "$((SECONDS - started))"
     ;;
   --computer-use-windows)
@@ -71,6 +74,13 @@ case "${1:-}" in
   --native)
     configure_cache
     case "$2" in
+      code)
+        started=$SECONDS
+        printf '==[build][code][START]== Linux Rust workspace and GUI shell\n'
+        cargo build --release --workspace
+        cargo build --release --manifest-path "$GUI_MANIFEST"
+        printf '==[build][code][DONE]== seconds=%s native=%s/release\n' "$((SECONDS - started))" "$CARGO_TARGET_DIR"
+        ;;
       native-gui) cargo build --release --manifest-path "$GUI_MANIFEST" ;;
       daemon) cargo build --release -p deepcode-kernel-daemon -p deepcode-first-party-tools ;;
       cli) cargo build --release -p deepcode-cli ;;
@@ -78,9 +88,9 @@ case "${1:-}" in
       *) printf 'Unknown native stage: %s\n' "$2" >&2; exit 2 ;;
     esac
     ;;
-  --package)
+  --runtime|--package)
     platform="$2"; shared="$3"; output="$4"
-    check_platform "$platform"
+    check_platform "$platform" "${1#--}"
     configure_cache
     target_args=()
     node="$(command -v node)"
@@ -119,6 +129,10 @@ case "${1:-}" in
     fi
     stage="$(mktemp -d "$(dirname "$shared")/$platform_dir.XXXXXX")"
     python3 scripts/package-runtime.py assemble --root "$ROOT_DIR" --platform "$platform_dir" --stage "$stage" --shared "$shared" --native "$native" --node "$node" --node-license "$node_license" "${loader_args[@]}"
+    if [ "$1" = --runtime ]; then
+      python3 scripts/package-runtime.py publish "$stage" "$output/$platform_dir"
+      exit 0
+    fi
     version="$(node -p 'require("./package.json").version')"
     archive="$output/$product-$version-$platform_dir.tar.gz"
     [ "$platform" != windows ] || archive="$output/$product-$version-$platform_dir.zip"
@@ -130,5 +144,5 @@ case "${1:-}" in
     fi
     python3 scripts/package-runtime.py publish "$stage" "$output/$platform_dir" "$archive" "${installer_args[@]}"
     ;;
-  *) printf 'Internal usage: --check platform | --shared directory | --native stage | --package platform shared output | --computer-use-windows output\n' >&2; exit 2 ;;
+  *) printf 'Internal usage: --check/--check-runtime platform | --compile-shared | --shared directory | --native stage | --runtime/--package platform shared output | --computer-use-windows output\n' >&2; exit 2 ;;
 esac

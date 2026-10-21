@@ -39,15 +39,15 @@ config=json.loads((root/'fixture.json').read_text())
 args=sys.argv[1:]
 mac=Path(__file__).name=='macos-build-bridge.py'
 action=args[0]
-platform='macos' if mac else args[1] if action in ('--check','--package') else None
+platform='macos' if mac else args[1] if action in ('--check','--check-runtime','--runtime','--package') else None
 with (root/'calls.jsonl').open('a') as log:
     log.write(json.dumps({'action':action,'platform':platform})+'\n')
-if action in ('--check','check'):
+if action in ('--check','check','--check-runtime','check-runtime'):
     sys.exit(config.get('check',{}).get(platform,0))
 if action=='--shared':
     target=Path(args[1]);target.mkdir(parents=True)
     (target/'input.txt').write_text(config.get('content','current'))
-elif action in ('--package','package'):
+elif action in ('--runtime','runtime','--package','package'):
     shared=Path(args[args.index('--shared')+1] if mac else args[2])
     output=Path(args[args.index('--output')+1] if mac else args[3])
     status=config.get('build',{}).get(platform,0)
@@ -138,6 +138,102 @@ class SharedResourcesTests(unittest.TestCase):
             self.assertEqual((root / 'debug/dist/debug/entry.js').read_bytes(), b'DEBUG_ONLY')
 
 
+class CodeCompilationTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix='deepcode-code-build-')
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+        for name in ('build.sh', 'scripts/source-identity.sh', 'scripts/build-platforms.sh'):
+            destination = self.root / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, destination)
+        (self.root / 'commands').mkdir()
+        # Only compilers are replaced. The public entrypoint and internal build
+        # script run unchanged, without any packaging scripts in the fixture.
+        compiler = '#!' + sys.executable + '\n' + r'''import json,os,sys
+from pathlib import Path
+root=Path(__file__).resolve().parents[1]
+name=Path(__file__).name
+args=sys.argv[1:]
+with (root/'calls.jsonl').open('a') as log:
+    log.write(json.dumps({'name':name,'args':args})+'\n')
+if os.environ.get('FAIL_COMPILER')==name:
+    sys.exit(47)
+def emit(relative):
+    path=root/relative
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text('compiled')
+if name=='pnpm':
+    if 'install' in args or 'typecheck' in args: pass
+    elif 'build:userspace-shared' in args:
+        for package in ('protocol','presentation-core','session-core'):
+            emit('userspace/'+package+'/dist/index.js')
+    elif 'build:web' in args: emit('userspace/gui/dist-deepcode-gui/index.html')
+    else: sys.exit('Unexpected non-compilation command: '+str(args))
+elif '--manifest-path' in args:
+    emit('target/release/DeepCode-GUI')
+elif '--workspace' in args:
+    for binary in ('deepcode-kernel-daemon','deepcode-first-party-provider','deepcode-host-web','deepcode-cli','deepcode-tui'):
+        emit('target/release/'+binary)
+else: sys.exit('Expected workspace compilation: '+str(args))
+'''
+        for name in ('cargo', 'pnpm'):
+            command = self.root / 'commands' / name
+            command.write_text(compiler)
+            command.chmod(0o755)
+        self.environment = {
+            **os.environ,
+            'PATH': str(self.root / 'commands') + os.pathsep + os.environ['PATH'],
+            'DEEPCODE_BUILD_COMMIT': 'fixture',
+            'DEEPCODE_OUTPUT_DIR': str(self.root / 'bin'),
+            'DEEPCODE_DISABLE_SCCACHE': '1',
+            'CARGO_TARGET_DIR': str(self.root / 'target'),
+            'PNPM_STORE_DIR': str(self.root / 'store'),
+        }
+
+    def build(self, *arguments):
+        return subprocess.run(['bash', str(self.root / 'build.sh'), *arguments],
+                              env=self.environment, text=True, capture_output=True, timeout=20)
+
+    def test_explicit_code_compiles_without_touching_packages(self):
+        write(self.root, 'bin/macos-arm64/running-product', b'existing macOS')
+        write(self.root, 'bin/win64/running-product', b'existing Windows')
+        write(self.root, 'bin/DeepCode-existing.zip', b'existing archive')
+        before = files(self.root / 'bin')
+        for arguments in (['--stage', 'code'],):
+            with self.subTest(arguments=arguments):
+                result = self.build(*arguments)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('packages=0 updated="code"', result.stdout)
+                self.assertEqual(files(self.root / 'bin'), before)
+                self.assertFalse((self.root / '.build-cache/build.lock').exists())
+                for package_name in ('protocol', 'presentation-core', 'session-core'):
+                    self.assertTrue((self.root / f'userspace/{package_name}/dist/index.js').is_file())
+                self.assertTrue((self.root / 'userspace/gui/dist-deepcode-gui/index.html').is_file())
+                for binary in ('deepcode-kernel-daemon', 'deepcode-first-party-provider', 'deepcode-host-web',
+                               'deepcode-cli', 'deepcode-tui', 'DeepCode-GUI'):
+                    self.assertTrue((self.root / 'target/release' / binary).is_file())
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertFalse(any('--target' in call['args'] for call in calls))
+        self.assertFalse(any('list' in call['args'] for call in calls))
+        self.assertTrue(all('--release' in call['args'] for call in calls if call['name'] == 'cargo'))
+
+    def test_compiler_failure_stops_build_and_releases_owned_resources(self):
+        for compiler, stage in (('pnpm', 'shared'), ('cargo', 'code')):
+            with self.subTest(compiler=compiler):
+                self.environment['FAIL_COMPILER'] = compiler
+                (self.root / 'calls.jsonl').unlink(missing_ok=True)
+                result = self.build('--stage', 'code')
+                self.assertEqual(result.returncode, 47, result.stdout + result.stderr)
+                self.assertIn(f'[FAILED]== stage={stage} exit=47', result.stderr)
+                self.assertNotIn('[build][DONE]', result.stdout)
+                self.assertFalse((self.root / 'bin').exists())
+                self.assertEqual(list((self.root / '.build-cache').iterdir()), [])
+                calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+                self.assertEqual(sum(call['name'] == compiler for call in calls), 1)
+                self.assertEqual(calls[-1]['name'], compiler)
+
+
 class BuildTests(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix='deepcode-build-')
@@ -155,6 +251,32 @@ class BuildTests(unittest.TestCase):
         (self.root / 'fixture.json').write_text(json.dumps(config))
         return subprocess.run(['bash', str(self.root / 'build.sh'), *arguments], env=self.environment,
                               text=True, capture_output=True, timeout=20)
+
+    def test_default_updates_only_the_development_host_runtime(self):
+        self.environment.pop('WSL_DISTRO_NAME', None)
+        for host, platform in (('Darwin', 'macos'), ('Windows_NT', 'windows'), ('Linux', 'linux')):
+            self.environment['DEEPCODE_BUILD_HOST_OS'] = host
+            for content in ('first', 'changed'):
+                with self.subTest(host=host, content=content):
+                    (self.root / 'calls.jsonl').write_text('')
+                    result = self.build({'content': content})
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(f'runtimes=1 packages=0 updated="{platform}"', result.stdout)
+                    self.assertEqual((self.root / f'output/{platform}.txt').read_text(), content)
+                    calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+                    self.assertEqual([call['platform'] for call in calls if call['platform']], [platform, platform])
+                    self.assertEqual(sum(call['action'] == '--shared' for call in calls), 1)
+                    self.assertTrue(any(call['action'] in ('runtime', '--runtime') for call in calls))
+                    self.assertFalse(any(call['action'] in ('package', '--package') for call in calls))
+                    self.assertFalse((self.root / '.build-cache/build.lock').exists())
+
+    def test_default_macos_runtime_does_not_fall_back_when_host_is_unavailable(self):
+        self.environment['DEEPCODE_BUILD_HOST_OS'] = 'Darwin'
+        result = self.build({'check': {'macos': 3}})
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls, [{'action': 'check-runtime', 'platform': 'macos'}])
+        self.assertFalse((self.root / 'output').exists())
 
     def test_debug_uses_available_windows_and_macos_and_preserves_normal_outputs(self):
         self.environment.pop('DEEPCODE_OUTPUT_DIR')
@@ -202,18 +324,28 @@ class BuildTests(unittest.TestCase):
             self.assertFalse((self.root / '.build-cache/build.lock').exists())
 
     def test_absent_platforms_and_host_failures_remain_distinct(self):
-        result = self.build({'check': {'macos': 3}})
+        result = self.build({'check': {'macos': 3}}, '--stage', 'package')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root / 'output/linux.txt').exists())
         self.assertFalse((self.root / 'output/macos.txt').exists())
         for config, arguments in [
-            ({'check': {'linux': 1, 'windows': 1, 'macos': 3}}, []),
+            ({'check': {'linux': 1, 'windows': 1, 'macos': 3}}, ['--stage', 'package']),
             ({'check': {'windows': 1}}, ['--stage', 'package-windows']),
-            ({'check': {'macos': 1}}, []),
+            ({'check': {'macos': 1}}, ['--stage', 'package']),
             ({'build': {'linux': 7}}, ['--stage', 'package-linux']),
         ]:
             with self.subTest(config=config):
                 self.assertNotEqual(self.build(config, *arguments).returncode, 0)
+
+    def test_explicit_full_package_prepares_shared_resources_once_for_all_platforms(self):
+        result = self.build({'content': 'current'}, '--stage', 'package')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('packages=3 updated="linux windows macos"', result.stdout)
+        for platform in ('linux', 'windows', 'macos'):
+            self.assertEqual((self.root / f'output/{platform}.txt').read_text(), 'current')
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(sum(call['action'] == '--shared' for call in calls), 1)
+        self.assertFalse(any(call['action'] in ('--compile-shared', '--native') for call in calls))
 
     def test_cancellation_releases_staging_only_after_host_acknowledges(self):
         result = self.build({'build': {'macos': 130}}, '--stage', 'package-macos')
@@ -297,11 +429,11 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
             packages = ['-p', 'deepcode-kernel-daemon', '-p', 'deepcode-first-party-tools',
                         '-p', 'deepcode-host-web', '-p', 'deepcode-cli', '-p', 'deepcode-tui',
                         '-p', 'deepcode-computer-use']
-            for kind in ('normal', 'debug'):
-                with self.subTest(kind=kind):
+            for kind, options in (('normal', []), ('debug', []), ('normal', ['--runtime'])):
+                with self.subTest(kind=kind, options=options):
                     (root / 'calls.jsonl').write_text('')
                     result = subprocess.run(
-                        ['/bin/bash', str(root / 'scripts/package-macos.sh'),
+                        ['/bin/bash', str(root / 'scripts/package-macos.sh'), *options,
                          str(root / 'shared'), str(root / 'output')],
                         cwd=root, env={**environment, 'DEEPCODE_BUILD_KIND': kind},
                         text=True, capture_output=True, timeout=20,
@@ -319,9 +451,48 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
                     config = {'productName': 'DeepCode-Debug', 'identifier': 'com.achbite.deepcode.debug'} if kind == 'debug' else None
                     self.assertEqual([json.loads(call['tauriConfig']) if call['tauriConfig'] else None
                                       for call in cargo], [config, config])
+                    publication = [call for call in calls if call['name'] == 'package-runtime.py' and call['argv'][0] == 'publish']
+                    self.assertEqual(len(publication), 1)
+                    if options:
+                        self.assertEqual(len(publication[0]['argv']), 3)
+                        self.assertFalse(any(call['name'] == 'package-installers.py' for call in calls))
+                    else:
+                        self.assertGreaterEqual(len(publication[0]['argv']), 4)
 
 
 class BridgeCleanupTests(unittest.TestCase):
+    def test_runtime_request_transfers_current_resources_and_completes_its_transaction(self):
+        with tempfile.TemporaryDirectory(prefix='deepcode-runtime-request-') as directory:
+            root = Path(directory).resolve()
+            shared = root / 'transaction/shared'
+            shared.mkdir(parents=True)
+            channel = root / 'bridge'
+            channel.mkdir()
+            worker = channel / 'worker.json'
+            worker.write_text(json.dumps({'workerId': 'owned-worker'}))
+            captured = []
+            write_json = bridge.write_json
+
+            def accept_request(path, value):
+                write_json(path, value)
+                if path.name == 'request.json':
+                    captured.append(value)
+                    self.assertEqual((shared.parent / 'macos-request').read_text(), path.parent.name)
+                    bridge.finish(path.parent, value, 0)
+
+            with patch.object(bridge, 'ROOT', root), patch.object(bridge, 'BRIDGE', channel), \
+                    patch.object(bridge, 'WORKER', worker), \
+                    patch.object(bridge, 'write_json', side_effect=accept_request), \
+                    patch.dict(os.environ, {'DEEPCODE_BUILD_COMMIT': 'current-source', 'DEEPCODE_BUILD_TIME': 'current-time'}):
+                self.assertEqual(bridge.request_host('runtime', shared, root / 'bin'), 0)
+            request, = captured
+            self.assertEqual(request['operation'], 'runtime')
+            self.assertEqual(request['shared'], 'transaction/shared')
+            self.assertEqual(request['output'], 'bin')
+            self.assertEqual(request['commit'], 'current-source')
+            self.assertEqual(request['builtAt'], 'current-time')
+            self.assertFalse((shared.parent / 'macos-request').exists())
+
     def test_request_forwards_explicit_signing_selection(self):
         with tempfile.TemporaryDirectory(prefix='deepcode-signing-request-') as directory:
             root = Path(directory)
@@ -549,6 +720,43 @@ class PublicationTests(unittest.TestCase):
         write(self.destination, 'deepcode-cli', b'previous CLI')
         write(self.destination, 'config/settings.json', b'user settings')
         write(self.destination, 'runtime/session.sqlite3', b'user history')
+
+    def test_runtime_update_preserves_user_data_and_existing_distribution_archive(self):
+        expected = files(self.stage)
+        self.archive.write_bytes(b'last distribution')
+        package.publish(self.stage, self.destination)
+        for name, data in expected.items():
+            self.assertEqual((self.destination / name).read_bytes(), data)
+        self.assertFalse((self.destination / 'web').exists())
+        self.assertFalse((self.destination / 'web-deepcode-gui/assets/obsolete.js').exists())
+        self.assertEqual((self.destination / 'config/settings.json').read_bytes(), b'user settings')
+        self.assertEqual((self.destination / 'runtime/session.sqlite3').read_bytes(), b'user history')
+        self.assertEqual(self.archive.read_bytes(), b'last distribution')
+        self.assertEqual({path.name for path in self.root.iterdir()}, {'stage', 'portable', 'runtime.tar.gz'})
+
+    def test_failed_runtime_update_restores_previous_complete_runtime(self):
+        before = files(self.destination)
+        rename = Path.rename
+        def fail_install(path, target):
+            if path == self.stage / 'deepcode-cli':
+                raise OSError('destination busy')
+            return rename(path, target)
+        with patch.object(Path, 'rename', fail_install):
+            with self.assertRaisesRegex(OSError, 'destination busy'):
+                package.publish(self.stage, self.destination)
+        self.assertEqual(files(self.destination), before)
+        self.assertFalse(self.archive.exists())
+
+    def test_daily_app_update_rejects_a_different_signer_before_replacement(self):
+        write(self.stage, 'DeepCode-GUI.app/Contents/MacOS/DeepCode-GUI', b'current GUI')
+        write(self.destination, 'DeepCode-GUI.app/Contents/MacOS/DeepCode-GUI', b'existing GUI')
+        before = files(self.destination)
+        with patch.object(package, 'signing_identity', return_value='selected-identity'), \
+                patch.object(package, 'require_same_identity', side_effect=ValueError('different signing identity')) as same:
+            with self.assertRaisesRegex(ValueError, 'different signing identity'):
+                package.publish(self.stage, self.destination)
+        same.assert_called_once_with(self.destination / 'DeepCode-GUI.app', 'selected-identity')
+        self.assertEqual(files(self.destination), before)
 
     def test_complete_publication_removes_obsolete_programs_and_archives_only_programs(self):
         expected = files(self.stage)
