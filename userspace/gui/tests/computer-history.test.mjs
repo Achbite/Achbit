@@ -7,7 +7,7 @@ import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJ
 import { createSession, readEvents, workspaceBinding } from '../../session-core/tests/local-agent-fixtures.mjs';
 import { decodeGuiProjection, installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
 
-test('computer history lists each operation collapsed and reveals only its archived evidence with accurate feedback', async t => {
+test('computer history uses the shared tool group and reveals only selected archived evidence with accurate feedback', async t => {
   const [{ ComputerActivity, computerInterfaceText, computerActivitySummary }, { readConversationArtifact }, { ToolActivityGroup }, { ConversationVirtualRow }, { projectionItems }, { AgentConversationHistory }] = await loadGuiModules(t, [
     '/src/components/local-agent/ComputerActivity.tsx', '/src/services/localAgentApi.ts', '/src/components/local-agent/ToolActivityDetails.tsx',
     '/src/components/local-agent/ConversationVirtualRow.tsx',
@@ -63,11 +63,16 @@ test('computer history lists each operation collapsed and reveals only its archi
     activities: items[0].values, artifacts: [artifact, savedArtifact],
     language, onExpand() {}, onOpenWorkspaceResource() {},
   }));
+  const folded = renderGroup();
+  assert.match(folded, /local-agent__tool-group-summary/,
+    'computer operations share the enclosing disclosure with ordinary tools and approvals');
+  assert.equal((folded.match(/aria-expanded="false"/g) ?? []).length, 1);
+  assert.doesNotMatch(folded, /Open · Draft|Observe · Draft|Press · Save draft|Used tool plugin.status|Accepted|<dialog|<pre/);
+  layout.state.set('tool-group:expanded', true);
   const group = renderGroup();
-  assert.doesNotMatch(group, /local-agent__tool-group-summary|Used \d+ tools/,
-    'computer operations have no enclosing tool-count disclosure');
+  assert.match(group, /local-agent__tool-group-summary/);
   assert.equal((group.match(/aria-expanded="false"/g) ?? []).length, 5,
-    'all three computer operations, the ordinary tool and the approval are individually visible and collapsed');
+    'after expanding the group, all three computer operations, the ordinary tool and the approval remain ordered with their own details collapsed');
   assert.ok(group.indexOf('Open · Draft') < group.indexOf('Used tool plugin.status'));
   assert.ok(group.indexOf('Used tool plugin.status') < group.indexOf('Observe · Draft'));
   assert.ok(group.indexOf('Observe · Draft') < group.indexOf('Accepted'));

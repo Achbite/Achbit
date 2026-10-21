@@ -1073,6 +1073,32 @@ async fn control_preview(
     }
 }
 
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewRegion {
+    content_kind: String,
+    rect: Option<[f64; 4]>,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+async fn preview_region(view: tauri::Webview) -> Result<PreviewRegion, String> {
+    let value = eval(view, include_str!("preview_region.js").into()).await?;
+    let region: PreviewRegion = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    if let Some([x, y, width, height]) = region.rect {
+        if region.content_kind != "image"
+            || ![x, y, width, height].iter().all(|value| value.is_finite())
+            || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0
+            || x + width > 1.000001 || y + height > 1.000001
+        {
+            return Err("native_browser_preview_region_invalid".into());
+        }
+    } else if region.content_kind != "viewport" {
+        return Err("native_browser_preview_region_invalid".into());
+    }
+    Ok(region)
+}
+
 #[cfg(target_os = "macos")]
 async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
     use objc2_foundation::{NSData, NSDataBase64EncodingOptions};
@@ -1084,8 +1110,12 @@ async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
     if size.width == 0 || size.height == 0 {
         return Err("native_browser_preview_empty_bounds".into());
     }
-    let width = 720.0 * f64::from(size.width) / f64::from(size.width.max(size.height)) / scale;
-    let capture = capture_macos(view, Some(width)).await?;
+    let region = preview_region(view.clone()).await?;
+    let [x, y, w, h] = region.rect.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    let rect = [x * f64::from(size.width) / scale, y * f64::from(size.height) / scale,
+        w * f64::from(size.width) / scale, h * f64::from(size.height) / scale];
+    let width = 720.0 * rect[2] / rect[2].max(rect[3]) / scale;
+    let capture = capture_macos(view, Some(width), region.rect.map(|_| rect)).await?;
     if capture.width > 722 || capture.height > 722 || capture.bytes.len() > 1_048_576 {
         return Err("native_browser_preview_frame_too_large".into());
     }
@@ -1097,16 +1127,18 @@ async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
         .as_millis();
     Ok(
         json!({"sequence":PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed),"capturedAt":stamp.to_string(),
-        "width":capture.width,"height":capture.height,"dataUrl":format!("data:image/jpeg;base64,{encoded}")}),
+        "width":capture.width,"height":capture.height,"contentKind":region.content_kind,"dataUrl":format!("data:image/jpeg;base64,{encoded}")}),
     )
 }
 
 #[cfg(windows)]
 async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
     use base64::Engine;
+    let region = preview_region(view.clone()).await?;
     let capture = capture(view).await?;
+    let rect = region.rect;
     let (bytes, width, height) =
-        tauri::async_runtime::spawn_blocking(move || preview_image::jpeg(&capture.bytes))
+        tauri::async_runtime::spawn_blocking(move || preview_image::jpeg_region(&capture.bytes, rect))
             .await
             .map_err(|error| error.to_string())??;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -1116,7 +1148,7 @@ async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
         .as_millis();
     Ok(
         json!({"sequence":PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed),"capturedAt":stamp.to_string(),
-        "width":width,"height":height,"dataUrl":format!("data:image/jpeg;base64,{encoded}")}),
+        "width":width,"height":height,"contentKind":region.content_kind,"dataUrl":format!("data:image/jpeg;base64,{encoded}")}),
     )
 }
 
@@ -1127,17 +1159,18 @@ async fn capture_preview(_view: tauri::Webview) -> Result<Value, String> {
 
 #[cfg(target_os = "macos")]
 async fn capture(view: tauri::Webview) -> Result<Capture, String> {
-    capture_macos(view, None).await
+    capture_macos(view, None, None).await
 }
 
 #[cfg(target_os = "macos")]
 async fn capture_macos(
     view: tauri::Webview,
     snapshot_width: Option<f64>,
+    rect: Option<[f64; 4]>,
 ) -> Result<Capture, String> {
     use objc2::{AnyThread, MainThreadOnly};
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_foundation::{NSDictionary, NSError, NSNumber, NSPoint, NSRect, NSSize};
     use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
@@ -1174,6 +1207,9 @@ async fn capture_macos(
             let _ = tx.send(outcome);
         });
         let configuration = WKSnapshotConfiguration::new(webview.mtm());
+        if let Some([x, y, width, height]) = rect {
+            configuration.setRect(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)));
+        }
         if let Some(width) = snapshot_width {
             configuration.setSnapshotWidth(Some(&NSNumber::new_f64(width)));
             configuration.setAfterScreenUpdates(false);

@@ -3,7 +3,7 @@ import type { ConversationReaderLayout } from '../../components/local-agent/Loca
 import type { UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { hasNativeBrowser, nativeBrowserCommand, nativeHostBinding, type NativeHostBinding } from '../../services/nativeBrowser';
-import { acceptPreview, activateDesktopPreview, computerPreviewSources, constrainPreviewPosition, previewPlacement, previewRailElements, readDesktopPreview, targetIdentity,
+import { acceptPreview, activateDesktopPreview, computerPreviewSources, constrainPreviewPosition, previewPlacement, previewFrameConstraints, previewRailElements, readDesktopPreview, targetIdentity,
   type BrowserPreviewTarget, type ComputerPreview, type DesktopPreviewTarget } from '../../services/computerPreview';
 import './computerTargetPreview.css';
 
@@ -115,12 +115,15 @@ function FloatingComputerPreview({ view, sessionId, runId, language, readerLayou
       const viewport = { width: window.innerWidth, height: window.innerHeight };
       const composerTop = composer?.getBoundingClientRect().top ?? window.innerHeight;
       let position = previewPlacement(conversation.getBoundingClientRect(), railRect?.width ? railRect : null, cardsBottom, viewport, composerTop, index);
+      const frameBounds = previewFrameConstraints(view.frame, position.width, position.maxHeight);
+      position = { ...position, ...frameBounds };
       if (manualPosition.current) {
         const bounds = (readerLayout.visible ? conversation : shell).getBoundingClientRect();
-        const available = constrainPreviewPosition(manualPosition.current, { width: 240, height: 0 }, bounds, viewport, composerTop);
+        const available = constrainPreviewPosition(manualPosition.current, { width: frameBounds.width, height: 0 }, bounds, viewport, composerTop);
         element.style.width = `${available.width}px`;
-        element.style.maxHeight = `${available.maxHeight}px`;
+        element.style.maxHeight = `${Math.min(available.maxHeight, frameBounds.maxHeight)}px`;
         position = constrainPreviewPosition(manualPosition.current, element.getBoundingClientRect(), bounds, viewport, composerTop);
+        position.maxHeight = Math.min(position.maxHeight, frameBounds.maxHeight);
       }
       Object.assign(element.style, { left: `${position.left}px`, top: `${position.top}px`, width: `${position.width}px`, maxHeight: `${position.maxHeight}px`, visibility: position.maxHeight < 64 ? 'hidden' : '' });
     };
@@ -142,7 +145,7 @@ function FloatingComputerPreview({ view, sessionId, runId, language, readerLayou
       alignPreview.current = null;
       observer.disconnect(); mutation.disconnect(); window.removeEventListener('resize', align); rail?.removeEventListener('scroll', align);
     };
-  }, [readerLayout.visible, readerLayout.expanded, readerLayout.conversationBounds, concealed, index, overlay]);
+  }, [readerLayout.visible, readerLayout.expanded, readerLayout.conversationBounds, concealed, index, overlay, view.frame?.width, view.frame?.height, view.frame?.contentKind]);
 
   async function activate() {
     const target = view.target;

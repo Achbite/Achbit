@@ -2,14 +2,32 @@
 use image::{codecs::jpeg::JpegEncoder, ImageFormat, ImageReader, Limits};
 use std::io::Cursor;
 
+#[cfg(test)]
 pub fn jpeg(png: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    jpeg_region(png, None)
+}
+
+pub fn jpeg_region(png: &[u8], region: Option<[f64; 4]>) -> Result<(Vec<u8>, u32, u32), String> {
     let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
     let mut limits = Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode().map_err(|error| error.to_string())?;
+    let mut image = reader.decode().map_err(|error| error.to_string())?;
+    if let Some([x, y, width, height]) = region {
+        if ![x, y, width, height].iter().all(|value| value.is_finite())
+            || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0
+            || x + width > 1.000001 || y + height > 1.000001 {
+            return Err("native_browser_preview_region_invalid".into());
+        }
+        let left = (x * f64::from(image.width())).floor() as u32;
+        let top = (y * f64::from(image.height())).floor() as u32;
+        let right = ((x + width) * f64::from(image.width())).ceil().min(f64::from(image.width())) as u32;
+        let bottom = ((y + height) * f64::from(image.height())).ceil().min(f64::from(image.height())) as u32;
+        if right <= left || bottom <= top { return Err("native_browser_preview_empty_bounds".into()); }
+        image = image.crop_imm(left, top, right - left, bottom - top);
+    }
     let image = image
         .thumbnail(image.width().min(720), image.height().min(720))
         .to_rgb8();
