@@ -140,6 +140,7 @@ pub struct TuiApp {
     context_open: bool,
     tasks_open: bool,
     detail_preview: Option<String>,
+    tool_detail: Option<(String, String)>,
     reasoning_enabled: bool,
     detail_scroll: Cell<u16>,
     detail_scroll_max: Cell<u16>,
@@ -178,6 +179,7 @@ impl TuiApp {
             context_open: false,
             tasks_open: false,
             detail_preview: None,
+            tool_detail: None,
             reasoning_enabled: false,
             detail_scroll: Cell::new(0),
             detail_scroll_max: Cell::new(0),
@@ -276,6 +278,7 @@ impl TuiApp {
             return true;
         }
         self.record_command(input);
+        self.tool_detail = None;
         self.transcript_scroll.set(None);
         match input {
             "/quit" | "/exit" => return false,
@@ -425,10 +428,15 @@ impl TuiApp {
                 self.tasks_open = false;
                 self.resource_preview = None;
                 self.detail_scroll.set(0);
+                let activity = value.trim_start_matches("/tool ").trim();
+                self.tool_detail = self
+                    .projection
+                    .as_ref()
+                    .map(|projection| (projection.session_id.clone(), activity.to_owned()));
                 self.detail_preview = Some(crate::renderer::tool_details(
                     self.host.language,
                     self.projection.as_ref(),
-                    value.trim_start_matches("/tool ").trim(),
+                    activity,
                 ));
             }
             "/cancel-plan" => self.cancel_plan().await,
@@ -1480,8 +1488,22 @@ impl TuiApp {
     pub fn initialized(&self) -> bool {
         self.initialized
     }
-    pub fn detail_preview(&self) -> Option<&str> {
-        self.detail_preview.as_deref()
+    pub fn detail_preview(&self) -> Option<std::borrow::Cow<'_, str>> {
+        let text = self.detail_preview.as_deref()?;
+        if let Some((session, activity)) = &self.tool_detail {
+            if self
+                .projection
+                .as_ref()
+                .is_some_and(|projection| &projection.session_id == session)
+            {
+                return Some(std::borrow::Cow::Owned(crate::renderer::tool_details(
+                    self.host.language,
+                    self.projection.as_ref(),
+                    activity,
+                )));
+            }
+        }
+        Some(std::borrow::Cow::Borrowed(text))
     }
 
     pub fn reasoning_enabled(&self) -> bool {
@@ -2067,6 +2089,37 @@ mod input_tests {
                 plugin_uris: vec![],
             },
         )
+    }
+
+    #[tokio::test]
+    async fn open_tool_details_follow_live_output_without_a_new_revision() {
+        let mut app = test_app();
+        let mut projection = waiting_projection("pendingPlan", serde_json::Value::Null);
+        projection.activities.push(serde_json::from_value(serde_json::json!({
+            "activityId":"tool:live", "kind":"tool", "status":"active", "label":"bash",
+            "runId":"run:test", "callId":"call:live", "sequence":1,
+            "liveOutput":{"stdout":"first", "stderr":"", "stdoutBytes":5,"stderrBytes":0,"truncated":false}
+        })).unwrap());
+        app.projection = Some(projection);
+        app.submit_line("/tool tool:live").await;
+        assert!(app.detail_preview().unwrap().contains("first"));
+        let current = app.projection.as_mut().unwrap();
+        let revision = current.revision;
+        current
+            .activities
+            .last_mut()
+            .unwrap()
+            .live_output
+            .as_mut()
+            .unwrap()
+            .stdout = "second".into();
+        assert!(app.detail_preview().unwrap().contains("second"));
+        assert_eq!(app.projection.as_ref().unwrap().revision, revision);
+        app.submit_line("/help").await;
+        assert!(app.detail_preview().unwrap().contains("DeepCode 命令"));
+        assert!(!app.detail_preview().unwrap().contains("second"));
+        app.submit_line("/close").await;
+        assert!(app.detail_preview().is_none());
     }
 
     #[tokio::test]
