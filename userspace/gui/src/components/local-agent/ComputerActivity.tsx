@@ -99,7 +99,7 @@ export function ComputerActivity({ activity, computer, artifacts, language, stat
       {computer.result && <div className="computer-activity__details">
         <span>{t(language, 'agent.computer.result')}</span><pre>{JSON.stringify(computer.result, null, 2)}</pre>
       </div>}
-      <FileChanges activities={[activity]} compact />
+      <FileChanges activities={[activity]} inlineDiff />
       <details className="computer-activity__parameters" onToggle={onExpand}>
         <summary>{t(language, 'agent.computer.parameters')}</summary>
         {computer.inputObservation && computer.inputObservation.artifactIds.length > 0 && <ObservationImages

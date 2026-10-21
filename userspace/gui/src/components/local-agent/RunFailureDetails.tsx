@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import type { LocalAgentError, ProviderAttemptFact, SessionProjection } from '@deepcode/protocol';
+import type { LocalAgentError, ProviderActivityProjection, ProviderAttemptFact, SessionProjection } from '@deepcode/protocol';
 import type { UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
+import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
 
 function ErrorDetails({ error, language }: { error: LocalAgentError; language: UiLanguage }) {
   const d = error.diagnostics;
@@ -21,12 +22,21 @@ function ErrorDetails({ error, language }: { error: LocalAgentError; language: U
   </details>;
 }
 
-export function ProviderRetryStatus({ projection, language }: { projection: SessionProjection; language: UiLanguage }) {
+export function providerRetryAttempt(projection: SessionProjection, activity?: ProviderActivityProjection) {
   const attempt = projection.providerAttempts?.at(-1);
-  if (projection.run?.status !== 'running' || attempt?.phase !== 'retryWaiting') return null;
+  if (projection.run?.status !== 'running' || !attempt) return null;
+  if (attempt.phase === 'retryWaiting') return attempt.attempt + 1;
+  if (attempt.phase === 'started' && attempt.attempt > 1 && (!activity || activity.phase === 'waitingResponse')) return attempt.attempt;
+  return null;
+}
+
+export function ProviderRetryStatus({ projection, language, activity }: {
+  projection: SessionProjection; language: UiLanguage; activity?: ProviderActivityProjection;
+}) {
+  const attempt = providerRetryAttempt(projection, activity);
+  if (attempt === null) return null;
   return <aside className="local-agent__retry-status" role="status">
-    <p>{providerPurposeLabel(attempt.purpose, language)} · {language === 'zh-CN' ? `正在等待同一请求的第 ${attempt.attempt + 1} 次发送。` : `Waiting for send ${attempt.attempt + 1} of this request.`}</p>
-    {attempt.error && <ErrorDetails error={attempt.error} language={language} />}
+    <p><DeepCodeShellIcon name="network" size={16} />{language === 'zh-CN' ? `正在重新连接 ${attempt}/5` : `Reconnecting ${attempt}/5`}</p>
   </aside>;
 }
 

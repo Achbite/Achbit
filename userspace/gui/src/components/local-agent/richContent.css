@@ -107,7 +107,7 @@
 .conversation-process-toggle[aria-expanded='false'] > .conversation-disclosure-chevron { transform: rotate(-90deg); }
 .conversation-process > summary > .conversation-disclosure-chevron, .conversation-changes-heading > .conversation-disclosure-chevron, .conversation-change-more > .conversation-disclosure-chevron { width: 12px; height: 12px; }
 details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-changes:not(.is-expanded) > button > .conversation-disclosure-chevron, .conversation-change-more[aria-expanded='false'] > .conversation-disclosure-chevron { transform: rotate(-90deg); }
-.conversation-reasoning-body { max-height: min(340px, 45vh); overflow: auto; overscroll-behavior: contain; padding: 8px 0 8px 24px; margin: 4px 0 12px; color: var(--dc-muted); font-size: var(--dc-font-body); line-height: var(--dc-line-reading); }
+.conversation-reasoning-body { max-height: min(340px, 45vh); overflow: auto; overscroll-behavior-x: contain; padding: 8px 0 8px 24px; margin: 4px 0 12px; color: var(--dc-muted); font-size: var(--dc-font-body); line-height: var(--dc-line-reading); }
 .conversation-reasoning-body pre { font: inherit; margin: 8px 0; }
 .conversation-reasoning-body > small { display: block; }
 .conversation-reasoning-body button { margin: 8px 8px 0 0; }
@@ -137,7 +137,24 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-changes--compact .conversation-changes-heading > svg { width: 15px; height: 15px; }
 .conversation-changes--compact .conversation-change-list { display: none; position: absolute; left: 0; top: 100%; z-index: 12; width: min(440px, 65vw); max-height: 240px; overflow: auto; padding: 6px; background: var(--dc-surface); border: 1px solid var(--dc-border); border-radius: 10px; box-shadow: 0 6px 20px color-mix(in srgb, var(--dc-shadow-color) 13.33%, transparent); }
 .conversation-changes--compact:hover .conversation-change-list, .conversation-changes--compact:focus-within .conversation-change-list, .conversation-changes--compact.is-expanded .conversation-change-list { display: block; }
-.local-agent__tool-entry-details .conversation-changes--compact .conversation-change-list { position: static; max-width: 100%; }
+.conversation-changes--inline { margin: 4px 0 8px; }
+.local-agent__tool-entry-details.local-agent__tool-entry-details--file { max-height: none; overflow: visible; }
+.conversation-changes--inline .conversation-change-list { padding: 0; }
+.conversation-changes--inline .conversation-change-row { min-width: 0; margin-bottom: 8px; overflow: hidden; border: 1px solid var(--dc-border); border-radius: 8px; }
+.local-agent .conversation-changes--inline .conversation-change-file { padding: 8px 12px; border-radius: 0; background: var(--dc-surface-subtle); }
+.conversation-changes--inline .conversation-change-file > span:first-child { color: var(--dc-accent); text-decoration: underline; text-underline-offset: 3px; }
+.conversation-inline-code { max-height: min(280px, 36vh); overflow: auto; font-family: var(--dc-font-code); font-size: var(--dc-font-code-size); line-height: 1.6; -webkit-user-select: text; user-select: text; }
+.conversation-inline-line { display: flex; min-width: max-content; }
+.local-agent .conversation-inline-line code { padding-right: 12px; font: inherit; white-space: pre; }
+.conversation-inline-number { flex: 0 0 4ch; padding: 0 8px; color: var(--dc-muted); text-align: right; user-select: none; }
+.conversation-inline-line.is-added { background: color-mix(in srgb, var(--dc-success) 12%, transparent); }
+.conversation-inline-line.is-removed { background: color-mix(in srgb, var(--dc-danger) 12%, transparent); }
+.conversation-inline-hunk { padding: 2px 12px; color: var(--dc-muted); background: var(--dc-surface-subtle); }
+.conversation-inline-notice { margin: 0; padding: 8px 12px; color: var(--dc-muted); font-size: 12px; overflow-wrap: anywhere; }
+.local-agent__tool-file-heading { display: flex; align-items: center; min-width: 0; }
+.local-agent .local-agent__tool-file-heading > .local-agent__tool-file-link { flex: 0 1 auto; min-width: 0; }
+.local-agent__tool-file-link strong > span { color: var(--dc-foreground); text-decoration: underline; text-underline-offset: 3px; }
+.local-agent .local-agent__tool-file-heading > button[aria-expanded] { flex: none; }
 .conversation-diff-editor { flex: 1; min-height: 0; }
 
 /* A fixed composer slot owns the live capsule; transcript growth cannot move it. */

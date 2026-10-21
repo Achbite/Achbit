@@ -1,5 +1,7 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import React, { useEffect, useState } from 'react';
+import { isPendingShell, shellCommandPreview, shellOutputTail } from './shellProgress';
+import './shellProgress.css';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@deepcode/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
@@ -7,6 +9,10 @@ import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { ApprovalActivity } from './ApprovalActivity';
 import { AgentGroupSummary } from './agentNavigation';
 import { FileChanges } from './FileChanges';
+import { FileReadPreview } from './FileReadPreview';
+import { changedFiles } from './fileChangeSummary';
+import { useConversationSessionId } from './ConversationSessionScope';
+import { requestReader } from './readerState';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { ComputerActivity, computerActivitySummary } from './ComputerActivity';
 
@@ -22,14 +28,14 @@ interface ToolActivityGroupProps {
   reviewingApproval?: boolean;
   activities: ActivityProjection[];
   language: UiLanguage;
-  onExpand(): void;
+  onExpand(node?: HTMLElement): void;
   onOpenWorkspaceResource(workspaceId: string, logicalPath: string): void;
 }
 
 interface ProviderHostedDraftGroupProps {
   blocks: Array<Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>>;
   language: UiLanguage;
-  onExpand(): void;
+  onExpand(node?: HTMLElement): void;
 }
 
 export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> = ({
@@ -45,8 +51,9 @@ export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> =
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
-        onClick={() => {
-          if (!expanded) onExpand();
+        data-conversation-disclosure={`hosted-group:${blocks[0]?.providerCallId}`}
+        onClick={(event) => {
+          onExpand(event.currentTarget);
           setExpanded((current) => !current);
         }}
       >
@@ -82,18 +89,18 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   onExpand,
   onOpenWorkspaceResource,
 }) => {
-  const [expansion, setExpanded] = useConversationRowState('tool-group:expanded', false);
+  const [expanded, setExpanded] = useConversationRowState('tool-group:expanded', false);
   const tools = activities.filter(activity => !activity.agent);
-  const individual = tools.some(activity => Boolean(activity.tool?.computer));
-  const expanded = individual || expansion;
+  const runningShells = tools.filter(isPendingShell).slice(-3);
   return (
     <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><article className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <div className="local-agent__tool-group-heading">{tools.length > 0 && !individual && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
+      <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
-        onClick={() => {
-          if (!expanded) onExpand();
+        data-conversation-disclosure={`tool-group:${activities[0]?.activityId}`}
+        onClick={(event) => {
+          onExpand(event.currentTarget);
           setExpanded(!expanded);
         }}
       >
@@ -109,8 +116,13 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
           <DeepCodeShellIcon name="chevronRight" />
         </span>
       </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
+      {!expanded && runningShells.length > 0 && <div className="local-agent__shell-progress-window">
+        {runningShells.map(activity => <ToolActivityEntry key={activity.activityId} activity={activity}
+          artifacts={artifacts} language={language} onExpand={onExpand}
+          onOpenWorkspaceResource={onOpenWorkspaceResource} />)}
+      </div>}
       {expanded && tools.length > 0 && (
-        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className={`local-agent__tool-group-items${individual ? ' local-agent__tool-group-items--individual' : ''}`}>
+        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
           {tools.map((activity) => (
             activity.kind === 'approval' ? <ApprovalActivity key={activity.activityId} activity={activity} language={language}
               pending={pendingApproval?.callId === activity.callId} reviewing={reviewingApproval} onExpand={onExpand} />
@@ -133,7 +145,7 @@ interface ProviderHostedEntryProps {
   hosted: ProviderHostedActivityProjection;
   status: ActivityProjection['status'];
   language: UiLanguage;
-  onExpand(): void;
+  onExpand(node?: HTMLElement): void;
 }
 
 const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, status, language, onExpand }) => {
@@ -148,8 +160,8 @@ const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, statu
   };
   return (
     <div className={`local-agent__tool-entry local-agent__tool-entry--${status}`}>
-      <button type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded} onClick={() => {
-        if (!expanded) onExpand();
+      <button type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`hosted:${hosted.providerCallId}`} aria-expanded={expanded} onClick={(event) => {
+        onExpand(event.currentTarget);
         setExpanded((value) => !value);
       }}>
         <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name="search" /></span>
@@ -197,7 +209,7 @@ interface ToolActivityEntryProps {
   activity: ActivityProjection;
   artifacts: readonly ArtifactProjection[];
   language: UiLanguage;
-  onExpand(): void;
+  onExpand(node?: HTMLElement): void;
   onOpenWorkspaceResource(workspaceId: string, logicalPath: string): void;
 }
 
@@ -210,6 +222,9 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
 }) => {
   const [expanded, setExpanded] = useConversationRowState(`tool:${activity.activityId}:expanded`, false);
   const theme = useDisplayTheme();
+  const sessionId = useConversationSessionId();
+  const activities = useMemo(() => [activity], [activity]);
+  const files = useMemo(() => changedFiles(activities), [activities]);
   const tool = activity.tool;
   const shell = tool?.shell;
   const process = tool?.process;
@@ -217,6 +232,14 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const output = activity.liveOutput ?? process?.output;
   const resources = tool?.resources.filter((resource) => !(resource.kind === 'workspacePath'
     && tool.fileChanges?.some((change) => change.workspaceId === resource.workspaceId && change.path === resource.logicalPath))) ?? [];
+  const file = activity.status === 'completed' && isFileMutationOperation(tool?.operation) && files.length === 1 ? files[0] : undefined;
+  const readFile = activity.status === 'completed' && tool?.operation === 'fs.read'
+    ? resources.find(resource => resource.kind === 'workspacePath' && resource.workspaceId && resource.logicalPath) : undefined;
+  const filePath = file?.path ?? readFile?.logicalPath;
+  const toggleExpanded = (event: React.MouseEvent<HTMLButtonElement>) => {
+    onExpand(event.currentTarget);
+    setExpanded(!expanded);
+  };
   if (tool?.computer) return <ComputerActivity activity={activity} computer={tool.computer} artifacts={artifacts}
     language={language} statusLabel={toolActivityStatus(activity.status, language)} onExpand={onExpand} />;
   if (activity.providerHosted) {
@@ -231,17 +254,32 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   }
   return (
     <div className={`local-agent__tool-entry local-agent__tool-entry--${activity.status}`}>
-      <UiRegion slot="activity.summary"><button
+      <UiRegion slot="activity.summary">{filePath && sessionId ? <div className="local-agent__tool-file-heading">
+        <button type="button" className="local-agent__tool-entry-heading local-agent__tool-file-link" title={filePath} onClick={() => {
+          if (readFile) {
+            requestReader(sessionId, { kind: 'workspace', workspaceId: readFile.workspaceId!, logicalPath: filePath });
+            return;
+          }
+          const latest = file!.changes.at(-1)!.change;
+          requestReader(sessionId, latest.after.exists
+            ? { kind: 'workspace', workspaceId: latest.workspaceId, logicalPath: filePath }
+            : { kind: 'diff', file: file! });
+        }}>
+          <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name={readFile ? 'artifact' : 'compose'} /></span>
+          <strong>{t(language, readFile ? 'agent.tool.activity.readPath' : tool?.operation === 'fs.delete' ? 'agent.tool.activity.deletedPath' : 'agent.tool.activity.editedPath', { path: '' })}<span>{filePath.split('/').at(-1)}</span></strong>
+        </button>
+        <button type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`tool:${activity.activityId}`} aria-label={toolActivitySummary(activity, language)} aria-expanded={expanded} onClick={toggleExpanded}>
+          <span className="local-agent__tool-entry-chevron" aria-hidden="true"><DeepCodeShellIcon name="chevronRight" /></span>
+        </button>
+      </div> : <button
         type="button"
         className="local-agent__tool-entry-heading"
         aria-expanded={expanded}
-        onClick={() => {
-          if (!expanded) onExpand();
-          setExpanded(!expanded);
-        }}
+        data-conversation-disclosure={`tool:${activity.activityId}`}
+        onClick={toggleExpanded}
       >
         <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name={shell ? 'terminal' : isFileMutationOperation(tool?.operation) ? 'compose' : tool?.operation?.startsWith('fs.') ? 'artifact' : 'tool'} /></span>
-        <strong>{toolActivitySummary(activity, language)}</strong>
+        <strong>{isPendingShell(activity) ? `$ ${shellCommandPreview(activity)}` : toolActivitySummary(activity, language)}</strong>
         {activity.status !== 'completed' && !activity.notExecuted && (
           <span>{toolActivityStatus(activity.status, language)}</span>
         )}
@@ -251,14 +289,21 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
         <span className="local-agent__tool-entry-chevron" aria-hidden="true">
           <DeepCodeShellIcon name="chevronRight" />
         </span>
-      </button></UiRegion>
+      </button>}</UiRegion>
+      {!expanded && isPendingShell(activity) && <div className="local-agent__shell-progress-tail">
+        {(['stdout', 'stderr'] as const).map(stream => output?.[stream] && <section key={stream}>
+          <small>{stream}</small><pre>{shellOutputTail(output[stream])}</pre>
+        </section>)}
+        {!output?.stdout && !output?.stderr && <small>{language === 'zh-CN' ? '尚无输出' : 'No output yet'}</small>}
+      </div>}
       {expanded && (
         <UiPluginSlotView slot="tool.result" input={{ kind: 'tool.result', activity, toolId: tool?.operation ?? activity.label, locale: language, theme }}>
-        <div className="local-agent__tool-entry-details">
+        <div className={`local-agent__tool-entry-details${filePath ? ' local-agent__tool-entry-details--file' : ''}`}>
           {tool?.error && <p className="local-agent__tool-error" role="status"><code>{tool.error.code}</code>: {tool.error.message}</p>}
           {tool?.projectionError && <p className="local-agent__tool-error" role="status"><code>{tool.projectionError.code}</code>: {tool.projectionError.message}</p>}
-          <FileChanges activities={[activity]} compact />
-          <dl>
+          <FileChanges activities={activities} inlineDiff />
+          {readFile && sessionId && <FileReadPreview sessionId={sessionId} workspaceId={readFile.workspaceId!} path={readFile.logicalPath!} language={language} />}
+          {!filePath && <dl>
             <div>
               <dt>{t(language, 'agent.tool.detail.operation')}</dt>
               <dd><code>{tool?.operation ?? activity.label}</code></dd>
@@ -290,7 +335,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
                 )}
               </>
             )}
-          </dl>
+          </dl>}
           {activity.interruption && <p role="status">{activity.interruption.message}</p>}
           {activity.notExecuted && <p role="status">{notExecutedStatus(activity, language)}</p>}
           {activity.inputRejection && (
@@ -304,9 +349,9 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
               ))}
             </div>
           )}
-          {resources.length > 0 && (
+          {resources.some(resource => resource !== readFile) && (
             <div className="local-agent__tool-resources">
-              {resources.map((resource, index) => {
+              {resources.filter(resource => resource !== readFile).map((resource, index) => {
                 const key = `${resource.kind}:${resource.workspaceId ?? ''}:${resource.logicalPath ?? resource.uri ?? resource.label}:${index}`;
                 if (
                   resource.kind === 'workspacePath'
@@ -407,32 +452,31 @@ export function toolGroupSummary(
   language: UiLanguage,
 ): string {
   const status = toolGroupStatus(activities);
-  if (!activities.every(activity => activity.status === 'completed')) {
-    if (!activities.some(activity => ['requested', 'active', 'waiting'].includes(activity.status))) {
-      return t(language, 'agent.tool.summary.count', { count: activities.length });
-    }
-    const counts = new Map<ActivityProjection['status'], number>();
-    for (const activity of activities) counts.set(activity.status, (counts.get(activity.status) ?? 0) + 1);
-    if (counts.size === 1 && ['active', 'requested', 'waiting'].includes(status)) {
-      return t(language, `agent.tool.summary.${status}Many`, { count: activities.length });
-    }
-    return [t(language, 'agent.tool.summary.count', { count: activities.length }),
-      ...Array.from(counts, ([state, count]) => t(language, 'agent.tool.summary.statusCount', {
-        status: ['requested', 'active', 'waiting', 'completed'].includes(state)
-          ? toolActivityStatus(state, language) : t(language, 'agent.tool.summary.ended'), count,
-      }))].join(' · ');
-  }
+  const completed = activities.every(activity => activity.status === 'completed');
+  const counts = new Map<ActivityProjection['status'], number>();
+  for (const activity of activities) counts.set(activity.status, (counts.get(activity.status) ?? 0) + 1);
+  const uniformPending = counts.size === 1 && ['active', 'requested', 'waiting'].includes(status);
+  const headline = t(language, uniformPending ? `agent.tool.summary.${status}Many` : 'agent.tool.summary.count', { count: activities.length });
+  // Keep operation context in every state. A rejected/failed member must not
+  // replace the whole group's description with a count or imply total success.
   const descriptions: string[] = [];
-  const operations = activities.map(activity => activity.tool?.operation ?? '');
-  if (operations.some(operation => operation === 'plugin.search' || operation === 'plugin.activate')) descriptions.push(t(language, 'agent.tool.summary.loaded'));
-  if (operations.some(operation => ['fs.read', 'fs.list', 'fs.search'].includes(operation))) descriptions.push(t(language, 'agent.tool.summary.read'));
-  if (operations.some(isFileMutationOperation)) descriptions.push(t(language, 'agent.tool.summary.edited'));
-  if (operations.some(operation => ['bash', 'powershell', 'process.start'].includes(operation))) descriptions.push(t(language, 'agent.tool.summary.ran'));
-  if (activities.some(activity => activity.kind === 'providerHosted')) descriptions.push(t(language, 'agent.tool.summary.searched'));
-  if (activities.some(activity => activity.kind === 'agent')) descriptions.push(t(language, 'agent.tool.summary.agents'));
-  if (!descriptions.length && activities.every(activity => activity.kind === 'approval')) descriptions.push(t(language, 'agent.tool.summary.permissions'));
-  return descriptions.length ? descriptions.join(language === 'zh-CN' ? '、' : ', ')
-    : t(language, 'agent.tool.summary.usedMany', { count: activities.length });
+  const describe = (kind: string) => descriptions.push(t(language, `agent.tool.summary.${completed ? '' : 'action.'}${kind}`));
+  const operations = activities.map(activity => activity.tool?.operation ?? (activity.kind === 'tool' ? activity.label : ''));
+  if (operations.some(operation => operation === 'plugin.search' || operation === 'plugin.activate')) describe('loaded');
+  if (operations.some(operation => ['fs.read', 'fs.list', 'fs.search'].includes(operation))) describe('read');
+  if (operations.some(isFileMutationOperation)) describe('edited');
+  if (operations.some(operation => ['bash', 'powershell', 'process.start'].includes(operation))) describe('ran');
+  if (activities.some(activity => activity.kind === 'providerHosted')) describe('searched');
+  if (activities.some(activity => activity.kind === 'agent')) describe('agents');
+  if (activities.some(activity => activity.kind === 'approval')) describe('permissions');
+  if (activities.some(activity => activity.tool?.computer)) describe('computer');
+  if (!descriptions.length) describe('other');
+  const states = !uniformPending && !completed
+    ? Array.from(counts, ([state, count]) => t(language, 'agent.tool.summary.statusCount', {
+      status: ['requested', 'active', 'waiting', 'completed'].includes(state)
+        ? toolActivityStatus(state, language) : t(language, 'agent.tool.summary.ended'), count,
+    })) : [];
+  return [headline, descriptions.join(language === 'zh-CN' ? '、' : ', '), ...states].filter(Boolean).join(' · ');
 }
 
 export function toolActivitySummary(activity: ActivityProjection, language: UiLanguage): string {

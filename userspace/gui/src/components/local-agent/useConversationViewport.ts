@@ -100,8 +100,9 @@ export function useConversationViewport({
   const anchorDisclosure = useCallback((node: HTMLElement) => {
     const body = bodyRef.current;
     const id = activeViewRef.current;
-    const key = node.dataset.conversationAnchor;
+    const key = node.dataset.conversationDisclosure ?? node.dataset.conversationAnchor;
     if (!body || !id || !key) return;
+    anchors.invalidate();
     applyLatestFollowMode(false);
     observedScrollTopRef.current = body.scrollTop;
     // The clicked disclosure owns this layout change, not the answer below it.
@@ -110,7 +111,7 @@ export function useConversationViewport({
       mode: 'detached', scrollTop: body.scrollTop,
       anchor: { key, offset: node.getBoundingClientRect().top - body.getBoundingClientRect().top },
     });
-  }, [applyLatestFollowMode]);
+  }, [anchors, applyLatestFollowMode]);
 
   // Only a reader action can leave follow mode. Layout can clamp scrollTop more
   // than once before an observer runs (composer replacement, then text growth).

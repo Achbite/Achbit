@@ -4614,7 +4614,7 @@ test('resource notifications use explicit references and preserve stream failure
   installGuiFetch(t, (url, init) => {
     assert.equal(url.pathname, '/api/conversation/sessions/session%3Afiles/resources/watch');
     assert.deepEqual(JSON.parse(init.body), { resources: [reference] });
-    return new Response('event: ready\ndata: {}\n\nevent: change\ndata: {"indices":[0]}\n\nevent: error\ndata: {"message":"watch failed"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+    return new Response('event: ready\ndata: {"indices":[0]}\n\nevent: change\ndata: {"indices":[0]}\n\nevent: error\ndata: {"message":"watch failed"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
   });
   const changes = [];
   await assert.rejects(watchResources('session:files', [reference], new AbortController().signal, indices => changes.push(indices)), /watch failed/);
@@ -4967,16 +4967,19 @@ test('workbench control examples use region data and Host actions while retainin
   ] }), { actions: {
     setTreeFilter(value) { calls.push(['filter', value]); }, setTreeRuntimeVisible(value) { calls.push(['runtime', value]); },
     setTreeItemExpanded(id, value) { calls.push(['expand', id, value]); }, openTreeItem(id) { calls.push(['open', id]); },
+    openTreeItemMenu(id) { calls.push(['menu', id]); },
   } }));
   const [filter, error, items, runtimeLabel] = tree.children[0].children;
   assert.equal(error.textContent, 'Original watch failure');
   items.children[0].onclick(); items.children[1].onclick();
+  items.children[1].focus = () => calls.push(['focus', 'file:one']);
+  items.children[1].oncontextmenu({ preventDefault() {}, stopPropagation() {} });
   assert.equal(items.children[2].disabled, true);
   assert.equal(items.children[2].title, 'Original read failure');
   filter.value = 'app'; filter.oninput();
   runtimeLabel.children[0].checked = true; runtimeLabel.children[0].onchange();
   assert.deepEqual(calls, ['reader', ['page', 'agent'], ['search', 'model'], ['expand', 'directory:one', true],
-    ['open', 'file:one'], ['filter', 'app'], ['runtime', true]]);
+    ['open', 'file:one'], ['focus', 'file:one'], ['menu', 'file:one'], ['filter', 'app'], ['runtime', true]]);
   for (const view of views.splice(0)) view.dispose();
   assert.deepEqual(header.children, [readerContent], 'scope owns the preserved Reader region');
   assert.equal(navigation.children.length, 0); assert.equal(tree.children.length, 0);

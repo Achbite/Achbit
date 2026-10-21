@@ -1,9 +1,16 @@
 import type { ActivityProjection, FileChangeProjection, SessionProjection } from '@deepcode/protocol';
 import { isBinaryFileChange, type readFileChange } from '../../services/localAgentApi';
+import type { ChangePreview } from './fileChangeLineCounts';
 
 export type Change = { change: FileChangeProjection; index: number; recordId: string };
 export type ChangedFile = { key: string; path: string; changes: Change[] };
 export type ChangeCounts = { added: number; removed: number };
+
+/** Content statistics follow displayed rows, not the entire archived round. */
+export function displayedChangedFiles(files: readonly ChangedFile[], compact: boolean, expanded: boolean, showAll: boolean): readonly ChangedFile[] {
+  if (!compact && !expanded) return [];
+  return compact || showAll ? files : files.slice(0, 3);
+}
 export type FileChangeStatistics = { kind: 'text'; counts: ChangeCounts } | { kind: 'binary' };
 
 // Only immutable, successfully classified revisions are retained; aborted and failed reads are not cached.
@@ -65,20 +72,28 @@ export async function readRoundChange(read: typeof readFileChange, sessionId: st
 }
 
 export function countChangedLines(before: string | null, after: string | null, signal?: AbortSignal): Promise<ChangeCounts> {
+  return computeChange<ChangeCounts>(before, after, false, signal);
+}
+
+export function previewChangedLines(before: string | null, after: string | null, signal?: AbortSignal): Promise<ChangePreview> {
+  return computeChange<ChangePreview>(before, after, true, signal);
+}
+
+function computeChange<T>(before: string | null, after: string | null, preview: boolean, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(signal.reason); return; }
     const worker = new Worker(new URL('./fileChangeSummary.worker.ts', import.meta.url), { type: 'module' });
     const dispose = () => { signal?.removeEventListener('abort', abort); worker.terminate(); };
     const abort = () => { dispose(); reject(signal?.reason); };
-    worker.onmessage = ({ data }: MessageEvent<{ counts: ChangeCounts } | { error: string }>) => {
+    worker.onmessage = ({ data }: MessageEvent<{ result: T } | { error: string }>) => {
       dispose();
       if ('error' in data) reject(new Error(data.error));
-      else resolve(data.counts);
+      else resolve(data.result);
     };
     worker.onerror = (event) => { dispose(); reject(new Error(event.message)); };
     worker.onmessageerror = () => { dispose(); reject(new Error('无法读取修改行数计算结果')); };
     signal?.addEventListener('abort', abort, { once: true });
-    try { worker.postMessage({ before, after }); }
+    try { worker.postMessage({ before, after, preview }); }
     catch (error) { dispose(); reject(error); }
   });
 }

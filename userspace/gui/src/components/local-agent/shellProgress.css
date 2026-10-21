@@ -1,0 +1,19 @@
+.local-agent__shell-progress-window {
+  margin: 4px 0 6px 22px;
+  border-left: 2px solid var(--border-color, #8884);
+  padding-left: 10px;
+}
+.local-agent__shell-progress-tail {
+  padding: 3px 8px 8px 28px;
+  max-height: 12em;
+  overflow: auto;
+  font-size: 12px;
+}
+.local-agent__shell-progress-tail section { margin: 2px 0; }
+.local-agent__shell-progress-tail pre {
+  margin: 2px 0 5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: inherit;
+}
+.local-agent__shell-progress-tail small { opacity: .7; }

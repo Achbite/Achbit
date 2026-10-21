@@ -375,7 +375,7 @@
 .local-agent__pasted-text-header strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-agent__pasted-text-header small { color: var(--dc-muted); }
 .local-agent__pasted-text-header button { border: 0; background: none; font-size: calc(22px * var(--dc-ui-font-scale, 1)); color: var(--dc-muted); cursor: pointer; }
-.local-agent__paste-toggle { border: 0; background: none; color: var(--dc-muted); padding: 8px 0; cursor: pointer; }
+.local-agent .local-agent__paste-toggle { border: 0; border-radius: 0; background: none; color: var(--dc-muted); padding: 8px 0; cursor: pointer; }
 .conversation-virtual-row { display: flow-root; }
 .conversation-virtual-row[hidden] { display: none; }
 .local-agent__paste-toggle { text-decoration: underline; }
@@ -654,10 +654,6 @@
   padding: 4px 0 4px 24px;
 }
 
-.local-agent__tool-group-items--individual {
-  padding-left: 0;
-}
-
 .local-agent__tool-entry {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -745,7 +741,6 @@
   min-width: 0;
   max-height: min(420px, 50vh);
   overflow: auto;
-  overscroll-behavior-y: contain;
   gap: 8px;
   margin: 0 0 8px;
   padding: 8px 12px 8px 24px;
@@ -1261,7 +1256,7 @@
   min-width: 0;
   max-height: 280px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
 }
 
 .local-agent .local-agent__interaction-close,
@@ -2262,6 +2257,7 @@
 .local-agent__error-details dl { display:grid; grid-template-columns:auto 1fr; gap:2px 12px; }
 .local-agent__error-details dd { margin:0; }
 .local-agent__retry-status { padding:12px 0; color:var(--dc-muted); }
+.local-agent__retry-status > p { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--dc-font-body); }
 .local-agent__recovery-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
 .local-agent__recovery-actions button { font:inherit; color:inherit; background:var(--dc-surface-raised); border:1px solid transparent; border-radius:8px; padding:6px 12px; cursor:pointer; }
 .local-agent__recovery-actions button:disabled { opacity:0.5; cursor:default; }

@@ -17,7 +17,7 @@ const signatures: Record<string, readonly string[]> = {
   updateDraft: ['string'], submitDraft: [], stopRun: [], activateSession: ['string'],
   selectReaderTab: ['string'], toggleReader: [], toggleReaderExpanded: [], setExpanded: ['boolean'],
   toggleTree: [], selectSettingsPage: ['string'], setSettingsSearch: ['string'], setTreeFilter: ['string'],
-  setTreeRuntimeVisible: ['boolean'], setTreeItemExpanded: ['string', 'boolean'], openTreeItem: ['string'],
+  setTreeRuntimeVisible: ['boolean'], setTreeItemExpanded: ['string', 'boolean'], openTreeItem: ['string'], openTreeItemMenu: ['string'],
   setUsageVisibility: ['visibility'], openUsageSettings: [],
 };
 function valid(kind: string, value: unknown): boolean {

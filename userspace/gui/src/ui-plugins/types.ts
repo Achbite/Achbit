@@ -50,6 +50,7 @@ export interface UiViewActions {
   setTreeRuntimeVisible?(visible: boolean): void;
   setTreeItemExpanded?(itemId: string, expanded: boolean): void;
   openTreeItem?(itemId: string): void;
+  openTreeItemMenu?(itemId: string): void;
   setUsageVisibility?(value: 'summary' | 'collapsed' | 'hidden'): void;
   openUsageSettings?(): void;
 }

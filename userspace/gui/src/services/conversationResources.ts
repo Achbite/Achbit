@@ -1,4 +1,5 @@
 import { EventSourceParserStream } from 'eventsource-parser/stream';
+import { createResourceSubscriptions } from './resourceSubscriptions';
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
 import { request, type ConversationResourceReadResult } from './localAgentApi';
 
@@ -44,8 +45,12 @@ export async function readResourceBlob(sessionId: string, resource: ResourceRefe
   return response.blob();
 }
 
-/** One subscription, disposed by the caller's signal; errors remain visible, without polling. */
-export async function watchResources(sessionId: string, resources: ResourceReference[], signal: AbortSignal, changed: (indices: number[]) => void): Promise<void> {
+/** Logical subscriptions share one physical Session stream; abort releases only this caller. */
+export const watchResources = createResourceSubscriptions(resourceKey, watchResourceStream);
+
+async function watchResourceStream(sessionId: string, resources: ResourceReference[], signal: AbortSignal,
+  ready: (indices?: number[]) => void, changed: (indices: number[]) => void,
+  unavailable: (indices: number[], error: unknown) => void): Promise<void> {
   const response = await fetch(endpoint(sessionId, 'watch'), { method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', ...getHostConnectionHeaders() }, body: JSON.stringify({ resources }) });
   if (!response.ok || !response.headers.get('content-type')?.startsWith('text/event-stream') || !response.body) {
@@ -58,8 +63,14 @@ export async function watchResources(sessionId: string, resources: ResourceRefer
       const result = await reader.read();
       if (result.done) throw new Error('resource_watch_closed');
       const event = result.value;
-      if (event.event === 'ready') changed(resources.map((_, index) => index));
-      else if (event.event === 'change') changed((JSON.parse(event.data) as { indices: number[] }).indices);
+      if (event.event && ['ready', 'change', 'resourceError'].includes(event.event)) {
+        const data = JSON.parse(event.data) as { indices: number[]; error?: { message?: string; error?: string } };
+        const { indices } = data;
+        if (!Array.isArray(indices) || indices.some(index => !Number.isSafeInteger(index) || index < 0 || index >= resources.length)) throw new Error('resource_watch_indices_invalid');
+        if (event.event === 'ready') ready(indices);
+        else if (event.event === 'change') changed(indices);
+        else unavailable(indices, new Error(data.error?.message ?? data.error?.error ?? 'resource_watch_failed'));
+      }
       else if (event.event === 'error') throw new Error((JSON.parse(event.data) as { message: string }).message);
     }
   } finally { await reader.cancel(); reader.releaseLock(); }

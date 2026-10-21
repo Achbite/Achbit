@@ -26,15 +26,17 @@ import { conversationNavigation } from './conversationWindow';
 import { ConversationLayoutCache, ConversationVirtualizer } from './conversationVirtualizer';
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
-import { RunFailureDetails, ProviderRetryStatus } from './RunFailureDetails';
+import { RunFailureDetails, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { InteractionCard } from './InteractionCard';
 import { messageDisplayText } from './interactionPresentation';
+import { isAutomaticApproval } from './composerDecisions';
 
 interface ConversationTranscriptProps {
   layoutCache: ConversationLayoutCache;
   language: UiLanguage;
   loading: boolean;
   showReasoning?: boolean;
+  automaticReview?: React.ReactNode;
   displaySettledRunIds: Set<string>;
   onDisplayed(identity: string, text: string): void;
   projection: SessionProjection | null;
@@ -54,6 +56,7 @@ export function ConversationTranscript({
   layoutCache,
   language,
   showReasoning = false,
+  automaticReview,
   displaySettledRunIds,
   onDisplayed,
   loading,
@@ -289,10 +292,10 @@ export function ConversationTranscript({
           activities={item.values}
           artifacts={projection?.artifacts}
           pendingApproval={projection?.pendingApproval}
-          reviewingApproval={projection?.pendingApproval?.preview.approvalReviewer === 'agent' && projection?.run?.status === 'running'}
+          reviewingApproval={isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run)}
           key={item.groupId}
           language={language}
-          onExpand={() => setLatestFollowMode(false)}
+          onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
           onOpenWorkspaceResource={openWorkspaceResource}
         />
       );
@@ -317,12 +320,14 @@ export function ConversationTranscript({
           blocks={item.blocks}
           key={item.groupId}
           language={language}
-          onExpand={() => setLatestFollowMode(false)}
+          onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
         />
       );
+  const currentActivity = assistantDraft?.runId === projection?.run?.runId ? assistantDraft?.activity : undefined;
   const providerStatus = <>
-      {projection?.run?.status === 'running' && projection.providerAttempts?.at(-1)?.phase === 'retryWaiting'
-        ? <ProviderRetryStatus projection={projection} language={language} />
+      {automaticReview}
+      {projection && providerRetryAttempt(projection, currentActivity) !== null
+        ? <ProviderRetryStatus projection={projection} language={language} activity={currentActivity} />
         : projection?.run && projection.run.status !== 'completed' && (
         <ProviderStageStatus run={projection.run} language={language}
           reasoning={showReasoning && assistantDraft ? { sessionId: projection.sessionId, requestId: assistantDraft.turnId } : undefined}
