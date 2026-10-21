@@ -53,31 +53,32 @@ pub(crate) struct KernelAuthorityModel {
 }
 
 impl KernelAuthorityModel {
+    pub(crate) const EVENT_TYPES: &'static [&'static str] = &[
+        "session.created",
+        "run.started",
+        "run.finishing",
+        "run.settled",
+        "plan.confirmed",
+        "plan.revision.requested",
+        "plan.superseded",
+        "plan.cancelled",
+        "plan.invalidated",
+        "agent.task.created",
+        "agent.task.started",
+        "agent.task.completed",
+        "tool.requested",
+        "approval.requested",
+        "approval.reviewed",
+        "approval.resolved",
+        "approval.revoked",
+        "provider.turn.settled",
+        "conversation.revised",
+    ];
+
     pub(crate) fn observes(event: &Value) -> bool {
-        matches!(
-            event["type"].as_str(),
-            Some(
-                "session.created"
-                    | "run.started"
-                    | "run.finishing"
-                    | "run.settled"
-                    | "plan.confirmed"
-                    | "plan.revision.requested"
-                    | "plan.superseded"
-                    | "plan.cancelled"
-                    | "plan.invalidated"
-                    | "agent.task.created"
-                    | "agent.task.started"
-                    | "agent.task.completed"
-                    | "tool.requested"
-                    | "approval.requested"
-                    | "approval.reviewed"
-                    | "approval.resolved"
-                    | "approval.revoked"
-                    | "provider.turn.settled"
-                    | "conversation.revised"
-            )
-        )
+        event["type"]
+            .as_str()
+            .is_some_and(|kind| Self::EVENT_TYPES.contains(&kind))
     }
 
     pub(crate) fn apply(&mut self, event: &Value) {

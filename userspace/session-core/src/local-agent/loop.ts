@@ -2181,10 +2181,12 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
       const pending = reviewSnapshot.state.pendingApprovals.find(item => item.callId === requestEvent.callId)!;
       let reviewRequestId = '';
       let reviewRecorded = false;
+      let reviewFailure: LocalAgentError | undefined;
       let verdict: ReturnType<typeof decodeApprovalReview> = { decision: 'ask', reason: '自动审查未完成。' };
       for (let attempt = 0; attempt < 2; attempt++) {
         reviewRequestId = deps.nextId('provider-request');
         reviewRecorded = false;
+        reviewFailure = undefined;
         let review: ReturnType<typeof prepareApprovalReview> | undefined;
         try {
           review = prepareApprovalReview(reviewSnapshot, runtime, pending, reviewRequestId, attempt > 0);
@@ -2201,6 +2203,7 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
         } catch (error) {
           if (signal.aborted) throw error;
           const fact = errorFact(error);
+          reviewFailure = fact;
           if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
             sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
               purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
@@ -2213,7 +2216,7 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
             verdict = { decision: 'ask', reason: `${retryFormat ? '审批结果格式无效，正在按原请求重试一次。' : '无法读取有效的审核结果，需要你决定是否执行。'}\n${fact.message}\n原始响应：${response}` };
             // Withhold authority without entering run.waiting during recovery.
             await commit({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId,
-              callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } });
+              callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict, error: fact } });
             reviewRecorded = true;
           }
           // Recording the failure yields to the Actor; a user decision or a
@@ -2226,7 +2229,8 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
       if (!reviewRecorded) {
         await commit(current => {
           const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
-            callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict } }];
+            callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict,
+              ...(reviewFailure ? { error: reviewFailure } : {}) } }];
           if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
             callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
               authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });

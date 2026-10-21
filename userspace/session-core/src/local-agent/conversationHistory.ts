@@ -1,9 +1,9 @@
 import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import type { RunLifecycleEvent, SessionEvent } from '@deepcode/protocol';
+import type { ResourceJournalEvent, RunLifecycleEvent, SessionEvent } from '@deepcode/protocol';
 
 /** Journal facts remain intact. A revision excludes only the replaced conversation
  * range; session settings, directory membership and file grants retain their current values. */
-export function activeConversationEvents<Event extends SessionEvent | RunLifecycleEvent>(events: readonly Event[]): Event[] {
+export function activeConversationEvents<Event extends SessionEvent | RunLifecycleEvent | ResourceJournalEvent>(events: readonly Event[]): Event[] {
   const revisions = events.filter((event): event is Extract<Event, { type: 'conversation.revised' }> => event.type === 'conversation.revised');
   for (const event of revisions) {
     const { fromSequence, throughSequence } = event.payload;

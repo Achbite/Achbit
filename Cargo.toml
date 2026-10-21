@@ -42,7 +42,7 @@ serde_yaml = "0.9"
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "system-proxy"] }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
 regex = "1"
 pdf-extract = "0.9"

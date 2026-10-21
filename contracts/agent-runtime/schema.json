@@ -2952,7 +2952,8 @@
                   "approvalId": {"$ref": "#/$defs/Id"},
                   "providerRequestId": {"$ref": "#/$defs/Id"},
                   "decision": {"enum": ["allow", "deny", "ask"]},
-                  "reason": {"type": "string"}
+                  "reason": {"type": "string"},
+                  "error": {"$ref": "#/$defs/LocalAgentError"}
                 }
               }
             },

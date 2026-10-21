@@ -196,8 +196,16 @@ impl Containers {
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or("Container ID missing")?;
+        // Docker does not promise a stable Mounts order across inspect calls.
+        // Preserve every field while giving this set a deterministic representation
+        // before it becomes part of the prepared authorization scope.
+        let mut mounts = info["Mounts"]
+            .as_array()
+            .ok_or("Container mounts missing")?
+            .clone();
+        mounts.sort_by_cached_key(Value::to_string);
         Ok(
-            json!({"engine":engine,"id":id,"name":info["Name"],"image":info["Image"],"mounts":info["Mounts"],
+            json!({"engine":engine,"id":id,"name":info["Name"],"image":info["Image"],"mounts":mounts,
             "user":info["Config"]["User"],"networkMode":info["HostConfig"]["NetworkMode"],"privileged":info["HostConfig"]["Privileged"],
             "capAdd":info["HostConfig"]["CapAdd"],"devices":info["HostConfig"]["Devices"]}),
         )
@@ -426,6 +434,67 @@ impl Drop for MetadataArchive {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn container_preparation_ignores_mount_order_but_preserves_scope_changes() {
+        let root = MetadataArchive(
+            std::env::temp_dir().join(
+                crate::utils::new_runtime_ref("container-mount-test")
+                    .unwrap()
+                    .replace(':', "-"),
+            ),
+        );
+        std::fs::create_dir_all(&root.0).unwrap();
+        let executable = root.0.join("docker");
+        std::fs::write(
+            &executable,
+            r#"#!/bin/sh
+case "$*" in
+  *"context show"*) echo test ;;
+  *"context inspect"*) echo '[{"Endpoints":{"docker":{"Host":"unix:///test.sock"}}}]' ;;
+  *"container inspect"*) cat "$(dirname "$0")/inspect.json" ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let containers = Containers::new(root.0.to_str().unwrap()).unwrap();
+        let input =
+            parse(json!({"action":"exec","container":"test","command":"printf verified"})).unwrap();
+        let mounts = json!([
+            {"Type":"bind","Source":"/project","Destination":"/workspace","RW":true,"Propagation":"rprivate"},
+            {"Type":"volume","Name":"cache","Source":"/volumes/cache","Destination":"/cache","RW":false}
+        ]);
+        let prepare = |mounts: Value| {
+            std::fs::write(root.0.join("inspect.json"), json!([{
+                "Id":"container-id","Image":"image-id","Name":"/test","Mounts":mounts,
+                "Config":{"User":"1000"},"HostConfig":{"NetworkMode":"bridge","Privileged":false}
+            }]).to_string()).unwrap();
+            containers.prepare(&input, "/project", None)
+        };
+        let first = prepare(mounts.clone()).unwrap();
+        let mut reordered = mounts.clone();
+        reordered.as_array_mut().unwrap().reverse();
+        assert_eq!(first, prepare(reordered).unwrap());
+        for (field, value) in [
+            ("Source", json!("/other")),
+            ("Destination", json!("/other")),
+            ("RW", json!(false)),
+        ] {
+            let mut changed = mounts.clone();
+            changed[0][field] = value;
+            assert_ne!(
+                first,
+                prepare(changed).unwrap(),
+                "{field} changes authority"
+            );
+        }
+        let mut added = mounts.clone();
+        added.as_array_mut().unwrap().push(mounts[0].clone());
+        assert_ne!(first, prepare(added).unwrap(), "do not drop mount entries");
+        assert!(prepare(Value::Null).unwrap_err().contains("mounts missing"));
+    }
 
     #[test]
     fn container_cleanup_retains_execution_result() {
