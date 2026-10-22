@@ -33,6 +33,29 @@ pub(crate) struct LocalAgentJournal {
 #[derive(Debug)]
 struct ValidatedNewEvent<'a>(&'a Value);
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct JournalEvent<Payload> {
+    schema_version: &'static str,
+    event_id: String,
+    session_id: String,
+    sequence: i64,
+    occurred_at: String,
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    call_id: Option<String>,
+    payload: Payload,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct JournalEventPublication {
+    value: Vec<JournalEvent<Box<serde_json::value::RawValue>>>,
+    permissions: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunProviderRuntime {
     pub(crate) provider_runtime_ref: String,
@@ -299,11 +322,42 @@ impl LocalAgentJournal {
             .map_err(sql_error("session_read_failed"))
     }
 
+    #[cfg(test)]
     pub(crate) fn read_events(
         &self,
         session_id: &str,
         after: u64,
     ) -> Result<Vec<Value>, LocalAgentStoreError> {
+        self.read_event_rows::<Value>(session_id, after).map(|rows| {
+            rows.into_iter().map(|row| {
+                let mut event = json!({"schemaVersion": row.schema_version,
+                    "eventId": row.event_id, "sessionId": row.session_id,
+                    "sequence": row.sequence, "occurredAt": row.occurred_at, "type": row.event_type});
+                event["payload"] = row.payload;
+                if let Some(run) = row.run_id { event["runId"] = json!(run); }
+                if let Some(call) = row.call_id { event["callId"] = json!(call); }
+                event
+            }).collect()
+        })
+    }
+
+    pub(crate) fn read_events_publication(
+        &self,
+        session_id: &str,
+        after: u64,
+    ) -> Result<JournalEventPublication, LocalAgentStoreError> {
+        // Stored payloads are already JSON. Validate their syntax and serialize
+        // them directly, without constructing and re-encoding a second tree.
+        let value = self.read_event_rows(session_id, after)?;
+        let permissions = self.permission_model()?.publication(session_id, true);
+        Ok(JournalEventPublication { value, permissions })
+    }
+
+    fn read_event_rows<Payload: serde::de::DeserializeOwned>(
+        &self,
+        session_id: &str,
+        after: u64,
+    ) -> Result<Vec<JournalEvent<Payload>>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         let connection = self.lock()?;
         let exists: bool = connection
@@ -344,24 +398,29 @@ impl LocalAgentJournal {
         for row in rows {
             let (sequence, event_id, event_type, occurred_at, run_id, call_id, payload) =
                 row.map_err(sql_error("session_event_read_failed"))?;
-            let mut event = json!({
-                "schemaVersion": EVENT_VERSION,
-                "eventId": event_id,
-                "sessionId": session_id,
-                "sequence": sequence,
-                "occurredAt": occurred_at,
-                "type": event_type,
+            events.push(JournalEvent {
+                schema_version: EVENT_VERSION,
+                event_id,
+                session_id: session_id.to_owned(),
+                sequence,
+                occurred_at,
+                event_type,
+                run_id,
+                call_id,
+                payload: serde_json::from_str(&payload).map_err(|error| {
+                    // RawValue's syntax scanner may phrase a malformed JSON
+                    // error differently. Decode only that failed row for the
+                    // established diagnostic; valid history keeps the fast path.
+                    decode_json(&payload, "session_event_corrupt")
+                        .err()
+                        .unwrap_or_else(|| {
+                            LocalAgentStoreError::new(
+                                "session_event_corrupt",
+                                format!("JSON 解码失败：{error}"),
+                            )
+                        })
+                })?,
             });
-            // The decoded payload is already owned. json!(payload) would serialize
-            // it into another Value, copying the entire historical context again.
-            event["payload"] = decode_json(&payload, "session_event_corrupt")?;
-            if let Some(run_id) = run_id {
-                event["runId"] = json!(run_id);
-            }
-            if let Some(call_id) = call_id {
-                event["callId"] = json!(call_id);
-            }
-            events.push(event);
         }
         Ok(events)
     }
@@ -6969,6 +7028,57 @@ mod tests {
                 .settings["agent.permissions.shellAccess"],
             "workspace"
         );
+    }
+
+    #[test]
+    fn encoded_history_publication_matches_decoded_events_and_preserves_read_errors() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let id = "session:encoded-history";
+        journal
+            .create_session(id, "History", &json!([]), None, None)
+            .unwrap();
+        journal
+            .append(&json!({"type":"message.committed", "sessionId":id,
+            "payload":{"messageId":"message:text", "role":"user",
+                "content":"引用 \\\"value\\\"\n🖼 ".repeat(1024)}}))
+            .unwrap();
+        for after in [0, 1, 2, u64::MAX] {
+            let expected = journal
+                .publication(
+                    Value::Array(journal.read_events(id, after).unwrap()),
+                    id,
+                    true,
+                )
+                .unwrap();
+            let encoded =
+                serde_json::to_vec(&journal.read_events_publication(id, after).unwrap()).unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&encoded).unwrap(), expected);
+        }
+        assert_eq!(
+            journal
+                .read_events_publication("session:missing", 0)
+                .err()
+                .unwrap()
+                .code,
+            journal.read_events("session:missing", 0).unwrap_err().code
+        );
+        let connection = Connection::open(store.path()).unwrap();
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints=ON;")
+            .unwrap();
+        for payload in ["{", "[1,]", "{\"content\":\"broken\\q\"}"] {
+            connection
+                .execute(
+                    "UPDATE session_events SET payload_json=?1 WHERE session_id=?2 AND sequence=2",
+                    params![payload, id],
+                )
+                .unwrap();
+            let decoded = journal.read_events(id, 0).unwrap_err();
+            let encoded = journal.read_events_publication(id, 0).err().unwrap();
+            assert_eq!(encoded.code, decoded.code);
+            assert_eq!(encoded.message, decoded.message);
+        }
     }
 
     #[test]

@@ -4,9 +4,9 @@ pub(crate) const LARGE_JSON_BODY_LIMIT_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ApiResponse {
+pub(crate) struct ApiResponse<T = Value> {
     pub(crate) ok: bool,
-    pub(crate) data: Option<Value>,
+    pub(crate) data: Option<T>,
     pub(crate) error: Option<String>,
     pub(crate) message: Option<String>,
 }

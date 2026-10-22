@@ -182,15 +182,28 @@ function writableRecord<Key extends WritableRecordKey>(state: SessionState, key:
 }
 
 export function reduceSession(previous: SessionState, event: SessionEvent): SessionState {
-  return reduceSessionEvent(previous, event, false);
+  return reduceSessionEvent(previous, event);
 }
 
-function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusive: boolean): SessionState {
+// These indexes live only for one ordered replay. They select the same facts as
+// incremental reduction without repeatedly scanning all earlier requests/calls.
+interface ReplayIndexes {
+  compositions: Map<string, number>;
+  attempts: Map<string, Map<string, SessionState['providerAttempts'][string]>>;
+  calls: [string, ProviderCallFactState][];
+}
+
+function compositionIndex(state: SessionState, requestId: string, replay?: ReplayIndexes): number {
+  return replay ? replay.compositions.get(requestId) ?? -1
+    : state.contextCompositions.findIndex(item => item.providerRequestId === requestId);
+}
+
+function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?: ReplayIndexes): SessionState {
   if (event.sessionId !== previous.sessionId) throw new Error('session_event_identity_mismatch');
   if (event.sequence !== previous.revision + 1) throw new Error('session_event_sequence_gap');
 
   const next: SessionState = { ...previous, revision: event.sequence };
-  recordOwnership.set(next, exclusive ? 'exclusive' : new Set());
+  recordOwnership.set(next, replay ? 'exclusive' : new Set());
   const lifecycleEvent = projectRunLifecycleEvent(event);
   const lifecycle = lifecycleEvent ? reduceRunLifecycle({
     run: previous.run ? { runId: previous.run.runId, status: previous.run.status,
@@ -206,8 +219,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
       assertRunningRun(next, event.runId, 'provider_attempt_run_not_active');
       const fact = event.payload;
       const previousAttempt = next.providerAttempts[fact.providerAttemptId];
-      const related = Object.values(next.providerAttempts).filter((item) => item.providerRequestId === fact.providerRequestId);
-      if (!next.contextCompositions.some((item) => item.providerRequestId === fact.providerRequestId && item.runId === event.runId && item.purpose === fact.purpose)) throw new Error('provider_attempt_composition_missing');
+      const related = replay ? [...(replay.attempts.get(fact.providerRequestId)?.values() ?? [])]
+        : Object.values(next.providerAttempts).filter((item) => item.providerRequestId === fact.providerRequestId);
+      const composition = next.contextCompositions[compositionIndex(next, fact.providerRequestId, replay)];
+      if (!composition || composition.runId !== event.runId || composition.purpose !== fact.purpose) throw new Error('provider_attempt_composition_missing');
       if (fact.phase === 'started') {
         if (previousAttempt || fact.attempt !== related.length + 1 || fact.attempt > 5
           || related.some((item) => !['retryWaiting'].includes(item.phase))) throw new Error('provider_attempt_start_invalid');
@@ -215,6 +230,11 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
         || previousAttempt.attempt !== fact.attempt
         || (fact.phase === 'retryWaiting' ? previousAttempt.phase !== 'failed' : previousAttempt.phase !== 'started')) throw new Error('provider_attempt_transition_invalid');
       writableRecord(next, 'providerAttempts')[fact.providerAttemptId] = { ...structuredClone(fact), runId: event.runId, updatedAt: event.occurredAt };
+      if (replay) {
+        const attempts = replay.attempts.get(fact.providerRequestId) ?? new Map();
+        attempts.set(fact.providerAttemptId, next.providerAttempts[fact.providerAttemptId]);
+        replay.attempts.set(fact.providerRequestId, attempts);
+      }
       break;
     }
     case 'run.timing.updated':
@@ -866,11 +886,9 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
       );
       break;
     case 'context.composed':
-      next.contextCompositions = [...next.contextCompositions];
+      if (!replay) next.contextCompositions = [...next.contextCompositions];
       assertRunningRun(next, event.runId, 'provider_request_run_not_active');
-      if (next.contextCompositions.some((receipt) => (
-        receipt.providerRequestId === event.payload.providerRequestId
-      ))) throw new Error('provider_request_receipt_duplicate');
+      if (compositionIndex(next, event.payload.providerRequestId, replay) >= 0) throw new Error('provider_request_receipt_duplicate');
       validateContextPartitions(event.payload.partitions);
       next.contextCompositions.push({
         runId: event.runId,
@@ -892,6 +910,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
         sequence: event.sequence,
         createdAt: event.occurredAt,
       });
+      replay?.compositions.set(event.payload.providerRequestId, next.contextCompositions.length - 1);
       break;
     case 'provider.turn.settled': {
       writableRecord(next, 'activities');
@@ -902,23 +921,28 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
       if (event.payload.providerRuntimeRef !== providerRuntimeForPurpose(runtime, event.payload.purpose).providerRuntimeRef) {
         throw new Error('provider_turn_runtime_identity_mismatch');
       }
-      const receipt = next.contextCompositions.find((candidate) => (
-        candidate.runId === event.runId
-        && candidate.providerRequestId === event.payload.providerRequestId
-      ));
-      if (!receipt || receipt.purpose !== event.payload.purpose) {
+      const receipt = next.contextCompositions[compositionIndex(next, event.payload.providerRequestId, replay)];
+      if (!receipt || receipt.runId !== event.runId || receipt.purpose !== event.payload.purpose) {
         throw new Error('provider_turn_composition_missing');
       }
       if (next.providerTurns[event.payload.providerRequestId]) {
         throw new Error('provider_turn_completion_duplicate');
       }
-      const currentTurnCallFacts = Object.entries(next.providerCallFacts)
+      const currentTurnCallFacts: [string, ProviderCallFactState][] = replay ? [] : Object.entries(next.providerCallFacts)
         .filter(([, fact]) => (
           fact.runId === event.runId
           && fact.sequence > receipt.sequence
           && fact.sequence < event.sequence
         ))
         .sort((left, right) => left[1].sequence - right[1].sequence);
+      if (replay) {
+        for (let index = replay.calls.length - 1; index >= 0; index--) {
+          const entry = replay.calls[index];
+          if (entry[1].sequence <= receipt.sequence) break;
+          if (entry[1].runId === event.runId && entry[1].sequence < event.sequence) currentTurnCallFacts.push(entry);
+        }
+        currentTurnCallFacts.reverse();
+      }
       const currentTurnCallIds = currentTurnCallFacts.map(([callId]) => callId);
       const settlement = event.payload;
       if (settlement.outcome === 'completed') {
@@ -1065,7 +1089,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
       break;
     }
     case 'context.updated': {
-      next.contextCompositions = [...next.contextCompositions];
+      if (!replay) next.contextCompositions = [...next.contextCompositions];
       writableRecord(next, 'providerUsageRequestIds');
       writableRecord(next, 'tokenUsageHistory');
       assertRunningRun(next, event.runId, 'provider_usage_run_not_active');
@@ -1093,11 +1117,8 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
       if (next.providerUsageRequestIds[providerRequestId]) {
         throw new Error('provider_usage_duplicate');
       }
-      const receiptIndex = next.contextCompositions.findIndex((receipt) => (
-        receipt.runId === event.runId
-        && receipt.providerRequestId === providerRequestId
-      ));
-      if (receiptIndex < 0) throw new Error('provider_request_receipt_missing');
+      const receiptIndex = compositionIndex(next, providerRequestId, replay);
+      if (receiptIndex < 0 || next.contextCompositions[receiptIndex].runId !== event.runId) throw new Error('provider_request_receipt_missing');
       next.providerUsageRequestIds[providerRequestId] = true;
       const receipt = next.contextCompositions[receiptIndex];
       next.contextCompositions[receiptIndex] = {
@@ -1224,6 +1245,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, exclusi
     };
   }
   next.pendingApproval = next.pendingApprovals[0] ?? null;
+  if (replay && 'callId' in event && event.callId) {
+    const fact = next.providerCallFacts[event.callId];
+    if (fact?.sequence === event.sequence) replay.calls.push([event.callId, fact]);
+  }
   recordOwnership.delete(next);
   return next;
 }
@@ -1267,6 +1292,7 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
   // Archived child identities also label received messages during history-only replay.
   state.agentChildren = agents.agentChildren;
   const active = activeConversationEvents(events);
+  const replay: ReplayIndexes = { compositions: new Map(), attempts: new Map(), calls: [] };
   for (const event of active) {
     // The lifetime stream above has already reduced these facts exactly once.
     if (isAgentLifetimeEvent(event)) {
@@ -1280,7 +1306,7 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
       continue;
     }
     // Only explicitly superseded journal ranges may create a gap in active history.
-    state = reduceSessionEvent({ ...state, revision: event.sequence - 1 }, event, true);
+    state = reduceSessionEvent({ ...state, revision: event.sequence - 1 }, event, replay);
   }
   // Editing changes model history, but cannot erase usage already incurred.
   const activeSequences = new Set(active.map((event) => event.sequence));
