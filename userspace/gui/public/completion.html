@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeepCode</title>
+<style>
+  :root { color-scheme: light dark; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fafafa; color: #242424; }
+  main { height: 116px; padding: 16px 18px; display: grid; grid-template-columns: 32px 1fr 22px; gap: 12px; align-content: center; }
+  .icon { margin-top: 2px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: #e5f2e9; color: #277348; font-size: 18px; }
+  button { font: inherit; cursor: pointer; }
+  #open { min-width: 0; border: 0; padding: 0; text-align: left; background: none; color: inherit; }
+  small { display: block; color: #797979; font-size: 11px; margin-bottom: 5px; }
+  strong { font-size: 14px; font-weight: 600; }
+  #body { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 5px 0 0; line-height: 1.4; color: #696969; overflow-wrap: anywhere; }
+  #dismiss { align-self: start; border: 0; padding: 0; background: none; color: #797979; font-size: 19px; }
+  #error { position: fixed; inset: auto 8px 2px; font-size: 10px; color: #b42929; }
+  button:focus-visible { outline: 2px solid #428765; outline-offset: 3px; border-radius: 3px; }
+  @media (prefers-color-scheme: dark) { body { background: #242424; color: #f1f1f1; } #body, small, #dismiss { color: #b5b5b5; } .icon { background: #293e32; color: #a7d6b7; } }
+</style></head><body>
+<main><span class="icon" aria-hidden="true">✓</span><button id="open"><small>DeepCode</small><strong id="title"></strong><span id="body"></span></button><button id="dismiss">×</button></main>
+<div id="error" role="alert"></div>
+<script>
+  const params = new URLSearchParams(location.search);
+  document.getElementById('title').textContent = params.get('title');
+  document.getElementById('body').textContent = params.get('body');
+  document.getElementById('open').setAttribute('aria-label', params.get('open'));
+  document.getElementById('dismiss').setAttribute('aria-label', params.get('dismiss'));
+  async function invoke(command, args) {
+    try { await window.__TAURI__.core.invoke(command, args); }
+    catch (error) { document.getElementById('error').textContent = String(error); }
+  }
+  document.getElementById('open').onclick = () => invoke('deepcode_open_completion', { sessionId: params.get('session') });
+  document.getElementById('dismiss').onclick = () => invoke('deepcode_dismiss_completion');
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') void invoke('deepcode_dismiss_completion'); });
+</script></body></html>

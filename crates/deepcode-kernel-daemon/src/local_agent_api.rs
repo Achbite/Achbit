@@ -1284,22 +1284,23 @@ pub(crate) async fn local_agent_events_read(
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Query(query): Query<LocalSessionEventsQuery>,
-) -> Json<ApiResponse> {
+) -> Response {
     if let Err(response) = require_session_service(&state, &headers) {
-        return response;
+        return response.into_response();
     }
     match state
         .local_agent
         .journal
-        .read_events(&session_id, query.after.unwrap_or(0))
-        .and_then(|events| {
-            state
-                .local_agent
-                .journal
-                .publication(Value::Array(events), &session_id, true)
-        }) {
-        Ok(events) => ApiResponse::ok(events),
-        Err(error) => store_error(error),
+        .read_events_publication(&session_id, query.after.unwrap_or(0))
+    {
+        Ok(events) => Json(ApiResponse {
+            ok: true,
+            data: Some(events),
+            error: None,
+            message: None,
+        })
+        .into_response(),
+        Err(error) => store_error(error).into_response(),
     }
 }
 

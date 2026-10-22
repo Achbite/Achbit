@@ -17,6 +17,7 @@ import type {
   ConversationReadResult,
   ConversationSessionStatus,
   SessionProjection,
+  SessionResourceProjection,
   PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@deepcode/protocol';
@@ -86,6 +87,7 @@ export class SessionService implements ConversationPort {
   readonly #retirements = new Map<string, Promise<void>>();
   readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
   readonly #historyReads = new Map<string, Promise<SessionProjection>>();
+  readonly #resourceReads = new Map<string, Promise<SessionResourceProjection>>();
   readonly #deletingSessionIds = new Set<string>();
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
   readonly #lifetime = new AbortController();
@@ -290,10 +292,20 @@ export class SessionService implements ConversationPort {
     await this.withActor(sessionId, actor => actor.replaceCapabilities(implementation));
   }
 
-  async resourceSnapshot(sessionId: string, recordIds: readonly string[] = []): Promise<import('@deepcode/protocol').SessionResourceProjection> {
-    const read = await this.journal.readResources(sessionId, recordIds);
-    if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
-    return projectSessionResources(read, recordIds, projectResourceTool);
+  async resourceSnapshot(sessionId: string, recordIds: readonly string[] = []): Promise<SessionResourceProjection> {
+    const key = JSON.stringify([sessionId, recordIds]);
+    let pending = this.#resourceReads.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const read = await this.journal.readResources(sessionId, recordIds);
+        if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+        return projectSessionResources(read, recordIds, projectResourceTool);
+      })();
+      this.#resourceReads.set(key, pending);
+    }
+    // Share overlapping previews only; later reads must see fresh facts/errors.
+    try { return structuredClone(await pending); }
+    finally { if (this.#resourceReads.get(key) === pending) this.#resourceReads.delete(key); }
   }
 
   async snapshot(sessionId: string): Promise<SessionProjection> {

@@ -30,7 +30,7 @@ Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 �
 
 ## Linux
 
-解压后使用包内 `DeepCode-GUI`、`deepcode-cli` 或 `deepcode-tui`。桌面环境需要 GTK 和 WebKitGTK。工作区 Shell 的环境要求见[执行环境](product/execution-environments.md)。
+解压后使用包内 `DeepCode-GUI`、`deepcode-cli` 或 `deepcode-tui`。桌面环境需要 GTK、WebKitGTK 和 ALSA（`libasound2`，用于完成提示音）。工作区 Shell 的环境要求见[执行环境](product/execution-environments.md)。
 
 ## 用户目录
 

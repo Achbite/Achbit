@@ -44,6 +44,51 @@ function tauriInvoke(): TauriCoreApi['invoke'] | null {
   return window.__TAURI__?.core?.invoke ?? null;
 }
 
+export function hasDesktopNotifications(): boolean {
+  return typeof window !== 'undefined' && tauriInvoke() !== null;
+}
+
+export interface CompletionReminder {
+  sessionId: string;
+  title: string;
+  body: string;
+  openLabel: string;
+  dismissLabel: string;
+}
+
+export async function notifyTaskCompleted(reminder: CompletionReminder): Promise<void> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('desktop_notifications_unavailable');
+  await invoke('deepcode_notify_completed', { reminder });
+}
+
+export interface CompletionSoundInfo { path: string; custom: boolean }
+
+export async function getCompletionSound(): Promise<CompletionSoundInfo> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('desktop_notifications_unavailable');
+  return invoke<CompletionSoundInfo>('deepcode_completion_sound');
+}
+
+export async function setCompletionSound(data: number[] | null): Promise<CompletionSoundInfo> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('desktop_notifications_unavailable');
+  return invoke<CompletionSoundInfo>('deepcode_set_completion_sound', { data });
+}
+
+export async function previewCompletionSound(): Promise<void> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('desktop_notifications_unavailable');
+  await invoke('deepcode_preview_completion_sound');
+}
+
+export async function onCompletionOpen(listener: (sessionId: string) => void): Promise<() => void> {
+  if (!hasDesktopNotifications()) return () => {};
+  const events = window.__TAURI__?.event;
+  if (!events) throw new Error('desktop_events_unavailable');
+  return events.listen<string>('deepcode:completion-open', event => listener(event.payload));
+}
+
 export interface NativePathOptions {
   kind: 'file' | 'directory' | 'path';
   multiple?: boolean;

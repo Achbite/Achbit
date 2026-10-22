@@ -958,7 +958,7 @@ test('scope-only Plan review foregrounds additions and keeps the complete confir
   assert.equal(planScopeAddition(previous, { ...current, summary: 'A different objective.' }), null);
   const decision = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', uiActionError: null, composer: {
     pendingPlan: current, pendingScopeAddition: addition, textareaRef: { current: null }, draft: '', submitting: false,
-    profiles: [], selectedProfileId: null, pastedTexts: [], failedDrafts: [], pendingFilesystemPaths: [],
+    profiles: [], selectedProfileId: null, pastedTexts: [], pastedImages: [], failedDrafts: [], pendingFilesystemPaths: [],
     pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textDecision: true,
   } }));
   assert.match(decision, />确认新增范围<\/b>/);
@@ -1499,7 +1499,7 @@ test('composer accepts inherited effort and never enables a new run with a blank
     '/src/components/local-agent/SessionModelSelector.tsx',
   ]);
   const previousStorage = globalThis.sessionStorage;
-  globalThis.sessionStorage = { getItem: () => JSON.stringify({ draft: 'Continue', pastedTexts: [], filesystemPaths: [], pluginSelections: [] }) };
+  globalThis.sessionStorage = { getItem: () => JSON.stringify({ draft: 'Continue', pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] }) };
   t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
   const profiles = [
     { id: 'profile:one', name: 'One', enabled: true, thinking: 'enabled', reasoningEffort: 'high' },
@@ -3048,7 +3048,7 @@ test('pending approvals replace ordinary input while preserving its draft for re
   const composer = {
     pendingApproval: { approvalId: 'approval:one', preview: { summary: 'Write the requested file', effects: [], logicalTargets: [] } },
     projection: { contextCompositions:[], queuedInputs: [{ commandId: 'queued:one', text: 'Keep the public API unchanged', status: 'queued', filesystemReferences: [] }] },
-    profiles: [], selectedProfileId: null, draft: 'Second request', pastedTexts: [], failedDrafts: [],
+    profiles: [], selectedProfileId: null, draft: 'Second request', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], showStopAction: false, canSend: false, submitting: true,
     textareaRef: { current: null }, respondApproval() {},
   };
@@ -3105,7 +3105,7 @@ test('questions and Plan revisions share the main input and render a single prim
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { ConversationComposer } = await loadGuiModule(t, '/src/components/local-agent/ConversationComposer.tsx');
-  const base = { profiles: [], selectedProfileId: null, draft: '保留构建配置', pastedTexts: [], failedDrafts: [],
+  const base = { profiles: [], selectedProfileId: null, draft: '保留构建配置', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     canSend: true, showStopAction: false, textDecision: true };
   for (const decision of [
@@ -3191,7 +3191,7 @@ test('unavailable plugins preserve their source error and cannot be selected in 
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { ConversationComposer } = await loadGuiModule(t, '/src/components/local-agent/ConversationComposer.tsx');
   const html = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', uiActionError: null, composer: {
-    profiles: [], selectedProfileId: null, draft: '@', pastedTexts: [], failedDrafts: [],
+    profiles: [], selectedProfileId: null, draft: '@', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [plugin], commandSuggestions: [], pluginPickerOpen: true,
     textareaRef: { current: null },
   } }));

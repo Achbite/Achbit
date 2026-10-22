@@ -12,7 +12,7 @@ const plan = { planId: 'plan:review', runId: 'run:review', revision: 2, status: 
 
 function composerFor(pendingPlan) {
   return { pendingPlan, pendingScopeAddition: null, pendingApproval: null, pendingInteraction: null,
-    profiles: [], selectedProfileId: null, draft: '保留现有报告', pastedTexts: [], failedDrafts: [],
+    profiles: [], selectedProfileId: null, draft: '保留现有报告', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     submitting: false, canSend: true, showStopAction: false, textDecision: true,
     projection: { sessionId: 'session:review', pendingPlan, plans: [pendingPlan], interactions: [], workspaceBindings: [], contextCompositions: [], queuedInputs: [],
@@ -116,7 +116,7 @@ test('a revision after Plan review sends the original text as a Plan response ra
   const draft = '只整理已确认的目录。\n保留原始报告，不执行额外命令。';
   const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
   globalThis.sessionStorage = { getItem: key => key.startsWith('deepcode:composer:')
-    ? JSON.stringify({ draft, pastedTexts: [], filesystemPaths: [], pluginSelections: [] }) : null, setItem() {}, removeItem() {} };
+    ? JSON.stringify({ draft, pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] }) : null, setItem() {}, removeItem() {} };
   t.after(() => {
     if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;

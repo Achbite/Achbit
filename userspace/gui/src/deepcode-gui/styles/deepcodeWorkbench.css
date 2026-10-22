@@ -16,6 +16,13 @@
 }
 
 .deepcode-gui-workbench:has([data-navigation-density='compact']) { --dc-navigation-row: 31px; }
+.deepcode-gui-notification-error {
+  position: absolute;
+  z-index: 30;
+  top: var(--dc-titlebar-height);
+  right: 16px;
+  max-width: min(440px, calc(100% - 32px));
+}
 .deepcode-gui-workbench:has(.deepcode-gui-shell--no-context) { --dc-header-context-width: auto; }
 
 /* Navigation and window chrome are controls; conversation and reader text stay selectable. */

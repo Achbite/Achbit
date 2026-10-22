@@ -32,6 +32,24 @@ const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showCon
   'gui.usageWidget.enabled', 'gui.usageWidget.visibility', 'gui.usageWidget.currency', 'gui.defaultFileOpen', 'gui.showRuntimeFiles'];
 const agentKeys = ['agent.responseLanguage', 'agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens', 'agent.systemPrompt'];
 
+test('completion sound controls and their search entry are available only in the desktop shell', async t => {
+  const previous = globalThis.window;
+  t.after(() => { globalThis.window = previous; });
+  const [{ default: CompletionSoundSettings }, { settingsSearchDefinitions }] = await loadGuiModules(t, [
+    '/src/components/settings-center/CompletionSoundSettings.tsx',
+    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  ]);
+  globalThis.window = { __TAURI__: { core: { invoke() {} } } };
+  const desktop = capture(CompletionSoundSettings, { language: 'zh-CN' });
+  assert.match(desktop.html, /试听/); assert.match(desktop.html, /选择音频/);
+  assert.match(desktop.html, /type="file"/);
+  assert.doesNotMatch(desktop.html, /<h3|<hr/, 'audio controls preserve the flat General page');
+  assert.equal(settingsSearchDefinitions('zh-CN', 'macos').filter(x => x.id === 'gui.completionSound').length, 1);
+  window.__DEEPCODE_BROWSER_PREVIEW__ = true;
+  assert.equal(capture(CompletionSoundSettings, { language: 'zh-CN' }).html, '');
+  assert.equal(settingsSearchDefinitions('zh-CN', 'macos').some(x => x.id === 'gui.completionSound'), false);
+});
+
 for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pages and open on flat General preferences (${language})`, async t => {
   const [{ useSettingsStore }, { default: SettingsCenter }, { GuiSettingsSection, AgentSettingsSection, settingsSearchDefinitions }] = await loadGuiModules(t, [
     '/src/state/settingsStore.ts', '/src/components/settings-center/SettingsCenter.tsx',

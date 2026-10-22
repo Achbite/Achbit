@@ -18,7 +18,7 @@ deepcode-first-party-tools.workspace = true
 deepcode-kernel-runtime.workspace = true
 deepcode-kernel-tools.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 tokio.workspace = true
 tower-http.workspace = true
 reqwest.workspace = true

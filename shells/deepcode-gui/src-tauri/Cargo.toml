@@ -27,6 +27,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.11.2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
+rodio = { version = "0.20", default-features = false, features = ["wav"] }
+tempfile = "3"
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -47,7 +49,7 @@ objc2 = "0.6"
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGWindow", "CGImage", "CGGeometry"], optional = true }
 block2 = "0.6"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "block2"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenPanel", "NSSavePanel", "NSWindow", "NSResponder", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSWindow", "NSResponder", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSData", "NSDictionary", "NSError", "NSBundle"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

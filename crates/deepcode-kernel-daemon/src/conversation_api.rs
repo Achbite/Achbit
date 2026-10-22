@@ -340,7 +340,7 @@ pub(crate) async fn conversation_artifact_read(
 ) -> Response {
     let projection = match request_service(
         state.session_service.clone(),
-        "snapshot",
+        "resourceSnapshot",
         json!({"sessionId":session_id}),
     )
     .await
@@ -1685,6 +1685,63 @@ fn save_input_resource(
     input_id: &str,
     content: &str,
 ) -> Result<Value, String> {
+    let mut display_name: String = content
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("粘贴的文本")
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect();
+    if display_name.is_empty() {
+        display_name = "粘贴的文本".to_string();
+    }
+    save_input_bytes(
+        state,
+        session_id,
+        input_id,
+        content.as_bytes(),
+        "user-input.txt",
+        &display_name,
+        "text/plain",
+        true,
+    )
+}
+
+fn save_input_image(
+    state: &AppState,
+    session_id: &str,
+    input_id: &str,
+    content: &[u8],
+    declared_media: &str,
+) -> Result<Value, String> {
+    let media_type = image_media_type(content)?;
+    if media_type != declared_media {
+        return Err("input_resource_media_type_mismatch".into());
+    }
+    let name = match media_type {
+        "image/png" => "clipboard.png",
+        "image/jpeg" => "clipboard.jpg",
+        "image/gif" => "clipboard.gif",
+        "image/webp" => "clipboard.webp",
+        _ => unreachable!("image_media_type validates the supported formats"),
+    };
+    save_input_bytes(
+        state, session_id, input_id, content, name, name, media_type, false,
+    )
+}
+
+fn save_input_bytes(
+    state: &AppState,
+    session_id: &str,
+    input_id: &str,
+    content: &[u8],
+    logical_path: &str,
+    display_name: &str,
+    media_type: &str,
+    pasted_text: bool,
+) -> Result<Value, String> {
     if !valid_id(session_id) || !valid_id(input_id) {
         return Err("input_resource_identity_invalid".into());
     }
@@ -1704,38 +1761,29 @@ fn save_input_resource(
     let workspace_id = format!("input-workspace-{key_hash}");
     let root = session_attachment_root(&gui.paths.attachment_store_root, session_id)
         .join(reference_storage_segment(&reference_id));
-    let target = root.join("user-input.txt");
+    let target = root.join(logical_path);
     if target.exists() {
         let existing = fs::read(&target).map_err(|error| error.to_string())?;
-        if existing != content.as_bytes() {
+        if existing != content {
             return Err("input_resource_identity_conflict".into());
         }
     } else {
+        if root.exists() {
+            return Err("input_resource_identity_conflict".into());
+        }
         fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         let result = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&target)
             .and_then(|mut file| {
-                file.write_all(content.as_bytes())?;
+                file.write_all(content)?;
                 file.sync_all()
             });
         if let Err(error) = result {
             cleanup_created_snapshot_roots(&[root]);
             return Err(error.to_string());
         }
-    }
-    let mut display_name: String = content
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("粘贴的文本")
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(80)
-        .collect();
-    if display_name.is_empty() {
-        display_name = "粘贴的文本".to_string();
     }
     if gui.conversation_catalog.workspace(&workspace_id).is_none() {
         let canonical_root = fs::canonicalize(&root)
@@ -1744,7 +1792,7 @@ fn save_input_resource(
             .to_string();
         let workspace = ConversationWorkspaceRecord {
             workspace_id: workspace_id.clone(),
-            display_name: display_name.clone(),
+            display_name: display_name.to_string(),
             canonical_root,
             owner_session_id: Some(session_id.to_string()),
             session_workdir: false,
@@ -1755,15 +1803,20 @@ fn save_input_resource(
             return Err(error);
         }
     }
-    Ok(json!({ "text": "", "reference": {
-        "referenceId": reference_id, "workspaceId": workspace_id, "logicalPath": "user-input.txt",
-        "displayName": display_name, "kind": "file", "mediaType": "text/plain", "byteLength": content.len(), "source": "pastedText",
-    } }))
+    let mut reference = json!({
+        "referenceId": reference_id, "workspaceId": workspace_id, "logicalPath": logical_path,
+        "displayName": display_name, "kind": "file", "mediaType": media_type, "byteLength": content.len(),
+    });
+    if pasted_text {
+        reference["source"] = json!("pastedText");
+    }
+    Ok(json!({ "text": "", "reference": reference }))
 }
 
 pub(crate) async fn conversation_input_upload(
     State(state): State<AppState>,
     Path((session_id, input_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Json<ApiResponse> {
     let body = match body {
@@ -1778,11 +1831,26 @@ pub(crate) async fn conversation_input_upload(
             return ApiResponse::error("input_resource_body_read_failed", error.to_string())
         }
     };
-    let content = match std::str::from_utf8(&body) {
-        Ok(content) => content,
-        Err(error) => return ApiResponse::error("input_resource_invalid_utf8", &error.to_string()),
+    let media_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("text/plain")
+        .split(';')
+        .next()
+        .unwrap_or("text/plain")
+        .trim();
+    let saved = if media_type.starts_with("image/") {
+        save_input_image(&state, &session_id, &input_id, &body, media_type)
+    } else {
+        let content = match std::str::from_utf8(&body) {
+            Ok(content) => content,
+            Err(error) => {
+                return ApiResponse::error("input_resource_invalid_utf8", &error.to_string())
+            }
+        };
+        save_input_resource(&state, &session_id, &input_id, content)
     };
-    match save_input_resource(&state, &session_id, &input_id, content) {
+    match saved {
         Ok(value) => ApiResponse::ok(value),
         Err(error) => ApiResponse::error("input_resource_save_failed", &error),
     }

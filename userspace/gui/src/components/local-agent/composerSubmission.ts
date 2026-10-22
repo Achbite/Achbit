@@ -1,10 +1,12 @@
 import type { PluginSelectionInput } from '@deepcode/protocol';
 import type { BrowserAnnotationDraft } from './browserReview';
+import type { PastedImageInput } from '../../services/pastedImage';
 import type { PastedTextInput } from '../../services/pastedText';
 
 export interface ComposerState {
   draft: string;
   pastedTexts: Array<PastedTextInput & { expanded: boolean; browserReview?: BrowserAnnotationDraft }>;
+  pastedImages: PastedImageInput[];
   filesystemPaths: Array<{ path: string; kind: 'file' | 'directory' }>;
   pluginSelections: PluginSelectionInput[];
   selectionStart: number;
@@ -13,15 +15,15 @@ export interface ComposerState {
 }
 
 export function emptyComposerState(): ComposerState {
-  return { draft: '', pastedTexts: [], filesystemPaths: [], pluginSelections: [], selectionStart: 0, selectionEnd: 0, focused: false };
+  return { draft: '', pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [], selectionStart: 0, selectionEnd: 0, focused: false };
 }
 
 export function composerStateIsEmpty(state: ComposerState): boolean {
-  return !state.draft && !state.pastedTexts.length && !state.filesystemPaths.length && !state.pluginSelections.length;
+  return !state.draft && !state.pastedTexts.length && !state.pastedImages.length && !state.filesystemPaths.length && !state.pluginSelections.length;
 }
 
 export function cloneComposerState(state: ComposerState): ComposerState {
-  return { ...state, pastedTexts: state.pastedTexts.map((item) => ({ ...item })),
+  return { ...state, pastedImages: (state.pastedImages ?? []).map((item) => ({ ...item })), pastedTexts: state.pastedTexts.map((item) => ({ ...item })),
     filesystemPaths: state.filesystemPaths.map((item) => ({ ...item })),
     pluginSelections: state.pluginSelections.map((item) => ({ ...item })) };
 }

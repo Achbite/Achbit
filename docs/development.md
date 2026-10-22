@@ -66,6 +66,8 @@ Explicit `-debug` mode selects available Windows and macOS targets when no stage
 
 Use the [Debug CLI guide](debug-control.md) with an explicit test workspace and state root. Call tools and UI actions directly; use one pushed observation stream only for Session/Provider task tests. Debug verification does not automatically add real-model, ordinary CLI/TUI or installer acceptance. Ordinary Session timing is available in both normal and Debug builds.
 
+For historical-session latency, measure process startup, navigation readiness and first session activation separately against the same isolated data snapshot. History replay uses the shared Session reducer with indexes scoped to that replay. Resource and artifact previews use the journal's resource fields and the same Session decoders and revision rules, without rereading model context or retaining a persistent projection cache. Concurrent identical previews share only the pending read; each caller receives independent output. Debug action completion and frame observations are distinct from a physical screen-paint measurement.
+
 DeepCode can read the [English product guide](product/debug-control.md) through `doc.read` with `name="debug-control.md"`; `deepcode-iteration` links the workflow to that document. Built-in Skills/references and the `doc.read` document list are embedded by `local_agent_product_tools.rs`, while packaging also copies `docs/product` into runtime resources. A new Markdown file is not automatically a readable built-in document: update the existing manifest when adding an entry, then rebuild/restart the owning Host. Keep long-lived guidance separate from task receipts.
 
 ## Checks

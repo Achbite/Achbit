@@ -118,7 +118,7 @@ export function ConversationComposer({
   // Alternating names restarts the surface pulse, including rapid repeat clicks.
   const playPressFeedback = () => setPressFeedback(current => current === 'a' ? 'b' : 'a');
   const draftEmpty = !draft && !pendingFilesystemPaths.length
-    && !composer.pastedTexts.length && !pluginSelections.length;
+    && !composer.pastedTexts.length && !composer.pastedImages.length && !pluginSelections.length;
   useLayoutEffect(() => {
     // Sending clears the draft; deleting the last character is still editing.
     if (draftEmpty && editedDraft.current !== draft) setPressFeedback(null);
@@ -146,7 +146,7 @@ export function ConversationComposer({
     const bounds = rail.getBoundingClientRect(), item = latest.getBoundingClientRect();
     if (item.left < bounds.left) rail.scrollLeft -= bounds.left - item.left + 13;
     else if (item.right > bounds.right) rail.scrollLeft += item.right - bounds.right + 13;
-  }, [composer.pastedTexts, pendingFilesystemPaths, pluginSelections]);
+  }, [composer.pastedTexts, composer.pastedImages, pendingFilesystemPaths, pluginSelections]);
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
@@ -194,6 +194,7 @@ export function ConversationComposer({
       {composer.failedDrafts.map((failed, index) => <details className="local-agent__failed-draft" key={index}>
         <summary>{language === 'zh-CN' ? '未发送草稿已保留' : 'Unsent draft saved'}</summary>
         <pre>{[failed.draft, ...failed.pastedTexts.map((item) => item.text)].filter(Boolean).join('\n\n')}</pre>
+        {failed.pastedImages.map((image) => <div key={image.inputId}>{image.name}</div>)}
         {failed.filesystemPaths.map((item) => <div key={item.path}>{item.path}</div>)}
         {failed.pluginSelections.map((item) => <div key={item.selectionId}>@{item.label}</div>)}
         <button type="button" disabled={!composer.canRestoreFailedDraft} onClick={() => composer.restoreFailedDraft(index)}>
@@ -327,7 +328,7 @@ export function ConversationComposer({
         {selectedProfileId && !profiles.some((profile) => profile.id === selectedProfileId && profile.enabled) && (
           <p className="local-agent__profile-notice" role="status">{t(language, 'agent.profile.boundUnavailable')}</p>
         )}
-        {(composer.pastedTexts.length > 0 || pendingFilesystemPaths.length > 0 || pluginSelections.length > 0) && (
+        {(composer.pastedImages.length > 0 || composer.pastedTexts.length > 0 || pendingFilesystemPaths.length > 0 || pluginSelections.length > 0) && (
           <div ref={attachmentRail} className="local-agent__draft-attachments" role="group" tabIndex={0}
             aria-label={language === 'zh-CN' ? '消息附件，可左右滚动查看' : 'Message attachments, scroll horizontally to browse'}>
             {composer.pastedTexts.map(paste => paste.browserReview ? (
@@ -352,6 +353,16 @@ export function ConversationComposer({
                 </button>
                 {paste.expanded && <textarea aria-label={t(language, 'agent.paste.original')} value={paste.text} onChange={(event) => composer.editPastedText(paste.inputId, event.target.value)} rows={8} />}
               </div>
+            ))}
+            {composer.pastedImages.map((image) => (
+              <span className="local-agent__pasted-image" key={image.inputId} data-attachment-id={image.inputId}>
+                <img src={image.dataUrl} alt={image.name} />
+                <span className="local-agent__attachment-name" title={image.name}>{image.name}</span>
+                <button type="button" aria-label={t(language, 'agent.attachment.remove', { name: image.name })}
+                  onClick={() => composer.setPastedImages((current) => current.filter((item) => item.inputId !== image.inputId))}>
+                  <DeepCodeShellIcon name="close" size={14} />
+                </button>
+              </span>
             ))}
             {pluginSelections.map((selection) => (
               <span className="local-agent__draft-plugin" key={selection.selectionId} data-attachment-id={selection.selectionId}>
