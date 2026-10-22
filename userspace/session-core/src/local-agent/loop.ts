@@ -71,6 +71,7 @@ import type { AgentWait } from './agentManager.js';
 import type { ArtifactPresentationInput } from './sessionControls.js';
 import {
   SessionControlError,
+  agentTurnPolicy,
   type PlanPublicationDraft,
   type PlanScopeExtension,
   type SessionControlCall,
@@ -1367,22 +1368,29 @@ async function consumeProviderOutput(
   const inputBlocks = [...decodedOutputBlocks, ...aggregateBlocks].filter((block) => (
     block.kind === 'toolCall' || block.kind === 'toolCallRejected'
   ));
-  const conflict = inputBlocks.some((block) => (
+  const exclusiveCalls = inputBlocks.filter((block) => (
     block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
       || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
       || block.name === SESSION_CONTROL_SESSION
       || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall'
-        || !(block.input.action === 'send' || block.input.action === 'assign' || block.input.action === 'spawn' && block.input.delivery === 'async')
-        || inputBlocks.some(other => other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE))
-  )) && inputBlocks.length > 1
-    ? '该控制调用需要独占一轮；异步 agent spawn、assign 和 send 可以与一个 todo.update 一起提交。本批次未执行。'
-    : inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE).length > 1
-      ? '每个 Provider turn 最多包含一个 todo.update；本批次未执行，请合并步骤更新。'
+        || agentTurnPolicy(block.input) === 'exclusive')
+  ));
+  const incompatibleAgentCalls = inputBlocks.filter(block => block.name === SESSION_CONTROL_AGENT
+    && block.kind === 'toolCall' && agentTurnPolicy(block.input) === 'agents'
+    && inputBlocks.some(other => other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE));
+  const conflictSources = exclusiveCalls.length > 0 ? exclusiveCalls : incompatibleAgentCalls;
+  const todoCalls = inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE);
+  const conflict = conflictSources.length > 0 && inputBlocks.length > 1
+    ? { calls: conflictSources, reason: '控制调用违反独占或 agent 批次组合规则' }
+    : todoCalls.length > 1
+      ? { calls: todoCalls, reason: '每个 Provider turn 最多包含一个 todo.update，请合并步骤更新' }
       : undefined;
   if (conflict) {
+    const sources = conflict.calls.map(block => `${block.name}${block.kind === 'toolCall' && typeof block.input.action === 'string' ? `(action=${block.input.action})` : ''} [${block.providerCallId}]`).join('、');
     for (const blocks of [decodedOutputBlocks, aggregateBlocks]) {
       for (const [index, block] of blocks.entries()) {
         if (block.kind !== 'toolCall') continue;
+        const message = `${conflict.reason}；冲突来源：${sources}。${conflict.calls.includes(block) ? '该调用触发冲突' : '本调用随批次拒绝'}，本批次未执行。`;
         blocks[index] = {
           outputIndex: block.outputIndex,
           item: block.item,
@@ -1391,8 +1399,8 @@ async function consumeProviderOutput(
           name: block.name,
           error: {
             code: 'session_control_turn_conflict',
-            message: conflict,
-            issues: [{ path: '$', rule: 'control_turn', message: conflict }],
+            message,
+            issues: [{ path: '$', rule: 'control_turn', message }],
           },
         };
       }
@@ -1646,7 +1654,7 @@ async function consumeProviderOutput(
     try {
       const control = controls.decode(call.callId, call.name, call.input);
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
-      else if (control?.kind === 'agent' && agentBatch) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
+      else if (control?.kind === 'agent' && (agentBatch || agentTurnPolicy(call.input) === 'tools')) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
       else dispatchCalls.push({ ...call, owner: 'kernel' });
     } catch (error) {
@@ -1662,7 +1670,7 @@ async function consumeProviderOutput(
         progress = { kind: 'controlRejected', rejection };
         continue;
       }
-      if (call.name === SESSION_CONTROL_AGENT && agentBatch) { dispatchCalls.push({ ...call, owner: 'rejected', error: rejection.error }); continue; }
+      if (call.name === SESSION_CONTROL_AGENT && (agentBatch || agentTurnPolicy(call.input) === 'tools')) { dispatchCalls.push({ ...call, owner: 'rejected', error: rejection.error }); continue; }
       return {
         kind: 'controlRejected',
         rejection,

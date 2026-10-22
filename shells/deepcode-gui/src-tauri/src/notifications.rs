@@ -18,7 +18,7 @@ pub struct Reminder {
 
 fn show_if_background(app: &tauri::AppHandle, reminder: Reminder) -> Result<(), String> {
     let main = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or("main_window_unavailable")?;
     #[cfg(target_os = "macos")]
     if objc2_app_kit::NSApplication::sharedApplication(
@@ -31,7 +31,7 @@ fn show_if_background(app: &tauri::AppHandle, reminder: Reminder) -> Result<(), 
         return Ok(());
     }
     #[cfg(not(target_os = "macos"))]
-    for (label, window) in app.webview_windows() {
+    for (label, window) in app.windows() {
         if label != WINDOW && window.is_focused().map_err(|error| error.to_string())? {
             return Ok(());
         }
@@ -133,7 +133,7 @@ pub fn deepcode_dismiss_completion(window: tauri::WebviewWindow) -> Result<(), S
 #[tauri::command]
 pub fn deepcode_open_completion(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
     let main = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or("main_window_unavailable")?;
     app.emit_to("main", "deepcode:completion-open", session_id)
         .map_err(|error| error.to_string())?;

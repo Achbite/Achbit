@@ -215,6 +215,29 @@ export interface PlanScopeExtension {
   mutationManifest: PlanOperation[];
 }
 
+const agentTurnPolicies = {
+  models: 'tools',
+  spawn: 'agents',
+  assign: 'agents',
+  send: 'agents',
+  compact: 'exclusive',
+  wait: 'exclusive',
+  cancel: 'exclusive',
+  close: 'exclusive',
+} as const satisfies Record<AgentOperation['action'], 'tools' | 'agents' | 'exclusive'>;
+
+export function agentTurnPolicy(input: Record<string, unknown>): 'tools' | 'agents' | 'exclusive' {
+  if (typeof input.action !== 'string' || !Object.hasOwn(agentTurnPolicies, input.action)) return 'exclusive';
+  if (input.action === 'spawn' && input.delivery !== 'async') return 'exclusive';
+  return agentTurnPolicies[input.action as AgentOperation['action']];
+}
+
+const agentTurnGuidance = Object.entries(agentTurnPolicies).reduce<Record<string, string[]>>((groups, [action, policy]) => {
+  (groups[policy] ??= []).push(action === 'spawn' ? 'spawn(delivery=async)' : action);
+  return groups;
+}, {});
+const agentTurnInstruction = ` ${agentTurnGuidance.tools!.join(', ')} may share a turn with independent ordinary tools and at most one todo.update. Available ${agentTurnGuidance.agents!.join(', ')} operations may share a turn only with other agent calls and at most one todo.update. Submit ${agentTurnGuidance.exclusive!.join(', ')} and spawn(delivery=wait) alone.`;
+
 /** Detailed contracts are returned by discovery, leaving the provider tool prefix stable. */
 export function agentOperationDefinitions({ messaging, delegation, continuation }: AgentCapabilities,
   options: { fullConfiguration?: boolean; presetIds?: string[]; profileIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean; coordinator?: boolean } = {}): JsonObject[] {
@@ -276,10 +299,10 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     },
     {
       name: SESSION_CONTROL_AGENT,
-      description: capabilities && !capabilities.delegation
+      description: (capabilities && !capabilities.delegation
         ? capabilities.messaging === 'parent' ? 'Contact your current task owner. Call action=models for contacts and operations. Send findings, questions or scope needs; messages do not grant permissions or start tasks. Use session wait for a needed reply; return a final answer when done. Retaining the Session needs no active wait.'
           : 'Coordinate directly with teammates. Agree on shared interfaces and one writer per shared file; send unresolved disagreements or scope needs to the coordinator. Messages are not agreement or permission. Use session wait for needed replies; finish with a final answer and evidence, not an indefinite wait. Call action=models for contacts and operations. Multiple messages may share a turn.'
-        : 'When enabled, proactively delegate independent work asynchronously with necessary context, scope and expected evidence. No user reminder is needed. Use collaboration for communicating teammates; give shared files one writer, resolve disagreements and verify results. Await final task results; completed tasks release execution without close. Keep short or tightly coupled work direct and continue independent work. Call action=models for operations and configuration. Disabling blocks new tasks, not existing work. Async spawns, assignments and messages may share a turn with todo.update; submit compact, wait, cancel, close and discovery alone.',
+        : 'When enabled, proactively delegate independent work asynchronously with necessary context, scope and expected evidence. No user reminder is needed. Use collaboration for communicating teammates; give shared files one writer, resolve disagreements and verify results. Await final task results; completed tasks release execution without close. Keep short or tightly coupled work direct and continue independent work. Call action=models for operations and configuration. Disabling blocks new tasks, not existing work.') + agentTurnInstruction,
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
