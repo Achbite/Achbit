@@ -5,10 +5,12 @@ mod file_reader;
 #[path = "../../../shared/open_file.rs"]
 mod open_file;
 
+mod completion_sound;
 #[path = "../../../shared/native_browser/mod.rs"]
 mod native_browser;
 #[path = "../../../shared/native_path_dialog/mod.rs"]
 mod native_path_dialog;
+mod notifications;
 mod ssh_auth;
 mod ssh_gui;
 
@@ -313,6 +315,10 @@ impl Drop for HostProcessGroup {
 }
 
 fn main() {
+    let completion_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        notifications::deepcode_dismiss_completion,
+        notifications::deepcode_open_completion
+    ];
     let auth_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         ssh_auth::deepcode_ssh_auth_context,
         ssh_auth::deepcode_ssh_auth_respond
@@ -330,6 +336,10 @@ fn main() {
         deepcode_window_toggle_maximize,
         deepcode_window_close,
         deepcode_open_external_url,
+        notifications::deepcode_notify_completed,
+        completion_sound::deepcode_completion_sound,
+        completion_sound::deepcode_set_completion_sound,
+        completion_sound::deepcode_preview_completion_sound,
         ssh_gui::deepcode_connect_ssh,
         ssh_gui::deepcode_open_local,
         native_browser::deepcode_browser_host,
@@ -342,6 +352,9 @@ fn main() {
         })
         .register_uri_scheme_protocol(ssh_auth::SCHEME, |_ctx, _request| ssh_auth::page())
         .invoke_handler(move |invoke| {
+            if invoke.message.webview_ref().label() == notifications::WINDOW {
+                return completion_handler(invoke);
+            }
             if invoke.message.webview_ref().label() == "ssh-auth" {
                 return auth_handler(invoke);
             }

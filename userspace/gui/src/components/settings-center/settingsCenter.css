@@ -548,3 +548,6 @@
 .plugin-connection > label { display:grid; grid-template-columns:minmax(0,1fr) minmax(190px,280px); align-items:center; gap:20px; min-height:52px; }
 .plugin-connection > label:has(textarea) { grid-template-columns:minmax(0,1fr); }
 @container (max-width:620px) { .plugin-connection > label { grid-template-columns:minmax(0,1fr); gap:6px; } }
+.settings-completion-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.settings-completion-path { overflow-wrap: anywhere; }
+.settings-completion { display: grid; gap: 8px; }

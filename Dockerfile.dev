@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && apt-get update && apt-get install -y --no-install-recommends \
         curl wget ca-certificates git \
         build-essential pkg-config make file bubblewrap \
-        libssl-dev \
+        libssl-dev libasound2-dev \
         libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
         gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 nsis \
         iputils-ping netcat-openbsd jq xz-utils unzip sccache

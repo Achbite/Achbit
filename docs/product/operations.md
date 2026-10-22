@@ -66,6 +66,10 @@ GUI, CLI and TUI share the Host. An automatically started Host stays alive while
 
 Switching conversations changes the view, not the previous task. Reopening a GUI does not retarget a waiting run; **Continue in this window** explicitly rebinds future requests. Earlier pending calls retain their original target. Observe again after rebinding.
 
+While the desktop GUI is open, each observed successful task completion plays one soft ding-dong. When the app is in the background, a separate DeepCode window also appears at the bottom-right of its monitor, above the taskbar or Dock, without taking keyboard focus. Click it to open the conversation, dismiss it, or let it hide after 8 seconds. This does not use system notifications or require notification permission. Loading completed history, cancellation and failure do not send success reminders. Closing the GUI stops its reminders. Playback follows the current system output device and volume.
+
+In **Settings → General → Task completion reminders**, preview the sound, choose a WAV (up to 30 seconds / 8 MiB), or restore the default. The override lives at `<local config directory>/user/local/sounds/completion.wav`; settings displays the exact local path, including in Debug or SSH mode. The GUI reads the file anew for every playback, so replacing it directly takes effect on the next reminder. Invalid replacements and playback errors are reported; they do not silently substitute a different sound.
+
 ## Models and context
 
 Use [model services](model-services.md) for profiles, authentication, images, context settings and usage. The selected model/environment is captured for a run. A slow request alone does not prove a stuck Loop; inspect its Provider/tool result and original error.

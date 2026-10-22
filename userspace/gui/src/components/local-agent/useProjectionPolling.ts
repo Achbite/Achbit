@@ -20,7 +20,7 @@ export function startProjectionPolling(active: boolean, refresh: () => Promise<v
   let timeout: number | null = null;
   const schedule = () => {
     if (cancelled || refreshing || timeout !== null) return;
-    const delay = document.visibilityState === 'hidden' ? 10_000 : active ? 120 : 4_000;
+    const delay = document.visibilityState === 'hidden' ? (active ? 1_000 : 10_000) : active ? 120 : 4_000;
     timeout = window.setTimeout(() => {
       timeout = null;
       poll();

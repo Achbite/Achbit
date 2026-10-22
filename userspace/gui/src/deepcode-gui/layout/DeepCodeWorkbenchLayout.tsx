@@ -23,6 +23,9 @@ import DeepCodeConversationShell from './DeepCodeConversationShell';
 import DeepCodeSidebar from './DeepCodeSidebar';
 import SidebarMenu from './SidebarMenu';
 import { useReadRunMarkers } from './useReadRunMarkers';
+import { useCompletionNotifications } from './useCompletionNotifications';
+import { onCompletionOpen } from '../../services/runtimeAdapter';
+import { DismissibleError } from '../../components/local-agent/DismissibleError';
 import { useSidebarOrder } from './useSidebarOrder';
 import DeepCodeTaskPanel from './DeepCodeTaskPanel';
 import DeepCodeTitlebar from './DeepCodeTitlebar';
@@ -83,6 +86,7 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
       },
     };
   }, [projection, sessionStatuses]);
+  const completionNotification = useCompletionNotifications(sidebarStatuses, catalog.sessions, language);
   const loading = useLocalAgentStore((state) => state.loading);
   const submitting = useLocalAgentStore((state) => state.submitting);
   const catalogBusy = useLocalAgentStore((state) => state.catalogBusy);
@@ -112,6 +116,16 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
   useInterfaceReloadView('settingsOpen', settingsOpen);
   useInterfaceReloadView('conversation', { sessionId: activeSessionId, draftProjectId });
   const [settingsNavigation, setSettingsNavigation] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onCompletionOpen(sessionId => {
+      setSettingsOpen(false);
+      void activateSession(sessionId);
+    }).then(stop => { if (disposed) stop(); else unlisten = stop; })
+      .catch(error => setNavigationError(String(error)));
+    return () => { disposed = true; unlisten?.(); };
+  }, [activateSession]);
   const settingsClose = useRef<HTMLButtonElement>(null);
   const settingsOpener = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -398,7 +412,9 @@ const DeepCodeWorkbenchLayout: React.FC<DeepCodeWorkbenchLayoutProps> = ({
           }}
         />
       </DeepCodeNavigationBox></UiRegion>,
-        main: <><div
+        main: <>{completionNotification.error && <div className="deepcode-gui-notification-error">
+          <DismissibleError language={language} onDismiss={completionNotification.dismiss}>{completionNotification.error}</DismissibleError>
+        </div>}<div
         className={`deepcode-gui-shell${showContextRail ? '' : ' deepcode-gui-shell--no-context'}`}
         data-navigation-density={navigationDensity}
       >
