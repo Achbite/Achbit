@@ -83,7 +83,7 @@ export function settingsSearchDefinitions(language: ReturnType<typeof normalizeU
   };
   return [
     ...Object.entries(groups).flatMap(([category, keys]) => definitionsFor(keys, available, language).map((definition) => ({ id: definition.key, title: definition.label, keywords: `${definition.key} ${definition.description}`, category }))),
-    ...(hasDesktopNotifications() ? [{ id: 'gui.completionSound', title: t(language, 'settings.completion.title'), keywords: t(language, 'settings.completion.behavior'), category: 'general' }] : []),
+    ...(hasDesktopNotifications() ? [{ id: 'gui.completionSound', title: t(language, 'settings.completion.title'), keywords: t(language, 'settings.completion.searchKeywords'), category: 'general' }] : []),
   ];
 }
 
