@@ -58,7 +58,7 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
       await options.saveDefaults?.(value);
       Object.assign(settings, value);
     },
-    async models() { return [
+    async models() { return options.models ? options.models() : [
       { profileId: 'profile:default', name: 'Default', model: 'fixture-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] },
       { profileId: 'profile:chosen', name: 'Chosen model', model: 'chosen-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['high'] },
     ]; },
@@ -258,6 +258,104 @@ for (const maxConcurrent of [2, 1]) test(`one response admits async child spawns
   for (const childId of entered) assert.equal(occurrences(rootInput, `Evidence from ${childId}.`), 1);
 });
 
+for (const scenario of [
+  { surface: 'aggregate', catalogFailure: false },
+  { surface: 'responses', catalogFailure: false },
+  { surface: 'aggregate', catalogFailure: true },
+]) test(`discovery shares a turn with independent reads and Todo (${scenario.surface}, failure=${scenario.catalogFailure})`, async t => {
+  const ownerId = `session:discovery-batch:${scenario.surface}:${scenario.catalogFailure}`;
+  const tools = ['session.read', 'skill.read'].map(name => ({ toolBindingRef: `binding:${name}`, name,
+    description: `Read ${name} evidence.`, origin: 'coreBuiltin', availability: 'callable', possibleEffects: [],
+    inputSchema: { type: 'object', additionalProperties: false, properties: name === 'session.read'
+      ? { sessionId: { type: 'string' }, view: { type: 'string' } } : { name: { type: 'string' } } } }));
+  const executions = [];
+  const calls = [
+    ['discovery:session', 'session_read', { sessionId: 'session:evidence', view: 'summary' }],
+    ['discovery:skill-a', 'skill_read', { name: 'first-skill' }],
+    ['discovery:skill-b', 'skill_read', { name: 'second-skill' }],
+    ['discovery:models', 'agent', { action: 'models' }],
+    ['discovery:todo', 'todo_update', { items: [{ text: 'Read the independent evidence.', status: 'inProgress' }] }],
+  ];
+  const fixture = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
+    assert.ok(turn <= 2, 'one mixed batch must close before the final answer');
+    if (turn === 1) {
+      for (const [outputIndex, [id, name, input]] of calls.entries()) yield scenario.surface === 'aggregate'
+        ? call(request, id, name, input)
+        : providerEvent(request.requestId, 'output.item.completed', { outputIndex, item: {
+          type: 'function_call', call_id: id, name, arguments: JSON.stringify(input), status: 'completed' } });
+    } else {
+      const results = request.messages.filter(message => message.role === 'tool');
+      // Results arrive as their owners finish; identity, call order and exact-once closure are distinct contracts.
+      assert.deepEqual(results.map(message => message.providerCallId).sort(), calls.map(([id]) => id).sort());
+      const replayedCalls = request.messages.flatMap(message => [...(message.toolCalls ?? []),
+        ...(message.providerOutputBlocks ?? []).filter(block => block.kind === 'toolCall')]);
+      assert.deepEqual(replayedCalls.map(call => call.providerCallId), calls.map(([id]) => id));
+      for (const [id] of calls.slice(0, 3)) assert.match(results.find(message => message.providerCallId === id).content, /read evidence:/u);
+      const discovery = results.find(message => message.providerCallId === 'discovery:models');
+      if (scenario.catalogFailure) assert.match(discovery.content, /model_catalog_unavailable/u);
+      else assert.ok(JSON.parse(discovery.content).operations.some(operation => operation.action === 'models'));
+      assert.equal(results.some(message => message.content.includes('session_control_turn_conflict')), false);
+      yield answer(request, 'All independent results were received.');
+    }
+    yield done(request);
+  }, { preparation: { tools },
+    ...(scenario.catalogFailure ? { models: async () => { throw new Error('model_catalog_unavailable'); } } : {}),
+    kernel: () => emptyKernel({ async execute(request) {
+      executions.push(request);
+      return completedExecutionReply(request, { content: `read evidence:${request.providerCallId ?? request.callId}` });
+    } }),
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:discovery-batch', 'Discover models and read the independent evidence.'));
+  const state = await completed(fixture.service, ownerId);
+  assert.deepEqual(state.agentTasks ?? [], []);
+  assert.equal(state.todoList.items[0].status, 'inProgress');
+  assert.deepEqual(executions.map(request => request.toolName), ['session.read', 'skill.read', 'skill.read']);
+  const events = await readEvents(fixture.journal, ownerId);
+  const facts = events.filter(event => ['tool.requested', 'agent.control.completed', 'session.control.rejected', 'todo.updated'].includes(event.type));
+  assert.deepEqual(facts.map(event => event.payload.providerCallId), calls.map(([id]) => id));
+  assert.equal(events.filter(event => event.type === 'tool.completed').length, 3);
+  assert.equal(events.some(event => event.type === 'agent.task.created'), false);
+  if (scenario.catalogFailure) {
+    assert.equal(facts[3].type, 'session.control.rejected');
+    assert.equal(facts[3].payload.error.message, 'model_catalog_unavailable');
+  }
+});
+
+test('plugin activation mixed with discovery and a read rejects the entire batch with its conflict source', async t => {
+  const ownerId = 'session:plugin-discovery-conflict';
+  const tool = { toolBindingRef: 'binding:read-conflict', name: 'fs.read', description: 'Read evidence.',
+    origin: 'coreBuiltin', availability: 'callable', possibleEffects: [],
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } };
+  const discoveryTool = { toolBindingRef: 'binding:plugin-search-conflict', name: 'plugin.search', description: 'Discover plugins.',
+    origin: 'coreBuiltin', availability: 'callable', possibleEffects: ['localRead'], inputSchema: { type: 'object', properties: {} } };
+  let modelReads = 0, executions = 0;
+  const fixture = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
+    if (turn === 1) {
+      yield call(request, 'exclusive:plugin', 'plugin_activate', { pluginUris: ['plugin://sample@builtin'] });
+      yield call(request, 'exclusive:models', 'agent', { action: 'models' });
+      yield call(request, 'exclusive:read', 'fs_read', { path: 'evidence.txt' });
+    } else {
+      assert.equal(turn, 2);
+      const errors = request.messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content));
+      assert.equal(errors.length, 3);
+      assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
+      assert.match(errors[0].error.message, /plugin\.activate \[exclusive:plugin\].*该调用触发冲突/u);
+      assert.match(errors[1].error.message, /plugin\.activate \[exclusive:plugin\].*本调用随批次拒绝/u);
+      assert.match(errors[2].error.message, /plugin\.activate \[exclusive:plugin\].*本调用随批次拒绝/u);
+      yield answer(request, 'The conflicting batch had no effects.');
+    }
+    yield done(request);
+  }, { preparation: { tools: [tool, discoveryTool] }, models: async () => { modelReads++; return []; },
+    kernel: () => emptyKernel({ async execute(request) { executions++; return completedExecutionReply(request, {}); } }),
+  });
+  await fixture.service.submit(messageCommand(ownerId, 'command:plugin-conflict', 'Inspect the conflicting batch.'));
+  await completed(fixture.service, ownerId);
+  assert.equal(modelReads, 0);
+  assert.equal(executions, 0);
+  const events = await readEvents(fixture.journal, ownerId);
+  assert.equal(events.some(event => ['tool.requested', 'agent.control.completed', 'session.plugins.activated'].includes(event.type)), false);
+});
+
 test('a session control mixed with child creation is rejected before either operation starts', async t => {
   const ownerId = 'session:exclusive-wake';
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
@@ -280,6 +378,8 @@ test('a session control mixed with child creation is rejected before either oper
   });
   assert.equal(errors.length, 2);
   assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
+  assert.match(errors[0].error.message, /session\(action=schedule\) \[mixed:session\].*本调用随批次拒绝/u);
+  assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*该调用触发冲突/u);
 });
 
 test('a retained child continues across parent runs with its original Session, model and conversation', async t => {
