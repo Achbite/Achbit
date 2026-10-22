@@ -6,7 +6,7 @@ import { SessionService, emptySessionState, reduceSession, recoverSession, proje
 import { projectSessionResources } from '../dist/local-agent/resourceProjection.js';
 import { projectResourceTool } from '../dist/local-agent/reducer.js';
 
-async function fixture() {
+async function fixture(withArtifacts = false) {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:resource-projection', runId = 'run:resource-projection';
   await createSession(journal, sessionId, [workspaceBinding]);
   const events = await readEvents(journal, sessionId);
@@ -36,6 +36,8 @@ async function fixture() {
       unrelatedBody: `TOOL_BODY_${suffix}`, fileChanges: [{ workspaceId: workspaceBinding.workspaceId, path: `${suffix}.txt`, kind: 'create',
         before: { exists: false }, after: { exists: true, contentRef: `/archive/${suffix}`, sizeBytes: 3 } }],
     }).record;
+    if (withArtifacts && suffix === 'session') record.output.artifacts = [{ artifactId: 'artifact:preview', label: 'Preview',
+      logicalPath: 'preview.png', contentType: 'image/png', contentMode: 'fixed' }];
     records.push(record);
     await append('tool.completed', { record }, { runId, callId });
   }
@@ -51,7 +53,7 @@ async function fixture() {
 function expectedResources(events, sessionId, recordIds = []) {
   const p = projectSession(recoverSession(sessionId, events));
   return { sessionId, revision: p.revision, workspaceBindings: p.workspaceBindings,
-    messages: p.messages.map(({filesystemReferences})=>({filesystemReferences})), shellAuthorizations: p.shellAuthorizations,
+    messages: p.messages.map(({filesystemReferences})=>({filesystemReferences})), shellAuthorizations: p.shellAuthorizations, artifacts: p.artifacts,
     activities: p.activities.filter(a=>a.tool?.recordId && recordIds.includes(a.tool.recordId)).map(a=>({tool:{recordId:a.tool.recordId,
       ...(a.tool.fileChanges?{fileChanges:a.tool.fileChanges}:{})}})) };
 }
@@ -74,6 +76,30 @@ test('resource views equal full projection fields, select only requested records
   assert.deepEqual(f.events,original);
 });
 
+test('artifact previews use resource fields and retain full projection visibility and decoding errors', async t => {
+  const f=await fixture(true);
+  const service=new SessionService(f.journal,{async create(){throw new Error('artifact_preview_started_actor');}});t.after(()=>service.dispose());
+  f.journal.read=async function*(){throw new Error('artifact_preview_read_full_journal');};
+  const view=await service.resourceSnapshot(f.sessionId);
+  assert.deepEqual(view,expectedResources(f.events,f.sessionId));
+  assert.deepEqual(view.artifacts.map(a=>a.artifactId),['artifact:preview']);
+  assert.equal(view.activities.length,0);
+  const read=await f.journal.readResources(f.sessionId);
+  assert.ok(!JSON.stringify(read).includes('TOOL_BODY_run'));
+  const bad=structuredClone(read);
+  const badRecord=bad.events.find(e=>e.payload.record)?.payload.record;
+  badRecord.output.artifacts[0].contentType=null;
+  assert.deepEqual(projectSessionResources(bad,[],projectResourceTool).artifacts,[]);
+  const badEvents=structuredClone(f.events);
+  badEvents.find(e=>e.type==='tool.completed').payload.record.output.artifacts[0].contentType=null;
+  assert.deepEqual(projectSessionResources(bad,[],projectResourceTool),expectedResources(badEvents,f.sessionId));
+  await f.settle();
+  await f.append('conversation.revised',{commandId:'command:edit',messageId:'message:input',fromSequence:3,throughSequence:f.events.at(-1).sequence});
+  const revised=await service.resourceSnapshot(f.sessionId);
+  assert.deepEqual(revised,expectedResources(f.events,f.sessionId));
+  assert.deepEqual(revised.artifacts,[]);
+});
+
 test('resource grants, revocation, workspace membership and message edits retain full replay semantics',async t=>{
   const f=await fixture();const service=new SessionService(f.journal,{async create(){throw new Error('unexpected_actor');}});t.after(()=>service.dispose());
   const check=async()=>assert.deepEqual(await service.resourceSnapshot(f.sessionId,f.records.map(r=>r.recordId)),expectedResources(f.events,f.sessionId,f.records.map(r=>r.recordId)));
@@ -88,6 +114,29 @@ test('resource grants, revocation, workspace membership and message edits retain
   assert.equal(edited.messages.length,0);assert.equal(edited.activities.length,0);assert.equal(edited.shellAuthorizations.length,1);
   await f.append('approval.revoked',{commandId:'command:revoke',authorityId:'authority:session'},{runId:f.runId});await check();
   assert.equal((await service.resourceSnapshot(f.sessionId)).shellAuthorizations.length,0);
+});
+
+test('overlapping resource previews share one read, isolate results and discard successful or failed reads afterwards', async t => {
+  const f=await fixture(true), originalRead=f.journal.readResources.bind(f.journal);
+  const service=new SessionService(f.journal,{async create(){throw new Error('unexpected_actor');}});t.after(()=>service.dispose());
+  let release, reads=0;
+  const gate=new Promise(resolve=>{release=resolve;});
+  f.journal.readResources=async(...args)=>{reads++;await gate;return originalRead(...args);};
+  const pending=[service.resourceSnapshot(f.sessionId),service.resourceSnapshot(f.sessionId)];
+  assert.equal(reads,1);release();
+  const [first,second]=await Promise.all(pending);
+  assert.deepEqual(first,expectedResources(f.events,f.sessionId));assert.deepEqual(second,first);
+  first.artifacts[0].label='caller mutation';
+  assert.equal(second.artifacts[0].label,'Preview');
+  assert.deepEqual(await service.resourceSnapshot(f.sessionId),expectedResources(f.events,f.sessionId));
+  assert.equal(reads,2);
+  const failure=new Error('fresh_resource_read_failure');
+  f.journal.readResources=async()=>{reads++;throw failure;};
+  const failed=await Promise.allSettled([service.resourceSnapshot(f.sessionId),service.resourceSnapshot(f.sessionId)]);
+  assert.equal(reads,3);
+  for(const result of failed){assert.equal(result.status,'rejected');assert.equal(result.reason,failure);}
+  f.journal.readResources=originalRead;
+  assert.deepEqual(await service.resourceSnapshot(f.sessionId),expectedResources(f.events,f.sessionId));
 });
 
 test('resource reads preserve fresh journal errors and reject wrong identity, order and missing approval facts',async t=>{

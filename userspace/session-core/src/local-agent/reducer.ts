@@ -2139,14 +2139,13 @@ function projectProcess(state: SessionState, job: ManagedProcessSnapshot): void 
 
 class ToolDetailProjectionError extends Error {}
 
-/** Resource lookups use the same tool/file-change decoder as the full projection. */
+/** Resource lookups share the full projection's file-change and artifact decoder. */
 export function projectResourceTool(record: ToolExecutionRecord) {
-  if (!('output' in record) || !isRecord(record.output) || !Object.hasOwn(record.output, 'fileChanges')) return { recordId: record.recordId };
-  const { tool } = projectToolRecord(record, {});
+  const { tool, artifacts } = projectToolRecord(record, {});
   const job = record.outcome === 'completed' && isRecord(record.output) ? record.output.job : undefined;
   const managed = record.preparedEffect.providerRef === 'deepcode:processes' && record.input.action === 'start'
     && isManagedProcessSnapshot(job) && job.callId === record.callId && job.runId === record.runId && job.sessionId === record.sessionId;
-  return { recordId: record.recordId, ...(!managed && tool.fileChanges ? { fileChanges: tool.fileChanges } : {}) };
+  return { tool: { recordId: record.recordId, ...(!managed && tool.fileChanges ? { fileChanges: tool.fileChanges } : {}) }, artifacts };
 }
 
 function projectToolRecord(record: ToolExecutionRecord, activities: SessionState['activities']): {

@@ -2430,6 +2430,7 @@ export interface SessionResourceProjection {
   workspaceBindings: WorkspaceBindingDisplay[];
   messages: Array<Pick<SessionProjection['messages'][number], 'filesystemReferences'>>;
   shellAuthorizations: SessionProjection['shellAuthorizations'];
+  artifacts: ArtifactProjection[];
   activities: Array<{ tool: Pick<NonNullable<ActivityProjection['tool']>, 'recordId' | 'fileChanges'> }>;
 }
 

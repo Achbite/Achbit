@@ -340,7 +340,7 @@ pub(crate) async fn conversation_artifact_read(
 ) -> Response {
     let projection = match request_service(
         state.session_service.clone(),
-        "snapshot",
+        "resourceSnapshot",
         json!({"sessionId":session_id}),
     )
     .await

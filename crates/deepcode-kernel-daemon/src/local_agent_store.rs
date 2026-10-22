@@ -448,7 +448,7 @@ impl LocalAgentJournal {
             .map_err(sql_error("session_read_failed"))?
             .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
         // Never materialize model context or unrelated tool outputs. Requested
-        // records remain intact for Session's canonical detail decoder.
+        // records and artifact sources stay intact for Session's shared decoder.
         let mut statement = connection.prepare(
             "SELECT sequence,event_type,run_id,call_id,
              CASE
@@ -469,8 +469,9 @@ impl LocalAgentJournal {
                WHEN event_type='approval.revoked' THEN json_object('authorityId',json_extract(payload_json,'$.authorityId'))
                WHEN event_type='conversation.revised' THEN json_object('fromSequence',json_extract(payload_json,'$.fromSequence'),
                  'throughSequence',json_extract(payload_json,'$.throughSequence'))
-               WHEN event_type='tool.completed' AND json_array_length(?2)>0 THEN
-                 CASE WHEN json_extract(payload_json,'$.record.recordId') IN (SELECT value FROM json_each(?2)) THEN payload_json ELSE '{}' END
+               WHEN event_type='tool.completed' THEN
+                 CASE WHEN json_type(payload_json,'$.record.output.artifacts') IS NOT NULL
+                   OR json_extract(payload_json,'$.record.recordId') IN (SELECT value FROM json_each(?2)) THEN payload_json ELSE '{}' END
                WHEN event_type='process.updated' THEN json_object('job',json_object('callId',json_extract(payload_json,'$.job.callId')))
                ELSE '{}'
              END
@@ -6454,6 +6455,24 @@ mod tests {
         ] {
             assert!(!selected.to_string().contains(marker));
         }
+        let artifact = json!({"record":{"recordId":"record:artifact","output":{"artifacts":[
+            {"artifactId":"artifact:preview","contentType":"image/png","contentMode":"fixed"}
+        ]}}});
+        journal.lock().unwrap().execute(
+            "INSERT INTO session_events(session_id,sequence,event_id,event_type,run_id,call_id,payload_json,occurred_at)
+             VALUES (?1,7,'event:artifact','tool.completed','run:resource','call:artifact',?2,'now')",
+            params![id,artifact.to_string()],
+        ).unwrap();
+        let with_artifact = journal.read_resources(id, &[]).unwrap();
+        assert_eq!(with_artifact["revision"], 7);
+        assert_eq!(
+            with_artifact["events"].as_array().unwrap().last().unwrap()["payload"],
+            artifact
+        );
+        assert_eq!(with_artifact["events"][2]["payload"], json!({}));
+        assert!(!with_artifact
+            .to_string()
+            .contains("CONTEXT_BODY_NOT_NEEDED"));
         assert_eq!(
             journal
                 .read_resources("session:missing", &[])

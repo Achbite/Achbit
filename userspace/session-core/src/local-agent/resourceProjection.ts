@@ -69,7 +69,10 @@ export function projectResourceEvent(event: SessionEvent, recordIds: readonly st
         ...(event.payload.authorizationScope ? { authorizationScope: event.payload.authorizationScope } : {}) } };
     case 'approval.revoked': return { ...base, type: event.type, runId: event.runId, payload: { authorityId: event.payload.authorityId } };
     case 'tool.completed': return { ...base, type: event.type, runId: event.runId, callId: event.callId,
-      payload: recordIds.includes(event.payload.record.recordId) ? { record: structuredClone(event.payload.record) } : {} };
+      payload: recordIds.includes(event.payload.record.recordId)
+        || ('output' in event.payload.record && event.payload.record.output !== null
+          && typeof event.payload.record.output === 'object' && 'artifacts' in event.payload.record.output)
+        ? { record: structuredClone(event.payload.record) } : {} };
     case 'tool.input-rejected': case 'tool.not-executed':
       return { ...base, type: event.type, runId: event.runId, callId: event.callId, payload: {} };
     case 'process.updated': return recordIds.length ? { ...base, type: event.type, runId: event.runId, callId: event.callId, payload: { job: { callId: event.payload.job.callId } } } : null;
@@ -81,7 +84,9 @@ export function projectResourceEvent(event: SessionEvent, recordIds: readonly st
 }
 
 export function projectSessionResources(read: ResourceJournalRead, recordIds: readonly string[],
-  projectTool: (record: ToolExecutionRecord) => SessionResourceProjection['activities'][number]['tool']): SessionResourceProjection {
+  projectTool: (record: ToolExecutionRecord) => {
+    tool: SessionResourceProjection['activities'][number]['tool']; artifacts: SessionResourceProjection['artifacts'];
+  }): SessionResourceProjection {
   if (!Number.isSafeInteger(read.revision) || read.revision < 1 || read.events[0]?.type !== 'session.created'
     || read.events[0].sequence !== 1) throw new Error('session_creation_event_missing');
   let sequence = 0;
@@ -95,6 +100,7 @@ export function projectSessionResources(read: ResourceJournalRead, recordIds: re
   const approvals = new Map<string, Approval>();
   const messages: SessionResourceProjection['messages'] = [];
   const processes = new Set<string>();
+  const artifacts = new Map<string, SessionResourceProjection['artifacts'][number]>();
   const selected = new Map<string, { callId: string; tool: SessionResourceProjection['activities'][number]['tool'] }>();
   const requested = new Set(recordIds);
   for (const event of activeConversationEvents(read.events)) {
@@ -114,10 +120,14 @@ export function projectSessionResources(read: ResourceJournalRead, recordIds: re
       case 'run.settled': grants = authorizationsAfterSettlement(grants, event.runId); approvals.clear(); break;
       case 'tool.completed':
         approvals.delete(event.callId);
-        if (event.payload.record && requested.has(event.payload.record.recordId) && !selected.has(event.payload.record.recordId)) {
-          const tool = projectTool(event.payload.record);
-          if (processes.has(event.callId)) delete tool.fileChanges;
-          selected.set(event.payload.record.recordId, { callId: event.callId, tool });
+        if (event.payload.record) {
+          const projection = projectTool(event.payload.record);
+          for (const artifact of projection.artifacts) artifacts.set(artifact.artifactId, artifact);
+          if (requested.has(event.payload.record.recordId) && !selected.has(event.payload.record.recordId)) {
+            const tool = projection.tool;
+            if (processes.has(event.callId)) delete tool.fileChanges;
+            selected.set(event.payload.record.recordId, { callId: event.callId, tool });
+          }
         }
         break;
       case 'tool.input-rejected': case 'tool.not-executed': approvals.delete(event.callId); break;
@@ -128,5 +138,6 @@ export function projectSessionResources(read: ResourceJournalRead, recordIds: re
     }
   }
   return { sessionId: read.sessionId, revision: read.revision, workspaceBindings: workspace.workspaceBindings,
-    messages, shellAuthorizations: grants, activities: [...selected.values()].map(({ tool }) => ({ tool })) };
+    messages, shellAuthorizations: grants, artifacts: [...artifacts.values()],
+    activities: [...selected.values()].map(({ tool }) => ({ tool })) };
 }
