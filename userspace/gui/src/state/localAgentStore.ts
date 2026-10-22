@@ -1,3 +1,4 @@
+import type { PastedImageInput } from '../services/pastedImage';
 import type { UserSettings, ShellAuthorizationScope } from '@deepcode/protocol';
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
 import { create } from 'zustand';
@@ -37,6 +38,7 @@ import {
   resolveConversationFilesystemReferences,
   submitLocalAgentCommand,
   uploadConversationPastedText,
+  uploadConversationPastedImage,
   updateConversationProject as updateProjectRequest,
   updateConversationSession as updateSessionRequest,
 } from '../services/localAgentApi';
@@ -95,6 +97,7 @@ export interface LocalAgentState {
     pluginSelections?: PluginSelectionInput[],
     pastedTexts?: PastedTextInput[],
     onSessionCreated?: (sessionId: string) => void,
+    pastedImages?: PastedImageInput[],
   ): Promise<CommandReply>;
   focusContext(
     task: string,
@@ -102,6 +105,7 @@ export interface LocalAgentState {
     pluginSelections?: PluginSelectionInput[],
     pastedTexts?: PastedTextInput[],
     onSessionCreated?: (sessionId: string) => void,
+    pastedImages?: PastedImageInput[],
   ): Promise<CommandReply>;
   setMessageFeedback(messageId: string, feedback: MessageFeedback | null): Promise<CommandReply>;
   editMessage(messageId: string, text: string, expectedRevision: number): Promise<CommandReply>;
@@ -557,9 +561,10 @@ const store = create<LocalAgentState>((set, get) => ({
     pluginSelections = [],
     pastedTexts = [],
     onSessionCreated,
+    pastedImages = [],
   ) => {
     const trimmed = text.trim();
-    const inputError = !trimmed && !pastedTexts.length && !filesystemPaths.length
+    const inputError = !trimmed && !pastedTexts.length && !pastedImages.length && !filesystemPaths.length
       ? 'message_empty'
       : trimmed.startsWith('/') ? `conversation_command_unknown:${trimmed}` : null;
     if (inputError) {
@@ -575,6 +580,7 @@ const store = create<LocalAgentState>((set, get) => ({
       pluginSelections,
       pastedTexts,
       onSessionCreated,
+      pastedImages,
     );
   },
 
@@ -584,6 +590,7 @@ const store = create<LocalAgentState>((set, get) => ({
     pluginSelections = [],
     pastedTexts = [],
     onSessionCreated,
+    pastedImages = [],
   ) => {
     if (!task.trim()) throw new Error('context_focus_task_empty');
     const { projection } = get();
@@ -599,6 +606,7 @@ const store = create<LocalAgentState>((set, get) => ({
       pluginSelections,
       pastedTexts,
       onSessionCreated,
+      pastedImages,
     );
   },
 
@@ -861,10 +869,11 @@ async function submitNewRun(
   pluginSelections: PluginSelectionInput[],
   pastedTexts: PastedTextInput[],
   onSessionCreated?: (sessionId: string) => void,
+  pastedImages: PastedImageInput[] = [],
 ): Promise<CommandReply> {
   const submissionGeneration = beginSubmission(set);
   try {
-    if (filesystemPaths.length + pastedTexts.length > 8) throw new Error('message_filesystem_reference_limit');
+    if (filesystemPaths.length + pastedTexts.length + pastedImages.length > 8) throw new Error('message_filesystem_reference_limit');
     const messageProfileId = get().selectedProfileId;
     const reasoningEffortOverride = get().reasoningEffortOverride;
     const activeRun = get().projection?.run;
@@ -900,6 +909,9 @@ async function submitNewRun(
       : [];
     for (const paste of pastedTexts) {
       filesystemReferences.push(await uploadConversationPastedText(sessionId, paste.inputId, paste.text));
+    }
+    for (const image of pastedImages) {
+      filesystemReferences.push(await uploadConversationPastedImage(sessionId, image));
     }
     if (generation !== submissionGeneration || get().sessionId !== sessionId) throw new Error('conversation_session_changed');
     const guidanceReferences = effectivePluginSelections.flatMap((selection) => {

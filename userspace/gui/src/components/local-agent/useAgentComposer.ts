@@ -11,6 +11,7 @@ import { composerCommands, parseComposerCommand, suggestComposerCommands, type C
 import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
 import { foregroundApproval, foregroundPlan } from './composerDecisions';
+import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
 import { cloneComposerState, composerStateIsEmpty, emptyComposerState, submitComposerState, type ComposerState } from './composerSubmission';
 
@@ -88,6 +89,7 @@ export function useAgentComposer(
   const modelSettingsBusy = useLocalAgentStore((state) => state.modelSettingsBusy);
   const [initialComposer] = useState(()=>readComposerDraft(composerStateKey));
   const [draft, setDraft] = useState(initialComposer.draft);
+  const [pastedImages, setPastedImages] = useState(initialComposer.pastedImages);
   const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>(initialComposer.pastedTexts);
   const [pendingFilesystemPaths, setPendingFilesystemPaths] = useState<
     PendingFilesystemPath[]
@@ -97,6 +99,7 @@ export function useAgentComposer(
   const [pluginQuery, setPluginQuery] = useState('');
   const [pluginTriggerStart, setPluginTriggerStart] = useState<number | null>(null);
   const [pluginActiveIndex, setPluginActiveIndex] = useState(0);
+  const [readingImages, setReadingImages] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [attachmentDialogOpen, setAttachmentDialogOpen] = useState(false);
@@ -112,14 +115,14 @@ export function useAgentComposer(
   const composerStatesRef = useRef(new Map<string, ComposerState>());
   const [failedDrafts, setFailedDrafts] = useState<Record<string, ComposerState[]>>({});
   const currentComposerStateRef = useRef<ComposerState>(emptyComposerState());
-  currentComposerStateRef.current = { draft, pastedTexts, filesystemPaths: pendingFilesystemPaths,
+  currentComposerStateRef.current = { draft, pastedTexts, pastedImages, filesystemPaths: pendingFilesystemPaths,
     pluginSelections, selectionStart: textareaRef.current?.selectionStart ?? draft.length,
     selectionEnd: textareaRef.current?.selectionEnd ?? draft.length,
     focused: typeof document !== 'undefined' && document.activeElement === textareaRef.current };
   const activeComposerStateKeyRef = useRef(composerStateKey);
   useEffect(()=>{
     saveComposerDraft(activeComposerStateKeyRef.current,currentComposerStateRef.current);
-  },[draft,pastedTexts,pendingFilesystemPaths,pluginSelections,composerStateKey]);
+  },[draft,pastedTexts,pastedImages,pendingFilesystemPaths,pluginSelections,composerStateKey]);
   const pendingComposerRestoreRef = useRef<{
     key: string;
     state: ComposerState;
@@ -134,6 +137,7 @@ export function useAgentComposer(
     composerStatesRef.current.set(activeComposerStateKeyRef.current, {
       draft: element.value,
       pastedTexts: pastedTexts.map((item) => ({ ...item })),
+      pastedImages: pastedImages.map((item) => ({ ...item })),
       filesystemPaths: pendingFilesystemPaths.map((item) => ({ ...item })),
       pluginSelections: pluginSelections.map((item) => ({ ...item })),
       selectionStart: element.selectionStart ?? element.value.length,
@@ -150,6 +154,7 @@ export function useAgentComposer(
     currentComposerStateRef.current = copy;
     setDraft(copy.draft);
     setPastedTexts(copy.pastedTexts);
+    setPastedImages(copy.pastedImages);
     setPendingFilesystemPaths(copy.filesystemPaths);
     setPluginSelections(copy.pluginSelections);
     pendingComposerRestoreRef.current = { key, state: copy };
@@ -178,6 +183,7 @@ export function useAgentComposer(
       : {
           draft: textarea?.value ?? draft,
           pastedTexts: pastedTexts.map((item) => ({ ...item })),
+          pastedImages: pastedImages.map((item) => ({ ...item })),
           filesystemPaths: pendingFilesystemPaths.map((item) => ({ ...item })),
           pluginSelections: pluginSelections.map((item) => ({ ...item })),
           selectionStart: textarea?.selectionStart ?? previous?.selectionStart ?? draft.length,
@@ -194,6 +200,7 @@ export function useAgentComposer(
     pendingComposerRestoreRef.current = { key: composerStateKey, state: incoming };
     setDraft(incoming.draft);
     setPastedTexts(incoming.pastedTexts);
+    setPastedImages(incoming.pastedImages);
     setPendingFilesystemPaths(incoming.filesystemPaths);
     setPluginSelections(incoming.pluginSelections);
     setPluginPickerOpen(false);
@@ -293,6 +300,7 @@ export function useAgentComposer(
     const submittedComposerState: ComposerState = {
       draft: submittedText,
       pastedTexts: pastedTexts.map((item) => ({ ...item })),
+      pastedImages: pastedImages.map((item) => ({ ...item })),
       filesystemPaths: submittedFilesystemPaths.map((item) => ({ ...item })),
       pluginSelections: submittedPluginSelections.map((item) => ({ ...item })),
       selectionStart: submittedTextarea?.selectionStart ?? submittedText.length,
@@ -322,9 +330,9 @@ export function useAgentComposer(
         }
         const focusMatch = submittedText.match(/^\/focus(?:\s+)([\s\S]+)$/u);
         if (focusMatch) {
-          await focusContext(focusMatch[1]!.trim(), submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated);
+          await focusContext(focusMatch[1]!.trim(), submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         } else {
-          await sendMessage(submittedText, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated);
+          await sendMessage(submittedText, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         }
       },
     });
@@ -584,7 +592,7 @@ export function useAgentComposer(
       const unique = selections.filter((item, index) => selections.findIndex(other => other.path === item.path && other.kind === item.kind) === index);
       if (unique.length > 1 && unique.some(item => item.kind === 'directory')) throw new Error(language === 'zh-CN' ? '请选择多个文件或一个文件夹。' : 'Select multiple files or one folder.');
       const additions = unique.filter(item => !pendingFilesystemPaths.some(current => current.path === item.path && current.kind === item.kind));
-      if (pendingFilesystemPaths.length + pastedTexts.length + additions.length > 8) {
+      if (pendingFilesystemPaths.length + pastedTexts.length + pastedImages.length + additions.length > 8) {
         throw new Error(t(language, 'agent.attachment.error.maxFiles'));
       }
       if (additions.some(item => item.kind === 'file' && mediaTypeForPath(item.path) === 'application/pdf')) {
@@ -634,7 +642,7 @@ export function useAgentComposer(
     next.pastedTexts = next.pastedTexts.filter(item => item !== previous);
     if (previous?.browserReview?.screenshot)
       next.filesystemPaths = next.filesystemPaths.filter(item => item.path !== previous.browserReview!.screenshot);
-    if (next.filesystemPaths.length + next.pastedTexts.length + (screenshot ? 2 : 1) > 8)
+    if (next.filesystemPaths.length + next.pastedTexts.length + next.pastedImages.length + (screenshot ? 2 : 1) > 8)
       throw new Error(t(language, 'agent.attachment.error.maxFiles'));
     next.pastedTexts.push({ inputId: nextPanelId('annotation'), text: formatBrowserAnnotation(annotation, previewId, language === 'zh-CN'),
       expanded: false, browserReview: { annotation, previewId, screenshot } });
@@ -650,10 +658,33 @@ export function useAgentComposer(
   const pasteText = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     pendingComposerRestoreRef.current = null;
     if (textDecision || editingMessage) return;
+    const images = clipboardImages(event.clipboardData);
+    if (images.length) {
+      event.preventDefault();
+      const key = activeComposerStateKeyRef.current;
+      const read = () => activeComposerStateKeyRef.current === key
+        ? currentComposerStateRef.current : composerStatesRef.current.get(key) ?? readComposerDraft(key);
+      const fits = (state: ComposerState) => state.filesystemPaths.length + state.pastedTexts.length
+        + state.pastedImages.length + images.length <= 8;
+      if (!fits(read())) {
+        setAttachmentError(t(language, 'agent.attachment.error.maxFiles'));
+        return;
+      }
+      setReadingImages((count) => count + 1);
+      void Promise.all(images.map((image) => readPastedImage(image, nextPanelId('image'), language === 'zh-CN')))
+        .then((additions) => {
+          const current = read();
+          if (!fits(current)) throw new Error(t(language, 'agent.attachment.error.maxFiles'));
+          setComposerStateForKey(key, { ...current, pastedImages: [...current.pastedImages, ...additions] });
+          if (activeComposerStateKeyRef.current === key) setAttachmentError(null);
+        }).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error)))
+        .finally(() => setReadingImages((count) => count - 1));
+      return;
+    }
     const text = event.clipboardData.getData('text/plain');
     if (!isLongPastedText(text)) return;
     event.preventDefault();
-    if (pendingFilesystemPaths.length + pastedTexts.length >= 8) {
+    if (pendingFilesystemPaths.length + pastedTexts.length + pastedImages.length >= 8) {
       setAttachmentError(t(language, 'agent.attachment.error.maxFiles'));
       return;
     }
@@ -677,12 +708,12 @@ export function useAgentComposer(
   };
   const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
   const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
-  const canSend = guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
+  const canSend = readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
     ? Boolean(draft.trim()) && (!pendingInteraction || pendingInteraction.allowFreeform)
-    : Boolean(draft.trim() || pastedTexts.length || pendingFilesystemPaths.length || editingMessage?.message.filesystemReferences.length)
+    : Boolean(draft.trim() || pastedTexts.length || pastedImages.length || pendingFilesystemPaths.length || editingMessage?.message.filesystemReferences.length)
       && !modelSettingsBusy && !catalogBusy
       && Boolean(canCancel || (modelSelectionConfirmed && profiles.some((profile) => profile.id === selectedProfileId && profile.enabled))));
-  const showStopAction = canCancel && !textDecision && !draft.trim() && !pastedTexts.length && !pendingFilesystemPaths.length;
+  const showStopAction = canCancel && !textDecision && !draft.trim() && !pastedTexts.length && !pastedImages.length && !pendingFilesystemPaths.length;
   const canRestoreFailedDraft = composerStateIsEmpty(currentComposerStateRef.current);
   const restoreFailedDraft = (index: number) => {
     const saved = failedDrafts[composerStateKey]?.[index];
@@ -729,6 +760,8 @@ export function useAgentComposer(
     draft,
     pastedTexts,
     setPastedTexts,
+    pastedImages,
+    setPastedImages,
     pasteText,
     editPastedText,
     setDraft,

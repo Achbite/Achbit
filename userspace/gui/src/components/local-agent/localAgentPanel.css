@@ -2414,3 +2414,5 @@
 .local-agent__terminal-error details[open] { min-width:0; overflow-wrap:anywhere; }
 .local-agent__terminal-error .local-agent__recovery-actions { margin-top:4px; }
 .local-agent__recovery-actions button:hover:not(:disabled) { background:var(--dc-surface-hover); }
+
+.local-agent__pasted-image > img { width: 48px; height: 48px; object-fit: contain; border-radius: 4px; }

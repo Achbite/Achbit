@@ -1,3 +1,4 @@
+import { pastedImageBytes, type PastedImageInput } from './pastedImage';
 import { isLlmReasoningEffort } from '@deepcode/protocol';
 import { isProcessActivity } from '@deepcode/protocol';
 import { isShellAuthorizationScope } from '@deepcode/protocol';
@@ -225,6 +226,17 @@ export async function uploadConversationPastedText(
   const saved = await request<{ reference: unknown }>(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/input-resources/${encodeURIComponent(inputId)}`,
     { method: 'POST', body: text, headers: { 'Content-Type': 'text/plain; charset=utf-8' }, signal },
+  );
+  if (!isFilesystemReference(saved.reference)) throw new Error('conversation_input_resource_invalid');
+  return saved.reference as FilesystemReference;
+}
+
+export async function uploadConversationPastedImage(
+  sessionId: string, image: PastedImageInput, signal?: AbortSignal,
+): Promise<FilesystemReference> {
+  const saved = await request<{ reference: unknown }>(
+    `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/input-resources/${encodeURIComponent(image.inputId)}`,
+    { method: 'POST', body: pastedImageBytes(image), headers: { 'Content-Type': image.mediaType }, signal },
   );
   if (!isFilesystemReference(saved.reference)) throw new Error('conversation_input_resource_invalid');
   return saved.reference as FilesystemReference;

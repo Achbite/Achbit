@@ -12,6 +12,8 @@ Quick directions for using DeepCode. Read only the section needed for the task; 
 
 Computer Use is an optional plugin. Embedded browser tools need the originating GUI; desktop control needs its native helper and reported OS permissions. Inspect before acting, reuse the returned target identities, and use foreground observation for coordinate input. Unsupported actions do not automatically switch input methods. Never replay dispatched input solely because its screenshot failed.
 
+Paste PNG, JPEG, GIF or WebP images into the GUI composer to add removable thumbnail attachments (up to 8 MiB each, within the shared eight-attachment limit). Upload occurs when the message is sent, including image-only messages; a failed upload preserves the draft for retry.
+
 User images and GUI observations supply pixels for one successful request. Later requests retain references; `session.read` with `view: images` and exact current-session image IDs reopens them. A live thumbnail, file path or presented artifact is not model visual input.
 
 ## Settings and extensions

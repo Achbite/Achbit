@@ -28,7 +28,7 @@ test('GUI commands dispatch existing actions without sending model prompts or ca
   const previousStorage = globalThis.sessionStorage;
   let draft = '/new', composer, sent = 0, cancelled = 0;
   globalThis.sessionStorage = {
-    getItem: () => JSON.stringify({ draft, pastedTexts: [], filesystemPaths: [], pluginSelections: [] }),
+    getItem: () => JSON.stringify({ draft, pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] }),
     setItem() {},
   };
   t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
