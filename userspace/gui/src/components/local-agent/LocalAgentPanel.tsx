@@ -6,7 +6,7 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
 import useAppStatusStore from '../../state/appStatusStore';
 import { usePresentedCommittedContent } from '../../presentation/PresentationRuntime';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import { projectionItems, assistantDraftItems } from './conversationItems';
 import { useConversationViewport } from './useConversationViewport';
@@ -137,7 +137,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           toggleTree: resourcePreview.toggleTree,
         }} regions={{ heading: <div className="local-agent__header-conversation">
         <div className="local-agent__heading">
-          <span className="local-agent__heading-mark"><DeepCodeShellIcon name="session" /></span>
+          <span className="local-agent__heading-mark"><AchbitShellIcon name="session" /></span>
           <div>
             <strong>{title}</strong>
             {!headerTarget && activeProject && <span>{activeProject.title}</span>}
@@ -179,7 +179,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">
-          <summary>{t(language, 'deepcodeGui.outputs.title')}</summary>
+          <summary>{t(language, 'achbitGui.outputs.title')}</summary>
           <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />
         </details>}
       </div>
@@ -191,7 +191,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
             title={t(language, 'agent.jumpLatest')}
             onClick={scrollToLatest}
           >
-            <DeepCodeShellIcon name="chevronDown" />
+            <AchbitShellIcon name="chevronDown" />
           </button>
         )}
       </div>

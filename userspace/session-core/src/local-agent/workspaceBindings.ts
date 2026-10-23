@@ -1,4 +1,4 @@
-import type { FilesystemReference, NewSessionEvent, SessionEvent, WorkspaceBindingDisplay } from '@deepcode/protocol';
+import type { FilesystemReference, NewSessionEvent, SessionEvent, WorkspaceBindingDisplay } from '@achbit/protocol';
 
 /** Address lookup does not itself grant workspace or file authority. */
 export function appendResourceBindings(

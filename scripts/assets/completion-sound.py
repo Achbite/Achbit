@@ -22,7 +22,7 @@ for i in range(round(RATE * DURATION)):
         value += gain * envelope * tone
     value *= min(1.0, (DURATION - t) / 0.10)
     samples.append(struct.pack('<h', round(value * 32767)))
-output = Path(__file__).resolve().parents[2] / 'shells/deepcode-gui/src-tauri/sounds/completion.wav'
+output = Path(__file__).resolve().parents[2] / 'shells/achbit-gui/src-tauri/sounds/completion.wav'
 with wave.open(str(output), 'wb') as audio:
     audio.setparams((1, 2, RATE, 0, 'NONE', 'not compressed'))
     audio.writeframes(b''.join(samples))

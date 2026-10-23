@@ -18,7 +18,7 @@ importers:
         specifier: 1.10.1
         version: 1.10.1
 
-  shells/deepcode-gui:
+  shells/achbit-gui:
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.11.2
@@ -44,10 +44,10 @@ importers:
       '@codemirror/view':
         specifier: 6.43.12
         version: 6.43.12
-      '@deepcode/presentation-core':
+      '@achbit/presentation-core':
         specifier: workspace:*
         version: link:../presentation-core
-      '@deepcode/protocol':
+      '@achbit/protocol':
         specifier: workspace:*
         version: link:../protocol
       '@headless-tree/core':
@@ -138,7 +138,7 @@ importers:
 
   userspace/presentation-core:
     dependencies:
-      '@deepcode/protocol':
+      '@achbit/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
@@ -154,7 +154,7 @@ importers:
 
   userspace/session-core:
     dependencies:
-      '@deepcode/protocol':
+      '@achbit/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:

@@ -1,4 +1,4 @@
-import type { ConversationProject, ConversationSessionSummary, SessionProjection, AssistantDraftBlockProjection, LlmProviderProfile, LlmReasoningEffort, ModelConnection, ActivityProjection, ConnectionSummary, ProviderAdapterDescriptor, UsageQuery, UsageReport, AuthFlow, QuotaSnapshot } from '@deepcode/protocol';
+import type { ConversationProject, ConversationSessionSummary, SessionProjection, AssistantDraftBlockProjection, LlmProviderProfile, LlmReasoningEffort, ModelConnection, ActivityProjection, ConnectionSummary, ProviderAdapterDescriptor, UsageQuery, UsageReport, AuthFlow, QuotaSnapshot } from '@achbit/protocol';
 
 import type { UsageWidgetLabels } from './usageWidgetLabels';
 import type { UsageCostDisplay } from './usageCost';
@@ -32,7 +32,7 @@ export type UiRegionData =
       items: readonly { id: string; parentId?: string; name: string; kind: 'directory' | 'file' | 'unavailable'; depth: number; expanded: boolean; selected: boolean; error?: string }[] }
   | { kind: 'navigation'; projects: readonly ConversationProject[]; sessions: readonly ConversationSessionSummary[]; activeSessionId: string | null; busy: boolean };
 export interface UiViewActions {
-  selectModel?(profileId: string, effort: import('@deepcode/protocol').LlmReasoningEffort | null): Promise<void>;
+  selectModel?(profileId: string, effort: import('@achbit/protocol').LlmReasoningEffort | null): Promise<void>;
   pickAttachments?(): void;
   addAttachments?(files: Array<{ path: string; kind: 'file' | 'directory' }>): Promise<void>;
   updateDraft?(text: string): void;

@@ -5,7 +5,7 @@ import type {
   RunRuntimeSnapshot,
   SessionEvent,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   buildConversationProviderRequest,
   runInputMessageEvent,

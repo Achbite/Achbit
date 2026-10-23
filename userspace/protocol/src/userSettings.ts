@@ -40,6 +40,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   'gui.usageWidget.visibility': 'summary',
   'gui.usageWidget.currency': 'USD',
   'gui.showReasoning': false,
+  'gui.completionSound.foreground': false,
   'gui.defaultFileOpen': 'reader',
   'gui.showRuntimeFiles': false,
   'gui.sidebarOrder': '{"projects":[],"sessions":[]}',

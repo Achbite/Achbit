@@ -15,10 +15,10 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 ROOT = Path(__file__).resolve().parent
 VARIANTS = {
-    'warm': ('reading', 'DeepCode Quiet Reading SC', 'kai'),
-    'warm-sans': ('reading', 'DeepCode Quiet Reading Sans SC', 'sans'),
-    'compact-kai': ('mono', 'DeepCode Quiet Mono Kai SC', 'kai'),
-    'compact': ('mono', 'DeepCode Quiet Mono SC', 'sans'),
+    'warm': ('reading', 'Achbit Quiet Reading SC', 'kai'),
+    'warm-sans': ('reading', 'Achbit Quiet Reading Sans SC', 'sans'),
+    'compact-kai': ('mono', 'Achbit Quiet Mono Kai SC', 'kai'),
+    'compact': ('mono', 'Achbit Quiet Mono SC', 'sans'),
 }
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source-dir', type=Path, default=ROOT)
@@ -35,7 +35,7 @@ if args.variant is None:
                         '--output-dir', str(args.output_dir), '--variant', variant], check=True)
         receipts.append(json.loads((args.output_dir / f'{variant}.json').read_text()))
     (args.output_dir / 'font-build-receipt.json').write_text(json.dumps(receipts, ensure_ascii=False, indent=2) + '\n')
-    with zipfile.ZipFile(ROOT / 'DeepCode-Quiet-SC.zip', 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(ROOT / 'Achbit-Quiet-SC.zip', 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for receipt in receipts:
             archive.write(args.output_dir / receipt['file'], receipt['file'])
         for name in ('README.md', 'sources.json', 'Maple-LICENSE.txt', 'Libertinus-OFL.txt',
@@ -53,7 +53,7 @@ GLYPHSETS = {key: font.getGlyphSet() for key, font in SOURCES.items()}
 LICENSES = [ROOT / name for name in ("Maple-LICENSE.txt", "Libertinus-OFL.txt", "WenKai-OFL.txt")]
 OFL = "\n\n".join(path.read_text() for path in LICENSES)
 COPYRIGHT = "\n".join(path.read_text().split("This Font Software")[0].strip() for path in LICENSES)
-COPYRIGHT += "\nDeepCode Quiet SC review derivative, 2026."
+COPYRIGHT += "\nAchbit Quiet SC review derivative, 2026."
 
 
 

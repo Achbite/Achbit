@@ -1,4 +1,4 @@
-import type { ActivityProjection, AssistantDraftBlockProjection, SessionProjection } from '@deepcode/protocol';
+import type { ActivityProjection, AssistantDraftBlockProjection, SessionProjection } from '@achbit/protocol';
 
 export type ProjectionItem =
   | {

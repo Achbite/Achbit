@@ -1,9 +1,9 @@
-import { decodeShellCommandRules, isShellAuthorizationScope, sessionAuthorizationScope, type ShellAuthorizationScope } from '@deepcode/protocol';
+import { decodeShellCommandRules, isShellAuthorizationScope, sessionAuthorizationScope, type ShellAuthorizationScope } from '@achbit/protocol';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import type { AgentComposer } from './useAgentComposer';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { planOperationDetail } from './planReview';
@@ -28,7 +28,7 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
           className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
             <header className="local-agent__interaction-panel-heading">
               <span className="local-agent__interaction-caption">
-                <DeepCodeShellIcon name={pendingPlan ? 'artifact' : 'question'} size={17} />
+                <AchbitShellIcon name={pendingPlan ? 'artifact' : 'question'} size={17} />
                 {pendingPlan
                   ? t(language, pendingScopeAddition ? 'agent.plan.reviewScope' : 'agent.plan.review')
                   : t(language, confirmation ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
@@ -38,11 +38,11 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                 aria-label={t(language, 'agent.interaction.navigation')}>
                 <button type="button" aria-label={t(language, 'agent.interaction.previous')}
                   title={t(language, 'agent.interaction.previous')} disabled={submitting || interactionNavigation.index === 0}
-                  onClick={interactionNavigation.previous}><DeepCodeShellIcon name="chevronLeft" size={15} /></button>
+                  onClick={interactionNavigation.previous}><AchbitShellIcon name="chevronLeft" size={15} /></button>
                 <span aria-live="polite">{interactionNavigation.index + 1}/{interactionNavigation.count}</span>
                 <button type="button" aria-label={t(language, 'agent.interaction.next')}
                   title={t(language, 'agent.interaction.next')} disabled={submitting || interactionNavigation.index === interactionNavigation.count - 1}
-                  onClick={interactionNavigation.next}><DeepCodeShellIcon name="chevronRight" size={15} /></button>
+                  onClick={interactionNavigation.next}><AchbitShellIcon name="chevronRight" size={15} /></button>
               </div>}
               {(pendingPlan || pendingInteraction?.allowFreeform) && <button
                 type="button"
@@ -53,7 +53,7 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                 onClick={() => pendingPlan
                   ? void submitPlanDecision({ kind: 'cancel' })
                   : void sendDecision(t(language, 'agent.interaction.skip'))}
-              ><DeepCodeShellIcon name="close" size={15} /></button>}
+              ><AchbitShellIcon name="close" size={15} /></button>}
               </div>
             </header>
           <div
@@ -150,7 +150,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             {pendingPlan.review?.status === 'completed' && pendingPlan.review.decision && pendingPlan.review.reason
               && <ApprovalReviewReason language={language} review={{ decision: pendingPlan.review.decision, reason: pendingPlan.review.reason }} />}
             {Boolean(pendingPlan.workspaceRequests?.length) && <section className="local-agent__decision" aria-label={language === 'zh-CN' ? '工作区权限' : 'Workspace access'}>
-              <header className="local-agent__decision-heading"><DeepCodeShellIcon name="shield" /><strong>{t(language, 'agent.plan.workspaceRequest')}</strong></header>
+              <header className="local-agent__decision-heading"><AchbitShellIcon name="shield" /><strong>{t(language, 'agent.plan.workspaceRequest')}</strong></header>
               <ul>{pendingPlan.workspaceRequests!.map(request => <li key={request.workspaceId}><code>{request.rootPath}</code></li>)}</ul>
             </section>}
             <ol className="local-agent__interaction-options">
@@ -200,7 +200,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
         >
           <header className="local-agent__decision-heading">
             <span className="local-agent__decision-mark" aria-hidden="true">
-              <DeepCodeShellIcon name={sessionBrowser ? 'browser' : 'shield'} />
+              <AchbitShellIcon name={sessionBrowser ? 'browser' : 'shield'} />
             </span>
             <span>{t(language, sessionBrowser ? 'agent.approval.browser' : 'agent.approval.toolPermission')}</span>
           </header>
@@ -219,7 +219,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             <details className="local-agent__decision-scope">
               <summary>
                 <span>{t(language, 'agent.approval.scope')}</span>
-                <DeepCodeShellIcon name="chevronDown" />
+                <AchbitShellIcon name="chevronDown" />
               </summary>
               {sessionBrowser && <pre className="local-agent__decision-command"><code>{pendingApproval.preview.summary}</code></pre>}
               {runCommand && <p>{t(language, 'agent.permission.grantHelp')}</p>}

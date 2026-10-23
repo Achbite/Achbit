@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 import { conversationDisplay } from './conversationDisplay';
 
 /** Presentation acknowledgement only; Session still owns every run and message fact. */

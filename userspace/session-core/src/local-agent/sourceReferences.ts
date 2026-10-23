@@ -1,4 +1,4 @@
-import type { JsonObject, SourceReferences } from '@deepcode/protocol';
+import type { JsonObject, SourceReferences } from '@achbit/protocol';
 
 const citationPrefix = '\uE200cite\uE202';
 

@@ -2121,7 +2121,7 @@
 .local-agent__queued-input span { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 560px) {
-  .local-agent .deepcode-session-model__context {
+  .local-agent .achbit-session-model__context {
     display: none;
   }
 }
@@ -2207,14 +2207,14 @@
 @container composer (max-width: 560px) {
   .local-agent__composer-footer { padding-inline: 8px; gap: 6px; }
   .local-agent__composer-tools { flex: 1 1 auto; gap: 4px; }
-  .deepcode-session-model__selector { max-width: min(200px, 48cqi); gap: 5px; }
+  .achbit-session-model__selector { max-width: min(200px, 48cqi); gap: 5px; }
   .local-agent__composer-primary-actions, .local-agent__composer-actions { gap: 5px; }
 }
 @container composer (max-width: 350px) {
-  .deepcode-session-model__selector-effort { display: none; }
+  .achbit-session-model__selector-effort { display: none; }
   .local-agent__composer-footer { flex-wrap: wrap; }
   .local-agent__composer-actions { flex-basis: 100%; }
-  .deepcode-session-model__selector { max-width: 40cqi; }
+  .achbit-session-model__selector { max-width: 40cqi; }
 }
 
 .local-agent__total-cache {
@@ -2278,9 +2278,9 @@
 .local-agent__permission-save-rule { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 .local-agent__permission-grants code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-.deepcode-session-model__efforts { display:flex; gap:4px; padding:6px; }
-.deepcode-session-model__efforts button { justify-content:center; flex:1; }
-.deepcode-session-model__efforts button[aria-checked=true] { background:var(--dc-surface-hover); color:var(--dc-accent); }
+.achbit-session-model__efforts { display:flex; gap:4px; padding:6px; }
+.achbit-session-model__efforts button { justify-content:center; flex:1; }
+.achbit-session-model__efforts button[aria-checked=true] { background:var(--dc-surface-hover); color:var(--dc-accent); }
 
 .local-agent__auto-review { padding: 18px 19px 12px; }
 .local-agent__auto-review > header { display: flex; align-items: center; gap: 12px; padding-bottom: 17px; }

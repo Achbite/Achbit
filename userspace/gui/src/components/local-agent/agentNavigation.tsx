@@ -1,7 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
-import type { ActivityProjection, AgentTaskProjection, SessionProjection } from '@deepcode/protocol';
+import type { ActivityProjection, AgentTaskProjection, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 
 import { requestReader, type AgentReaderTarget } from './readerState';
 
@@ -65,7 +65,7 @@ export function AgentGroupSummary({ activities, language, entryPrefix = activiti
       return <button type="button" key={activity.activityId} aria-pressed={selected} aria-label={`${activity.label} · ${statusLabel}`}
         className={`agent-tasks__member agent-tasks__member--${status}`}
         onClick={() => navigation.open(selected ? null : { sessionId, entryId })}>
-        <DeepCodeShellIcon name="subagents" /><span>{activity.label}</span>
+        <AchbitShellIcon name="subagents" /><span>{activity.label}</span>
         {!sharedStatus && <span>{statusLabel}</span>}
       </button>;
     })}

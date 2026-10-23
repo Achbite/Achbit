@@ -86,7 +86,7 @@ impl Page {
 }
 
 pub struct NativeBrowser {
-    directories: deepcode_host_connection::UserDirectories,
+    directories: achbit_host_connection::UserDirectories,
     binding: HostBinding,
     pages: Mutex<HashMap<String, Page>>,
     page_changed: Condvar,
@@ -116,7 +116,7 @@ impl NativeBrowser {
 
 pub fn start(
     app: &tauri::AppHandle,
-    directories: deepcode_host_connection::UserDirectories,
+    directories: achbit_host_connection::UserDirectories,
     host_instance_id: String,
     token: String,
     self_bootstrap: String,
@@ -1088,8 +1088,12 @@ async fn preview_region(view: tauri::Webview) -> Result<PreviewRegion, String> {
     if let Some([x, y, width, height]) = region.rect {
         if region.content_kind != "image"
             || ![x, y, width, height].iter().all(|value| value.is_finite())
-            || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0
-            || x + width > 1.000001 || y + height > 1.000001
+            || x < 0.0
+            || y < 0.0
+            || width <= 0.0
+            || height <= 0.0
+            || x + width > 1.000001
+            || y + height > 1.000001
         {
             return Err("native_browser_preview_region_invalid".into());
         }
@@ -1112,8 +1116,12 @@ async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
     }
     let region = preview_region(view.clone()).await?;
     let [x, y, w, h] = region.rect.unwrap_or([0.0, 0.0, 1.0, 1.0]);
-    let rect = [x * f64::from(size.width) / scale, y * f64::from(size.height) / scale,
-        w * f64::from(size.width) / scale, h * f64::from(size.height) / scale];
+    let rect = [
+        x * f64::from(size.width) / scale,
+        y * f64::from(size.height) / scale,
+        w * f64::from(size.width) / scale,
+        h * f64::from(size.height) / scale,
+    ];
     let width = 720.0 * rect[2] / rect[2].max(rect[3]) / scale;
     let capture = capture_macos(view, Some(width), region.rect.map(|_| rect)).await?;
     if capture.width > 722 || capture.height > 722 || capture.bytes.len() > 1_048_576 {
@@ -1137,10 +1145,11 @@ async fn capture_preview(view: tauri::Webview) -> Result<Value, String> {
     let region = preview_region(view.clone()).await?;
     let capture = capture(view).await?;
     let rect = region.rect;
-    let (bytes, width, height) =
-        tauri::async_runtime::spawn_blocking(move || preview_image::jpeg_region(&capture.bytes, rect))
-            .await
-            .map_err(|error| error.to_string())??;
+    let (bytes, width, height) = tauri::async_runtime::spawn_blocking(move || {
+        preview_image::jpeg_region(&capture.bytes, rect)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

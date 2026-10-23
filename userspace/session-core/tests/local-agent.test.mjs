@@ -511,7 +511,7 @@ test('subagent models discovery uses the Host port without starting children', a
   const host = new HttpAgentHostPort({ apiBase: 'http://fixture', serviceToken: 'fixture', fetchImpl: async (url, init) => {
     requests += 1;
     assert.equal(url, 'http://fixture/api/local-agent/agents/models');
-    assert.equal(new Headers(init.headers).get('x-deepcode-session-service-token'), 'fixture');
+    assert.equal(new Headers(init.headers).get('x-achbit-session-service-token'), 'fixture');
     return new Response(JSON.stringify({ ok: true, data: models }), { status: 200 });
   } });
   host.settings = async () => ({ enabled: true, profileId: 'profile:configured', reasoningEffort: '',
@@ -1517,7 +1517,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
     workspaceShellSupported: false,
     workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
-    runtimeExecutables: { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' } };
+    runtimeExecutables: { kernel: '/opt/deepcode/achbit-kernel', cli: '/opt/deepcode/achbit-cli' } };
   const saved = environmentInstruction(observed);
   const modelEnvironment = JSON.parse(saved.text.split('\n')[1]);
   for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox']) {
@@ -1529,7 +1529,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
   assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
   assert.deepEqual(observed.workspaceSandbox, { available: false, reason: 'fixture sandbox probe diagnostic' });
   assert.deepEqual(observed.runtimeExecutables,
-    { kernel: '/opt/deepcode/deepcode-kernel', cli: '/opt/deepcode/deepcode-cli' });
+    { kernel: '/opt/deepcode/achbit-kernel', cli: '/opt/deepcode/achbit-cli' });
   const preparation = fakeRunPreparation();
   const port = {
     ...preparation.port,
@@ -5792,10 +5792,11 @@ test('aggregate input admission preserves raw errors, permits correction, and ne
       const name = request.tools.find((candidate) => candidate.inputSchema.properties?.path).name;
       if (requests.length === 1) {
         yield providerEvent(request.requestId, 'tool.call', { callId: 'native:ok', name, arguments: '{"workspace":"primary","path":"first.txt"}' });
-        yield providerEvent(request.requestId, 'tool.call', { callId: 'native:bad', name: suffix === 'unknown' ? 'undeclared_tool' : name, arguments: invalid });
+        yield providerEvent(request.requestId, 'tool.call', { callId: 'native:bad', thoughtSignature: 'opaque-gemini-signature', name: suffix === 'unknown' ? 'undeclared_tool' : name, arguments: invalid });
       } else if (requests.length === 2) {
         assert.equal(executions.length, 1);
         const raw = request.messages.flatMap((message) => message.toolCalls ?? []).find((call) => call.providerCallId === 'native:bad');
+        assert.equal(raw.thoughtSignature, 'opaque-gemini-signature');
         assert.equal(raw.input, invalid, 'the model sees its exact original arguments');
         assert.equal(raw.name, suffix === 'unknown' ? 'undeclared_tool' : name);
         const rejected = request.messages.map(jsonMessagePayload).find((value) => value?.status === 'inputRejected');
@@ -5812,6 +5813,7 @@ test('aggregate input admission preserves raw errors, permits correction, and ne
           assert.equal(name, 'read_current_run');
           const historical = request.messages.flatMap((message) => message.toolCalls ?? []).find((call) => call.providerCallId === 'native:bad');
           assert.equal(historical.name, suffix === 'unknown' ? 'undeclared_tool' : requests[0].tools.find((candidate) => candidate.inputSchema.properties?.path).name);
+          assert.equal(historical.thoughtSignature, 'opaque-gemini-signature', 'journal replay preserves provider signatures');
           assert.equal(historical.input, invalid, 'rejected history keeps the original owner alias and arguments');
         }
         yield providerEvent(request.requestId, 'assistant.message', { messageId: `native:answer:${requests.length}`, content: 'Both files read.' });
@@ -5988,7 +5990,7 @@ test('protocol failures and cancellation never enter a network retry loop', asyn
 
 
 test('an upstream service error retains its directive and ends without a network retry', async (t) => {
-  const { isLocalAgentErrorValue } = await import('@deepcode/protocol');
+  const { isLocalAgentErrorValue } = await import('@achbit/protocol');
   const journal = new InMemoryCommandJournal(), sessionId = 'session:service-unavailable';
   await createSession(journal, sessionId);
   const failure = { code: 'provider_error', message: 'Our servers are currently overloaded. Please try again later.', diagnostics: {

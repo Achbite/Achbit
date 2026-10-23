@@ -1,5 +1,5 @@
 import { t, type UiLanguage } from '../../i18n';
-import type { PlanOperation, PlanProjection } from '@deepcode/protocol';
+import type { PlanOperation, PlanProjection } from '@achbit/protocol';
 
 /** A presentation diff only: confirmation still addresses the complete published revision. */
 export function planScopeAddition(previous: PlanProjection | undefined, current: PlanProjection): {

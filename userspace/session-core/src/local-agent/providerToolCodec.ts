@@ -8,8 +8,8 @@ import type {
   RunRuntimeSnapshot,
   SessionEvent,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
-import { SESSION_CONTROL_PLAN_PUBLISH } from '@deepcode/protocol';
+} from '@achbit/protocol';
+import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 import { LoopFailure } from './loopFailure.js';
 
 const PROVIDER_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;

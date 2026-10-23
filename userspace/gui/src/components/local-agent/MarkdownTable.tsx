@@ -1,7 +1,7 @@
 import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { normalizeUiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 
 type ContentElement = React.ReactElement<{ children?: React.ReactNode; 'data-column'?: string }>;
 const isElement = (node: React.ReactNode): node is ContentElement => React.isValidElement(node);
@@ -78,7 +78,7 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
         {chinese ? '横向滚动查看' : 'Scroll horizontally'}
       </span>
       <button type="button" className="conversation-table-expand" onClick={() => setExpanded(true)}>
-        <DeepCodeShellIcon name="expand" />
+        <AchbitShellIcon name="expand" />
         {chinese ? '放大表格' : 'Expand table'}
       </button>
     </div>
@@ -92,7 +92,7 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
       {expanded && <>
         <header className="conversation-table-dialog-header">
           <div><strong id={titleId}>{chinese ? '表格' : 'Table'}</strong><small>{chinese ? `${table.rows} 行 · ${table.columns} 列` : `${table.rows} rows · ${table.columns} columns`}</small></div>
-          <button type="button" className="conversation-table-close" aria-label={chinese ? '关闭表格' : 'Close table'} onClick={() => dialog.current?.close()}><DeepCodeShellIcon name="close" /></button>
+          <button type="button" className="conversation-table-close" aria-label={chinese ? '关闭表格' : 'Close table'} onClick={() => dialog.current?.close()}><AchbitShellIcon name="close" /></button>
         </header>
         <div className="conversation-table-dialog-body" tabIndex={0}><table>{table.content}</table></div>
       </>}

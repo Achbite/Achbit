@@ -1,6 +1,6 @@
 import type {
   CommandJournalPort, ConversationReadQuery, ConversationReadResult, JsonObject, SessionEvent,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { reasoningReadItem } from './reasoningRead.js';
 import { projectSession, recoverSession } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';

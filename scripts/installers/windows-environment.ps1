@@ -25,7 +25,7 @@ if (-not $Remove) {
         } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
     }
     # The Host owns platform directory creation, configuration validation and backups.
-    & (Join-Path $programRoot 'deepcode-kernel.exe') --prepare-user-config
+    & (Join-Path $programRoot 'achbit-kernel.exe') --prepare-user-config
     if ($LASTEXITCODE -ne 0) {
         throw "DeepCode user configuration preparation failed (exit $LASTEXITCODE)."
     }

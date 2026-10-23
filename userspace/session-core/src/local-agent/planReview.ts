@@ -1,5 +1,5 @@
-import type { ProviderRequest, RunRuntimeSnapshot, PendingPlanProjection } from '@deepcode/protocol';
-import { LOCAL_AGENT_PROTOCOL_VERSION, providerRuntimeForPurpose } from '@deepcode/protocol';
+import type { ProviderRequest, RunRuntimeSnapshot, PendingPlanProjection } from '@achbit/protocol';
+import { LOCAL_AGENT_PROTOCOL_VERSION, providerRuntimeForPurpose } from '@achbit/protocol';
 import { APPROVAL_REVIEW_SCHEMA } from './approvalReview.js';
 import { buildContextCompositionReceipt } from './contextComposer.js';
 import { LoopFailure } from './loopFailure.js';

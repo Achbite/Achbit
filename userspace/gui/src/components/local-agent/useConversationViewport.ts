@@ -1,7 +1,7 @@
 import { registerInterfaceReloadView, restoredInterfaceView } from '../../services/interfaceReload';
 import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 import { ConversationAnchors, firstReadingAnchor } from './conversationAnchors';
 
 const LATEST_TOLERANCE = 2;

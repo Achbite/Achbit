@@ -7,7 +7,7 @@ import type {
   SelectedPluginSnapshot,
   ToolPromptContribution,
   ToolPromptProviderSnapshot,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { LoopFailure } from './loopFailure.js';
 import { CORE_TOOL_ORDER } from './providerToolCodec.js';
 

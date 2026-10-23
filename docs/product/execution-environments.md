@@ -23,13 +23,13 @@ Backends: macOS `sandbox-exec`; Linux/WSL2 Bubblewrap; native Windows LPAC. Back
 
 Settings → Execution environment selects PowerShell 7, Windows PowerShell or Git Bash. Automatic prefers PowerShell 7, then Windows PowerShell 5.1. An explicit choice does not silently fall back. `System32/bash.exe` is WSL, not Git Bash.
 
-Use the recorded shell dialect. PowerShell 5.1 has no `&&` / `||`; after a native command, capture `$LASTEXITCODE` and explicitly return it. DeepCode runs PowerShell scripts as temporary UTF-8 files without changing machine execution policy.
+Use the recorded shell dialect. PowerShell 5.1 has no `&&` / `||`; after a native command, capture `$LASTEXITCODE` and explicitly return it. Achbit runs PowerShell scripts as temporary UTF-8 files without changing machine execution policy.
 
 For `*_workspace_sandbox_unavailable`, inspect `workspaceSandbox.reason` or use **Check Windows support** in settings. This tests LPAC support, not service readiness. An installed Docker command does not prove daemon access. Preserve startup errors, including nested Store PowerShell failures, rather than treating them as syntax errors or reinstalling automatically.
 
 ## Explicit WSL projects
 
-Project → Manage workspace → Runtime shell: select WSL, the distribution, and its installed Linux `deepcode-kernel` executable, for example `/opt/deepcode/deepcode-kernel`. The distribution, compatible Linux worker and files must already exist; a Windows `.exe` is not a Linux worker.
+Project → Manage workspace → Runtime shell: select WSL, the distribution, and its installed Linux `achbit-kernel` executable, for example `/opt/deepcode/achbit-kernel`. The distribution, compatible Linux worker and files must already exist; a Windows `.exe` is not a Linux worker.
 
 Filesystem tools and Bash use that distribution. Windows paths are translated; WSL UNC paths must belong to it. Conversation and permissions remain with the original Host. Missing workers or paths are errors, not permission to install WSL, move files or use native execution instead.
 
@@ -43,11 +43,11 @@ Existing containers retain their actual mounts and permissions. The plugin does 
 
 ## SSH remote Hosts
 
-In the GUI connection dialog, select POSIX for macOS/Linux or Windows (OpenSSH) for a Windows login shell. Supply the remote `deepcode-cli` path and optional user-data root. Local and remote OS may differ.
+In the GUI connection dialog, select POSIX for macOS/Linux or Windows (OpenSSH) for a Windows login shell. Supply the remote `achbit-cli` path and optional user-data root. Local and remote OS may differ.
 
 ```sh
-deepcode-cli ssh configure --host user@host --remote-shell windows --remote-cli 'C:\Program Files\DeepCode\deepcode-cli.exe' --output windows-host.json
-deepcode-cli ssh connect --profile windows-host.json
+achbit-cli ssh configure --host user@host --remote-shell windows --remote-cli 'C:\Program Files\DeepCode\achbit-cli.exe' --output windows-host.json
+achbit-cli ssh connect --profile windows-host.json
 ```
 
 The quoting above fits PowerShell/POSIX shells. Profiles use `remoteShell: posix|windows`. Passwords and key passphrases belong in the existing authentication prompts, not logs.

@@ -143,9 +143,9 @@ fail_if_macos_package_running() {
   local macos_dir="$ROOT_DIR/bin/macos-arm64"
   local targets=(
     "$macos_dir/DeepCode.app/Contents/MacOS/DeepCode"
-    "$macos_dir/DeepCode.app/Contents/MacOS/deepcode-kernel"
-    "$macos_dir/DeepCode-GUI.app/Contents/MacOS/DeepCode-GUI"
-    "$macos_dir/DeepCode-GUI.app/Contents/MacOS/deepcode-kernel"
+    "$macos_dir/DeepCode.app/Contents/MacOS/achbit-kernel"
+    "$macos_dir/Achbit.app/Contents/MacOS/Achbit"
+    "$macos_dir/Achbit.app/Contents/MacOS/achbit-kernel"
   )
   local target
   local matches
@@ -188,17 +188,17 @@ clean_repo_local() {
     "$ROOT_DIR/userspace/session-core/node_modules"
     "$ROOT_DIR/userspace/protocol/node_modules"
     "$ROOT_DIR/userspace/presentation-core/node_modules"
-    "$ROOT_DIR/shells/deepcode-gui/node_modules"
+    "$ROOT_DIR/shells/achbit-gui/node_modules"
     "$ROOT_DIR/userspace/gui/dist"
-    "$ROOT_DIR/userspace/gui/dist-deepcode-gui"
+    "$ROOT_DIR/userspace/gui/dist-achbit-gui"
     "$ROOT_DIR/userspace/session-core/dist"
     "$ROOT_DIR/userspace/protocol/dist"
     "$ROOT_DIR/userspace/presentation-core/dist"
-    "$ROOT_DIR/shells/deepcode-gui/dist"
+    "$ROOT_DIR/shells/achbit-gui/dist"
     "$ROOT_DIR/userspace/gui/tsconfig.tsbuildinfo"
     "$ROOT_DIR/userspace/session-core/tsconfig.tsbuildinfo"
     "$ROOT_DIR/userspace/protocol/tsconfig.tsbuildinfo"
-    "$ROOT_DIR/shells/deepcode-gui/tsconfig.tsbuildinfo"
+    "$ROOT_DIR/shells/achbit-gui/tsconfig.tsbuildinfo"
   )
 
   local path

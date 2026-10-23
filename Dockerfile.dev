@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         curl wget ca-certificates git \
         build-essential pkg-config make file bubblewrap \
         libssl-dev libasound2-dev \
-        libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+        libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev librsvg2-bin patchelf \
         gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 nsis \
         iputils-ping netcat-openbsd jq xz-utils unzip sccache
 
@@ -95,13 +95,13 @@ RUN --mount=type=cache,target=/usr/local/rustup/downloads,sharing=locked \
         rustup component add rustfmt clippy
 
 # ---- 5. 入口脚本 ----
-COPY skills/deepcode-documents/scripts/requirements.txt /opt/deepcode-documents-requirements.txt
+COPY skills/achbit-documents/scripts/requirements.txt /opt/achbit-documents-requirements.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends python3-venv fonts-noto-cjk \
- && python3 -m venv /opt/deepcode-documents \
- && /opt/deepcode-documents/bin/pip install --no-cache-dir -r /opt/deepcode-documents-requirements.txt
-ENV DEEPCODE_DOCUMENT_PYTHON=/opt/deepcode-documents/bin/python \
+ && python3 -m venv /opt/achbit-documents \
+ && /opt/achbit-documents/bin/pip install --no-cache-dir -r /opt/achbit-documents-requirements.txt
+ENV DEEPCODE_DOCUMENT_PYTHON=/opt/achbit-documents/bin/python \
     PNPM_STORE_DIR=/root/.local/share/pnpm/store \
     DEEPCODE_WINDOWS_NODE_BIN=/opt/deepcode-node-win64/node.exe \
     DEEPCODE_NODE_LICENSE=/usr/local/LICENSE

@@ -9,7 +9,7 @@ import type {
   PlanOperation,
   ProviderToolDefinition,
   TodoItem,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   isLlmReasoningEffort,
   decodeAgentContribution,
@@ -23,7 +23,7 @@ import {
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 
 export interface SessionControlWireNames {
   interactionRequest: string;

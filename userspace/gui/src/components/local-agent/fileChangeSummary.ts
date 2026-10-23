@@ -1,4 +1,4 @@
-import type { ActivityProjection, FileChangeProjection, SessionProjection } from '@deepcode/protocol';
+import type { ActivityProjection, FileChangeProjection, SessionProjection } from '@achbit/protocol';
 import { isBinaryFileChange, type readFileChange } from '../../services/localAgentApi';
 import type { ChangePreview } from './fileChangeLineCounts';
 

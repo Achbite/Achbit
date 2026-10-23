@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AuthFlow, ConnectionSummary, QuotaSnapshot } from '@deepcode/protocol';
+import type { AuthFlow, ConnectionSummary, QuotaSnapshot } from '@achbit/protocol';
 import { cancelModelAuth, getModelAuth, getModelQuota, logoutModelConnection, startModelAuth } from '../../../services/apiClient';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
 import { data, Hint, message, useModelLanguage } from './shared';
@@ -65,7 +65,7 @@ export default function SubscriptionAuth({ connection, onChanged }: { connection
       {flow.userCode && <code>{flow.userCode}</code>}
       <div className="model-actions"><button onClick={() => flow.verificationUrl && void openExternalUrl(flow.verificationUrl).catch(e => setError(message(e)))}>{text('打开登录页面', 'Open sign-in page')}</button>
         <button onClick={async () => { try { setFlow(data(await cancelModelAuth(flow.id))); pending.current = null; } catch (e) { setError(message(e)); } }}>{text('取消', 'Cancel')}</button></div>
-    </div> : <div className="model-actions"><button className="model-primary" disabled={loading} onClick={() => void login('browser')}>{text('浏览器登录', 'Sign in with browser')}</button><button disabled={loading} onClick={() => void login('deviceCode')}>{text('设备码登录', 'Use device code')}</button><Hint>{text('由 DeepCode 独立完成授权，不需要安装 Codex CLI。', 'Authorize directly in DeepCode. No Codex CLI installation required.')}</Hint></div>}
+    </div> : <div className="model-actions"><button className="model-primary" disabled={loading} onClick={() => void login('browser')}>{text('浏览器登录', 'Sign in with browser')}</button><button disabled={loading} onClick={() => void login('deviceCode')}>{text('设备码登录', 'Use device code')}</button><Hint>{text('由 Achbit 独立完成授权，不需要安装 Codex CLI。', 'Authorize directly in Achbit. No Codex CLI installation required.')}</Hint></div>}
     {error && <div className="settings-error" role="alert">{error}</div>}
     {connection.authStatus === 'ready' && <>
       <div className="model-heading"><h3>{text('套餐额度', 'Plan limits')}</h3><button onClick={() => setQuotaRevision(n => n + 1)}>{text('刷新', 'Refresh')}</button></div>

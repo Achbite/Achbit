@@ -5,6 +5,7 @@ node_modules/
 
 # ---- 构建产物 ----
 **/dist/
+**/dist-achbit-gui/
 **/dist-deepcode-gui/
 **/build/
 target/
@@ -40,6 +41,7 @@ lerna-debug.log*
 .env.*
 !.env.example
 .deepcode-worktree.mk
+.achbit-worktree.mk
 
 # ---- IDE / 系统 ----
 .DS_Store

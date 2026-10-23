@@ -8,7 +8,7 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
 import type { UiLanguage } from '../../i18n';
 import type { ReaderTarget } from './readerState';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 
 type Node = { name: string; parentId?: string; entry?: ResourceEntry; children?: ResourceEntry[]; error?: string };
@@ -227,7 +227,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
         openMenu(displayedItem(id).getItemData().entry, anchor, rect.left, rect.bottom);
       },
     }}>
-    <label className="resource-tree__filter"><DeepCodeShellIcon name="search" /><input value={filter} onChange={event => setFilter(event.target.value)} placeholder={chinese ? '筛选已加载文件…' : 'Filter loaded files…'} aria-label={chinese ? '筛选文件' : 'Filter files'} /></label>
+    <label className="resource-tree__filter"><AchbitShellIcon name="search" /><input value={filter} onChange={event => setFilter(event.target.value)} placeholder={chinese ? '筛选已加载文件…' : 'Filter loaded files…'} aria-label={chinese ? '筛选文件' : 'Filter files'} /></label>
     {watchError && <p className="local-agent__resource-error" role="alert">{watchError}</p>}
     <div className="resource-tree__items" {...tree.getContainerProps(chinese ? '文件' : 'Files')}>
       {displayed.map(item => {
@@ -242,7 +242,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
           }}
           className={`resource-tree__item${item.getId() === selected ? ' is-selected' : ''}${data.entry?.category ? ' is-root' : ''}`}
           style={{ paddingLeft: 8 + item.getItemMeta().level * 12 }}>
-          <DeepCodeShellIcon name={item.isFolder() ? (item.isExpanded() ? 'chevronDown' : 'chevronRight') : 'artifact'} />
+          <AchbitShellIcon name={item.isFolder() ? (item.isExpanded() ? 'chevronDown' : 'chevronRight') : 'artifact'} />
           <span ref={element => { if (element?.parentElement) rows.current.set(item.getId(), element.parentElement as HTMLButtonElement); else rows.current.delete(item.getId()); }} className={data.error ? 'local-agent__resource-error' : ''}>{data.name}</span>
         </button>;
       })}

@@ -14,16 +14,16 @@ command -v "$CARGO" >/dev/null || { printf 'Set DEEPCODE_MACOS_CARGO to the inst
 if [ "${1:-}" = --tui ]; then
   [ "$#" -eq 2 ] || exit 2
   export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
-  "$CARGO" build --release -p deepcode-tui
+  "$CARGO" build --release -p achbit-tui
   mkdir -p "$2"
-  cp "$CARGO_TARGET_DIR/release/deepcode-tui" "$2/deepcode-tui"
+  cp "$CARGO_TARGET_DIR/release/achbit-tui" "$2/achbit-tui"
   exit 0
 fi
 if [ "${1:-}" = --computer-use ]; then
   [ "$#" -eq 2 ] || exit 2
   export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
   python3 scripts/macos_signing.py
-  "$CARGO" build --release -p deepcode-computer-use
+  "$CARGO" build --release -p achbit-computer-use
   python3 scripts/computer_use_package.py --native "$CARGO_TARGET_DIR/release" --output "$2/macos-arm64"
   exit 0
 fi
@@ -42,13 +42,13 @@ OUTPUT="$2"
 cargo_args=(build --release)
 gui_args=(build --release)
 if [ "${DEEPCODE_BUILD_KIND:-normal}" = debug ]; then
-  cargo_args+=(--features deepcode-kernel-daemon/debug-control,deepcode-cli/debug-control)
+  cargo_args+=(--features achbit-kernel-daemon/debug-control,achbit-cli/debug-control)
   gui_args+=(--features debug-control)
-  export TAURI_CONFIG='{"productName":"DeepCode-Debug","identifier":"com.achbite.deepcode.debug"}'
+  export TAURI_CONFIG='{"productName":"Achbit-Debug","identifier":"com.achbite.deepcode.debug"}'
 fi
 export CARGO_TARGET_DIR="${DEEPCODE_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
-"$CARGO" "${cargo_args[@]}" -p deepcode-kernel-daemon -p deepcode-first-party-tools -p deepcode-host-web -p deepcode-cli -p deepcode-tui -p deepcode-computer-use
-"$CARGO" "${gui_args[@]}" --manifest-path "$ROOT_DIR/shells/deepcode-gui/src-tauri/Cargo.toml"
+"$CARGO" "${cargo_args[@]}" -p achbit-kernel-daemon -p achbit-first-party-tools -p achbit-host-web -p achbit-cli -p achbit-tui -p achbit-computer-use
+"$CARGO" "${gui_args[@]}" --manifest-path "$ROOT_DIR/shells/achbit-gui/src-tauri/Cargo.toml"
 STAGE="$(mktemp -d "$(dirname "$SHARED")/macos-arm64.XXXXXX")"
 trap 'rm -rf -- "$STAGE"' EXIT
 python3 scripts/package-runtime.py assemble --root "$ROOT_DIR" --platform macos-arm64 --stage "$STAGE" --shared "$SHARED" --native "$CARGO_TARGET_DIR/release" --node "$NODE" --node-license "$NODE_LICENSE"
@@ -58,9 +58,9 @@ if [ "$runtime_only" -eq 1 ]; then
 fi
 VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
 if [ "${DEEPCODE_BUILD_KIND:-normal}" = debug ]; then
-  python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64" "$OUTPUT/DeepCode-Debug-$VERSION-macos-arm64.tar.gz"
+  python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64" "$OUTPUT/Achbit-Debug-$VERSION-macos-arm64.tar.gz"
 else
-  INSTALLER="$(dirname "$SHARED")/DeepCode-$VERSION-macos-arm64.pkg"
+  INSTALLER="$(dirname "$SHARED")/Achbit-$VERSION-macos-arm64.pkg"
   python3 scripts/package-installers.py macos-arm64 "$STAGE" "$INSTALLER"
-  python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64" "$OUTPUT/DeepCode-$VERSION-macos-arm64.tar.gz" --installer "$INSTALLER"
+  python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64" "$OUTPUT/Achbit-$VERSION-macos-arm64.tar.gz" --installer "$INSTALLER"
 fi

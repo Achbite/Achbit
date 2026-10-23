@@ -1,4 +1,4 @@
-import type { KernelPort, ManagedProcessSnapshot } from '@deepcode/protocol';
+import type { KernelPort, ManagedProcessSnapshot } from '@achbit/protocol';
 
 /** One run-owned fact feed. It never schedules a model request. */
 export class ManagedProcesses {

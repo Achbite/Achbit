@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { COMMAND_REPLY_VERSION } from '@deepcode/protocol';
+import { COMMAND_REPLY_VERSION } from '@achbit/protocol';
 import { admitSessionEvents } from '../dist/local-agent/admission.js';
 import { loopSnapshot, SessionService } from '../dist/index.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';

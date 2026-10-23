@@ -1,5 +1,5 @@
-import { decodeAgentRecipe, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@deepcode/protocol';
-import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentSettings, UserSettings } from '@deepcode/protocol';
+import { decodeAgentRecipe, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@achbit/protocol';
+import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentSettings, UserSettings } from '@achbit/protocol';
 
 export const DEFAULT_AGENT_CONFIGURATION: AgentConfiguration = {
   context: { id: 'journal' }, compaction: { id: 'summary' }, controls: { id: 'standard' },

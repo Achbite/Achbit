@@ -1,5 +1,5 @@
 {
-  "name": "@deepcode/presentation-core",
+  "name": "@achbit/presentation-core",
   "version": "0.6.58",
   "license": "MIT",
   "private": true,
@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@deepcode/protocol": "workspace:*"
+    "@achbit/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

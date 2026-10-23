@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="DeepCode" fill="#0868CE">
-<title>DeepCode</title>
-<g transform="translate(6.4 6.4) scale(.9)">
-    <path fill-rule="evenodd" d="M10 22H30C54 22 69 39 69 64S54 106 30 106H10A4 4 0 0 1 6 102V26A4 4 0 0 1 10 22ZM19 35V93H30C45 93 56 82 56 64S45 35 30 35H19Z"/>
-    <path d="M123 34 113 44C108 37 101 34 94 34C78 34 69 47 69 64S78 94 94 94C101 94 108 91 113 84L123 94C115 103 106 107 94 107C71 107 56 89 56 64S71 21 94 21C106 21 115 25 123 34Z"/>
-  </g>
-</svg>

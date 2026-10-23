@@ -1,4 +1,4 @@
-import type { AgentChildProjection, AgentLifecycleEvent, AgentTaskProjection, SessionEvent } from '@deepcode/protocol';
+import type { AgentChildProjection, AgentLifecycleEvent, AgentTaskProjection, SessionEvent } from '@achbit/protocol';
 
 export type AgentTaskSummary = Omit<AgentTaskProjection, 'text' | 'result'>;
 export interface AgentLifecycleState {

@@ -1,5 +1,5 @@
 {
-  "name": "@deepcode/chrome-devtools-runtime",
+  "name": "@achbit/chrome-devtools-runtime",
   "version": "0.6.58",
   "private": true,
   "license": "MIT",

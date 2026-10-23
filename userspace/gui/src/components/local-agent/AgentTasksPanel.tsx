@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { CONVERSATION_COMMAND_VERSION, type AgentChildProjection, type AgentTaskProjection,
-  type PlanResponse, type SessionProjection, type ShellAuthorizationScope, type UserSettings } from '@deepcode/protocol';
+  type PlanResponse, type SessionProjection, type ShellAuthorizationScope, type UserSettings } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { ComposerDecisionPanels } from './ComposerDecisionPanels';
@@ -13,7 +13,7 @@ import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ArtifactLinks } from './ArtifactLinks';
 import { requestWorkspacePreview, type AgentReaderTarget } from './readerState';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { projectionItems, assistantDraftItems } from './conversationItems';
 import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
 import PlanCard from './PlanCard';
@@ -107,8 +107,8 @@ export function AgentPageInformation({ name, sessionId, projection, language, on
   const modelName = model?.model ?? t(language, projection ? 'agent.page.unavailable' : 'agent.team.loading');
   return <>
     <div className="document-preview__toolbar native-browser-address agent-tasks__toolbar" aria-label={t(language, 'agent.page.information')}>
-      <button type="button" className="reader-icon-button" onClick={onBack} aria-label={t(language, 'agent.page.back')} title={t(language, 'agent.page.back')}><DeepCodeShellIcon name="chevronLeft" /></button>
-      <DeepCodeShellIcon name="subagents" />
+      <button type="button" className="reader-icon-button" onClick={onBack} aria-label={t(language, 'agent.page.back')} title={t(language, 'agent.page.back')}><AchbitShellIcon name="chevronLeft" /></button>
+      <AchbitShellIcon name="subagents" />
       <div className="agent-tasks__identity">
         {([['name', name], ['id', sessionId]] as const).map(([key, value]) => <button key={key} type="button" className={`agent-tasks__identity-${key}`}
           onClick={() => void copy(key, value)} aria-label={t(language, copied === key ? 'agent.message.copied' : `agent.page.copy${key === 'name' ? 'Name' : 'Id'}`)}

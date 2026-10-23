@@ -1,6 +1,6 @@
 # Product operations
 
-Quick directions for using DeepCode. Read only the section needed for the task; current tool schemas and returned availability determine callable operations.
+Quick directions for using Achbit. Read only the section needed for the task; current tool schemas and returned availability determine callable operations.
 
 ## Tools and validation
 
@@ -8,7 +8,7 @@ Quick directions for using DeepCode. Read only the section needed for the task; 
 - File tools operate on bound workspaces. Use `fs.read` for known text, with line/byte bounds; use file tools for project edits and deletion. Use the project's declared environment for commands.
 - Preserve actual results: rejected input was not executed; approval is not execution; a dispatched action with a failed observation is not a fully verified action. Correct the reported cause instead of repeating an unchanged failure.
 - Live output is bounded. Inspect the returned full-output paths when needed; do not rerun a command just to recover its log.
-- For DeepCode Debug control, use `doc.read` → `debug-control.md`. Direct tool/UI operations do not need an Agent task.
+- For Achbit Debug control, use `doc.read` → `debug-control.md`. Direct tool/UI operations do not need an Agent task.
 
 Computer Use is an optional plugin. Embedded browser tools need the originating GUI; desktop control needs its native helper and reported OS permissions. Inspect before acting, reuse the returned target identities, and use foreground observation for coordinate input. Unsupported actions do not automatically switch input methods. Never replay dispatched input solely because its screenshot failed.
 
@@ -24,10 +24,10 @@ Activate relevant enabled results with `plugin.activate` alone, using their exac
 
 | Source | Registration |
 | --- | --- |
-| Local CLI tools | `plugins.sources`, `deepcode-tool.json` |
+| Local CLI tools | `plugins.sources`, `achbit-tool.json` |
 | External MCP | `mcp.servers`; include a useful capability `description` |
 | Custom Skills | `skills.mounts`; folder or `SKILL.md` |
-| Display plugins | `workbench.uiPlugins`, `deepcode-ui.json`; see [UI plugins](ui-plugins.md) |
+| Display plugins | `workbench.uiPlugins`, `achbit-ui.json`; see [UI plugins](ui-plugins.md) |
 
 Settings switches/selections save immediately; numeric fields commit with Enter. Text edits and new connections retain Save/Create. Saved runtime configuration generally applies to the next run; selected Skill/CLI-plugin content is refreshed before the next request. In-flight calls keep their captured bindings. Relevant permission revocation is checked before execution.
 
@@ -56,19 +56,19 @@ Reader's Subagents view inspects recorded work without resuming it. Closing that
 ## Host lifetime
 
 ```sh
-deepcode-cli sessions
-deepcode-cli read --session 'session:...'
-deepcode-cli resume 'session:...'
-deepcode-cli new -C /absolute/workspace
-deepcode-cli start-host
-deepcode-cli stop-host
+achbit-cli sessions
+achbit-cli read --session 'session:...'
+achbit-cli resume 'session:...'
+achbit-cli new -C /absolute/workspace
+achbit-cli start-host
+achbit-cli stop-host
 ```
 
 GUI, CLI and TUI share the Host. An automatically started Host stays alive while clients or unfinished tasks need it, including tasks waiting for decisions. A persistent Host started with `start-host` needs explicit shutdown. Reading history does not resume execution or recover lost runtime bindings.
 
 Switching conversations changes the view, not the previous task. Reopening a GUI does not retarget a waiting run; **Continue in this window** explicitly rebinds future requests. Earlier pending calls retain their original target. Observe again after rebinding.
 
-While the desktop GUI is open, each observed successful task completion plays one soft ding-dong. When the app is in the background, a separate DeepCode window also appears at the bottom-right of its monitor, above the taskbar or Dock, without taking keyboard focus. Click it to open the conversation, dismiss it, or let it hide after 8 seconds. This does not use system notifications or require notification permission. Loading completed history, cancellation and failure do not send success reminders. Closing the GUI stops its reminders. Playback follows the current system output device and volume.
+While the desktop GUI is open, each observed successful task completion plays one soft ding-dong. When the app is in the background, a separate Achbit window also appears at the bottom-right of its monitor, above the taskbar or Dock, without taking keyboard focus. Click it to open the conversation, dismiss it, or let it hide after 8 seconds. This does not use system notifications or require notification permission. Loading completed history, cancellation and failure do not send success reminders. Closing the GUI stops its reminders. Playback follows the current system output device and volume.
 
 In **Settings → General → Task completion reminders**, preview the sound, choose a WAV (up to 30 seconds / 8 MiB), or restore the default. The override lives at `<local config directory>/user/local/sounds/completion.wav`; settings displays the exact local path, including in Debug or SSH mode. The GUI reads the file anew for every playback, so replacing it directly takes effect on the next reminder. Invalid replacements and playback errors are reported; they do not silently substitute a different sound.
 
@@ -92,7 +92,7 @@ Resource subscriptions are shared per Session; one unavailable file does not fai
 
 ## Reading and appearance
 
-Settings → Appearance controls fonts, sizes and colors. Preset changes apply immediately; custom font text needs confirmation. TUI `/font` lists choices and `/font follow` rereads the shared preference. `deepcode-tui --in-place` uses the current terminal rather than opening a dedicated window.
+Settings → Appearance controls fonts, sizes and colors. Preset changes apply immediately; custom font text needs confirmation. TUI `/font` lists choices and `/font follow` rereads the shared preference. `achbit-tui --in-place` uses the current terminal rather than opening a dedicated window.
 
 CLI chat/TUI use `/sessions`, `/resume <number|full-id>` and `/new`. Numbers refer to the last list in that process. TUI `/reply` answers a decision, `/decision` shows details, `/tool <activity-id>` opens full output and `/error` shows the original error.
 
@@ -102,7 +102,7 @@ File-tool arrows open the preview in one step. Edits show changed lines with nea
 
 ## Document output
 
-For requested HTML/PDF/Markdown delivery, read `deepcode-documents`. Use `document.render` with the requested format and workspace destination. PDF needs the configured WeasyPrint environment; missing dependencies are a failure, not a different-format delivery.
+For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` with the requested format and workspace destination. PDF needs the configured WeasyPrint environment; missing dependencies are a failure, not a different-format delivery.
 
 Archive an existing file with `artifact.prepare`, or register a live URL with `artifact.preview`. Deliver selected results using `artifact.present`, then cite its returned URI. Preparing/registering alone does not deliver; registering a URL does not verify it. Re-prepare edited files and reuse the `deliveryId` for an update. Keep scripts, logs and observation screenshots intermediate unless requested.
 
@@ -124,3 +124,7 @@ Archive an existing file with `artifact.prepare`, or register a live URL with `a
 Authorized macOS builds use a persistent signer, defaulting to `DeepCode Local Development`; `DEEPCODE_MACOS_SIGN_IDENTITY` selects another. Initial setup is `bash scripts/setup-macos-signing.sh` on the Mac. The private key stays in that user's keychain; system password/trust prompts require human handling.
 
 Keep signer and bundle identity stable across updates. The Computer Use helper has its own Accessibility/Screen Recording grants. Use its `status` to inspect the actual running helper and permission error; do not reset OS permissions or replace unrelated apps as a generic fix. From a source checkout, `bash ./build.sh` updates the local runnable product; `bash ./build.sh --stage package-macos` explicitly builds the macOS distribution package. For isolated Debug builds, use [Debug control](debug-control.md).
+
+## Completion reminders
+
+In Settings → General, **Play completion sound in foreground** (`gui.completionSound.foreground`) defaults to off. Enable it to hear successful task completions while Achbit is active. Background completions still play the selected sound and show the reminder window. Previewing an audio file plays it regardless of this preference. The preference changes presentation only, not Session completion facts.

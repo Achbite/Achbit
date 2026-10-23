@@ -1,5 +1,5 @@
 import type { ConversationRound } from './conversationItems';
-import type { InteractionProjection } from '@deepcode/protocol';
+import type { InteractionProjection } from '@achbit/protocol';
 import { messageDisplayText } from './interactionPresentation';
 
 export interface ConversationNavigationEntry { key: string; rowIndex: number; label: string }

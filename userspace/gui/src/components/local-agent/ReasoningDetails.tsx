@@ -3,7 +3,7 @@ import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import React, { useEffect, useState } from 'react';
 import { useConversationHost } from './ConversationHost';
-import type { JsonObject } from '@deepcode/protocol';
+import type { JsonObject } from '@achbit/protocol';
 import { useConversationRowState } from './ConversationVirtualRow';
 
 export function ReasoningDetails({ sessionId, requestId, live = false, summary }: { sessionId: string; requestId: string; live?: boolean; summary?: React.ReactNode }) {

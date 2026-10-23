@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { DEFAULT_USER_SETTINGS, type UserSettings } from '@deepcode/protocol';
+import { DEFAULT_USER_SETTINGS, type UserSettings } from '@achbit/protocol';
 import NativeSelect from '../shared/NativeSelect';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
@@ -88,12 +88,12 @@ export default function GuiFontSettings({ language }: { language: UiLanguage }) 
     <div className="appearance-config-box__body">
       {picker(UI_FONT_FAMILY_SETTING, t(language, 'settings.font.default'))}
       {!expanded && <div className="appearance-font-preview" style={preview}>
-        <span className="appearance-font-preview__interface">DeepCode · {t(language, 'settings.font.interfacePreview')}</span>
+        <span className="appearance-font-preview__interface">Achbit · {t(language, 'settings.font.interfacePreview')}</span>
         <p className="appearance-font-preview__content">{t(language, 'settings.font.preview')}</p>
-        <code className="appearance-font-preview__code">const message = "你好，DeepCode";</code>
+        <code className="appearance-font-preview__code">const message = "你好，Achbit";</code>
       </div>}
       <details className="appearance-font-details" onToggle={event => setExpanded(event.currentTarget.open)}>
-        <summary><DeepCodeShellIcon name="chevronRight" size={14} />{t(language, 'settings.font.details')}</summary>
+        <summary><AchbitShellIcon name="chevronRight" size={14} />{t(language, 'settings.font.details')}</summary>
         <div className="appearance-font-groups">
           {GROUPS.map(group => {
             let family: string | undefined;
@@ -108,7 +108,7 @@ export default function GuiFontSettings({ language }: { language: UiLanguage }) 
                 </NativeSelect></label>
               </div>
               <div className={`appearance-font-group__sample appearance-font-group__sample--${group.id}`} style={{ fontFamily: family, fontSize: Number(values[group.size]) }}>
-                {group.id === 'terminal' ? <code>const message = "你好，DeepCode"; // 0123456789</code>
+                {group.id === 'terminal' ? <code>const message = "你好，Achbit"; // 0123456789</code>
                   : group.id === 'interface' ? t(language, 'settings.font.interfacePreview') : t(language, 'settings.font.preview')}
               </div>
             </fieldset>;

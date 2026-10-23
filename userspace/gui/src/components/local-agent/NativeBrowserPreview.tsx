@@ -11,7 +11,7 @@ import {
   type NativeHostBinding,
   type NativePage,
 } from '../../services/nativeBrowser';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { type BrowserAnnotation, type BrowserReviewEdit } from './browserReview';
 
 export function NativeBrowserPreview({
@@ -60,7 +60,7 @@ export function NativeBrowserPreview({
       return address.protocol === 'file:'
         ? (decodeURIComponent(address.pathname).split('/').at(-1) ?? url)
         : page?.kind === 'deepcode'
-          ? 'DeepCode'
+          ? 'Achbit'
           : url;
     } catch {
       return url;
@@ -284,19 +284,19 @@ export function NativeBrowserPreview({
           aria-label={t(language, 'reader.refresh')}
           title={t(language, 'reader.refresh')}
         >
-          <DeepCodeShellIcon name="refresh" />
+          <AchbitShellIcon name="refresh" />
         </button>
         {page?.status === 'loading' && <small role="status">{t(language, 'reader.loading')}</small>}
         {reviewing ? <div className="native-browser-review-controls" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setReviewing(false); } }}>
           <span title={t(language, 'reader.annotation.hint')}>{t(language, 'reader.annotation.gesture')}</span>
-          <kbd>esc</kbd><button type="button" aria-label={t(language, 'reader.annotation.exit')} onClick={() => setReviewing(false)}><DeepCodeShellIcon name="close" size={14} /></button>
+          <kbd>esc</kbd><button type="button" aria-label={t(language, 'reader.annotation.exit')} onClick={() => setReviewing(false)}><AchbitShellIcon name="close" size={14} /></button>
         </div> : <button
           disabled={!page || page.status !== 'ready' || busy || !onReview}
           type="button"
           onClick={startReview}
           title={t(language, 'reader.annotation.hint')}
         >
-          <DeepCodeShellIcon name="compose" />
+          <AchbitShellIcon name="compose" />
           <span>{t(language, 'reader.annotation.annotation')}</span>
         </button>}
       </form>

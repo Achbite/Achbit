@@ -1,14 +1,14 @@
 // Isolated visual fixture. Uses production composer state and components, with no backend calls.
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, type ModelInteractionRequest } from '@deepcode/protocol';
+import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, type ModelInteractionRequest } from '@achbit/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { InteractionCard } from '../../src/components/local-agent/InteractionCard';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import { installTextSelectionBoundary } from '../../src/components/shared/textSelection';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
 import '../../src/components/local-agent/localAgentPanel.css';

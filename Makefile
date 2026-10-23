@@ -1,7 +1,9 @@
-# DeepCode Docker environment and thin build entrypoints.
+# Achbit Docker environment and thin build entrypoints.
+
+-include .achbit-worktree.mk
 
 # ---- 基础常量（与项目结构强绑定）----
-IMAGE_NAME       ?= deepcode-dev
+IMAGE_NAME       ?= achbit-dev
 IMAGE_TAG        ?= latest
 IMAGE            := $(IMAGE_NAME):$(IMAGE_TAG)
 DOCKERFILE       ?= Dockerfile.dev
@@ -10,8 +12,8 @@ DEEPCODE_PROJECT_ROOT := $(realpath $(CURDIR))
 DEEPCODE_BUILD_HOST_OS := $(shell uname -s)
 UI_PLUGIN ?= ui-plugins/template
 UI_PACKAGE ?=
-CONTAINER_NAME ?= deepcode-dev
-CONTAINER_HOSTNAME ?= deepcode-dev
+CONTAINER_NAME ?= achbit-dev
+CONTAINER_HOSTNAME ?= achbit-dev
 DEEPCODE_HOST_PORT ?= 31246
 DEEPCODE_CONTAINER_PORT ?= 31246
 DEEPCODE_RUST_TOOLCHAIN ?= $(shell awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $$2; exit }' rust-toolchain.toml)
@@ -110,7 +112,7 @@ RUN_ARGS := \
 	-e PATH=/root/.local/share/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	$(NETWORK_ENV_ARGS)
 
-.PHONY: help docker-info branch-audit branch-hooks shell build package ui ui-update native-gui dev-deepcode-gui reset-dev clean package-macos _validate_config _print_image _ensure_image _ensure_container
+.PHONY: help docker-info branch-audit branch-hooks shell build package ui ui-update native-gui dev-achbit-gui reset-dev clean package-macos _validate_config _print_image _ensure_image _ensure_container
 
 # Environment settings are forwarded to the sole build orchestrator.
 export CONTAINER_NAME WORKDIR_IN_CTNR
@@ -120,10 +122,10 @@ help:
 	@echo "make build: 编译并更新本机可运行目录；macOS 更新 bin/macos-arm64，不生成安装器或压缩包"
 	@echo "make package: 编译并打包全部可用平台，生成运行目录、压缩包及安装器"
 	@echo "make package-macos: Docker 共享构建 + 宿主 Darwin 编译/组装，支持容器内 build.sh 发起"
-	@echo "make ui: 单 GUI 资源到 bin/ui/web-deepcode-gui"
+	@echo "make ui: 单 GUI 资源到 bin/ui/web-achbit-gui"
 	@echo "make ui-update UI_PACKAGE=bin/macos-arm64: 完整替换本地包 GUI"
 	@echo "make native-gui: Docker 内构建 Linux GUI native shell"
-	@echo "make dev-deepcode-gui: Docker 内 Vite HMR，浏览器访问已映射的 Host 端口"
+	@echo "make dev-achbit-gui: Docker 内 Vite HMR，浏览器访问已映射的 Host 端口"
 	@echo "make clean: 删除当前配置的容器、镜像和缓存 volumes"
 
 docker-info:
@@ -252,8 +254,8 @@ ui-update:
 native-gui:
 	@bash ./build.sh --stage native-gui
 
-dev-deepcode-gui: _ensure_container
-	@bash scripts/dev-deepcode-gui-host.sh "$(CONTAINER_NAME)" "$(WORKDIR_IN_CTNR)" "$(DEEPCODE_CONTAINER_PORT)" $(NETWORK_ENV_ARGS)
+dev-achbit-gui: _ensure_container
+	@bash scripts/dev-achbit-gui-host.sh "$(CONTAINER_NAME)" "$(WORKDIR_IN_CTNR)" "$(DEEPCODE_CONTAINER_PORT)" $(NETWORK_ENV_ARGS)
 
 # ---- reset-dev / clean：只操作固定命名的单仓开发资源 ----
 reset-dev:
@@ -277,6 +279,6 @@ clean:
 
 .PHONY: ui-plugin ui-plugin-watch
 ui-plugin: _ensure_container
-	@docker exec -e DEEPCODE_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @deepcode/client exec vite build --config vite.ui-plugin.config.ts
+	@docker exec -e DEEPCODE_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @achbit/client exec vite build --config vite.ui-plugin.config.ts
 ui-plugin-watch: _ensure_container
-	@docker exec -e DEEPCODE_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @deepcode/client exec vite build --config vite.ui-plugin.config.ts --watch
+	@docker exec -e DEEPCODE_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @achbit/client exec vite build --config vite.ui-plugin.config.ts --watch

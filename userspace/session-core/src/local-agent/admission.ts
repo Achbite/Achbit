@@ -1,7 +1,7 @@
-import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@deepcode/protocol';
-import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
-import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@achbit/protocol';
+import { isSessionAuthorizationScope } from '@achbit/protocol';
+import { SESSION_EVENT_VERSION } from '@achbit/protocol';
+import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@achbit/protocol';
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
 import { admitModelView } from './modelView.js';

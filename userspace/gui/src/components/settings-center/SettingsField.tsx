@@ -4,7 +4,7 @@ import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { useSettingsSearchTarget } from './settingsSearch';
 import { useSettingsHelp } from './SettingsHelp';
 import React, { useEffect, useState } from 'react';
-import { DEFAULT_USER_SETTINGS, type UserSettingValue } from '@deepcode/protocol';
+import { DEFAULT_USER_SETTINGS, type UserSettingValue } from '@achbit/protocol';
 import { useSettingsStore, type SettingDefinition } from '../../state/settingsStore';
 import { parseSettingDraft, reconcileSettingDraft } from './settingDraft';
 import { t, type UiLanguage } from '../../i18n';

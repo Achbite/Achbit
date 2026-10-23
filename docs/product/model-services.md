@@ -9,16 +9,43 @@ The last profile used for a submitted task becomes the new-conversation default.
 Codex Coding Plan supports browser or device authentication through the Host, without requiring an installed Codex CLI. Credentials stay in the local secret store. Login is a user action; do not copy credentials between ordinary and Debug instances without authorization.
 
 ```sh
-deepcode-cli connections
-deepcode-cli auth login openai-codex browser
-deepcode-cli auth login CONNECTION_ID device
-deepcode-cli auth status
-deepcode-cli auth logout CONNECTION_ID
-deepcode-cli quota CONNECTION_ID
-deepcode-cli --model PROFILE_ID ask "Explain this code."
+achbit-cli connections
+achbit-cli auth login openai-codex browser
+achbit-cli auth login CONNECTION_ID device
+achbit-cli auth status
+achbit-cli auth logout CONNECTION_ID
+achbit-cli quota CONNECTION_ID
+achbit-cli --model PROFILE_ID ask "Explain this code."
 ```
 
 TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [English](deepseek.md) or [Chinese](deepseek.zh-CN.md) guide.
+
+## API and Coding Plan selection
+
+Choose **API connection** or **Coding Plan** directly in Models & services. The connection form also lets you switch between these modes. Select the service and region, enter its key (or sign in when account authentication is supported), and choose the first model before creating the connection. Models remain editable afterward. GUI, TUI and CLI share the saved connection and model list.
+
+| Service | API | Coding Plan | Authentication / protocol |
+| --- | --- | --- | --- |
+| OpenAI / Codex | OpenAI API | Codex | API Key / browser or device-code login; Responses |
+| Anthropic Claude | Claude API | No direct subscription login supplied | API Key; Messages |
+| Google Gemini | Gemini API | No Google account subscription login supplied | API Key; OpenAI-compatible Chat Completions |
+| DeepSeek | DeepSeek API | — | API Key; Responses, Chat Completions or Messages |
+| GLM / Z.ai | China and global API | China and global Coding Plan | Separate plan keys and endpoints; Chat Completions |
+| Moonshot / Kimi | Moonshot API | Kimi Code China and global | Separate plan keys and endpoints; Chat Completions |
+| MiniMax | China and global API | China Token Plan and global M / Coding Plan | API Key or Subscription Key; Messages |
+| Alibaba Cloud | DashScope API | Coding Plan and Token Plan | Dedicated plan key and endpoint; Chat Completions |
+| Volcengine | Ark API | Coding Plan | Dedicated plan key and endpoint; Chat Completions |
+| OpenRouter, xAI, Mistral, Groq, SiliconFlow | API presets | — | API Key; Chat Completions |
+| Ollama | Local service | — | No key; Ollama protocol |
+| Custom | Editable endpoint | — | API Key; Responses, Chat Completions or Messages |
+
+Plan billing does not imply OAuth. API-key plans never enter the Codex login flow. Choose a key and endpoint from the same provider, region and plan. Provider tool eligibility and account permissions still apply; this client does not impersonate another coding tool. Claude, Cursor, GitHub Copilot and Google consumer subscriptions are not interchangeable API credentials and are not advertised as direct subscription integrations here.
+
+Templates are starting configurations, not a live model inventory. Enter the model ID your account offers when no model is prefilled. Newly added presets start with a conservative 128,000-token context and 16,000-token output budget; adjust these to the model and plan limits. Image input must be enabled for a model that supports it. The **Test** button sends a real short request and reports its error unchanged. Protocol tests do not prove account access, quota or every model-specific feature.
+
+Codex exposes a provider quota snapshot. Other plan presets show recorded request/token usage; absence of a quota API is not a zero balance. Plan usage does not display a made-up per-token bill. Gemini tool-call thought signatures are retained through the journal and sent back on subsequent Chat Completions requests.
+
+Endpoint references (checked 2026-10-23): [GLM](https://docs.bigmodel.cn/cn/coding-plan/quick-start), [Z.ai](https://zcode.z.ai/en/docs/configuration), [Kimi Code](https://www.kimi.com/code/docs/en/), [MiniMax Global](https://platform.minimax.io/docs/m-plan/other-tools), [MiniMax China](https://platform.minimax.cn/docs/api-reference/text-anthropic-api), [Alibaba Cloud](https://help.aliyun.com/en/model-studio/base-url), [Volcengine](https://docs.volcengine.com/docs/ark/coding-plan-personal-faq?lang=zh), [Gemini](https://ai.google.dev/gemini-api/docs/openai), [Claude API](https://platform.claude.com/docs/en/api/overview).
 
 ## Context management
 
@@ -44,7 +71,7 @@ This schedules compaction at a safe boundary; it does not launch an idle task or
 ## Usage
 
 ```sh
-deepcode-cli usage all 30
+achbit-cli usage all 30
 ```
 
 The GUI defaults to the last 30 local dates, not a calendar month. CLI date ranges use UTC. Usage records count physical Provider calls, including known retry usage; missing usage or unknown prices remain unavailable/partial, not zero.

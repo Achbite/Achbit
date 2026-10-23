@@ -2,7 +2,7 @@ import { UiRegion } from '../../ui-plugins/UiRegion';
 import type { BrowserAnnotationDraft } from './browserReview';
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import SessionModelSelector from './SessionModelSelector';
 import TotalCacheUsage from './TotalCacheUsage';
 import { ComposerDecisionPanels, ComposerQuestionPrompt } from './ComposerDecisionPanels';
@@ -213,11 +213,11 @@ export function ConversationComposer({
         aria-label={t(language, 'agent.decision.pending')}>
         <button type="button" aria-pressed={showApproval} aria-controls={decisionContentId}
           onClick={() => setSelectedTextDecision(null)}>
-          <DeepCodeShellIcon name="shield" size={16} />{t(language, 'agent.approval.toolPermission')}
+          <AchbitShellIcon name="shield" size={16} />{t(language, 'agent.approval.toolPermission')}
         </button>
         <button type="button" aria-pressed={!showApproval} aria-controls={decisionContentId}
           onClick={() => setSelectedTextDecision(concurrentDecisionKey)}>
-          <DeepCodeShellIcon name={composer.pendingPlan ? 'artifact' : 'question'} size={16} />
+          <AchbitShellIcon name={composer.pendingPlan ? 'artifact' : 'question'} size={16} />
           {t(language, composer.pendingPlan ? 'agent.plan.review'
             : composer.pendingInteraction?.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
         </button>
@@ -279,7 +279,7 @@ export function ConversationComposer({
                 onClick={() => selectPlugin(plugin)}
                 onMouseEnter={() => { if (plugin.enabled && plugin.available) setPluginActiveIndex(index); }}
               >
-                <DeepCodeShellIcon name="extension" />
+                <AchbitShellIcon name="extension" />
                 <span>
                   <b>{plugin.displayName}</b>
                   <small>{plugin.shortDescription}</small>
@@ -287,7 +287,7 @@ export function ConversationComposer({
                     ? `${plugin.error.code}: ${plugin.error.message}`
                     : language === 'zh-CN' ? '插件未启用' : 'Plugin disabled'}</small>}
                 </span>
-                <span className="plugin-selection-mark" title={readyPlugins.has(plugin.uri) ? (language==='zh-CN'?'当前任务已就绪':'Ready in this task') : pluginSelections.some(selection=>selection.uri===plugin.uri) ? (language==='zh-CN'?'已选择，发送后加入任务':'Selected; prepared on send') : undefined}>{pluginSelections.some(selection=>selection.uri===plugin.uri)||readyPlugins.has(plugin.uri)? <DeepCodeShellIcon name="check" size={14} /> : null}</span>
+                <span className="plugin-selection-mark" title={readyPlugins.has(plugin.uri) ? (language==='zh-CN'?'当前任务已就绪':'Ready in this task') : pluginSelections.some(selection=>selection.uri===plugin.uri) ? (language==='zh-CN'?'已选择，发送后加入任务':'Selected; prepared on send') : undefined}>{pluginSelections.some(selection=>selection.uri===plugin.uri)||readyPlugins.has(plugin.uri)? <AchbitShellIcon name="check" size={14} /> : null}</span>
               </button>
             )) : (
               <div className="local-agent__plugin-picker-empty">
@@ -316,7 +316,7 @@ export function ConversationComposer({
               onMouseDown={event => event.preventDefault()}
               onClick={() => void selectCommand(command.id)}
             >
-              <DeepCodeShellIcon name={command.icon} />
+              <AchbitShellIcon name={command.icon} />
               <span>
                 <b>{t(language, command.id === 'focus' ? 'agent.context.focusCommand' : `agent.commands.${command.id}`)}</b>
                 <small>{t(language, command.id === 'focus' ? 'agent.context.focusCommandDescription' : `agent.commands.${command.id}Description`)}</small>
@@ -336,17 +336,17 @@ export function ConversationComposer({
                 <button type="button" className="local-agent__annotation-edit"
                   title={`${paste.browserReview.annotation.title || paste.browserReview.annotation.url}\n\n${paste.browserReview.annotation.comment}`}
                   onClick={() => onEditBrowserReview(paste.browserReview!)}>
-                  <DeepCodeShellIcon name="compose" />
+                  <AchbitShellIcon name="compose" />
                   <span><strong>{language === 'zh-CN' ? '批注' : 'Annotation'} {annotations.indexOf(paste) + 1} · {paste.browserReview.annotation.title || paste.browserReview.annotation.url}</strong><small>{paste.browserReview.annotation.comment}</small></span>
                 </button>
-                <button type="button" aria-label={language === 'zh-CN' ? '移除批注' : 'Remove annotation'} onClick={() => composer.removeBrowserReview(paste.inputId)}><DeepCodeShellIcon name="close" size={14} /></button>
+                <button type="button" aria-label={language === 'zh-CN' ? '移除批注' : 'Remove annotation'} onClick={() => composer.removeBrowserReview(paste.inputId)}><AchbitShellIcon name="close" size={14} /></button>
               </div>
             ) : (
               <div className="local-agent__pasted-text" key={paste.inputId} data-attachment-id={paste.inputId}>
                 <div className="local-agent__pasted-text-header">
-                  <DeepCodeShellIcon name="artifact" />
+                  <AchbitShellIcon name="artifact" />
                   <span><strong>{pastedTextTitle(paste.text)}</strong><small>TXT · {(new TextEncoder().encode(paste.text).byteLength / 1024).toFixed(1)} KiB</small></span>
-                  <button type="button" aria-label={t(language, 'agent.paste.remove')} onClick={() => composer.setPastedTexts((current) => current.filter((item) => item.inputId !== paste.inputId))}><DeepCodeShellIcon name="close" size={14} /></button>
+                  <button type="button" aria-label={t(language, 'agent.paste.remove')} onClick={() => composer.setPastedTexts((current) => current.filter((item) => item.inputId !== paste.inputId))}><AchbitShellIcon name="close" size={14} /></button>
                 </div>
                 <button type="button" className="local-agent__paste-toggle" aria-expanded={paste.expanded} onClick={() => composer.setPastedTexts((current) => current.map((item) => item.inputId === paste.inputId ? { ...item, expanded: !item.expanded } : item))}>
                   {t(language, paste.expanded ? 'agent.paste.collapse' : 'agent.paste.expand')}
@@ -360,13 +360,13 @@ export function ConversationComposer({
                 <span className="local-agent__attachment-name" title={image.name}>{image.name}</span>
                 <button type="button" aria-label={t(language, 'agent.attachment.remove', { name: image.name })}
                   onClick={() => composer.setPastedImages((current) => current.filter((item) => item.inputId !== image.inputId))}>
-                  <DeepCodeShellIcon name="close" size={14} />
+                  <AchbitShellIcon name="close" size={14} />
                 </button>
               </span>
             ))}
             {pluginSelections.map((selection) => (
               <span className="local-agent__draft-plugin" key={selection.selectionId} data-attachment-id={selection.selectionId}>
-                <DeepCodeShellIcon name="extension" />
+                <AchbitShellIcon name="extension" />
                 <span className="local-agent__attachment-name" title={selection.label}>@{selection.label}</span>
                 <button
                   type="button"
@@ -377,7 +377,7 @@ export function ConversationComposer({
                     )));
                     setDraft((current) => current.replace(`@${selection.label}`, '').trimStart());
                   }}
-                ><DeepCodeShellIcon name="close" size={14} /></button>
+                ><AchbitShellIcon name="close" size={14} /></button>
               </span>
             ))}
             {pendingFilesystemPaths.filter(reference => !composer.pastedTexts.some(paste => paste.browserReview?.screenshot === reference.path)).map((reference) => (
@@ -388,7 +388,7 @@ export function ConversationComposer({
                 key={`${reference.kind}:${reference.path}`}
                 data-attachment-id={`${reference.kind}:${reference.path}`}
               >
-                <DeepCodeShellIcon name={reference.kind === 'directory'
+                <AchbitShellIcon name={reference.kind === 'directory'
                   ? 'folder'
                   : 'artifact'} />
                 <span className="local-agent__attachment-name" title={reference.path}>
@@ -403,12 +403,12 @@ export function ConversationComposer({
                   onClick={() => setPendingFilesystemPaths((current) => current.filter((item) => (
                     item.path !== reference.path || item.kind !== reference.kind
                   )))}
-                ><DeepCodeShellIcon name="close" size={14} /></button>
+                ><AchbitShellIcon name="close" size={14} /></button>
               </span>
             ))}
           </div>
         )}
-        {composer.textDecision && <span className="local-agent__decision-input-mark" aria-hidden="true"><DeepCodeShellIcon name="compose" size={16} /></span>}
+        {composer.textDecision && <span className="local-agent__decision-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>}
         <textarea
           ref={textareaRef}
           value={draft}
@@ -457,7 +457,7 @@ export function ConversationComposer({
                   setPermissionMenuOpen(false);
                 }}
               >
-                <DeepCodeShellIcon name="plus" />
+                <AchbitShellIcon name="plus" />
               </button>
               {attachmentMenuOpen && (
                 <div className="local-agent__attachment-menu" role="menu">
@@ -469,7 +469,7 @@ export function ConversationComposer({
                       setAttachmentDialogOpen(true);
                     }}
                   >
-                    <DeepCodeShellIcon name="paperclip" />
+                    <AchbitShellIcon name="paperclip" />
                     <span>
                       <b>{t(language, 'agent.attachment.filesAndFolders')}</b>
                       <small>{t(language, 'agent.attachment.pickerDescription')}</small>
@@ -480,7 +480,7 @@ export function ConversationComposer({
                     role="menuitem"
                     onClick={openPluginPicker}
                   >
-                    <DeepCodeShellIcon name="extension" />
+                    <AchbitShellIcon name="extension" />
                     <span>
                       <b>{t(language, 'agent.plugin.menu')}</b>
                       <small>{t(language, 'agent.plugin.menuDescription')}</small>
@@ -491,7 +491,7 @@ export function ConversationComposer({
                     role="menuitem"
                     onClick={insertFocusCommand}
                   >
-                    <DeepCodeShellIcon name="activity" />
+                    <AchbitShellIcon name="activity" />
                     <span>
                       <b>{t(language, 'agent.context.focusCommand')}</b>
                       <small>{t(language, 'agent.context.focusCommandDescription')}</small>
@@ -543,7 +543,7 @@ export function ConversationComposer({
                 aria-label={t(language, 'agent.composer.stopCurrentRun')}
                 title={t(language, 'agent.composer.stop')}
                 onClick={() => void cancelRun()}
-              ><DeepCodeShellIcon name="stop" /></button>}
+              ><AchbitShellIcon name="stop" /></button>}
               {!showStopAction && <button
                 type="button"
                 className={`local-agent__send${composer.textDecision || composer.editingMessage ? ' local-agent__send--decision' : ''}`}
@@ -556,7 +556,7 @@ export function ConversationComposer({
                 disabled={!canSend}
                 onClick={() => void submitDraft()}
               >
-                {composer.editingMessage ? t(language, 'agent.message.regenerate') : composer.textDecision ? t(language, 'agent.composer.send') : <DeepCodeShellIcon name="arrowUp" />}
+                {composer.editingMessage ? t(language, 'agent.message.regenerate') : composer.textDecision ? t(language, 'agent.composer.send') : <AchbitShellIcon name="arrowUp" />}
               </button>}
             </div>
           </div></UiRegion>

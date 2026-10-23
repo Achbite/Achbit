@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { PendingAgentDecision, SessionProjection } from '@deepcode/protocol';
+import type { PendingAgentDecision, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import ModalDialog from '../shared/ModalDialog';
 import { ChildDecisions } from './AgentTasksPanel';

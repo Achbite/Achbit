@@ -5,9 +5,11 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
-import { closeFinishedWindow, launchWindow, native, runInCurrentWindow } from '../macos/window.mjs';
+import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
+import { closeFinishedWindow, launchWindow, native, runInCurrentWindow, withFontSettings } from '../macos/window.mjs';
 
-const font = { name: 'DeepCodeQuietTerminalMonoSC-Regular', size: 12 };
+const font = { name: 'AchbitQuietTerminalMonoSC-Regular', size: 12 };
 const owner = { windowId: 42, tty: '/dev/ttys-test' };
 async function fixture(t) {
   const temporary = await mkdtemp(join(tmpdir(), 'deepcode-window-test-'));
@@ -109,6 +111,37 @@ test('native bridge records a new window before tab metadata can fail and protec
   assert.deepEqual(closed, [42]);
 });
 
+test('cold Terminal startup identifies the requested tab among restored windows', async () => {
+  const source = await readFile(new URL('../macos/font-bridge.js', import.meta.url), 'utf8');
+  const records = [];
+  const closed = [];
+  const restored = { id: () => 7, tabs: () => [{ tty: () => '/dev/ordinary' }] };
+  const tab = { tty: () => owner.tty };
+  const created = { id: () => owner.windowId, tabs: () => [tab] };
+  let running = false;
+  const terminal = {
+    running: () => running,
+    windows: () => [restored, created],
+    doScript: () => { running = true; return tab; },
+    close: window => closed.push(window.id()),
+  };
+  const dollar = Object.assign(text => ({ dataUsingEncoding: () => ({ writeToFileAtomically: path => {
+    records.push({ path, owner: JSON.parse(text) }); return true;
+  } }) }), { NSUTF8StringEncoding: 4 });
+  const context = vm.createContext({ ObjC: { import() {} }, Application: () => terminal, $: dollar });
+  vm.runInContext(source, context);
+  assert.deepEqual(JSON.parse(context.run(['create', JSON.stringify({
+    command: 'owned launch', ownerPath: '/owned/owner.json',
+  })])), owner);
+  assert.deepEqual(records, [
+    { path: '/owned/owner.json', owner: { windowId: 42, tty: null } },
+    { path: '/owned/owner.json', owner },
+  ]);
+  context.run(['close', JSON.stringify(owner)]);
+  assert.deepEqual(closed, [42]);
+  assert.equal(terminal.windows().includes(restored), true);
+});
+
 test('the command window runs in its current tty until TUI exit and restores its appearance', async t => {
   const config = { ...await fixture(t), tty: owner.tty, args: ['--api', 'http://127.0.0.1:8123', '--session', 'session:test'] };
   const previous = { ...owner, name: 'Menlo-Regular', size: 13, title: 'my shell' };
@@ -174,7 +207,7 @@ test('the native bridge borrows only the matching tab and restores its font size
   const previous = JSON.parse(context.run(['capture', JSON.stringify({ tty: owner.tty })]));
   assert.deepEqual(previous, { ...owner, name: initial.fontName, size: initial.fontSize, title: initial.customTitle });
   context.run(['apply', JSON.stringify({ ...owner, ...font })]);
-  assert.deepEqual(selected, { fontName: font.name, fontSize: font.size, customTitle: 'DeepCode' });
+  assert.deepEqual(selected, { fontName: font.name, fontSize: font.size, customTitle: 'AC' });
   context.run(['restore', JSON.stringify(previous)]);
   assert.deepEqual(selected, initial);
   assert.deepEqual(ordinary, { ...initial, customTitle: 'other shell' });
@@ -240,4 +273,46 @@ test('finished-window cleanup closes only the original empty single-tab window',
   tabs = [target];
   assert.deepEqual(close(owner), { closed: true });
   assert.deepEqual(closed, [owner.windowId]);
+});
+
+test('font settings helper keeps its lease until startup completes and releases it on every outcome', async () => {
+  for (const failure of [false, true]) {
+    let child;
+    const start = (binary, args, options) => {
+      assert.equal(binary, '/owned/achbit-tui');
+      assert.deepEqual(args, ['-C', '/workspace', '--font-settings']);
+      assert.equal(options.env.DEEPCODE_TUI_FONT_SETTINGS_LEASE, '1');
+      child = spawn(process.execPath, ['-e', "console.log(JSON.stringify({font:'warm'}));process.stdin.resume();"], options);
+      return child;
+    };
+    const action = async settings => {
+      assert.deepEqual(settings, {font:'warm'});
+      await delay(20);
+      assert.equal(child.exitCode, null, 'helper must remain alive throughout native startup');
+      if (failure) throw new Error('native window creation failed');
+      return 42;
+    };
+    const pending = withFontSettings('/owned/achbit-tui', ['-C', '/workspace'], action, start);
+    if (failure) await assert.rejects(pending, /native window creation failed/);
+    else assert.equal(await pending, 42);
+    assert.equal(child.exitCode, 0, 'EOF releases the helper without a leaked process');
+  }
+});
+
+test('font settings startup failures remain failures and never launch a window', async () => {
+  let called = false;
+  const use = () => { called = true; };
+  await assert.rejects(withFontSettings('/missing/achbit-tui', [], use), /ENOENT/);
+  let child;
+  await assert.rejects(withFontSettings('/unused', [], use, (_binary, _args, options) => {
+    child = spawn(process.execPath, ['-e', "console.log('invalid json');process.stdin.resume();"], options);
+    return child;
+  }), /font preference read failed/);
+  assert.equal(called, false);
+  assert.equal(child.exitCode, 0);
+});
+
+test('losing the font settings lease before handoff cannot report a successful launch', async () => {
+  await assert.rejects(withFontSettings('/unused', [], async () => { await delay(100); }, (_binary, _args, options) =>
+    spawn(process.execPath, ['-e', "console.log('{}');setTimeout(()=>process.exit(7),10);"], options)), /exited \(7\)/);
 });

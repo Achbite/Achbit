@@ -7,7 +7,7 @@ import { readDocumentText, type DocumentFormat } from './documentResources';
 import './documentPreview.css';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import SourceFileView from './SourceFileView';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { ImageReview } from './ImageReview';
 
 const PdfDocumentPreview = lazy(() => loadInterfaceModule(() => import('./PdfDocumentPreview')));
@@ -38,10 +38,10 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
         {format !== 'pdf' && format !== 'image' && <button className="reader-icon-button" type="button" aria-pressed={showSource} onClick={() => setShowSource((value) => !value)}
           aria-label={showSource ? (chinese ? '返回预览' : 'Return to preview') : (chinese ? '查看源码' : 'View source')}
           title={showSource ? (chinese ? '返回预览' : 'Return to preview') : (chinese ? '查看源码' : 'View source')}>
-          <DeepCodeShellIcon name="code" />
+          <AchbitShellIcon name="code" />
         </button>}
         <a className="reader-icon-button" href={download || undefined} download={filename.split(/[\\/]/).at(-1)} aria-label={chinese ? '下载文档' : 'Download'} title={chinese ? '下载文档' : 'Download'}>
-          <DeepCodeShellIcon name="download" />
+          <AchbitShellIcon name="download" />
         </a>
       </div>
     </div>

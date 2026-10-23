@@ -3,7 +3,7 @@
 .model-services h3 { margin: 0; font-size: 14px; }
 .model-services button, .model-services input, .model-services select { font: inherit; color: inherit; }
 .model-services button { border: 1px solid transparent; border-radius: 7px; background: var(--dc-surface-subtle); padding: 7px 12px; cursor: pointer; }
-.model-services button:hover { background: var(--bg-hover, var(--dc-surface-raised)); }
+.model-services button:hover:not(:disabled) { background: var(--dc-surface-hover); }
 .model-services button:disabled { opacity: .45; cursor: default; }
 .model-services .model-primary { background: var(--dc-control-background); color: var(--dc-control-foreground); border-color: transparent; background: var(--dc-surface-hover); font-weight: 600; }
 .model-services .model-primary:hover:not(:disabled) { background: var(--dc-surface-hover); }
@@ -30,9 +30,6 @@
 .model-connection-row:hover .model-reorder, .model-connection-row:focus-within .model-reorder { opacity: 1; }
 .model-reorder button { padding: 3px 6px; border: 0; background: none; }
 .model-empty { padding: 24px 0; color: var(--text-muted); }
-.model-add { position: relative; }
-.model-add-menu { position: absolute; right: 0; top: calc(100% + 8px); min-width: 180px; padding: 5px; z-index: 5; background: var(--dc-surface-raised); border: 0; border-radius: 9px; box-shadow: var(--dc-shadow-panel); }
-.model-add-menu button { display: block; width: 100%; text-align: left; border: 0; background: none; }
 .model-breadcrumb { display: flex; gap: 12px; align-items: center; color: var(--text-muted); font-size: 12px; margin-bottom: 25px; }
 .model-services fieldset { padding: 0; border: 0; margin: 0; min-width: 0; }
 .model-form-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
@@ -103,3 +100,9 @@
 @container (max-width: 620px) {
   .model-form-grid > label:not(.model-toggle-row) { grid-template-columns:minmax(0,1fr); gap:6px; padding-block:12px; }
 }
+
+.model-connection-entry, .model-mode-switch { display: flex; flex-wrap: wrap; gap: 8px; }
+.model-mode-switch { margin: 0 0 18px; }
+.model-services .model-mode-switch button[aria-pressed="true"] { background: var(--dc-surface-hover); color: var(--dc-foreground-strong); font-weight: 600; }
+.model-connection-hint { color: var(--text-muted); font-size: 12px; line-height: 1.6; margin: 12px 0; }
+@media (max-width: 560px) { .model-heading { flex-wrap: wrap; } }

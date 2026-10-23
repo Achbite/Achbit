@@ -1,5 +1,5 @@
 import React from 'react';
-import type { ExecutionPlanStep } from '@deepcode/protocol';
+import type { ExecutionPlanStep } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 

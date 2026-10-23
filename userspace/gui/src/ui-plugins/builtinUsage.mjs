@@ -155,21 +155,22 @@ export default { apply(context) {
       attach(detail, !collapsed && input.expanded && !menu);
       if (collapsed) { place(); return; }
       const plan = input.connection.billingMode === 'subscription';
-      const windows = plan && data?.windows ? [...data.windows].sort((a,b)=>b.windowDurationSeconds-a.windowDurationSeconds) : [];
-      const totals = !plan && data?.totals;
-      const amount = error ? text('unavailable') : loading && !data ? '…' : plan ? windows.length ? remaining(windows[0]) : '—' : totals?.estimatedCost != null ? money(totals.estimatedCost) : totals?.calls === 0 ? text('noCalls') : text('unpriced');
+      const quota = plan && input.connection.credentialKind === 'oauth';
+      const windows = quota && data?.windows ? [...data.windows].sort((a,b)=>b.windowDurationSeconds-a.windowDurationSeconds) : [];
+      const totals = !quota && data?.totals;
+      const amount = error ? text('unavailable') : loading && !data ? '…' : quota ? windows.length ? remaining(windows[0]) : '—' : plan ? totals?.reportedCalls ? `${(totals.inputTokens + totals.outputTokens).toLocaleString()} tokens` : totals?.calls === 0 ? text('noCalls') : text('unavailable') : totals?.estimatedCost != null ? money(totals.estimatedCost) : totals?.calls === 0 ? text('noCalls') : text('unpriced');
       const nextDetailState = [data, error, loading && !data, plan, input.locale, input.costDisplay.currency, input.costDisplay.usdRate];
       detail.setAttribute('aria-busy', String(loading));
       if (nextDetailState.some((value, index) => value !== detailState[index])) {
         detailState = nextDetailState;
         const scrollTop = detail.scrollTop;
         detail.replaceChildren();
-        detail.append(node('strong',plan ? text('remaining') : text('today')));
+        detail.append(node('strong',quota ? text('remaining') : text('today')));
         if(error) detail.append(node('p',error,'dc-usage__error'));
         else if(loading && !data) detail.append(node('small','…'));
-        else if(plan) { for(const window of windows) { line(detail,window.label,remaining(window)); if(window.resetsAt) detail.append(node('small',text('resets')+new Date(window.resetsAt).toLocaleString(input.locale))); } }
-        else if(totals) { line(detail,text('estimate'),amount);line(detail,text('tokens'),`${totals.inputTokens.toLocaleString()} / ${totals.outputTokens.toLocaleString()}`);line(detail,text('cached'),totals.cacheReadTokens.toLocaleString());line(detail,text('calls'),String(totals.calls));
-          if(totals.pricedCalls < totals.calls) detail.append(node('small',text('priced')+`${totals.pricedCalls}/${totals.calls}`));
+        else if(quota) { for(const window of windows) { line(detail,window.label,remaining(window)); if(window.resetsAt) detail.append(node('small',text('resets')+new Date(window.resetsAt).toLocaleString(input.locale))); } }
+        else if(totals) { if (!plan) line(detail,text('estimate'),amount);line(detail,text('tokens'),`${totals.inputTokens.toLocaleString()} / ${totals.outputTokens.toLocaleString()}`);line(detail,text('cached'),totals.cacheReadTokens.toLocaleString());line(detail,text('calls'),String(totals.calls));
+          if(!plan && totals.pricedCalls < totals.calls) detail.append(node('small',text('priced')+`${totals.pricedCalls}/${totals.calls}`));
           if(data.coverageFrom > data.query.from) detail.append(node('small',text('coverage')+new Date(data.coverageFrom).toLocaleString(input.locale)));
           const chart=node('div',null,'dc-usage__chart'), max=Math.max(1,...data.buckets.map(bucket=>bucket.inputTokens+bucket.outputTokens));chart.setAttribute('aria-label',text('hourly'));
           for(const bucket of data.buckets) { const bar=node('i');bar.style.height=`${(bucket.inputTokens+bucket.outputTokens)/max*100}%`;bar.title=`${bucket.label}: ${bucket.inputTokens+bucket.outputTokens}`;chart.append(bar); }detail.append(chart);
@@ -201,7 +202,7 @@ export default { apply(context) {
       if(!force&&key===requestKey) {render();return;}
       clearTimeout(timer);requestKey=key;request=new AbortController();const current=request;
       loading=true;render();
-      try { const value=input.connection.billingMode==='subscription' ? await scope.quota.read(current.signal) : await scope.usage.query({from:day.getTime(),to:Math.max(day.getTime()+1,Date.now()),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,granularity:'hour',connectionId:input.connection.id,modelId:input.modelId},current.signal);
+      try { const value=input.connection.billingMode==='subscription' && input.connection.credentialKind==='oauth' ? await scope.quota.read(current.signal) : await scope.usage.query({from:day.getTime(),to:Math.max(day.getTime()+1,Date.now()),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,granularity:'hour',connectionId:input.connection.id,modelId:input.modelId},current.signal);
         if(current.signal.aborted||scope.signal.aborted)return;data=value;error='';
       } catch(reason) {if(current.signal.aborted||scope.signal.aborted)return;data=null;error=reason instanceof Error?reason.message:String(reason);}
       if(current.signal.aborted||scope.signal.aborted)return;

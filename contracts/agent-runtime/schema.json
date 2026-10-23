@@ -317,7 +317,8 @@
         "callId": {"$ref": "#/$defs/Id"},
         "providerCallId": {"$ref": "#/$defs/Id"},
         "name": {"$ref": "#/$defs/Id"},
-        "input": {"oneOf": [{"$ref": "#/$defs/JsonObject"}, {"type": "string"}]}
+        "input": {"oneOf": [{"$ref": "#/$defs/JsonObject"}, {"type": "string"}]},
+        "thoughtSignature": {"type": "string", "minLength": 1}
       }
     },
     "ProviderOutputBlock": {
@@ -962,7 +963,8 @@
               "properties": {
                 "callId": {"$ref": "#/$defs/Id"},
                 "name": {"$ref": "#/$defs/Id"},
-                "input": {"oneOf": [{"$ref": "#/$defs/JsonObject"}, {"type": "string"}]}
+                "input": {"oneOf": [{"$ref": "#/$defs/JsonObject"}, {"type": "string"}]},
+                "thoughtSignature": {"type": "string", "minLength": 1}
               }
             },
             "providerAttemptId": {"$ref": "#/$defs/Id"}
@@ -4254,6 +4256,7 @@
         "providerCallId": {"$ref": "#/$defs/Id"},
         "toolName": {"$ref": "#/$defs/Id"},
         "arguments": {"type": "string"},
+        "thoughtSignature": {"type": "string", "minLength": 1},
         "error": {"$ref": "#/$defs/ToolInputError"}
       }
     },

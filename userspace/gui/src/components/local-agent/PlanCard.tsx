@@ -1,8 +1,8 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import React, { useEffect, useRef } from 'react';
-import type { PlanOperation, PlanProjection, WorkspaceBindingDisplay } from '@deepcode/protocol';
+import type { PlanOperation, PlanProjection, WorkspaceBindingDisplay } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { PlanDocument } from './PlanDocument';
 import { useConversationRowState } from './ConversationVirtualRow';
@@ -50,10 +50,10 @@ const PlanCard: React.FC<PlanCardProps> = ({
   if (addition) return <UiRegion slot="activity.row" actions={{ setExpanded: toggle }}><article ref={cardRef} className="local-agent__tool-entry">
     <button type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded}
       onClick={() => toggle(!expanded)}>
-      <DeepCodeShellIcon name="compose" />
+      <AchbitShellIcon name="compose" />
       <strong>{language === 'zh-CN' ? '计划范围调整' : 'Plan scope adjustment'}</strong>
       <span>{status}</span>
-      <span className="local-agent__tool-entry-chevron" aria-hidden="true"><DeepCodeShellIcon name="chevronRight" /></span>
+      <span className="local-agent__tool-entry-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
     </button>
     {expanded && <PlanCardContent plan={plan} previousPlan={previousPlan} workspaceBindings={workspaceBindings} language={language} />}
   </article></UiRegion>;
@@ -69,7 +69,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
             aria-label={t(language, 'agent.plan.collapse')}
             onClick={() => toggle(false)}
           >
-            <DeepCodeShellIcon name="activity" />
+            <AchbitShellIcon name="activity" />
             <span>
               {t(language, 'agent.plan.documentLabel')}
               {' · '}
@@ -77,7 +77,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
               {active ? ` · ${t(language, 'agent.plan.active')}` : ''}
             </span>
             <span className="local-agent__plan-card-status">{status}</span>
-            <DeepCodeShellIcon name="chevronDown" />
+            <AchbitShellIcon name="chevronDown" />
           </button>
           <PlanCardContent plan={plan} previousPlan={previousPlan} workspaceBindings={workspaceBindings} language={language} />
         </div>
@@ -89,11 +89,11 @@ const PlanCard: React.FC<PlanCardProps> = ({
           aria-label={t(language, 'agent.plan.expand')}
           onClick={() => toggle(true)}
         >
-          <DeepCodeShellIcon name="activity" />
+          <AchbitShellIcon name="activity" />
           <strong><MarkdownInline>{plan.title}</MarkdownInline></strong>
           <span className="local-agent__plan-card-status">{status} · {stepCount}</span>
           <span className="local-agent__plan-card-chevron" aria-hidden="true">
-            <DeepCodeShellIcon name="chevronRight" />
+            <AchbitShellIcon name="chevronRight" />
           </span>
         </button>
       )}

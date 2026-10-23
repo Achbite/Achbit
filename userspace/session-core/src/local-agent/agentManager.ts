@@ -1,8 +1,8 @@
-import { CONVERSATION_COMMAND_VERSION, inheritAgentRecipe } from '@deepcode/protocol';
+import { CONVERSATION_COMMAND_VERSION, inheritAgentRecipe } from '@achbit/protocol';
 import type {
   AgentChildProjection, AgentHostPort, AgentOperation, AgentTaskProjection,
   CommandReply, JsonObject, SessionProjection,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import type { SessionActor } from './actor.js';
 import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js';
 import { agentOperationDefinitions } from './sessionControls.js';
@@ -211,8 +211,8 @@ export class AgentManager {
       this.configurations.resolve(inheritedConfiguration, preset.configuration ?? {}, true),
       { ...operation.loop, ...(operation.context ? { context: operation.context } : {}) }, settings.allowFullConfiguration === true) : undefined;
     const permissions = !existingChild ? agentPermissionPatches(preset.permissions, operation.permissions) : undefined;
-    let modelSelection: { profileId: string; reasoningEffortOverride: import('@deepcode/protocol').LlmReasoningEffort | null } | undefined;
-    let instanceModel: import('@deepcode/protocol').AgentModelConfiguration | undefined;
+    let modelSelection: { profileId: string; reasoningEffortOverride: import('@achbit/protocol').LlmReasoningEffort | null } | undefined;
+    let instanceModel: import('@achbit/protocol').AgentModelConfiguration | undefined;
     if (!existingChild) {
       const ruleProfileId = preset.profileId || settings.profileId || owner.run?.profileId;
       const followsOwner = !preset.profileId && !settings.profileId && (operation.profileId === undefined || operation.profileId === ruleProfileId);

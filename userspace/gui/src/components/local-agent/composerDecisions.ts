@@ -1,4 +1,4 @@
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 
 /** Automatic review remains a process fact, not a foreground user decision. */
 export function isAutomaticApproval(approval: SessionProjection['pendingApproval'], run: SessionProjection['run'] | undefined): boolean {

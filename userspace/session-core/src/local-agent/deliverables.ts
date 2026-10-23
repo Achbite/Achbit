@@ -1,4 +1,4 @@
-import type { ArtifactProjection, DeliverableProjection, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
+import type { ArtifactProjection, DeliverableProjection, NewSessionEvent, SessionEvent } from '@achbit/protocol';
 import type { ArtifactPresentationInput } from './sessionControls.js';
 import { SessionControlError } from './sessionControls.js';
 

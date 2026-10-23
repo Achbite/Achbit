@@ -1,4 +1,4 @@
-import type { ModelMessage, SessionEvent } from '@deepcode/protocol';
+import type { ModelMessage, SessionEvent } from '@achbit/protocol';
 import type { ContextMessageContribution } from './plugins.js';
 
 type ImageReference = {

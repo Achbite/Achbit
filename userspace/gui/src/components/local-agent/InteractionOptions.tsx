@@ -1,4 +1,4 @@
-import type { InteractionProjection } from '@deepcode/protocol';
+import type { InteractionProjection } from '@achbit/protocol';
 import { MarkdownInline } from './BufferedMarkdown';
 
 /** Both answer surfaces submit the stable option ID, never its display label. */

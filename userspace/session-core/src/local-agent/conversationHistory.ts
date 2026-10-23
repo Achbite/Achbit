@@ -1,5 +1,5 @@
-import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import type { ResourceJournalEvent, RunLifecycleEvent, SessionEvent } from '@deepcode/protocol';
+import { isSessionAuthorizationScope } from '@achbit/protocol';
+import type { ResourceJournalEvent, RunLifecycleEvent, SessionEvent } from '@achbit/protocol';
 
 /** Journal facts remain intact. A revision excludes only the replaced conversation
  * range; session settings, directory membership and file grants retain their current values. */

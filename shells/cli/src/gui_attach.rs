@@ -1,5 +1,5 @@
 //! One SSH connection owns this UI bridge; the shared Host owns Agent lifetime.
-use deepcode_host_connection::{
+use achbit_host_connection::{
     configure_runtime_child, configured_path,
     loopback_http::request_loopback_json_until,
     process::{terminate_owned_process_tree, wait_for_child_exit, OwnedHostProcess},
@@ -7,7 +7,7 @@ use deepcode_host_connection::{
     ssh::{GuiAttachReceipt, GuiAttachRequest, GUI_ATTACH_SCHEMA},
     startup, LocalHostConnection, UserDirectories,
 };
-use deepcode_kernel_abi::{
+use achbit_kernel_abi::{
     HostProcessIdentity, HOST_INSTANCE_ID_ENV, HOST_INSTANCE_ID_PREFIX, HOST_SHELL_TOKEN_ENV,
     HOST_UI_TOKEN_ENV, HOST_UI_TOKEN_HEADER,
 };
@@ -41,9 +41,9 @@ pub async fn serve() -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .unwrap_or_else(|| {
             directory.join(if cfg!(windows) {
-                "deepcode-host-web.exe"
+                "achbit-host-web.exe"
             } else {
-                "deepcode-host-web"
+                "achbit-host-web"
             })
         });
     if !proxy_path.is_file() {
@@ -93,7 +93,7 @@ pub async fn serve() -> Result<(), String> {
         let query = format!("GET /api/host/identity HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{HOST_UI_TOKEN_HEADER}: {}\r\nConnection: close\r\n\r\n", request.ui_token);
         let value = request_loopback_json_until::<serde_json::Value>("127.0.0.1", &port.to_string(), &query, deadline)?;
         let identity: HostProcessIdentity = serde_json::from_value(value["data"].clone()).map_err(std::io::Error::other)?;
-        if value["ok"] != true || identity.instance_id != instance || identity.pid != process.child.id() || identity.service != "deepcode-host-web" {
+        if value["ok"] != true || identity.instance_id != instance || identity.pid != process.child.id() || identity.service != "achbit-host-web" {
             return Err(std::io::Error::other("GUI bridge identity mismatch"));
         }
         Ok(identity)

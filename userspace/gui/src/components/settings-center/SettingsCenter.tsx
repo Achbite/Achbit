@@ -13,7 +13,7 @@ import {
 } from './sections/CategorizedSettingsSections';
 import LlmSection from './sections/LlmSection';
 import PluginsSection from './sections/PluginsSection';
-import DeepCodeShellIcon, { type DeepCodeShellIconName } from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon, { type AchbitShellIconName } from '../shared/AchbitShellIcon';
 import './settingsCenter.css';
 import { createInteractionFocus, InteractionFocusContext } from '../shared/interactionFocus';
 
@@ -49,8 +49,8 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
     useSettingsStore((state) => state.effectiveSettings['workbench.language']),
   );
   const statusText = (value: string) => ['connected', 'disconnected', 'checking'].includes(value)
-    ? t(language, `deepcodeGui.status.${value}`) : value;
-  const items: Array<{ key: SettingsKey; icon: DeepCodeShellIconName; label: string }> = [
+    ? t(language, `achbitGui.status.${value}`) : value;
+  const items: Array<{ key: SettingsKey; icon: AchbitShellIconName; label: string }> = [
     { key: 'general', icon: UI_ICON_ROLES.settings.general, label: language === 'zh-CN' ? '通用' : 'General' },
     { key: 'gui', icon: UI_ICON_ROLES.settings.appearance, label: t(language, 'settings.nav.gui') },
     { key: 'agent', icon: UI_ICON_ROLES.settings.agent, label: t(language, 'settings.nav.agent') },
@@ -138,7 +138,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
               aria-current={!searching && activeKey === item.key ? 'page' : undefined}
               type="button"
             >
-              <span className="settings-nav-item__icon"><DeepCodeShellIcon name={item.icon} /></span>
+              <span className="settings-nav-item__icon"><AchbitShellIcon name={item.icon} /></span>
               <span>{item.label}</span>
             </button>
           ))}

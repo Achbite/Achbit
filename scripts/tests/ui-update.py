@@ -37,13 +37,13 @@ class UiUpdateTests(unittest.TestCase):
         self.addCleanup(identity.stop)
         self.addCleanup(same_identity.stop)
         self.assets, self.package = self.root / "assets", self.root / "package"
-        self.target = self.package / "web-deepcode-gui"
+        self.target = self.package / "web-achbit-gui"
         write(self.assets, "index.html", b'<script type="module" src="assets/current.js"></script>')
         write(self.assets, "assets/current.js", b"new frontend")
         write(self.assets, "pdfjs/wasm/decoder.wasm", b"local renderer asset")
         write(self.target, "index.html", b"previous frontend")
         write(self.target, "assets/obsolete.js", b"old chunk")
-        for name in ["deepcode-kernel", "session-core/dist/sessionServiceBridge.js", "config/user-settings.json", "data/agent-runtime/session.sqlite3"]:
+        for name in ["achbit-kernel", "session-core/dist/sessionServiceBridge.js", "config/user-settings.json", "data/agent-runtime/session.sqlite3"]:
             write(self.package, name, f"keep original {name}".encode())
 
     def test_command_replaces_complete_gui_and_retains_other_files(self):
@@ -51,7 +51,7 @@ class UiUpdateTests(unittest.TestCase):
         subprocess.run([sys.executable, str(SCRIPT), "--assets", str(self.assets), "--package", str(self.package)], check=True)
         self.assertEqual(files(self.target), files(self.assets))
         for name, content in before.items():
-            if not name.startswith("web-deepcode-gui/"):
+            if not name.startswith("web-achbit-gui/"):
                 self.assertEqual((self.package / name).read_bytes(), content)
         self.assertFalse((self.target / "assets/obsolete.js").exists())
 
@@ -63,8 +63,8 @@ class UiUpdateTests(unittest.TestCase):
         self.assertEqual(files(self.package), before)
 
     def test_signing_failure_restores_app_resources(self):
-        app = self.package / "DeepCode-GUI.app"
-        target = app / "Contents/Resources/web-deepcode-gui"
+        app = self.package / "Achbit.app"
+        target = app / "Contents/Resources/web-achbit-gui"
         write(target, "index.html", b"previous app resources")
         before = files(app)
         with patch.object(updater, "sign_app", side_effect=[OSError("signing failed"), None]):
@@ -74,8 +74,8 @@ class UiUpdateTests(unittest.TestCase):
         self.assertFalse(any(self.package.glob(".ui-update-*")))
 
     def test_signing_preflight_failure_does_not_modify_the_app(self):
-        app = self.package / 'DeepCode-GUI.app'
-        target = app / 'Contents/Resources/web-deepcode-gui'
+        app = self.package / 'Achbit.app'
+        target = app / 'Contents/Resources/web-achbit-gui'
         write(target, 'index.html', b'previous app resources')
         before = files(app)
         for check in (self.identity, self.same_identity):
@@ -88,8 +88,8 @@ class UiUpdateTests(unittest.TestCase):
                 check.side_effect = None
 
     def test_app_and_standalone_command_destinations(self):
-        app = self.package / "DeepCode-GUI.app"
-        target = app / "Contents/Resources/web-deepcode-gui"
+        app = self.package / "Achbit.app"
+        target = app / "Contents/Resources/web-achbit-gui"
         write(target, "index.html", b"previous app resources")
         for argument, destination in [("--package", app), ("--output", self.root / "standalone")]:
             with patch.object(sys, "argv", [str(SCRIPT), "--assets", str(self.assets), argument, str(destination)]), patch.object(updater, "sign_app"):

@@ -13,7 +13,7 @@ mod render;
 mod session_navigation;
 mod ssh;
 
-use deepcode_kernel_client::{
+use achbit_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, CreateConversationSessionRequest,
     FilesystemReference, FilesystemReferencePathInput, HttpKernelClient, KernelBootstrap,
     KernelBootstrapOptions, PluginCatalogItem, PluginCatalogProjection, PluginSelectionInput,
@@ -45,7 +45,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[tokio::main]
 async fn main() {
     if std::env::var("DEEPCODE_SSH_ASKPASS").as_deref() == Ok("1") {
-        if let Err(error) = deepcode_host_connection::ssh::run_askpass_helper() {
+        if let Err(error) = achbit_host_connection::ssh::run_askpass_helper() {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -761,7 +761,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .await
                 .map_err(|error| error.to_string())?;
             if let Some(next) = resource.next_byte {
-                eprintln!("部分内容；续读：deepcode-cli open-resource --session {session_id} {workspace_id} {logical_path:?} {next}");
+                eprintln!("部分内容；续读：achbit-cli open-resource --session {session_id} {workspace_id} {logical_path:?} {next}");
             }
             print!("{}", resource.content);
             if !resource.content.ends_with('\n') {
@@ -976,7 +976,7 @@ async fn wait_for_projection(
 }
 
 fn print_sessions(
-    sessions: &[deepcode_kernel_client::ConversationSessionSummary],
+    sessions: &[achbit_kernel_client::ConversationSessionSummary],
     current: Option<&str>,
 ) {
     let language = i18n::Language::ZhCn;
@@ -1028,7 +1028,7 @@ async fn run_chat(
     let mut output = CliRenderState::after(&projection);
     let mut rendered_revision = projection.revision;
     let mut rendered_agent_decisions = projection.pending_agent_decisions.clone();
-    let mut session_list: Option<Vec<deepcode_kernel_client::ConversationSessionSummary>> = None;
+    let mut session_list: Option<Vec<achbit_kernel_client::ConversationSessionSummary>> = None;
     let mut next_message_profile_id: Option<String> = initial_profile_id.map(str::to_owned);
     let mut prompt_needed = true;
     loop {
@@ -1436,7 +1436,7 @@ async fn render_pending_agent_decisions(
         render_action_required_if_any(&mut stdout, &child).map_err(|error| error.to_string())?;
         writeln!(
             stdout,
-            "回复此子代理：deepcode-cli ask --session {} \"/reply <答复>\"",
+            "回复此子代理：achbit-cli ask --session {} \"/reply <答复>\"",
             child.session_id
         )
         .map_err(|error| error.to_string())?;
@@ -1491,26 +1491,26 @@ fn new_id(kind: &str) -> String {
 fn print_help() {
     println!("模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days=30]\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
     println!(
-        r#"DeepCode 本地编码 Agent
+        r#"Achbit 本地编码 Agent
 
 用法：
-  deepcode-cli ask [-C <workspace>] [--session <id>] [--file <path>]... [--directory <path>]... [--plugin <plugin://uri>]... [--plain] <message-or-response>
-  deepcode-cli chat [-C <workspace>] [--session <id>] [--plugin <plugin://uri>]...
-  deepcode-cli sessions
-  deepcode-cli new [-C <workspace>]
-  deepcode-cli resume <完整 session: ID>
-  deepcode-cli show --session <id>
-  deepcode-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
-  deepcode-cli cancel-plan --session <id>
-  deepcode-cli cancel --session <id> <run-id>
-  deepcode-cli attach-directory --session <id> <path>
-  deepcode-cli detach-directory --session <id> <workspace-id>
-  deepcode-cli open-resource --session <id> <workspace-id> <logical-path>
-  deepcode-cli diff --session <id> <record-id> <file-index>
-  deepcode-cli start-host
-  deepcode-cli stop-host
-  deepcode-cli status
-  deepcode-cli ssh help
+  achbit-cli ask [-C <workspace>] [--session <id>] [--file <path>]... [--directory <path>]... [--plugin <plugin://uri>]... [--plain] <message-or-response>
+  achbit-cli chat [-C <workspace>] [--session <id>] [--plugin <plugin://uri>]...
+  achbit-cli sessions
+  achbit-cli new [-C <workspace>]
+  achbit-cli resume <完整 session: ID>
+  achbit-cli show --session <id>
+  achbit-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
+  achbit-cli cancel-plan --session <id>
+  achbit-cli cancel --session <id> <run-id>
+  achbit-cli attach-directory --session <id> <path>
+  achbit-cli detach-directory --session <id> <workspace-id>
+  achbit-cli open-resource --session <id> <workspace-id> <logical-path>
+  achbit-cli diff --session <id> <record-id> <file-index>
+  achbit-cli start-host
+  achbit-cli stop-host
+  achbit-cli status
+  achbit-cli ssh help
 
 使用 -C/--workspace 为新对话指定工作目录；已有对话通过 attach-directory/detach-directory 管理目录。
 chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启动目录新建；切换不会取消原会话或复制权限。序号仅对应本进程最后显示的列表。
@@ -1554,7 +1554,7 @@ mod tests {
 
     #[tokio::test]
     async fn long_focus_upload_preserves_the_task_and_existing_references() {
-        use deepcode_kernel_client::KernelClientConfig;
+        use achbit_kernel_client::KernelClientConfig;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1575,7 +1575,7 @@ mod tests {
             "logicalPath":"user-input.txt", "displayName":"完整任务", "kind":"file",
             "mediaType":"text/plain", "byteLength":task.len(), "source":"pastedText",
         });
-        let mut command = deepcode_kernel_client::focus_command(
+        let mut command = achbit_kernel_client::focus_command(
             "session:focus",
             "command:focus",
             &task,

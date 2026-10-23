@@ -1,4 +1,4 @@
-import type { JsonObject, SessionEvent } from '@deepcode/protocol';
+import type { JsonObject, SessionEvent } from '@achbit/protocol';
 
 /** Stored with the accepted control result, never sent to the model. */
 export interface ControlWait {

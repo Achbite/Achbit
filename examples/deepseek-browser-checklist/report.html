@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Chromium、Firefox、WebKit 跨浏览器验收速查表：文档支持范围对照与可勾选验收清单。">
+<title>跨浏览器验收速查表 · Chromium / Firefox / WebKit</title>
+<style>
+  :root{
+    --paper:#f4f2ec;
+    --card:#fffdf8;
+    --ink:#16201d;
+    --muted:#5f6b65;
+    --line:#e4dfd3;
+    --line-strong:#d3ccbc;
+    --accent:#0f5c50;
+    --accent-deep:#0b453d;
+    --accent-soft:#e8f1ed;
+    --amber:#a9550b;
+    --amber-soft:#fbf1e1;
+    --chromium:#2563eb;
+    --firefox:#c2410c;
+    --webkit:#6d3bbd;
+    --radius:18px;
+    --shadow:0 1px 2px rgba(22,32,29,.04), 0 12px 32px -18px rgba(22,32,29,.22);
+    --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:24px}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(15,92,80,.06), transparent 60%),
+      var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:16px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:3px}
+  a:hover{color:var(--accent-deep)}
+  code{
+    font-family:var(--mono);
+    font-size:.86em;
+    background:#f1ede3;
+    border:1px solid #e5dfd1;
+    border-radius:5px;
+    padding:.12em .4em;
+    white-space:nowrap;
+  }
+  .wrap{width:min(1120px, calc(100% - 40px));margin-inline:auto}
+  .sr-only{
+    position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+    overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;
+  }
+
+  /* ---------- Hero ---------- */
+  .hero{
+    position:relative;
+    overflow:hidden;
+    background:
+      radial-gradient(900px 420px at 8% -20%, rgba(45,212,168,.20), transparent 62%),
+      radial-gradient(760px 400px at 95% 0%, rgba(217,119,6,.22), transparent 60%),
+      linear-gradient(145deg,#0c1e1a 0%,#102a24 55%,#14312a 100%);
+    color:#f7f5ee;
+    padding:34px 0 92px;
+  }
+  .hero::after{
+    content:"";
+    position:absolute;inset:0;
+    background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px);
+    background-size:100% 42px;
+    pointer-events:none;
+    mask-image:linear-gradient(to bottom,rgba(0,0,0,.7),transparent 85%);
+  }
+  .hero .wrap{position:relative;z-index:1}
+  .topline{
+    display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding-bottom:44px;
+    font-family:var(--mono);
+    font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:#a8c3b9;
+  }
+  .topline .mark{display:inline-flex;align-items:center;gap:9px}
+  .topline .mark::before{
+    content:"";width:8px;height:8px;border-radius:2px;
+    background:#d9973f;box-shadow:0 0 0 4px rgba(217,151,63,.16);
+  }
+  h1{
+    margin:0;
+    font-size:clamp(2.35rem,5.6vw,4rem);
+    line-height:1.08;
+    letter-spacing:-.035em;
+    font-weight:750;
+    max-width:15ch;
+  }
+  h1 em{font-style:normal;color:#e9b978}
+  .lede{
+    margin:22px 0 0;
+    max-width:52ch;
+    font-size:clamp(1rem,1.5vw,1.14rem);
+    line-height:1.75;
+    color:#cddbd5;
+  }
+  .meta-row{display:flex;flex-wrap:wrap;gap:9px;margin-top:30px}
+  .pill{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:6px 12px;
+    border:1px solid rgba(255,255,255,.18);
+    border-radius:999px;
+    background:rgba(255,255,255,.06);
+    color:#dbe7e1;
+    font-size:12.5px;
+    line-height:1.4;
+    letter-spacing:.01em;
+    backdrop-filter:blur(4px);
+  }
+  .pill::before{content:"";width:5px;height:5px;border-radius:50%;background:#9fc7b7}
+  .pill.warn{border-color:rgba(233,185,120,.42);background:rgba(217,151,63,.13);color:#f3d9b6}
+  .pill.warn::before{background:#e9b978}
+
+  /* ---------- Notice ---------- */
+  main{padding-bottom:64px}
+  .notice{
+    position:relative;z-index:2;
+    margin-top:-54px;
+    display:grid;
+    grid-template-columns:auto 1fr;
+    gap:16px;
+    padding:22px 24px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-left:4px solid var(--amber);
+    border-radius:14px;
+    box-shadow:var(--shadow);
+  }
+  .notice-icon{
+    width:38px;height:38px;flex:none;border-radius:10px;
+    display:grid;place-items:center;
+    background:var(--amber-soft);color:var(--amber);
+    font-family:var(--mono);font-weight:700;font-size:17px;
+  }
+  .notice h2{
+    margin:0 0 5px;
+    font-size:15.5px;letter-spacing:.01em;
+  }
+  .notice p{margin:0;font-size:14px;line-height:1.7;color:var(--muted);max-width:90ch}
+  .notice p + p{margin-top:5px}
+  .notice strong{color:#7a3f08}
+
+  /* ---------- Sections ---------- */
+  section.block{margin-top:52px}
+  .section-head{
+    display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+    margin-bottom:20px;
+  }
+  .kicker{
+    display:block;
+    font-family:var(--mono);
+    font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);
+    margin-bottom:8px;
+  }
+  .section-head h2{
+    margin:0;
+    font-size:clamp(1.5rem,2.6vw,1.9rem);
+    line-height:1.25;letter-spacing:-.02em;
+  }
+  .section-head p{margin:0;max-width:46ch;font-size:13.5px;color:var(--muted)}
+  .card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+
+  /* ---------- Table ---------- */
+  .table-card{padding:10px}
+  .table-scroll{overflow-x:auto;border-radius:12px}
+  table{width:100%;border-collapse:separate;border-spacing:0;min-width:790px;font-size:13.5px;line-height:1.6}
+  caption{caption-side:top;text-align:left}
+  th,td{text-align:left;vertical-align:top;padding:15px 16px;border-bottom:1px solid var(--line)}
+  tbody tr:last-child td{border-bottom:0}
+  thead th{
+    background:#f0ede4;
+    font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+    color:#46524c;font-weight:650;
+    border-bottom:1px solid var(--line-strong);
+    white-space:nowrap;
+  }
+  thead th:first-child{border-top-left-radius:9px}
+  thead th:last-child{border-top-right-radius:9px}
+  th.dim, td.dim{width:116px;color:var(--muted);font-weight:600;font-size:12.5px;letter-spacing:.02em;white-space:nowrap}
+  tbody tr:hover td{background:#fbf9f3}
+  .eng{
+    display:inline-flex;align-items:center;gap:7px;
+    font-weight:700;letter-spacing:0;text-transform:none;font-size:13.5px;color:var(--ink)
+  }
+  .eng::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--dot)}
+  .eng.chromium{--dot:var(--chromium)}
+  .eng.firefox{--dot:var(--firefox)}
+  .eng.webkit{--dot:var(--webkit)}
+  .tag{
+    display:inline-block;
+    padding:2px 7px;
+    border-radius:5px;
+    background:#eef4f1;
+    border:1px solid #dbe7e1;
+    color:#2d5a4f;
+    font-size:11.5px;
+    line-height:1.55;
+    white-space:nowrap;
+  }
+  td .tag{margin:0 4px 3px 0}
+  .muted{color:var(--muted)}
+  .advice td{background:#fcfaf4}
+  .advice td.dim{color:var(--amber)}
+  .table-note{
+    margin:12px 4px 2px;
+    font-size:12.5px;
+    color:var(--muted);
+    display:flex;gap:8px;align-items:flex-start;
+  }
+  .table-note::before{content:"※";color:var(--amber);font-family:var(--mono)}
+  .cmd-row{
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:10px;
+    margin-top:14px;
+  }
+  .cmd{
+    background:#f7f4ec;
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:11px 13px;
+    min-width:0;
+  }
+  .cmd-label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+  .cmd code{
+    display:block;
+    background:transparent;border:0;padding:0;
+    font-size:12px;
+    color:#20342c;
+    overflow:hidden;text-overflow:ellipsis;
+  }
+  .cache-note{margin:10px 4px 0;font-size:12px;color:var(--muted)}
+
+  /* ---------- Checklist layout ---------- */
+  #checklist{padding-top:4px}
+  .layout{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 296px;
+    gap:26px;
+    align-items:start;
+  }
+  .groups{display:grid;gap:16px;min-width:0}
+  .group{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:6px 8px 9px;
+    box-shadow:0 1px 2px rgba(22,32,29,.03);
+    transition:border-color .2s ease, box-shadow .2s ease;
+  }
+  .group.complete{border-color:#cbdfd3;box-shadow:0 0 0 1px #e2f0e8 inset}
+  .group-head{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:12px 10px 7px;
+  }
+  .group-head h3{
+    margin:0;
+    display:inline-flex;align-items:center;gap:9px;
+    font-size:14px;letter-spacing:.01em;
+  }
+  .dot{width:9px;height:9px;border-radius:3px;background:var(--accent)}
+  .dot.env{background:#0f766e}
+  .dot.chromium{background:var(--chromium)}
+  .dot.firefox{background:var(--firefox)}
+  .dot.webkit{background:var(--webkit)}
+  .dot.record{background:#7a6a4f}
+  .gcount{
+    font-family:var(--mono);
+    font-size:11.5px;
+    color:var(--muted);
+    background:#f4f0e6;
+    border-radius:999px;
+    padding:2px 9px;
+    font-variant-numeric:tabular-nums;
+  }
+  .group.complete .gcount{background:#e2f0e8;color:#1c5d45}
+  .items{display:grid;gap:2px}
+  .item{
+    display:flex;align-items:flex-start;gap:12px;
+    padding:11px 10px;
+    border:1px solid transparent;
+    border-radius:10px;
+    cursor:pointer;
+    transition:background .16s ease,border-color .16s ease;
+  }
+  .item:hover{background:#faf7ef}
+  .item.is-checked{background:#f0f7f2;border-color:#dcebe2}
+  .item input{
+    position:absolute;
+    width:1px;height:1px;
+    opacity:0;
+    pointer-events:none;
+  }
+  .box{
+    flex:none;
+    width:20px;height:20px;
+    margin-top:2px;
+    border:1.5px solid #c8c1b1;
+    border-radius:6px;
+    background:#fff;
+    display:grid;place-items:center;
+    color:#fff;
+    transition:background .15s ease,border-color .15s ease,transform .15s ease;
+  }
+  .box svg{width:13px;height:13px;opacity:0;transform:scale(.7);transition:opacity .12s ease,transform .12s ease}
+  .item input:checked + .box{background:var(--accent);border-color:var(--accent)}
+  .item input:checked + .box svg{opacity:1;transform:scale(1)}
+  .item input:focus-visible + .box{outline:3px solid rgba(15,92,80,.28);outline-offset:2px}
+  .item:active .box{transform:scale(.94)}
+  .item-body{min-width:0;display:block}
+  .item-title{
+    display:block;
+    font-size:14px;
+    line-height:1.55;
+    font-weight:600;
+    letter-spacing:.005em;
+  }
+  .item.is-checked .item-title{color:#0d4b41}
+  .item-hint{
+    display:block;
+    margin-top:2px;
+    font-size:12.5px;
+    line-height:1.6;
+    color:var(--muted);
+  }
+  .item.is-checked .item-hint{color:#5d756b}
+  .item-hint code{font-size:.88em;background:#f5f1e8}
+
+  /* ---------- Summary ---------- */
+  .summary{
+    position:sticky;
+    top:20px;
+    padding:20px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+  .summary-label{
+    margin:0;
+    font-family:var(--mono);
+    font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--muted);
+  }
+  .counter{
+    display:flex;align-items:baseline;gap:6px;
+    margin:6px 0 0;
+    font-variant-numeric:tabular-nums;
+    letter-spacing:-.045em;
+  }
+  #doneCount{font-size:52px;line-height:1;font-weight:750;color:var(--accent)}
+  .slash{font-size:26px;color:#b8b2a2;font-weight:400;letter-spacing:0}
+  #totalCount{font-size:22px;color:var(--muted);font-weight:600}
+  .counter-unit{align-self:flex-end;font-size:12px;color:var(--muted);margin-bottom:6px;letter-spacing:0}
+  .bar{
+    height:8px;
+    margin-top:14px;
+    border-radius:999px;
+    background:#eee9dd;
+    overflow:hidden;
+  }
+  .bar-fill{
+    width:0%;height:100%;
+    border-radius:inherit;
+    background:linear-gradient(90deg,#147a68,#3aa07f);
+    transition:width .28s cubic-bezier(.4,0,.2,1);
+  }
+  .pct{margin:7px 0 0;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .group-stats{
+    list-style:none;
+    margin:16px 0 0;
+    padding:14px 0 0;
+    border-top:1px solid var(--line);
+    display:grid;gap:7px;
+  }
+  .group-stats li{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;color:#44514b}
+  .group-stats span:last-child{font-family:var(--mono);font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .reset{
+    width:100%;
+    margin-top:16px;
+    padding:9px 12px;
+    border:1px solid var(--line-strong);
+    border-radius:9px;
+    background:transparent;
+    color:#4d5a53;
+    font-family:inherit;
+    font-size:12.5px;
+    cursor:pointer;
+    transition:background .15s ease,border-color .15s ease,color .15s ease;
+  }
+  .reset:hover{background:#f7f3e9;border-color:#bdb5a3;color:#22302b}
+  .reset:focus-visible{outline:3px solid rgba(15,92,80,.25);outline-offset:2px}
+  .save-note{margin:10px 0 0;font-size:11px;line-height:1.6;color:#8a938d;text-align:center}
+
+  /* ---------- Record ---------- */
+  .record{margin-top:16px;padding:20px}
+  .record h2{margin:0 0 4px;font-size:16px}
+  .record > p{margin:0 0 16px;font-size:12.5px;color:var(--muted)}
+  .fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .field{display:grid;gap:6px}
+  .field.full{grid-column:1 / -1}
+  .field label{font-size:12px;color:#4d5a53;font-weight:600;letter-spacing:.01em}
+  .field input,.field textarea{
+    width:100%;
+    padding:9px 11px;
+    border:1px solid var(--line-strong);
+    border-radius:8px;
+    background:#fffefb;
+    color:var(--ink);
+    font-family:inherit;
+    font-size:13.5px;
+    line-height:1.6;
+  }
+  .field textarea{min-height:76px;resize:vertical}
+  .field input:focus,.field textarea:focus{
+    outline:0;
+    border-color:var(--accent);
+    box-shadow:0 0 0 3px rgba(15,92,80,.12);
+  }
+  .field input::placeholder,.field textarea::placeholder{color:#a9a497}
+
+  /* ---------- Footer ---------- */
+  footer{
+    margin-top:48px;
+    padding-top:22px;
+    border-top:1px solid var(--line-strong);
+    font-size:12.5px;
+    color:var(--muted);
+  }
+  footer h2{margin:0 0 8px;font-size:13px;color:var(--ink);letter-spacing:.02em}
+  footer p{margin:0 0 8px;max-width:88ch}
+  footer .disclaimer{
+    margin-top:14px;
+    padding:12px 14px;
+    border:1px dashed var(--line-strong);
+    border-radius:8px;
+    background:rgba(255,255,255,.45);
+    color:#5a665f;
+  }
+  footer code{font-size:11.5px}
+
+  @media (max-width:900px){
+    .layout{grid-template-columns:1fr}
+    .summary{position:static;order:-1}
+    .section-head{flex-direction:column;align-items:flex-start;gap:6px}
+    .cmd-row{grid-template-columns:1fr}
+    .table-hint{display:block!important}
+  }
+  @media (max-width:560px){
+    .wrap{width:min(100% - 24px,1120px)}
+    .hero{padding-bottom:80px}
+    .topline{padding-bottom:32px}
+    .notice{grid-template-columns:1fr;padding:18px}
+    .notice-icon{display:none}
+    .fields{grid-template-columns:1fr}
+    .table-card{padding:6px}
+    .item{padding:11px 8px}
+  }
+  .table-hint{display:none;margin:0 4px 8px;font-size:11.5px;color:#8a938d}
+
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    *{transition:none!important}
+  }
+  @media print{
+    body{background:#fff;font-size:11pt}
+    .hero{background:#fff;color:#111;padding:0 0 18px;border-bottom:2px solid #111}
+    .hero::after{display:none}
+    .topline{color:#555;padding-bottom:10px}
+    h1{font-size:26pt}
+    h1 em{color:#111}
+    .lede{color:#333}
+    .meta-row{margin-top:10px}
+    .pill{color:#333;border-color:#bbb;background:#fff}
+    .notice{margin-top:16px;box-shadow:none}
+    .summary{position:static;box-shadow:none}
+    .reset,.save-note{display:none}
+    .group,.card,.record{box-shadow:none;break-inside:avoid}
+    .item{break-inside:avoid}
+    a{color:#111;text-decoration:underline}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="topline">
+      <span class="mark">QA Field Notes</span>
+      <span>2026 · 前端验收</span>
+    </div>
+    <h1>跨浏览器验收<em>速查表</em></h1>
+    <p class="lede">Chromium、Firefox、WebKit 的文档支持范围、关键差异与一份可勾选的验收清单。为前端团队的日常跨引擎验收准备。</p>
+    <div class="meta-row">
+      <span class="pill">来源：Playwright Docs · Browsers</span>
+      <span class="pill">查阅日期 2026-10-23</span>
+      <span class="pill warn">未做浏览器兼容性实测</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="notice" role="note">
+    <div class="notice-icon" aria-hidden="true">!</div>
+    <div>
+      <h2>先读：这是文档速查，不是实测报告</h2>
+      <p>本页只整理 Playwright 官方文档对三款浏览器构建的<strong>支持范围与差异说明</strong>，没有在当前环境安装浏览器二进制，也没有运行任何页面或兼容性测试。文档写“支持”不等于本项目“已实测通过”。</p>
+      <p>清单中的勾选项供团队验收时逐条记录；未执行的项目请保持未勾选，并在结论里注明“未测”。</p>
+    </div>
+  </div>
+
+  <section class="block" aria-labelledby="compare-title">
+    <div class="section-head">
+      <div>
+        <span class="kicker">01 / Comparison</span>
+        <h2 id="compare-title">三引擎速览</h2>
+      </div>
+      <p>只保留会影响验收判断的差异：构建来源、品牌版通道、版本节奏与平台限制。</p>
+    </div>
+
+    <div class="card table-card">
+      <p class="table-hint">表格可左右滑动查看 →</p>
+      <div class="table-scroll">
+        <table>
+          <caption class="sr-only">Chromium、Firefox、WebKit 支持范围对照</caption>
+          <thead>
+            <tr>
+              <th scope="col" class="dim">维度</th>
+              <th scope="col"><span class="eng chromium">Chromium</span></th>
+              <th scope="col"><span class="eng firefox">Firefox</span></th>
+              <th scope="col"><span class="eng webkit">WebKit</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row" class="dim">构建来源</th>
+              <td>默认使用开源 Chromium 构建；版本领先品牌浏览器，Google Chrome N 时已支持 Chromium N+1。</td>
+              <td>匹配近期 Firefox Stable 的构建；依赖 Playwright 的补丁。</td>
+              <td>取自 WebKit main 分支，常早于 Apple Safari 集成这些更新。</td>
+            </tr>
+            <tr>
+              <th scope="row" class="dim">品牌版 / 通道</th>
+              <td>可驱动机器上已安装的 Chrome、Edge；品牌浏览器不默认安装。当前版本明确支持 Stable、Beta，另有 dev / canary 通道可用。</td>
+              <td><span class="tag">不支持品牌版</span>不能改用系统安装的 Firefox 代替。</td>
+              <td><span class="tag">不支持品牌版</span>不能改用 Safari 代替，应使用最新 WebKit 构建。</td>
+            </tr>
+            <tr>
+              <th scope="row" class="dim">版本节奏</th>
+              <td>领先 Stable 数周，适合提前发现下一版 Chrome / Edge 的回归。</td>
+              <td>匹配近期 Firefox Stable 构建。</td>
+              <td>领先 Safari 的集成节奏，为浏览器升级问题留出反应时间。</td>
+            </tr>
+            <tr>
+              <th scope="row" class="dim">平台相关差异</th>
+              <td>开源构建不含 Chrome / Edge 打包的全部编解码器；企业浏览器策略可能影响启动与控制。</td>
+              <td>媒体编解码等平台相关能力在 Linux、macOS、Windows 间差异明显。</td>
+              <td>同样随操作系统变化；Linux CI 成本低，macOS 最接近 Safari（如视频播放）。</td>
+            </tr>
+            <tr class="advice">
+              <th scope="row" class="dim">验收关注<br><span class="tag">建议</span></th>
+              <td>先确认本次用的是开源 Chromium 还是 chrome / msedge 通道；headless 用例明确实现模式；编解码相关用例补跑品牌通道。</td>
+              <td>只用 Playwright 提供的构建；在目标用户所在 OS 上复跑平台相关用例，不只看 CI。</td>
+              <td>视频类用例在 macOS 上复核；报告里不要写成“Safari 已通过”。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-note">前四行是 Playwright 文档的陈述；“验收关注”是本速查表据此给出的操作建议，不是官方结论。</p>
+
+      <div class="cmd-row">
+        <div class="cmd">
+          <span class="cmd-label">安装默认浏览器</span>
+          <code>npx playwright install</code>
+        </div>
+        <div class="cmd">
+          <span class="cmd-label">只安装 WebKit</span>
+          <code>npx playwright install webkit</code>
+        </div>
+        <div class="cmd">
+          <span class="cmd-label">连同系统依赖安装（CI）</span>
+          <code>npx playwright install --with-deps chromium</code>
+        </div>
+      </div>
+      <p class="cache-note">默认缓存位置（macOS）：<code>~/Library/Caches/ms-playwright</code>。文档示例体积：Chromium 约 281M、Firefox 约 187M、WebKit 约 180M，实际以本机为准。</p>
+    </div>
+  </section>
+
+  <section class="block" id="checklist" aria-labelledby="checklist-title">
+    <div class="section-head">
+      <div>
+        <span class="kicker">02 / Checklist</span>
+        <h2 id="checklist-title">验收清单</h2>
+      </div>
+      <p>按团队实际执行勾选。进度只保存在当前浏览器，不会上传；分享 HTML 不会带走勾选状态。</p>
+    </div>
+
+    <div class="layout">
+      <div class="groups">
+
+        <section class="group" data-group="env" aria-labelledby="g-env">
+          <div class="group-head">
+            <h3 id="g-env"><span class="dot env"></span>环境与基线</h3>
+            <span class="gcount" data-group-count="env">0/3</span>
+          </div>
+          <div class="items">
+            <label class="item" id="label-env-1">
+              <input type="checkbox" id="env-1" data-group="env">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">记录 Playwright 版本</span>
+                <span class="item-hint">执行 <code>npx playwright --version</code> 并写入验收记录。文档说明每个版本绑定特定的浏览器二进制，升级 Playwright 后通常需要重新安装。</span>
+              </span>
+            </label>
+            <label class="item" id="label-env-2">
+              <input type="checkbox" id="env-2" data-group="env">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">安装三引擎二进制并确认可启动</span>
+                <span class="item-hint"><code>npx playwright install</code> 安装默认浏览器，或分别安装 chromium / firefox / webkit；确认缓存目录与磁盘空间。</span>
+              </span>
+            </label>
+            <label class="item" id="label-env-3">
+              <input type="checkbox" id="env-3" data-group="env">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">项目配置与执行范围一致</span>
+                <span class="item-hint">config 中的 projects 与实际 <code>--project</code> 参数对齐，避免漏跑引擎或误把单引擎结果当成全量结果。</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="group" data-group="chromium" aria-labelledby="g-chromium">
+          <div class="group-head">
+            <h3 id="g-chromium"><span class="dot chromium"></span>Chromium</h3>
+            <span class="gcount" data-group-count="chromium">0/4</span>
+          </div>
+          <div class="items">
+            <label class="item" id="label-chromium-1">
+              <input type="checkbox" id="chromium-1" data-group="chromium">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">确认本次运行的构建与通道</span>
+                <span class="item-hint">记录是开源 Chromium 构建，还是 <code>chrome</code> / <code>msedge</code> 通道；品牌浏览器不会被默认安装。</span>
+              </span>
+            </label>
+            <label class="item" id="label-chromium-2">
+              <input type="checkbox" id="chromium-2" data-group="chromium">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">音视频 / 编解码用例补跑品牌通道</span>
+                <span class="item-hint">开源 Chromium 不含 Chrome、Edge 打包的全部编解码器；依赖这些能力时用稳定通道复核一次。</span>
+              </span>
+            </label>
+            <label class="item" id="label-chromium-3">
+              <input type="checkbox" id="chromium-3" data-group="chromium">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">明确 headless 实现并各跑一次关键路径</span>
+                <span class="item-hint">区分默认 headless shell 与 <code>channel: 'chromium'</code> 的新 headless 模式，两者行为可能不同；安装时用 <code>--only-shell</code> / <code>--no-shell</code> 控制下载。</span>
+              </span>
+            </label>
+            <label class="item" id="label-chromium-4">
+              <input type="checkbox" id="chromium-4" data-group="chromium">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">有企业策略时换环境补跑品牌通道</span>
+                <span class="item-hint">企业浏览器策略可能干扰启动与控制；本地先用捆绑 Chromium，另找无策略环境验证 chrome / msedge。</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="group" data-group="firefox" aria-labelledby="g-firefox">
+          <div class="group-head">
+            <h3 id="g-firefox"><span class="dot firefox"></span>Firefox</h3>
+            <span class="gcount" data-group-count="firefox">0/3</span>
+          </div>
+          <div class="items">
+            <label class="item" id="label-firefox-1">
+              <input type="checkbox" id="firefox-1" data-group="firefox">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">使用 Playwright 提供的 Firefox 构建</span>
+                <span class="item-hint">文档明确 Playwright 依赖补丁，不支持品牌版 Firefox；不要用系统安装的 Firefox 代替验收。</span>
+              </span>
+            </label>
+            <label class="item" id="label-firefox-2">
+              <input type="checkbox" id="firefox-2" data-group="firefox">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">记录 Firefox 运行所在操作系统</span>
+                <span class="item-hint">文档提示部分功能依赖底层平台，媒体编解码等能力在 Linux、macOS、Windows 之间可能明显不同。</span>
+              </span>
+            </label>
+            <label class="item" id="label-firefox-3">
+              <input type="checkbox" id="firefox-3" data-group="firefox">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">平台相关功能在目标 OS 上复跑</span>
+                <span class="item-hint">不要只凭 Linux CI 的结果推断 macOS / Windows 用户体验；涉及媒体能力时尤其要分开记录。</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="group" data-group="webkit" aria-labelledby="g-webkit">
+          <div class="group-head">
+            <h3 id="g-webkit"><span class="dot webkit"></span>WebKit</h3>
+            <span class="gcount" data-group-count="webkit">0/4</span>
+          </div>
+          <div class="items">
+            <label class="item" id="label-webkit-1">
+              <input type="checkbox" id="webkit-1" data-group="webkit">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">使用 Playwright WebKit 构建，不用 Safari 代替</span>
+                <span class="item-hint">文档明确不支持品牌版 Safari，应使用最新的 WebKit 构建；报告中也应写 WebKit，而不是笼统写 Safari。</span>
+              </span>
+            </label>
+            <label class="item" id="label-webkit-2">
+              <input type="checkbox" id="webkit-2" data-group="webkit">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">视频类用例在 macOS 上复核</span>
+                <span class="item-hint">文档建议最接近 Safari 的体验在 mac 上运行 WebKit，例如涉及视频播放时。</span>
+              </span>
+            </label>
+            <label class="item" id="label-webkit-3">
+              <input type="checkbox" id="webkit-3" data-group="webkit">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">Linux CI 与 macOS 结果分别记录</span>
+                <span class="item-hint">Linux CI 通常最省成本，但平台能力与 macOS 不同；把差异项单独标注，不要合并成一句“WebKit 通过”。</span>
+              </span>
+            </label>
+            <label class="item" id="label-webkit-4">
+              <input type="checkbox" id="webkit-4" data-group="webkit">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">结论注明 WebKit 与 Safari 的边界</span>
+                <span class="item-hint">若目标用户以 Safari 为主，写清“WebKit 通过 ≠ Safari 已实测”；WebKit 来自 main 分支，通常早于 Safari 集成。</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="group" data-group="record" aria-labelledby="g-record">
+          <div class="group-head">
+            <h3 id="g-record"><span class="dot record"></span>一致性与记录</h3>
+            <span class="gcount" data-group-count="record">0/4</span>
+          </div>
+          <div class="items">
+            <label class="item" id="label-record-1">
+              <input type="checkbox" id="record-1" data-group="record">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">同一组关键路径在三引擎全部执行</span>
+                <span class="item-hint">首屏、导航、表单、鉴权、支付等主路径保持一致；留存 trace、截图与控制台错误，便于复盘。</span>
+              </span>
+            </label>
+            <label class="item" id="label-record-2">
+              <input type="checkbox" id="record-2" data-group="record">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">记录每个引擎的完整环境</span>
+                <span class="item-hint">浏览器版本、操作系统、Playwright 版本、执行时间与提交号，缺一项都很难复现差异。</span>
+              </span>
+            </label>
+            <label class="item" id="label-record-3">
+              <input type="checkbox" id="record-3" data-group="record">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">差异项按类型归档</span>
+                <span class="item-hint">分为“平台差异 / 待确认 / 阻塞”，不要只记通过或失败；平台限制与真实缺陷的处理方式不同。</span>
+              </span>
+            </label>
+            <label class="item" id="label-record-4">
+              <input type="checkbox" id="record-4" data-group="record">
+              <span class="box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3.2 8.4l3 3 6.6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="item-body">
+                <span class="item-title">结论区分“文档支持”与“本次实测通过”</span>
+                <span class="item-hint">未测引擎、未测设备、未测功能都要明确标注；官方文档的支持范围不能当作验收通过证据。</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+      </div>
+
+      <aside class="summary" aria-labelledby="progressLabel">
+        <p class="summary-label" id="progressLabel">本次验收进度</p>
+        <p class="counter">
+          <span id="doneCount">0</span><span class="slash">/</span><span id="totalCount">18</span><span class="counter-unit">项已完成</span>
+        </p>
+        <div class="bar" id="progressBar" role="progressbar" aria-valuemin="0" aria-valuemax="18" aria-valuenow="0" aria-valuetext="已完成 0 / 18 项">
+          <div class="bar-fill" id="barFill"></div>
+        </div>
+        <p class="pct" id="percentText">0% 已完成</p>
+
+        <ul class="group-stats">
+          <li><span>环境与基线</span><span data-group-count="env">0/3</span></li>
+          <li><span>Chromium</span><span data-group-count="chromium">0/4</span></li>
+          <li><span>Firefox</span><span data-group-count="firefox">0/3</span></li>
+          <li><span>WebKit</span><span data-group-count="webkit">0/4</span></li>
+          <li><span>一致性与记录</span><span data-group-count="record">0/4</span></li>
+        </ul>
+
+        <button type="button" class="reset" id="resetBtn">重置清单与记录</button>
+        <p class="save-note">勾选自动保存在本机浏览器，不会上传。</p>
+        <p class="sr-only" id="liveStatus" role="status" aria-live="polite">已完成 0 / 18 项</p>
+      </aside>
+    </div>
+
+    <section class="card record" aria-labelledby="record-title">
+      <h2 id="record-title">验收记录</h2>
+      <p>仅保存在本机浏览器；不会提交到任何外部服务。</p>
+      <div class="fields">
+        <div class="field">
+          <label for="owner">验收人</label>
+          <input type="text" id="owner" autocomplete="off" placeholder="姓名或小组">
+        </div>
+        <div class="field">
+          <label for="build">构建 / 分支</label>
+          <input type="text" id="build" autocomplete="off" placeholder="例如 release/2.4 · a1b2c3d">
+        </div>
+        <div class="field full">
+          <label for="notes">结论与差异备注</label>
+          <textarea id="notes" placeholder="三引擎实测结果、未测项、平台差异与阻塞项……"></textarea>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <footer>
+    <h2>来源与说明</h2>
+    <p>主要来源：<a href="https://playwright.dev/docs/browsers" target="_blank" rel="noopener noreferrer">Playwright Docs — Browsers</a>（Microsoft / Playwright，英文），查阅日期 <strong>2026-10-23</strong>，通过内置浏览器打开并观察页面正文。逐条事实、原文引述与对应章节见同目录 <code>sources.json</code>。</p>
+    <p>页面为单文件 HTML，样式与脚本全部内联，不依赖 CDN、字体服务或任何外部接口；勾选状态仅写入本机 <code>localStorage</code>，可随时重置。</p>
+    <p class="disclaimer">测试范围声明：本次工作只进行了公开文档查阅与页面观察，<strong>没有安装浏览器二进制，也没有执行 Chromium、Firefox、WebKit 的兼容性测试</strong>。表中“支持”描述的是 Playwright 文档的支持范围，不代表任何具体项目已验收通过；请以团队实跑记录为准。</p>
+  </footer>
+
+</main>
+
+<script>
+(function () {
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.item input[type="checkbox"]'));
+  var total = boxes.length;
+  var doneEl = document.getElementById('doneCount');
+  var totalEl = document.getElementById('totalCount');
+  var bar = document.getElementById('barFill');
+  var progressBar = document.getElementById('progressBar');
+  var percentText = document.getElementById('percentText');
+  var liveStatus = document.getElementById('liveStatus');
+  var storageKey = 'xb-acceptance-v1';
+  var metaIds = ['owner', 'build', 'notes'];
+
+  totalEl.textContent = total;
+  progressBar.setAttribute('aria-valuemax', total);
+
+  function readSaved() {
+    try {
+      var raw = localStorage.getItem(storageKey);
+      return raw ? JSON.parse(raw) : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        checked: boxes.filter(function (box) { return box.checked; }).map(function (box) { return box.id; }),
+        owner: document.getElementById('owner').value,
+        build: document.getElementById('build').value,
+        notes: document.getElementById('notes').value
+      }));
+    } catch (error) {
+      /* 本地存储不可用时，页面仍可正常勾选，只是不持久化。 */
+    }
+  }
+
+  function render() {
+    var done = 0;
+    boxes.forEach(function (box) {
+      var item = box.closest('.item');
+      if (item) item.classList.toggle('is-checked', box.checked);
+      if (box.checked) done += 1;
+    });
+
+    var percent = total ? Math.round((done / total) * 100) : 0;
+    doneEl.textContent = done;
+    bar.style.width = percent + '%';
+    percentText.textContent = percent + '% 已完成';
+    progressBar.setAttribute('aria-valuenow', done);
+    progressBar.setAttribute('aria-valuetext', '已完成 ' + done + ' / ' + total + ' 项');
+    liveStatus.textContent = '已完成 ' + done + ' / ' + total + ' 项';
+
+    document.querySelectorAll('[data-group-count]').forEach(function (el) {
+      var group = el.getAttribute('data-group-count');
+      var inGroup = boxes.filter(function (box) { return box.dataset.group === group; });
+      var groupDone = inGroup.filter(function (box) { return box.checked; }).length;
+      el.textContent = groupDone + '/' + inGroup.length;
+    });
+
+    document.querySelectorAll('.group').forEach(function (groupEl) {
+      var groupBoxes = groupEl.querySelectorAll('input[type="checkbox"]');
+      var groupDone = Array.prototype.filter.call(groupBoxes, function (box) { return box.checked; }).length;
+      groupEl.classList.toggle('complete', groupBoxes.length > 0 && groupDone === groupBoxes.length);
+    });
+  }
+
+  var saved = readSaved();
+  if (Array.isArray(saved.checked)) {
+    boxes.forEach(function (box) {
+      if (saved.checked.indexOf(box.id) !== -1) box.checked = true;
+    });
+  }
+  metaIds.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el && typeof saved[id] === 'string') el.value = saved[id];
+  });
+
+  boxes.forEach(function (box) {
+    box.addEventListener('change', function () {
+      render();
+      save();
+    });
+  });
+
+  metaIds.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', save);
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', function () {
+    boxes.forEach(function (box) { box.checked = false; });
+    metaIds.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    try { localStorage.removeItem(storageKey); } catch (error) {}
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,11 +1,11 @@
-import { modelReasoningEfforts } from '@deepcode/protocol';
+import { modelReasoningEfforts } from '@achbit/protocol';
 import React, { useEffect, useId, useRef, useState } from 'react';
-import type { ContextCompositionProjection, ContextUsageProjection, LlmProviderProfile, ModelConnection, LlmReasoningEffort } from '@deepcode/protocol';
+import type { ContextCompositionProjection, ContextUsageProjection, LlmProviderProfile, ModelConnection, LlmReasoningEffort } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { ContextUsageControl } from './ContextUsageControl';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import SubagentQuickSettings from './SubagentQuickSettings';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -60,7 +60,7 @@ export default function SessionModelSelector({ language, profiles, connections =
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>(subagentsOpen ? 'input[role="switch"]' : choosingModel
       ? 'button[aria-checked="true"]:not(:disabled),[role="menuitemradio"]:not(:disabled)'
-      : '.deepcode-session-model__current')?.focus({ preventScroll: true });
+      : '.achbit-session-model__current')?.focus({ preventScroll: true });
   }, [open, choosingModel, subagentsOpen]);
   useEffect(() => {
     if (!open) return;
@@ -73,7 +73,7 @@ export default function SessionModelSelector({ language, profiles, connections =
     try { await onSelect(profile.id, effort); }
     finally { setCandidateId(null); }
   };
-  return <div ref={rootRef} className="deepcode-session-model" onBlur={event => {
+  return <div ref={rootRef} className="achbit-session-model" onBlur={event => {
     if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
   }}>
     <ContextUsageControl language={language} contextUsage={contextUsage} contextCompositions={contextCompositions}
@@ -87,12 +87,12 @@ export default function SessionModelSelector({ language, profiles, connections =
         if (!profiles.some(profile => profile.id === id && profile.enabled)) throw new Error('model_profile_unavailable');
         await onSelect(id, effort);
       } }}>
-      <button ref={triggerRef} type="button" className="deepcode-session-model__selector" disabled={busy}
+      <button ref={triggerRef} type="button" className="achbit-session-model__selector" disabled={busy}
         aria-label={`${title} · ${effortLabel}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined}
         onClick={() => { setContextOpen(false); setCandidateId(null); setChoosingModel(false); setSubagentsOpen(false); setOpen(value => !value); }}>
-        <span>{title}</span><span className="deepcode-session-model__selector-effort">{effortLabel}</span><DeepCodeShellIcon name="chevronDown" />
+        <span>{title}</span><span className="achbit-session-model__selector-effort">{effortLabel}</span><AchbitShellIcon name="chevronDown" />
       </button>
-      {open && <div id={menuId} ref={menuRef} role="dialog" className="deepcode-session-model__menu" data-native-overlay
+      {open && <div id={menuId} ref={menuRef} role="dialog" className="achbit-session-model__menu" data-native-overlay
         aria-label={chinese ? '模型与推理强度' : 'Model and reasoning'} onKeyDown={event => {
           if (event.key === 'Escape') {
             event.preventDefault(); event.stopPropagation();
@@ -108,17 +108,17 @@ export default function SessionModelSelector({ language, profiles, connections =
           }
         }}>
         {subagentsOpen ? <>
-          <button type="button" className="deepcode-session-model__menu-back" onClick={() => setSubagentsOpen(false)}>
-            <DeepCodeShellIcon name="chevronLeft" size={16} />{t(language, 'settings.subagents.title')}
+          <button type="button" className="achbit-session-model__menu-back" onClick={() => setSubagentsOpen(false)}>
+            <AchbitShellIcon name="chevronLeft" size={16} />{t(language, 'settings.subagents.title')}
           </button>
           <SubagentQuickSettings profiles={profiles} connections={connections} mainProfileId={selectedProfileId} language={language} />
         </> : choosingModel ? <>
-          <button type="button" className="deepcode-session-model__menu-back" onClick={() => setChoosingModel(false)}>
-            <DeepCodeShellIcon name="chevronLeft" size={16} />{chinese ? '选择模型' : 'Choose model'}
+          <button type="button" className="achbit-session-model__menu-back" onClick={() => setChoosingModel(false)}>
+            <AchbitShellIcon name="chevronLeft" size={16} />{chinese ? '选择模型' : 'Choose model'}
           </button>
-          <div className="deepcode-session-model__model-list" role="menu" aria-label={chinese ? '模型' : 'Models'}>
+          <div className="achbit-session-model__model-list" role="menu" aria-label={chinese ? '模型' : 'Models'}>
           {connections.filter(connection => profiles.some(profile => profile.enabled && profile.connectionId === connection.id)).map(connection => <React.Fragment key={connection.id}>
-            <div className="deepcode-session-model__menu-title">{connection.name}</div>
+            <div className="achbit-session-model__menu-title">{connection.name}</div>
             {profiles.filter(profile => profile.enabled && profile.connectionId === connection.id).map(profile => <button
               key={profile.id} type="button" role="menuitemradio" aria-checked={candidate?.id === profile.id} aria-disabled={busy}
               onClick={() => {
@@ -128,21 +128,21 @@ export default function SessionModelSelector({ language, profiles, connections =
                 if (profile.id !== selectedProfileId && (profile.thinking === 'disabled' || profile.reasoningEffort)) {
                   void choose(profile.thinking === 'disabled' ? null : profile.reasoningEffort!, profile);
                 }
-              }}><span>{profile.name}</span>{candidate?.id === profile.id && <DeepCodeShellIcon name="check" />}</button>)}
+              }}><span>{profile.name}</span>{candidate?.id === profile.id && <AchbitShellIcon name="check" />}</button>)}
           </React.Fragment>)}
           </div>
         </> : <>
-          <div className="deepcode-session-model__heading">
-            <button type="button" className="deepcode-session-model__subagents" aria-label={subagentLabel}
+          <div className="achbit-session-model__heading">
+            <button type="button" className="achbit-session-model__subagents" aria-label={subagentLabel}
               title={subagentLabel} aria-pressed={subagentsEnabled}
-              onClick={() => setSubagentsOpen(true)}><DeepCodeShellIcon name="subagents" size={19} /></button>
-            <button type="button" className="deepcode-session-model__current" aria-haspopup="menu" onClick={() => setChoosingModel(true)}>
+              onClick={() => setSubagentsOpen(true)}><AchbitShellIcon name="subagents" size={19} /></button>
+            <button type="button" className="achbit-session-model__current" aria-haspopup="menu" onClick={() => setChoosingModel(true)}>
               <strong>{candidate?.thinking === 'disabled' ? t(language, 'agent.profile.thinkingDisabled')
                 : candidateEffort ? t(language, `settings.llm.effort.${candidateEffort}`) : (chinese ? '选择强度' : 'Choose level')}</strong>
-              <span>{candidate?.name ?? title}<DeepCodeShellIcon name="chevronRight" size={14} /></span>
+              <span>{candidate?.name ?? title}<AchbitShellIcon name="chevronRight" size={14} /></span>
             </button>
           </div>
-          {candidate?.thinking !== 'disabled' && <div className="deepcode-session-model__efforts" role="radiogroup"
+          {candidate?.thinking !== 'disabled' && <div className="achbit-session-model__efforts" role="radiogroup"
             aria-label={t(language, 'settings.llm.reasoningEffort')}>
             {modelReasoningEfforts(candidate).map(effort => <button
               key={effort} type="button" role="radio" aria-checked={confirmed && candidate?.id === selectedProfileId && effectiveEffort === effort}

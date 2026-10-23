@@ -1,6 +1,6 @@
 //! Input decisions shared by the CLI and TUI; Session remains the command owner.
 use crate::i18n::Language;
-use deepcode_kernel_client::{
+use achbit_kernel_client::{
     approval_response_command, focus_command, interaction_response_command,
     message_command_with_profile_and_plugins, plan_confirm_command, plan_revision_command,
     FilesystemReference, HttpKernelClient, InteractionProjection, PluginSelectionInput,
@@ -113,7 +113,7 @@ pub fn contextual_input_command(
         }
         if let Some(approval) = projection.pending_approval.as_ref() {
             let decision = approval_decision_for_input(language, response)?;
-            let scope = deepcode_kernel_client::approval_scope_for_input(decision);
+            let scope = achbit_kernel_client::approval_scope_for_input(decision);
             if scope.is_some_and(|scope| {
                 !approval
                     .preview
@@ -213,7 +213,7 @@ fn approval_decision_for_input(language: Language, input: &str) -> Result<&'stat
         "4" | "allow-host-run" | "本轮允许Host" => Ok("allow-host-run"),
         "5" | "allow-files-run" => Ok("allow-files-run"),
         "6" | "allow-files-session" => Ok("allow-files-session"),
-        _ => deepcode_kernel_client::AUTHORIZATION_OPTIONS
+        _ => achbit_kernel_client::AUTHORIZATION_OPTIONS
             .iter()
             .find(|(_, command)| *command == input.trim())
             .map(|(_, command)| *command)
@@ -247,7 +247,7 @@ pub(crate) mod fixtures {
         decision: serde_json::Value,
     ) -> SessionProjection {
         let mut value = json!({
-            "schemaVersion": deepcode_kernel_client::SESSION_PROJECTION_VERSION, "permissionOverrides":{}, "effectivePermissions":null, "shellAuthorizations":[],
+            "schemaVersion": achbit_kernel_client::SESSION_PROJECTION_VERSION, "permissionOverrides":{}, "effectivePermissions":null, "shellAuthorizations":[],
             "sessionId":"session:test", "revision":1, "display":{"creationTitle":"input"},
             "workspaceBindings":[], "sessionDirectoryIndexes":[], "timeline":[], "messages":[],
             "queuedInputs":[], "narratives":[], "plans":[], "contextCompositions":[], "interactions":[],

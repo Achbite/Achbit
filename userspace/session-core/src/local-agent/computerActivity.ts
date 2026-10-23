@@ -1,4 +1,4 @@
-import type { ActivityProjection, ArtifactProjection, ComputerActivityProjection, JsonObject, ToolExecutionRecord } from '@deepcode/protocol';
+import type { ActivityProjection, ArtifactProjection, ComputerActivityProjection, JsonObject, ToolExecutionRecord } from '@achbit/protocol';
 
 const tools = new Set(['computer.control', 'browser.open', 'browser.page', 'browser.observe', 'browser.capture']);
 const object = (value: unknown): value is JsonObject => Boolean(value) && typeof value === 'object' && !Array.isArray(value);

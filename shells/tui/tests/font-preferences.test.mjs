@@ -6,13 +6,13 @@ import { BUILTIN_FONTS, fontPreference, shellQuote, windowArguments } from '../m
 
 test('TUI follows GUI defaults and the terminal group without writing another preference', () => {
   assert.deepEqual(fontPreference({}, DEFAULT_USER_SETTINGS), {
-    family: 'warm-sans', name: 'DeepCodeQuietTerminalReadingSansSC-Regular', file: 'DeepCodeQuietTerminalReadingSansSC-Regular.ttf', size: 12,
+    family: 'warm-sans', name: 'AchbitQuietTerminalReadingSansSC-Regular', file: 'AchbitQuietTerminalReadingSansSC-Regular.ttf', size: 12,
   });
   const settings = { 'gui.fontFamily': 'warm-sans', 'gui.terminalFontFamily': 'inherit', 'gui.codeFontSize': 14 };
   const original = structuredClone(settings);
-  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS).name, 'DeepCodeQuietTerminalReadingSansSC-Regular');
-  assert.equal(fontPreference({ ...settings, 'gui.terminalFontFamily': 'compact-kai' }, DEFAULT_USER_SETTINGS).name, 'DeepCodeQuietTerminalMonoKaiSC-Regular');
-  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'compact').name, 'DeepCodeQuietTerminalMonoSC-Regular');
+  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS).name, 'AchbitQuietTerminalReadingSansSC-Regular');
+  assert.equal(fontPreference({ ...settings, 'gui.terminalFontFamily': 'compact-kai' }, DEFAULT_USER_SETTINGS).name, 'AchbitQuietTerminalMonoKaiSC-Regular');
+  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'compact').name, 'AchbitQuietTerminalMonoSC-Regular');
   assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'system').name, 'Menlo-Regular');
   assert.deepEqual(settings, original);
   for (const family of Object.keys(BUILTIN_FONTS)) {
@@ -36,7 +36,7 @@ test('window options preserve TUI arguments and reject unavailable font selectio
 
 test('Windows resolves the same GUI choice to distinct console-loadable family names', () => {
   const settings = { 'gui.fontFamily': 'warm-sans', 'gui.terminalFontFamily': 'inherit', 'gui.codeFontSize': 14 };
-  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'follow', 'win32').name, 'DeepCode TUI Reading Sans SC');
+  assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'follow', 'win32').name, 'Achbit TUI Reading Sans SC');
   assert.equal(fontPreference(settings, DEFAULT_USER_SETTINGS, 'system', 'win32').name, 'Consolas');
   const names = new Set();
   for (const choice of Object.keys(BUILTIN_FONTS)) {

@@ -1,11 +1,11 @@
 import { RunTiming } from './runTiming.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
-import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
-import type { SessionOperation, JsonObject } from '@deepcode/protocol';
+import type { SessionOperation, JsonObject } from '@achbit/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { ManagedProcesses } from './managedProcesses.js';
-import { validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/protocol';
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
@@ -26,11 +26,11 @@ import type {
   RunSettlement,
   SessionEvent,
   SessionProjection,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   COMMAND_REPLY_VERSION,
   SESSION_EVENT_VERSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { SessionCapabilityManager } from './sessionCapabilities.js';
 import {
@@ -139,14 +139,14 @@ export class SessionActor {
     });
   }
 
-  async agentCapabilities(runId: string): Promise<import('@deepcode/protocol').AgentCapabilities> {
+  async agentCapabilities(runId: string): Promise<import('@achbit/protocol').AgentCapabilities> {
     const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
     return decodeAgentCapabilities(runtime.agentCapabilities);
   }
 
   /** Freeze inherited context rules from the caller's actual run, not later global defaults. */
-  async contextConfiguration(runId: string): Promise<import('@deepcode/protocol').AgentConfiguration> {
+  async contextConfiguration(runId: string): Promise<import('@achbit/protocol').AgentConfiguration> {
     const snapshot = await this.loadSnapshot();
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
@@ -187,7 +187,7 @@ export class SessionActor {
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
-  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@achbit/protocol').JsonObject }> {
     const state = (await this.loadSnapshot()).state;
     return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, subagentSettings: state.subagentSettings, agentContext: state.agentContext,
       agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,

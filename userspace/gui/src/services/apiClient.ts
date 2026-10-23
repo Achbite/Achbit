@@ -14,7 +14,7 @@ import type {
   SaveWorkspaceFileResult,
   UserSettingValue,
   WorkspaceState,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { activeT } from '../i18n';
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
 
@@ -183,26 +183,26 @@ export function probeLlmProfile(
 
 // Model services use the same authenticated Host connection as ConversationPort.
 export function getModelConnections(signal?: AbortSignal) {
-  return getJson<import('@deepcode/protocol').ConnectionsResult>(`${API_BASE}/llm/connections`, signal);
+  return getJson<import('@achbit/protocol').ConnectionsResult>(`${API_BASE}/llm/connections`, signal);
 }
-export function patchModelConnections(edit: import('@deepcode/protocol').ConnectionEdit) {
-  return sendJson<import('@deepcode/protocol').ConnectionsResult>(`${API_BASE}/llm/connections`, 'PATCH', edit);
+export function patchModelConnections(edit: import('@achbit/protocol').ConnectionEdit) {
+  return sendJson<import('@achbit/protocol').ConnectionsResult>(`${API_BASE}/llm/connections`, 'PATCH', edit);
 }
 export function startModelAuth(connectionId: string, method: 'browser' | 'deviceCode') {
-  return sendJson<import('@deepcode/protocol').AuthFlow>(`${API_BASE}/llm/auth`, 'POST', { connectionId, method });
+  return sendJson<import('@achbit/protocol').AuthFlow>(`${API_BASE}/llm/auth`, 'POST', { connectionId, method });
 }
 export function getModelAuth(id: string, signal?: AbortSignal) {
-  return getJson<import('@deepcode/protocol').AuthFlow>(`${API_BASE}/llm/auth/${encodeURIComponent(id)}`, signal);
+  return getJson<import('@achbit/protocol').AuthFlow>(`${API_BASE}/llm/auth/${encodeURIComponent(id)}`, signal);
 }
 export function cancelModelAuth(id: string) {
-  return sendJson<import('@deepcode/protocol').AuthFlow>(`${API_BASE}/llm/auth/${encodeURIComponent(id)}`, 'DELETE', {});
+  return sendJson<import('@achbit/protocol').AuthFlow>(`${API_BASE}/llm/auth/${encodeURIComponent(id)}`, 'DELETE', {});
 }
 export function logoutModelConnection(id: string) {
   return sendJson<unknown>(`${API_BASE}/llm/connections/${encodeURIComponent(id)}/logout`, 'POST', {});
 }
 export function getModelQuota(id: string, signal?: AbortSignal) {
-  return getJson<import('@deepcode/protocol').QuotaSnapshot>(`${API_BASE}/llm/connections/${encodeURIComponent(id)}/quota`, signal);
+  return getJson<import('@achbit/protocol').QuotaSnapshot>(`${API_BASE}/llm/connections/${encodeURIComponent(id)}/quota`, signal);
 }
-export function queryModelUsage(query: import('@deepcode/protocol').UsageQuery, signal?: AbortSignal) {
-  return sendJson<import('@deepcode/protocol').UsageReport>(`${API_BASE}/llm/usage`, 'POST', query, { signal });
+export function queryModelUsage(query: import('@achbit/protocol').UsageQuery, signal?: AbortSignal) {
+  return sendJson<import('@achbit/protocol').UsageReport>(`${API_BASE}/llm/usage`, 'POST', query, { signal });
 }

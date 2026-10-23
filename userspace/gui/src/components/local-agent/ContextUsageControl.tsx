@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { ContextCompositionProjection, ContextUsageProjection } from '@deepcode/protocol';
+import type { ContextCompositionProjection, ContextUsageProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { lastCallInputCacheMetric } from '../../utils/providerUsage';
 import { buildContextCompositionLayout, CONTEXT_FOCUS_USED_PERCENT } from './contextCompositionLayout';
@@ -160,7 +160,7 @@ export function ContextUsageControl({
     <>
       <button
         type="button"
-        className={`deepcode-session-model__context${contextPercent === null ? ' deepcode-session-model__context--unknown' : ''}`}
+        className={`achbit-session-model__context${contextPercent === null ? ' achbit-session-model__context--unknown' : ''}`}
         style={{ '--deepcode-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
         aria-label={contextLabel}
         aria-expanded={contextOpen}
@@ -172,21 +172,21 @@ export function ContextUsageControl({
       </button>
       {contextOpen && hasContextFacts && (
         <section
-          className="deepcode-session-model__context-popover"
+          className="achbit-session-model__context-popover"
           role="dialog"
           aria-label={t(language, 'agent.context.window')}
         >
           <header>
             <strong>{t(language, 'agent.context.window')}</strong>
           </header>
-          <div className="deepcode-session-model__context-body">
-            <div className="deepcode-session-model__context-total">
+          <div className="achbit-session-model__context-body">
+            <div className="achbit-session-model__context-total">
               <span>{t(language, 'agent.context.used')}</span>
               <strong>{contextTitle}</strong>
               <span>{contextLabel}</span>
             </div>
             <div
-              className="deepcode-session-model__usage-track"
+              className="achbit-session-model__usage-track"
               role="progressbar"
               aria-label={contextTitle}
               aria-valuemin={0}
@@ -196,12 +196,12 @@ export function ContextUsageControl({
               <span style={{ width: `${contextPercent ?? 0}%` }} />
             </div>
 
-            <div className="deepcode-session-model__composition-stage">
+            <div className="achbit-session-model__composition-stage">
               {displayedUsage ? (
                 <button
                   type="button"
                   className={[
-                    'deepcode-session-model__composition-bar',
+                    'achbit-session-model__composition-bar',
                     compositionLayout.focused ? 'is-focused' : '',
                   ].filter(Boolean).join(' ')}
                   aria-label={`${t(language, 'agent.context.composition')}: ${metricAriaLabel(activeMetric, language)}`}
@@ -217,7 +217,7 @@ export function ContextUsageControl({
                     <span
                       key={segment.metric.key}
                       className={[
-                        'deepcode-session-model__composition-segment',
+                        'achbit-session-model__composition-segment',
                         compositionLayout.focused
                           && segment.metric.key === focusedContextKey
                           ? 'is-active'
@@ -229,13 +229,13 @@ export function ContextUsageControl({
                   ))}
                 </button>
               ) : (
-                <div className="deepcode-session-model__composition-bar deepcode-session-model__composition-bar--unknown">
+                <div className="achbit-session-model__composition-bar achbit-session-model__composition-bar--unknown">
                   {t(language, 'common.notAvailable')}
                 </div>
               )}
             </div>
 
-            <div className="deepcode-session-model__context-detail" aria-live="polite">
+            <div className="achbit-session-model__context-detail" aria-live="polite">
               <span data-context-key={activeMetric.key} />
               <div>
                 <strong>{activeMetric.label}</strong>
@@ -246,8 +246,8 @@ export function ContextUsageControl({
               <span>{metricValue(activeMetric, language)}</span>
             </div>
 
-            <div className="deepcode-session-model__cache">
-              <div className="deepcode-session-model__cache-head">
+            <div className="achbit-session-model__cache">
+              <div className="achbit-session-model__cache-head">
                 <strong>
                   {t(language, 'agent.context.inputCache')}
                   {cache && !cache.complete && ` · ${t(language, 'agent.context.cachePartial', {
@@ -262,26 +262,26 @@ export function ContextUsageControl({
               {cache ? (
                 <>
                   <div
-                    className="deepcode-session-model__cache-track"
+                    className="achbit-session-model__cache-track"
                     role="img"
                     aria-label={cacheAriaLabel(cache, language)}
                   >
                     <span style={{ width: `${cache.hitPercent}%` }} />
                     <span />
                   </div>
-                  <div className="deepcode-session-model__cache-legend">
+                  <div className="achbit-session-model__cache-legend">
                     <span>{t(language, 'agent.context.cacheHit')} {formatTokens(cache.hitTokens, language)}</span>
                     <span>{t(language, 'agent.context.cacheMiss')} {formatTokens(cache.missTokens, language)}</span>
                   </div>
                 </>
               ) : (
-                <div className="deepcode-session-model__cache-empty">
+                <div className="achbit-session-model__cache-empty">
                   {t(language, 'common.notAvailable')}
                 </div>
               )}
             </div>
 
-            <div className="deepcode-session-model__context-sections">
+            <div className="achbit-session-model__context-sections">
               {detailMetrics.length > 0
                 ? detailMetrics.map((section) => (
                     <button
@@ -300,7 +300,7 @@ export function ContextUsageControl({
                     </button>
                   ))
                 : (
-                    <div className="deepcode-session-model__context-sections-empty">
+                    <div className="achbit-session-model__context-sections-empty">
                       {t(language, 'common.notAvailable')}
                     </div>
                   )}

@@ -1,7 +1,7 @@
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ModalDialog from '../shared/ModalDialog';
 import React, { useEffect, useMemo, useState } from 'react';
-import type { BrowseEntry, BrowsePathResult, InitialLocation } from '@deepcode/protocol';
+import type { BrowseEntry, BrowsePathResult, InitialLocation } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { browsePath, getInitialLocations, hasNativePathPicker, type NativePathOptions, type NativePathSelection } from '../../services/runtimeAdapter';
 import NativePathDialog from './NativePathDialog';
@@ -89,19 +89,19 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
   const selectedType = selectedEntry?.type ?? 'directory';
 
   return (
-    <ModalDialog className="ws-open-dialog__backdrop" onClose={onCancel} aria-label={title ?? t(language, 'deepcodeGui.project.folderDialogTitle')}>
+    <ModalDialog className="ws-open-dialog__backdrop" onClose={onCancel} aria-label={title ?? t(language, 'achbitGui.project.folderDialogTitle')}>
       <div
         className={`ws-open-dialog${isAttachmentSelection ? ' ws-open-dialog--message-attachment' : ''}`}
         aria-label={title ?? t(language, isAttachmentSelection
           ? 'agent.attachment.pickerTitle'
-          : 'deepcodeGui.project.folderDialogTitle')}
+          : 'achbitGui.project.folderDialogTitle')}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="ws-open-dialog__header">
           <span>
             <strong>{title ?? t(language, isAttachmentSelection
               ? 'agent.attachment.pickerTitle'
-              : 'deepcodeGui.project.folderDialogTitle')}</strong>
+              : 'achbitGui.project.folderDialogTitle')}</strong>
             {isAttachmentSelection && (
               <small>{t(language, 'agent.attachment.pickerDescription')}</small>
             )}
@@ -111,7 +111,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
             className="ws-open-dialog__close"
             aria-label={t(language, 'workspaceDialog.cancel')}
             onClick={onCancel}
-          ><DeepCodeShellIcon name="close" size={14} /></button>
+          ><AchbitShellIcon name="close" size={14} /></button>
         </div>
         <div className="ws-open-dialog__addressbar">
           <button
@@ -162,7 +162,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
                 title={location.absolutePath}
               >
                 <span className="ws-open-dialog__sidebar-icon">
-                  <DeepCodeShellIcon name={location.kind === 'home' ? 'account' : 'folder'} size={16} />
+                  <AchbitShellIcon name={location.kind === 'home' ? 'account' : 'folder'} size={16} />
                 </span>
                 <span>{location.label}</span>
               </button>
@@ -206,7 +206,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
                           ? current.filter(file => file.absolutePath !== entry.absolutePath) : [...current, entry]);
                       }} />}
                     <span className="ws-open-dialog__entry-icon">
-                      <DeepCodeShellIcon name={entry.type === 'directory' ? 'folder' : 'file'} size={16} />
+                      <AchbitShellIcon name={entry.type === 'directory' ? 'folder' : 'file'} size={16} />
                     </span>
                     <span className="ws-open-dialog__entry-name">{entry.name}</span>
                   </li>
@@ -249,6 +249,6 @@ export default function ProjectFolderDialog(props: ProjectFolderDialogProps) {
       ? t(props.language, 'agent.attachment.attachSelected') : (props.language === 'zh-CN' ? '选择' : 'Select')}
     cancelLabel={t(props.language, 'workspaceDialog.cancel')}
     title={props.title ?? t(props.language, kind === 'directory'
-      ? 'deepcodeGui.project.folderDialogTitle' : 'agent.attachment.pickerTitle')}
+      ? 'achbitGui.project.folderDialogTitle' : 'agent.attachment.pickerTitle')}
     onSelect={props.onSelect} onSelectMany={props.onSelectMany} onCancel={props.onCancel} />;
 }

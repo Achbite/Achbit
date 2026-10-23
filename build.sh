@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/source-identity.sh"
-CONTAINER_NAME="${CONTAINER_NAME:-deepcode-dev}"
+CONTAINER_NAME="${CONTAINER_NAME:-achbit-dev}"
 WORKDIR_IN_CTNR="${WORKDIR_IN_CTNR:-/workspace}"
 OUTPUT_DIR="${DEEPCODE_OUTPUT_DIR:-$ROOT_DIR/bin}"
 [[ "$OUTPUT_DIR" = /* ]] || OUTPUT_DIR="$ROOT_DIR/$OUTPUT_DIR"
@@ -27,7 +27,7 @@ Usage: bash build.sh [-debug] [--stage STAGE]...
   daemon | cli | tui  Build only the selected Linux native executable.
   native-gui          Build only the Linux native GUI shell.
   computer-use        Update only the independently signed macOS Computer Use App.
-  computer-use-windows  Update only DeepCode-Computer-Use.exe in bin/win64 (GUI may keep running).
+  computer-use-windows  Update only Achbit-Computer-Use.exe in bin/win64 (GUI may keep running).
 Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, DEEPCODE_OUTPUT_DIR,
   CARGO_TARGET_DIR, RUSTC_WRAPPER, SCCACHE_DIR,
   DEEPCODE_MACOS_CARGO, DEEPCODE_MACOS_NODE_BIN, DEEPCODE_MACOS_CARGO_TARGET_DIR,
@@ -235,7 +235,7 @@ if [ "$code" -eq 1 ]; then
   built_platforms+=(code)
 fi
 if [ "$ui" -eq 1 ]; then
-  python3 "$ROOT_DIR/scripts/update-ui.py" --assets "$TRANSACTION/shared/web-deepcode-gui" --output "$OUTPUT_DIR/ui/web-deepcode-gui"
+  python3 "$ROOT_DIR/scripts/update-ui.py" --assets "$TRANSACTION/shared/web-achbit-gui" --output "$OUTPUT_DIR/ui/web-achbit-gui"
   rm -rf -- "$OUTPUT_DIR/ui/web"
 fi
 for stage in "${native_stages[@]:-}"; do

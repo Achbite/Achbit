@@ -1,12 +1,12 @@
 [package]
-name = "deepcode-computer-use"
+name = "achbit-computer-use"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "DeepCode-Computer-Use"
+name = "Achbit-Computer-Use"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,5 +1,5 @@
-import type { RunRuntimeSnapshot, SessionEvent } from '@deepcode/protocol';
-import { decodeAgentRecipe, permissionPolicyConstraints } from '@deepcode/protocol';
+import type { RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
+import { decodeAgentRecipe, permissionPolicyConstraints } from '@achbit/protocol';
 
 const ENVIRONMENT_ID = 'deepcode.session-environment';
 

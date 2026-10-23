@@ -5,7 +5,7 @@ import LlmSection from '../../src/components/settings-center/sections/LlmSection
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 
 installPaletteDefaults();

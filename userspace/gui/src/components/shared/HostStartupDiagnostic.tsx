@@ -9,8 +9,8 @@ export function HostStartupDiagnostic({ status, workspaceError, language, onRetr
   const disconnected = failedStatus?.code === 'host_ssh_disconnected';
   if (!failedStatus && !workspaceError) return null;
   return <section className="host-startup-diagnostic" role="alert">
-    <h3>{t(language, ssh ? (disconnected ? 'deepcodeGui.ssh.disconnectTitle' : 'deepcodeGui.ssh.failed') : failedStatus ? 'host.startup.failed' : 'workspace.error.load')}</h3>
-    {failedStatus && <p>{disconnected ? t(language, 'deepcodeGui.ssh.disconnected') : failedStatus.code}</p>}
+    <h3>{t(language, ssh ? (disconnected ? 'achbitGui.ssh.disconnectTitle' : 'achbitGui.ssh.failed') : failedStatus ? 'host.startup.failed' : 'workspace.error.load')}</h3>
+    {failedStatus && <p>{disconnected ? t(language, 'achbitGui.ssh.disconnected') : failedStatus.code}</p>}
     <details open>
       <summary>{t(language, 'agent.tool.detail.error')}<UiIcon name="chevronDown" size={14} /></summary>
       {failedStatus && <pre tabIndex={0}>{failedStatus.message}</pre>}
@@ -19,6 +19,6 @@ export function HostStartupDiagnostic({ status, workspaceError, language, onRetr
     {failedStatus?.diagnosticRef && <div className="host-startup-diagnostic__log">
       <span>{t(language, 'host.startup.log')}</span><code>{failedStatus.diagnosticRef}</code>
     </div>}
-    {failedStatus && onRetry && <button type="button" className="settings-button" disabled={busy} onClick={onRetry}>{t(language, busy ? 'deepcodeGui.statusAction.starting' : 'deepcodeGui.statusAction.retry')}</button>}
+    {failedStatus && onRetry && <button type="button" className="settings-button" disabled={busy} onClick={onRetry}>{t(language, busy ? 'achbitGui.statusAction.starting' : 'achbitGui.statusAction.retry')}</button>}
   </section>;
 }

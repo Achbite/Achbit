@@ -8,7 +8,7 @@ import { fontPreference, shellQuote, windowArguments } from './font-preferences.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const resources = dirname(here);
-const binary = resolve(resources, '../MacOS/deepcode-tui');
+const binary = resolve(resources, '../MacOS/achbit-tui');
 const stages = { prepare: 'font preparation', create: 'Terminal window creation', capture: 'current terminal capture', apply: 'window font application', restore: 'terminal appearance restoration', close: 'owned window cleanup', closeFinished: 'finished terminal cleanup' };
 
 export function native(action, config, execute = execFileSync) {
@@ -67,16 +67,68 @@ async function scheduleWindowClose(owner, waitForPid, temporary) {
   } finally { await log.close(); }
 }
 
-async function preferences(args, choice) {
-  const { DEFAULT_USER_SETTINGS } = await import(pathToFileURL(join(resources, 'node_modules/@deepcode/protocol/dist/index.js')));
-  let settings;
+// Retain the ordinary Host client lease while native window setup is in flight.
+// The private stdin pipe has one owner; EOF releases it even after a parent crash.
+export async function withFontSettings(binary, args, use, start = spawn) {
+  const child = start(binary, [...args, '--font-settings'], {
+    env: { ...process.env, DEEPCODE_TUI_FONT_SETTINGS_LEASE: '1' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let output = '', stderr = '', delivered = false, released = false, earlyExit;
+  let resolveSettings, rejectSettings;
+  const settings = new Promise((accept, reject) => { resolveSettings = accept; rejectSettings = reject; });
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', text => {
+    if (delivered) return;
+    output += text;
+    const end = output.indexOf('\n');
+    if (end < 0) return;
+    delivered = true;
+    try { resolveSettings(JSON.parse(output.slice(0, end))); }
+    catch (error) { rejectSettings(error); }
+  });
+  child.stderr.on('data', text => { stderr = (stderr + text).slice(-8192); });
+  child.stdin.on('error', error => rejectSettings(error));
+  child.once('error', error => rejectSettings(error));
+  const finished = new Promise(accept => child.once('close', (code, signal) => {
+    const detail = stderr.trim() || `font settings process exited (${signal ?? code})`;
+    if (!released) earlyExit = new Error(detail);
+    if (!delivered) rejectSettings(new Error(detail));
+    accept({ code, detail });
+  }));
+  const timeout = setTimeout(() => {
+    rejectSettings(new Error('Timed out reading font settings.'));
+    child.kill('SIGTERM');
+  }, 30_000);
+  let failed = false;
   try {
-    settings = JSON.parse(execFileSync(binary, [...args, '--font-settings'], { encoding: 'utf8', timeout: 30_000 }));
-  } catch (cause) {
-    throw new Error(`font preference read failed: ${cause.stderr?.toString().trim() || cause.message}`, { cause });
+    const value = await settings.catch(cause => { throw new Error(`font preference read failed: ${cause.message}`, { cause }); });
+    clearTimeout(timeout);
+    if (earlyExit) throw earlyExit;
+    const result = await use(value);
+    if (earlyExit) throw earlyExit;
+    return result;
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    released = true;
+    child.stdin.end();
+    const cleanupTimeout = setTimeout(() => child.kill('SIGTERM'), 5_000);
+    const result = await finished;
+    clearTimeout(cleanupTimeout);
+    if (!failed && result.code !== 0) throw new Error(result.detail);
   }
-  const font = fontPreference(settings, DEFAULT_USER_SETTINGS, choice);
-  return { ...font, file: font.file ? join(here, 'fonts', font.file) : null };
+}
+
+async function withPreferences(args, choice, use) {
+  const { DEFAULT_USER_SETTINGS } = await import(pathToFileURL(join(resources, 'node_modules/@achbit/protocol/dist/index.js')));
+  return withFontSettings(binary, args, settings => {
+    const font = fontPreference(settings, DEFAULT_USER_SETTINGS, choice);
+    return use({ ...font, file: font.file ? join(here, 'fonts', font.file) : null });
+  });
 }
 
 export async function runChild(path) {
@@ -237,11 +289,12 @@ async function main(args) {
   if (args[0] === '--run') return runChild(args[1]);
   if (args[0] === '--apply-font') {
     const tty = process.env.DEEPCODE_TUI_WINDOW_TTY;
-    if (!tty) throw new Error('Use the DeepCode dedicated terminal window to change its font.');
-    const font = await preferences([], args[1]);
-    native('prepare', font);
-    native('apply', { ...font, tty });
-    return 0;
+    if (!tty) throw new Error('Use the Achbit dedicated terminal window to change its font.');
+    return withPreferences([], args[1], font => {
+      native('prepare', font);
+      native('apply', { ...font, tty });
+      return 0;
+    });
   }
   const { font: choice, inPlace, forward } = windowArguments(args);
   const plain = inPlace || forward.some(arg => ['--help', '-h', '--smoke', '--font-settings'].includes(arg))
@@ -254,22 +307,23 @@ async function main(args) {
       child.once('exit', code => accept(code ?? 1));
     });
   }
-  const font = await preferences(forward, choice);
-  const temporary = process.env.DEEPCODE_USER_ROOT
-    ? join(resolve(process.env.DEEPCODE_USER_ROOT), 'tmp') : join(tmpdir(), 'DeepCode');
-  if (commandWindow && process.env.TERM_PROGRAM === 'Apple_Terminal') {
-    const tty = execFileSync('/usr/bin/tty', { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'] }).trim();
-    return runInCurrentWindow({ font, tty, binary, args: forward, cwd: process.cwd(), environment: {}, temporary });
-  }
-  const environment = Object.fromEntries(['DEEPCODE_RUNTIME_DIR', 'DEEPCODE_KERNEL_BIN',
-    'DEEPCODE_USER_ROOT', 'DEEPCODE_API_URL', 'DEEPCODE_HOST_SHELL_TOKEN']
-    .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
-  return launchWindow({ font, args: forward, binary, cwd: process.cwd(), environment, temporary });
+  return withPreferences(forward, choice, font => {
+    const temporary = process.env.DEEPCODE_USER_ROOT
+      ? join(resolve(process.env.DEEPCODE_USER_ROOT), 'tmp') : join(tmpdir(), 'DeepCode');
+    if (commandWindow && process.env.TERM_PROGRAM === 'Apple_Terminal') {
+      const tty = execFileSync('/usr/bin/tty', { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'] }).trim();
+      return runInCurrentWindow({ font, tty, binary, args: forward, cwd: process.cwd(), environment: {}, temporary });
+    }
+    const environment = Object.fromEntries(['DEEPCODE_RUNTIME_DIR', 'DEEPCODE_KERNEL_BIN',
+      'DEEPCODE_USER_ROOT', 'DEEPCODE_API_URL', 'DEEPCODE_HOST_SHELL_TOKEN']
+      .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+    return launchWindow({ font, args: forward, binary, cwd: process.cwd(), environment, temporary });
+  });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code; }, error => {
-    console.error(`DeepCode TUI: ${error.message}`);
+    console.error(`Achbit TUI: ${error.message}`);
     process.exitCode = 1;
   });
 }

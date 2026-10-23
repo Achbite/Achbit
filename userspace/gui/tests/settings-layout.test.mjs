@@ -28,7 +28,7 @@ function fixture(t, store, language) {
   t.after(() => Object.assign(initial, original));
   return initial;
 }
-const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning',
+const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning', 'gui.completionSound.foreground',
   'gui.usageWidget.enabled', 'gui.usageWidget.visibility', 'gui.usageWidget.currency', 'gui.defaultFileOpen', 'gui.showRuntimeFiles'];
 const agentKeys = ['agent.responseLanguage', 'agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens', 'agent.systemPrompt'];
 

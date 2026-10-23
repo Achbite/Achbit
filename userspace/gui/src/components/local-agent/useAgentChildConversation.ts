@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConversationCommand, SessionProjection } from '@deepcode/protocol';
+import type { ConversationCommand, SessionProjection } from '@achbit/protocol';
 import { getLocalAgentProjection, submitLocalAgentCommand } from '../../services/localAgentApi';
 import { startProjectionPolling } from './useProjectionPolling';
 import useAppStatusStore from '../../state/appStatusStore';

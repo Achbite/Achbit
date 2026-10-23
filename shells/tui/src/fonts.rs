@@ -33,7 +33,7 @@ pub fn validate_choice(choice: &str, language: Language) -> Result<(), String> {
 pub async fn apply(
     choice: &str,
     language: Language,
-    _client: &deepcode_kernel_client::HttpKernelClient,
+    _client: &achbit_kernel_client::HttpKernelClient,
 ) -> Result<(), String> {
     validate_choice(choice, language)?;
     let owned = cfg!(target_os = "macos") && std::env::var_os("DEEPCODE_TUI_WINDOW_TTY").is_some();
@@ -43,7 +43,7 @@ pub async fn apply(
         return Err(language.text("tui.font.requiresWindow").into());
     }
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let resources = deepcode_host_connection::runtime_root(
+    let resources = achbit_host_connection::runtime_root(
         executable
             .parent()
             .ok_or("TUI executable directory unavailable")?,
@@ -134,8 +134,8 @@ mod tests {
             .unwrap_err()
             .contains("not-a-builtin"));
         if !cfg!(any(target_os = "macos", windows)) {
-            let client = deepcode_kernel_client::HttpKernelClient::new(
-                deepcode_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
+            let client = achbit_kernel_client::HttpKernelClient::new(
+                achbit_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
                     .with_host_shell_token(format!("dchost_{}", "00".repeat(32))),
             )
             .unwrap();

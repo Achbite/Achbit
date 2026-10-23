@@ -1,0 +1,22 @@
+[package]
+name = "achbit-first-party-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Out-of-process first-party tool provider for DeepCode."
+
+[[bin]]
+name = "achbit-first-party-provider"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+achbit-host-connection.workspace = true
+pdf-extract.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+roxmltree.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"

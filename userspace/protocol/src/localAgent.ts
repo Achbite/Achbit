@@ -682,6 +682,8 @@ export interface ProviderToolCallInput {
   /** Canonical name, or the original wire name for provider_tool_alias_unknown. */
   toolName: string;
   arguments: string;
+  /** Opaque provider tool-call signature, replayed without interpretation. */
+  thoughtSignature?: string;
   error?: LocalAgentError & { issues: ToolInputIssue[] };
 }
 
@@ -1838,6 +1840,7 @@ export interface ModelToolCall {
   providerCallId: string;
   name: string;
   input: JsonObject | string;
+  thoughtSignature?: string;
 }
 
 export interface ProviderToolDefinition {
@@ -1927,7 +1930,7 @@ export type ProviderEvent = { providerAttemptId?: string } & (
       schemaVersion: typeof PROVIDER_EVENT_VERSION;
       requestId: string;
       type: 'tool.call';
-      data: { callId: string; name: string } & ({ input: JsonObject; arguments?: never } | { arguments: string; input?: never });
+      data: { callId: string; name: string; thoughtSignature?: string } & ({ input: JsonObject; arguments?: never } | { arguments: string; input?: never });
     }
   | {
       schemaVersion: typeof PROVIDER_EVENT_VERSION;

@@ -64,7 +64,7 @@ test('review budgets unrelated receipts before script evidence and preserves ori
 });
 
 test('capture review uses the exact window from the latest current-run list, without exposing unrelated windows', () => {
-  const window = { windowId: 42, owner: 'DeepCode-Debug', pid: 123, title: 'Debug test', bounds: { x: 0, y: 0, width: 900, height: 600 } };
+  const window = { windowId: 42, owner: 'Achbit-Debug', pid: 123, title: 'Debug test', bounds: { x: 0, y: 0, width: 900, height: 600 } };
   const listed = windows => ({ toolName: 'computer.control', input: { action: 'listWindows' }, output: { windows } });
   const f = fixture('computer.control', { action: 'capture', windowId: 42 }, [listed([window, { windowId: 99, title: 'Unrelated private window' }])]);
   const { packet } = f.prepare();

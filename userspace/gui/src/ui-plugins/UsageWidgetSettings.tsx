@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { UserSettings } from '@deepcode/protocol';
+import type { UserSettings } from '@achbit/protocol';
 import ModalDialog from '../components/shared/ModalDialog';
 import { normalizeUiLanguage, settingText, t } from '../i18n';
 import { useSettingsStore } from '../state/settingsStore';

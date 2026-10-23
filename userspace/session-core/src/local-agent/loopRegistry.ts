@@ -1,5 +1,5 @@
-import type { AgentContributionSelection, JsonObject } from '@deepcode/protocol';
-import { decodeAgentContribution } from '@deepcode/protocol';
+import type { AgentContributionSelection, JsonObject } from '@achbit/protocol';
+import { decodeAgentContribution } from '@achbit/protocol';
 import { runAgentLoop } from './loop.js';
 
 /** A trusted driver uses the same Actor commit, cancellation and Kernel ports. */

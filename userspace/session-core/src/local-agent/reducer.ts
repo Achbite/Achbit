@@ -1,5 +1,5 @@
 import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
-import { isManagedProcessSnapshot, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { isManagedProcessSnapshot, providerRuntimeForPurpose } from '@achbit/protocol';
 import { advanceDeliverables, compareDeliverables } from './deliverables.js';
 import { advanceTodoList } from './todoState.js';
 import { providerTextStreamId } from './streamIdentity.js';
@@ -28,7 +28,7 @@ import type {
   ShellExecutionEnvironmentProjection,
   ToolExecutionRecord,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
@@ -36,7 +36,7 @@ import {
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
   SESSION_PROJECTION_VERSION, permissionSettings, validatePermissionPatches, isLocalAgentErrorValue,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 
 export interface SessionState {
   subagentSettings?: SessionProjection['subagentSettings'];
@@ -2456,7 +2456,7 @@ export function combineTokenUsage(
 }
 
 /** Replay compact receipts without loading child prompts, outputs or execution state. */
-export function providerUsageFromEvents(read: import('@deepcode/protocol').ProviderUsageRead): SessionProjection['tokenUsage'] {
+export function providerUsageFromEvents(read: import('@achbit/protocol').ProviderUsageRead): SessionProjection['tokenUsage'] {
   let usage = emptySessionState(read.sessionId).tokenUsage;
   const completed = new Set<string>(), reported = new Set<string>();
   let previous = 0;
@@ -2522,7 +2522,7 @@ function projectFileChanges(record: ToolExecutionRecord): Pick<NonNullable<Activ
   })) };
 }
 
-function projectFileChangeSide({ exists, contentRef, sizeBytes, error }: import('@deepcode/protocol').FileChangeSide) {
+function projectFileChangeSide({ exists, contentRef, sizeBytes, error }: import('@achbit/protocol').FileChangeSide) {
   return { exists, ...(contentRef === undefined ? {} : { contentRef }),
     ...(sizeBytes === undefined ? {} : { sizeBytes }), ...(error === undefined ? {} : { error }) };
 }

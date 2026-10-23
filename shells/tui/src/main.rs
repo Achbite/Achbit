@@ -13,6 +13,7 @@ mod renderer;
 #[path = "../../shared/session_navigation.rs"]
 mod session_navigation;
 
+use achbit_kernel_client::{KernelBootstrap, KernelBootstrapOptions};
 use app::{TuiApp, TuiHostOptions};
 use crossterm::{
     event::{
@@ -22,7 +23,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use deepcode_kernel_client::{KernelBootstrap, KernelBootstrapOptions};
 use renderer::Renderer;
 use std::{
     env,
@@ -59,7 +59,7 @@ async fn main() {
         match windows_terminal::launch(&values) {
             Ok(status) => exit(status.code().unwrap_or(1)),
             Err(error) => {
-                eprintln!("DeepCode TUI window: {error}");
+                eprintln!("AC TUI window: {error}");
                 exit(1);
             }
         }
@@ -90,7 +90,22 @@ async fn main() {
             .map_err(|error| error.to_string())
             .and_then(|settings| fonts::settings_for_window(&settings))
         {
-            Ok(settings) => println!("{settings}"),
+            Ok(settings) => {
+                println!("{settings}");
+                // The macOS launcher owns this pipe until the real TUI has acquired
+                // its own client lease. EOF also releases it if the launcher dies.
+                if env::var_os("DEEPCODE_TUI_FONT_SETTINGS_LEASE").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+                {
+                    if let Err(error) = io::stdout().flush().and_then(|_| {
+                        io::copy(&mut io::stdin().lock(), &mut io::sink()).map(|_| ())
+                    }) {
+                        eprintln!("{error}");
+                        drop(bootstrap);
+                        exit(1);
+                    }
+                }
+            }
             Err(error) => {
                 eprintln!("{}", language.format("tui.settingsReadFailed", &[error]));
                 drop(bootstrap);
@@ -171,7 +186,7 @@ fn startup_language(values: &[String]) -> Language {
 }
 
 async fn language_for_app(
-    client: &deepcode_kernel_client::HttpKernelClient,
+    client: &achbit_kernel_client::HttpKernelClient,
     explicit: Option<Language>,
 ) -> Result<Language, String> {
     if let Some(language) = explicit {
@@ -523,7 +538,7 @@ async fn run_plain(mut app: TuiApp) -> io::Result<Option<String>> {
             return Ok(app.action_required());
         }
         if prompt_needed && !input_closed {
-            print!("DeepCode TUI> ");
+            print!("AC TUI> ");
             io::stdout().flush()?;
             prompt_needed = false;
         }
@@ -670,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_language_bypasses_settings_but_read_failure_is_returned() {
         use super::{language_for_app, Language};
-        use deepcode_kernel_client::{HttpKernelClient, KernelClientConfig};
+        use achbit_kernel_client::{HttpKernelClient, KernelClientConfig};
         let client = HttpKernelClient::new(
             KernelClientConfig::new("http://127.0.0.1:0")
                 .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),

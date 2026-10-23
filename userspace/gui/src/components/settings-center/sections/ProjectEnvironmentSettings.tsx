@@ -52,7 +52,7 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
         <label className="settings-field settings-field--compact"><span>{chinese ? '运行位置' : 'Run tools in'}</span>
           <NativeSelect className="settings-field__select" value={target.kind} disabled={saving}
             onChange={event => {
-              if (event.target.value === 'wsl') setTarget({ kind: 'wsl', distribution: '', worker: 'deepcode-kernel-daemon' });
+              if (event.target.value === 'wsl') setTarget({ kind: 'wsl', distribution: '', worker: 'achbit-kernel-daemon' });
               else void save({ kind: 'native' });
             }}>
             <option value="native">{chinese ? '本机' : 'Native'}</option>
@@ -72,7 +72,7 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
           <label className="settings-field settings-field--compact"><span>{chinese ? 'WSL 发行版' : 'WSL distribution'}</span>
             <input className="settings-field__input" value={target.distribution} disabled={saving} placeholder="Ubuntu" onChange={(event) => setTarget({ ...target, distribution: event.target.value })} /></label>
           <label className="settings-field settings-field--compact"><span>{chinese ? 'Linux Kernel 可执行文件' : 'Linux Kernel executable'}</span>
-            <input className="settings-field__input" value={target.worker} disabled={saving} placeholder="/opt/deepcode/deepcode-kernel-daemon" onChange={(event) => setTarget({ ...target, worker: event.target.value })} /></label>
+            <input className="settings-field__input" value={target.worker} disabled={saving} placeholder="/opt/deepcode/achbit-kernel-daemon" onChange={(event) => setTarget({ ...target, worker: event.target.value })} /></label>
         </>}
         {textDirty && <div className="settings-actions"><button className="settings-button" disabled={saving || !!configurationError || (target.kind === 'wsl' && (!target.distribution.trim() || !target.worker.trim()))} onClick={() => void save()}>{chinese ? '保存环境' : 'Save environment'}</button></div>}
       </>}

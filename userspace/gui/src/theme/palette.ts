@@ -1,5 +1,5 @@
 import palette from '../../../../config/ui/palette.json';
-import type { GuiAccentColor, GuiResolvedTheme } from './deepcodeGuiTheme';
+import type { GuiAccentColor, GuiResolvedTheme } from './achbitGuiTheme';
 import './paletteBase.css';
 
 export const PALETTE_SETTING = 'workbench.styleTokenOverrides';

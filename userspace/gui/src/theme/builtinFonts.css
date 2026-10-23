@@ -1,27 +1,27 @@
 @font-face {
-  font-family: 'DeepCode Quiet Reading SC';
-  src: url('../assets/fonts/DeepCodeQuietReadingSC-Regular.woff2') format('woff2');
+  font-family: 'Achbit Quiet Reading SC';
+  src: url('../assets/fonts/AchbitQuietReadingSC-Regular.woff2') format('woff2');
   font-style: normal;
   font-weight: 400;
   font-display: swap;
 }
 @font-face {
-  font-family: 'DeepCode Quiet Reading Sans SC';
-  src: url('../assets/fonts/DeepCodeQuietReadingSansSC-Regular.woff2') format('woff2');
+  font-family: 'Achbit Quiet Reading Sans SC';
+  src: url('../assets/fonts/AchbitQuietReadingSansSC-Regular.woff2') format('woff2');
   font-style: normal;
   font-weight: 400;
   font-display: swap;
 }
 @font-face {
-  font-family: 'DeepCode Quiet Mono Kai SC';
-  src: url('../assets/fonts/DeepCodeQuietMonoKaiSC-Regular.woff2') format('woff2');
+  font-family: 'Achbit Quiet Mono Kai SC';
+  src: url('../assets/fonts/AchbitQuietMonoKaiSC-Regular.woff2') format('woff2');
   font-style: normal;
   font-weight: 400;
   font-display: swap;
 }
 @font-face {
-  font-family: 'DeepCode Quiet Mono SC';
-  src: url('../assets/fonts/DeepCodeQuietMonoSC-Regular.woff2') format('woff2');
+  font-family: 'Achbit Quiet Mono SC';
+  src: url('../assets/fonts/AchbitQuietMonoSC-Regular.woff2') format('woff2');
   font-style: normal;
   font-weight: 400;
   font-display: swap;

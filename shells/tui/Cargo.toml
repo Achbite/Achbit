@@ -1,5 +1,5 @@
 [package]
-name = "deepcode-tui"
+name = "achbit-tui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-deepcode-kernel-client.workspace = true
-deepcode-host-connection.workspace = true
+achbit-kernel-client.workspace = true
+achbit-host-connection.workspace = true
 crossterm.workspace = true
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 pulldown-cmark = { version = "0.13", default-features = false }

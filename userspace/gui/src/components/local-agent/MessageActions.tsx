@@ -1,6 +1,6 @@
-import type { MessageFeedback, ProjectionMessage } from '@deepcode/protocol';
+import type { MessageFeedback, ProjectionMessage } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 
 /** Shared message chrome; clipboard and Session commands stay with their owner. */
 export function MessageActions({ message, language, copied, busy, canEdit, onCopy, onFeedback, onEdit }: {
@@ -17,20 +17,20 @@ export function MessageActions({ message, language, copied, busy, canEdit, onCop
     : message.role === 'user' ? 'agent.message.copyMessage' : 'agent.message.copyResponse');
   return <div className="local-agent__message-actions" role="group" aria-label={t(language, 'agent.message.actions')}>
     <button type="button" className="conversation-copy-button" aria-label={copyLabel} title={copyLabel} onClick={onCopy}>
-      <DeepCodeShellIcon name={copied ? 'check' : 'copy'} />
+      <AchbitShellIcon name={copied ? 'check' : 'copy'} />
       <span className="conversation-copy-hint" role="status">{t(language, copied ? 'agent.message.copied' : 'agent.message.copy')}</span>
     </button>
     {message.role === 'user' && !message.replyToInteraction && !message.runId && <button type="button"
       aria-label={t(language, 'agent.message.edit')} title={t(language, canEdit ? 'agent.message.edit' : 'agent.message.editWait')}
       disabled={!canEdit} onClick={onEdit}>
-      <DeepCodeShellIcon name="compose" />
+      <AchbitShellIcon name="compose" />
     </button>}
     {message.role === 'assistant' && (['up', 'down'] as const).map((feedback) => {
       const label = t(language, feedback === 'up' ? 'agent.message.helpful' : 'agent.message.notHelpful');
       return <button key={feedback} type="button" className={message.feedback === feedback ? 'is-selected' : ''}
         aria-pressed={message.feedback === feedback} aria-label={label} title={label} disabled={busy}
         onClick={() => onFeedback(message.feedback === feedback ? null : feedback)}>
-        <DeepCodeShellIcon name={feedback === 'up' ? 'thumbUp' : 'thumbDown'} />
+        <AchbitShellIcon name={feedback === 'up' ? 'thumbUp' : 'thumbDown'} />
       </button>;
     })}
   </div>;

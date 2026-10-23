@@ -4,7 +4,7 @@ import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
 import { readDocumentText } from './documentResources';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { AgentConversationPage } from './AgentTasksPanel';
-import SshConnection from '../../deepcode-gui/layout/SshConnection';
+import SshConnection from '../../achbit-gui/layout/SshConnection';
 import { ResourceTree } from './ResourceTree';
 import type { AttachTreeResource } from './ResourceTreeMenu';
 import { FileChangePreview } from './FileChanges';
@@ -38,7 +38,7 @@ import {
   type NativePage,
 } from '../../services/nativeBrowser';
 import { useSettingsStore } from '../../state/settingsStore';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import './documentPreview.css';
 import type { ReaderNavigation } from './readerState';
@@ -80,7 +80,7 @@ function tabName(tab: ReaderTab, language: UiLanguage): string {
   if (tab.target.kind === 'workspace') return readerFilename(tab.target.logicalPath);
   if (tab.target.kind === 'artifact') return readerFilename(tab.target.artifact.label);
   return tab.target.selfPreview
-    ? 'DeepCode'
+    ? 'Achbit'
     : tab.target.filePath
       ? readerFilename(tab.target.filePath)
       : tab.target.url
@@ -385,7 +385,7 @@ export function ResourcePreview({
                   onClick={() => preview.selectTab(tab.id)}
                   title={tabName(tab, language)}
                 >
-                  <DeepCodeShellIcon name={tab.target.kind === 'agent' ? 'subagents' : 'artifact'} />
+                  <AchbitShellIcon name={tab.target.kind === 'agent' ? 'subagents' : 'artifact'} />
                   <span>{tab.target.kind === 'diff' ? readerFilename(tab.target.file.path) : tabName(tab, language)}</span>
                   {tab.target.kind === 'diff' && <small className="reader-tab__kind">· diff</small>}
                 </button>
@@ -394,7 +394,7 @@ export function ResourcePreview({
                   onClick={() => void preview.closeTab(tab.id)}
                   aria-label={(chinese ? '关闭 ' : 'Close ') + tabName(tab, language)}
                 >
-                  <DeepCodeShellIcon name="close" />
+                  <AchbitShellIcon name="close" />
                 </button>
               </div>
             ))}
@@ -406,7 +406,7 @@ export function ResourcePreview({
             aria-label={chinese ? '打开预览' : 'Open preview'}
             title={chinese ? '打开预览' : 'Open preview'}
           >
-            <DeepCodeShellIcon name="plus" />
+            <AchbitShellIcon name="plus" />
           </button>
           <div className="reader-tabs__actions">
             <UiRegion slot="reader.toolbar" data={readerData} actions={readerActions}>
@@ -499,13 +499,13 @@ export function ReaderControls({ language, preview, disabled }: {
   const expandLabel = preview.expanded ? (chinese ? '返回并排' : 'Restore split view') : (chinese ? '铺满工作区' : 'Expand preview');
   const sidebarLabel = chinese ? '浏览器与预览' : 'Browser and preview';
   return <>
-    {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><DeepCodeShellIcon name="folder" /></button>}
+    {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
     {preview.visible && <button type="button" className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
-      <DeepCodeShellIcon name={preview.expanded ? 'collapse' : 'expand'} />
+      <AchbitShellIcon name={preview.expanded ? 'collapse' : 'expand'} />
     </button>}
     <SshConnection language={language} />
     <button type="button" className="reader-icon-button" disabled={disabled} aria-label={sidebarLabel} title={sidebarLabel} aria-pressed={preview.visible} onClick={preview.toggle}>
-      <DeepCodeShellIcon name="sidebar" />
+      <AchbitShellIcon name="sidebar" />
     </button>
   </>;
 }
@@ -528,9 +528,9 @@ function ReaderStart({
   return (
     <div className="reader-start">
       <button type="button" className="reader-start__entry" onClick={() => setChoosing('file')}>
-        <DeepCodeShellIcon name="folder" />
+        <AchbitShellIcon name="folder" />
         <span>{language === 'zh-CN' ? '打开文件' : 'Open file'}</span>
-        <DeepCodeShellIcon name="chevronRight" />
+        <AchbitShellIcon name="chevronRight" />
       </button>
       {hasNativeBrowser() ? (
         <>
@@ -543,9 +543,9 @@ function ReaderStart({
               aria-controls={addressId}
               onClick={() => setEnteringAddress((value) => !value)}
             >
-              <DeepCodeShellIcon name="browser" />
+              <AchbitShellIcon name="browser" />
               <span>{t(language, 'reader.start.browser')}</span>
-              <DeepCodeShellIcon name={enteringAddress ? 'chevronDown' : 'chevronRight'} />
+              <AchbitShellIcon name={enteringAddress ? 'chevronDown' : 'chevronRight'} />
             </button>
           </div>
           {enteringAddress && <button type="button" className="settings-button" onClick={() => setChoosing('browser')}>
@@ -590,9 +590,9 @@ function ReaderStart({
                   title={page.url}
                   onClick={() => openTarget({ kind: 'browser', previewId: page.previewId })}
                 >
-                  <DeepCodeShellIcon name="browser" />
+                  <AchbitShellIcon name="browser" />
                   <span>{readerPageName(page.url)}</span>
-                  <DeepCodeShellIcon name="chevronRight" />
+                  <AchbitShellIcon name="chevronRight" />
                 </button>
               ))}
             </section>
@@ -757,7 +757,7 @@ function ReaderDocument({
             }
           }}
         >
-          <summary className="reader-icon-button" aria-label={chinese ? '文件位置' : 'File location'} title={chinese ? '文件位置' : 'File location'}><DeepCodeShellIcon name="info" /></summary>
+          <summary className="reader-icon-button" aria-label={chinese ? '文件位置' : 'File location'} title={chinese ? '文件位置' : 'File location'}><AchbitShellIcon name="info" /></summary>
           <div className="reader-location-detail">
             <code>{locationError ?? location ?? (chinese ? '正在读取…' : 'Loading…')}</code>
             {location && !locationError && (
@@ -796,7 +796,7 @@ function ReaderDocument({
           aria-label={chinese ? '重新读取' : 'Reload'}
           title={chinese ? '重新读取' : 'Reload'}
         >
-          <DeepCodeShellIcon name="refresh" />
+          <AchbitShellIcon name="refresh" />
         </button>
     </>;
   return (
@@ -897,7 +897,7 @@ function ReaderFileActions({ sessionId, target, language }: {
       }} onKeyDown={event => {
         if (event.key === 'Escape') { event.stopPropagation(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); }
       }}>
-        <summary aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <DeepCodeShellIcon name="chevronDown" /></summary>
+        <summary aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <AchbitShellIcon name="chevronDown" /></summary>
         <div role="menu">
           {host.openFile && <button role="menuitem" onClick={() => void open('code')}>{language === 'zh-CN' ? '在 VS Code 中打开' : 'Open in VS Code'}</button>}
           {host.locatePath && <button role="menuitem" onClick={() => void open('folder')}>{language === 'zh-CN' ? '打开所在文件夹' : 'Show in folder'}</button>}

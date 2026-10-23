@@ -1,6 +1,6 @@
 import type { ChangedFile } from './fileChangeSummary';
 import { resourceKey, type ResourceReference } from '../../services/conversationResources';
-import type { ArtifactProjection } from '@deepcode/protocol';
+import type { ArtifactProjection } from '@achbit/protocol';
 import type { SourcePosition } from './resourceLinks';
 import type { NativePage } from '../../services/nativeBrowser';
 export type AgentReaderTarget = { kind: 'agent'; parentSessionId: string; agentSessionId?: string; entryId?: string };

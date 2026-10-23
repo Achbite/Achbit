@@ -79,7 +79,7 @@ class ProgramCleanupTests(unittest.TestCase):
             (root / 'scripts').mkdir()
             for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py'):
                 shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
-            write(root, 'bin/macos-arm64/deepcode-cli', b'program')
+            write(root, 'bin/macos-arm64/achbit-cli', b'program')
             write(root, 'bin/macos-arm64/config/settings.json', b'user settings')
             before = files(root)
 
@@ -89,7 +89,7 @@ class ProgramCleanupTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn(str(root / 'bin/macos-arm64/deepcode-cli'), result.stdout)
+            self.assertIn(str(root / 'bin/macos-arm64/achbit-cli'), result.stdout)
             self.assertNotIn('config/settings.json', result.stdout)
             self.assertEqual(files(root), before)
 
@@ -101,12 +101,12 @@ class SharedResourcesTests(unittest.TestCase):
             destination = Path(directory) / 'resources'
             for name in ('session-core', 'protocol'):
                 write(root, f'userspace/{name}/package.json', json.dumps({
-                    'name': f'@deepcode/{name}', 'version': '0.0.0', 'license': 'MIT',
+                    'name': f'@achbit/{name}', 'version': '0.0.0', 'license': 'MIT',
                     'type': 'module', 'main': './dist/index.js',
                 }).encode())
                 write(root, f'userspace/{name}/dist/index.js', b'export {};')
             write(root, 'userspace/session-core/dist/debug/sessionServiceBridge.js', b'DEBUG_ONLY')
-            write(root, 'userspace/gui/dist-deepcode-gui/index.html', b'GUI')
+            write(root, 'userspace/gui/dist-achbit-gui/index.html', b'GUI')
             write(root, 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp/index.js', b'upstream')
             write(root, 'LICENSE', b'license')
             write(root, 'dependencies.json', b'[]')
@@ -127,7 +127,7 @@ class SharedResourcesTests(unittest.TestCase):
             self.assertFalse((destination / 'session-core/dist/debug').exists())
 
     def test_debug_js_is_only_published_when_explicitly_selected(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-debug-modules-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-debug-modules-') as directory:
             root = Path(directory)
             write(root, 'package.json', json.dumps({'name': 'example', 'version': '1', 'license': 'MIT', 'type': 'module', 'main': 'dist/index.js'}).encode())
             write(root, 'dist/index.js', b'export {};')
@@ -168,12 +168,12 @@ if name=='pnpm':
     elif 'build:userspace-shared' in args:
         for package in ('protocol','presentation-core','session-core'):
             emit('userspace/'+package+'/dist/index.js')
-    elif 'build:web' in args: emit('userspace/gui/dist-deepcode-gui/index.html')
+    elif 'build:web' in args: emit('userspace/gui/dist-achbit-gui/index.html')
     else: sys.exit('Unexpected non-compilation command: '+str(args))
 elif '--manifest-path' in args:
-    emit('target/release/DeepCode-GUI')
+    emit('target/release/Achbit')
 elif '--workspace' in args:
-    for binary in ('deepcode-kernel-daemon','deepcode-first-party-provider','deepcode-host-web','deepcode-cli','deepcode-tui'):
+    for binary in ('achbit-kernel-daemon','achbit-first-party-provider','achbit-host-web','achbit-cli','achbit-tui'):
         emit('target/release/'+binary)
 else: sys.exit('Expected workspace compilation: '+str(args))
 '''
@@ -209,9 +209,9 @@ else: sys.exit('Expected workspace compilation: '+str(args))
                 self.assertFalse((self.root / '.build-cache/build.lock').exists())
                 for package_name in ('protocol', 'presentation-core', 'session-core'):
                     self.assertTrue((self.root / f'userspace/{package_name}/dist/index.js').is_file())
-                self.assertTrue((self.root / 'userspace/gui/dist-deepcode-gui/index.html').is_file())
-                for binary in ('deepcode-kernel-daemon', 'deepcode-first-party-provider', 'deepcode-host-web',
-                               'deepcode-cli', 'deepcode-tui', 'DeepCode-GUI'):
+                self.assertTrue((self.root / 'userspace/gui/dist-achbit-gui/index.html').is_file())
+                for binary in ('achbit-kernel-daemon', 'achbit-first-party-provider', 'achbit-host-web',
+                               'achbit-cli', 'achbit-tui', 'Achbit'):
                     self.assertTrue((self.root / 'target/release' / binary).is_file())
         calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
         self.assertFalse(any('--target' in call['args'] for call in calls))
@@ -365,8 +365,8 @@ class WindowsDebugPackageTests(unittest.TestCase):
             root = Path(directory)
             native, shared = root / 'native', root / 'shared'
             shared.mkdir()
-            for name in ('deepcode-kernel-daemon', 'deepcode-first-party-provider', 'deepcode-host-web',
-                         'deepcode-cli', 'deepcode-tui', 'DeepCode-GUI', 'DeepCode-Computer-Use'):
+            for name in ('achbit-kernel-daemon', 'achbit-first-party-provider', 'achbit-host-web',
+                         'achbit-cli', 'achbit-tui', 'Achbit', 'Achbit-Computer-Use'):
                 write(native, name + '.exe', name.encode())
             for name in ('node.exe', 'LICENSE', 'WebView2Loader.dll'):
                 write(root, name, name.encode())
@@ -381,16 +381,16 @@ class WindowsDebugPackageTests(unittest.TestCase):
                         patch.dict(os.environ, {'DEEPCODE_BUILD_KIND': kind, 'DEEPCODE_BUILD_TIME': 'fixture'}):
                     package.assemble(args)
                 debug = kind == 'debug'
-                self.assertEqual((stage / 'DeepCode-Debug.exe').exists(), debug)
-                self.assertEqual((stage / 'DeepCode-GUI.exe').exists(), not debug)
-                self.assertEqual((stage / 'deepcode-debug.cmd').exists(), debug)
+                self.assertEqual((stage / 'Achbit-Debug.exe').exists(), debug)
+                self.assertEqual((stage / 'Achbit.exe').exists(), not debug)
+                self.assertEqual((stage / 'achbit-debug.cmd').exists(), debug)
                 self.assertEqual(json.loads((stage / 'BUILDINFO.json').read_text())['debugControl'], debug)
                 if debug:
-                    launcher = (stage / 'deepcode-debug.cmd').read_text()
-                    self.assertIn('"%~dp0deepcode-cli.exe" debug %*', launcher)
+                    launcher = (stage / 'achbit-debug.cmd').read_text()
+                    self.assertIn('"%~dp0achbit-cli.exe" debug %*', launcher)
                     self.assertIn('exit /b %errorlevel%', launcher)
-                    self.assertIn('DeepCode-Debug.exe', package.PROGRAM_ENTRIES)
-                    self.assertIn('deepcode-debug.cmd', package.PROGRAM_ENTRIES)
+                    self.assertIn('Achbit-Debug.exe', package.PROGRAM_ENTRIES)
+                    self.assertIn('achbit-debug.cmd', package.PROGRAM_ENTRIES)
 
 
 class NativeMacArgumentsTests(unittest.TestCase):
@@ -426,9 +426,9 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
                 'DEEPCODE_MACOS_CARGO_TARGET_DIR': str(root / 'target'),
             }
             environment.pop('TAURI_CONFIG', None)
-            packages = ['-p', 'deepcode-kernel-daemon', '-p', 'deepcode-first-party-tools',
-                        '-p', 'deepcode-host-web', '-p', 'deepcode-cli', '-p', 'deepcode-tui',
-                        '-p', 'deepcode-computer-use']
+            packages = ['-p', 'achbit-kernel-daemon', '-p', 'achbit-first-party-tools',
+                        '-p', 'achbit-host-web', '-p', 'achbit-cli', '-p', 'achbit-tui',
+                        '-p', 'achbit-computer-use']
             for kind, options in (('normal', []), ('debug', []), ('normal', ['--runtime'])):
                 with self.subTest(kind=kind, options=options):
                     (root / 'calls.jsonl').write_text('')
@@ -441,14 +441,14 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
                     cargo = [call for call in calls if call['name'] == 'cargo']
-                    features = ['--features', 'deepcode-kernel-daemon/debug-control,deepcode-cli/debug-control'] if kind == 'debug' else []
+                    features = ['--features', 'achbit-kernel-daemon/debug-control,achbit-cli/debug-control'] if kind == 'debug' else []
                     gui_features = ['--features', 'debug-control'] if kind == 'debug' else []
                     self.assertEqual([call['argv'] for call in cargo], [
                         ['build', '--release', *features, *packages],
                         ['build', '--release', *gui_features, '--manifest-path',
-                         str(root / 'shells/deepcode-gui/src-tauri/Cargo.toml')],
+                         str(root / 'shells/achbit-gui/src-tauri/Cargo.toml')],
                     ])
-                    config = {'productName': 'DeepCode-Debug', 'identifier': 'com.achbite.deepcode.debug'} if kind == 'debug' else None
+                    config = {'productName': 'Achbit-Debug', 'identifier': 'com.achbite.deepcode.debug'} if kind == 'debug' else None
                     self.assertEqual([json.loads(call['tauriConfig']) if call['tauriConfig'] else None
                                       for call in cargo], [config, config])
                     publication = [call for call in calls if call['name'] == 'package-runtime.py' and call['argv'][0] == 'publish']
@@ -603,8 +603,8 @@ class MacosSigningTests(unittest.TestCase):
             stub = b"""#!/bin/sh
 exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])); sys.exit(23)' "$@"
 """
-            for name in ['deepcode-kernel-daemon', 'deepcode-first-party-provider', 'deepcode-host-web',
-                         'deepcode-cli', 'deepcode-tui', 'DeepCode-GUI']:
+            for name in ['achbit-kernel-daemon', 'achbit-first-party-provider', 'achbit-host-web',
+                         'achbit-cli', 'achbit-tui', 'Achbit']:
                 write(native, name, stub)
                 (native / name).chmod(0o755)
             write(root, 'node', stub)
@@ -618,20 +618,20 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
                 package.assemble(args)
             arguments = ['--session', 'session:test', 'argument with spaces', 'literal "$HOME"', '']
             for shell in ('CLI', 'TUI'):
-                result = subprocess.run(['bash', str(stage / f'DeepCode-{shell}.command'), *arguments],
+                result = subprocess.run(['bash', str(stage / f'Achbit-{shell}.command'), *arguments],
                                         env={**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable},
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 23, result.stderr)
-                expected = ([str(stage / 'DeepCode-GUI.app/Contents/Resources/tui/window.mjs'), '--command-window']
+                expected = ([str(stage / 'Achbit.app/Contents/Resources/tui/window.mjs'), '--command-window']
                             if shell == 'TUI' else []) + arguments
                 self.assertEqual(json.loads(result.stdout), expected)
 
     def test_macos_tui_resources_include_four_native_fonts_and_licenses(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-tui-resources-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-tui-resources-') as directory:
             resources = Path(directory)
             package.macos_tui_resources(ROOT, resources)
             for family in ('Reading', 'ReadingSans', 'MonoKai', 'Mono'):
-                font = resources / 'tui/fonts' / f'DeepCodeQuietTerminal{family}SC-Regular.ttf'
+                font = resources / 'tui/fonts' / f'AchbitQuietTerminal{family}SC-Regular.ttf'
                 self.assertGreater(font.stat().st_size, 1_000_000)
                 data = font.read_bytes()
                 self.assertEqual(data[:4], b'\x00\x01\x00\x00')
@@ -664,8 +664,8 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
                         family = names[strings + position:strings + position + size].decode('utf-16-be')
                         self.assertLess(len(family.encode('utf-16-le')), 64)
                         families.add(family)
-            self.assertEqual(families, {'DeepCode TUI Reading SC', 'DeepCode TUI Reading Sans SC',
-                                       'DeepCode TUI Mono Kai SC', 'DeepCode TUI Mono SC'})
+            self.assertEqual(families, {'Achbit TUI Reading SC', 'Achbit TUI Reading Sans SC',
+                                       'Achbit TUI Mono Kai SC', 'Achbit TUI Mono SC'})
 
     def test_identity_is_explicit_and_never_falls_back_to_ad_hoc(self):
         fingerprint = 'A' * 40
@@ -688,20 +688,20 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
     def test_native_components_have_stable_identifiers_and_vendor_node_is_preserved(self):
         import plistlib
         with tempfile.TemporaryDirectory(prefix='deepcode-native-sign-') as directory:
-            app = Path(directory) / 'DeepCode-GUI.app'
+            app = Path(directory) / 'Achbit.app'
             write(app, 'Contents/Info.plist', plistlib.dumps({
-                'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleExecutable': 'DeepCode-GUI'}))
-            for name in ('DeepCode-GUI', 'deepcode-kernel', 'deepcode-host-web'):
+                'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleExecutable': 'Achbit'}))
+            for name in ('Achbit', 'achbit-kernel', 'achbit-host-web'):
                 write(app, 'Contents/MacOS/' + name, b'owned native binary')
             write(app, 'Contents/Resources/node/bin/node', b'vendor signed node')
             with patch.object(macos_signing.subprocess, 'run') as command:
                 macos_signing.sign_app(app, 'certificate', native_components=True)
             commands = [call.args[0] for call in command.call_args_list]
             self.assertEqual([call[-1] for call in commands], [
-                str(app / 'Contents/MacOS/deepcode-host-web'),
-                str(app / 'Contents/MacOS/deepcode-kernel'), str(app), str(app)])
-            self.assertIn('com.achbite.deepcode.gui.deepcode-host-web', commands[0])
-            self.assertIn('com.achbite.deepcode.gui.deepcode-kernel', commands[1])
+                str(app / 'Contents/MacOS/achbit-host-web'),
+                str(app / 'Contents/MacOS/achbit-kernel'), str(app), str(app)])
+            self.assertIn('com.achbite.deepcode.gui.achbit-host-web', commands[0])
+            self.assertIn('com.achbite.deepcode.gui.achbit-kernel', commands[1])
             self.assertTrue(all('--deep' not in call for call in commands[:-1]))
             self.assertIn('--verify', commands[-1])
 
@@ -713,11 +713,11 @@ class PublicationTests(unittest.TestCase):
         self.root = Path(scratch.name)
         self.stage, self.destination = self.root / 'stage', self.root / 'portable'
         self.archive = self.root / 'runtime.tar.gz'
-        write(self.stage, 'web-deepcode-gui/index.html', b'current UI')
-        write(self.stage, 'deepcode-cli', b'current CLI')
-        write(self.destination, 'web-deepcode-gui/assets/obsolete.js', b'old chunk')
+        write(self.stage, 'web-achbit-gui/index.html', b'current UI')
+        write(self.stage, 'achbit-cli', b'current CLI')
+        write(self.destination, 'web-achbit-gui/assets/obsolete.js', b'old chunk')
         write(self.destination, 'web/index.html', b'retired editor')
-        write(self.destination, 'deepcode-cli', b'previous CLI')
+        write(self.destination, 'achbit-cli', b'previous CLI')
         write(self.destination, 'config/settings.json', b'user settings')
         write(self.destination, 'runtime/session.sqlite3', b'user history')
 
@@ -728,7 +728,7 @@ class PublicationTests(unittest.TestCase):
         for name, data in expected.items():
             self.assertEqual((self.destination / name).read_bytes(), data)
         self.assertFalse((self.destination / 'web').exists())
-        self.assertFalse((self.destination / 'web-deepcode-gui/assets/obsolete.js').exists())
+        self.assertFalse((self.destination / 'web-achbit-gui/assets/obsolete.js').exists())
         self.assertEqual((self.destination / 'config/settings.json').read_bytes(), b'user settings')
         self.assertEqual((self.destination / 'runtime/session.sqlite3').read_bytes(), b'user history')
         self.assertEqual(self.archive.read_bytes(), b'last distribution')
@@ -738,7 +738,7 @@ class PublicationTests(unittest.TestCase):
         before = files(self.destination)
         rename = Path.rename
         def fail_install(path, target):
-            if path == self.stage / 'deepcode-cli':
+            if path == self.stage / 'achbit-cli':
                 raise OSError('destination busy')
             return rename(path, target)
         with patch.object(Path, 'rename', fail_install):
@@ -748,14 +748,14 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(self.archive.exists())
 
     def test_daily_app_update_rejects_a_different_signer_before_replacement(self):
-        write(self.stage, 'DeepCode-GUI.app/Contents/MacOS/DeepCode-GUI', b'current GUI')
-        write(self.destination, 'DeepCode-GUI.app/Contents/MacOS/DeepCode-GUI', b'existing GUI')
+        write(self.stage, 'Achbit.app/Contents/MacOS/Achbit', b'current GUI')
+        write(self.destination, 'Achbit.app/Contents/MacOS/Achbit', b'existing GUI')
         before = files(self.destination)
         with patch.object(package, 'signing_identity', return_value='selected-identity'), \
                 patch.object(package, 'require_same_identity', side_effect=ValueError('different signing identity')) as same:
             with self.assertRaisesRegex(ValueError, 'different signing identity'):
                 package.publish(self.stage, self.destination)
-        same.assert_called_once_with(self.destination / 'DeepCode-GUI.app', 'selected-identity')
+        same.assert_called_once_with(self.destination / 'Achbit.app', 'selected-identity')
         self.assertEqual(files(self.destination), before)
 
     def test_complete_publication_removes_obsolete_programs_and_archives_only_programs(self):
@@ -764,7 +764,7 @@ class PublicationTests(unittest.TestCase):
         for name, data in expected.items():
             self.assertEqual((self.destination / name).read_bytes(), data)
         self.assertFalse((self.destination / 'web').exists())
-        self.assertFalse((self.destination / 'web-deepcode-gui/assets/obsolete.js').exists())
+        self.assertFalse((self.destination / 'web-achbit-gui/assets/obsolete.js').exists())
         self.assertEqual((self.destination / 'config/settings.json').read_bytes(), b'user settings')
         self.assertEqual((self.destination / 'runtime/session.sqlite3').read_bytes(), b'user history')
         with tarfile.open(self.archive) as archive:
@@ -811,7 +811,7 @@ class PublicationTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'linux', 'mapped image fixture requires Linux')
     def test_mapped_windows_images_are_rejected_before_program_replacement(self):
         destination = self.root / 'win64'
-        for name in ['node/bin/node.exe', 'deepcode-kernel.exe']:
+        for name in ['node/bin/node.exe', 'achbit-kernel.exe']:
             binary = destination / name
             binary.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(shutil.which('sleep'), binary)
@@ -840,28 +840,28 @@ class InstallerTests(unittest.TestCase):
             stub = b"""#!/bin/sh
 exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"runtime":os.environ.get("DEEPCODE_RUNTIME_DIR"),"kernel":os.environ.get("DEEPCODE_KERNEL_BIN"),"user":os.environ.get("DEEPCODE_USER_ROOT")})); sys.exit(23)' "$@"
 """
-            write(stage, 'DeepCode-GUI.app/Contents/MacOS/deepcode-cli', stub)
-            (stage / 'DeepCode-GUI.app/Contents/MacOS/deepcode-cli').chmod(0o755)
-            write(stage, 'DeepCode-GUI.app/Contents/Resources/node/bin/node', stub)
-            (stage / 'DeepCode-GUI.app/Contents/Resources/node/bin/node').chmod(0o755)
-            write(stage, 'DeepCode-GUI.app/Contents/Resources/session-core/dist/index.js', b'Session')
-            write(stage, 'DeepCode Computer Use.app/Contents/MacOS/DeepCode-Computer-Use', b'Computer Use')
+            write(stage, 'Achbit.app/Contents/MacOS/achbit-cli', stub)
+            (stage / 'Achbit.app/Contents/MacOS/achbit-cli').chmod(0o755)
+            write(stage, 'Achbit.app/Contents/Resources/node/bin/node', stub)
+            (stage / 'Achbit.app/Contents/Resources/node/bin/node').chmod(0o755)
+            write(stage, 'Achbit.app/Contents/Resources/session-core/dist/index.js', b'Session')
+            write(stage, 'Achbit Computer Use.app/Contents/MacOS/Achbit-Computer-Use', b'Computer Use')
             def inspect(command, **kwargs):
                 self.assertEqual(command[0], 'pkgbuild')
                 payload = Path(command[command.index('--root') + 1])
-                app = payload / 'Applications/DeepCode-GUI.app'
-                self.assertEqual((app / 'Contents/MacOS/deepcode-cli').read_bytes(), stub)
-                self.assertEqual((payload / 'Applications/DeepCode Computer Use.app/Contents/MacOS/DeepCode-Computer-Use').read_bytes(), b'Computer Use')
+                app = payload / 'Applications/Achbit.app'
+                self.assertEqual((app / 'Contents/MacOS/achbit-cli').read_bytes(), stub)
+                self.assertEqual((payload / 'Applications/Achbit Computer Use.app/Contents/MacOS/Achbit-Computer-Use').read_bytes(), b'Computer Use')
                 arguments = ['--session', 'session:launcher', 'argument with spaces', 'literal "$HOME"', '']
-                for name in ('deepcode', 'deepcode-tui'):
+                for name in ('achbit', 'achbit-tui'):
                     launcher = (payload / 'usr/local/bin' / name).read_text()
                     # Relocate only the installation root; execute the remaining launcher unchanged.
-                    install_root = '/Applications/DeepCode-GUI.app'
+                    install_root = '/Applications/Achbit.app'
                     self.assertIn(install_root, launcher, 'Cannot safely relocate the installer fixture')
                     relocated = root / name
                     relocated.write_text(launcher.replace(install_root, str(app)))
                     expected_args = ([str(app / 'Contents/Resources/tui/window.mjs')]
-                                     if name == 'deepcode-tui' else []) + arguments
+                                     if name == 'achbit-tui' else []) + arguments
                     for user_root in (None, str(root / 'independent user data')):
                         environment = {**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable,
                                        'DEEPCODE_RUNTIME_DIR': 'stale-runtime', 'DEEPCODE_KERNEL_BIN': 'stale-kernel'}
@@ -874,7 +874,7 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
                         observed = json.loads(launched.stdout)
                         self.assertEqual(observed['argv'], expected_args)
                         self.assertEqual(observed['runtime'], str(app / 'Contents/Resources'))
-                        self.assertEqual(observed['kernel'], str(app / 'Contents/MacOS/deepcode-kernel'))
+                        self.assertEqual(observed['kernel'], str(app / 'Contents/MacOS/achbit-kernel'))
                         self.assertEqual(observed['user'], user_root)
                 self.assertFalse((payload / 'Users').exists())
                 return subprocess.CompletedProcess(command, 0)
@@ -905,7 +905,7 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
         with tempfile.TemporaryDirectory(prefix='deepcode-nsis-') as directory:
             root = Path(directory)
             stage = root / 'stage'
-            write(stage, 'DeepCode-GUI.exe', b'disposable native compiler output')
+            write(stage, 'Achbit.exe', b'disposable native compiler output')
             write(stage, 'libexec/windows-environment.ps1', b'exit 0')
             output = root / 'DeepCode-setup.exe'
             installers.windows(stage, output, '0.6.2')

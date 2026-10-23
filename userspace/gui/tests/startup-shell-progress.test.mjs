@@ -116,3 +116,27 @@ test('a quiet Shell displays its command before completion, then a bounded live 
   assert.equal(shellOutputTail('10%\r20%\r30%\r40%'), '20%\n30%\n40%');
   assert.equal(shellOutputTail('x'.repeat(10000)).length,241);
 });
+
+test('native startup completion wakes the observer and its subscription is released', async t => {
+  const previous = globalThis.window;
+  let callback, removed = false, observed = 0;
+  globalThis.window = { location: new URL('deepcode-gui://localhost/index.html'), __TAURI__: {
+    core: { invoke: async () => {} },
+    event: { listen: async (name, handler) => {
+      assert.equal(name, 'deepcode:host-startup-complete');
+      callback = handler;
+      return () => { removed = true; };
+    } },
+  } };
+  t.after(() => { if (previous === undefined) delete globalThis.window; else globalThis.window = previous; });
+  const [{ onHostStartupComplete, isRuntimeReady }] = await loadGuiModules(t, ['/src/services/runtimeAdapter.ts']);
+  const stop = await onHostStartupComplete(() => observed++);
+  callback({ payload: null });
+  assert.equal(observed, 1);
+  assert.equal(isRuntimeReady({ok:true,data:{ok:true,status:'ok',kernel:'ready',session:'starting'}}), false, 'a wakeup never replaces the actual health check');
+  assert.equal(isRuntimeReady({ok:true,data:{ok:true,status:'ok',kernel:'ready',session:'ready'}}), true);
+  stop(); assert.equal(removed, true);
+  globalThis.window.__DEEPCODE_BROWSER_PREVIEW__ = true;
+  const previewStop = await onHostStartupComplete(() => observed++);
+  previewStop(); assert.equal(observed, 1);
+});

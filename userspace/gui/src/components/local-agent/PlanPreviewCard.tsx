@@ -1,8 +1,8 @@
 import { useRef } from 'react';
 import { useConversationRowState } from './ConversationVirtualRow';
-import type { PlanPreviewProjection } from '@deepcode/protocol';
+import type { PlanPreviewProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { MarkdownInline } from './BufferedMarkdown';
 import { PlanDocument } from './PlanDocument';
 
@@ -24,14 +24,14 @@ export function PlanPreviewCard({ preview, language, onToggle }: PlanPreviewCard
     {expanded ? <div className="local-agent__plan-document">
       <button type="button" className="local-agent__plan-document-meta" aria-expanded="true" aria-label={t(language, 'agent.plan.collapse')} onClick={toggle}>
         <span className="local-agent__run-spinner" aria-hidden="true" /><span>{status}</span>
-        <DeepCodeShellIcon name="chevronDown" />
+        <AchbitShellIcon name="chevronDown" />
       </button>
       <PlanPreviewContent preview={preview} language={language} />
     </div> : <button type="button" className="local-agent__plan-card-summary" aria-expanded="false" aria-label={t(language, 'agent.plan.expand')} onClick={toggle}>
       <span className="local-agent__run-spinner" aria-hidden="true" />
       <strong><MarkdownInline>{preview.title || status}</MarkdownInline></strong>
       <span className="local-agent__plan-card-status">{status}</span>
-      <span className="local-agent__plan-card-chevron" aria-hidden="true"><DeepCodeShellIcon name="chevronRight" /></span>
+      <span className="local-agent__plan-card-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
     </button>}
   </section>;
 }

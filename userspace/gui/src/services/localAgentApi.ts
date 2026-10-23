@@ -1,10 +1,10 @@
 import { pastedImageBytes, type PastedImageInput } from './pastedImage';
-import { isLlmReasoningEffort } from '@deepcode/protocol';
-import { isProcessActivity } from '@deepcode/protocol';
-import { isShellAuthorizationScope } from '@deepcode/protocol';
-import { validatePermissionPatches } from '@deepcode/protocol';
-import { isLocalAgentErrorValue } from '@deepcode/protocol';
-import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
+import { isLlmReasoningEffort } from '@achbit/protocol';
+import { isProcessActivity } from '@achbit/protocol';
+import { isShellAuthorizationScope } from '@achbit/protocol';
+import { validatePermissionPatches } from '@achbit/protocol';
+import { isLocalAgentErrorValue } from '@achbit/protocol';
+import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
 import type {
   AssistantDraftBlockProjection,
   AgentSettings,
@@ -18,12 +18,12 @@ import type {
   FilesystemReference,
   PluginCatalogProjection,
   SessionProjection,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   COMMAND_REPLY_VERSION,
   RUN_PROJECTION_STATUSES,
   SESSION_PROJECTION_VERSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
 import { isShellActivityResult } from './shellActivityCodec';
 
@@ -1607,8 +1607,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-export async function readConversation(sessionId: string, query: Omit<import('@deepcode/protocol').ConversationReadQuery, 'sessionId'>, signal?: AbortSignal) {
-  return await request<import('@deepcode/protocol').ConversationReadResult>(
+export async function readConversation(sessionId: string, query: Omit<import('@achbit/protocol').ConversationReadQuery, 'sessionId'>, signal?: AbortSignal) {
+  return await request<import('@achbit/protocol').ConversationReadResult>(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`,
     { method: 'POST', body: JSON.stringify(query), signal },
   );

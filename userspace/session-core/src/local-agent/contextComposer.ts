@@ -15,7 +15,7 @@ import type {
   ToolExecutionRecord,
   TodoListProjection,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   LOCAL_AGENT_PROTOCOL_VERSION,
   SESSION_CONTROL_INTERACTION_REQUEST,
@@ -25,7 +25,7 @@ import {
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { LoopFailure } from './loopFailure.js';
 import { journalModelViews } from './modelView.js';
 import type {
@@ -768,6 +768,7 @@ export function messagesFromJournal(
               providerCallId: call.providerCallId,
               name: call.toolName,
               input: call.arguments,
+              ...(call.thoughtSignature !== undefined ? { thoughtSignature: call.thoughtSignature } : {}),
             })),
           },
         });
@@ -1334,7 +1335,7 @@ function messageContentForModel(
       binding.workspaceId,
       index === 0 ? 'primary' : `workspace${index + 1}`,
     ]));
-    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the DeepCode-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
+    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the Achbit-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
       payload.filesystemReferences.map((reference) => ({
         referenceId: reference.referenceId,
         workspace: workspaceHandleById.get(reference.workspaceId) ?? 'unavailable',
@@ -1420,7 +1421,7 @@ function stripShellDiagnostics(output: Record<string, unknown>): void {
   delete output.capturedBytes;
 }
 
-function processContext(job: import('@deepcode/protocol').ManagedProcessSnapshot): unknown {
+function processContext(job: import('@achbit/protocol').ManagedProcessSnapshot): unknown {
   // Bound each appended snapshot; the complete output remains in Kernel storage.
   const { result, output } = job;
   const details = isRecord(result) ? { ...result } : result;

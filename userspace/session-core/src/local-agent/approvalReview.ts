@@ -1,5 +1,5 @@
-import type { JsonObject, ProviderRequest, RunRuntimeSnapshot, SessionProjection } from '@deepcode/protocol';
-import { LOCAL_AGENT_PROTOCOL_VERSION, providerRuntimeForPurpose } from '@deepcode/protocol';
+import type { JsonObject, ProviderRequest, RunRuntimeSnapshot, SessionProjection } from '@achbit/protocol';
+import { LOCAL_AGENT_PROTOCOL_VERSION, providerRuntimeForPurpose } from '@achbit/protocol';
 import { buildContextCompositionReceipt } from './contextComposer.js';
 import type { ContextMessageContribution } from './plugins.js';
 import type { LoopSnapshot } from './loop.js';

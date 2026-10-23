@@ -64,7 +64,7 @@ export function UsageWidget({ readerLayout, hidden }: {
     costDisplay: { currency: costDisplay.currency, usdRate: costDisplay.usdRate }, labels: usageWidgetLabels(locale) }),
   [connection, profile?.model, displayVisibility, expanded, revision, locale, theme, costDisplay.currency, costDisplay.usdRate]);
   if (!enabled) return null;
-  return <div ref={boundary} className="deepcode-gui-usage-boundary" hidden={concealed}>
+  return <div ref={boundary} className="achbit-gui-usage-boundary" hidden={concealed}>
     <UiPluginSlotView slot="usage.widget" input={input}
       actions={{ setExpanded, setUsageVisibility: value => {
         if (value !== 'summary') setExpanded(false);

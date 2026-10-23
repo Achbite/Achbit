@@ -1,6 +1,6 @@
-import type { ActivityProjection } from '@deepcode/protocol';
+import type { ActivityProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { ApprovalReviewReason } from './ApprovalReviewReason';
 
@@ -19,9 +19,9 @@ export function ApprovalActivity({ activity, pending, reviewing, language, onExp
   return <article className="local-agent__approval-record">
     <button type="button" className="local-agent__approval-record-heading" aria-expanded={expanded}
       onClick={() => { if (!expanded) onExpand(); setExpanded((value) => !value); }}>
-      <DeepCodeShellIcon name="hand" />
+      <AchbitShellIcon name="hand" />
       <span>{t(language, `agent.approval.record.${status}`)}</span>
-      <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
+      <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
     {expanded && <div className="local-agent__approval-record-body">
       <p>{activity.label}</p>

@@ -1,4 +1,4 @@
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 
 type Timing = NonNullable<SessionProjection['runTimings']>[number];

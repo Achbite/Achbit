@@ -9,7 +9,7 @@ import { Cost } from '../../src/components/settings-center/model-services/shared
 import { useSettingsStore } from '../../src/state/settingsStore';
 import plugin from '../../src/ui-plugins/builtinUsage.mjs';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 
 installPaletteDefaults();

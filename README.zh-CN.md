@@ -1,18 +1,22 @@
-# DeepCode
+# Achbit
 
-DeepCode 是提供 GUI、TUI 和 CLI 的本地优先编程 Agent。它可以读取和修改项目、运行工具、检查结果，并在共享会话中继续工作；支持多种模型连接，以及 Skill、CLI 和 MCP 扩展。
+Achbit 是提供 GUI、TUI 和 CLI 的本地优先编程 Agent。它可以读取和修改项目、运行工具、检查结果，并在共享会话中继续工作；支持多种模型连接，以及 Skill、CLI 和 MCP 扩展。
+
+**Achbit** 使用 **AC** 图标，呼应算法竞赛中 Accepted（通过）的含义。API 与 Coding Plan 的接入方式见[模型与服务](docs/product/model-services.md)。
 
 **[快速开始](#快速开始) · [下载](https://github.com/Achbite/DeepCode/releases) · [DeepSeek 接入](docs/product/deepseek.zh-CN.md) · [English](README.md)**
 
 ## 界面展示
 
-![DeepCode GUI 在对话旁展示项目交付看板](assets/readme/workspace-zh.jpg)
+![使用 AC 图标的 Achbit GUI](assets/readme/achbit-workspace.png)
 
-*使用虚构项目数据的真实 GUI 任务：读取 CSV、生成交互式看板并检查预览。可使用[示例 CSV](examples/delivery-dashboard/delivery-data.csv)尝试。这张图片用于通用产品展示。*
+*当前 Achbit 界面，来自 2026-10-23 的隔离 macOS Debug 真实截图。*
 
-![DeepCode TUI 中文与数学公式展示图](assets/readme/tui-borderless-zh.png)
+![API 与 Coding Plan 接入选择](assets/readme/achbit-model-services.png)
 
-*基于真实 TUI 对话截图，经图片编辑去除外沿白边的展示图。[原始截图](assets/readme/tui-native-zh.png)仍保留，详见[图片说明](assets/readme/README.md)。*
+*模型设置沿用统一界面风格，区分套餐 API Key 与账号登录。图中为 GLM Coding Plan 配置表单，不代表已经完成真实模型请求。*
+
+**真实任务示例：** DeepSeek API 查阅网页、生成交互清单，再用 Computer Use 实际操作并截图。[查看完整过程与更多示例 →](examples/README.zh-CN.md)
 
 ## 快速开始
 
@@ -22,9 +26,9 @@ DeepCode 是提供 GUI、TUI 和 CLI 的本地优先编程 Agent。它可以读�
 
 | 平台 | 安装或启动 |
 | --- | --- |
-| macOS Apple Silicon | 安装 `DeepCode-<version>-macos-arm64.pkg`，再打开 `/Applications/DeepCode-GUI.app`；解压版直接打开包内的 `DeepCode-GUI.app`。 |
-| Windows x64 | 运行 `DeepCode-<version>-win64-setup.exe`，再从开始菜单打开 DeepCode；解压版打开 `DeepCode-GUI.exe`。 |
-| Linux x64 / ARM64 | 解压对应架构的程序包，运行 `./DeepCode-GUI`。 |
+| macOS Apple Silicon | 安装 `Achbit-<version>-macos-arm64.pkg`，再打开 `/Applications/Achbit.app`；解压版直接打开包内的 `Achbit.app`。 |
+| Windows x64 | 运行 `Achbit-<version>-win64-setup.exe`，再从开始菜单打开 Achbit；解压版打开 `Achbit.exe`。 |
+| Linux x64 / ARM64 | 解压对应架构的程序包，运行 `./Achbit`。 |
 
 1. 打开 **设置 → 模型与服务**，配置 API 连接或支持的 Coding Plan。
 2. 选择项目文件夹和模型。使用 DeepSeek 时，可直接按照[简体中文](docs/product/deepseek.zh-CN.md)或 [English](docs/product/deepseek.md) 指南配置。
@@ -39,8 +43,8 @@ DeepCode 是提供 GUI、TUI 和 CLI 的本地优先编程 Agent。它可以读�
 **在宿主机执行：**
 
 ```bash
-git clone --branch main https://github.com/Achbite/DeepCode.git
-cd DeepCode
+git clone --branch main https://github.com/Achbite/DeepCode.git Achbit
+cd Achbit
 
 # 仅 macOS：打包前一次性准备固定的本地签名身份，
 # 按 macOS 提示完成必要的钥匙串确认。
@@ -53,7 +57,7 @@ Windows 和 Linux 跳过签名命令。`main` 为稳定源码，`dev-main` 为�
 
 **在容器内（`/workspace`）执行：**
 
-日常开发使用 `bash ./build.sh`（或 `pnpm build`），编译并更新开发宿主平台在 `bin/` 下的完整可运行目录，包含最新原生程序、Session 代码与 GUI 资源，不生成安装器或压缩包。macOS 构建完成后直接打开 `bin/macos-arm64/DeepCode-GUI.app`。容器使用 `make shell` 传入的宿主平台；Windows/WSL 更新 `bin/win64`，Linux 使用容器架构。全平台分发打包需明确执行 `bash ./build.sh --stage package`（或 `pnpm package`）。单平台分发打包使用下列命令：
+日常开发使用 `bash ./build.sh`（或 `pnpm build`），编译并更新开发宿主平台在 `bin/` 下的完整可运行目录，包含最新原生程序、Session 代码与 GUI 资源，不生成安装器或压缩包。macOS 构建完成后直接打开 `bin/macos-arm64/Achbit.app`。容器使用 `make shell` 传入的宿主平台；Windows/WSL 更新 `bin/win64`，Linux 使用容器架构。全平台分发打包需明确执行 `bash ./build.sh --stage package`（或 `pnpm package`）。单平台分发打包使用下列命令：
 
 | 目标平台 | 命令 | 当前源码目录中的输出 |
 | --- | --- | --- |
@@ -67,30 +71,30 @@ Windows 和 Linux 跳过签名命令。`main` 为稳定源码，`dev-main` 为�
 
 ```bash
 # macOS
-open bin/macos-arm64/DeepCode-GUI.app
-./bin/macos-arm64/DeepCode-TUI.command -C /path/to/project
+open bin/macos-arm64/Achbit.app
+./bin/macos-arm64/Achbit-TUI.command -C /path/to/project
 
 # Linux：如果生成的是 x64 产物，将 linux-arm64 替换为 linux-x64
-./bin/linux-arm64/DeepCode-GUI
-./bin/linux-arm64/deepcode-tui -C /path/to/project
+./bin/linux-arm64/Achbit
+./bin/linux-arm64/achbit-tui -C /path/to/project
 ```
 
-Windows 请从 Windows 打开源码目录，启动 `bin\win64\DeepCode-GUI.exe`；也可在 Windows 终端运行 `bin\win64\deepcode-tui.bat -C C:\path\to\project`。然后按上方步骤连接模型并提交第一个任务。更多构建选项和已有程序包的更新方法见[开发指南](docs/development.md)。
+Windows 请从 Windows 打开源码目录，启动 `bin\win64\Achbit.exe`；也可在 Windows 终端运行 `bin\win64\achbit-tui.bat -C C:\path\to\project`。然后按上方步骤连接模型并提交第一个任务。更多构建选项和已有程序包的更新方法见[开发指南](docs/development.md)。
 
 ### 在终端中使用
 
-通过 macOS PKG 或 Windows Setup 安装后，可以直接使用 `deepcode-cli` 和 `deepcode-tui`；Windows 安装后需重新打开终端。解压版提供以下启动器：
+通过 macOS PKG 或 Windows Setup 安装后，可以直接使用 `achbit-cli` 和 `achbit-tui`；Windows 安装后需重新打开终端。解压版提供以下启动器：
 
 | 平台 | CLI | TUI |
 | --- | --- | --- |
-| macOS | `./DeepCode-CLI.command` | `./DeepCode-TUI.command` |
-| Windows | `.\deepcode-cli.bat` | `.\deepcode-tui.bat` |
-| Linux | `./deepcode-cli` | `./deepcode-tui` |
+| macOS | `./Achbit-CLI.command` | `./Achbit-TUI.command` |
+| Windows | `.\achbit-cli.bat` | `.\achbit-tui.bat` |
+| Linux | `./achbit-cli` | `./achbit-tui` |
 
 ```bash
-deepcode-cli connections
-deepcode-cli --model <profile-id> chat -C /path/to/project
-deepcode-tui -C /path/to/project
+achbit-cli connections
+achbit-cli --model <profile-id> chat -C /path/to/project
+achbit-tui -C /path/to/project
 ```
 
 解压版请将命令替换为对应启动器。`<profile-id>` 从 `connections` 中复制，是保存的配置 ID。TUI 中用 `/model` 选择模型、`/sessions` 和 `/resume` 继续会话，输入 `/` 查看可用命令。使用 `/language en-US` 或 `/language zh-CN` 切换并保存界面语言；它与消息中要求的回复语言分别设置。窗口和字体行为见[安装指南](docs/distribution.md)。

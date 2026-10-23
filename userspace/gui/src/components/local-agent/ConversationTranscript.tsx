@@ -1,14 +1,14 @@
 import { parseLocalTarget, bindLocalTarget, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
 import { ResourceLinkChoices } from './ResourceLinkChoices';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { MessageFeedback, SessionProjection } from '@deepcode/protocol';
+import type { MessageFeedback, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useConversationHost } from './ConversationHost';
 import { workspaceResourceLink } from './documentResources';
 import { requestReader } from './readerState';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { PresentedCommittedContent } from '../../presentation/PresentationRuntime';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ReasoningHistory } from './ReasoningDetails';
 import { PlanPreviewCard } from './PlanPreviewCard';
@@ -245,7 +245,7 @@ export function ConversationTranscript({
                       : undefined}
                     key={reference.referenceId}
                   >
-                    <DeepCodeShellIcon name={reference.kind === 'directory'
+                    <AchbitShellIcon name={reference.kind === 'directory'
                       ? 'folder'
                       : 'artifact'} />
                     {reference.displayName}
@@ -453,8 +453,8 @@ function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, dis
         onToggleProcess(event.currentTarget);
         setDisclosure({ displaySettled, open: !expanded });
       }}>
-        <DeepCodeShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
-        <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
+        <AchbitShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
+        <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
       </button><RunTiming timing={timing} language={language} /></div>}
       <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} hidden={row.process && !expanded && !row.required}
         eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
@@ -479,7 +479,7 @@ export function InteractionReplyQuote({ prompt, language }: { prompt: string; la
     <button type="button" className="conversation-answered-question-toggle" aria-expanded={expanded}
       aria-label={toggleLabel} title={toggleLabel} onClick={() => setExpanded((value) => !value)}>
       {!expanded && <span><MarkdownInline>{prompt.split(/\n\s*\n/)[0]!}</MarkdownInline></span>}
-      <DeepCodeShellIcon name="chevronDown" />
+      <AchbitShellIcon name="chevronDown" />
     </button>
     {expanded && <div className="conversation-answered-question-body"><MarkdownContent>{prompt}</MarkdownContent></div>}
   </div>;

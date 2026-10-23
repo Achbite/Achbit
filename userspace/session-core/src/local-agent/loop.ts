@@ -1,4 +1,4 @@
-import { permissionSettings, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
@@ -33,7 +33,7 @@ import type {
   ToolExecutionRequest,
   ToolExecutionProgress,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   KERNEL_REPLY_VERSION,
   KERNEL_REQUEST_VERSION,
@@ -44,7 +44,7 @@ import {
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
 import {
@@ -1361,6 +1361,7 @@ async function consumeProviderOutput(
         call_id: call.callId,
         name: call.name,
         arguments: call.arguments ?? JSON.stringify(call.input),
+        ...(call.thoughtSignature !== undefined ? { thoughtSignature: call.thoughtSignature } : {}),
       },
     }, toolCodec)
   ));
@@ -1628,6 +1629,7 @@ async function consumeProviderOutput(
           providerCallId: block.providerCallId,
           toolName: block.name,
           arguments: block.item.arguments as string,
+          ...(typeof block.item.thoughtSignature === 'string' ? { thoughtSignature: block.item.thoughtSignature } : {}),
           ...(block.kind === 'toolCallRejected' ? { error: structuredClone(block.error) } : {}),
         };
       }),

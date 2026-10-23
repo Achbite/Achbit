@@ -1,6 +1,6 @@
 # Debug control quick reference
 
-Use `deepcode-debug` to control an isolated Debug build directly. Tool and UI actions need no model or Agent Loop. Use task commands only when the behavior under test involves Session, Provider or model review. A Debug package does not imply ordinary CLI/TUI, installer or release acceptance.
+Use `achbit-debug` to control an isolated Debug build directly. Tool and UI actions need no model or Agent Loop. Use task commands only when the behavior under test involves Session, Provider or model review. A Debug package does not imply ordinary CLI/TUI, installer or release acceptance.
 
 ## Start and stop
 
@@ -9,15 +9,15 @@ Build through the project's Docker entrypoint: `bash ./build.sh -debug --stage p
 Run from the package directory; the test workspace must already exist:
 
 ```sh
-./deepcode-debug launch --artifact . --workspace /absolute/test-workspace --state-root /absolute/debug-state
+./achbit-debug launch --artifact . --workspace /absolute/test-workspace --state-root /absolute/debug-state
 export DEEPCODE_USER_ROOT=/absolute/debug-state
-./deepcode-debug inspect
-./deepcode-debug --help
+./achbit-debug inspect
+./achbit-debug --help
 # At the end, release this launch's GUI and Host:
-./deepcode-debug stop
+./achbit-debug stop
 ```
 
-On Windows use `.\deepcode-debug.cmd` and `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'` in PowerShell. Keep the package's relative paths intact.
+On Windows use `.\achbit-debug.cmd` and `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'` in PowerShell. Keep the package's relative paths intact.
 
 - Every connected command needs `--state-root DIR` or explicit `DEEPCODE_USER_ROOT`. Keep Debug data separate from the ordinary product; credentials are not copied.
 - `launch --headless` starts only the Host. Normal launch checks GUI readiness, not just a PID.
@@ -27,11 +27,11 @@ On Windows use `.\deepcode-debug.cmd` and `$env:DEEPCODE_USER_ROOT = 'E:\debug-s
 ## Direct tools
 
 ```sh
-./deepcode-debug tools list
-./deepcode-debug tools inspect --tool fs.read
-./deepcode-debug tools call --tool fs.read --input '{"path":"one.txt"}'
-./deepcode-debug tools call --tool fs.read --input '{"path":"two.txt"}' --no-wait
-./deepcode-debug operation inspect --operation-id OPERATION_ID --wait-ms 180000
+./achbit-debug tools list
+./achbit-debug tools inspect --tool fs.read
+./achbit-debug tools call --tool fs.read --input '{"path":"one.txt"}'
+./achbit-debug tools call --tool fs.read --input '{"path":"two.txt"}' --no-wait
+./achbit-debug operation inspect --operation-id OPERATION_ID --wait-ms 180000
 ```
 
 Each call is an independent Kernel operation with its own permissions and result. `fs.read` takes one file; submit separate calls for concurrent reads. For a pending decision, use `operation respond --operation-id ID --decision-id ID --decision allow|deny` within existing authorization, or `operation cancel --operation-id ID`. Acceptance or approval is not completion.
@@ -41,10 +41,10 @@ Optional plugins: `components list`, `components inspect --uri URI`, then `compo
 ## GUI actions
 
 ```sh
-./deepcode-debug surfaces list
-./deepcode-debug surfaces inspect --target main
-./deepcode-debug action --target main --name click --args '{"selector":"OBSERVED_SELECTOR"}'
-./deepcode-debug action --target main --name plugin.action --args '{"componentId":"OBSERVED_ID","action":"OBSERVED_ACTION","arguments":[]}'
+./achbit-debug surfaces list
+./achbit-debug surfaces inspect --target main
+./achbit-debug action --target main --name click --args '{"selector":"OBSERVED_SELECTOR"}'
+./achbit-debug action --target main --name plugin.action --args '{"componentId":"OBSERVED_ID","action":"OBSERVED_ACTION","arguments":[]}'
 ```
 
 Use current surface IDs, selectors, component signatures and availability from inspection. DOM actions: `click`, `type`, `select`, `key`, `scroll`, `focus`, `wait`. A component callback returning does not establish asynchronous business completion.
@@ -76,11 +76,11 @@ Receipts retain before/after observations, errors, operation identity, timings a
 ## Session tasks and results
 
 ```sh
-./deepcode-debug task submit --text 'Read one.txt and report its contents' --follow
+./achbit-debug task submit --text 'Read one.txt and report its contents' --follow
 # Or follow future events of an existing task:
-./deepcode-debug observe subscribe --session-id SESSION_ID
-./deepcode-debug observe --subscription-id SUBSCRIPTION_ID --follow --wait-ms 180000
-./deepcode-debug task inspect --session-id SESSION_ID
+./achbit-debug observe subscribe --session-id SESSION_ID
+./achbit-debug observe --subscription-id SUBSCRIPTION_ID --follow --wait-ms 180000
+./achbit-debug task inspect --session-id SESSION_ID
 ```
 
 `task submit` subscribes before execution. One `--follow` connection delivers grouped text/tool facts, decisions and terminal state. Quiet timeouts do not cancel work; keep that connection instead of repeatedly polling or analyzing each stream fragment. An existing-task subscription covers future events, not history. Read the task's own terminal result; a closed stream is not success.
@@ -99,12 +99,12 @@ Forwarded child decisions retain `sourceSessionId` and `agentRoute`; respond usi
 ## Measurements
 
 ```sh
-./deepcode-debug metrics query --kind tool --tool fs.read --group-by tool,status
-./deepcode-debug metrics query --kind ui --event click
-./deepcode-debug metrics query --kind component --group-by component,event
-./deepcode-debug metrics query --kind session --session-id SESSION_ID
-./deepcode-debug metrics query --kind provider --session-id SESSION_ID
-./deepcode-debug metrics export --kind tool > tool-metrics.jsonl
+./achbit-debug metrics query --kind tool --tool fs.read --group-by tool,status
+./achbit-debug metrics query --kind ui --event click
+./achbit-debug metrics query --kind component --group-by component,event
+./achbit-debug metrics query --kind session --session-id SESSION_ID
+./achbit-debug metrics query --kind provider --session-id SESSION_ID
+./achbit-debug metrics export --kind tool > tool-metrics.jsonl
 ```
 
 Use `--params JSON` or `@FILE` for filters; `fromMs` / `toMs` are epoch milliseconds. Kernel timing uses `Us`; UI/component timing uses `Ms`. Preserve coverage and unknown values; do not sum overlapping spans or mix Session-only and child-inclusive usage. External controller tokens are not measured by the target.

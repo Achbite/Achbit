@@ -1,4 +1,4 @@
-import type { NewSessionEvent, ProviderAttemptFact, ProviderAttemptTiming, ProviderTextSegmentTiming, ProviderEvent, ProviderRequest } from '@deepcode/protocol';
+import type { NewSessionEvent, ProviderAttemptFact, ProviderAttemptTiming, ProviderTextSegmentTiming, ProviderEvent, ProviderRequest } from '@achbit/protocol';
 import { errorFact, ProviderCompletedFailure, ProviderReportedFailure } from './loopFailure.js';
 import type { AgentLoopDeps } from './loop.js';
 

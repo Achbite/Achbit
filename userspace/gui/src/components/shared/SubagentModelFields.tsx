@@ -1,4 +1,4 @@
-import { modelReasoningEfforts, type AgentSettings, type LlmProviderProfile, type ModelConnection } from '@deepcode/protocol';
+import { modelReasoningEfforts, type AgentSettings, type LlmProviderProfile, type ModelConnection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import NativeSelect from './NativeSelect';
 

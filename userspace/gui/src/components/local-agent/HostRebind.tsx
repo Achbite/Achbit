@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { HostWindowBinding, RunProjection } from '@deepcode/protocol';
+import type { HostWindowBinding, RunProjection } from '@achbit/protocol';
 import { nativeHostBinding } from '../../services/nativeBrowser';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useUiLanguage } from '../../useUiLanguage';

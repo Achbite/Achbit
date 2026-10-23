@@ -1,13 +1,13 @@
 {
-  "name": "@deepcode/client",
+  "name": "@achbit/client",
   "version": "0.6.58",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config vite.deepcode-gui.config.ts",
+    "dev": "vite --config vite.achbit-gui.config.ts",
     "build": "pnpm typecheck && pnpm build:web",
-    "build:web": "vite build --config vite.deepcode-gui.config.ts",
+    "build:web": "vite build --config vite.achbit-gui.config.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:manual": "tsc --noEmit -p tsconfig.manual.json",
     "test": "node --test tests/*.test.mjs"
@@ -19,8 +19,8 @@
     "@codemirror/search": "6.7.2",
     "@codemirror/state": "6.7.5",
     "@codemirror/view": "6.43.12",
-    "@deepcode/presentation-core": "workspace:*",
-    "@deepcode/protocol": "workspace:*",
+    "@achbit/presentation-core": "workspace:*",
+    "@achbit/protocol": "workspace:*",
     "@headless-tree/core": "1.7.0",
     "@headless-tree/react": "1.7.0",
     "@lezer/highlight": "1.2.3",

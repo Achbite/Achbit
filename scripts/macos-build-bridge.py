@@ -317,7 +317,7 @@ def cancel_package(shared):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['ensure', 'serve', 'stop', 'check', 'check-runtime', 'runtime', 'package', 'computer-use', 'cancel'])
-    parser.add_argument('--container', default=os.environ.get('CONTAINER_NAME', 'deepcode-dev'))
+    parser.add_argument('--container', default=os.environ.get('CONTAINER_NAME', 'achbit-dev'))
     parser.add_argument('--workdir', default=os.environ.get('WORKDIR_IN_CTNR', '/workspace'))
     parser.add_argument('--shared')
     parser.add_argument('--output')

@@ -2,7 +2,7 @@ import AppearanceConfiguration from './AppearanceConfiguration';
 import { PALETTE_SETTING, decodePaletteOverrides, paletteToken } from '../../theme/palette';
 import GuiPaletteSettings from './GuiPaletteSettings';
 import { useSettingsSearchTarget } from './settingsSearch';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useSettingsHelp } from './SettingsHelp';
 import React from 'react';
 import type { UiLanguage } from '../../i18n';
@@ -17,7 +17,7 @@ import {
   normalizeGuiThemePreference,
   type GuiAccentColor,
   type GuiThemePreference,
-} from '../../theme/deepcodeGuiTheme';
+} from '../../theme/achbitGuiTheme';
 
 
 interface GuiAppearanceSettingsProps {
@@ -106,7 +106,7 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
                   onClick={event => { selectTheme(value, themeDisabled); if (event.detail > 0) event.currentTarget.blur(); }}
                 >
                   <span className="settings-theme-label">
-                    <span className="settings-selection-check" aria-hidden="true"><DeepCodeShellIcon name="check" size={14} /></span>
+                    <span className="settings-selection-check" aria-hidden="true"><AchbitShellIcon name="check" size={14} /></span>
                     {optionLabel(themeDefinition, value)}
                   </span>
                 </button>
@@ -136,7 +136,7 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
                     aria-hidden="true"
                   />
                   <span>{optionLabel(accentDefinition, value)}</span>
-                  <span className="settings-accent-check" aria-hidden="true"><DeepCodeShellIcon name="check" size={14} /></span>
+                  <span className="settings-accent-check" aria-hidden="true"><AchbitShellIcon name="check" size={14} /></span>
                 </button>
               ))}
             </div>

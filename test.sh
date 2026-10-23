@@ -57,7 +57,7 @@ run_required() {
   cargo fmt --all -- --check
   cargo test --workspace
   printf '[test] Debug 控制专用合同\n'
-  cargo test -p deepcode-kernel-daemon -p deepcode-cli --features deepcode-kernel-daemon/debug-control,deepcode-cli/debug-control debug
+  cargo test -p achbit-kernel-daemon -p achbit-cli --features achbit-kernel-daemon/debug-control,achbit-cli/debug-control debug
   printf '[test] 构建编排与程序发布\n'
   python3 -I -S ./scripts/tests/build-platforms.py
   printf '[test] GUI 资源发布\n'
@@ -68,13 +68,13 @@ run_required() {
   printf '[test] TUI 字体选择与窗口启动参数\n'
   node --test ./shells/tui/tests/*.test.mjs
   printf '[test] Session 数据流\n'
-  pnpm --filter @deepcode/session-core test
+  pnpm --filter @achbit/session-core test
   printf '[test] GUI 投影合同与状态交互\n'
-  pnpm --filter @deepcode/client test
+  pnpm --filter @achbit/client test
   printf '[test] GUI 类型接线（共享包已编译）\n'
-  pnpm --filter @deepcode/client typecheck
+  pnpm --filter @achbit/client typecheck
   printf '[test] 手工预览类型接线\n'
-  pnpm --filter @deepcode/client typecheck:manual
+  pnpm --filter @achbit/client typecheck:manual
 }
 
 run_workspace_shell() {
@@ -97,9 +97,9 @@ run_workspace_shell() {
 # E2E scripts consume the outputs selected here; direct calls must supply these paths.
 if [ "$profile" = cli ] || [ "$profile" = full ]; then
   test_target_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
-  export DEEPCODE_E2E_DAEMON="${DEEPCODE_E2E_DAEMON:-$test_target_dir/debug/deepcode-kernel-daemon}"
-  export DEEPCODE_E2E_CLI="${DEEPCODE_E2E_CLI:-$test_target_dir/debug/deepcode-cli}"
-  export DEEPCODE_E2E_TUI="${DEEPCODE_E2E_TUI:-$test_target_dir/debug/deepcode-tui}"
+  export DEEPCODE_E2E_DAEMON="${DEEPCODE_E2E_DAEMON:-$test_target_dir/debug/achbit-kernel-daemon}"
+  export DEEPCODE_E2E_CLI="${DEEPCODE_E2E_CLI:-$test_target_dir/debug/achbit-cli}"
+  export DEEPCODE_E2E_TUI="${DEEPCODE_E2E_TUI:-$test_target_dir/debug/achbit-tui}"
   export DEEPCODE_E2E_SESSION_BRIDGE="${DEEPCODE_E2E_SESSION_BRIDGE:-$ROOT_DIR/userspace/session-core/dist/sessionServiceBridge.js}"
 fi
 
@@ -109,7 +109,7 @@ case "$profile" in
   cli)
     run_required
     printf '[test] CLI 与 daemon 正式入口\n'
-    cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui
+    cargo build -p achbit-first-party-tools -p achbit-kernel-daemon -p achbit-cli -p achbit-tui
     python3 -I -S ./scripts/tests/owned-daemon.py
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
     python3 -I -S ./scripts/tests/provider-retry-cli.py
@@ -124,8 +124,8 @@ case "$profile" in
   full)
     run_required
     printf '[test] CLI、TUI 与 GUI 正式包入口\n'
-    cargo build -p deepcode-first-party-tools -p deepcode-kernel-daemon -p deepcode-cli -p deepcode-tui -p deepcode-host-web
-    pnpm --filter @deepcode/client build:web
+    cargo build -p achbit-first-party-tools -p achbit-kernel-daemon -p achbit-cli -p achbit-tui -p achbit-host-web
+    pnpm --filter @achbit/client build:web
     python3 -I -S ./scripts/tests/owned-daemon.py
     printf '[test] 本地 Agent 真实链路与共享投影壳\n'
     python3 -I -S ./scripts/tests/tool-input-cli-e2e.py

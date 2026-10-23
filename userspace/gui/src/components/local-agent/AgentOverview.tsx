@@ -1,6 +1,6 @@
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { requestAgentConversation, requestAgentOverview } from './agentNavigation';
 
 /** A display of the latest member facts; opening history reuses the conversation's navigation. */
@@ -25,16 +25,16 @@ export function AgentOverview({ projection, language }: { projection: SessionPro
   const counts = new Map<string, number>();
   for (const member of members) counts.set(member.status, (counts.get(member.status) ?? 0) + 1);
   const otherCounts = ['needsInput', 'running', 'failed', 'indeterminate', 'cancelled', 'closed', 'idle'].filter(status => counts.has(status));
-  return <section className="deepcode-gui-task-list-card">
-    <div className="deepcode-gui-task-list-card__title">{t(language, 'agent.team.title')}</div>
-    <button type="button" className="deepcode-gui-agent-summary" aria-label={t(language, 'agent.page.overview')}
+  return <section className="achbit-gui-task-list-card">
+    <div className="achbit-gui-task-list-card__title">{t(language, 'agent.team.title')}</div>
+    <button type="button" className="achbit-gui-agent-summary" aria-label={t(language, 'agent.page.overview')}
       onClick={() => requestAgentOverview(projection.sessionId)}>
-      <DeepCodeShellIcon name="subagents" />
-      <span className="deepcode-gui-agent-summary__active">{otherCounts.map(status => <span key={status}>
+      <AchbitShellIcon name="subagents" />
+      <span className="achbit-gui-agent-summary__active">{otherCounts.map(status => <span key={status}>
         {counts.get(status)} {t(language, statusKey(status))}
       </span>)}</span>
       {counts.has('completed') && <span>{counts.get('completed')} {t(language, statusKey('completed'))}</span>}
-      <DeepCodeShellIcon name="chevronRight" />
+      <AchbitShellIcon name="chevronRight" />
     </button>
   </section>;
 }
@@ -49,11 +49,11 @@ export function AgentOverviewList({ projection, language }: { projection: Sessio
       if (!group.length) return null;
       return <section key={status} aria-label={t(language, statusKey(status))}>
         <h3>{t(language, statusKey(status))}<span>{group.length}</span></h3>
-        <div className="deepcode-gui-agent-members">
-          {group.map(member => <button type="button" key={member.sessionId} className={`deepcode-gui-agent-member deepcode-gui-agent-member--${member.status}`}
+        <div className="achbit-gui-agent-members">
+          {group.map(member => <button type="button" key={member.sessionId} className={`achbit-gui-agent-member achbit-gui-agent-member--${member.status}`}
             onClick={() => requestAgentConversation(projection.sessionId, member.sessionId, `overview:${member.sessionId}`)}>
-            <DeepCodeShellIcon name="subagents" /><span><strong>{member.name}</strong>
-              {member.description && <small>{member.description}</small>}</span><DeepCodeShellIcon name="chevronRight" />
+            <AchbitShellIcon name="subagents" /><span><strong>{member.name}</strong>
+              {member.description && <small>{member.description}</small>}</span><AchbitShellIcon name="chevronRight" />
           </button>)}
         </div>
       </section>;

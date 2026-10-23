@@ -18,7 +18,7 @@ function prepareFont(config) {
   }
   const name = ObjC.unwrap(font.fontName);
   if (!name) throw new Error('Font did not become available: ' + config.name);
-  if (!font.fixedPitch) throw new Error('Terminal requires a fixed-width font. Choose a DeepCode built-in font or a monospaced custom font: ' + name);
+  if (!font.fixedPitch) throw new Error('Terminal requires a fixed-width font. Choose a Achbit built-in font or a monospaced custom font: ' + name);
   return { name: name, size: config.size };
 }
 
@@ -35,8 +35,13 @@ function run(argv) {
   if (mode === 'create') {
     const previous = terminal.running() ? terminal.windows.id() : [];
     const tab = terminal.doScript(config.command);
-    const created = terminal.windows().filter(w => previous.indexOf(w.id()) < 0);
-    if (created.length !== 1) throw new Error('Terminal did not create a separate DeepCode window.');
+    let created = terminal.windows().filter(w => previous.indexOf(w.id()) < 0);
+    if (created.length > 1) {
+      // Cold startup may restore unrelated windows alongside the requested tab.
+      const tty = tab.tty();
+      created = created.filter(w => w.tabs().some(candidate => candidate.tty() === tty));
+    }
+    if (created.length !== 1) throw new Error('Terminal did not create a separate Achbit window.');
     const window = created[0];
     // Persist identity before tab lookup, title, font, bounds, or activation can fail.
     const owner = { windowId: window.id(), tty: null };
@@ -44,14 +49,14 @@ function run(argv) {
     owner.tty = tab.tty();
     recordOwner(config.ownerPath, owner);
     if (window.tabs().length !== 1 || window.tabs()[0].tty() !== owner.tty) {
-      throw new Error('Terminal did not create a separate DeepCode tab.');
+      throw new Error('Terminal did not create a separate Achbit tab.');
     }
     return JSON.stringify(owner);
   }
   if (!terminal.running()) {
     if (mode === 'close' || mode === 'closeFinished') return JSON.stringify({ closed: true });
     if (mode === 'restore') return JSON.stringify({ restored: false });
-    throw new Error('The DeepCode terminal window is closed.');
+    throw new Error('The Achbit terminal window is closed.');
   }
   if (mode === 'close' || mode === 'closeFinished') {
     const windows = terminal.windows().filter(w => w.id() === config.windowId);
@@ -75,7 +80,7 @@ function run(argv) {
     }
   }));
   if (mode === 'restore' && matches.length === 0) return JSON.stringify({ restored: false });
-  if (matches.length !== 1) throw new Error('The DeepCode terminal tab was not found.');
+  if (matches.length !== 1) throw new Error('The Achbit terminal tab was not found.');
   const { tab, window } = matches[0];
   if (mode === 'capture') {
     return JSON.stringify({ windowId: window.id(), tty: tab.tty(), name: tab.fontName(), size: tab.fontSize(), title: tab.customTitle() });
@@ -85,7 +90,7 @@ function run(argv) {
   tab.fontSize = config.size;
   window.bounds = bounds;
   if (tab.fontName() !== config.name || tab.fontSize() !== config.size) throw new Error('Terminal did not apply the selected font.');
-  tab.customTitle = mode === 'restore' ? config.title : 'DeepCode';
+  tab.customTitle = mode === 'restore' ? config.title : 'AC';
   if (mode === 'apply' && config.windowId !== undefined) terminal.activate();
   return JSON.stringify({ windowId: window.id(), tty: tab.tty(), name: tab.fontName(), size: tab.fontSize() });
 }

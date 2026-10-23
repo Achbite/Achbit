@@ -1,7 +1,7 @@
 // Real transcript/composer components; isolated facts and command capture, no Provider or user session.
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, type SessionProjection } from '@deepcode/protocol';
+import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, type SessionProjection } from '@achbit/protocol';
 import { emptySessionState, projectSession } from '../../../session-core/src/local-agent/reducer';
 import { ConversationTranscript } from '../../src/components/local-agent/ConversationTranscript';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
@@ -13,12 +13,12 @@ import { usePresentedCommittedContent } from '../../src/presentation/Presentatio
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import { ConversationDisplayProvider, useDisplayedConversation } from '../../src/components/local-agent/ConversationDisplayProvider';
-import DeepCodeTaskPanel from '../../src/deepcode-gui/layout/DeepCodeTaskPanel';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import AchbitTaskPanel from '../../src/achbit-gui/layout/AchbitTaskPanel';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 import '../../src/components/shared/focus.css';
-import '../../src/deepcode-gui/styles/deepcodeShell.css';
+import '../../src/achbit-gui/styles/achbitShell.css';
 
 installPaletteDefaults();
 const previewParams = new URLSearchParams(location.search);
@@ -182,7 +182,7 @@ function Preview() {
         openWorkspaceResource={async () => {}} setUiActionError={setError} canEditMessage={composer.canEditMessage} onEditMessage={composer.beginMessageEdit} />
     </div></div><ConversationComposer language={language} composer={composer} uiActionError={error}
       onDismissUiActionError={() => setError(null)} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} /></main>
-    {layoutCheck && <DeepCodeTaskPanel projection={projection} language={language} />}
+    {layoutCheck && <AchbitTaskPanel projection={projection} language={language} />}
     </div>
     <output className="fixture-result" aria-label="命令回执">{result}</output>
   </>;

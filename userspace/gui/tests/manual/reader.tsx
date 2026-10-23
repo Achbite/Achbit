@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { ResourcePreview, useResourcePreview } from '../../src/components/local-agent/ResourcePreview';
 import { useConversationHost } from '../../src/components/local-agent/ConversationHost';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 

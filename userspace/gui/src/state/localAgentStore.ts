@@ -1,5 +1,5 @@
 import type { PastedImageInput } from '../services/pastedImage';
-import type { UserSettings, ShellAuthorizationScope } from '@deepcode/protocol';
+import type { UserSettings, ShellAuthorizationScope } from '@achbit/protocol';
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
 import { create } from 'zustand';
 import type {
@@ -18,8 +18,8 @@ import type {
   PlanResponse,
   SessionProjection,
   HostWindowBinding,
-} from '@deepcode/protocol';
-import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@deepcode/protocol';
+} from '@achbit/protocol';
+import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import type { PastedTextInput } from '../services/pastedText';
