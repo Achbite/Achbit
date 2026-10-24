@@ -62,6 +62,7 @@ type StoreErrorSource =
   | 'operation';
 
 export interface LocalAgentState {
+  welcomeIndex: number;
   sessionId: string | null;
   draftProjectId: string | null;
   selectedProfileId: string | null;
@@ -186,6 +187,7 @@ let projectionRefreshFlight: {
 } | null = null;
 
 const store = create<LocalAgentState>((set, get) => ({
+  welcomeIndex: 0,
   sessionId: null,
   draftProjectId: null,
   selectedProfileId: null,
@@ -342,6 +344,7 @@ const store = create<LocalAgentState>((set, get) => ({
     advanceView();
     activeSubmissionCount = 0;
     set({
+      welcomeIndex: (get().welcomeIndex + 1) % 4,
       sessionId: null,
       projection: null,
       draftProjectId: projectId,
