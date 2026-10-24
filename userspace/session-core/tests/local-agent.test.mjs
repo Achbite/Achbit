@@ -3281,6 +3281,10 @@ test('stopping an active Provider cancels its turn and Run without executing inc
   const terminal = singleEvent(events, 'provider.turn.settled');
   assert.equal(terminal.payload.outcome, 'cancelled');
   assert.equal('error' in terminal.payload, false);
+  const cancelledAttempt = events.find(event => event.type === 'provider.attempt.updated' && event.payload.phase === 'failed');
+  assert.deepEqual(cancelledAttempt?.payload.error, { code: 'provider_cancelled', message: 'user_cancelled',
+    diagnostics: { source: 'session', phase: 'provider', category: 'cancelled', retryable: false,
+      causes: [{ message: 'user_cancelled' }] } });
   assert.equal(events.some(event => event.type === 'tool.requested'), false);
   assert.equal(events.some(event => event.type === 'run.failure.snapshot'), false);
   assert.ok(singleEvent(events, 'run.runtime.released').sequence < singleEvent(events, 'run.settled').sequence);
@@ -3294,6 +3298,7 @@ test('stopping an active Provider cancels its turn and Run without executing inc
 });
 
 test('Provider HTTP cancellation does not replace an independent error or secondary cleanup failure', async () => {
+  const { withProviderAttempts } = await import('../dist/local-agent/providerAttempts.js');
   const controller = new AbortController();
   controller.abort('user_cancelled');
   const failure = new LoopFailure('provider_event_json_invalid', 'Invalid Provider frame.');
@@ -3305,6 +3310,23 @@ test('Provider HTTP cancellation does not replace an independent error or second
       else assert.deepEqual(actual.diagnostics.secondary, [{ code: failure.code, message: failure.message }]);
       return true;
     });
+    const attemptController = new AbortController(), events = [];
+    const request = { requestId: 'request:cancel-error', sessionId: 'session:cancel-error', runId: 'run:cancel-error', purpose: 'agent' };
+    const deps = { nextId: () => 'attempt:cancel-error', updateAssistantDraft() {}, commit: async event => { events.push(event); } };
+    await assert.rejects(withProviderAttempts(request, deps, attemptController.signal, async () => {
+      attemptController.abort(controller.signal.reason);
+      throw error;
+    }), actual => actual === error);
+    const recorded = events.find(event => event.payload.phase === 'failed').payload.error;
+    if (error === controller.signal.reason) {
+      assert.equal(recorded.code, 'provider_cancelled');
+      assert.equal(recorded.diagnostics.category, 'cancelled');
+    } else {
+      assert.notEqual(recorded.diagnostics?.category, 'cancelled');
+      if (error === failure) assert.deepEqual(recorded, { code: failure.code, message: failure.message });
+      else assert.deepEqual(recorded.diagnostics.secondary, [{ code: failure.code, message: failure.message }]);
+    }
+    assert.equal(events.some(event => event.payload.phase === 'retryWaiting'), false);
   }
 });
 

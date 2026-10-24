@@ -76,6 +76,12 @@ export async function withProviderAttempts<T>(
     } catch (error) {
       finish('interrupted');
       const failure = errorFact(error);
+      if (signal.aborted && error === signal.reason
+        && (signal.reason === 'user_cancelled' || signal.reason === 'user_cancelled_plan')) {
+        failure.code = 'provider_cancelled';
+        failure.diagnostics = { source: 'session', phase: 'provider', category: 'cancelled', retryable: false,
+          causes: [{ message: failure.message }] };
+      }
       try { await record('failed', { error: failure }); }
       catch (recordError) { throw classifyFailure(new AggregateError([error, recordError], failure.message)); }
       deps.updateAssistantDraft(null);
