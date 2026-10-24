@@ -68,6 +68,34 @@ test('catalog edits made during startup survive late plugin/model discovery', as
   });
 });
 
+test('welcome is chosen randomly and remains stable while the new conversation is empty', async t => {
+  const [{ createLocalAgentStore }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/state/settingsStore.ts',
+  ]);
+  t.mock.method(useSettingsStore.getState(), 'loadUserSettings', async () => {});
+  let random = 0.62;
+  t.mock.method(Math, 'random', () => random);
+  const store = createLocalAgentStore();
+  assert.equal(store.getState().welcomeIndex, 2, 'the initial welcome uses the random selection');
+
+  random = 0.91;
+  for (const projectId of [null, null, 'project:one', 'project:one', 'project:two', null]) {
+    store.getState().startNewSession(projectId);
+    assert.equal(store.getState().welcomeIndex, 2, 'both new conversation entries retain the current welcome');
+    assert.equal(store.getState().draftProjectId, projectId);
+    assert.equal(store.getState().sessionId, null);
+  }
+
+  const sessionId = 'session:history';
+  store.setState({ sessionId, projection: projectSession(emptySessionState(sessionId)) });
+  store.getState().startNewSession('project:one');
+  assert.equal(store.getState().welcomeIndex, 3, 'leaving a conversation chooses a new random welcome');
+  assert.equal(store.getState().projection, null);
+  random = 0.13;
+  store.getState().startNewSession(null);
+  assert.equal(store.getState().welcomeIndex, 3, 'repeated clicks do not redraw the random selection');
+});
+
 test('a quiet Shell displays its command before completion, then a bounded live tail without expanding details', async t => {
   const previous = globalThis.self; globalThis.self = {};
   t.after(() => { if (previous === undefined) delete globalThis.self; else globalThis.self = previous; });

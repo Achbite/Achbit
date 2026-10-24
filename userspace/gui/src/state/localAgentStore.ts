@@ -187,7 +187,7 @@ let projectionRefreshFlight: {
 } | null = null;
 
 const store = create<LocalAgentState>((set, get) => ({
-  welcomeIndex: 0,
+  welcomeIndex: Math.floor(Math.random() * 4),
   sessionId: null,
   draftProjectId: null,
   selectedProfileId: null,
@@ -344,7 +344,7 @@ const store = create<LocalAgentState>((set, get) => ({
     advanceView();
     activeSubmissionCount = 0;
     set({
-      welcomeIndex: (get().welcomeIndex + 1) % 4,
+      welcomeIndex: get().sessionId === null ? get().welcomeIndex : Math.floor(Math.random() * 4),
       sessionId: null,
       projection: null,
       draftProjectId: projectId,
