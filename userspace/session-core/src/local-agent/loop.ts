@@ -1,3 +1,4 @@
+import { pendingProcessWait } from './processWait.js';
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure } from './approvalReview.js';
@@ -117,7 +118,7 @@ export interface AgentLoopDeps {
   readSnapshot(): Promise<LoopSnapshot>;
   waitForChange?(revision: number, signal: AbortSignal, permissions?: SessionState['publishedPermissions']): Promise<void>;
   syncProcesses?(): Promise<void>;
-  waitProcesses?(signal: AbortSignal): Promise<void>;
+  waitProcesses?(signal: AbortSignal, jobIds?: string[], timeoutSeconds?: number): Promise<void>;
   agents?: {
     execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
     wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
@@ -367,6 +368,9 @@ export async function runAgentLoop(
       }
       const waitingForTools = await dispatchPendingTools(deps, runId, signal);
       if (waitingForTools) return waitingForTools;
+      snapshot = await deps.readSnapshot();
+      const processWait = pendingProcessWait(snapshot.events, runId);
+      if (processWait) await deps.waitProcesses?.(signal, processWait.jobIds, processWait.timeoutSeconds);
       snapshot = await deps.readSnapshot();
 
       throwIfAborted(signal);
@@ -2289,6 +2293,19 @@ async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: 
       enteredSegmentEnd = end;
       const waiting = await executeToolSegment(deps, segment, dependencies, signal);
       if (waiting) return waiting;
+      snapshot = await deps.readSnapshot();
+      const job = Object.values(snapshot.state.processes).find(job => job.callId === first.callId && job.status === 'active');
+      const completed = snapshot.events.findLast(event => event.type === 'tool.completed' && event.callId === first.callId);
+      const result = completed?.type === 'tool.completed' && 'output' in completed.payload.record ? completed.payload.record.output as {job?: {status?: string}} | null : null;
+      const explicitWait = first.payload.toolName === 'process' && first.payload.input.action === 'wait' && result?.job?.status === 'active';
+      if (job && first.payload.toolName !== 'process' || explicitWait && pendingProcessWait(snapshot.events, runId)) {
+        // A yielded execution is not successful completion of a sequential barrier.
+        // Pair the remaining calls with honest non-execution receipts before review.
+        for (const later of pending.slice(end)) await deps.commit({type: 'tool.not-executed',
+          sessionId: later.sessionId, runId, callId: later.callId,
+          payload: {attemptId: later.payload.attemptId, reason: 'dependencyPending', predecessorCallId: first.callId}});
+        break;
+      }
       offset = end;
     }
   } catch (error) {

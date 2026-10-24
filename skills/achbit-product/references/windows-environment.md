@@ -14,4 +14,4 @@ Use the recorded target, shell dialect and original error before changing anythi
 
 Automatic native selection prefers PowerShell 7, then Windows PowerShell. Explicit choices do not fall back. Git Bash is opt-in; `System32/bash.exe` is a WSL launcher. For a project requiring Linux, select an explicit WSL distribution and installed Linux Kernel rather than translating commands by guesswork.
 
-New runs capture configuration; explicit environment refresh updates Host paths. Do not reinstall the product, edit Session databases, relax permissions or switch to Host execution as a generic remedy. See `doc.read` → `execution-environments.md` for configuration.
+New runs capture configuration; explicit environment refresh updates Host paths. Do not reinstall the product, edit Session databases, relax permissions or switch to Host execution as a generic remedy. See `execution-environments.md` in `productDocsPath` for configuration.

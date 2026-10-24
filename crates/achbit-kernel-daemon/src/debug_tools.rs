@@ -152,6 +152,9 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         serde_json::from_value(environment["shell"].clone()).map_err(|e| e.to_string())?;
     config.execution_path = Some(string(&environment, "executionPath")?.into());
     config.file_read_roots = plugins.file_read_roots();
+    if let Some(path) = environment["productDocsPath"].as_str() {
+        config.file_read_roots.push(path.into());
+    }
     #[cfg(target_os = "macos")]
     if let Some(commands) = environment["commandPaths"].as_object() {
         for path in commands.values().filter_map(Value::as_str) {
@@ -190,7 +193,7 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         state.session_service.clone(),
     ))
     .with_plugin_settings(settings.clone(), false)
-    .with_processes(plugins.process_instance())
+    .with_documents(plugins.document_instance())
     .with_containers(plugins.container_instance())
     .with_computer_use(plugins.computer_use_instance())
     .with_document_python(settings["agent.documents.pythonPath"].as_str());

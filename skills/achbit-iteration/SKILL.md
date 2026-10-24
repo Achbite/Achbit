@@ -11,11 +11,13 @@ Preserve the requested scope: analysis, implementation, Debug verification or re
 
 ## Choose the entrypoint
 
-- To control a Debug product, read `doc.read` with `name="debug-control.md"`. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
+- To control a Debug product, read `debug-control.md` in `productDocsPath` with the shell. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
 - To locate code for a change, read [references/implementation-map.md](references/implementation-map.md), then inspect the relevant producer and consumer.
 - To load edited code, use [references/update-modes.md](references/update-modes.md). A successful build does not update an existing process.
 
 Session owns the Agent Loop and conversation state; Kernel owns tools, permissions and execution facts; shells display those facts. Extend existing owners and ports rather than adding a second store or Loop. Ask before changing an unresolved public contract or expanding the task.
+
+Obtain the user's approval before adding any model-callable tool, including a Kernel tool. First reuse existing tools, CLI commands, Shell or Skills. Keep the tool set small: shell commands can search and read the bundled documentation directory. Dedicated Kernel tools for writes, edits and network search exist to enforce permission gates and record execution facts, not to wrap every shell operation. When proposing a tool, explain the concrete capability gap, necessary responsibility and permission boundary before implementation.
 
 ## Verify only what changed
 

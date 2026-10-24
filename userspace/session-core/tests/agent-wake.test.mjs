@@ -1700,3 +1700,32 @@ test('total usage includes nested and closed Agents once and updates without a p
   assert.deepEqual((await reopened.snapshot(ownerId)).totalTokenUsage, result.totalTokenUsage,
     'closed descendants and their unknown usage remain included when history is read without Actors');
 });
+
+test('ordinary members select coordinator templates without overriding permissions or Loop policy', async t => {
+  const ownerId = 'session:template-owner';
+  const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
+    if (sessionId === ownerId) {
+      if (turn === 1) yield call(request, 'template:member', 'agent', { action: 'spawn', preset: 'collaboration',
+        capabilities: { delegation: true }, name: 'Member', task: 'Inspect your configured templates.', delivery: 'wait' });
+      else yield answer(request, 'Template control verified.');
+    } else if (turn === 1) yield call(request, 'template:override', 'agent', { action: 'spawn', name: 'Unauthorized customization',
+      task: 'Must not start.', delivery: 'wait', permissions: { 'agent.permissions.shell': 'ask' } });
+    else if (turn === 2) {
+      assert.match(textOf(request), /agent_coordinator_configuration_required/u);
+      yield call(request, 'template:discover', 'agent', { action: 'models' });
+    } else {
+      const choices = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+      assert.deepEqual(choices.presets.map(p => p.id), ['analysis', 'collaboration']);
+      assert.equal(choices.permissionPolicies, undefined);
+      assert.equal(choices.runners, undefined);
+      assert.equal(choices.fullConfiguration, false);
+      yield answer(request, 'Configured templates available.');
+    }
+    yield done(request);
+  }, { settings: { allowMemberAnalysis: true, allowFullConfiguration: true } });
+  await fixture.service.submit(messageCommand(ownerId, 'command:templates', 'Check configured members.'));
+  const parent = await completed(fixture.service, ownerId);
+  const child = await fixture.service.snapshot(parent.agentTasks[0].agentSessionId);
+  assert.deepEqual(child.agentChildren ?? [], []);
+  assert.equal(child.run.status, 'completed');
+});

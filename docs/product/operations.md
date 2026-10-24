@@ -8,7 +8,7 @@ Quick directions for using Achbit. Read only the section needed for the task; cu
 - File tools operate on bound workspaces. Use `fs.read` for known text, with line/byte bounds; use file tools for project edits and deletion. Use the project's declared environment for commands.
 - Preserve actual results: rejected input was not executed; approval is not execution; a dispatched action with a failed observation is not a fully verified action. Correct the reported cause instead of repeating an unchanged failure.
 - Live output is bounded. Inspect the returned full-output paths when needed; do not rerun a command just to recover its log.
-- For Achbit Debug control, use `doc.read` → `debug-control.md`. Direct tool/UI operations do not need an Agent task.
+- For Achbit Debug control, read [Debug control](debug-control.md). Direct tool/UI operations do not need an Agent task.
 
 Computer Use is an optional plugin. Embedded browser tools need the originating GUI; desktop control needs its native helper and reported OS permissions. Inspect before acting, reuse the returned target identities, and use foreground observation for coordinate input. Unsupported actions do not automatically switch input methods. Never replay dispatched input solely because its screenshot failed.
 
@@ -31,6 +31,14 @@ Activate relevant enabled results with `plugin.activate` alone, using their exac
 
 Settings switches/selections save immediately; numeric fields commit with Enter. Text edits and new connections retain Save/Create. Saved runtime configuration generally applies to the next run; selected Skill/CLI-plugin content is refreshed before the next request. In-flight calls keep their captured bindings. Relevant permission revocation is checked before execution.
 
+## Execution approval
+
+Delegated execution review may read the current conversation and related files in its bound workspaces before deciding. It uses the existing `session.read` and `fs.read` tools, including project rules and earlier user corrections; recorded preferences help interpret the task but do not grant permission. Other sessions, write tools, desktop control and network tools are unavailable to the reviewer. A read that needs additional permission remains unexecuted and is reported as missing evidence, without recursive approval.
+
+Reviews make at most six evidence rounds, then return allow, deny or ask for the specific missing evidence. Their input budget follows the configured reviewer model's context window and output reserve. Repetitive accessibility errors are grouped with a reference to the original tool record; the complete user instructions and proposed operation are retained. A manual decision or permission change stops obsolete review work. Plan approval remains a separate decision.
+
+For long original text, use `session.read` with `view: messages` plus `messageId`, or `view: tools` plus `recordId`, and follow the selected field's `nextOffset`. List excerpts remain bounded; a truncated excerpt does not prove that the omitted content was checked.
+
 ## Plans and task progress
 
 Plan approval may be manual, delegated or off. Use a Plan when project changes need new or expanded authorization; existing authorization does not need to be reconfirmed for every implementation detail. Plan approval, execution permission and engineering decisions are separate. Read-only investigation needs no Plan. Session-managed drafts have their existing file access.
@@ -46,6 +54,8 @@ Use `interaction.request` alone to ask a necessary question. `mode: continue` pe
 ## Agent delegation and Reader
 
 Call `agent` with `action: models` for the current operation schemas. When enabled, delegate useful independent work with enough context, scope and expected evidence; keep short or coupled work local. Use collaboration for communicating teammates and assign one writer per shared file.
+
+The fixed templates are `analysis` (contact the task owner) and `collaboration` (contact teammates). Permissions and runtime configuration inherit from the parent. The main conversation can configure templates and customize a child within its authority; ordinary members select those templates and cannot override permissions or Loop configuration.
 
 Await final results and verify them. Completed tasks release execution automatically; `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message, not authorization or a new assignment.
 
@@ -102,7 +112,7 @@ File-tool arrows open the preview in one step. Edits show changed lines with nea
 
 ## Document output
 
-For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` with the requested format and workspace destination. PDF needs the configured WeasyPrint environment; missing dependencies are a failure, not a different-format delivery.
+For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` (activate `plugin://documents@builtin` first) with the requested format and workspace destination. PDF needs the configured WeasyPrint environment; missing dependencies are a failure, not a different-format delivery.
 
 Archive an existing file with `artifact.prepare`, or register a live URL with `artifact.preview`. Deliver selected results using `artifact.present`, then cite its returned URI. Preparing/registering alone does not deliver; registering a URL does not verify it. Re-prepare edited files and reuse the `deliveryId` for an update. Keep scripts, logs and observation screenshots intermediate unless requested.
 

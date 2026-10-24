@@ -24,7 +24,7 @@ Here, “daemon” means `crates/achbit-kernel-daemon/src/`; “Session” means
 
 | Need | Existing form |
 | --- | --- |
-| Presentation | `achbit-ui.json`; `doc.read` → `ui-plugins.md`; `ui-plugins/` examples |
+| Presentation | `achbit-ui.json`; `ui-plugins.md` in `productDocsPath`; `ui-plugins/` examples |
 | Task instructions | `SKILL.md`, `skills.mounts` |
 | Local executable tool | `achbit-tool.json`; `examples/plugins/cli-text/` |
 | External tool server | `mcp.servers`, existing MCP adapter |

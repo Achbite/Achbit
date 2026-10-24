@@ -1071,7 +1071,11 @@ impl SessionProjection {
                                 activity.status != "cancelled"
                                     || disposition.predecessor_call_id.is_some()
                             }
-                            "dependencyFailed" => {
+                            "approvalRequired" => {
+                                activity.status != "rejected"
+                                    || disposition.predecessor_call_id.is_some()
+                            }
+                            "dependencyFailed" | "dependencyPending" => {
                                 activity.status != "rejected"
                                     || disposition
                                         .predecessor_call_id
@@ -2351,9 +2355,19 @@ pub struct ToolActivityProjection {
     pub projection_error: Option<ConversationError>,
     pub resources: Vec<ActivityResourceProjection>,
     pub shell: Option<ShellActivityProjection>,
+    #[serde(default)]
+    pub shell_intents: Vec<ShellCommandIntent>,
     pub process: Option<ProcessActivityProjection>,
     #[serde(default)]
     pub file_changes: Vec<FileChangeProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandIntent {
+    pub kind: String,
+    pub targets: Vec<String>,
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -3110,6 +3124,7 @@ mod tests {
     #[test]
     fn projection_preserves_unexecuted_dispositions_and_approval_collection() {
         for (status, disposition) in [
+            ("rejected", json!({"reason":"approvalRequired"})),
             ("cancelled", json!({"reason":"cancelled"})),
             (
                 "rejected",

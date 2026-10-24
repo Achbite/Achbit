@@ -26,8 +26,6 @@ export const CORE_TOOL_ORDER = [
   'web.fetch',
   'session.read',
   'skill.read',
-  'doc.read',
-  'document.render',
   'browser.page',
   'browser.service',
   'browser.capture',

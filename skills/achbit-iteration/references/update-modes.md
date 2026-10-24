@@ -16,7 +16,7 @@ Interface reload uses Cmd+Shift+R on macOS, Ctrl+Shift+R elsewhere, or `browser.
 
 ## Debug verification
 
-Through the project container, use `bash ./build.sh -debug --stage package-macos` or `--stage package-windows`. Control the resulting isolated package with `achbit-debug`; read `doc.read` → `debug-control.md` for commands.
+Through the project container, use `bash ./build.sh -debug --stage package-macos` or `--stage package-windows`. Control the resulting isolated package with `achbit-debug`; read `debug-control.md` in `productDocsPath` for commands.
 
 - Tool behavior: direct `tools call` and its operation result.
 - GUI behavior: `surfaces inspect`, `action`, a relevant result condition and screenshots only when needed.

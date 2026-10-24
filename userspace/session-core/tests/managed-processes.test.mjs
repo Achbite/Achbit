@@ -6,7 +6,7 @@ import { actorWith, createSession, fakeRunPreparation, emptyKernel, workspaceBin
   providerEvent, messageCommand, waitForProjection, completedExecutionReply, readEvents } from './local-agent-fixtures.mjs';
 
 const processTool = { toolBindingRef: 'binding:process', name: 'process', description: 'Manage a command',
-  origin: 'extension', pluginUri: 'plugin://processes@builtin',
+  origin: 'coreBuiltin',
   availability: 'callable', possibleEffects: ['process'],
   inputSchema: {type: 'object', required: ['action'], properties: {action: {type: 'string'}, input: {type: 'object'}}} };
 
@@ -67,7 +67,6 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   const actor = actorWith(journal, sessionId, provider, kernel, preparation.port, `managed-${stop}`);
   t.after(async () => { finish('cancelled'); wake(); await actor.dispose(); });
   const message = messageCommand(sessionId, 'command:start', 'Build with a managed process.');
-  message.pluginSelections = [{selectionId:'selection:processes',uri:'plugin://processes@builtin',label:'Processes'}];
   await actor.submit(message);
   const active = await waitForProjection(actor, p => p.activities.some(a => a.tool?.process && a.status === 'active'));
   while (calls < 2) await delay(5);
@@ -106,29 +105,42 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   }
 });
 
+function activeJobReply(request) {
+  const job = { jobId: 'job:question', sessionId: request.sessionId, runId: request.runId, callId: request.callId, revision: 1,
+    toolName: 'bash', command: 'prepare', targets: ['.'], status: 'active', startedAt: String(Date.now()),
+    output: { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, truncated: false } };
+  const reply = completedExecutionReply(request, { job });
+  reply.record.preparedEffect.providerRef = 'deepcode:processes';
+  reply.record.preparedEffect.operation = 'bash';
+  reply.record.preparedEffect.logicalTargets = ['.'];
+  return { job, reply };
+}
+
 test('managed process feed failure during a question settles the run and accepts the next input', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:waiting-process-failure';
   await createSession(journal, sessionId, [workspaceBinding]);
   const watchError = new Error('waiting process feed disconnected');
-  let failWatch, calls = 0, closures = 0;
+  let failWatch, job, calls = 0, closures = 0;
   const preparation = fakeRunPreparation({ tools: [processTool], contextWindowTokens: 20000 });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
-    if (++calls === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:question', name: 'interaction_request',
+    if (++calls === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'process:start', name: 'process', input: { action: 'start', tool: 'bash', input: { command: 'prepare' } } });
+    else if (calls === 2) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:question', name: 'interaction_request',
       input: { kind: 'question', prompt: 'Choose the next action.', allowFreeform: true } });
     else yield providerEvent(request.requestId, 'text.delta', {text: 'Next run completed.'});
     yield providerEvent(request.requestId, 'completed', {});
-  } }, emptyKernel({ async readProcesses(request, signal) {
-    if (request.cancel) closures++;
-    if (request.waitMs && !signal.aborted) await new Promise((resolve, reject) => {
+  } }, emptyKernel({ async execute(request) { const started = activeJobReply(request); job = started.job; return started.reply; },
+    async readProcesses(request, signal) {
+    if (request.cancel) { closures++; job = { ...job, revision: job.revision + 1, status: 'cancelled', completedAt: String(Date.now()), error: { code: 'tool_execution_cancelled', message: 'Cancelled' } }; }
+    const changed = () => job && job.runId === request.runId && request.revisions?.[job.jobId] !== job.revision;
+    if (request.waitMs && !changed() && !signal.aborted) await new Promise((resolve, reject) => {
       const stop = () => { signal.removeEventListener('abort', stop); resolve(); };
       signal.addEventListener('abort', stop, { once: true });
       failWatch = () => { reject(watchError); stop(); };
     });
-    return [];
+    return changed() ? [structuredClone(job)] : [];
   } }), preparation.port, 'waiting-process-failure');
   t.after(() => actor.dispose());
   const message = messageCommand(sessionId, 'command:start', 'Ask before the next step.');
-  message.pluginSelections = [{selectionId:'selection:processes',uri:'plugin://processes@builtin',label:'Processes'}];
   await actor.submit(message);
   const waiting = await waitForProjection(actor, p => p.run?.status === 'waiting');
   failWatch();
@@ -147,20 +159,22 @@ test('Actor disposal releases its composition when managed process closure fails
   await createSession(journal, sessionId, [workspaceBinding]);
   const closeError = new Error('Managed process closure failed.');
   const compositionError = new Error('Composition disposal failed.');
-  let compositionDisposals = 0, disposed = false;
+  let compositionDisposals = 0, disposed = false, job, calls = 0;
   const actor = actorWith(journal, sessionId, { async *stream(request) {
-    yield providerEvent(request.requestId, 'tool.call', { callId: 'native:question', name: 'interaction_request',
+    if (++calls === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'process:start', name: 'process', input: { action: 'start', tool: 'bash', input: { command: 'prepare' } } });
+    else yield providerEvent(request.requestId, 'tool.call', { callId: 'native:question', name: 'interaction_request',
       input: { kind: 'question', prompt: 'Choose the next action.', allowFreeform: true } });
     yield providerEvent(request.requestId, 'completed', {});
-  } }, emptyKernel({ async readProcesses(request, signal) {
+  } }, emptyKernel({ async execute(request) { const started = activeJobReply(request); job = started.job; return started.reply; },
+    async readProcesses(request, signal) {
     if (request.cancel) throw closeError;
-    if (request.waitMs && !signal.aborted) await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
-    return [];
+    const changed = () => job && request.revisions?.[job.jobId] !== job.revision;
+    if (request.waitMs && !changed() && !signal.aborted) await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    return changed() ? [structuredClone(job)] : [];
   } }), fakeRunPreparation({ tools: [processTool], contextWindowTokens: 20000 }).port,
   'dispose-process-failure', () => { compositionDisposals++; throw compositionError; });
   t.after(async () => { if (!disposed) await actor.dispose(); });
   const message = messageCommand(sessionId, 'command:start', 'Ask before the next step.');
-  message.pluginSelections = [{ selectionId: 'selection:processes', uri: 'plugin://processes@builtin', label: 'Processes' }];
   await actor.submit(message);
   await waitForProjection(actor, projection => projection.run?.status === 'waiting');
   disposed = true;

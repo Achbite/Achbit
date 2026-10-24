@@ -4,7 +4,6 @@ import type { KernelPort, ManagedProcessSnapshot } from '@achbit/protocol';
 export class ManagedProcesses {
   readonly #controller = new AbortController();
   readonly #jobs = new Map<string, ManagedProcessSnapshot>();
-  readonly #listeners = new Set<() => void>();
   #writes: Promise<void> = Promise.resolve();
   #failure?: unknown;
   readonly #watch: Promise<void>;
@@ -14,7 +13,6 @@ export class ManagedProcesses {
     this.#watch = this.watch().catch(error => {
       if (this.#controller.signal.aborted) return;
       this.#failure = error;
-      this.notify();
       onError(error);
     });
   }
@@ -29,7 +27,6 @@ export class ManagedProcesses {
       if (!changed.length) return;
       await this.commit(changed);
       for (const job of changed) this.#jobs.set(job.jobId, job);
-      this.notify();
     });
     this.#writes = task;
     return task;
@@ -49,23 +46,6 @@ export class ManagedProcesses {
     const jobs = await this.kernel.readProcesses({sessionId: this.sessionId, runId: this.runId, revisions: this.revisions()});
     await this.accept(jobs);
   }
-
-  async wait(signal: AbortSignal): Promise<void> {
-    await this.sync();
-    while ([...this.#jobs.values()].some(job => job.status === 'active')) {
-      if (this.#failure) throw this.#failure;
-      signal.throwIfAborted();
-      await new Promise<void>((resolve, reject) => {
-        const done = () => { this.#listeners.delete(done); signal.removeEventListener('abort', abort); resolve(); };
-        const abort = () => { this.#listeners.delete(done); signal.removeEventListener('abort', abort); reject(signal.reason); };
-        this.#listeners.add(done);
-        signal.addEventListener('abort', abort, {once: true});
-      });
-    }
-    if (this.#failure) throw this.#failure;
-  }
-
-  private notify(): void { for (const listener of [...this.#listeners]) listener(); }
 
   async close(): Promise<void> {
     this.#controller.abort();

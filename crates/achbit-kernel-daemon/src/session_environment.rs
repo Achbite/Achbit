@@ -67,6 +67,18 @@ pub(crate) fn prepare(
         configuration["revision"].as_u64().unwrap_or(0),
     );
     let kernel_path = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable_dir = kernel_path
+        .parent()
+        .ok_or("Kernel executable has no directory")?;
+    let docs = achbit_host_connection::runtime_root(executable_dir)
+        .map_err(|error| error.to_string())?
+        .join("docs/product");
+    let product_docs_path = match std::fs::metadata(&docs) {
+        Ok(metadata) if metadata.is_dir() => Some(docs),
+        Ok(_) => return Err("Packaged product documentation path is not a directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
     let mut runtime_executables = json!({ "kernel": kernel_path });
     if let Some(directory) = kernel_path.parent() {
         let cli = directory.join(if cfg!(windows) {
@@ -91,6 +103,7 @@ pub(crate) fn prepare(
         "developerCommands": commands,
         "commandPaths": command_paths,
         "runtimeExecutables": runtime_executables,
+        "productDocsPath": product_docs_path,
         "executionPath": execution_path.to_string_lossy(),
         "workspaceShellSupported": sandbox.available,
         "workspaceSandbox": sandbox,

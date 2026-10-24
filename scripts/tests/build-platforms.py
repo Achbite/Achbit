@@ -359,6 +359,35 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((transaction / 'shared/input.txt').is_file())
 
 
+class LinuxPackageTests(unittest.TestCase):
+    def test_entrypoints_remain_distinct_on_case_insensitive_filesystems(self):
+        with tempfile.TemporaryDirectory(prefix='achbit-linux-package-') as directory:
+            root = Path(directory)
+            native, shared = root / 'native', root / 'shared'
+            shared.mkdir()
+            for name in ('achbit-kernel-daemon', 'achbit-first-party-provider', 'achbit-host-web',
+                         'achbit-cli', 'achbit-tui', 'Achbit'):
+                write(native, name, name.encode())
+            for name in ('node', 'LICENSE', 'bwrap'):
+                write(root, name, name.encode())
+            for platform in ('linux-arm64', 'linux-x64'):
+                with self.subTest(platform=platform):
+                    stage = root / platform
+                    args = SimpleNamespace(root=ROOT, stage=stage, platform=platform,
+                                           native=native, shared=shared, node=root / 'node',
+                                           node_license=root / 'LICENSE')
+                    with patch.object(package.subprocess, 'run'), \
+                            patch.object(package.shutil, 'which', return_value=str(root / 'bwrap')), \
+                            patch.dict(os.environ, {'DEEPCODE_BUILD_KIND': 'normal', 'DEEPCODE_BUILD_TIME': 'fixture'}):
+                        package.assemble(args)
+                    names = [entry.name for entry in stage.iterdir()]
+                    self.assertEqual(len(names), len({name.casefold() for name in names}),
+                                     'Linux package filenames must not collide on a host-mounted filesystem')
+                    for name in ('Achbit', 'achbit-cli', 'achbit-tui'):
+                        self.assertEqual((stage / name).read_bytes(), name.encode())
+                    self.assertEqual(json.loads((stage / 'BUILDINFO.json').read_text())['platform'], platform)
+
+
 class WindowsDebugPackageTests(unittest.TestCase):
     def test_debug_and_normal_packages_have_distinct_executable_and_control_launcher(self):
         with tempfile.TemporaryDirectory(prefix='deepcode-win-debug-') as directory:

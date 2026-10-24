@@ -45,7 +45,7 @@ test('context settings default off at 500k; optional child overrides preserve un
   const spawn = operations.find(item => item.action === 'spawn');
   assert.deepEqual(spawn.inputSchema.required, ['action', 'task', 'name', 'delivery']);
   assert.match(spawn.description, /inherit from the parent/);
-  assert.match(spawn.description, /doc.read model-services.md/);
+  assert.match(spawn.description, /model-services.md in productDocsPath/);
   assert.equal(decodeSessionControlCall('call:compact', 'agent', { action: 'compact', agentId: 'session:child' }).operation.focus, undefined);
 });
 

@@ -28,10 +28,10 @@ pub(crate) struct Input {
 pub(crate) fn schema() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
         "action":{"type":"string","enum":["start","wait","status","cancel"]},
-        "tool":{"type":"string","enum":["bash","powershell","container"],"description":"For start: an available execution tool. Container jobs accept exec only."},
+        "tool":{"type":"string","enum":["bash","powershell","container"],"description":"For start: an available execution tool. Container jobs accept create or exec."},
         "input":{"type":"object","description":"For start: the chosen tool's exact input, excluding workspace and workspaceId; select workspace on this process call. Include any permission request. Omit timeout for no runtime limit."},
         "jobId":{"type":"string","description":"For wait/status/cancel: the jobId returned by start."},
-        "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"For wait only: return the current status after this many seconds without stopping the job. Omit to wait until it ends."}
+        "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional explicit dependency-wait deadline, without stopping the job. Normally omit; completion wakes the Loop automatically."}
     }})
 }
 
@@ -49,11 +49,12 @@ pub(crate) fn parse(raw: Value) -> Result<Input, String> {
                 && value.job_id.is_none() =>
         {
             if value.tool.as_deref() == Some("container")
-                && value.input.as_ref().unwrap()["action"] != "exec"
+                && !matches!(
+                    value.input.as_ref().unwrap()["action"].as_str(),
+                    Some("create" | "exec")
+                )
             {
-                return Err(
-                    "Container jobs accept exec only; create the test container first.".into(),
-                );
+                return Err("Container jobs accept create or exec.".into());
             }
         }
         "wait" | "status" | "cancel"
@@ -79,10 +80,13 @@ pub(crate) struct ReadRequest {
     pub wait_ms: u64,
     #[serde(default)]
     pub cancel: bool,
+    pub cancel_job_id: Option<String>,
 }
 
 struct Entry {
     snapshot: Value,
+    visible: bool,
+    result: Option<Result<KernelToolExecutionResult, String>>,
     published: Option<Instant>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -101,7 +105,32 @@ struct Registry {
 pub(crate) struct Jobs(Arc<Registry>);
 
 impl Jobs {
-    pub fn start<F>(&self, mut snapshot: Value, execute: F) -> Result<Value, String>
+    pub fn start<F>(&self, snapshot: Value, execute: F) -> Result<Value, String>
+    where
+        F: FnOnce(
+                KernelCancellationToken,
+                KernelProgressSink,
+            ) -> Result<KernelToolExecutionResult, String>
+            + Send
+            + 'static,
+    {
+        self.start_inner(
+            snapshot,
+            true,
+            KernelCancellationToken::default(),
+            KernelProgressSink::default(),
+            execute,
+        )
+    }
+
+    fn start_inner<F>(
+        &self,
+        mut snapshot: Value,
+        visible: bool,
+        cancellation: KernelCancellationToken,
+        foreground: KernelProgressSink,
+        execute: F,
+    ) -> Result<Value, String>
     where
         F: FnOnce(
                 KernelCancellationToken,
@@ -114,7 +143,6 @@ impl Jobs {
             .as_str()
             .ok_or("Job identity missing")?
             .to_owned();
-        let cancellation = KernelCancellationToken::default();
         snapshot["revision"] = json!(1);
         snapshot["status"] = json!("active");
         snapshot["startedAt"] = json!(crate::now_text());
@@ -133,6 +161,8 @@ impl Jobs {
             id.clone(),
             Entry {
                 snapshot,
+                visible,
+                result: None,
                 published: None,
                 stdout: vec![],
                 stderr: vec![],
@@ -144,6 +174,17 @@ impl Jobs {
         let output_jobs = self.clone();
         let output_id = id.clone();
         let progress = KernelProgressSink::new(move |event| {
+            // Forward live output only while this is still a foreground call.
+            let visible = output_jobs
+                .0
+                .entries
+                .lock()
+                .expect("process registry")
+                .get(&output_id)
+                .is_none_or(|entry| entry.visible);
+            if !visible {
+                foreground.emit(event.clone());
+            }
             let KernelToolProgress::Output { stream, bytes, .. } = event else {
                 return;
             };
@@ -179,6 +220,7 @@ impl Jobs {
                 .unwrap_or_else(|_| Err("Managed process executor panicked".into()));
                 let mut entries = jobs.0.entries.lock().expect("process registry");
                 let entry = entries.get_mut(&job_id).expect("registered process");
+                entry.result = Some(result.clone());
                 entry.snapshot["completedAt"] = json!(crate::now_text());
                 match result {
                     Ok(result) => {
@@ -218,6 +260,66 @@ impl Jobs {
         Ok(initial)
     }
 
+    pub fn foreground<F>(
+        &self,
+        snapshot: Value,
+        cancellation: KernelCancellationToken,
+        progress: KernelProgressSink,
+        execute: F,
+    ) -> Result<KernelToolExecutionResult, String>
+    where
+        F: FnOnce(
+                KernelCancellationToken,
+                KernelProgressSink,
+            ) -> Result<KernelToolExecutionResult, String>
+            + Send
+            + 'static,
+    {
+        let invocation_id = snapshot["attemptId"]
+            .as_str()
+            .ok_or("Attempt identity missing")?
+            .to_owned();
+        let job = self.start_inner(snapshot, false, cancellation.clone(), progress, execute)?;
+        let id = job["jobId"].as_str().ok_or("Job identity missing")?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut entries = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| "Process registry lock failed")?;
+        loop {
+            let entry = entries
+                .get_mut(id)
+                .ok_or("Managed foreground job missing")?;
+            if let Some(result) = entry.result.clone() {
+                let mut entry = entries.remove(id).expect("registered foreground job");
+                drop(entries);
+                if let Some(handle) = entry.thread.take() {
+                    handle.join().map_err(|_| "Managed process thread failed")?;
+                }
+                return result;
+            }
+            if !cancellation.is_cancelled() && Instant::now() >= deadline {
+                entry.visible = true;
+                let job = entry.snapshot.clone();
+                self.0.updated.notify_all();
+                return Ok(KernelToolExecutionResult {
+                    invocation_id,
+                    outcome:
+                        achbit_kernel_runtime::executors::KernelToolExecutionOutcome::Completed,
+                    output: json!({"job":job}),
+                    error: None,
+                });
+            }
+            entries = self
+                .0
+                .updated
+                .wait_timeout(entries, Duration::from_millis(100))
+                .map_err(|_| "Process wait failed")?
+                .0;
+        }
+    }
+
     pub fn snapshots(
         &self,
         session: &str,
@@ -236,14 +338,16 @@ impl Jobs {
         loop {
             let mut snapshots = Vec::new();
             for entry in entries.values_mut().filter(|entry| {
-                entry.snapshot["sessionId"] == session && entry.snapshot["runId"] == run
+                entry.visible
+                    && entry.snapshot["sessionId"] == session
+                    && entry.snapshot["runId"] == run
             }) {
                 let id = entry.snapshot["jobId"].as_str().unwrap();
                 let revision = entry.snapshot["revision"].as_u64().unwrap();
                 let active = entry.snapshot["status"] == "active";
                 let due = entry.published.is_none_or(|at| at.elapsed() >= INTERVAL);
                 if !revisions.contains_key(id)
-                    || !active && revisions.get(id) != Some(&revision)
+                    || (!active || wait_ms == 0) && revisions.get(id) != Some(&revision)
                     || active && due
                 {
                     if active && revisions.get(id) == Some(&revision) {
@@ -367,5 +471,138 @@ impl Jobs {
             self.release_run(&session, &run)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use achbit_kernel_runtime::executors::{
+        KernelToolExecutionFailure, KernelToolExecutionOutcome,
+    };
+    fn snapshot() -> Value {
+        json!({"jobId":"job:test", "sessionId":"session:test", "runId":"run:test",
+        "callId":"call:test", "attemptId":"attempt:test", "toolName":"bash", "command":"command", "targets":[]})
+    }
+    fn result(error: Option<KernelToolExecutionFailure>) -> KernelToolExecutionResult {
+        KernelToolExecutionResult {
+            invocation_id: "attempt:test".into(),
+            outcome: if error.is_some() {
+                KernelToolExecutionOutcome::Failed
+            } else {
+                KernelToolExecutionOutcome::Completed
+            },
+            output: json!({"stdout":"preserved", "exitCode":0}),
+            error,
+        }
+    }
+    #[test]
+    fn foreground_short_keeps_original_result_without_publishing_a_job() {
+        let jobs = Jobs::default();
+        let reply = jobs
+            .foreground(
+                snapshot(),
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(result(None)),
+            )
+            .unwrap();
+        assert_eq!(reply, result(None));
+        assert!(jobs
+            .snapshots("session:test", "run:test", &Default::default(), 0)
+            .unwrap()
+            .is_empty());
+    }
+    #[test]
+    fn foreground_yields_the_same_execution_and_cancellation_reaps_it() {
+        let jobs = Jobs::default();
+        let count = Arc::new(AtomicU64::new(0));
+        let executed = count.clone();
+        let reply = jobs
+            .foreground(
+                snapshot(),
+                Default::default(),
+                Default::default(),
+                move |cancel, _| {
+                    executed.fetch_add(1, Ordering::SeqCst);
+                    while !cancel.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Ok(result(Some(KernelToolExecutionFailure {
+                        code: "tool_execution_cancelled".into(),
+                        message: "cancelled".into(),
+                    })))
+                },
+            )
+            .unwrap();
+        assert_eq!(reply.output["job"]["status"], "active");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let terminal = jobs
+            .control(
+                "session:test",
+                "run:test",
+                "job:test",
+                "cancel",
+                None,
+                &Default::default(),
+            )
+            .unwrap();
+        assert_eq!(terminal["status"], "cancelled");
+        assert_eq!(terminal["result"]["stdout"], "preserved");
+        jobs.release_run("session:test", "run:test").unwrap();
+    }
+    #[test]
+    fn explicit_sync_reads_fresh_output_without_waking_the_background_feed() {
+        let jobs = Jobs::default();
+        let (send, receive) = std::sync::mpsc::channel();
+        let (ready, received) = std::sync::mpsc::channel();
+        jobs.start(snapshot(), move |cancel, progress| {
+            receive.recv().unwrap();
+            progress.emit(KernelToolProgress::Output {
+                stream: "stdout".into(),
+                bytes: b"progress".to_vec(),
+                offset: 0,
+            });
+            ready.send(()).unwrap();
+            while !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(result(None))
+        })
+        .unwrap();
+        let initial = jobs
+            .snapshots("session:test", "run:test", &Default::default(), 0)
+            .unwrap();
+        let revisions =
+            BTreeMap::from([("job:test".into(), initial[0]["revision"].as_u64().unwrap())]);
+        send.send(()).unwrap();
+        received.recv().unwrap();
+        assert!(jobs
+            .snapshots("session:test", "run:test", &revisions, 1)
+            .unwrap()
+            .is_empty());
+        let fresh = jobs
+            .snapshots("session:test", "run:test", &revisions, 0)
+            .unwrap();
+        assert_eq!(fresh[0]["output"]["stdout"], "progress");
+        assert_eq!(fresh[0]["status"], "active");
+        jobs.control(
+            "session:test",
+            "run:test",
+            "job:test",
+            "cancel",
+            None,
+            &Default::default(),
+        )
+        .unwrap();
+        jobs.release_run("session:test", "run:test").unwrap();
+    }
+    #[test]
+    fn container_preparation_can_be_managed() {
+        assert!(parse(json!({"action":"start", "tool":"container", "input":{"action":"create", "image":"test"}})).is_ok());
+        assert!(
+            parse(json!({"action":"start", "tool":"container", "input":{"action":"inspect"}}))
+                .is_err()
+        );
     }
 }

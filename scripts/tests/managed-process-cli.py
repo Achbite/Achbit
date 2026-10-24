@@ -113,7 +113,8 @@ class Provider(fixture.MockProviderHandler):
                 state.job_id = job['jobId']
                 call('wait-checkpoint', action='wait', jobId=state.job_id, waitSeconds=1)
             elif ordinal == 3:
-                job = results['wait-checkpoint']['output']['job']
+                job = next(value['process'] for value in reversed(fixture.json_payloads(body))
+                           if value.get('type') == 'process.updated' and value.get('process', {}).get('jobId') == state.job_id)
                 require(job['status'] == 'active' and 'managed-pid:' in job['output']['stdout'], job)
                 if state.mode == 'user-stop':
                     self._send_text('process-progress')
@@ -127,8 +128,10 @@ class Provider(fixture.MockProviderHandler):
             elif ordinal == 5 and state.mode == 'complete':
                 call('wait-timeout', action='wait', jobId=results['start-timeout']['output']['job']['jobId'])
             elif ordinal == 6 and state.mode == 'complete':
-                job = results['wait-timeout']['output']['job']
-                require(job['status'] == 'failed' and job['result']['timedOut'] is True, job)
+                job_id = results['start-timeout']['output']['job']['jobId']
+                job = next(value['process'] for value in reversed(fixture.json_payloads(body))
+                           if value.get('type') == 'process.updated' and value.get('process', {}).get('jobId') == job_id)
+                require(job['status'] == 'failed' and job['result'].get('timedOut') is True, job)
                 assert_stopped(job)
                 call('start-short', action='start', tool=SHELL, input=execution_input(SHORT_COMMAND))
             elif ordinal == 7 and state.mode == 'complete':
@@ -171,7 +174,7 @@ def check(mode):
                 'agent.permissions.shell': 'ask', 'agent.permissions.shellAccess': 'full',
             }))
             command = [str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
-                       '--session', session, '--plain', '--plugin', 'plugin://processes@builtin']
+                       '--session', session, '--plain']
             if CONTAINER:
                 command.extend(['--plugin', 'plugin://containers@builtin'])
             command.extend(['ask', 'Start and control the requested test processes.'])

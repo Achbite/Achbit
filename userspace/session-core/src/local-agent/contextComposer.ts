@@ -199,7 +199,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   if (pluginAvailability.length) instructions.push({
     contributionId: `tool-availability:${input.runtime.kernelCatalogSnapshotRef}`,
     contributionKind: 'sessionControls', label: 'Execution capabilities',
-    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nUse only the callable tools in this request. Blocked tools are unavailable for the reported reason; do not probe for them or recreate their effects through shell commands. These facts describe execution capability, not permission approval. Native runtimeStatus reports the executor's last preparation observation; action results provide later facts.` },
+    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nBlocked tools are unavailable for the stated reason. Capability status grants no execution permission. runtimeStatus is a preparation observation; action results provide later facts.` },
   });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
@@ -638,6 +638,22 @@ export function messagesFromJournal(
         message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
           agentId: task.agentSessionId, result: event.payload.result }) },
       });
+    } else if (event.type === 'process.wait.changed' && event.payload.phase === 'review') {
+      const latest = new Map<string, import('@achbit/protocol').ManagedProcessSnapshot>();
+      for (const fact of events) {
+        if (fact.sequence > event.sequence) break;
+        if (fact.type === 'process.updated') latest.set(fact.payload.job.jobId, fact.payload.job);
+        if (fact.type === 'tool.completed' && 'output' in fact.payload.record && isRecord(fact.payload.record.output)) {
+          const job = fact.payload.record.output.job;
+          if (isRecord(job) && typeof job.jobId === 'string' && !latest.has(job.jobId)) latest.set(job.jobId, job as unknown as import('@achbit/protocol').ManagedProcessSnapshot);
+        }
+      }
+      pendingAgentEvidence.push({ contributionId: `process-review:${event.eventId}`, contributionKind: 'journalMessages',
+        label: 'Dependency wait review', sourceSequence: event.sequence, message: {role: 'user', content: JSON.stringify({
+          type: 'process.wait.review', waitId: event.payload.waitId, waitingSince: event.payload.startedAt,
+          instruction: 'The Loop has waited on these commands for 120 seconds. Check the evidence; elapsed time alone is not a failure. You may repair or restart within the existing task authorization, or ask for missing information. If normal, call process with action=wait and the jobId; this logical wait will not automatically request another review.',
+          jobs: event.payload.jobIds.map(id => latest.get(id)).filter(job => job !== undefined).map(processContext),
+        })} });
     } else if (event.type === 'wake.triggered') {
       pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
@@ -1429,7 +1445,8 @@ function processContext(job: import('@achbit/protocol').ManagedProcessSnapshot):
     delete details.stdout; delete details.stderr;
     if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details);
   }
-  return { jobId: job.jobId, command: job.command, status: job.status,
+  return { jobId: job.jobId, command: job.command, status: job.status, startedAt: job.startedAt,
+    ...(job.lastOutputAt ? {lastOutputAt: job.lastOutputAt} : {}), ...(job.completedAt ? {completedAt: job.completedAt} : {}),
     ...(job.error ? { error: job.error } : {}),
     output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
     truncated: output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000 },

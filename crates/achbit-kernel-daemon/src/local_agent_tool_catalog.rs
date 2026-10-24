@@ -145,6 +145,7 @@ trait ToolProvider: Send {
 struct ProductToolProvider(Arc<ProductTools>);
 
 struct DocumentToolProvider {
+    instance: String,
     python: Option<std::path::PathBuf>,
 }
 
@@ -152,13 +153,13 @@ impl ToolProvider for DocumentToolProvider {
     fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
         Ok(InstalledToolProvider {
             tools: vec![PendingToolContribution {
-                origin: "coreBuiltin",
+                origin: "extension",
                 provider_ref: "deepcode:documents".into(),
-                plugin_uri: None,
-                plugin_instance_ref: None,
-                contribution_ref: "deepcode:documents/document.render".into(),
+                plugin_uri: Some("plugin://documents@builtin".into()),
+                plugin_instance_ref: Some(self.instance.clone()),
+                contribution_ref: format!("{}/document.render", self.instance),
                 name: "document.render".into(),
-                description: "Create a polished document artifact in the workspace. Write complete HTML or Markdown, or render self-contained HTML to PDF with WeasyPrint. Read achbit-documents via skill.read for templates and typography when needed. Output is a workspace mutation; the existing Plan and permission policy applies. PDF requires a configured Python environment with WeasyPrint. Source limit: 1 MiB; PDF limit: 32 MiB.".into(),
+                description: "Create a polished document artifact in the workspace. Write complete HTML or Markdown, or render self-contained HTML to PDF with WeasyPrint. Output is a workspace mutation; the existing Plan and permission policy applies. PDF requires a configured Python environment with WeasyPrint. Source limit: 1 MiB; PDF limit: 32 MiB.".into(),
                 input_schema: documents::input_schema(),
                 effect_class: None,
                 effect_scope: CatalogEffectScope::WorkspaceMutation,
@@ -275,11 +276,11 @@ impl ToolProvider for ProductToolProvider {
                 });
             }
         }
-        if let Some(instance) = &self.0.process_instance {
+        {
             tools.push(PendingToolContribution {
-                origin: "extension", provider_ref: "deepcode:processes".into(), plugin_uri: Some("plugin://processes@builtin".into()),
-                plugin_instance_ref: Some(instance.clone()), contribution_ref: format!("{instance}/process"),
-                name: "process".into(), description: "Manage long-running commands in this run. start returns a jobId after normal Kernel approval; use wait when later work depends on the result, status for inspection, or cancel to stop that job. Status changes arrive automatically. Container jobs require the containers plugin. Existing permissions and explicit timeouts still apply.".into(),
+                origin: "coreBuiltin", provider_ref: "deepcode:processes".into(), plugin_uri: None,
+                plugin_instance_ref: None, contribution_ref: "deepcode:processes/process".into(),
+                name: "process".into(), description: "Manage commands in this run: action=start launches a shell or container command; action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion wakes the Loop automatically; do not poll. See managed-processes.md in productDocsPath for recovery.".into(),
                 input_schema: crate::managed_processes::schema(), effect_class: None, effect_scope: CatalogEffectScope::Process,
                 availability: ToolAvailability::Callable, availability_reason: None, runtime_status: None, logical_target: None, binding: ToolExecutorBinding::Process,
             });
@@ -625,6 +626,14 @@ impl ToolCatalogSnapshot {
                 )
             })
             .transpose()?;
+        let document_provider =
+            product
+                .document_instance
+                .as_ref()
+                .map(|instance| DocumentToolProvider {
+                    instance: instance.clone(),
+                    python: product.document_python.clone(),
+                });
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(BuiltinToolProvider::prepare(
                 executor_config,
@@ -632,12 +641,12 @@ impl ToolCatalogSnapshot {
                 enable_web_search,
             )?),
             Box::new(McpToolProvider::prepare(mcp)?),
-            Box::new(DocumentToolProvider {
-                python: product.document_python.clone(),
-            }),
             Box::new(ProductToolProvider(product)),
         ];
         if let Some(provider) = container_provider {
+            providers.push(Box::new(provider));
+        }
+        if let Some(provider) = document_provider {
             providers.push(Box::new(provider));
         }
         Self::from_providers(extension_generation_ref, providers)
@@ -1561,6 +1570,43 @@ fn validate_ref(field: &str, value: &str) -> Result<(), ToolCatalogError> {
 mod tests {
     use super::*;
     use achbit_kernel_runtime::executors::EmptySecretProvider;
+
+    #[test]
+    fn documents_are_selected_extensions_while_process_is_core() {
+        for selected in [false, true] {
+            let mut product = crate::local_agent_product_tools::test_product_tools();
+            if selected {
+                Arc::get_mut(&mut product).unwrap().document_instance =
+                    Some("plugin-instance:documents".into());
+            }
+            let catalog = ToolCatalogSnapshot::prepare(
+                "extension:documents",
+                KernelExecutorConfig::default(),
+                Arc::new(EmptySecretProvider),
+                McpRuntime::default(),
+                false,
+                product,
+            )
+            .unwrap();
+            let view = catalog.provider_view();
+            let tools = view.as_array().unwrap();
+            assert!(tools.iter().any(|tool| tool["name"] == "fs.read"));
+            assert!(tools.iter().any(|tool| tool["name"] == "process"
+                && tool["origin"] == "coreBuiltin"
+                && tool.get("pluginUri").is_none()));
+            assert!(!tools
+                .iter()
+                .any(|tool| matches!(tool["name"].as_str(), Some("doc.read" | "doc.search"))));
+            let renderer = tools.iter().find(|tool| tool["name"] == "document.render");
+            assert_eq!(renderer.is_some(), selected);
+            if let Some(renderer) = renderer {
+                assert_eq!(renderer["origin"], "extension");
+                assert_eq!(renderer["pluginUri"], "plugin://documents@builtin");
+                assert_eq!(renderer["possibleEffects"], json!(["workspaceMutation"]));
+            }
+            catalog.dispose().unwrap();
+        }
+    }
 
     struct DesktopStatus(bool);
     impl crate::desktop_tools::DesktopExecutor for DesktopStatus {

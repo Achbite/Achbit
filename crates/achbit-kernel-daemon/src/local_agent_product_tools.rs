@@ -24,7 +24,7 @@ pub(crate) struct ProductTools {
     pub(crate) desktop: Option<crate::desktop_tools::DesktopRun>,
     pub(crate) computer_use_instance: Option<String>,
     pub(crate) container_instance: Option<String>,
-    pub(crate) process_instance: Option<String>,
+    pub(crate) document_instance: Option<String>,
 }
 
 impl ProductTools {
@@ -39,7 +39,7 @@ impl ProductTools {
             desktop: None,
             computer_use_instance: None,
             container_instance: None,
-            process_instance: None,
+            document_instance: None,
         }
     }
 
@@ -61,8 +61,8 @@ impl ProductTools {
         self.computer_use_instance = instance;
         self
     }
-    pub(crate) fn with_processes(mut self, instance: Option<String>) -> Self {
-        self.process_instance = instance;
+    pub(crate) fn with_documents(mut self, instance: Option<String>) -> Self {
+        self.document_instance = instance;
         self
     }
 
@@ -107,7 +107,6 @@ impl ProductTools {
                 .read(input),
             "session.read" => self.reader.read(input),
             "skill.read" => read_skill(input),
-            "doc.read" => read_doc(input),
             "plugin.search" => {
                 let query = input["query"].as_str().unwrap_or("");
                 let limit = input["limit"].as_u64().unwrap_or(20) as usize;
@@ -160,10 +159,7 @@ impl ProductTools {
                     "path":{"type":"string","description":"SKILL.md or a reference path linked by that Skill."}
                 }
             })),
-            ("doc.read", format!("Read bundled Achbit product documentation in English Markdown. Docs explain product behavior, configuration and known limitations; Skills describe task workflows. Available documents: {}.", bundled_doc_names().collect::<Vec<_>>().join(", ")), json!({
-                "type":"object", "additionalProperties":false, "required":["name"],
-                "properties":{"name":{"type":"string","enum":bundled_doc_names().collect::<Vec<_>>()}}
-            })),
+
         ]
     }
 }
@@ -258,48 +254,6 @@ const SKILLS: &[ProductSkill] = &[
     },
 ];
 
-const DOCS: &[(&str, &str)] = &[
-    (
-        "debug-control.md",
-        include_str!("../../../docs/product/debug-control.md"),
-    ),
-    (
-        "ui-plugins.md",
-        include_str!("../../../docs/product/ui-plugins.md"),
-    ),
-    (
-        "operations.md",
-        include_str!("../../../docs/product/operations.md"),
-    ),
-    (
-        "execution-environments.md",
-        include_str!("../../../docs/product/execution-environments.md"),
-    ),
-    (
-        "model-services.md",
-        include_str!("../../../docs/product/model-services.md"),
-    ),
-];
-
-pub(crate) fn bundled_doc_names() -> impl Iterator<Item = &'static str> {
-    DOCS.iter().map(|(name, _)| *name)
-}
-
-fn read_doc(input: Value) -> Result<Value, SessionServiceError> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Query {
-        name: String,
-    }
-    let query: Query = serde_json::from_value(input)
-        .map_err(|error| SessionServiceError::new("tool_input_invalid", error.to_string()))?;
-    let (_, content) = DOCS
-        .iter()
-        .find(|(name, _)| *name == query.name)
-        .ok_or_else(|| SessionServiceError::new("doc_not_found", &query.name))?;
-    Ok(json!({"name":query.name,"mediaType":"text/markdown","content":content}))
-}
-
 pub(crate) fn bundled_skill_settings() -> Vec<Value> {
     SKILLS
         .iter()
@@ -366,38 +320,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_product_docs_are_discoverable_and_readable() {
+    fn product_documentation_does_not_add_tool_or_plugin_entries() {
         let tools = test_product_tools();
-        let definitions = ProductTools::definitions();
-        let (_, description, schema) = definitions
+        assert!(ProductTools::definitions()
             .iter()
-            .find(|(name, _, _)| *name == "doc.read")
-            .unwrap();
-        let names = schema["properties"]["name"]["enum"].as_array().unwrap();
-        assert!(names.contains(&json!("model-services.md")));
+            .all(|(name, _, _)| !name.starts_with("doc.")));
         let catalog = crate::local_agent_plugins::plugin_catalog_projection(&json!({})).unwrap();
-        for name in names {
-            assert!(description.contains(name.as_str().unwrap()));
-            let reference = json!({"toolName":"doc.read", "name":name});
-            let item = catalog["plugins"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|item| item["reference"] == reference)
-                .unwrap();
-            assert_eq!(item["category"], "reference");
-            assert_eq!(item["discovery"], "searchOnly");
-            assert_eq!(item["available"], true);
-            let doc = tools.call("doc.read", json!({"name":name})).unwrap();
-            assert_eq!(doc["name"], *name);
-            assert_eq!(doc["mediaType"], "text/markdown");
-            assert!(doc["content"].as_str().unwrap().starts_with("# "));
+        assert!(catalog["plugins"].as_array().unwrap().iter().all(|plugin| {
+            plugin["reference"]["toolName"] != "doc.read"
+                && !plugin["uri"].as_str().unwrap().starts_with("plugin://doc-")
+        }));
+        for name in ["doc.search", "doc.read"] {
+            assert_eq!(
+                tools.call(name, json!({})).unwrap_err().code,
+                "tool_not_found"
+            );
         }
-        let model_doc = tools
-            .call("doc.read", json!({"name":"model-services.md"}))
-            .unwrap();
-        assert!(model_doc["content"].as_str().unwrap().contains("## Usage"));
-        assert!(tools.computer_use_instance.is_none());
     }
 
     #[test]
@@ -454,7 +392,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         for uri in [
-            "plugin://processes@builtin",
+            "plugin://documents@builtin",
             "plugin://containers@builtin",
             "plugin://lab@mcp",
         ] {
@@ -488,16 +426,8 @@ mod tests {
     }
 
     #[test]
-    fn product_docs_and_skills_are_distinct_read_only_resources() {
+    fn product_skills_keep_their_read_only_resources() {
         let tools = test_product_tools();
-        let doc = tools
-            .call("doc.read", json!({"name":"execution-environments.md"}))
-            .unwrap();
-        assert_eq!(doc["mediaType"], "text/markdown");
-        assert!(doc["content"]
-            .as_str()
-            .unwrap()
-            .contains("## Native Windows"));
         assert!(tools
             .call("skill.read", json!({"name":"execution-environments.md"}))
             .is_err());
@@ -508,15 +438,6 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("---\nname: achbit-product"));
-        assert!(tools
-            .call("doc.read", json!({"name":"../../private.md"}))
-            .is_err());
-        assert!(tools
-            .call("doc.read", json!({"name":"ui-plugins.md"}))
-            .unwrap()["content"]
-            .as_str()
-            .unwrap()
-            .contains("apply(context)"));
         for path in [
             "SKILL.md",
             "references/design.md",
@@ -589,6 +510,6 @@ mod tests {
         }
         assert!(tools.computer_use_instance.is_none());
         assert!(tools.container_instance.is_none());
-        assert!(tools.process_instance.is_none());
+        assert!(tools.document_instance.is_none());
     }
 }

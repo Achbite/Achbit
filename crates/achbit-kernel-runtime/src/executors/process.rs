@@ -1442,6 +1442,36 @@ mod plan_scope_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_accepts_an_exited_group_without_resignalling_a_reaped_child() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read ready; exit 7"])
+            .stdin(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(!macos_process_group_has_no_live_members(child.id() as i32));
+        child.stdin.take().unwrap().write_all(b"ready\n").unwrap();
+        // Observe exit without reaping so the group deterministically contains a zombie.
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        let observed = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        let signal_result = signal_process_group(child.id(), UNIX_SIGTERM);
+        let result = terminate_child(&mut child);
+        let _ = child.wait();
+        assert_eq!(observed, 0);
+        signal_result.unwrap();
+        assert_eq!(result.unwrap().code(), Some(7));
+    }
+
     #[test]
     fn terminated_processes_report_no_exit_code() {
         let root = std::env::temp_dir().join(new_process_scope_id());
@@ -1963,6 +1993,12 @@ fn wait_for_bounded_pty_child(
 
 #[cfg(unix)]
 fn terminate_child(child: &mut Child) -> KernelResult<ExitStatus> {
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|error| KernelError::Other(format!("poll bash termination: {error}")))?
+    {
+        return Ok(status);
+    }
     signal_process_group(child.id(), UNIX_SIGTERM)?;
     let deadline = Instant::now() + PROCESS_TERMINATION_GRACE;
     loop {
@@ -2225,6 +2261,14 @@ fn signal_process_group(process_id: u32, signal: i32) -> KernelResult<()> {
         .map_err(|_| KernelError::Other(format!("bash process id exceeds i32: {process_id}")))?;
     if unsafe { deepcode_process_kill(-process_group_id, signal) } < 0 {
         let error = std::io::Error::last_os_error();
+        // Darwin killpg can report EPERM when only zombies remain. Confirm
+        // there is no live member; real denial or an unreadable group stays an error.
+        #[cfg(target_os = "macos")]
+        if error.raw_os_error() == Some(libc::EPERM)
+            && macos_process_group_has_no_live_members(process_group_id)
+        {
+            return Ok(());
+        }
         if error.raw_os_error() != Some(libc::ESRCH) {
             return Err(KernelError::Other(format!(
                 "signal bash process group {process_id}: {error}"
@@ -2232,6 +2276,57 @@ fn signal_process_group(process_id: u32, signal: i32) -> KernelResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_group_has_no_live_members(process_group_id: i32) -> bool {
+    // libproc returns a PID count here, and returns zero both for an empty
+    // group and some failures. Clear errno so absence is not inferred from failure.
+    unsafe {
+        *libc::__error() = 0;
+    }
+    let required = unsafe { libc::proc_listpgrppids(process_group_id, std::ptr::null_mut(), 0) };
+    if required < 0 || (required == 0 && std::io::Error::last_os_error().raw_os_error() != Some(0))
+    {
+        return false;
+    }
+    let mut pids = vec![0_i32; required as usize + 32];
+    let Ok(bytes) = i32::try_from(pids.len() * std::mem::size_of::<i32>()) else {
+        return false;
+    };
+    unsafe {
+        *libc::__error() = 0;
+    }
+    let count =
+        unsafe { libc::proc_listpgrppids(process_group_id, pids.as_mut_ptr().cast(), bytes) };
+    if count < 0
+        || count as usize >= pids.len()
+        || (count == 0 && std::io::Error::last_os_error().raw_os_error() != Some(0))
+    {
+        return false;
+    }
+    for pid in pids.into_iter().take(count as usize).filter(|pid| *pid > 0) {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if read == size {
+            let info = unsafe { info.assume_init() };
+            if info.pbi_pgid == process_group_id as u32 && info.pbi_status != libc::SZOMB {
+                return false;
+            }
+        } else if read != 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(unix)]

@@ -145,8 +145,8 @@ def assemble(args):
     if windows:
         for alias, original in [('achbit-cli.cmd', 'achbit-cli.bat'), ('achbit-tui.cmd', 'achbit-tui.bat')]:
             (stage / alias).write_text('@echo off\ncall "%~dp0' + original + '" %*\nexit /b %errorlevel%\n')
-    elif not macos:
-        (stage / 'achbit').symlink_to('achbit-cli')
+    # Linux uses Achbit, achbit-cli and achbit-tui. An achbit alias would
+    # collide with the GUI on case-insensitive host-mounted directories.
     metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME'], 'buildKind': 'debug' if debug else 'normal', 'debugControl': debug}
     (resources / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
     if macos:

@@ -3281,6 +3281,7 @@ test('GUI consumes Session-normalized tool errors and record-local detail failur
   for (const [reason, status, zh, en] of [
     ['cancelled', 'cancelled', '未执行：已取消', 'Not executed: cancelled'],
     ['dependencyFailed', 'rejected', '未执行：前序调用未成功', 'Not executed: predecessor did not succeed'],
+    ['approvalRequired', 'rejected', '未执行：读取需要额外授权', 'Not executed: reading requires additional approval'],
   ]) {
     const notExecuted = structuredClone(inputRejected);
     const item = notExecuted.activities.find((entry) => entry.activityId === activity.activityId);
@@ -5215,4 +5216,16 @@ test('subagent draft edits update future defaults without starting a Session and
   assert.equal(store.getState().draftSubagentSettings, null);
   store.getState().startNewSession();
   assert.equal(store.getState().draftSubagentSettings, null, 'a new draft does not reuse an earlier explicit override');
+});
+
+test('shell search and read summaries distinguish intent from exact fs.read evidence', async t => {
+  const { toolActivitySummary } = await loadGuiModule(t, '/src/components/local-agent/ToolActivityDetails.tsx');
+  const activity = { kind: 'tool', label: 'bash', status: 'active', tool: { operation: 'bash', resources: [],
+    shell: { command: 'rg TODO src', cwd: '.' }, shellIntents: [{ kind: 'search', query: 'TODO', targets: ['src'] }] } };
+  assert.equal(toolActivitySummary(activity, 'zh-CN'), '在 src 中搜索“TODO”');
+  assert.equal(toolActivitySummary({ ...activity, status: 'completed' }, 'zh-CN'), '已在 src 中搜索“TODO”');
+  assert.doesNotMatch(toolActivitySummary({ ...activity, status: 'failed' }, 'zh-CN'), /已在|已读取/);
+  activity.tool.shellIntents = [{ kind: 'read', targets: ['README.md'] }];
+  assert.equal(toolActivitySummary({ ...activity, status: 'completed' }, 'zh-CN'), '读取目标: README.md');
+  assert.match(toolActivitySummary({ ...activity, status: 'completed', tool: { operation: 'fs.read', resources: [{ label: 'README.md' }] } }, 'zh-CN'), /已读取/);
 });

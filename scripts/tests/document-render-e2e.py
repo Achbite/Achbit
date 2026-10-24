@@ -49,13 +49,19 @@ class Handler(fixture.MockProviderHandler):
             state.calls += 1
             functions = [entry["function"] for entry in body["tools"]]
             skill = next(entry["name"] for entry in functions if "achbit-documents" in entry["parameters"].get("properties", {}).get("name", {}).get("enum", []))
-            renderer = next(entry["name"] for entry in functions if "pdf" in entry["parameters"].get("properties", {}).get("format", {}).get("enum", []))
+            renderers = [entry["name"] for entry in functions if "pdf" in entry["parameters"].get("properties", {}).get("format", {}).get("enum", [])]
+            if state.calls == 1:
+                require(not renderers, "Renderer must be absent before plugin activation")
+            else:
+                require(len(renderers) == 1, "Activated document plugin must expose exactly one renderer")
+            renderer = renderers[0] if renderers else None
+            activate = next(entry["name"] for entry in functions if "pluginUris" in entry["parameters"].get("properties", {}))
             reader = next(entry["name"] for entry in functions if "startByte" in entry["parameters"].get("properties", {}))
             results = {message["tool_call_id"]: json.loads(message["content"]) for message in body["messages"] if message["role"] == "tool"}
-            if state.calls == 2:
+            if state.calls == 3:
                 require(results["skill"]["outcome"] == "completed", "Built-in document Skill failed")
                 require("document.render" in results["skill"]["output"]["content"], "Skill content missing")
-            elif state.calls == 3:
+            elif state.calls == 4:
                 for name in ["html", "pdf", "markdown"]:
                     require(results[name]["outcome"] == "completed", f"Document export failed: {results[name]}")
                 require(results["missing"]["outcome"] == "failed", "Read failure was not preserved")
@@ -64,8 +70,10 @@ class Handler(fixture.MockProviderHandler):
             self.send_header("connection", "close")
             self.end_headers()
             if state.calls == 1:
-                self._send_tool_calls([("skill", skill, {"name": "achbit-documents"})])
+                self._send_tool_calls([("activate", activate, {"pluginUris": ["plugin://documents@builtin"]})])
             elif state.calls == 2:
+                self._send_tool_calls([("skill", skill, {"name": "achbit-documents"})])
+            elif state.calls == 3:
                 self._send_tool_calls([
                     ("html", renderer, {"path": "报告.html", "format": "html", "content": HTML}),
                     ("pdf", renderer, {"path": "报告.pdf", "format": "pdf", "content": HTML}),
@@ -149,7 +157,7 @@ def main():
             session = fixture.create_session(daemon, workspace)
             fixture.cli(daemon, session["sessionId"], "请将报告排版为 HTML、PDF 和 Markdown。")
             state.assert_healthy()
-            require(state.calls == 3 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
+            require(state.calls == 4 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
             verify_resources(daemon, fixture.projection(daemon, session["sessionId"]), workspace)
             print("[documents-e2e] PASS: actual CLI, built-in Skill, HTML/PDF/Markdown tools, artifacts, resource bytes, and continuation after a read failure (fixture Provider)", flush=True)
             if args.preview_port:

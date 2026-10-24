@@ -1,5 +1,7 @@
 # Document design
 
+The layout approach is informed by Kami: restrained color, consistent typography and content-sized templates. Achbit keeps its own self-contained template and existing renderer; this does not bundle Kami’s fonts, MCP tools or validation suite.
+
 ## Hierarchy and rhythm
 
 - Choose one clear title, then headings that describe the document's real structure. Keep heading levels consecutive.

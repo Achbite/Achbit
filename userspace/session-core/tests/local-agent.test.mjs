@@ -539,7 +539,7 @@ test('subagent models discovery uses the Host port without starting children', a
     assert.equal(discovered.parentAgentId, 'session:owner');
     assert.deepEqual(discovered.agents, []);
     assert.equal(discovered.fullConfiguration, false);
-    assert.equal(discovered.configuration.context, undefined);
+    assert.equal(discovered.configuration, undefined);
     assert.equal(requests, 1);
     capabilities = NO_AGENT_CAPS;
     await assert.rejects(manager.execute('session:analysis', 'run:models', 'call:models-analysis',
@@ -678,12 +678,14 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     `call:${++sequence}`, operation, signal);
   const spawn = (sessionId, extra = {}) => execute(sessionId,
     { action: 'spawn', name: 'Researcher', task: 'Inspect the evidence.', delivery: 'async', ...extra });
+  const mixedCaps = { messaging: false, continuation: true, delegation: false };
+  states.get(ownerId).subagentSettings.presets = JSON.stringify([{ id: 'nested-reader', name: 'Nested reader',
+    capabilities: mixedCaps, profileId: 'profile:selected-child', reasoningEffort: 'max' }]);
   const first = await spawn(ownerId, { preset: 'collaboration', capabilities: { delegation: true } });
   const firstId = first.agentId;
   const firstRunId = states.get(firstId).run.runId;
   assert.deepEqual(states.get(firstId).agentContext.capabilities, ALL_AGENT_CAPS);
-  const mixedCaps = { messaging: false, continuation: true, delegation: false };
-  const nested = await spawn(firstId, { capabilities: mixedCaps, profileId: 'profile:selected-child', reasoningEffort: 'max' });
+  const nested = await spawn(firstId, { preset: 'nested-reader' });
   const nestedId = nested.agentId;
   const lineage = structuredClone(states.get(nestedId).agentContext);
   assert.equal(lineage.ownerSessionId, ownerId);
@@ -733,8 +735,9 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   states.get(ownerId).subagentSettings.allowMemberAnalysis = true;
   const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
   await assert.rejects(execute(restricted.agentId, { action: 'send', agentId: limited.agentId, text: 'Peer message is unavailable.' }), /agent_messaging_disabled/);
-  await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_capability_not_grantable/);
-  const permitted = await spawn(restricted.agentId, { capabilities: { messaging: false } });
+  await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_coordinator_configuration_required/);
+  const permitted = await spawn(restricted.agentId);
+  assert.equal(states.get(permitted.agentId).agentContext.capabilities.messaging, false);
   finish(permitted.agentId);
   await manager.forSession(restricted.agentId).wait(states.get(restricted.agentId).run.runId, signal);
   finish(restricted.agentId);
@@ -1516,6 +1519,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
   let observed = { ...runtimeSnapshot('environment:fixture').environment,
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
     workspaceShellSupported: false,
+    productDocsPath: '/opt/deepcode/docs/product',
     workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
     runtimeExecutables: { kernel: '/opt/deepcode/achbit-kernel', cli: '/opt/deepcode/achbit-cli' } };
   const saved = environmentInstruction(observed);
@@ -1523,7 +1527,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
   for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox']) {
     assert.equal(modelEnvironment[field], undefined);
   }
-  for (const field of ['os', 'arch', 'executionTarget', 'shell', 'executionPath', 'developerCommands']) {
+  for (const field of ['os', 'arch', 'executionTarget', 'shell', 'executionPath', 'developerCommands', 'productDocsPath']) {
     assert.deepEqual(modelEnvironment[field], observed[field]);
   }
   assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);

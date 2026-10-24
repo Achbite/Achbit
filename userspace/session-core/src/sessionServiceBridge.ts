@@ -313,6 +313,10 @@ function decodeCommand(value: unknown): ConversationCommand {
         || !validId(value.runId) || !value.expectedHostBinding || !value.hostBinding
         || !validHostBinding(value.expectedHostBinding) || !validHostBinding(value.hostBinding)) throw new Error('conversation_command_invalid');
       return value as unknown as ConversationCommand;
+    case 'tool.cancel':
+      if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'runId', 'callId'])
+        || !validId(value.runId) || !validId(value.callId)) throw new Error('conversation_command_invalid');
+      return value as unknown as ConversationCommand;
     case 'run.cancel':
       if (
         !hasExactKeys(value, [

@@ -1647,6 +1647,7 @@ fn validate_new_event(
         "approval.reviewed",
         "tool.completed",
         "process.updated",
+        "process.wait.changed",
         "tool.input-rejected",
         "tool.interrupted",
         "tool.not-executed",
@@ -2032,6 +2033,37 @@ fn validate_new_event(
                 }
             }
         }
+        "process.wait.changed" => {
+            let payload = &event["payload"];
+            exact_object(
+                payload,
+                &[
+                    "waitId",
+                    "phase",
+                    "jobIds",
+                    "startedAt",
+                    "reviewAt",
+                    "reviewed",
+                    "afterSequence",
+                ],
+                &[],
+            )?;
+            validate_id("waitId", required_string(payload, "waitId")?)?;
+            validate_unique_ids(payload, "jobIds")?;
+            if !matches!(
+                payload["phase"].as_str(),
+                Some("waiting" | "review" | "resumed" | "released")
+            ) || payload["reviewed"].as_bool().is_none()
+                || payload["startedAt"].as_u64().is_none()
+                || payload["reviewAt"].as_u64().is_none()
+                || payload["afterSequence"].as_u64().is_none()
+            {
+                return Err(LocalAgentStoreError::new(
+                    "process_wait_invalid",
+                    "Invalid dependency wait state.",
+                ));
+            }
+        }
         "process.updated" => {
             let job = &event["payload"]["job"];
             if !job.is_object()
@@ -2069,8 +2101,11 @@ fn validate_new_event(
             exact_object(payload, &["attemptId", "reason"], &["predecessorCallId"])?;
             validate_id("attemptId", required_string(payload, "attemptId")?)?;
             let reason = required_string(payload, "reason")?;
-            if !matches!(reason, "cancelled" | "dependencyFailed")
-                || (reason == "dependencyFailed") != payload.get("predecessorCallId").is_some()
+            if !matches!(
+                reason,
+                "cancelled" | "dependencyFailed" | "dependencyPending" | "approvalRequired"
+            ) || matches!(reason, "dependencyFailed" | "dependencyPending")
+                != payload.get("predecessorCallId").is_some()
             {
                 return Err(LocalAgentStoreError::new(
                     "tool_not_executed_invalid",
@@ -3370,6 +3405,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         "context.focus",
         "message.feedback.set",
         "run.cancel",
+        "tool.cancel",
         "run.host.rebind",
         "interaction.respond",
         "approval.respond",

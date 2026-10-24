@@ -591,6 +591,14 @@ export type ConversationCommand =
     }
   | {
       schemaVersion: typeof CONVERSATION_COMMAND_VERSION;
+      type: 'tool.cancel';
+      commandId: string;
+      sessionId: string;
+      runId: string;
+      callId: string;
+    }
+  | {
+      schemaVersion: typeof CONVERSATION_COMMAND_VERSION;
       type: 'run.cancel';
       commandId: string;
       sessionId: string;
@@ -1233,7 +1241,7 @@ export type SessionEvent =
       runId: string;
       callId: string;
       /** Session knows that this call never entered effect execution. */
-      payload: { attemptId: string; reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
+      payload: { attemptId: string; reason: 'cancelled' | 'dependencyFailed' | 'dependencyPending' | 'approvalRequired'; predecessorCallId?: string };
     })
   | (SessionEventBase & {
       type: 'tool.interrupted';
@@ -1241,6 +1249,11 @@ export type SessionEvent =
       callId: string;
       /** Session disposition after runtime release; it does not assert a Kernel effect outcome. */
       payload: { attemptId: string; error: LocalAgentError };
+    })
+  | (SessionEventBase & {
+      type: 'process.wait.changed';
+      runId: string;
+      payload: ProcessWaitState;
     })
   | (SessionEventBase & {
       type: 'process.updated';
@@ -1570,7 +1583,7 @@ export interface ActivityProjection {
   approvalReview?: NonNullable<EffectPreview['review']>;
   inputRejection?: ToolInputRejection['error'];
   interruption?: LocalAgentError;
-  notExecuted?: { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string };
+  notExecuted?: { reason: 'cancelled' | 'dependencyFailed' | 'dependencyPending' | 'approvalRequired'; predecessorCallId?: string };
   providerHosted?: ProviderHostedActivityProjection;
   agent?: { agentSessionId: string } & (
     { taskId: string; phase: 'started' | 'completed' }
@@ -1601,6 +1614,13 @@ export interface ActivityResourceProjection {
   uri?: string;
 }
 
+/** Literal command targets for display; not a record of actual filesystem reads. */
+export interface ShellCommandIntent {
+  kind: 'read' | 'search';
+  targets: string[];
+  query?: string;
+}
+
 export interface ToolActivityProjection {
   recordId?: string;
   error?: LocalAgentError;
@@ -1609,6 +1629,7 @@ export interface ToolActivityProjection {
   operation: string;
   resources: ActivityResourceProjection[];
   shell?: ShellActivityProjection;
+  shellIntents?: ShellCommandIntent[];
   process?: ProcessActivityProjection;
   fileChanges?: FileChangeProjection[];
   computer?: ComputerActivityProjection;
@@ -2319,12 +2340,24 @@ export interface ProcessActivityProjection {
   result?: { exitCode: number | null; durationMs: number; timedOut: boolean };
 }
 
+/** Durable logical wait; process replacement and model requests do not renew its review. */
+export interface ProcessWaitState {
+  waitId: string;
+  phase: 'waiting' | 'review' | 'resumed' | 'released';
+  jobIds: string[];
+  startedAt: number;
+  reviewAt: number;
+  reviewed: boolean;
+  afterSequence: number;
+}
+
 export interface ProcessReadRequest {
   sessionId: string;
   runId: string;
   revisions?: Record<string, number>;
   waitMs?: number;
   cancel?: boolean;
+  cancelJobId?: string;
 }
 
 export interface FileCallPreparationRequest { requests: ToolExecutionRequest[] }

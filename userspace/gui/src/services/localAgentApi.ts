@@ -1436,10 +1436,11 @@ function isActivity(value: unknown): boolean {
         : ['started', 'completed'].includes(String(value.agent.phase)) && isIdentifier(value.agent.taskId)) : value.agent === undefined);
 }
 
-function isNotExecuted(value: unknown): value is { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string } {
+function isNotExecuted(value: unknown): value is { reason: 'cancelled' | 'dependencyFailed' | 'dependencyPending' | 'approvalRequired'; predecessorCallId?: string } {
   return isExactRecord(value, ['reason'], ['predecessorCallId'])
-    && ['cancelled', 'dependencyFailed'].includes(String(value.reason))
-    && (value.predecessorCallId === undefined || isIdentifier(value.predecessorCallId));
+    && ['cancelled', 'dependencyFailed', 'dependencyPending', 'approvalRequired'].includes(String(value.reason))
+    && (['dependencyFailed', 'dependencyPending'].includes(String(value.reason))
+      ? isIdentifier(value.predecessorCallId) : value.predecessorCallId === undefined);
 }
 
 function isLiveToolOutput(value: unknown): boolean {
@@ -1466,9 +1467,13 @@ function isProviderHostedActivity(value: unknown): boolean {
 }
 
 function isToolActivity(value: unknown, activityStatus: string): boolean {
-  return isExactRecord(value, ['operation', 'resources'], ['shell', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
+  return isExactRecord(value, ['operation', 'resources'], ['shell', 'shellIntents', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
     && (value.error === undefined || isLocalAgentError(value.error))
     && (value.projectionError === undefined || isLocalAgentError(value.projectionError))
+    && (value.shellIntents === undefined || isArrayOf(value.shellIntents, intent =>
+      isExactRecord(intent, ['kind', 'targets'], ['query']) && (intent.kind === 'read' || intent.kind === 'search')
+      && isArrayOf(intent.targets, target => typeof target === 'string')
+      && (intent.kind === 'search' ? typeof intent.query === 'string' : intent.query === undefined)))
     && (value.recordId === undefined || isIdentifier(value.recordId))
     && isNonEmptyText(value.operation)
     && isArrayOf(value.resources, isActivityResource)

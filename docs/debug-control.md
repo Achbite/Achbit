@@ -41,4 +41,4 @@ UI 动作可通过 `waitFor` 等待 DOM 或组件状态。动作返回不等于�
 
 任务观察使用一条 `--follow` 连接，按批次接收文本、工具、决定和终态，不轮询状态。按任务自身终态判断成功，不以观察流关闭代替完成。
 
-完整参数与示例见 [Debug control](product/debug-control.md)，产品内用 `doc.read` 的 `name="debug-control.md"` 读取。构建不更新运行进程；只在授权范围内重启目标 GUI/Host，标准版保持独立。
+完整参数与示例见 [Debug control](product/debug-control.md)，产品内通过 Shell 读取 `productDocsPath` 下的同名文件。构建不更新运行进程；只在授权范围内重启目标 GUI/Host，标准版保持独立。

@@ -96,7 +96,7 @@ enum PluginContribution {
     Skill,
     Host,
     Container,
-    Process,
+    Document,
     Mcp { plugin_uri: String },
 }
 
@@ -174,10 +174,10 @@ impl ResolvedPluginSelection {
             .map(|plugin| plugin.plugin_instance_ref.clone())
     }
 
-    pub(crate) fn process_instance(&self) -> Option<String> {
+    pub(crate) fn document_instance(&self) -> Option<String> {
         self.plugins
             .iter()
-            .find(|plugin| matches!(plugin.contribution, PluginContribution::Process))
+            .find(|plugin| matches!(plugin.contribution, PluginContribution::Document))
             .map(|plugin| plugin.plugin_instance_ref.clone())
     }
 
@@ -217,7 +217,7 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
                         source.contribution,
                         PluginContribution::Host
                             | PluginContribution::Container
-                            | PluginContribution::Process
+                            | PluginContribution::Document
                     ) =>
                 {
                     "host"
@@ -244,10 +244,6 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
         plugins.push(json!({"uri":format!("plugin://{id}@builtin"),"displayName":skill["displayName"],"shortDescription":skill["description"],
             "source":"builtin","category":if functional {"functional"} else {"reference"},"contributionKind":"skill","discovery":if functional {"default"} else {"searchOnly"},
             "activationMediaTypes":[],"enabled":true,"available":true,"reference":{"toolName":"skill.read","name":id}}));
-    }
-    for name in crate::local_agent_product_tools::bundled_doc_names() {
-        plugins.push(json!({"uri":format!("plugin://doc-{name}@builtin"),"displayName":name,"shortDescription":"DeepCode product documentation",
-            "source":"builtin","category":"reference","contributionKind":"skill","discovery":"searchOnly","activationMediaTypes":[],"enabled":true,"available":true,"reference":{"toolName":"doc.read","name":name}}));
     }
     Ok(json!({"revision":revision,"plugins":plugins}))
 }
@@ -514,15 +510,16 @@ fn plugin_catalog(
             content: Arc::from(guide.as_bytes()),
         }),
     )?;
-    let uri = "plugin://processes@builtin";
-    let guide = include_str!("../../../plugins/processes/README.md");
+    let uri = "plugin://documents@builtin";
+    let guide = include_str!("../../../skills/achbit-documents/SKILL.md");
     insert_plugin_source(
         &mut sources,
         PluginCatalogEntry::Loaded(PluginSource {
             public: PublicPluginCatalogItem {
                 uri: uri.into(),
-                display_name: "Processes".into(),
-                short_description: "托管长时间命令、等待结果或并行处理独立工作。".into(),
+                display_name: "Documents".into(),
+                short_description: "生成 HTML、PDF 或 Markdown 文档，按需使用排版模板与字体指导。"
+                    .into(),
                 icon_ref: None,
                 management: Some(json!({"key":"plugins.disabled","id":uri})),
                 activation_media_types: vec![],
@@ -532,11 +529,11 @@ fn plugin_catalog(
             },
             plugin_artifact_ref: crate::utils::new_runtime_ref("plugin-artifact")?,
             plugin_instance_ref: String::new(),
-            capability_refs: vec!["host:processes".into()],
-            capability_summary: "Start run-owned commands, wait for results, or cancel them. Status is delivered automatically; do independent work or wait before dependent actions.".into(),
+            capability_refs: vec!["host:documents".into()],
+            capability_summary: guide.into(),
             tool_prompt_provider: None,
-            contribution: PluginContribution::Process,
-            implementation: json!({"host":"native","plugin":"processes"}),
+            contribution: PluginContribution::Document,
+            implementation: json!({"host":"native","plugin":"documents"}),
             content: Arc::from(guide.as_bytes()),
         }),
     )?;
@@ -966,7 +963,7 @@ mod tests {
         for uri in [
             "plugin://computer-use@builtin",
             "plugin://containers@builtin",
-            "plugin://processes@builtin",
+            "plugin://documents@builtin",
         ] {
             let item = catalog["plugins"]
                 .as_array()

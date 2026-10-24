@@ -58,7 +58,7 @@ Endpoint references (checked 2026-10-23): [GLM](https://docs.bigmodel.cn/cn/codi
 
 Read `agent` → `models` for current schemas. Children inherit context/compaction defaults; no override is required. A child receives its assigned context, not the full parent conversation.
 
-Optional overrides are `context: {id:"journal", parameters:{maxTokens:...}}` and `loop.compaction: {id:"summary", parameters:{enabled:..., thresholdTokens:..., pressureRatio:...}}`. Budget must fit the model window and output reserve; `pressureRatio` is greater than zero and at most one. Disabling automatic management does not disable pressure compaction.
+For the main conversation, optional overrides are `context: {id:"journal", parameters:{maxTokens:...}}` and `loop.compaction: {id:"summary", parameters:{enabled:..., thresholdTokens:..., pressureRatio:...}}`. Budget must fit the model window and output reserve; `pressureRatio` is greater than zero and at most one. Disabling automatic management does not disable pressure compaction.
 
 For an existing child:
 

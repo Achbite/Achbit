@@ -7,9 +7,9 @@ description: Find Achbit operation, configuration and troubleshooting guidance w
 
 Achbit is the current product name. Built-in Skill IDs and product commands use the `achbit-*` prefix.
 
-Use current tool schemas and availability. Read only the document relevant to the question with `doc.read`:
+Use current tool schemas and availability. Product docs are Markdown files in `productDocsPath` from the execution context. Use the shell to search with `grep`/`rg` and read the relevant file with `cat`, `sed` or PowerShell equivalents:
 
-| Need | name |
+| Need | File |
 | --- | --- |
 | Tools, plugins, Plans, delegation, Reader, delivery | `operations.md` |
 | Shell, sandbox, Docker, WSL or SSH | `execution-environments.md` |

@@ -486,6 +486,9 @@ impl LocalAgentRuntime {
             &provider_runtime.profile_id,
         );
         executor_config.file_read_roots = plugin_selection.file_read_roots();
+        if let Some(path) = environment["productDocsPath"].as_str() {
+            executor_config.file_read_roots.push(path.into());
+        }
         #[cfg(target_os = "macos")]
         if let Some(commands) = environment["commandPaths"].as_object() {
             for (name, path) in commands {
@@ -553,7 +556,7 @@ impl LocalAgentRuntime {
                             .run(&request.session_id, &request.run_id),
                     )
                     .with_containers(plugin_selection.container_instance())
-                    .with_processes(plugin_selection.process_instance())
+                    .with_documents(plugin_selection.document_instance())
                     .with_browser_binding(environment.get("hostBinding").cloned().map(
                         |mut binding| {
                             binding["sessionId"] = json!(request.session_id);
@@ -1573,6 +1576,16 @@ pub(crate) async fn local_agent_processes(
     }
     let jobs = state.local_agent.kernel.jobs.clone();
     match tokio::task::spawn_blocking(move || {
+        if let Some(id) = &body.cancel_job_id {
+            jobs.control(
+                &body.session_id,
+                &body.run_id,
+                id,
+                "cancel",
+                None,
+                &achbit_kernel_runtime::executors::KernelCancellationToken::default(),
+            )?;
+        }
         if body.cancel {
             jobs.cancel_run(&body.session_id, &body.run_id)?;
         }

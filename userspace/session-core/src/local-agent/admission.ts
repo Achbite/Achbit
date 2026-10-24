@@ -271,12 +271,22 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.payload.pluginInstanceRefs.length !== view.selectedPlugins.plugins.length) throw new Error('run_runtime_release_plugin_mismatch');
       break;
     }
+    case 'process.wait.changed': {
+      const wait = event.payload;
+      if (!wait.waitId || !wait.jobIds.length || !Number.isSafeInteger(wait.startedAt)
+        || !Number.isSafeInteger(wait.reviewAt) || wait.reviewAt < wait.startedAt
+        || wait.jobIds.some(id => state.processes[id]?.runId !== event.runId)) throw new Error('process_wait_invalid');
+      const previous = events.findLast(e => e.type === 'process.wait.changed' && e.runId === event.runId);
+      if (previous?.type === 'process.wait.changed' && previous.payload.waitId === wait.waitId
+        && previous.payload.reviewed && !wait.reviewed) throw new Error('process_wait_review_rearmed');
+      break;
+    }
     case 'process.updated': {
       const job = event.payload.job;
       const request = events.find(item => item.type === 'tool.requested' && item.callId === event.callId && item.runId === event.runId);
       const previous = state.processes[job.jobId];
       if (!isManagedProcessSnapshot(job) || job.sessionId !== event.sessionId || job.runId !== event.runId
-        || job.callId !== event.callId || request?.type !== 'tool.requested' || request.payload.toolName !== 'process'
+        || job.callId !== event.callId || request?.type !== 'tool.requested' || !['process', 'bash', 'powershell', 'container'].includes(request.payload.toolName)
         || previous && (previous.callId !== job.callId || previous.revision >= job.revision || previous.status !== 'active')) {
         throw new Error('managed_process_event_invalid');
       }
@@ -291,8 +301,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.type === 'tool.not-executed') {
         if (state.activities[`tool:${event.callId}`]?.status !== 'requested') throw new Error('tool_not_executed_started');
         const predecessor = event.payload.predecessorCallId;
-        if ((event.payload.reason === 'dependencyFailed') !== Boolean(predecessor)
-          || predecessor && (!state.activities[`tool:${predecessor}`] || ['requested', 'active', 'completed'].includes(state.activities[`tool:${predecessor}`]!.status))) {
+        if (['dependencyFailed', 'dependencyPending'].includes(event.payload.reason) !== Boolean(predecessor)
+          || predecessor && (!state.activities[`tool:${predecessor}`]
+            || event.payload.reason === 'dependencyFailed' && ['requested', 'active', 'completed'].includes(state.activities[`tool:${predecessor}`]!.status))) {
           throw new Error('tool_not_executed_dependency_invalid');
         }
       }

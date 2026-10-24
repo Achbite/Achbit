@@ -2043,6 +2043,15 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "callId"],
+          "properties": {
+            "schemaVersion": {"const": "deepcode.command.v3"}, "type": {"const": "tool.cancel"},
+            "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"},
+            "runId": {"$ref": "#/$defs/Id"}, "callId": {"$ref": "#/$defs/Id"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "interactionId", "response"],
           "properties": {
             "schemaVersion": {"const": "deepcode.command.v3"},
@@ -2239,6 +2248,7 @@
             "tool.not-executed",
             "session.subagent-settings.updated",
             "process.updated",
+            "process.wait.changed",
             "tool.completed",
             "session.plugins.activated",
             "agent.task.created",
@@ -3049,6 +3059,19 @@
             },
             "required": ["runId", "callId"]
           }
+        },
+        {
+          "if": {"properties": {"type": {"const": "process.wait.changed"}}},
+          "then": {"required": ["runId"], "properties": {"payload": {
+            "type": "object", "additionalProperties": false,
+            "required": ["waitId", "phase", "jobIds", "startedAt", "reviewAt", "reviewed", "afterSequence"],
+            "properties": {
+              "waitId": {"$ref": "#/$defs/Id"}, "phase": {"enum": ["waiting", "review", "resumed", "released"]},
+              "jobIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}},
+              "startedAt": {"type": "integer", "minimum": 0}, "reviewAt": {"type": "integer", "minimum": 0},
+              "reviewed": {"type": "boolean"}, "afterSequence": {"type": "integer", "minimum": 0}
+            }
+          }}}
         },
         {
           "if": {"properties": {"type": {"const": "process.updated"}}},
@@ -4214,7 +4237,7 @@
     "ToolNotExecuted": {
       "type": "object", "additionalProperties": false,
       "required": ["attemptId", "reason"],
-      "properties": {"attemptId": {"$ref": "#/$defs/Id"}, "reason": {"enum": ["cancelled", "dependencyFailed"]},
+      "properties": {"attemptId": {"$ref": "#/$defs/Id"}, "reason": {"enum": ["cancelled", "dependencyFailed", "dependencyPending", "approvalRequired"]},
         "predecessorCallId": {"$ref": "#/$defs/Id"}}
     },
     "ToolInputRejection": {
@@ -4655,6 +4678,15 @@
         }
       }
     },
+    "ShellCommandIntent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "targets"],
+      "properties": {
+        "kind": {"enum": ["read", "search"]},
+        "targets": {"type": "array", "items": {"type": "string"}},
+        "query": {"type": "string"}
+      }
+    },
     "ToolActivityProjection": {
       "type": "object",
       "additionalProperties": false,
@@ -4666,6 +4698,7 @@
         "operation": {"type": "string"},
         "resources": {"type": "array", "items": {"$ref": "#/$defs/ActivityResourceProjection"}},
         "shell": {"$ref": "#/$defs/ShellActivityProjection"},
+        "shellIntents": {"type": "array", "items": {"$ref": "#/$defs/ShellCommandIntent"}},
         "process": {"$ref": "#/$defs/ProcessActivityProjection"},
         "computer": {"$ref": "#/$defs/ComputerActivityProjection"},
         "fileChanges": {"type": "array", "items": {"$ref": "#/$defs/FileChangeProjection"}}
@@ -4702,7 +4735,7 @@
         "inputRejection": {"$ref": "#/$defs/ToolInputError"},
         "interruption": {"$ref": "#/$defs/LocalAgentError"},
         "notExecuted": {"type": "object", "additionalProperties": false, "required": ["reason"],
-          "properties": {"reason": {"enum": ["cancelled", "dependencyFailed"]}, "predecessorCallId": {"$ref": "#/$defs/Id"}}},
+          "properties": {"reason": {"enum": ["cancelled", "dependencyFailed", "dependencyPending", "approvalRequired"]}, "predecessorCallId": {"$ref": "#/$defs/Id"}}},
         "agent": {"type": "object", "additionalProperties": false, "required": ["agentSessionId", "taskId", "phase"], "properties": {"agentSessionId": {"$ref": "#/$defs/Id"}, "taskId": {"$ref": "#/$defs/Id"}, "phase": {"enum": ["started", "completed"]}}},
         "providerHosted": {
           "type": "object",

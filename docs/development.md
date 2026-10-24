@@ -68,7 +68,7 @@ Use the [Debug CLI guide](debug-control.md) with an explicit test workspace and 
 
 For historical-session latency, measure process startup, navigation readiness and first session activation separately against the same isolated data snapshot. History replay uses the shared Session reducer with indexes scoped to that replay. Resource and artifact previews use the journal's resource fields and the same Session decoders and revision rules, without rereading model context or retaining a persistent projection cache. Concurrent identical previews share only the pending read; each caller receives independent output. Debug action completion and frame observations are distinct from a physical screen-paint measurement.
 
-Achbit can read the [English product guide](product/debug-control.md) through `doc.read` with `name="debug-control.md"`; `achbit-iteration` links the workflow to that document. Built-in Skills/references and the `doc.read` document list are embedded by `local_agent_product_tools.rs`, while packaging also copies `docs/product` into runtime resources. A new Markdown file is not automatically a readable built-in document: update the existing manifest when adding an entry, then rebuild/restart the owning Host. Keep long-lived guidance separate from task receipts.
+Product guides are ordinary Markdown files under the environment snapshot’s `productDocsPath`. Search and read them with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
 
 ## Checks
 

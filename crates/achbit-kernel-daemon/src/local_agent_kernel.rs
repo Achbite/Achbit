@@ -1062,6 +1062,20 @@ impl LocalAgentKernel {
                     "callId 已绑定到其他 attemptId。",
                 ));
             }
+            if let Some(job_id) = record["output"]["job"]["jobId"].as_str() {
+                self.jobs
+                    .control(
+                        required_record_string(&record, "sessionId")?,
+                        required_record_string(&record, "runId")?,
+                        job_id,
+                        "cancel",
+                        None,
+                        &KernelCancellationToken::default(),
+                    )
+                    .map_err(|message| {
+                        LocalAgentKernelError::new("managed_process_cancel_failed", message)
+                    })?;
+            }
             let outcome = required_record_string(&record, "outcome")?.to_string();
             return Ok(cancel_reply(call_id, attempt_id, &outcome, Some(record)));
         }
@@ -1073,6 +1087,20 @@ impl LocalAgentKernel {
                         "tool_call_identity_conflict",
                         "callId 已绑定到其他 attemptId。",
                     ));
+                }
+                if let Some(job_id) = record["output"]["job"]["jobId"].as_str() {
+                    self.jobs
+                        .control(
+                            required_record_string(&record, "sessionId")?,
+                            required_record_string(&record, "runId")?,
+                            job_id,
+                            "cancel",
+                            None,
+                            &KernelCancellationToken::default(),
+                        )
+                        .map_err(|message| {
+                            LocalAgentKernelError::new("managed_process_cancel_failed", message)
+                        })?;
                 }
                 let outcome = required_record_string(&record, "outcome")?.to_string();
                 return Ok(cancel_reply(call_id, attempt_id, &outcome, Some(record)));
@@ -2226,7 +2254,10 @@ impl LocalAgentKernel {
         progress: achbit_kernel_runtime::executors::KernelProgressSink,
         lease: PhysicalAttemptLease,
     ) -> Result<KernelToolExecutionResult, String> {
-        if prepared.source_binding.is_some() {
+        if prepared.source_binding.is_some()
+            || is_shell_tool(&prepared.operation)
+            || matches!(&prepared.input, PreparedToolInput::Container { input, .. } if input.action != "inspect")
+        {
             let kernel = self.clone();
             let mut inner = prepared.clone();
             inner.source_binding = None;
@@ -2234,32 +2265,40 @@ impl LocalAgentKernel {
             let request = request.clone();
             let authority = authority.clone();
             // Transfer the already acquired lease; retirement cannot interrupt this owned job.
+            let explicit_start = prepared.source_binding.is_some();
             let command = match &inner.input {
                 PreparedToolInput::Builtin(
                     KernelCanonicalInvocation::ProcessShell { command, .. }
                     | KernelCanonicalInvocation::ProcessPowerShell { command, .. },
-                ) => Some(command.as_str()),
-                PreparedToolInput::Container { input, .. } => input.command.as_deref(),
+                ) => Some(command.clone()),
+                PreparedToolInput::Container { input, .. } => {
+                    Some(input.command.clone().unwrap_or_else(|| {
+                        format!(
+                            "container {} {}",
+                            input.action,
+                            input.image.as_deref().unwrap_or("")
+                        )
+                    }))
+                }
                 _ => None,
             }
             .ok_or("Managed command missing")?;
             let snapshot = json!({
                 "jobId": random_id("job").map_err(|e| e.message)?,
                 "sessionId": request.session_id, "runId": request.run_id, "callId": request.call_id,
-                "toolName": inner.operation,
+                "toolName": inner.operation, "attemptId": invocation_id,
                 "command": command,
                 "targets": inner.logical_targets,
             });
-            let job = self.jobs.start(snapshot, move |cancellation, progress| {
-                kernel.execute_with_lease(
-                    &inner,
-                    &request,
-                    &authority,
-                    cancellation,
-                    progress,
-                    lease,
-                )
-            })?;
+            let execute = move |cancellation, progress| {
+                kernel.execute_owned(&inner, &request, &authority, cancellation, progress, lease)
+            };
+            if !explicit_start {
+                return self
+                    .jobs
+                    .foreground(snapshot, cancellation, progress, execute);
+            }
+            let job = self.jobs.start(snapshot, execute)?;
             return Ok(KernelToolExecutionResult {
                 invocation_id,
                 outcome: KernelToolExecutionOutcome::Completed,
@@ -2272,17 +2311,38 @@ impl LocalAgentKernel {
                 &request.session_id,
                 &request.run_id,
                 input.job_id.as_deref().ok_or("jobId missing")?,
-                &input.action,
+                if input.action == "wait" {
+                    "status"
+                } else {
+                    &input.action
+                },
                 input.wait_seconds,
                 &cancellation,
             )?;
             return Ok(KernelToolExecutionResult {
                 invocation_id: request.attempt_id.clone(),
                 outcome: KernelToolExecutionOutcome::Completed,
-                output: json!({ "job": job }),
+                output: if input.action == "wait" {
+                    json!({ "job": job, "wait": {
+                    "jobId": input.job_id, "timeoutSeconds": input.wait_seconds } })
+                } else {
+                    json!({ "job": job })
+                },
                 error: None,
             });
         }
+        self.execute_owned(prepared, request, authority, cancellation, progress, lease)
+    }
+
+    fn execute_owned(
+        &self,
+        prepared: &PreparedEffect,
+        request: &LocalToolExecutionRequest,
+        authority: &Value,
+        cancellation: KernelCancellationToken,
+        progress: achbit_kernel_runtime::executors::KernelProgressSink,
+        lease: PhysicalAttemptLease,
+    ) -> Result<KernelToolExecutionResult, String> {
         let workspace_authority = if authority["source"] == "composite" {
             &authority["workspaceAuthority"]
         } else {
@@ -4006,8 +4066,7 @@ mod attempt_control_tests {
         }
         let product = Arc::try_unwrap(crate::local_agent_product_tools::test_product_tools())
             .ok()
-            .unwrap()
-            .with_processes(Some("instance:process".into()));
+            .unwrap();
         let config = KernelExecutorConfig {
             shell_program: Some(
                 achbit_kernel_runtime::shell_environment::discover("bash").unwrap(),
@@ -4057,10 +4116,19 @@ mod attempt_control_tests {
             waiting["record"]["output"]["job"]["status"], "active",
             "{waiting}"
         );
-        assert_eq!(
-            waiting["record"]["output"]["job"]["output"]["stdout"],
-            "managed-ready"
-        );
+        assert_eq!(waiting["record"]["output"]["wait"]["jobId"], job_id);
+        let sampled = kernel
+            .jobs
+            .control(
+                &request.session_id,
+                &request.run_id,
+                job_id,
+                "wait",
+                Some(1),
+                &Default::default(),
+            )
+            .unwrap();
+        assert_eq!(sampled["output"]["stdout"], "managed-ready");
         assert!(kernel
             .jobs
             .control(
@@ -4441,8 +4509,7 @@ mod attempt_control_tests {
             input["workspaceId"] = json!("workspace:test");
             let product = Arc::try_unwrap(crate::local_agent_product_tools::test_product_tools())
                 .ok()
-                .unwrap()
-                .with_processes(Some("instance:process".into()));
+                .unwrap();
             let (kernel, mut request, _) =
                 kernel_with_product_tools(Arc::new(Workspace), tool, input, Arc::new(product));
             kernel
