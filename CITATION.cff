@@ -1,14 +1,14 @@
 cff-version: 1.2.0
-message: "If you use DeepCode in research, prototypes, or technical writing, please cite it using this metadata."
-title: "DeepCode"
+message: "If you use Achbit in research, prototypes, or technical writing, please cite it using this metadata."
+title: "Achbit"
 type: software
 version: 0.6.60
 authors:
-  - name: "DeepCode Team"
+  - name: "Achbit Team"
 year: 2026
 license: MIT
-repository-code: "https://github.com/Achbite/DeepCode"
-abstract: "DeepCode is a local-first coding-agent framework focused on a single Session Agent Loop, controlled Kernel tool effects, durable local records, plugin-shaped composition, and shared projections across multiple shells."
+repository-code: "https://github.com/Achbite/Achbit"
+abstract: "Achbit is a local-first coding-agent framework focused on a single Session Agent Loop, controlled Kernel tool effects, durable local records, plugin-shaped composition, and shared projections across multiple shells."
 keywords:
   - ai-coding-agent
   - kernel-session-architecture

@@ -290,6 +290,17 @@
   font-weight: var(--dc-weight-semibold);
 }
 
+.local-agent__empty--welcome {
+  transform: translateY(24px);
+}
+
+.local-agent__empty--welcome strong {
+  font-size: calc(28px * var(--dc-ui-font-scale, 1));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
 .local-agent--empty .local-agent__body {
   overflow: hidden;
 }

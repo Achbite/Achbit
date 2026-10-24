@@ -85,6 +85,8 @@ export function ConversationTranscript({
   };
   const assistantDraft = projection?.assistantDraft ?? null;
   const submitting = useLocalAgentStore((state) => state.submitting);
+  const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
+  const welcomeSuffix = welcomeIndex === 0 ? '' : `.${welcomeIndex}`;
   const setMessageFeedback = useLocalAgentStore((state) => state.setMessageFeedback);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
@@ -391,8 +393,8 @@ export function ConversationTranscript({
         <div className="local-agent__empty local-agent__empty--welcome">
           <strong>
             {activeProject
-              ? t(language, 'agent.chat.welcomeProject', { project: activeProject.title })
-              : t(language, 'agent.chat.welcomeDefault')}
+              ? t(language, `agent.chat.welcomeProject${welcomeSuffix}`, { project: activeProject.title })
+              : t(language, `agent.chat.welcomeDefault${welcomeSuffix}`)}
           </strong>
         </div>
       )}

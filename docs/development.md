@@ -88,4 +88,4 @@ The native GUI has a separate Cargo workspace at `shells/achbit-gui/src-tauri/Ca
 
 ## Contributing
 
-Read the effective project instructions before changing source or tests. Keep changes scoped to their behavior and run the relevant registered checks. Public development changes enter `dev-main` through a task-branch PR; stable-source updates enter `main` through a separate PR. Both use merge commits. Product operation details belong in the [product documentation](product/operations.md), while version changes belong in [Release notes](https://github.com/Achbite/DeepCode/releases).
+Read the effective project instructions before changing source or tests. Keep changes scoped to their behavior and run the relevant registered checks. Public development changes enter `dev-main` through a task-branch PR; stable-source updates enter `main` through a separate PR. Both use merge commits. Product operation details belong in the [product documentation](product/operations.md), while version changes belong in [Release notes](https://github.com/Achbite/Achbit/releases).

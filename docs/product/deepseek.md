@@ -1,12 +1,12 @@
-[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [Achbit](https://github.com/Achbite/DeepCode)
+[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [Achbit](https://github.com/Achbite/Achbit)
 
 # Use DeepSeek with Achbit (Achbite)
 
-[Achbit](https://github.com/Achbite/DeepCode) is an MIT-licensed, local-first coding agent with GUI, TUI, and CLI interfaces. This guide connects **DeepSeek Flash** through the **Responses API** to read a project, run tools, and continue the conversation.
+[Achbit](https://github.com/Achbite/Achbit) is an MIT-licensed, local-first coding agent with GUI, TUI, and CLI interfaces. This guide connects **DeepSeek Flash** through the **Responses API** to read a project, run tools, and continue the conversation.
 
 ## 1. Install and open Achbit
 
-Download a package offered for your platform from [Achbit Releases](https://github.com/Achbite/DeepCode/releases). Read that release's platform notes before choosing an installer or portable archive.
+Download a package offered for your platform from [Achbit Releases](https://github.com/Achbite/Achbit/releases). Read that release's platform notes before choosing an installer or portable archive.
 
 | Platform | Open the GUI | Portable terminal launchers |
 | --- | --- | --- |
@@ -21,8 +21,8 @@ For a source build, install Docker and GNU Make; on Windows use WSL2 with Docker
 **On the host:**
 
 ```bash
-git clone --branch main https://github.com/Achbite/DeepCode.git
-cd DeepCode
+git clone --branch main https://github.com/Achbite/Achbit.git Achbit
+cd Achbit
 # macOS only, once before packaging; skip on Windows and Linux:
 bash scripts/setup-macos-signing.sh
 make shell
@@ -36,7 +36,7 @@ make shell
 | Windows x64 | `bash ./build.sh --stage package-windows` | `bin/win64/` |
 | Linux, matching the container architecture | `bash ./build.sh --stage package-linux` | `bin/linux-x64/` or `bin/linux-arm64/` |
 
-Run `exit` after a successful build. **Back on the host**, open the GUI or terminal launcher from that output directory; for example, `open bin/macos-arm64/Achbit.app` on macOS. Open Windows outputs from Windows, not inside the Linux build container. See [build details](https://github.com/Achbite/DeepCode#build-from-source) for all launch commands.
+Run `exit` after a successful build. **Back on the host**, open the GUI or terminal launcher from that output directory; for example, `open bin/macos-arm64/Achbit.app` on macOS. Open Windows outputs from Windows, not inside the Linux build container. See [build details](https://github.com/Achbite/Achbit#build-from-source) for all launch commands.
 
 ## 2. Save a DeepSeek connection and model
 
@@ -64,10 +64,6 @@ Use `deepseek-flash` as the API model name. DeepSeek's [October 17, 2026 update]
 DeepSeek documents a **1M-token context window** and **up to 384K output tokens**. The settings above are Achbit's token budgets. Context includes both input and generated output, and a maximum output budget does not request that many output tokens. The built-in preset enables Thinking and image input and sets reasoning effort to `max`. Existing saved profiles retain their settings. See [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/).
 
 The model editor's **Web search** option controls the Responses API's built-in tool. Flash [ignores that tool](https://api-docs.deepseek.com/guides/responses_api/), so this preset leaves it off. Achbit's separate `web.search` tool uses the [DeepSeek Search API](https://api-docs.deepseek.com/guides/search/): `POST https://api.deepseek.com/v1/tools/search`. With an official DeepSeek API connection and no explicit search override, it reuses that connection's API key automatically. It returns search results and summaries directly, without an additional model request. Queries support the service's search operators and must contain at most 128 Unicode characters; the tool's result limit remains 1–10. Search calls follow the existing web-access permissions and are billed separately from model tokens; see [pricing](https://api-docs.deepseek.com/quick_start/pricing/).
-
-![Achbit model editor with DeepSeek V4.1 Flash, Responses API, and Max saved](assets/deepseek-settings-en.png)
-
-*The saved settings in the macOS GUI. The screenshot contains no API key.*
 
 The model editor's **Test** action sends a short connection probe and uses API quota. A successful probe confirms that request; continue with a real task below.
 

@@ -1,128 +1,107 @@
+<p align="center">
+  <img src="assets/brand/ac-mark.png" alt="Achbit AC logo" width="144">
+</p>
+<p align="center">
+  <a href="https://github.com/Achbite/Achbit/releases">Download</a> ·
+  <a href="docs/product/deepseek.md">DeepSeek setup</a> ·
+  <a href="examples/README.md">Examples</a> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 # Achbit
 
-Achbit is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and edit projects, run tools, inspect results, and continue in shared conversations. Connect your preferred model service and extend the agent with Skills, CLI tools, and MCP.
+Achbit is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and edit a project, run commands, work in a browser, and inspect the result in one conversation.
 
-**Achbit** uses an **AC** monogram, recalling “Accepted” in programming contests. See [model services](docs/product/model-services.md) for API and Coding Plan setup.
-
-**[Quick start](#quick-start) · [Download](https://github.com/Achbite/DeepCode/releases) · [DeepSeek guide](docs/product/deepseek.md) · [简体中文](README.zh-CN.md)**
-
-## See it in use
-
-![Achbit GUI with its AC monogram](assets/readme/achbit-workspace.png)
-
-*Current Achbit GUI, captured from the isolated macOS Debug build on 2026-10-23.*
-
-![API and Coding Plan connection selection](assets/readme/achbit-model-services.png)
-
-*The model settings preserve the shared interface style and separate API keys from account login. This Chinese-language capture shows a GLM Coding Plan form; it does not demonstrate a live provider request.*
-
-**Real task:** DeepSeek API researches a public page, builds an interactive checklist and verifies it with Computer Use. [See the walkthrough and more examples →](examples/README.md)
+Connect your preferred model service, then extend the agent with Skills, CLI tools, MCP, and plugins. The **AC** mark recalls “Accepted” in programming contests.
 
 ## Quick start
 
-### Download and run
+Download a package from [Releases](https://github.com/Achbite/Achbit/releases).
 
-Choose a package for your platform from [Releases](https://github.com/Achbite/DeepCode/releases). Each release lists its available packages and platform verification; if your platform has no download, use the source build below.
-
-| Platform | Install or launch |
+| Platform | Start Achbit |
 | --- | --- |
-| macOS Apple Silicon | Install `Achbit-<version>-macos-arm64.pkg`, then open `/Applications/Achbit.app`. For the portable archive, open `Achbit.app` inside the extracted directory. |
-| Windows x64 | Run `Achbit-<version>-win64-setup.exe` and open Achbit from the Start menu, or open `Achbit.exe` in the portable package. |
-| Linux x64 / ARM64 | Extract the matching package and run `./Achbit`. |
+| macOS Apple Silicon | Install the `.pkg`, then open `/Applications/Achbit.app`, or open `Achbit.app` from the portable archive. |
+| Windows x64 | Run the Setup installer, or open `Achbit.exe` from the portable ZIP. |
+| Linux | Extract a package for your architecture and run `./Achbit`. |
 
-1. Open **Settings → Models & services** and configure an API connection or a supported Coding Plan.
-2. Select a project folder and a model. For DeepSeek, follow the [English](docs/product/deepseek.md) or [简体中文](docs/product/deepseek.zh-CN.md) guide.
-3. Send your first task: **“Read this project's README, explain its purpose and entry points, and cite the files you read.”** Review any access requests and continue in the same conversation.
+1. Open **Settings → Models & services** and add an API connection or supported subscription. [DeepSeek setup →](docs/product/deepseek.md)
+2. Choose a project folder and a model.
+3. Give it a task: **“Read this project's README, explain its entry points, and cite the files you read.”**
 
-Packages include their runtime. Windows portable packages need WebView2; Linux GUI needs GTK/WebKitGTK. See [installation, platform requirements, and user files](docs/distribution.md).
+![Achbit GUI with an English conversation and browser preview](assets/readme/achbit-computer-use-en.png)
 
-### Build from source
+The navigation holds your projects and conversations. Tool results stay with the conversation; files and browser previews open beside it.
 
-Install Docker and GNU Make. On Windows, use WSL2 with Docker integration. For macOS packaging, also prepare Xcode Command Line Tools, the Rust toolchain in `rust-toolchain.toml`, and Node.js on the Mac host.
+Packages include their runtime. See [platform requirements and installation](docs/distribution.md) for WebView2, Linux desktop dependencies, and the packages available for each release.
 
-**On the host:**
+## Computer Use
 
-```bash
-git clone --branch main https://github.com/Achbite/DeepCode.git Achbit
-cd Achbit
+Move from code to its running interface. Achbit can open project pages in its built-in browser, inspect their contents, interact with controls, and capture the result. Chrome DevTools MCP and native macOS / Windows interaction provide additional ways to work with applications.
 
-# macOS only: prepare your persistent local signing identity once,
-# before packaging. Follow any Keychain confirmation shown by macOS.
-bash scripts/setup-macos-signing.sh
+Try the **[Launch checklist](examples/launch-checklist/README.md)** project. It is a single HTML page with four tasks, filters, and saved progress. No installation or server is required.
 
-make shell
-```
+> Open index.html in the built-in browser. Check two tasks, confirm 2 / 4 and 50%, filter the completed items, then reload and verify that the selections persist.
 
-Skip the signing command on Windows and Linux. `main` contains the stable source; `dev-main` tracks development. `make shell` builds or updates the development image, creates or reuses the container for this checkout, and enters its shell. On macOS, it also starts this checkout's native build bridge.
+Open `examples/launch-checklist` as a project and use its [full prompt](examples/launch-checklist/prompt.en.txt). For a task that also creates a deliverable, see the [DeepSeek browser research example](examples/deepseek-browser-checklist/README.md).
 
-**Inside the container (`/workspace`):**
+See [Computer Use](plugins/computer-use/README.md) and [Chrome integration](plugins/chrome-devtools/README.md) for platform support and permissions.
 
-For daily development, run `bash ./build.sh` (or `pnpm build`). It compiles and updates the development host's complete runnable product in `bin/`, including current native programs, Session code and GUI resources, without creating archives or installers. On macOS, open `bin/macos-arm64/Achbit.app` after the build. Docker uses the host platform supplied by `make shell`; Windows/WSL selects `bin/win64`, and Linux selects its container architecture. To build and package every available platform, explicitly run `bash ./build.sh --stage package` (or `pnpm package`). Select a single distribution package below:
+## Terminal
 
-| Target | Command | Output in the checkout |
-| --- | --- | --- |
-| macOS Apple Silicon | `bash ./build.sh --stage package-macos` | `bin/macos-arm64/` |
-| Windows x64 | `bash ./build.sh --stage package-windows` | `bin/win64/` |
-| Linux, matching the container architecture | `bash ./build.sh --stage package-linux` | `bin/linux-x64/` or `bin/linux-arm64/` |
+After installing the macOS PKG or Windows Setup, run:
 
-Shared TypeScript, GUI resources, Linux programs, and Windows cross-compilation run in Docker. macOS native compilation and signing run on the Mac through the build bridge. Packaging also creates versioned archives in `bin/`, plus a macOS PKG or Windows Setup where applicable.
-
-After a successful runtime build or packaging, run `exit` to leave the container. **Back on the host**, launch your product:
-
-```bash
-# macOS
-open bin/macos-arm64/Achbit.app
-./bin/macos-arm64/Achbit-TUI.command -C /path/to/project
-
-# Linux: use linux-x64 instead if that is the generated architecture
-./bin/linux-arm64/Achbit
-./bin/linux-arm64/achbit-tui -C /path/to/project
-```
-
-On Windows, open the checkout from Windows and launch `bin\win64\Achbit.exe`, or run `bin\win64\achbit-tui.bat -C C:\path\to\project` in a Windows terminal. Continue with the model connection and first task above. The [development guide](docs/development.md) covers build options and updating an existing package.
-
-### Use the terminal
-
-After a macOS PKG or Windows Setup installation, use `achbit-cli` and `achbit-tui` directly; reopen the Windows terminal after installation. Portable packages provide these launchers:
-
-| Platform | CLI | TUI |
-| --- | --- | --- |
-| macOS | `./Achbit-CLI.command` | `./Achbit-TUI.command` |
-| Windows | `.\achbit-cli.bat` | `.\achbit-tui.bat` |
-| Linux | `./achbit-cli` | `./achbit-tui` |
-
-```bash
+```sh
 achbit-cli connections
 achbit-cli --model <profile-id> chat -C /path/to/project
 achbit-tui -C /path/to/project
 ```
 
-For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. Use `/language en-US` or `/language zh-CN` to change and save the interface language; this is separate from the language requested in a message. See [terminal and window behavior](docs/distribution.md).
+Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a model and `/sessions` to continue a conversation. GUI, TUI, and CLI share connections and Session state. Portable launchers are listed in the [distribution guide](docs/distribution.md).
 
-## Models and services
+## How it fits together
 
-Add API services or supported subscription connections in **Settings → Models & services**. GUI, CLI, and TUI share saved connections and conversations.
+| Part | Responsibility |
+| --- | --- |
+| [Session](userspace/session-core) | One agent loop for model turns, context, waiting, cancellation, and conversation history. |
+| [Kernel](crates/achbit-kernel-runtime) | Tool execution, permissions, results, and resource lifetimes. |
+| [GUI](userspace/gui), [TUI](shells/tui), [CLI](shells/cli) | Interfaces over the shared Session projection. |
+| [Plugins](plugins) and Skills | Capabilities discovered and activated for the task. |
 
-See [Models, subscriptions, and usage](docs/product/model-services.md) for connection management and accounting. Provider-specific setup is documented in the [DeepSeek guide](docs/product/deepseek.md).
+File operations can run together when their dependencies permit it. Long-running commands retain their running state, so later work waits for the result it needs. Computer Use follows the same tool and conversation lifecycle.
 
-## Extensions and Computer Use
+## Build from source
 
-Add Skills, CLI tools, MCP connections, and UI plugins. The agent discovers registered capabilities by task; tools execute within the configured permissions. See [plugin configuration](docs/product/operations.md#settings-and-extensions) and [UI extensions](docs/product/ui-plugins.md).
+Install Docker and GNU Make. On Windows, use WSL2 with Docker integration. macOS native packaging also needs Xcode Command Line Tools, the repository's Rust toolchain, and Node.js.
 
-In the GUI, use the built-in browser to preview and inspect frontend work. This embedded preview requires a GUI window. When needed and authorized, connect Chrome pages or operate native macOS and Windows applications. Chrome confirms its debugging connection in the browser; native desktop actions follow the platform's permissions. See [Computer Use](plugins/computer-use/README.md) and [Chrome integration](plugins/chrome-devtools/README.md) for supported entries and platforms.
+On the host:
 
-## Development and documentation
+```sh
+git clone https://github.com/Achbite/Achbit.git
+cd Achbit
+# macOS only, once before building:
+bash scripts/setup-macos-signing.sh
+make shell
+```
 
-Inside `make shell`, run `bash ./test.sh required` for the standard checks, `bash ./test.sh cli` for CLI integration, or `bash ./test.sh full` for the complete registered suite. See [development and validation](docs/development.md) for the environment and scope of each check.
+Skip the signing command on Windows and Linux. Inside the container:
 
-- [Product operations, conversations, and appearance](docs/product/operations.md)
-- [Installation, updates, and local data](docs/distribution.md)
-- [Workspace environments and permissions](docs/product/execution-environments.md)
+```sh
+bash ./build.sh           # Runnable build for the development host
+bash ./test.sh required  # Standard checks
+```
+
+Return to the host and open the program in `bin/macos-arm64`, `bin/win64`, or the matching Linux directory. Use `bash ./build.sh --stage package` when you need archives and installers. See [development and validation](docs/development.md) for individual targets and Debug builds.
+
+## Documentation
+
 - [Models, subscriptions, and usage](docs/product/model-services.md)
-- [Release notes and downloads](https://github.com/Achbite/DeepCode/releases)
+- [Conversations, settings, and extensions](docs/product/operations.md)
+- [Workspace environments and permissions](docs/product/execution-environments.md)
+- [Installation, updates, and local data](docs/distribution.md)
+- [Examples](examples/README.md)
 
-Workspace files and conversation data stay on your machine. Selected prompts, context, and images are sent to your configured model service; connected tools may communicate with their services. A local model connection keeps model requests on your machine.
+Project files and conversation records are stored locally. Prompts, selected context, and images are sent to your configured model service; connected tools may contact their own services.
 
 ## License
 
-[MIT](LICENSE). See [attributions](ATTRIBUTION.md), [third-party notices](THIRD_PARTY_NOTICES.md), and [citation metadata](CITATION.cff).
+[MIT](LICENSE). [Attributions](ATTRIBUTION.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Citation](CITATION.cff)
