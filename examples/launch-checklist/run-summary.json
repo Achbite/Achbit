@@ -1,0 +1,48 @@
+{
+  "recordedOn": "2026-10-24",
+  "runtime": {
+    "version": "0.6.60",
+    "sourceCommit": "b5edaa437f08f1aff02638c383ef0898beafb9f3",
+    "platform": "macos-arm64",
+    "buildKind": "normal"
+  },
+  "provider": {
+    "model": "deepseek-flash",
+    "protocol": "responses",
+    "reasoningEffort": "max",
+    "imageInput": true
+  },
+  "result": {
+    "status": "completed",
+    "completedItems": 2,
+    "totalItems": 4,
+    "progressPercent": 50,
+    "completedFilterChecked": true,
+    "selectionPersistedAfterReload": true,
+    "sourceHtmlUnchanged": true
+  },
+  "toolOutcomes": {
+    "completed": 15
+  },
+  "tools": {
+    "plugin.search": 1,
+    "bash": 1,
+    "browser.open": 1,
+    "browser.page": 7,
+    "browser.observe": 4,
+    "browser.capture": 1
+  },
+  "usage": {
+    "cacheAvailable": true,
+    "cacheComplete": true,
+    "cacheHitRatio": 0.9307627736343758,
+    "cacheMissInputTokens": 20043,
+    "cacheReadInputTokens": 269440,
+    "inputTokens": 289483,
+    "outputTokens": 3231,
+    "providerCallCount": 17,
+    "reportedCallCount": 17
+  },
+  "capture": "launch-checklist-final.png",
+  "scope": "Built-in browser interaction on macOS; native external apps and other platforms were not exercised by this example."
+}
