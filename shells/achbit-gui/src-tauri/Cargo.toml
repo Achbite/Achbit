@@ -57,3 +57,6 @@ gtk = "0.18"
 
 [dev-dependencies]
 image = { version = "=0.25.6", default-features = false, features = ["png", "jpeg"] }
+
+[patch.crates-io]
+wry = { path = "../../../third-party/wry" }

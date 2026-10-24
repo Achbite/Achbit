@@ -576,6 +576,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                     .ok_or("native_browser_window_closed")?;
                 let mut builder =
                     tauri::webview::WebviewBuilder::new(&id_for_create, WebviewUrl::External(url))
+                        .focused(false)
                         .initialization_script("window.__DEEPCODE_BROWSER_PREVIEW__ = true;")
                         .data_directory(
                             app_for_create

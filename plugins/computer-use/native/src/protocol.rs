@@ -6,6 +6,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static RESOURCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Focus changes require an explicit request, including app-only observations.
+pub fn foreground_requested(input: &Value) -> bool {
+    input["mode"] == "foreground"
+}
+
 /// Observations older than this must be refreshed before any action.
 pub const OBSERVATION_LIFETIME_SECONDS: u64 = 120;
 /// Longest edge of every archived screenshot supplied to the model.
@@ -132,6 +137,21 @@ pub fn image_rect(rect: Bounds, image: (f64, f64), bounds: Bounds) -> Bounds {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn observations_only_activate_for_explicit_foreground_requests() {
+        for target in [
+            serde_json::json!({"app":"test"}),
+            serde_json::json!({"app":"test","windowId":42}),
+        ] {
+            assert!(!foreground_requested(&target));
+            let mut request = target.clone();
+            request["mode"] = serde_json::json!("background");
+            assert!(!foreground_requested(&request));
+            request["mode"] = serde_json::json!("foreground");
+            assert!(foreground_requested(&request));
+        }
+    }
 
     fn arguments(endpoint: &str) -> Vec<String> {
         [

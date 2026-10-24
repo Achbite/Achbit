@@ -660,11 +660,7 @@ unsafe fn observe(
     activate_requested: bool,
 ) -> Result<(Observation, Value), String> {
     let window_id = input["windowId"].as_u64().map(|id| id as u32);
-    let foreground = input["mode"].as_str().unwrap_or(if window_id.is_some() {
-        "background"
-    } else {
-        "foreground"
-    }) == "foreground";
+    let foreground = crate::protocol::foreground_requested(input);
     let (mut items, accessibility, window_info, window_id, bounds) = with_accessibility(
         app,
         pid,
