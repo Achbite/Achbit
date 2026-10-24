@@ -1,3 +1,4 @@
+import { BrowserViewportControl } from './BrowserViewportControl';
 import { measureBrowserSurface } from './nativeBrowserLayout';
 import { NativeBrowserControl } from './NativeBrowserControl';
 import { t } from '../../i18n';
@@ -286,6 +287,8 @@ export function NativeBrowserPreview({
         >
           <AchbitShellIcon name="refresh" />
         </button>
+        {page && <BrowserViewportControl value={page.viewport} language={language} disabled={busy}
+          onChange={viewport => void act({ action: 'setViewport', viewport })} />}
         {page?.status === 'loading' && <small role="status">{t(language, 'reader.loading')}</small>}
         {reviewing ? <div className="native-browser-review-controls" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setReviewing(false); } }}>
           <span title={t(language, 'reader.annotation.hint')}>{t(language, 'reader.annotation.gesture')}</span>

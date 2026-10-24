@@ -17,8 +17,10 @@ pub mod debug;
 #[cfg(any(windows, test))]
 mod preview_image;
 mod services;
+mod viewport;
 #[cfg(windows)]
 use control_indicator::{ControlIndicator, ControlState};
+use viewport::Viewport;
 
 static PAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -51,6 +53,7 @@ struct Page {
     service_id: Option<String>,
     kind: String,
     surface: SurfaceState,
+    viewport: Viewport,
     #[serde(skip)]
     preview_run_id: Option<String>,
     #[serde(skip)]
@@ -68,6 +71,10 @@ struct SurfaceState {
     activation_ack: u64,
     reason: String,
     bounds: Option<[f64; 4]>,
+    #[serde(skip)]
+    available_bounds: Option<[f64; 4]>,
+    #[serde(skip)]
+    viewport_revision: u64,
 }
 
 impl Page {
@@ -319,6 +326,43 @@ async fn ready_page(app: tauri::AppHandle, preview_id: String) -> Result<Page, S
     .map_err(|error| error.to_string())?
 }
 
+fn apply_viewport(
+    view: &tauri::Webview,
+    viewport: Viewport,
+    available: [f64; 4],
+) -> Result<[f64; 4], String> {
+    let (bounds @ [x, y, width, height], scale) = viewport.fit(available);
+    view.set_bounds(tauri::Rect {
+        position: tauri::LogicalPosition::new(x, y).into(),
+        size: tauri::LogicalSize::new(width, height).into(),
+    })
+    .map_err(|error| error.to_string())?;
+    view.set_zoom(scale).map_err(|error| error.to_string())?;
+    Ok(bounds)
+}
+
+fn set_viewport(app: &tauri::AppHandle, id: &str, viewport: Viewport) -> Result<Page, String> {
+    let state = app.state::<NativeBrowser>();
+    let mut pages = state
+        .pages
+        .lock()
+        .map_err(|_| "native_browser_state_unavailable")?;
+    let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
+    let view = app.get_webview(id).ok_or("native_browser_page_closed")?;
+    let available = current.surface.available_bounds.unwrap_or_else(|| {
+        let (width, height) = viewport.initial_size();
+        [0.0, 0.0, width, height]
+    });
+    let bounds = apply_viewport(&view, viewport, available)?;
+    current.viewport = viewport;
+    current.surface.bounds = Some(bounds);
+    // Invalidate an in-flight capture without consuming the GUI's sequence.
+    current.surface.viewport_revision += 1;
+    let page = current.clone();
+    publish(app, &page);
+    Ok(page)
+}
+
 async fn activate(app: tauri::AppHandle, page: Page) -> Result<Value, String> {
     let mut page = ready_page(app.clone(), page.preview_id).await?;
     let activation_id = PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -476,6 +520,10 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             .collect::<Vec<_>>();
         return Ok(json!({"pages":pages}));
     }
+    let requested_viewport = input.get("viewport").map(Viewport::parse).transpose()?;
+    if requested_viewport.is_some() && !matches!(action, "open" | "openSelf" | "setViewport") {
+        return Err("viewport is only supported by open, openSelf and setViewport".into());
+    }
     if matches!(action, "open" | "openSelf") {
         let state = app.state::<NativeBrowser>();
         let opening = state.opening.lock().await;
@@ -513,7 +561,10 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             .values()
             .find(|page| page.matches_target(&session_id, url.as_str(), &service_id, kind))
             .cloned();
-        if let Some(page) = existing {
+        if let Some(mut page) = existing {
+            if let Some(viewport) = requested_viewport {
+                page = set_viewport(&app, &page.preview_id, viewport)?;
+            }
             drop(opening);
             bind_preview_target(&app, &page.preview_id, preview_run_id.as_deref())?;
             #[cfg(windows)]
@@ -533,6 +584,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             };
             return serde_json::to_value(page).map_err(|error| error.to_string());
         }
+        let viewport = requested_viewport.unwrap_or_default();
         let id = resource_id(&binding, "preview");
         let page = Page {
             binding: binding.clone(),
@@ -554,6 +606,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             service_id,
             kind: kind.into(),
             surface: SurfaceState::default(),
+            viewport,
             preview_run_id: None,
             preview_sequence: 0,
             #[cfg(windows)]
@@ -614,7 +667,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                     .add_child(
                         builder,
                         tauri::LogicalPosition::new(0.0, 0.0),
-                        tauri::LogicalSize::new(1280.0, 800.0),
+                        tauri::LogicalSize::<f64>::from(viewport.initial_size()),
                     )
                     .map_err(|error| error.to_string())?;
                 view.hide().map_err(|error| error.to_string())?;
@@ -680,6 +733,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         page = ready_page(app.clone(), id.to_string()).await?;
     }
     match action {
+        "setViewport" => {
+            return serde_json::to_value(set_viewport(
+                &app,
+                id,
+                requested_viewport.ok_or("setViewport requires viewport")?,
+            )?)
+            .map_err(|error| error.to_string());
+        }
         "activateControlPreview" => {
             if tool_request || page.preview_run_id.as_deref() != input["runId"].as_str() {
                 return Err("native_browser_preview_target_changed".into());
@@ -834,13 +895,10 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                 if width < 1.0 || height < 1.0 {
                     return Err("Browser bounds are empty.".into());
                 }
-                view.set_bounds(tauri::Rect {
-                    position: tauri::LogicalPosition::new(x, y).into(),
-                    size: tauri::LogicalSize::new(width, height).into(),
-                })
-                .map_err(|error| error.to_string())?;
+                let available = [x, y, width, height];
+                current.surface.bounds = Some(apply_viewport(&view, current.viewport, available)?);
+                current.surface.available_bounds = Some(available);
                 view.show().map_err(|error| error.to_string())?;
-                current.surface.bounds = Some([x, y, width, height]);
             } else {
                 view.hide().map_err(|error| error.to_string())?;
             }
@@ -874,7 +932,11 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             page = page_state(&app, id)?;
             page.url = view.url().map_err(|error| error.to_string())?.to_string();
             // A capture belongs to one acknowledged surface geometry.
-            let geometry = (page.surface.generation, page.surface.sequence);
+            let geometry = (
+                page.surface.generation,
+                page.surface.sequence,
+                page.surface.viewport_revision,
+            );
             #[cfg(windows)]
             let offscreen = show_offscreen_for_capture(&app, id, &view)?;
             let captured = capture(view.clone()).await;
@@ -884,7 +946,13 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             }
             let capture = captured?;
             let current = page_state(&app, id)?;
-            if geometry != (current.surface.generation, current.surface.sequence) {
+            if geometry
+                != (
+                    current.surface.generation,
+                    current.surface.sequence,
+                    current.surface.viewport_revision,
+                )
+            {
                 return Err(format!("native_browser_layout_changed: {id}"));
             }
             let stamp = SystemTime::now()
@@ -914,7 +982,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                 .map_err(|error| error.to_string())?;
             file.sync_all().map_err(|error| error.to_string())?;
             return Ok(
-                json!({"contentRef":path,"contentType":"image/png","width":capture.width,"height":capture.height,"sourcePage":{"hostInstanceId":binding.host_instance_id,"windowLabel":binding.window_label,"previewId":id,"url":page.url,"capturedAt":stamp.to_string(),"range":"viewport"}}),
+                json!({"contentRef":path,"contentType":"image/png","width":capture.width,"height":capture.height,"sourcePage":{"hostInstanceId":binding.host_instance_id,"windowLabel":binding.window_label,"previewId":id,"url":page.url,"capturedAt":stamp.to_string(),"range":"viewport"},"viewport":page.viewport}),
             );
         }
         "close" => {
@@ -1043,7 +1111,11 @@ async fn control_preview(
     let view = app
         .get_webview(&page.preview_id)
         .ok_or("native_browser_page_closed")?;
-    let geometry = (page.surface.generation, page.surface.sequence);
+    let geometry = (
+        page.surface.generation,
+        page.surface.sequence,
+        page.surface.viewport_revision,
+    );
     #[cfg(windows)]
     let frame = match show_offscreen_for_capture(&app, &page.preview_id, &view) {
         Ok(previous) => {
@@ -1062,7 +1134,11 @@ async fn control_preview(
         || current.preview_sequence != page.preview_sequence
         || current.url != page.url
         || current.status != "ready"
-        || (current.surface.generation, current.surface.sequence) != geometry
+        || (
+            current.surface.generation,
+            current.surface.sequence,
+            current.surface.viewport_revision,
+        ) != geometry
     {
         return Ok(
             json!({"state":"updating","target":target,"reason":"native_browser_target_changed"}),
@@ -1278,14 +1354,19 @@ fn hide_after_offscreen_capture(
     id: &str,
     view: &tauri::Webview,
     previous: tauri::Rect,
-    geometry: (u64, u64),
+    geometry: (u64, u64, u64),
 ) {
     let state = app.state::<NativeBrowser>();
     let Ok(pages) = state.pages.lock() else {
         return;
     };
     if pages.get(id).is_some_and(|current| {
-        !current.visible && (current.surface.generation, current.surface.sequence) == geometry
+        !current.visible
+            && (
+                current.surface.generation,
+                current.surface.sequence,
+                current.surface.viewport_revision,
+            ) == geometry
     }) {
         let _ = view.hide();
         let _ = view.set_bounds(previous);
@@ -1427,6 +1508,7 @@ mod tests {
             status: "ready".into(),
             visible: false,
             surface: SurfaceState::default(),
+            viewport: Viewport::default(),
             preview_run_id: None,
             preview_sequence: 0,
             #[cfg(windows)]

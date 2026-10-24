@@ -6,7 +6,9 @@
 .document-preview__toolbar label { display: flex; align-items: center; gap: 6px; }
 .document-preview__toolbar input { width: 70px; }
 .document-preview__toolbar a { margin-left: auto; color: var(--dc-accent, var(--accent)); text-decoration: none; }
-.document-preview__html { width: 100%; height: min(66dvh, 760px); border: 0; background: var(--dc-document-paper); }
+.document-preview__html-surface { position:relative; height:min(66dvh,760px); min-height:0; overflow:hidden; background:var(--dc-surface); }
+.document-preview__html { position:absolute; top:0; left:0; border:0; transform-origin:top left; background:var(--dc-document-paper); }
+.document-preview__toolbar .browser-viewport-control { max-width:160px; min-width:0; }
 .document-preview__markdown { padding: 24px clamp(18px, 4vw, 48px); overflow-wrap: anywhere; }
 .document-preview__markdown pre { min-width: 0; }
 .document-pdf { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; }
@@ -62,7 +64,7 @@
 .local-agent__reader .local-agent__resource-body {flex:1;min-height:0;overflow:auto;padding:0;}
 .local-agent__reader .local-agent__resource-body > :is(pre,p) {margin:16px;}
 .local-agent__reader .document-preview {height:100%;min-height:0;}
-.local-agent__reader .document-preview__html {flex:1;height:100%;min-height:0;}
+.local-agent__reader .document-preview__html-surface {flex:1;height:auto;min-height:0;}
 .local-agent__reader .document-pdf {display:flex;flex-direction:column;flex:1;min-height:0;}
 .local-agent__reader .document-pdf__surface {min-height:0;height:auto;}
 .reader-start {width:min(480px,100%);margin:auto;padding:24px;font-size:var(--dc-font-body,14px);}

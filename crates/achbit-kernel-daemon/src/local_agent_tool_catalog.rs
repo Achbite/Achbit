@@ -914,7 +914,8 @@ impl PreparedCatalogBinding {
             match (self.tool_name(), action) {
                 (
                     "browser.page",
-                    "openSelf" | "list" | "status" | "activate" | "close" | "refreshInterface",
+                    "openSelf" | "list" | "status" | "setViewport" | "activate" | "close"
+                    | "refreshInterface",
                 ) => return Ok(CatalogEffectScope::LocalRead),
                 ("browser.page", "reload") => {
                     let page = crate::browser_tools::call(
@@ -1323,10 +1324,13 @@ fn browser_targets(name: &str, input: &Value) -> Result<Vec<String>, ToolCatalog
         ToolCatalogError::new("tool_input_invalid", "Browser arguments must be an object.")
     })?;
     if name == "browser.open" {
-        if object.keys().any(|key| key != "path") {
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "path" | "viewport"))
+        {
             return Err(ToolCatalogError::new(
                 "tool_input_invalid",
-                "Only a workspace-relative path is accepted.",
+                "Only a workspace-relative path and optional viewport are accepted.",
             ));
         }
         return Ok(vec![text("path")?.into()]);
@@ -1412,6 +1416,7 @@ fn browser_targets(name: &str, input: &Value) -> Result<Vec<String>, ToolCatalog
         !matches!(
             key.as_str(),
             "action"
+                | "viewport"
                 | "previewId"
                 | "url"
                 | "filePath"
@@ -1433,6 +1438,7 @@ fn browser_targets(name: &str, input: &Value) -> Result<Vec<String>, ToolCatalog
         action,
         "open"
             | "openSelf"
+            | "setViewport"
             | "list"
             | "status"
             | "activate"
@@ -1445,6 +1451,14 @@ fn browser_targets(name: &str, input: &Value) -> Result<Vec<String>, ToolCatalog
         return Err(ToolCatalogError::new(
             "tool_input_invalid",
             "Unsupported browser action.",
+        ));
+    }
+    if (input.get("viewport").is_some() && !matches!(action, "open" | "openSelf" | "setViewport"))
+        || (action == "setViewport" && input.get("viewport").is_none())
+    {
+        return Err(ToolCatalogError::new(
+            "tool_input_invalid",
+            "viewport belongs to open/openSelf or setViewport; setViewport requires it.",
         ));
     }
     if matches!(action, "open" | "navigate") && !input["serviceId"].is_string() {
@@ -1781,6 +1795,27 @@ mod tests {
             }
         }
         catalog.dispose().unwrap();
+    }
+
+    #[test]
+    fn browser_viewport_settings_preserve_workspace_and_page_targets() {
+        let viewport = json!({"mode":"fixed","width":1280,"height":800});
+        assert_eq!(
+            browser_targets(
+                "browser.open",
+                &json!({"path":"page.html","viewport":viewport})
+            )
+            .unwrap(),
+            vec!["page.html"]
+        );
+        assert_eq!(browser_targets("browser.page", &json!({"action":"setViewport","previewId":"preview-1","viewport":{"mode":"adaptive"}})).unwrap(), vec!["browser:preview-1"]);
+        for input in [
+            json!({"action":"setViewport","previewId":"preview-1"}),
+            json!({"action":"setViewport","viewport":viewport}),
+            json!({"action":"act","operation":"inspect","previewId":"preview-1","viewport":viewport}),
+        ] {
+            assert!(browser_targets("browser.page", &input).is_err());
+        }
     }
 
     #[test]

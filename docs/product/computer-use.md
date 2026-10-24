@@ -14,4 +14,6 @@ setValue replaces the observed control value and returns valueVerification. A mi
 
 Screenshots supplied to a successful model request are transient visual input. Later context keeps references; session.read view=images reopens exact current-session IDs. Thumbnails, file paths and artifact presentation do not load pixels by themselves.
 
+Internal browser pages accept `viewport` on `browser.open` and `browser.page` open/openSelf. New pages default to `{"mode":"fixed","width":1280,"height":800}` in CSS pixels; the Reader scales the display to fit without switching to a narrow layout. Choose `{"mode":"adaptive"}` when the page should follow the Reader panel. Use `browser.page` with `action=setViewport`, exact previewId and viewport to change the policy without reloading. Omit viewport when reopening an existing page to retain its setting. `act` coordinates and inspect bounds are CSS pixels; screenshot pixel dimensions are reported separately.
+
 Browser activate mounts the page in the selected Reader; it does not request foreground application focus. Desktop foreground observation and HID input explicitly permit application activation. Launching an app with `open -a` also activates it; prefer a background launch when only observing or using supported AX actions. A target app may itself change focus in response to an AX action.

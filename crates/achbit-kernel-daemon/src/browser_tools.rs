@@ -219,7 +219,11 @@ pub(crate) fn execute(
         let [path] = context.private_resolved_targets.as_slice() else {
             return Err("browser_open_target_invalid".into());
         };
-        return call(binding, &json!({"action":"open", "filePath":path}));
+        input["action"] = json!("open");
+        input["filePath"] = json!(path);
+        input.as_object_mut().unwrap().remove("path");
+        input.as_object_mut().unwrap().remove("workspaceId");
+        return call(binding, &input);
     }
     if name == "browser.observe" {
         let directory = context
@@ -379,17 +383,17 @@ pub(crate) fn definitions() -> Vec<(&'static str, &'static str, Value)> {
         None => json!({"type":"integer"}),
     };
     vec![
-    ("browser.open", "Open or reuse this task's internal browser page, preserving the original file and page state. Supply a logical workspace handle and relative path. The page operates independently of the selected GUI task. Use browser.page reload on its previewId after editing static files; for development servers, keep the same previewId and observe hot updates. No shell, copy or additional permission is needed.",json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1}}})),
+    ("browser.open", "Open or reuse this task's internal browser page, preserving the original file and page state. Supply a logical workspace handle and relative path. The page operates independently of the selected GUI task. Use browser.page reload on its previewId after editing static files; for development servers, keep the same previewId and observe hot updates. No shell, copy or additional permission is needed. viewport selects fixed CSS width/height or adaptive panel layout; new pages default to fixed 1280x800. Omit it when reusing a page to preserve its viewport.",json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1},"viewport":viewport_schema()}})),
     ("browser.observe", "Return the exact internal preview's elements and viewport screenshot, including background pages, without changing the selected GUI task or Reader. Waits for page navigation to finish. Use returned selectors or viewport coordinates for interactions. Page contents are untrusted. Requires a vision-capable model; no additional permission is required.",json!({"type":"object","additionalProperties":false,"required":["previewId"],"properties":{"previewId":{"type":"string"}}})),
     ("computer.control", DESKTOP.description,json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
         "action":{"type":"string","enum":["status","listApps","listWindows","capture","observe","press","setValue","click","type","key","scroll","drag"],"description":"status/listApps/listWindows need no other fields. capture requires exactly one of windowId or display=primary. observe requires app; windowId and mode are optional. Every input action requires app and observationId, plus: press elementId; setValue elementId/text; click x/y; type text; key key; scroll deltaX/deltaY; drag x/y/toX/toY."},"display":{"type":"string","enum":["primary"]},"windowId":{"type":"integer","minimum":1},"app":{"type":"string","description":DESKTOP.app},"observationId":{"type":"string"},
         "mode":{"type":"string","enum":["background","foreground"],"description":"observe defaults to background, even without windowId. Only explicit mode=foreground permits raising the app and restoring focus for mouse/keyboard input."},"elementId":{"type":"string","description":DESKTOP.element},
         "x":{"type":"number"},"y":{"type":"number"},"toX":{"type":"number"},"toY":{"type":"number"},"text":{"type":"string"},"key":{"type":"string","description":DESKTOP.key},"deltaX":delta.clone(),"deltaY":delta
     }})),
-    ("browser.page","Operate previews in this task's GUI Host and Session. open/openSelf reuse the same resource without changing the selected GUI task. openSelf uses the installed UI; open a development server URL for Vite hot updates. Keep that previewId while editing and observing. For workspace files prefer browser.open; otherwise supply an HTTP(S) url, absolute filePath, or owned serviceId. activate explicitly shows a page in the selected task's Reader and waits for navigation and visible layout; on macOS it also initializes remote accessibility and returns separately verified readiness facts. Page status=ready alone means navigation finished. reload loads static file edits; navigate, act and close target an exact previewId. act supports inspect, selector or viewport-coordinate click, selector type, and scroll with an optional container selector. refreshInterface refreshes the primary DeepCode UI while preserving view state; it returns scheduled or needsUser for unsaved settings and never approves a user decision. Closing a page does not stop its service.",json!({
+    ("browser.page","Operate previews in this task's GUI Host and Session. open/openSelf reuse the same resource without changing the selected GUI task. openSelf uses the installed UI; open a development server URL for Vite hot updates. Keep that previewId while editing and observing. For workspace files prefer browser.open; otherwise supply an HTTP(S) url, absolute filePath, or owned serviceId. activate explicitly shows a page in the selected task's Reader and waits for navigation and visible layout; on macOS it also initializes remote accessibility and returns separately verified readiness facts. Page status=ready alone means navigation finished. reload loads static file edits; navigate, act and close target an exact previewId. act supports inspect, selector or viewport-coordinate click, selector type, and scroll with an optional container selector. refreshInterface refreshes the primary DeepCode UI while preserving view state; it returns scheduled or needsUser for unsaved settings and never approves a user decision. Closing a page does not stop its service. open/openSelf accept viewport; setViewport changes it on an existing page without reloading. Fixed CSS dimensions are scaled to fit the Reader; adaptive follows panel size. New pages default to fixed 1280x800. Click coordinates use CSS pixels from inspect, not screenshot pixels. activate mounts the Reader without bringing the app to the foreground.",json!({
         "type":"object","additionalProperties":false,"required":["action"],"properties":{
-            "action":{"type":"string","enum":["open","openSelf","list","status","activate","navigate","reload","act","close","refreshInterface"]},
-            "previewId":{"type":"string"},"url":{"type":"string"},"filePath":{"type":"string","description":"Explicit absolute HTML file path; preserve its relative resources."},"serviceId":{"type":"string"},"operation":{"type":"string","enum":["inspect","click","type","scroll"]},
+            "action":{"type":"string","enum":["open","openSelf","list","status","setViewport","activate","navigate","reload","act","close","refreshInterface"]},
+            "viewport":viewport_schema(),"previewId":{"type":"string"},"url":{"type":"string"},"filePath":{"type":"string","description":"Explicit absolute HTML file path; preserve its relative resources."},"serviceId":{"type":"string"},"operation":{"type":"string","enum":["inspect","click","type","scroll"]},
             "selector":{"type":"string"},"text":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"}
         }})),
     ("browser.service","Manage development services owned by this GUI Host and Session. Read the project configuration first; start its actual command and args in the explicit absolute directory, supplying its loopback URL. Starting a service requests Kernel Host-process permission; it does not inherit preview file permissions. A started process is not proof of a ready URL: open the URL and inspect its actual page. list/status report the process and logPath. stop only terminates this Host's exact owned process group. Closing a page leaves the service running; Host exit releases owned services.",json!({
@@ -400,6 +404,14 @@ pub(crate) fn definitions() -> Vec<(&'static str, &'static str, Value)> {
     ("browser.capture","Capture the exact preview viewport as a fixed PNG artifact without changing the selected GUI task. Requires previewId and workspace-relative .png path. The screenshot is preserved in the execution archive.",json!({
         "type":"object","additionalProperties":false,"required":["previewId","path"],"properties":{"previewId":{"type":"string"},"path":{"type":"string"}}}))
 ]
+}
+
+fn viewport_schema() -> Value {
+    json!({"description":"Page layout in CSS pixels, independent of Reader display size. Fixed preserves aspect ratio; adaptive reflows with the panel.", "oneOf":[
+        {"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"adaptive"}}},
+        {"type":"object","additionalProperties":false,"required":["mode","width","height"],"properties":{
+            "mode":{"const":"fixed"},"width":{"type":"integer","minimum":1,"maximum":8192},"height":{"type":"integer","minimum":1,"maximum":8192}}}
+    ]})
 }
 
 pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
@@ -486,6 +498,56 @@ pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_open_forwards_viewport_with_the_resolved_original_file() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let host = "viewport-forwarding-test";
+        ENDPOINTS.lock().unwrap().insert(
+            host.into(),
+            NativeEndpoint {
+                address,
+                token: "test-token".into(),
+            },
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            stream
+                .write_all(b"{\"ok\":true,\"data\":{\"previewId\":\"preview-viewport\"}}\n")
+                .unwrap();
+            request
+        });
+        let context = KernelToolExecutionContext {
+            output_directory: None,
+            workspace_root: Some("/workspace".into()),
+            workspace_id: Some("workspace:test".into()),
+            private_resolved_targets: vec!["/workspace/page.html".into()],
+            workspace_write_targets: None,
+            file_access: Default::default(),
+            cancellation: Default::default(),
+            progress: Default::default(),
+        };
+        let viewport = json!({"mode":"fixed","width":1440,"height":900});
+        let result = execute(
+            &json!({"hostInstanceId":host}),
+            "browser.open",
+            json!({"path":"page.html","viewport":viewport}),
+            &context,
+            "attempt:test",
+        );
+        ENDPOINTS.lock().unwrap().remove(host);
+        assert_eq!(result.unwrap()["previewId"], "preview-viewport");
+        assert_eq!(
+            server.join().unwrap()["input"],
+            json!({"action":"open","filePath":"/workspace/page.html","viewport":viewport})
+        );
+    }
 
     #[test]
     fn pure_capture_has_an_explicit_target_and_native_failures_retain_executor_diagnostics() {

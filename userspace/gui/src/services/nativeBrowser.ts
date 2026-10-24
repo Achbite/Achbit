@@ -1,9 +1,12 @@
 import { isRemoteHost } from './hostTarget';
 
+export type BrowserViewport = { mode: 'adaptive' } | { mode: 'fixed'; width: number; height: number };
+
 export interface NativeHostBinding { hostInstanceId: string; windowLabel: string; sessionId?:string }
 export interface NativePage extends NativeHostBinding {
   previewId: string; url: string; status: string; visible: boolean; serviceOwner: string;
   kind:string; serviceId?:string;
+  viewport: BrowserViewport;
   control?: { activeRuns: string[] };
   surface: { generation: number; sequence: number; activationId: number; activationAck: number; reason: string; bounds: [number, number, number, number] | null };
 }
