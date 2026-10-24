@@ -1,13 +1,13 @@
 [workspace]
 members = [
-  "crates/deepcode-kernel-abi",
-  "crates/deepcode-kernel-tools",
-  "crates/deepcode-kernel-runtime",
-  "crates/deepcode-kernel-client",
-  "crates/deepcode-kernel-daemon",
-  "crates/deepcode-first-party-tools",
-  "crates/deepcode-host-web",
-  "crates/deepcode-host-connection",
+  "crates/achbit-kernel-abi",
+  "crates/achbit-kernel-tools",
+  "crates/achbit-kernel-runtime",
+  "crates/achbit-kernel-client",
+  "crates/achbit-kernel-daemon",
+  "crates/achbit-first-party-tools",
+  "crates/achbit-host-web",
+  "crates/achbit-host-connection",
   "shells/cli",
   "shells/tui",
   "plugins/computer-use/native",
@@ -15,11 +15,11 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.6.58"
+version = "0.6.60"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
-authors = ["DeepCode Team"]
+authors = ["Achbit Team"]
 
 [profile.dev]
 incremental = true
@@ -28,13 +28,13 @@ incremental = true
 incremental = true
 
 [workspace.dependencies]
-deepcode-kernel-abi = { path = "crates/deepcode-kernel-abi" }
-deepcode-kernel-tools = { path = "crates/deepcode-kernel-tools" }
-deepcode-kernel-runtime = { path = "crates/deepcode-kernel-runtime" }
-deepcode-kernel-daemon = { path = "crates/deepcode-kernel-daemon" }
-deepcode-kernel-client = { path = "crates/deepcode-kernel-client" }
-deepcode-host-connection = { path = "crates/deepcode-host-connection" }
-deepcode-first-party-tools = { path = "crates/deepcode-first-party-tools" }
+achbit-kernel-abi = { path = "crates/achbit-kernel-abi" }
+achbit-kernel-tools = { path = "crates/achbit-kernel-tools" }
+achbit-kernel-runtime = { path = "crates/achbit-kernel-runtime" }
+achbit-kernel-daemon = { path = "crates/achbit-kernel-daemon" }
+achbit-kernel-client = { path = "crates/achbit-kernel-client" }
+achbit-host-connection = { path = "crates/achbit-host-connection" }
+achbit-first-party-tools = { path = "crates/achbit-first-party-tools" }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

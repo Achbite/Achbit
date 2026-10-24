@@ -1,4 +1,4 @@
-import type { ToolExecutionProgress, ToolOutputProjection } from '@deepcode/protocol';
+import type { ToolExecutionProgress, ToolOutputProjection } from '@achbit/protocol';
 
 // Same scale as terminal tool output. Full bytes stay in the Kernel archive.
 const STREAM_TAIL_CHARACTERS = 32 * 1024;

@@ -1,10 +1,11 @@
+import { useLocalAgentStore } from '../../state/localAgentStore';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { isPendingShell, shellCommandPreview, shellOutputTail } from './shellProgress';
 import './shellProgress.css';
 import React, { useEffect, useMemo, useState } from 'react';
-import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@deepcode/protocol';
+import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { ApprovalActivity } from './ApprovalActivity';
 import { AgentGroupSummary } from './agentNavigation';
@@ -58,11 +59,11 @@ export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> =
         }}
       >
         <span className="local-agent__tool-group-icon">
-          <DeepCodeShellIcon name="search" />
+          <AchbitShellIcon name="search" />
         </span>
         <strong>{summary}</strong>
         <span className="local-agent__tool-group-chevron" aria-hidden="true">
-          <DeepCodeShellIcon name="chevronRight" />
+          <AchbitShellIcon name="chevronRight" />
         </span>
       </button></UiRegion>
       {expanded && (
@@ -105,7 +106,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
         }}
       >
         <span className="local-agent__tool-group-icon">
-          <DeepCodeShellIcon
+          <AchbitShellIcon
             name={tools.every((activity) => activity.kind === 'providerHosted')
               ? 'search'
               : 'tool'}
@@ -113,7 +114,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
         </span>
         <strong>{toolGroupSummary(tools, language)}</strong>
         <span className="local-agent__tool-group-chevron" aria-hidden="true">
-          <DeepCodeShellIcon name="chevronRight" />
+          <AchbitShellIcon name="chevronRight" />
         </span>
       </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
       {!expanded && runningShells.length > 0 && <div className="local-agent__shell-progress-window">
@@ -164,10 +165,10 @@ const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, statu
         onExpand(event.currentTarget);
         setExpanded((value) => !value);
       }}>
-        <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name="search" /></span>
+        <span className="local-agent__tool-entry-icon"><AchbitShellIcon name="search" /></span>
         <strong>{providerHostedSummary(hosted, status, language)}</strong>
         {status !== 'completed' && <span>{toolActivityStatus(status, language)}</span>}
-        <span className="local-agent__tool-entry-chevron" aria-hidden="true"><DeepCodeShellIcon name="chevronRight" /></span>
+        <span className="local-agent__tool-entry-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
       </button>
       {expanded && <div className="local-agent__tool-entry-details">
         <dl>
@@ -230,6 +231,13 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const process = tool?.process;
   const result = shell?.result;
   const output = activity.liveOutput ?? process?.output;
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string>();
+  const canStop = Boolean(sessionId && activity.runId && activity.callId
+    && activity.status === 'active' && isPendingShell(activity));
+  useEffect(() => {
+    if (activity.status !== 'active') setStopping(false);
+  }, [activity.status]);
   const resources = tool?.resources.filter((resource) => !(resource.kind === 'workspacePath'
     && tool.fileChanges?.some((change) => change.workspaceId === resource.workspaceId && change.path === resource.logicalPath))) ?? [];
   const file = activity.status === 'completed' && isFileMutationOperation(tool?.operation) && files.length === 1 ? files[0] : undefined;
@@ -265,31 +273,46 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
             ? { kind: 'workspace', workspaceId: latest.workspaceId, logicalPath: filePath }
             : { kind: 'diff', file: file! });
         }}>
-          <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name={readFile ? 'artifact' : 'compose'} /></span>
+          <span className="local-agent__tool-entry-icon"><AchbitShellIcon name={readFile ? 'artifact' : 'compose'} /></span>
           <strong>{t(language, readFile ? 'agent.tool.activity.readPath' : tool?.operation === 'fs.delete' ? 'agent.tool.activity.deletedPath' : 'agent.tool.activity.editedPath', { path: '' })}<span>{filePath.split('/').at(-1)}</span></strong>
         </button>
         <button type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`tool:${activity.activityId}`} aria-label={toolActivitySummary(activity, language)} aria-expanded={expanded} onClick={toggleExpanded}>
-          <span className="local-agent__tool-entry-chevron" aria-hidden="true"><DeepCodeShellIcon name="chevronRight" /></span>
+          <span className="local-agent__tool-entry-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
         </button>
-      </div> : <button
+      </div> : <div className="local-agent__tool-entry-actions"><button
         type="button"
         className="local-agent__tool-entry-heading"
         aria-expanded={expanded}
         data-conversation-disclosure={`tool:${activity.activityId}`}
         onClick={toggleExpanded}
       >
-        <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name={shell ? 'terminal' : isFileMutationOperation(tool?.operation) ? 'compose' : tool?.operation?.startsWith('fs.') ? 'artifact' : 'tool'} /></span>
-        <strong>{isPendingShell(activity) ? `$ ${shellCommandPreview(activity)}` : toolActivitySummary(activity, language)}</strong>
+        <span className="local-agent__tool-entry-icon"><AchbitShellIcon name={shell || process ? 'terminal' : isFileMutationOperation(tool?.operation) ? 'compose' : tool?.operation?.startsWith('fs.') ? 'artifact' : 'tool'} /></span>
+        <strong>{isPendingShell(activity) && !tool?.shellIntents?.length ? `$ ${shellCommandPreview(activity)}` : toolActivitySummary(activity, language)}</strong>
         {activity.status !== 'completed' && !activity.notExecuted && (
-          <span>{toolActivityStatus(activity.status, language)}</span>
+          <span>{stopping && canStop ? t(language, 'agent.tool.shell.stopping')
+            : activity.status === 'cancelled' && (shell || process) ? t(language, 'agent.tool.shell.stopped')
+              : toolActivityStatus(activity.status, language)}</span>
         )}
         {activity.status === 'active' && activity.startedAt && (
           <ToolElapsed startedAt={activity.startedAt} language={language} />
         )}
         <span className="local-agent__tool-entry-chevron" aria-hidden="true">
-          <DeepCodeShellIcon name="chevronRight" />
+          <AchbitShellIcon name="chevronRight" />
         </span>
-      </button>}</UiRegion>
+      </button>
+      {canStop && <button type="button" className="local-agent__tool-stop"
+        aria-label={t(language, stopping ? 'agent.tool.shell.stopping' : 'agent.tool.shell.stop')}
+        disabled={stopping} onClick={() => {
+          if (stopping) return;
+          setStopping(true); setStopError(undefined);
+          void useLocalAgentStore.getState().cancelTool(sessionId!, activity.runId!, activity.callId!)
+            .catch(error => { setStopError(String(error)); setStopping(false); });
+        }}>
+        <AchbitShellIcon name={stopping ? 'spinner' : 'stop'} className={stopping ? 'local-agent__run-status-spinner' : undefined} />
+        {!stopping && <span className="local-agent__tool-stop-hint" aria-hidden="true">{t(language, 'agent.tool.shell.stop')}</span>}
+      </button>}
+      </div>}</UiRegion>
+      {stopError && <small className="local-agent__tool-error" role="alert">{stopError}</small>}
       {!expanded && isPendingShell(activity) && <div className="local-agent__shell-progress-tail">
         {(['stdout', 'stderr'] as const).map(stream => output?.[stream] && <section key={stream}>
           <small>{stream}</small><pre>{shellOutputTail(output[stream])}</pre>
@@ -301,6 +324,13 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
         <div className={`local-agent__tool-entry-details${filePath ? ' local-agent__tool-entry-details--file' : ''}`}>
           {tool?.error && <p className="local-agent__tool-error" role="status"><code>{tool.error.code}</code>: {tool.error.message}</p>}
           {tool?.projectionError && <p className="local-agent__tool-error" role="status"><code>{tool.projectionError.code}</code>: {tool.projectionError.message}</p>}
+          {Boolean(tool?.shellIntents?.length) && <div className="local-agent__tool-resources">
+            {tool!.shellIntents!.map((intent, index) => <div key={index}>
+              <small>{t(language, intent.kind === 'search' ? 'agent.tool.shell.searchTarget' : 'agent.tool.shell.readTarget')}</small>{' '}
+              <code>{intent.targets.join(', ') || t(language, 'agent.tool.shell.pipelineInput')}</code>
+              {intent.query !== undefined && <span>{' · '}{intent.query}</span>}
+            </div>)}
+          </div>}
           <FileChanges activities={activities} inlineDiff />
           {readFile && sessionId && <FileReadPreview sessionId={sessionId} workspaceId={readFile.workspaceId!} path={readFile.logicalPath!} language={language} />}
           {!filePath && <dl>
@@ -491,6 +521,15 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
   if (activity.status === 'requested' || activity.status === 'waiting') {
     return t(language, `agent.tool.summary.${activity.status}One`, { operation: command ?? operation });
   }
+  if ((activity.status === 'active' || activity.status === 'completed') && activity.tool?.shellIntents?.length) {
+    const intent = activity.tool.shellIntents[0]!;
+    const targets = intent.targets.map(path => path === '.' ? t(language, 'agent.tool.shell.currentDirectory') : path).join(', ')
+      || t(language, 'agent.tool.shell.pipelineInput');
+    const summary = intent.kind === 'search'
+      ? t(language, activity.status === 'active' ? 'agent.tool.shell.searching' : 'agent.tool.shell.searched', { targets, query: intent.query ?? '' })
+      : t(language, 'agent.tool.shell.readTarget', {}) + ': ' + targets;
+    return summary + (activity.tool.shellIntents.length > 1 ? t(language, 'agent.tool.shell.moreIntents', { count: activity.tool.shellIntents.length - 1 }) : '');
+  }
   if (activity.status === 'completed') {
     if ((operation === 'bash' || operation === 'powershell') && command) {
       return t(language, 'agent.tool.activity.ranCommand', { command });
@@ -525,6 +564,8 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
 }
 
 function notExecutedStatus(activity: ActivityProjection, language: UiLanguage): string {
+  if (activity.notExecuted?.reason === 'approvalRequired') return t(language, 'agent.tool.notExecuted.approvalRequired');
+  if (activity.notExecuted?.reason === 'dependencyPending') return language === 'zh-CN' ? '尚未执行：前序命令仍在运行' : 'Not executed: predecessor still running';
   return t(language, activity.notExecuted?.reason === 'cancelled'
     ? 'agent.tool.notExecuted.cancelled' : 'agent.tool.notExecuted.dependencyFailed');
 }

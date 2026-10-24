@@ -1,4 +1,4 @@
-import type { AssistantDraftProjection, SessionEvent, ToolExecutionProgress } from '@deepcode/protocol';
+import type { AssistantDraftProjection, SessionEvent, ToolExecutionProgress } from '@achbit/protocol';
 
 /** Optional read-only runtime port. It must enqueue synchronously, never await consumers. */
 export type SessionObservationInput =

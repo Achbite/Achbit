@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
 [ -f /.dockerenv ] || { printf 'Shared/Linux/Windows builds require the project Docker container.\n' >&2; exit 1; }
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
-GUI_MANIFEST="$ROOT_DIR/shells/deepcode-gui/src-tauri/Cargo.toml"
+GUI_MANIFEST="$ROOT_DIR/shells/achbit-gui/src-tauri/Cargo.toml"
 WINDOWS_TARGET=x86_64-pc-windows-gnu
 # Container installation defaults; callers may override these locations.
 PNPM_STORE_DIR="${PNPM_STORE_DIR:-${PNPM_HOME:-$HOME/.local/share/pnpm}/store}"
@@ -52,13 +52,13 @@ case "${1:-}" in
     printf '==[build][shared][START]== dependencies, TypeScript, GUI\n'
     pnpm --store-dir "${PNPM_STORE_DIR}" install --frozen-lockfile
     pnpm build:userspace-shared
-    pnpm --filter @deepcode/client typecheck
-    pnpm --filter @deepcode/client build:web
+    pnpm --filter @achbit/client typecheck
+    pnpm --filter @achbit/client build:web
     if [ "$1" = --shared ]; then
       destination="$2"
       mkdir -p "$destination"
       dependencies="$(dirname "$destination")/dependencies.json"
-      pnpm --filter @deepcode/client --filter @deepcode/session-core --filter @deepcode/chrome-devtools-runtime list --prod --depth Infinity --json > "$dependencies"
+      pnpm --filter @achbit/client --filter @achbit/session-core --filter @achbit/chrome-devtools-runtime list --prod --depth Infinity --json > "$dependencies"
       python3 scripts/package-runtime.py shared "$ROOT_DIR" "$destination" "$dependencies"
     fi
     printf '==[build][shared][DONE]== seconds=%s\n' "$((SECONDS - started))"
@@ -68,7 +68,7 @@ case "${1:-}" in
     output="$2"
     check_platform windows
     configure_cache
-    cargo build --release --target "$WINDOWS_TARGET" -p deepcode-computer-use
+    cargo build --release --target "$WINDOWS_TARGET" -p achbit-computer-use
     python3 scripts/computer_use_package.py --windows --native "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release" --output "$output/win64"
     ;;
   --native)
@@ -82,9 +82,9 @@ case "${1:-}" in
         printf '==[build][code][DONE]== seconds=%s native=%s/release\n' "$((SECONDS - started))" "$CARGO_TARGET_DIR"
         ;;
       native-gui) cargo build --release --manifest-path "$GUI_MANIFEST" ;;
-      daemon) cargo build --release -p deepcode-kernel-daemon -p deepcode-first-party-tools ;;
-      cli) cargo build --release -p deepcode-cli ;;
-      tui) cargo build --release -p deepcode-tui ;;
+      daemon) cargo build --release -p achbit-kernel-daemon -p achbit-first-party-tools ;;
+      cli) cargo build --release -p achbit-cli ;;
+      tui) cargo build --release -p achbit-tui ;;
       *) printf 'Unknown native stage: %s\n' "$2" >&2; exit 2 ;;
     esac
     ;;
@@ -107,18 +107,18 @@ case "${1:-}" in
     fi
     cargo_features=()
     gui_features=()
-    product=DeepCode
+    product=Achbit
     if [ "${DEEPCODE_BUILD_KIND:-normal}" = debug ]; then
       [ "$platform" = windows ] || { printf 'Unsupported Debug container platform: %s\n' "$platform" >&2; exit 2; }
-      cargo_features=(--features deepcode-kernel-daemon/debug-control,deepcode-cli/debug-control)
+      cargo_features=(--features achbit-kernel-daemon/debug-control,achbit-cli/debug-control)
       gui_features=(--features debug-control)
-      export TAURI_CONFIG='{"productName":"DeepCode-Debug","identifier":"com.achbite.deepcode.debug"}'
-      product=DeepCode-Debug
+      export TAURI_CONFIG='{"productName":"Achbit-Debug","identifier":"com.achbite.deepcode.debug"}'
+      product=Achbit-Debug
     fi
-    cargo build --release "${target_args[@]}" "${cargo_features[@]}" -p deepcode-kernel-daemon -p deepcode-first-party-tools -p deepcode-host-web -p deepcode-cli -p deepcode-tui
+    cargo build --release "${target_args[@]}" "${cargo_features[@]}" -p achbit-kernel-daemon -p achbit-first-party-tools -p achbit-host-web -p achbit-cli -p achbit-tui
     if [ "$platform" = windows ]; then
       # The desktop executor is a sibling program of the Windows GUI.
-      cargo build --release "${target_args[@]}" -p deepcode-computer-use
+      cargo build --release "${target_args[@]}" -p achbit-computer-use
       messages="$(dirname "$shared")/windows-native.jsonl"
       cargo build --release "${target_args[@]}" "${gui_features[@]}" --manifest-path "$GUI_MANIFEST" --message-format=json-render-diagnostics > "$messages"
       # Read this Cargo invocation's dependency output, not a glob over cached builds.
@@ -138,7 +138,7 @@ case "${1:-}" in
     [ "$platform" != windows ] || archive="$output/$product-$version-$platform_dir.zip"
     installer_args=()
     if [ "$platform" = windows ] && [ "${DEEPCODE_BUILD_KIND:-normal}" != debug ]; then
-      installer="$(dirname "$shared")/DeepCode-$version-win64-setup.exe"
+      installer="$(dirname "$shared")/Achbit-$version-win64-setup.exe"
       python3 scripts/package-installers.py win64 "$stage" "$installer"
       installer_args=(--installer "$installer")
     fi

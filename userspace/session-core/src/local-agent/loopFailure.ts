@@ -1,4 +1,4 @@
-import type { ErrorDiagnostics, LocalAgentError } from '@deepcode/protocol';
+import type { ErrorDiagnostics, LocalAgentError } from '@achbit/protocol';
 
 export class LoopFailure extends Error {
   constructor(readonly code: string, message: string, readonly diagnostics?: ErrorDiagnostics) {

@@ -17,7 +17,7 @@ spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__fi
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
-HTML = (fixture.ROOT / "skills/deepcode-documents/assets/document.html").read_text().replace("文档标题", "文档预览 · Document report").replace(
+HTML = (fixture.ROOT / "skills/achbit-documents/assets/document.html").read_text().replace("文档标题", "文档预览 · Document report").replace(
     "与读者和用途相关的简短说明", "同一份内容 · HTML / PDF / Markdown").replace("章节标题", "清晰的排版").replace(
     "替换为用户要求的正文。根据实际内容增删章节，不保留示例文字。",
     "Document rendering verification. 中文正文、标题层级和留白。<strong>重点信息</strong>保持清晰。").replace(
@@ -48,14 +48,20 @@ class Handler(fixture.MockProviderHandler):
             state = self.provider_state
             state.calls += 1
             functions = [entry["function"] for entry in body["tools"]]
-            skill = next(entry["name"] for entry in functions if "deepcode-documents" in entry["parameters"].get("properties", {}).get("name", {}).get("enum", []))
-            renderer = next(entry["name"] for entry in functions if "pdf" in entry["parameters"].get("properties", {}).get("format", {}).get("enum", []))
+            skill = next(entry["name"] for entry in functions if "achbit-documents" in entry["parameters"].get("properties", {}).get("name", {}).get("enum", []))
+            renderers = [entry["name"] for entry in functions if "pdf" in entry["parameters"].get("properties", {}).get("format", {}).get("enum", [])]
+            if state.calls == 1:
+                require(not renderers, "Renderer must be absent before plugin activation")
+            else:
+                require(len(renderers) == 1, "Activated document plugin must expose exactly one renderer")
+            renderer = renderers[0] if renderers else None
+            activate = next(entry["name"] for entry in functions if "pluginUris" in entry["parameters"].get("properties", {}))
             reader = next(entry["name"] for entry in functions if "startByte" in entry["parameters"].get("properties", {}))
             results = {message["tool_call_id"]: json.loads(message["content"]) for message in body["messages"] if message["role"] == "tool"}
-            if state.calls == 2:
+            if state.calls == 3:
                 require(results["skill"]["outcome"] == "completed", "Built-in document Skill failed")
                 require("document.render" in results["skill"]["output"]["content"], "Skill content missing")
-            elif state.calls == 3:
+            elif state.calls == 4:
                 for name in ["html", "pdf", "markdown"]:
                     require(results[name]["outcome"] == "completed", f"Document export failed: {results[name]}")
                 require(results["missing"]["outcome"] == "failed", "Read failure was not preserved")
@@ -64,8 +70,10 @@ class Handler(fixture.MockProviderHandler):
             self.send_header("connection", "close")
             self.end_headers()
             if state.calls == 1:
-                self._send_tool_calls([("skill", skill, {"name": "deepcode-documents"})])
+                self._send_tool_calls([("activate", activate, {"pluginUris": ["plugin://documents@builtin"]})])
             elif state.calls == 2:
+                self._send_tool_calls([("skill", skill, {"name": "achbit-documents"})])
+            elif state.calls == 3:
                 self._send_tool_calls([
                     ("html", renderer, {"path": "报告.html", "format": "html", "content": HTML}),
                     ("pdf", renderer, {"path": "报告.pdf", "format": "pdf", "content": HTML}),
@@ -109,8 +117,8 @@ def preview(daemon, port):
         "DEEPCODE_HOST_PORT": str(host_port), "DEEPCODE_GUI_DEV_PORT": str(port)}
     processes = []
     try:
-        processes.append(subprocess.Popen([str(fixture.ROOT / "target/debug/deepcode-host-web")], env=env, stdout=subprocess.DEVNULL))
-        processes.append(subprocess.Popen(["node", "node_modules/vite/bin/vite.js", "--config", "vite.deepcode-gui.config.ts", "--host", "0.0.0.0"],
+        processes.append(subprocess.Popen([str(fixture.ROOT / "target/debug/achbit-host-web")], env=env, stdout=subprocess.DEVNULL))
+        processes.append(subprocess.Popen(["node", "node_modules/vite/bin/vite.js", "--config", "vite.achbit-gui.config.ts", "--host", "0.0.0.0"],
             cwd=fixture.ROOT / "userspace/gui", env=env))
         print(f"[documents-e2e] Browser preview: http://127.0.0.1:{port}/ (Ctrl+C closes this fixture)", flush=True)
         while all(process.poll() is None for process in processes):
@@ -133,7 +141,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preview-port", type=int)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="deepcode-documents-e2e-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="achbit-documents-e2e-") as scratch:
         root = Path(scratch)
         workspace = root / "workspace"
         workspace.mkdir()
@@ -149,7 +157,7 @@ def main():
             session = fixture.create_session(daemon, workspace)
             fixture.cli(daemon, session["sessionId"], "请将报告排版为 HTML、PDF 和 Markdown。")
             state.assert_healthy()
-            require(state.calls == 3 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
+            require(state.calls == 4 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
             verify_resources(daemon, fixture.projection(daemon, session["sessionId"]), workspace)
             print("[documents-e2e] PASS: actual CLI, built-in Skill, HTML/PDF/Markdown tools, artifacts, resource bytes, and continuation after a read failure (fixture Provider)", flush=True)
             if args.preview_port:

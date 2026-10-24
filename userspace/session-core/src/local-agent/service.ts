@@ -1,5 +1,5 @@
 import type { SessionObservationSink } from './observation.js';
-import { decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
+import { decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
 import { agentPresets } from './agentConfiguration.js';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
@@ -20,7 +20,7 @@ import type {
   SessionResourceProjection,
   PendingAgentDecision,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { SessionActor } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';

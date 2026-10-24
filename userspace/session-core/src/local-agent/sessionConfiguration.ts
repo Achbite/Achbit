@@ -1,5 +1,5 @@
-import type { AgentConfiguration, AgentContributionSelection, JsonObject } from '@deepcode/protocol';
-import { SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_TODO_UPDATE } from '@deepcode/protocol';
+import type { AgentConfiguration, AgentContributionSelection, JsonObject } from '@achbit/protocol';
+import { SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_TODO_UPDATE } from '@achbit/protocol';
 import type { SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities } from './sessionCapabilities.js';
 import { buildAgentProviderRequest } from './contextComposer.js';

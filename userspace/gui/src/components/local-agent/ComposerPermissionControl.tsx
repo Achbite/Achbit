@@ -1,7 +1,7 @@
 import React, { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { permissionSettings } from '@deepcode/protocol';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import { permissionSettings } from '@achbit/protocol';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -70,7 +70,7 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   return <div ref={permissionControlRef} className="local-agent__permission-control">
     <button type="button" className="local-agent__permission-summary" aria-label={t(language, 'settings.nav.permissions')}
       title={summary} aria-expanded={permissionMenuOpen} onClick={() => { setPermissionMenuOpen(open => !open); setAttachmentMenuOpen(false); }}>
-      <DeepCodeShellIcon name="shield" /><span>{summary}</span>
+      <AchbitShellIcon name="shield" /><span>{summary}</span>
     </button>
     {permissionMenuOpen && createPortal(<div ref={permissionMenuRef} className="local-agent__permission-menu" style={position}
       data-native-overlay role="dialog" aria-label={t(language, heading)}
@@ -83,9 +83,9 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
         }
       }}>
       <header className="local-agent__permission-heading">
-        {page && <button type="button" aria-label={t(language, 'agent.permission.back')} onClick={() => setPage(null)}><DeepCodeShellIcon name="chevronLeft" /></button>}
+        {page && <button type="button" aria-label={t(language, 'agent.permission.back')} onClick={() => setPage(null)}><AchbitShellIcon name="chevronLeft" /></button>}
         <strong>{t(language, heading)}</strong>
-        <button type="button" aria-label={t(language, 'agent.permission.close')} onClick={close}><DeepCodeShellIcon name="close" /></button>
+        <button type="button" aria-label={t(language, 'agent.permission.close')} onClick={close}><AchbitShellIcon name="close" /></button>
       </header>
       {page === 'grants' ? <div className="local-agent__permission-grants">
         {grants.map(grant => <div key={grant.authorityId}>
@@ -109,10 +109,10 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
       </div> : <>
         <div className="local-agent__permission-invariant"><span>{t(language, 'agent.permission.workspaceRead')}</span><strong>{t(language, 'agent.permission.workspaceReadAllowed')}</strong></div>
         {rows.map(row => <button key={row.key} type="button" className="local-agent__permission-row" disabled={busy} onClick={() => setPage(row)}>
-          <span>{t(language, row.label)}</span><span>{t(language, row.values.find(([value]) => value === settings[row.key])![1])}<DeepCodeShellIcon name="chevronRight" /></span>
+          <span>{t(language, row.label)}</span><span>{t(language, row.values.find(([value]) => value === settings[row.key])![1])}<AchbitShellIcon name="chevronRight" /></span>
         </button>)}
         {grants.length > 0 && <button type="button" className="local-agent__permission-row" onClick={() => setPage('grants')}>
-          <span>{t(language, 'agent.permission.runGrants')}</span><span>{grants.length}<DeepCodeShellIcon name="chevronRight" /></span>
+          <span>{t(language, 'agent.permission.runGrants')}</span><span>{grants.length}<AchbitShellIcon name="chevronRight" /></span>
         </button>}
       </>}
       {(taskError || settingsError) && <div className="local-agent__error" role="alert">{taskError || settingsError}</div>}

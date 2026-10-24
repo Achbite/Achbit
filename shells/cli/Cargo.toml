@@ -1,5 +1,5 @@
 [package]
-name = "deepcode-cli"
+name = "achbit-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,16 +7,16 @@ license.workspace = true
 authors.workspace = true
 
 [features]
-debug-control = ["deepcode-host-connection/debug-control", "dep:reqwest", "dep:libc"]
+debug-control = ["achbit-host-connection/debug-control", "dep:reqwest", "dep:libc"]
 
 [[bin]]
-name = "deepcode-cli"
+name = "achbit-cli"
 path = "src/main.rs"
 
 [dependencies]
-deepcode-kernel-abi.workspace = true
-deepcode-kernel-client.workspace = true
-deepcode-host-connection.workspace = true
+achbit-kernel-abi.workspace = true
+achbit-kernel-client.workspace = true
+achbit-host-connection.workspace = true
 getrandom = "0.3"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }

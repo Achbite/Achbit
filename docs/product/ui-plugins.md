@@ -4,7 +4,7 @@ Display plugins replace named GUI regions or add supported settings panels. They
 
 ## Use a plugin
 
-Settings → Plugins → Add: select a local folder or `deepcode-ui.json`. Only load JavaScript intended to run in the application window. The source is stored in `workbench.uiPlugins`, independently of tool/Skill activation.
+Settings → Plugins → Add: select a local folder or `achbit-ui.json`. Only load JavaScript intended to run in the application window. The source is stored in `workbench.uiPlugins`, independently of tool/Skill activation.
 
 Saving the enabled compiled entry or manifest hot-replaces that plugin. TypeScript must first be compiled to its declared entry. Refresh list reconnects the source watch; Reload in plugin details reloads only that module. Disabling removes its effects and restores built-in presentation. Errors stay visible; none of these actions requires restarting the conversation.
 

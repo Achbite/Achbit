@@ -143,7 +143,7 @@ fn quoted_argument(argument: &OsStr) -> io::Result<Vec<u16>> {
 
 pub fn apply(font: &Value) -> Result<(), String> {
     if !is_owned() {
-        return Err("Font changes require the dedicated DeepCode console.".into());
+        return Err("Font changes require the dedicated Achbit console.".into());
     }
     // Legacy CJK code pages can force a system font even when SetCurrentConsoleFontEx
     // succeeds. Only our own UTF-8 console changes its output code page.
@@ -224,7 +224,7 @@ pub fn apply(font: &Value) -> Result<(), String> {
 
 pub fn finish(code: i32) {
     if code != 0 && is_owned() {
-        eprintln!("DeepCode TUI exited with code {code}. Press Enter to close this window.");
+        eprintln!("Achbit TUI exited with code {code}. Press Enter to close this window.");
         let mut line = String::new();
         let _ = io::stdin().read_line(&mut line);
     }
@@ -277,9 +277,9 @@ mod tests {
                 ("MonoKai", "Mono Kai"),
                 ("Mono", "Mono"),
             ] {
-                let name = format!("DeepCode TUI {label} SC");
+                let name = format!("Achbit TUI {label} SC");
                 apply(&json!({"name":name,"size":12,
-                    "file":fonts.join(format!("DeepCodeQuietTerminal{style}SC-Regular.ttf")).to_string_lossy()}))?;
+                    "file":fonts.join(format!("AchbitQuietTerminal{style}SC-Regular.ttf")).to_string_lossy()}))?;
                 applied.push(name);
             }
             apply(&json!({"name":"Consolas","size":12,"file":null}))?;

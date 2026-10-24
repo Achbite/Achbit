@@ -1,5 +1,5 @@
-import type { RunRuntimeSnapshot, SessionEvent } from '@deepcode/protocol';
-import { decodeAgentRecipe, permissionPolicyConstraints } from '@deepcode/protocol';
+import type { RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
+import { decodeAgentRecipe, permissionPolicyConstraints } from '@achbit/protocol';
 
 const ENVIRONMENT_ID = 'deepcode.session-environment';
 
@@ -20,7 +20,7 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
       throw new Error('session_environment_invalid');
     }
   }
-  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition'];
+  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'productDocsPath', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition'];
   if (data.agentComposition !== undefined) {
     const composition = data.agentComposition as Record<string, unknown>;
     if (!composition || typeof composition !== 'object' || Array.isArray(composition)
@@ -43,6 +43,10 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
     if (!binding || typeof binding.hostInstanceId !== 'string' || !binding.hostInstanceId
       || typeof binding.windowLabel !== 'string' || !binding.windowLabel) throw new Error('session_host_binding_invalid');
   }
+  if (data.productDocsPath !== undefined && data.productDocsPath !== null
+    && (typeof data.productDocsPath !== 'string' || !data.productDocsPath)) {
+    throw new Error('session_environment_invalid');
+  }
   if (data.runtimeExecutables !== undefined) {
     const executables = data.runtimeExecutables;
     if (!executables || typeof executables !== 'object' || Array.isArray(executables)
@@ -61,10 +65,11 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
       arch: data.arch,
       locale: data.locale,
       userShell: data.userShell,
+      ...(typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
       ...(data.agentComposition ? { agentComposition: data.agentComposition } : {}),
       ...(data.executionPath !== undefined ? { executionPath: data.executionPath } : {}),
       ...(data.executionTarget ? { executionTarget: data.executionTarget, shell: data.shell, ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }) } : {}),
-    })}\nProject build requirements come from project files. commandPaths lists commands found on executionPath, not all installed software. Workspace scope is sandboxed; authorized host calls use the same target, shell and prepared PATH outside that sandbox. Command-not-found describes this PATH; denied access or an unreachable socket does not prove a service is stopped. Check the needed scope and report the actual result.\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
+    })}\ncommandPaths describes the prepared PATH. Workspace execution is sandboxed; host access requires its existing authorization.${typeof data.productDocsPath === 'string' ? ' Search and read bundled Markdown docs at productDocsPath with the shell when needed.' : ''}\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
   };
 }
 

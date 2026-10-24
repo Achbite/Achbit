@@ -1,8 +1,8 @@
-import { CONVERSATION_COMMAND_VERSION, inheritAgentRecipe } from '@deepcode/protocol';
+import { CONVERSATION_COMMAND_VERSION, inheritAgentRecipe } from '@achbit/protocol';
 import type {
   AgentChildProjection, AgentHostPort, AgentOperation, AgentTaskProjection,
   CommandReply, JsonObject, SessionProjection,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import type { SessionActor } from './actor.js';
 import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js';
 import { agentOperationDefinitions } from './sessionControls.js';
@@ -77,7 +77,7 @@ export class AgentManager {
         const settings = caller.subagentSettings;
         const presets = agentPresets(settings).map(preset => ({ ...preset,
           capabilities: resolveAgentCapabilities(preset, undefined, capabilities, settings.allowMemberAnalysis) }));
-        const fullConfiguration = settings.allowFullConfiguration === true;
+        const fullConfiguration = !caller.agentContext && settings.allowFullConfiguration === true;
         const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
         const owner = await this.snapshot(ownerId);
         const profileIds = [...new Set([settings.profileId || owner.run?.profileId,
@@ -112,7 +112,7 @@ export class AgentManager {
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
             defaultProfileId: settings.profileId || owner.run?.profileId,
-            runners: this.loops.describe(),
+            ...(!caller.agentContext ? { runners: this.loops.describe(),
             permissionPolicies: [
               { id: 'local-standard', description: 'Keep Kernel admission and automatic Plan/file gates. Parameters can only restrict the inherited policy.',
                 parametersSchema: { type: 'object', additionalProperties: false, properties: {
@@ -123,7 +123,7 @@ export class AgentManager {
             workspaceSandbox: { defaultBackendId: 'platform-default',
               observed: caller.environment?.workspaceSandbox ?? null,
               description: 'Select platform-default or the observed backend. Shell isolation never grants file mutation authority. Unavailable isolation fails closed.' },
-            configuration: this.configurations.describe(fullConfiguration) } : {}) };
+            configuration: this.configurations.describe(fullConfiguration) } : {}) } : {}) };
       }
       case 'spawn': {
         const task = await abortable(this.admit(sessionId, runId, () => this.start(caller, runId, callId, operation, signal)), signal);
@@ -199,6 +199,9 @@ export class AgentManager {
     if (!caller.subagentSettings) throw new Error('agent_settings_missing');
     const settings = caller.subagentSettings;
     if (!settings.enabled) throw new Error('agent_disabled');
+    if (!existingChild && caller.agentContext && [operation.capabilities, operation.permissions, operation.runner,
+      operation.permissionPolicy, operation.workspaceSandbox, operation.context, operation.loop, operation.reasoningEffort]
+      .some(value => value !== undefined)) throw new Error('agent_coordinator_configuration_required');
     const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
     if (this.#blockedOwners.has(ownerId)) throw new Error('agent_owner_deleting');
     const owner = await this.snapshot(ownerId);
@@ -211,15 +214,15 @@ export class AgentManager {
       this.configurations.resolve(inheritedConfiguration, preset.configuration ?? {}, true),
       { ...operation.loop, ...(operation.context ? { context: operation.context } : {}) }, settings.allowFullConfiguration === true) : undefined;
     const permissions = !existingChild ? agentPermissionPatches(preset.permissions, operation.permissions) : undefined;
-    let modelSelection: { profileId: string; reasoningEffortOverride: import('@deepcode/protocol').LlmReasoningEffort | null } | undefined;
-    let instanceModel: import('@deepcode/protocol').AgentModelConfiguration | undefined;
+    let modelSelection: { profileId: string; reasoningEffortOverride: import('@achbit/protocol').LlmReasoningEffort | null } | undefined;
+    let instanceModel: import('@achbit/protocol').AgentModelConfiguration | undefined;
     if (!existingChild) {
       const ruleProfileId = preset.profileId || settings.profileId || owner.run?.profileId;
       const followsOwner = !preset.profileId && !settings.profileId && (operation.profileId === undefined || operation.profileId === ruleProfileId);
       if (followsOwner && !owner.run?.profileId) throw new Error('agent_owner_run_model_missing');
       const profileId = operation.profileId ?? ruleProfileId;
       if (!profileId) throw new Error('agent_model_unavailable');
-      if (!settings.allowFullConfiguration && (operation.reasoningEffort !== undefined
+      if ((caller.agentContext || !settings.allowFullConfiguration) && (operation.reasoningEffort !== undefined
         || ![ruleProfileId, ...presets.map(item => item.profileId)].includes(profileId))) throw new Error('agent_full_configuration_required');
       const modelRule = profileId === ruleProfileId ? preset : presets.find(item => item.profileId === profileId) ?? preset;
       const model = (await this.host.models()).find(item => item.profileId === profileId);

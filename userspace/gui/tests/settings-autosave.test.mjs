@@ -76,7 +76,7 @@ test('preset fonts and sizes save immediately through the shared settings owner 
   await flush();
   assert.deepEqual(fixture.writes[0], { 'gui.fontFamily': 'compact', 'gui.interfaceFontFamily': 'inherit',
     'gui.contentFontFamily': 'inherit', 'gui.terminalFontFamily': 'inherit' });
-  assert.match(typography.typographyStyles(useSettingsStore.getState().effectiveSettings)['--dc-font-ui'], /DeepCode Quiet Mono SC/);
+  assert.match(typography.typographyStyles(useSettingsStore.getState().effectiveSettings)['--dc-font-ui'], /Achbit Quiet Mono SC/);
   const size = elements(tree, node => node.props.value === 12 && typeof node.props.onChange === 'function')[0];
   size.props.onChange({ target: { value: '11' } });
   await flush();

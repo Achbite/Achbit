@@ -17,15 +17,26 @@ pub fn jpeg_region(png: &[u8], region: Option<[f64; 4]>) -> Result<(Vec<u8>, u32
     let mut image = reader.decode().map_err(|error| error.to_string())?;
     if let Some([x, y, width, height]) = region {
         if ![x, y, width, height].iter().all(|value| value.is_finite())
-            || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0
-            || x + width > 1.000001 || y + height > 1.000001 {
+            || x < 0.0
+            || y < 0.0
+            || width <= 0.0
+            || height <= 0.0
+            || x + width > 1.000001
+            || y + height > 1.000001
+        {
             return Err("native_browser_preview_region_invalid".into());
         }
         let left = (x * f64::from(image.width())).floor() as u32;
         let top = (y * f64::from(image.height())).floor() as u32;
-        let right = ((x + width) * f64::from(image.width())).ceil().min(f64::from(image.width())) as u32;
-        let bottom = ((y + height) * f64::from(image.height())).ceil().min(f64::from(image.height())) as u32;
-        if right <= left || bottom <= top { return Err("native_browser_preview_empty_bounds".into()); }
+        let right = ((x + width) * f64::from(image.width()))
+            .ceil()
+            .min(f64::from(image.width())) as u32;
+        let bottom = ((y + height) * f64::from(image.height()))
+            .ceil()
+            .min(f64::from(image.height())) as u32;
+        if right <= left || bottom <= top {
+            return Err("native_browser_preview_empty_bounds".into());
+        }
         image = image.crop_imm(left, top, right - left, bottom - top);
     }
     let image = image

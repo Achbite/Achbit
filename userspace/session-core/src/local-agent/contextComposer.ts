@@ -15,7 +15,7 @@ import type {
   ToolExecutionRecord,
   TodoListProjection,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   LOCAL_AGENT_PROTOCOL_VERSION,
   SESSION_CONTROL_INTERACTION_REQUEST,
@@ -25,7 +25,7 @@ import {
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { LoopFailure } from './loopFailure.js';
 import { journalModelViews } from './modelView.js';
 import type {
@@ -199,7 +199,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   if (pluginAvailability.length) instructions.push({
     contributionId: `tool-availability:${input.runtime.kernelCatalogSnapshotRef}`,
     contributionKind: 'sessionControls', label: 'Execution capabilities',
-    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nUse only the callable tools in this request. Blocked tools are unavailable for the reported reason; do not probe for them or recreate their effects through shell commands. These facts describe execution capability, not permission approval. Native runtimeStatus reports the executor's last preparation observation; action results provide later facts.` },
+    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nBlocked tools are unavailable for the stated reason. Capability status grants no execution permission. runtimeStatus is a preparation observation; action results provide later facts.` },
   });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
@@ -270,7 +270,17 @@ export function messagesFromJournal(
   runId: string,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   modelViewEvents: readonly SessionEvent[] = events,
+  includeReviewEvidence = false,
 ): ContextMessageContribution[] {
+  if (!includeReviewEvidence) {
+    // Reviewer reads belong to that independent review, not the working Agent's
+    // transcript. Their ordinary Kernel records remain in the Session journal.
+    const reviewCalls = new Set(events.flatMap(event => event.type === 'provider.turn.settled'
+      && event.payload.purpose === 'approvalReview' && event.payload.outcome === 'completed'
+      ? event.payload.orderedCallIds : []));
+    events = events.filter(event => !(event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview')
+      && !('callId' in event && event.callId && reviewCalls.has(event.callId)));
+  }
   const messages: ContextMessageContribution[] = [];
   const fixed = journalModelViews(modelViewEvents);
   const throughSequence = events.at(-1)?.sequence ?? 0;
@@ -638,6 +648,22 @@ export function messagesFromJournal(
         message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
           agentId: task.agentSessionId, result: event.payload.result }) },
       });
+    } else if (event.type === 'process.wait.changed' && event.payload.phase === 'review') {
+      const latest = new Map<string, import('@achbit/protocol').ManagedProcessSnapshot>();
+      for (const fact of events) {
+        if (fact.sequence > event.sequence) break;
+        if (fact.type === 'process.updated') latest.set(fact.payload.job.jobId, fact.payload.job);
+        if (fact.type === 'tool.completed' && 'output' in fact.payload.record && isRecord(fact.payload.record.output)) {
+          const job = fact.payload.record.output.job;
+          if (isRecord(job) && typeof job.jobId === 'string' && !latest.has(job.jobId)) latest.set(job.jobId, job as unknown as import('@achbit/protocol').ManagedProcessSnapshot);
+        }
+      }
+      pendingAgentEvidence.push({ contributionId: `process-review:${event.eventId}`, contributionKind: 'journalMessages',
+        label: 'Dependency wait review', sourceSequence: event.sequence, message: {role: 'user', content: JSON.stringify({
+          type: 'process.wait.review', waitId: event.payload.waitId, waitingSince: event.payload.startedAt,
+          instruction: 'The Loop has waited on these commands for 120 seconds. Check the evidence; elapsed time alone is not a failure. You may repair or restart within the existing task authorization, or ask for missing information. If normal, call process with action=wait and the jobId; this logical wait will not automatically request another review.',
+          jobs: event.payload.jobIds.map(id => latest.get(id)).filter(job => job !== undefined).map(processContext),
+        })} });
     } else if (event.type === 'wake.triggered') {
       pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
@@ -768,6 +794,7 @@ export function messagesFromJournal(
               providerCallId: call.providerCallId,
               name: call.toolName,
               input: call.arguments,
+              ...(call.thoughtSignature !== undefined ? { thoughtSignature: call.thoughtSignature } : {}),
             })),
           },
         });
@@ -1143,7 +1170,6 @@ function applyProviderTurnCompletions(
     if (
       event.type !== 'provider.turn.settled'
       || event.payload.outcome !== 'completed'
-      || event.payload.purpose !== 'agent'
     ) continue;
     const turnMessages = new Set<ModelMessage>();
     let projectedCallCount = 0;
@@ -1334,7 +1360,7 @@ function messageContentForModel(
       binding.workspaceId,
       index === 0 ? 'primary' : `workspace${index + 1}`,
     ]));
-    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the DeepCode-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
+    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the Achbit-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
       payload.filesystemReferences.map((reference) => ({
         referenceId: reference.referenceId,
         workspace: workspaceHandleById.get(reference.workspaceId) ?? 'unavailable',
@@ -1420,7 +1446,7 @@ function stripShellDiagnostics(output: Record<string, unknown>): void {
   delete output.capturedBytes;
 }
 
-function processContext(job: import('@deepcode/protocol').ManagedProcessSnapshot): unknown {
+function processContext(job: import('@achbit/protocol').ManagedProcessSnapshot): unknown {
   // Bound each appended snapshot; the complete output remains in Kernel storage.
   const { result, output } = job;
   const details = isRecord(result) ? { ...result } : result;
@@ -1428,7 +1454,8 @@ function processContext(job: import('@deepcode/protocol').ManagedProcessSnapshot
     delete details.stdout; delete details.stderr;
     if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details);
   }
-  return { jobId: job.jobId, command: job.command, status: job.status,
+  return { jobId: job.jobId, command: job.command, status: job.status, startedAt: job.startedAt,
+    ...(job.lastOutputAt ? {lastOutputAt: job.lastOutputAt} : {}), ...(job.completedAt ? {completedAt: job.completedAt} : {}),
     ...(job.error ? { error: job.error } : {}),
     output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
     truncated: output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000 },

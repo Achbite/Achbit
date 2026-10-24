@@ -57,8 +57,8 @@ def terminal_face(data, style):
     label = {'Reading': 'Reading', 'ReadingSans': 'Reading Sans', 'MonoKai': 'Mono Kai', 'Mono': 'Mono'}[style]
     # CONSOLE_FONT_INFOEX has only 32 UTF-16 units. Distinct short family names
     # let Windows select all four faces; macOS keeps the same PostScript names.
-    family = f'DeepCode TUI {label} SC'
-    postscript = f'DeepCodeQuietTerminal{style}SC-Regular'
+    family = f'Achbit TUI {label} SC'
+    postscript = f'AchbitQuietTerminal{style}SC-Regular'
     names = {1: family, 2: 'Regular', 3: postscript + ';0.101', 4: family + ' Regular',
              5: 'Version 0.101; fixed terminal cells', 6: postscript, 16: family, 17: 'Regular'}
     font['name'].names = [item for item in font['name'].names if item.nameID not in names]
@@ -79,12 +79,12 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.source) as source, zipfile.ZipFile(args.output, 'w', zipfile.ZIP_DEFLATED) as output:
         for style in FAMILIES:
-            name, data = terminal_face(source.read(f'DeepCodeQuiet{style}SC-Regular.ttf'), style)
+            name, data = terminal_face(source.read(f'AchbitQuiet{style}SC-Regular.ttf'), style)
             output.writestr(name, data)
             print(name, flush=True)
         for name in ('Maple-LICENSE.txt', 'Libertinus-OFL.txt', 'Libertinus-AUTHORS.txt', 'WenKai-OFL.txt', 'sources.json'):
             output.writestr(name, source.read(name))
-        output.writestr('README.md', 'DeepCode Quiet Terminal SC\n\n'
+        output.writestr('README.md', 'Achbit Quiet Terminal SC\n\n'
             'Four OFL-derived fixed-cell faces for terminal rendering. ASCII: 500 units; CJK: 1000; UPM: 1000.\n'
             'Reading preserves Libertinus Sans letterforms fitted to the terminal grid; Mono uses Maple Mono.\n'
             'Kai uses LXGW WenKai CJK, Sans uses Resource Han Rounded from Maple Mono CN.\n'

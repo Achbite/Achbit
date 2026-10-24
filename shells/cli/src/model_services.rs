@@ -1,5 +1,5 @@
 use super::*;
-use deepcode_kernel_client::{ModelConnection, ModelProfile};
+use achbit_kernel_client::{ModelConnection, ModelProfile};
 
 pub async fn connections(client: &HttpKernelClient) -> Result<Outcome, String> {
     let catalog = client
@@ -47,13 +47,16 @@ pub async fn login(
         .iter()
         .find(|c| c.connection.id == selector)
     {
+        if c.connection.credential_kind != "oauth" {
+            return Err("此连接使用 API Key 或无需认证，请在模型与服务中配置；账号登录仅适用于 OAuth 服务。".into());
+        }
         c.connection.id.clone()
     } else {
         let adapter = catalog
             .adapters
             .iter()
-            .find(|a| a.id == selector && a.billing_modes.iter().any(|m| m == "subscription"))
-            .ok_or("请指定现有连接 ID，或支持订阅的服务 ID（openai-codex）。")?;
+            .find(|a| a.id == selector && a.auth_methods.iter().any(|m| m == "browser" || m == "deviceCode"))
+            .ok_or("请指定支持账号登录的连接 ID 或服务 ID（openai-codex）；API Key 套餐请在模型与服务中配置。")?;
         let connection = ModelConnection {
             id: new_id("connection"),
             name: adapter.name.clone(),

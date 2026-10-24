@@ -1,7 +1,7 @@
 import CommandRuleSettings from './CommandRuleSettings';
 import { requestInterfaceReload } from '../../../services/interfaceReload';
 import React, { useMemo } from 'react';
-import type { UserSettingValue } from '@deepcode/protocol';
+import type { UserSettingValue } from '@achbit/protocol';
 import { normalizeUiLanguage, t } from '../../../i18n';
 import { localizeSettingDefinition } from '../../../settingsLocalization';
 import {
@@ -30,6 +30,7 @@ const GENERAL_KEYS = [
   'gui.navigationDensity',
   'gui.showContextRail',
   'gui.showReasoning',
+  'gui.completionSound.foreground',
   'gui.usageWidget.enabled',
   'gui.usageWidget.visibility',
   'gui.usageWidget.currency',
@@ -112,7 +113,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
 
   return (
     <div>
-      <h2 className="settings-title">{category === 'general' ? (language === 'zh-CN' ? '通用' : 'General') : category === 'about' ? (language === 'zh-CN' ? '关于 DeepCode' : 'About DeepCode') : t(language, 'settings.gui.title')}</h2>
+      <h2 className="settings-title">{category === 'general' ? (language === 'zh-CN' ? '通用' : 'General') : category === 'about' ? (language === 'zh-CN' ? '关于 Achbit' : 'About Achbit') : t(language, 'settings.gui.title')}</h2>
       {category === 'appearance' && <GuiAppearanceSettings definitions={appearance} language={language} />}
       {preferences.length > 0 && (
         <div className="settings-card">
@@ -137,7 +138,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
           <h3 className="settings-card__title">{t(language, 'settings.runtime.title')}</h3>
           <table className="settings-kv">
             <tbody>
-              <tr><td>{t(language, 'settings.runtime.product')}</td><td>DeepCode</td></tr>
+              <tr><td>{t(language, 'settings.runtime.product')}</td><td>Achbit</td></tr>
               <tr><td>{t(language, 'settings.runtime.serverVersion')}</td><td>{serverVersion ?? '-'}</td></tr>
               <tr><td>{t(language, 'settings.runtime.apiStatus')}</td><td>{apiStatus}</td></tr>
               <tr>

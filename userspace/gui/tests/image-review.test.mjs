@@ -32,7 +32,7 @@ test('image review keeps its native dialog and image source with explicit zoom a
 test('artifact image card is a single viewer trigger and stays unavailable until its image is loaded', async t => {
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
   const { ArtifactLinks } = await loadGuiModule(t, '/src/components/local-agent/ArtifactLinks.tsx');
-  const props = { alt: 'result.png', className: 'deepcode-gui-output-item document-artifacts__item',
+  const props = { alt: 'result.png', className: 'achbit-gui-output-item document-artifacts__item',
     children: [createElement('span', { key: 'thumbnail', className: 'document-artifacts__thumbnail' },
       createElement('img', { src: 'blob:artifact', alt: '' })), createElement('strong', { key: 'label' }, 'result.png')] };
   const html = renderToStaticMarkup(createElement(ImageReview, { ...props, source: 'blob:artifact' }));

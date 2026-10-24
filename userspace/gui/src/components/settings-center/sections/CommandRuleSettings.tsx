@@ -1,6 +1,6 @@
 import NativeSelect from '../../shared/NativeSelect';
 import { useState } from 'react';
-import { decodeShellCommandRules } from '@deepcode/protocol';
+import { decodeShellCommandRules } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../../i18n';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from '../settingsSearch';

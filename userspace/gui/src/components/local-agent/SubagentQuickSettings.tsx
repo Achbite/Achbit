@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { decodeAgentSettings, type AgentSettings, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@deepcode/protocol';
+import { decodeAgentSettings, type AgentSettings, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -49,7 +49,7 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
       <button type="button" disabled={saving || loading || defaultsLoading}
         onClick={() => void save(subagentDefaults(defaults))}>{t(language, 'settings.subagents.applyDefaults')}</button>
     </>}
-    {error && <p className="deepcode-session-model__error" role="alert">{error}</p>}
+    {error && <p className="achbit-session-model__error" role="alert">{error}</p>}
   </div>;
 }
 

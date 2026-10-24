@@ -52,20 +52,20 @@ def replace_ui(source, target, app=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--assets', type=Path, default=Path(__file__).resolve().parents[1] / 'bin/ui/web-deepcode-gui')
+    parser.add_argument('--assets', type=Path, default=Path(__file__).resolve().parents[1] / 'bin/ui/web-achbit-gui')
     destination = parser.add_mutually_exclusive_group(required=True)
-    destination.add_argument('--package', type=Path, help='Existing platform directory or DeepCode-GUI.app')
+    destination.add_argument('--package', type=Path, help='Existing platform directory or Achbit.app')
     destination.add_argument('--output', type=Path, help='Publish a standalone built UI directory')
     args = parser.parse_args()
     app = None
     if args.package:
         package = args.package.resolve()
-        app = package if package.suffix == '.app' else package / 'DeepCode-GUI.app'
+        app = package if package.suffix == '.app' else package / 'Achbit.app'
         if app.is_dir():
-            target = app / 'Contents/Resources/web-deepcode-gui'
+            target = app / 'Contents/Resources/web-achbit-gui'
         else:
             app = None
-            target = package / 'web-deepcode-gui'
+            target = package / 'web-achbit-gui'
         if not target.is_dir():
             parser.error(f'Packaged GUI resources are missing: {target}')
     else:

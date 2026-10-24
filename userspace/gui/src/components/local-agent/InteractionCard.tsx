@@ -1,10 +1,10 @@
-import type { InteractionProjection } from '@deepcode/protocol';
+import type { InteractionProjection } from '@achbit/protocol';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { MarkdownContent } from './BufferedMarkdown';
 import { useConversationRowState } from './ConversationVirtualRow';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { InteractionOptions } from './InteractionOptions';
 import { interactionResponseLabel } from './interactionPresentation';
 import { submitReplyOnEnter } from './replyKeyboard';
@@ -56,7 +56,7 @@ export function InteractionCard({ interaction, language, onRespond, disabled = f
     {pending && <>
       <InteractionOptions options={interaction.options} disabled={sending || disabled} onAnswer={response => { void answer(response); }} />
       {interaction.allowFreeform && <form className="local-agent__question-form" onSubmit={event => { event.preventDefault(); void answer(text); }}>
-        <span className="local-agent__question-input-mark" aria-hidden="true"><DeepCodeShellIcon name="compose" size={16} /></span>
+        <span className="local-agent__question-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>
         <textarea ref={textareaRef} aria-label={t(language, 'agent.question.answer')} placeholder={t(language, 'agent.composer.placeholder.interaction')} value={text} disabled={sending || disabled}
           onChange={event => setText(event.target.value)} onKeyDown={submitReplyOnEnter} rows={1} />
         <button type="submit" disabled={sending || disabled || !text.trim()}>{t(language, 'agent.question.answer')}</button>

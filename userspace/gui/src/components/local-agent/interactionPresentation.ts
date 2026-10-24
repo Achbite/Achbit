@@ -1,4 +1,4 @@
-import type { InteractionProjection, ProjectionMessage } from '@deepcode/protocol';
+import type { InteractionProjection, ProjectionMessage } from '@achbit/protocol';
 
 export function interactionResponseLabel(interaction: InteractionProjection | undefined, response: string): string {
   return interaction?.options?.find(option => option.id === response)?.label ?? response;

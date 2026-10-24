@@ -19,8 +19,8 @@ export default function InterfaceReloadDialog() {
   }, []);
   if (!pending && !error) return null;
   const busy = pending?.some(guard => guard.busy);
-  return <ModalDialog className="deepcode-gui-text-dialog-backdrop" aria-label={chinese ? '重新加载界面' : 'Reload interface'} onClose={() => { setPending(null); setError(''); }}>
-    <div className="deepcode-gui-text-dialog">
+  return <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-label={chinese ? '重新加载界面' : 'Reload interface'} onClose={() => { setPending(null); setError(''); }}>
+    <div className="achbit-gui-text-dialog">
       <header><h2>{chinese ? '重新加载界面' : 'Reload interface'}</h2></header>
       <p>{busy ? (chinese ? '有配置正在保存，请完成后再重载。' : 'Settings are being saved. Reload after saving completes.') : (chinese ? '以下配置尚未保存。返回保存，或放弃这些修改后重载。' : 'These settings have unsaved changes. Return to save, or discard them and reload.')}</p>
       <ul>{[...new Set(pending?.map(guard => guard.label))].map(label => <li key={label}>{label}</li>)}</ul>

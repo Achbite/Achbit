@@ -1,4 +1,4 @@
-import type { PluginSelectionInput } from '@deepcode/protocol';
+import type { PluginSelectionInput } from '@achbit/protocol';
 import type { BrowserAnnotationDraft } from './browserReview';
 import type { PastedImageInput } from '../../services/pastedImage';
 import type { PastedTextInput } from '../../services/pastedText';

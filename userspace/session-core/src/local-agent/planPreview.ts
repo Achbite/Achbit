@@ -1,4 +1,4 @@
-import type { PlanPreviewProjection, ProviderEvent } from '@deepcode/protocol';
+import type { PlanPreviewProjection, ProviderEvent } from '@achbit/protocol';
 
 const PREVIEW_INPUT_LIMIT = 64 * 1024;
 

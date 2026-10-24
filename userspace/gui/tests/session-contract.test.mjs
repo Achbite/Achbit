@@ -139,7 +139,7 @@ test('Preview resizing uses its container width for percentage units', async t =
 });
 
 test('Workbench view history deduplicates locations and branches after navigating back', async (t) => {
-  const { visitLocation, locationKey } = await loadGuiModule(t, '/src/deepcode-gui/layout/navigationHistory.ts');
+  const { visitLocation, locationKey } = await loadGuiModule(t, '/src/achbit-gui/layout/navigationHistory.ts');
   const conversation = { sessionId: 'session:view', draftProjectId: null, settingsOpen: false,
     reader: { sessionId: 'session:view', target: null, visible: false, expanded: false } };
   const file = { ...conversation, reader: { ...conversation.reader, visible: true,
@@ -160,7 +160,7 @@ test('Workbench view history deduplicates locations and branches after navigatin
 });
 
 test('Workbench history cannot reactivate a closed native browser page', async (t) => {
-  const { visitLocation, forgetClosedBrowser } = await loadGuiModule(t, '/src/deepcode-gui/layout/navigationHistory.ts');
+  const { visitLocation, forgetClosedBrowser } = await loadGuiModule(t, '/src/achbit-gui/layout/navigationHistory.ts');
   const conversation = { sessionId: 'session:view', draftProjectId: null, settingsOpen: false,
     reader: { sessionId: 'session:view', target: null, visible: true, expanded: false } };
   const browser = { ...conversation, reader: { ...conversation.reader, target: { kind: 'browser', previewId: 'page:closed' } } };
@@ -532,7 +532,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
 });
 
 test('sidebar reordering preserves project ownership and ignores stale drag targets', async (t) => {
-  const { moveSidebarItem } = await loadGuiModule(t, '/src/deepcode-gui/layout/sidebarOrder.ts');
+  const { moveSidebarItem } = await loadGuiModule(t, '/src/achbit-gui/layout/sidebarOrder.ts');
   const projects = [{ id: 'p:a' }, { id: 'p:b' }, { id: 'p:c' }];
   const sessions = [
     { id: 's:a', projectId: 'p:a' }, { id: 's:b', projectId: 'p:a' },
@@ -560,7 +560,7 @@ test('sidebar reordering preserves project ownership and ignores stale drag targ
 });
 
 test('sidebar manual order survives catalog updates while new and deleted entries remain correct', async (t) => {
-  const { orderSidebarItems, readSidebarOrder } = await loadGuiModule(t, '/src/deepcode-gui/layout/sidebarOrder.ts');
+  const { orderSidebarItems, readSidebarOrder } = await loadGuiModule(t, '/src/achbit-gui/layout/sidebarOrder.ts');
   const saved = readSidebarOrder(JSON.stringify({ projects: ['p:b', 'p:deleted', 'p:a'], sessions: [] }));
   const updatedCatalog = [{ id: 'p:a', updatedAt: 'later' }, { id: 'p:new' }, { id: 'p:b', updatedAt: 'earlier' }];
   assert.deepEqual(orderSidebarItems(updatedCatalog, saved.projects).map((entry) => entry.id), ['p:new', 'p:b', 'p:a']);
@@ -572,7 +572,7 @@ test('sidebar manual order survives catalog updates while new and deleted entrie
 
 test('sidebar order uses the shared settings store and failed saves retain the saved order', async (t) => {
   const [{ useSettingsStore }, { SIDEBAR_ORDER_SETTING, readSidebarOrder }] = await loadGuiModules(t, [
-    '/src/state/settingsStore.ts', '/src/deepcode-gui/layout/sidebarOrder.ts',
+    '/src/state/settingsStore.ts', '/src/achbit-gui/layout/sidebarOrder.ts',
   ]);
   let persisted = { 'gui.colorTheme': 'dark' };
   let fail = false;
@@ -3281,6 +3281,7 @@ test('GUI consumes Session-normalized tool errors and record-local detail failur
   for (const [reason, status, zh, en] of [
     ['cancelled', 'cancelled', '未执行：已取消', 'Not executed: cancelled'],
     ['dependencyFailed', 'rejected', '未执行：前序调用未成功', 'Not executed: predecessor did not succeed'],
+    ['approvalRequired', 'rejected', '未执行：读取需要额外授权', 'Not executed: reading requires additional approval'],
   ]) {
     const notExecuted = structuredClone(inputRejected);
     const item = notExecuted.activities.find((entry) => entry.activityId === activity.activityId);
@@ -3774,9 +3775,9 @@ test('theme library and UI fonts persist without changing active colors or appea
   });
   await reloaded.getState().loadUserSettings();
   const mixed = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.match(mixed['--dc-font-ui'], /DeepCode Quiet Reading SC/);
+  assert.match(mixed['--dc-font-ui'], /Achbit Quiet Reading SC/);
   assert.equal(mixed['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
-  assert.match(mixed['--dc-font-code'], /DeepCode Quiet Mono SC/);
+  assert.match(mixed['--dc-font-code'], /Achbit Quiet Mono SC/);
   assert.equal(mixed['--dc-font-reading-size'], '14px');
   assert.equal(mixed['--dc-font-code-size'], '11px');
   assert.equal(mixed['--dc-ui-font-scale'], String(16 / 14));
@@ -3787,8 +3788,8 @@ test('theme library and UI fonts persist without changing active colors or appea
   await reloaded.getState().loadUserSettings();
   const variants = fonts.typographyStyles(reloaded.getState().effectiveSettings);
   assert.equal(variants['--dc-font-ui'], mixed['--dc-font-ui']);
-  assert.match(variants['--dc-font-reading'], /^"DeepCode Quiet Reading Sans SC",/);
-  assert.match(variants['--dc-font-code'], /^"DeepCode Quiet Mono Kai SC",/);
+  assert.match(variants['--dc-font-reading'], /^"Achbit Quiet Reading Sans SC",/);
+  assert.match(variants['--dc-font-code'], /^"Achbit Quiet Mono Kai SC",/);
   assert.equal(variants['--dc-font-reading-size'], '14px');
   assert.equal(variants['--dc-font-code-size'], '11px');
   assert.equal(reloaded.getState().effectiveSettings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
@@ -3962,7 +3963,7 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   let view;
   let input = { visibility: 'summary', expanded: true, locale: 'zh-CN', revision: 0, modelId: 'codex',
     labels: usageWidgetLabels('zh-CN'), costDisplay: { currency: 'USD', usdRate: 1 },
-    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription', credentialKind: 'oauth' } };
   let reads = 0;
   const actions = {
     setExpanded(value) { changes.push(value); input = { ...input, expanded: value }; view.update(input); },
@@ -4103,7 +4104,7 @@ test('usage widget remembers a moved position across remounts without saving tem
   const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t, saved);
   const input = { visibility: 'summary', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
     labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
-    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription', credentialKind: 'oauth' } };
   const scope = { signal: new AbortController().signal, quota: { async read() { return { windows: [] }; } }, actions: {} };
   const view = mount(input, scope); await Promise.resolve();
   const root = container.children[0];
@@ -4122,7 +4123,7 @@ test('usage widget remembers a moved position across remounts without saving tem
 });
 
 test('output overview remains compact while the sidebar page shows all deliveries', async t => {
-  const { ConversationOutputs } = await loadGuiModule(t, '/src/deepcode-gui/layout/DeepCodeTaskPanel.tsx');
+  const { ConversationOutputs } = await loadGuiModule(t, '/src/achbit-gui/layout/AchbitTaskPanel.tsx');
   const React = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const artifacts = Array.from({ length: 5 }, (_, index) => ({ artifactId: `artifact:${index}`, sessionId: 'session:outputs',
@@ -4136,8 +4137,8 @@ test('output overview remains compact while the sidebar page shows all deliverie
   assert.doesNotMatch(overview, /Report 4/);
   assert.equal((page.match(/document-artifacts__item/g) ?? []).length, 5);
   assert.match(page, /Back to overview/);
-  assert.match(page, /deepcode-gui-output-page/);
-  assert.doesNotMatch(page, /deepcode-gui-output-more/);
+  assert.match(page, /achbit-gui-output-page/);
+  assert.doesNotMatch(page, /achbit-gui-output-more/);
   assert.deepEqual(artifacts, before);
 });
 
@@ -4145,7 +4146,7 @@ test('usage widget restores the summary position after temporary Reader docking'
   const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t);
   let input = { visibility: 'summary', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
     labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
-    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription', credentialKind: 'oauth' } };
   const view = mount(input, { signal: new AbortController().signal,
     quota: { async read() { return { windows: [] }; } }, actions: {},
   });
@@ -4179,7 +4180,7 @@ test('usage widget mounted with Reader open expands at the full boundary right e
   container.clientWidth = 360;
   const input = { visibility: 'collapsed', expanded: false, locale: 'en-US', revision: 0, modelId: 'codex',
     labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
-    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription' } };
+    connection: { id: 'connection:quota', name: 'Codex', billingMode: 'subscription', credentialKind: 'oauth' } };
   const view = mount(input, { signal: new AbortController().signal,
     quota: { async read() { return { windows: [] }; } }, actions: {},
   });
@@ -4191,6 +4192,32 @@ test('usage widget mounted with Reader open expands at the full boundary right e
   dispose();
 });
 
+test('API-key plans show recorded usage without requesting OAuth quota or estimating subscription cost', async t => {
+  const { container, usageWidgetLabels, mount, dispose } = await createUsageWidgetHarness(t);
+  let reads = 0;
+  mount({ visibility: 'summary', expanded: true, locale: 'en-US', revision: 0, modelId: 'plan-model',
+    labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
+    connection: { id: 'connection:plan', name: 'Coding Plan', billingMode: 'subscription', credentialKind: 'apiKey' },
+  }, { signal: new AbortController().signal, actions: {},
+    quota: { read() { assert.fail('API-key plans do not use the OAuth quota endpoint'); } },
+    usage: { async query(query) {
+      reads++;
+      assert.equal(query.connectionId, 'connection:plan');
+      return { totals: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 20, calls: 1, reportedCalls: 1,
+        pricedCalls: 1, estimatedCost: 99 }, query, coverageFrom: query.from, buckets: [] };
+    } },
+  });
+  await Promise.resolve();
+  const text = element => [element.textContent ?? '', ...element.children.map(text)].join(' ');
+  const rendered = text(container.children[0]);
+  assert.equal(reads, 1);
+  assert.match(rendered, /Coding Plan/);
+  assert.match(rendered, /120 \/ 30/);
+  assert.doesNotMatch(rendered, /\$99|99\.00/);
+  assert.equal(rendered.includes(usageWidgetLabels('en-US').remaining), false);
+  dispose();
+});
+
 for (const billingMode of ['subscription', 'metered']) {
   test(`usage widget preserves ${billingMode} read failures until a reopened request succeeds`, async (t) => {
     const { container, usageWidgetLabels, mount, dispose, listeners } = await createUsageWidgetHarness(t);
@@ -4198,7 +4225,7 @@ for (const billingMode of ['subscription', 'metered']) {
     const read = signal => new Promise((resolve, reject) => requests.push({ resolve, reject, signal }));
     let input = { visibility: 'summary', expanded: true, locale: 'en-US', revision: 0, modelId: 'test-model',
       labels: usageWidgetLabels('en-US'), costDisplay: { currency: 'USD', usdRate: 1 },
-      connection: { id: 'connection:usage', name: 'Usage', billingMode } };
+      connection: { id: 'connection:usage', name: 'Usage', billingMode, credentialKind: billingMode === 'subscription' ? 'oauth' : 'apiKey' } };
     const view = mount(input, { signal: new AbortController().signal, actions: {},
       quota: { read }, usage: { query: (_query, signal) => read(signal) } });
     const root = container.children[0];
@@ -5189,4 +5216,16 @@ test('subagent draft edits update future defaults without starting a Session and
   assert.equal(store.getState().draftSubagentSettings, null);
   store.getState().startNewSession();
   assert.equal(store.getState().draftSubagentSettings, null, 'a new draft does not reuse an earlier explicit override');
+});
+
+test('shell search and read summaries distinguish intent from exact fs.read evidence', async t => {
+  const { toolActivitySummary } = await loadGuiModule(t, '/src/components/local-agent/ToolActivityDetails.tsx');
+  const activity = { kind: 'tool', label: 'bash', status: 'active', tool: { operation: 'bash', resources: [],
+    shell: { command: 'rg TODO src', cwd: '.' }, shellIntents: [{ kind: 'search', query: 'TODO', targets: ['src'] }] } };
+  assert.equal(toolActivitySummary(activity, 'zh-CN'), '在 src 中搜索“TODO”');
+  assert.equal(toolActivitySummary({ ...activity, status: 'completed' }, 'zh-CN'), '已在 src 中搜索“TODO”');
+  assert.doesNotMatch(toolActivitySummary({ ...activity, status: 'failed' }, 'zh-CN'), /已在|已读取/);
+  activity.tool.shellIntents = [{ kind: 'read', targets: ['README.md'] }];
+  assert.equal(toolActivitySummary({ ...activity, status: 'completed' }, 'zh-CN'), '读取目标: README.md');
+  assert.match(toolActivitySummary({ ...activity, status: 'completed', tool: { operation: 'fs.read', resources: [{ label: 'README.md' }] } }, 'zh-CN'), /已读取/);
 });

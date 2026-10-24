@@ -10,7 +10,7 @@ Project-specific contributions include:
 - A minimal cross-layer protocol, append-only Session journal, and shared projection reducer.
 - A controlled Kernel tool catalog with one user-decision boundary immediately before uncovered effects.
 - Durable Kernel tool-result records used for exact replay and restart recovery.
-- DeepCode-GUI, CLI, and TUI shells that consume one shared Session projection.
+- Achbit GUI, CLI, and TUI shells that consume one shared Session projection.
 - Plugin-shaped Skill and MCP contributions composed without introducing another Agent Loop.
 
 ## Design References

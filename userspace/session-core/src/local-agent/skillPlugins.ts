@@ -1,5 +1,5 @@
-import { permissionSettings, validatePermissionPatches } from '@deepcode/protocol';
-import type { UserSettings, RunRuntimeSnapshot } from '@deepcode/protocol';
+import { permissionSettings, validatePermissionPatches } from '@achbit/protocol';
+import type { UserSettings, RunRuntimeSnapshot } from '@achbit/protocol';
 import type { SessionControlWireNames } from './sessionControls.js';
 
 export type InstructionContribution = RunRuntimeSnapshot['instructions'][number];
@@ -77,12 +77,7 @@ export function runtimeInstructions(
     },
     ...config.selectedPlugins.map((plugin) => ({
       id: `plugin.${instructionId(plugin.uri)}`,
-      text: `The \`${plugin.displayName}\` plugin is loaded for this request. User mentions and Agent-requested activation are independent ways to select capabilities.
-
-Available capabilities:
-${plugin.capabilitySummary}
-
-Call the tools listed for this request; use the plugin name to identify its capabilities, not as a tool name.`,
+      text: `Loaded plugin: ${plugin.displayName}. ${plugin.capabilitySummary}`,
     })),
   ];
   const seen = new Set<string>();

@@ -1,4 +1,4 @@
-use deepcode_kernel_client::{
+use achbit_kernel_client::{
     is_terminal_run_status, ActivityProjection, ApprovalProjection, ExecutionPlanStep,
     InteractionProjection, PlanOperation, ProjectionMessage, SessionProjection,
     SessionTimelineItem, TodoListProjection, ToolOutputProjection,
@@ -332,14 +332,14 @@ impl CliRenderState {
                         writeln!(out, "  {}", request.root_path)?;
                     }
                 }
-                writeln!(out, "输入 /reply 1 或 /reply 确认；输入 /reply <意见> 请求修订；普通消息继续排队；显式运行 `deepcode-cli cancel-plan --session {}` 取消。", projection.session_id)?;
+                writeln!(out, "输入 /reply 1 或 /reply 确认；输入 /reply <意见> 请求修订；普通消息继续排队；显式运行 `achbit-cli cancel-plan --session {}` 取消。", projection.session_id)?;
             }
         }
         if let Some(interaction) = projection.pending_interaction.as_ref() {
             render_interaction(out, interaction)?;
             writeln!(
                 out,
-                "继续：deepcode-cli ask --session {} \"/reply <response>\"",
+                "继续：achbit-cli ask --session {} \"/reply <response>\"",
                 projection.session_id
             )?;
         }
@@ -388,7 +388,7 @@ impl CliRenderState {
             if members.insert(&task.agent_session_id) {
                 writeln!(
                     out,
-                    "子代理 {} · deepcode-cli show --session {}",
+                    "子代理 {} · achbit-cli show --session {}",
                     task.display_name, task.agent_session_id
                 )?;
             }
@@ -399,7 +399,7 @@ impl CliRenderState {
             for (record, index, change) in changes {
                 writeln!(
                     out,
-                    "  {} {} · deepcode-cli diff --session {} {} {}",
+                    "  {} {} · achbit-cli diff --session {} {} {}",
                     change.kind, change.path, projection.session_id, record, index
                 )?;
             }
@@ -556,10 +556,11 @@ pub(crate) fn render_tool_activity(
         .not_executed
         .as_ref()
         .map_or(activity.status.as_str(), |result| {
-            if result.reason == "dependencyFailed" {
-                "未执行：前序调用未成功"
-            } else {
-                "未执行：已取消"
+            match result.reason.as_str() {
+                "approvalRequired" => "未执行：读取需要额外授权",
+                "dependencyFailed" => "未执行：前序调用未成功",
+                "dependencyPending" => "未执行：前序调用仍在运行",
+                _ => "未执行：已取消",
             }
         });
     writeln!(out, "工具 {operation} [{status}]")?;
@@ -643,7 +644,7 @@ pub(crate) fn render_tool_activity(
             if let Some(record) = &tool.record_id {
                 writeln!(
                     out,
-                    "  {} {} -> deepcode-cli diff --session {} {} {}",
+                    "  {} {} -> achbit-cli diff --session {} {} {}",
                     change.kind, change.path, projection.session_id, record, index
                 )?;
             }
@@ -657,7 +658,7 @@ pub(crate) fn render_tool_activity(
             ) {
                 ("workspacePath", Some(workspace_id), Some(logical_path), _) => writeln!(
                     out,
-                    "  {} -> deepcode-cli open-resource --session {} {} {:?}",
+                    "  {} -> achbit-cli open-resource --session {} {} {:?}",
                     resource.label, projection.session_id, workspace_id, logical_path,
                 )?,
                 ("url", _, _, Some(uri)) => writeln!(out, "  {} -> {uri}", resource.label)?,
@@ -743,10 +744,10 @@ pub(crate) fn render_todo(out: &mut impl Write, projection: &SessionProjection) 
             "  {marker} {} · {}",
             item.text,
             crate::i18n::Language::default().text(match item.status.as_str() {
-                "completed" => "deepcodeGui.tasks.status.completed",
-                "inProgress" => "deepcodeGui.tasks.status.inProgress",
-                "blocked" => "deepcodeGui.tasks.status.blocked",
-                _ => "deepcodeGui.tasks.status.pending",
+                "completed" => "achbitGui.tasks.status.completed",
+                "inProgress" => "achbitGui.tasks.status.inProgress",
+                "blocked" => "achbitGui.tasks.status.blocked",
+                _ => "achbitGui.tasks.status.pending",
             })
         )?;
     }
@@ -814,7 +815,7 @@ pub(crate) fn render_final_message(
 
 fn render_source_references(
     out: &mut impl Write,
-    references: Option<&deepcode_kernel_client::SourceReferences>,
+    references: Option<&achbit_kernel_client::SourceReferences>,
 ) -> io::Result<()> {
     if let Some(references) = references {
         for citation in &references.citations {
@@ -871,7 +872,7 @@ pub(crate) fn render_approval(
     }
     if !reviewing {
         writeln!(out, "/reply 1 允许一次 · /reply 2 拒绝")?;
-        for (scope, input) in deepcode_kernel_client::AUTHORIZATION_OPTIONS {
+        for (scope, input) in achbit_kernel_client::AUTHORIZATION_OPTIONS {
             if approval
                 .preview
                 .authorization_scopes
@@ -925,7 +926,7 @@ pub(crate) fn render_run_state(
 ) -> io::Result<()> {
     if let Some(run) = projection.run.as_ref() {
         writeln!(out, "run {}: {}", run.run_id, run.status)?;
-        if deepcode_kernel_client::is_terminal_run_status(&run.status) {
+        if achbit_kernel_client::is_terminal_run_status(&run.status) {
             if let Some(todo) = projection
                 .todo_list
                 .as_ref()
@@ -997,7 +998,7 @@ mod tests {
 
     fn projection() -> SessionProjection {
         serde_json::from_value(json!({
-            "schemaVersion": deepcode_kernel_client::SESSION_PROJECTION_VERSION, "permissionOverrides":{}, "effectivePermissions":null, "shellAuthorizations":[],
+            "schemaVersion": achbit_kernel_client::SESSION_PROJECTION_VERSION, "permissionOverrides":{}, "effectivePermissions":null, "shellAuthorizations":[],
             "sessionId": "session:test", "revision": 1,
             "display": {"creationTitle":"CLI display"},
             "workspaceBindings": [], "sessionDirectoryIndexes": [],
@@ -1014,6 +1015,11 @@ mod tests {
     #[test]
     fn unexecuted_tools_report_the_explicit_reason() {
         for (status, disposition, expected) in [
+            (
+                "rejected",
+                json!({"reason":"approvalRequired"}),
+                "未执行：读取需要额外授权",
+            ),
             ("cancelled", json!({"reason":"cancelled"}), "未执行：已取消"),
             (
                 "rejected",
@@ -1373,7 +1379,7 @@ mod tests {
             let text = String::from_utf8(out).unwrap();
             assert_eq!(text.matches("本轮修改").count(), 1);
             assert!(text.contains("已经写入文件，以下为实际结果。\n本轮修改"));
-            assert!(text.contains("create result.txt · deepcode-cli diff"));
+            assert!(text.contains("create result.txt · achbit-cli diff"));
         }
     }
 }

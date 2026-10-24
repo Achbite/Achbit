@@ -1,4 +1,4 @@
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { inputCacheMetric } from '../../utils/providerUsage';
 
@@ -9,7 +9,7 @@ export default function TotalCacheUsage({ projection, language }: {
 }) {
   const summary = cacheHitSummary(projection, language);
   return <span className="local-agent__total-cache" title={summary.title}>
-    <span>{t(language, 'deepcodeGui.cache.label')}</span>
+    <span>{t(language, 'achbitGui.cache.label')}</span>
     <span>{summary.value}</span>
   </span>;
 }
@@ -25,31 +25,31 @@ function cacheHitSummary(
     const percent = `${formatCachePercent(cache.hitPercent)}%`;
     return {
       value: percent,
-      title: t(language, 'deepcodeGui.cache.calculatedTitle', {
+      title: t(language, 'achbitGui.cache.calculatedTitle', {
         input: cache.inputTokens.toLocaleString(language),
         hit: cache.hitTokens.toLocaleString(language),
         miss: cache.missTokens.toLocaleString(language),
-      }) + (!cache.complete ? ` ${t(language, 'deepcodeGui.cache.partialTitle', {
+      }) + (!cache.complete ? ` ${t(language, 'achbitGui.cache.partialTitle', {
         reported: cache.reportedCallCount,
         calls: cache.providerCallCount,
-      })}` : '') + (running ? ` ${t(language, 'deepcodeGui.cache.updatingTitle')}` : ''),
+      })}` : '') + (running ? ` ${t(language, 'achbitGui.cache.updatingTitle')}` : ''),
     };
   }
   if (running) {
     return {
-      value: t(language, 'deepcodeGui.cache.pendingValue'),
-      title: t(language, 'deepcodeGui.cache.pendingTitle'),
+      value: t(language, 'achbitGui.cache.pendingValue'),
+      title: t(language, 'achbitGui.cache.pendingTitle'),
     };
   }
   if (!usage?.providerCallCount) {
     return {
-      value: t(language, 'deepcodeGui.cache.emptyValue'),
-      title: t(language, 'deepcodeGui.cache.emptyTitle'),
+      value: t(language, 'achbitGui.cache.emptyValue'),
+      title: t(language, 'achbitGui.cache.emptyTitle'),
     };
   }
   return {
-    value: t(language, 'deepcodeGui.cache.unavailableValue'),
-    title: t(language, 'deepcodeGui.cache.unavailableTitle', {
+    value: t(language, 'achbitGui.cache.unavailableValue'),
+    title: t(language, 'achbitGui.cache.unavailableTitle', {
       calls: usage.providerCallCount.toLocaleString(language),
     }),
   };

@@ -1,15 +1,15 @@
 import type { SessionObservationSink } from './local-agent/observation.js';
 import { LoopFailure } from './local-agent/loopFailure.js';
-import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
-import { isShellAuthorizationScope } from '@deepcode/protocol';
+import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
+import { isShellAuthorizationScope } from '@achbit/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
-import type { ConversationCommand, CommandJournalPort } from '@deepcode/protocol';
+import type { ConversationCommand, CommandJournalPort } from '@achbit/protocol';
 import { responseFrames } from './responseFrames.js';
 import {
   CONVERSATION_COMMAND_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
   validatePermissionPatches,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   HttpCommandJournal,
   HttpAgentHostPort,
@@ -17,7 +17,7 @@ import {
   HttpProviderPort,
   HttpRunPreparationPort,
 } from './local-agent/httpPorts.js';
-import { decodeAgentRecipe } from '@deepcode/protocol';
+import { decodeAgentRecipe } from '@achbit/protocol';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSessionService, SessionDeletionError, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
@@ -312,6 +312,10 @@ function decodeCommand(value: unknown): ConversationCommand {
       if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'runId', 'expectedHostBinding', 'hostBinding'])
         || !validId(value.runId) || !value.expectedHostBinding || !value.hostBinding
         || !validHostBinding(value.expectedHostBinding) || !validHostBinding(value.hostBinding)) throw new Error('conversation_command_invalid');
+      return value as unknown as ConversationCommand;
+    case 'tool.cancel':
+      if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'runId', 'callId'])
+        || !validId(value.runId) || !validId(value.callId)) throw new Error('conversation_command_invalid');
       return value as unknown as ConversationCommand;
     case 'run.cancel':
       if (

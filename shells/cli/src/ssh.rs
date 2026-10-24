@@ -1,10 +1,10 @@
 //! Local operator interface for an Agent assisting with SSH onboarding.
 //! This path does not bootstrap a local Session or receive login secrets.
-use deepcode_host_connection::{
+use achbit_host_connection::{
     ssh::{SshGuiConnection, SshTarget},
     UserDirectories,
 };
-use deepcode_kernel_abi::{HOST_TOKEN_ENTROPY_BYTES, HOST_UI_TOKEN_PREFIX};
+use achbit_kernel_abi::{HOST_TOKEN_ENTROPY_BYTES, HOST_UI_TOKEN_PREFIX};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -39,7 +39,7 @@ fn parse(args: &[String]) -> io::Result<Options> {
             port: None,
             identity_file: None,
             config_file: None,
-            cli_path: "deepcode-cli".into(),
+            cli_path: "achbit-cli".into(),
             user_root: None,
             remote_shell: Default::default(),
         },
@@ -171,15 +171,15 @@ fn connect_gui(options: Options, endpoint: String) -> io::Result<Value> {
             .parent()
             .ok_or_else(|| io::Error::other("CLI directory unavailable"))?
             .join(if cfg!(windows) {
-                "DeepCode-GUI.exe"
+                "Achbit.exe"
             } else {
-                "DeepCode-GUI"
+                "Achbit"
             }),
     };
     if !gui.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "DeepCode-GUI not found beside CLI; pass --gui <local GUI executable>",
+            "Achbit not found beside CLI; pass --gui <local GUI executable>",
         ));
     }
     let user = UserDirectories::resolve()?;
@@ -216,7 +216,7 @@ fn connect_gui(options: Options, endpoint: String) -> io::Result<Value> {
     if let Some(path) = &receipt {
         command.env(RECEIPT_ENV, path);
     }
-    let mut child = deepcode_host_connection::process::spawn_independent_shell(&mut command)?;
+    let mut child = achbit_host_connection::process::spawn_independent_shell(&mut command)?;
     let pid = child.id();
     if let Some(path) = &receipt {
         let deadline = Instant::now() + Duration::from_secs(310);
@@ -265,10 +265,10 @@ fn unique_id() -> String {
 }
 
 const HELP: &str = r#"Agent SSH onboarding (run on the computer displaying the GUI):
-  deepcode-cli ssh inspect --host <IP|alias> [--port <port>] [--user <name>]
-  deepcode-cli ssh configure --host <IP|alias> [options] --output <new profile.json>
-  deepcode-cli ssh check --profile <profile.json>
-  deepcode-cli ssh connect --profile <profile.json> [--wait] [--gui <executable>]
+  achbit-cli ssh inspect --host <IP|alias> [--port <port>] [--user <name>]
+  achbit-cli ssh configure --host <IP|alias> [options] --output <new profile.json>
+  achbit-cli ssh check --profile <profile.json>
+  achbit-cli ssh connect --profile <profile.json> [--wait] [--gui <executable>]
 All commands also accept --host instead of --profile and return JSON (except help).
 Options: --identity <local key path>, --config <OpenSSH config>, --remote-cli <path>, --remote-user-root <path>, --remote-shell <posix|windows>.
 Remote shell defaults to posix (macOS/Linux). Select windows for Windows OpenSSH using cmd.exe or PowerShell.
@@ -310,7 +310,7 @@ mod tests {
         assert!(args.wait);
         assert_eq!(
             args.target.remote_shell,
-            deepcode_host_connection::ssh::SshRemoteShell::Windows
+            achbit_host_connection::ssh::SshRemoteShell::Windows
         );
         assert!(parse_args(&["connect", "--host", "server", "--remote-shell", "unknown"]).is_err());
         assert!(parse_args(&["connect", "--host", "server", "--password", "secret"]).is_err());

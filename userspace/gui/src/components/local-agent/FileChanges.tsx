@@ -2,12 +2,12 @@ import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { requestReader } from './readerState';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ActivityProjection } from '@deepcode/protocol';
+import type { ActivityProjection } from '@achbit/protocol';
 import { useConversationHost, useConversationTheme } from './ConversationHost';
 import { loadCodeLanguage } from './codeLanguage';
 import { useConversationSessionId } from './ConversationSessionScope';
 import { useConversationRowState } from './ConversationVirtualRow';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
 import { changedFiles, displayedChangedFiles, readRoundChange, readChangeStatistics, previewChangedLines, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
@@ -70,13 +70,13 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
   });
   return <section className={`conversation-changes${compact ? ' conversation-changes--compact' : ''}${expanded ? ' is-expanded' : ''}`}>
     <button type="button" className="conversation-changes-heading" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-      <DeepCodeShellIcon name="compose" /><span><strong>{t(language, 'changes.files', { count: all.length })}</strong>{!compact && <small>{t(language, 'changes.round')}</small>}</span>
+      <AchbitShellIcon name="compose" /><span><strong>{t(language, 'changes.files', { count: all.length })}</strong>{!compact && <small>{t(language, 'changes.round')}</small>}</span>
       {total && <DiffCounts counts={total} />}
       {binaryCount > 0 && <small className="conversation-change-binary-count">{t(language, 'changes.binaryCount', { count: binaryCount })}</small>}
-      <DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
+      <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
     {(compact || expanded) && <div className="conversation-change-list">{entries}
-      {!compact && all.length > 3 && <button className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><DeepCodeShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
+      {!compact && all.length > 3 && <button className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
       {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><summary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</summary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
     </div>}
   </section>;

@@ -1,6 +1,6 @@
 import { providerTextStreamId } from '../local-agent/streamIdentity.js';
-import { LOCAL_AGENT_PROTOCOL_VERSION } from '@deepcode/protocol';
-import type { SessionEvent, SessionProjection, AssistantDraftProjection } from '@deepcode/protocol';
+import { LOCAL_AGENT_PROTOCOL_VERSION } from '@achbit/protocol';
+import type { SessionEvent, SessionProjection, AssistantDraftProjection } from '@achbit/protocol';
 import type { SessionObservationInput, SessionObservationSink } from '../local-agent/observation.js';
 
 type Item = Record<string, unknown>;

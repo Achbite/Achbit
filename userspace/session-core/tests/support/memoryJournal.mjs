@@ -1,4 +1,4 @@
-import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
+import { SESSION_EVENT_VERSION } from '@achbit/protocol';
 import { assertRuntimeContract } from './runtimeContract.mjs';
 import { projectAgentLifecycleEvent } from '../../dist/local-agent/agentLifecycle.js';
 import { projectRunLifecycleEvent } from '../../dist/local-agent/runLifecycle.js';

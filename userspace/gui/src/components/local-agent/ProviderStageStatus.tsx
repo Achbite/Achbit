@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { ProviderActivityProjection, RunProjection } from '@deepcode/protocol';
+import type { ProviderActivityProjection, RunProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { ReasoningDetails } from './ReasoningDetails';
 

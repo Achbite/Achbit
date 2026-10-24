@@ -331,11 +331,7 @@ impl Executor {
             ),
             None => None,
         };
-        let foreground = input["mode"].as_str().unwrap_or(if window_id.is_some() {
-            "background"
-        } else {
-            "foreground"
-        }) == "foreground";
+        let foreground = crate::protocol::foreground_requested(input);
         let window = match window_id {
             Some(id) => desktop::snapshot(id)?,
             None => desktop::app_window(app)?,

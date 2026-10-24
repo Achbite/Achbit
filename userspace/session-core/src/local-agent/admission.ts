@@ -1,7 +1,7 @@
-import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@deepcode/protocol';
-import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import { SESSION_EVENT_VERSION } from '@deepcode/protocol';
-import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@achbit/protocol';
+import { isSessionAuthorizationScope } from '@achbit/protocol';
+import { SESSION_EVENT_VERSION } from '@achbit/protocol';
+import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@achbit/protocol';
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
 import { admitModelView } from './modelView.js';
@@ -232,19 +232,28 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       admitModelView(event.payload, events);
       const compaction = events.some((item) => item.type === 'context.compaction.requested'
         && item.runId === runId && item.payload.providerRequestId === event.payload.providerRequestId);
+      const runtime = state.runRuntimeSnapshots[event.runId];
+      const view = state.runToolViews[event.runId] ?? runtime;
       if (event.payload.purpose === 'approvalReview') {
         const planReview = state.pendingPlan?.review?.status === 'reviewing'
           && state.pendingPlan.review.providerRequestId === event.payload.providerRequestId;
-        if ((!state.pendingApproval && !planReview) || event.payload.tools.length
-          || (state.pendingApproval && planReview)) throw new Error('approval_review_context_invalid');
+        const reading = event.payload.responseConstraint === 'normal' && event.payload.tools.length > 0 && !planReview;
+        const deciding = event.payload.responseConstraint === 'answerOnly' && event.payload.tools.length === 0;
+        if ((!state.pendingApproval && !planReview) || (state.pendingApproval && planReview) || (!reading && !deciding)
+          || event.payload.tools.some(tool => {
+            const declared = view.tools.find(candidate => candidate.name === tool.canonicalName && candidate.availability === 'callable');
+            const alias = view.providerToolAliases.find(candidate => candidate.canonicalName === tool.canonicalName);
+            return !['fs.read', 'session.read'].includes(tool.canonicalName) || !declared || !alias
+              || tool.itemId !== declared.name || tool.wireName !== alias.wireName
+              || tool.origin !== declared.origin || tool.availability !== declared.availability
+              || tool.pluginUri !== declared.pluginUri;
+          })) throw new Error('approval_review_context_invalid');
       }
       if ((event.payload.purpose === 'contextCompaction') !== compaction) throw new Error('context_composition_purpose_mismatch');
       if (JSON.stringify(event.payload.workspaceBindings.map(binding => binding.itemId))
         !== JSON.stringify(requestResourceBindings(state.run?.workspaceBindings ?? [], events).map(binding => binding.workspaceId))) {
         throw new Error('context_workspace_snapshot_mismatch');
       }
-      const runtime = state.runRuntimeSnapshots[event.runId];
-      const view = state.runToolViews[event.runId] ?? runtime;
       if (event.payload.kernelCatalogSnapshotRef && event.payload.kernelCatalogSnapshotRef !== view.kernelCatalogSnapshotRef) {
         throw new Error('tool_request_binding_missing');
       }
@@ -271,12 +280,22 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.payload.pluginInstanceRefs.length !== view.selectedPlugins.plugins.length) throw new Error('run_runtime_release_plugin_mismatch');
       break;
     }
+    case 'process.wait.changed': {
+      const wait = event.payload;
+      if (!wait.waitId || !wait.jobIds.length || !Number.isSafeInteger(wait.startedAt)
+        || !Number.isSafeInteger(wait.reviewAt) || wait.reviewAt < wait.startedAt
+        || wait.jobIds.some(id => state.processes[id]?.runId !== event.runId)) throw new Error('process_wait_invalid');
+      const previous = events.findLast(e => e.type === 'process.wait.changed' && e.runId === event.runId);
+      if (previous?.type === 'process.wait.changed' && previous.payload.waitId === wait.waitId
+        && previous.payload.reviewed && !wait.reviewed) throw new Error('process_wait_review_rearmed');
+      break;
+    }
     case 'process.updated': {
       const job = event.payload.job;
       const request = events.find(item => item.type === 'tool.requested' && item.callId === event.callId && item.runId === event.runId);
       const previous = state.processes[job.jobId];
       if (!isManagedProcessSnapshot(job) || job.sessionId !== event.sessionId || job.runId !== event.runId
-        || job.callId !== event.callId || request?.type !== 'tool.requested' || request.payload.toolName !== 'process'
+        || job.callId !== event.callId || request?.type !== 'tool.requested' || !['process', 'bash', 'powershell', 'container'].includes(request.payload.toolName)
         || previous && (previous.callId !== job.callId || previous.revision >= job.revision || previous.status !== 'active')) {
         throw new Error('managed_process_event_invalid');
       }
@@ -291,8 +310,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.type === 'tool.not-executed') {
         if (state.activities[`tool:${event.callId}`]?.status !== 'requested') throw new Error('tool_not_executed_started');
         const predecessor = event.payload.predecessorCallId;
-        if ((event.payload.reason === 'dependencyFailed') !== Boolean(predecessor)
-          || predecessor && (!state.activities[`tool:${predecessor}`] || ['requested', 'active', 'completed'].includes(state.activities[`tool:${predecessor}`]!.status))) {
+        if (['dependencyFailed', 'dependencyPending'].includes(event.payload.reason) !== Boolean(predecessor)
+          || predecessor && (!state.activities[`tool:${predecessor}`]
+            || event.payload.reason === 'dependencyFailed' && ['requested', 'active', 'completed'].includes(state.activities[`tool:${predecessor}`]!.status))) {
           throw new Error('tool_not_executed_dependency_invalid');
         }
       }

@@ -1,6 +1,6 @@
 import NativeSelect from '../../shared/NativeSelect';
 import { useEffect, useMemo, useState } from 'react';
-import type { ConnectionSummary, UsageQuery, UsageReport, UsageBucket } from '@deepcode/protocol';
+import type { ConnectionSummary, UsageQuery, UsageReport, UsageBucket } from '@achbit/protocol';
 import { queryModelUsage } from '../../../services/apiClient';
 import { UiSettingsContributions, useDisplayTheme } from '../../../ui-plugins/UiPlugins';
 import { Cost, data, Hint, message, useMoneyFormatter, periodQuery, useModelLanguage } from './shared';

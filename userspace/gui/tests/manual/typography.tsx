@@ -1,12 +1,12 @@
 // Isolated presentation fixture using real settings and typography components.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_USER_SETTINGS, type UserSettings } from '@deepcode/protocol';
+import { DEFAULT_USER_SETTINGS, type UserSettings } from '@achbit/protocol';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import GuiTypography from '../../src/theme/GuiTypography';
 import GuiFontSettings from '../../src/components/settings-center/GuiFontSettings';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/settings-center/settingsCenter.css';
 import '../../src/components/settings-center/appearanceConfiguration.css';

@@ -1,10 +1,10 @@
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import NativeSelect from '../../shared/NativeSelect';
-import { modelReasoningEfforts, type UserSettings } from '@deepcode/protocol';
+import { modelReasoningEfforts, type UserSettings } from '@achbit/protocol';
 import { t } from '../../../i18n';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConnectionSummary, ConnectionsResult, LlmProviderProfile, LlmProfilesResult, ModelConnection, ProviderAdapterDescriptor, UsageReport } from '@deepcode/protocol';
+import type { ConnectionSummary, ConnectionsResult, LlmProviderProfile, LlmProfilesResult, ModelConnection, ProviderAdapterDescriptor, UsageReport } from '@achbit/protocol';
 import { getLlmProfiles, getModelConnections, patchModelConnections, queryModelUsage } from '../../../services/apiClient';
 import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { useSettingsStore } from '../../../state/settingsStore';
@@ -73,6 +73,12 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
     </div>
   </details>;
 }
+export function adapterCredentialKind(adapter: ProviderAdapterDescriptor): ModelConnection['credentialKind'] {
+  if (adapter.authMethods.includes('apiKey')) return 'apiKey';
+  if (adapter.authMethods.includes('browser') || adapter.authMethods.includes('deviceCode')) return 'oauth';
+  return 'none';
+}
+
 function newModel(connection: ModelConnection, adapter: ProviderAdapterDescriptor): LlmProviderProfile {
   return { ...(adapter.models[0] ?? { name: '', model: '', kind: adapter.protocols[0], providerFlavor: 'openai', enabled: true, contextWindowTokens: 128000, maxOutputTokens: 16000 }), id: `model:${crypto.randomUUID()}`, connectionId: connection.id };
 }
@@ -81,9 +87,9 @@ function connectionSettings(connection: ModelConnection): ModelConnection {
   return { id, name, adapterId, billingMode, baseUrl, credentialKind };
 }
 
-function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onSaved, onBack }: {
+export function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onMode, onSaved, onBack }: {
   current?: ConnectionSummary; adapters: ProviderAdapterDescriptor[]; profiles: LlmProviderProfile[];
-  defaultId?: string; mode: 'metered' | 'subscription'; onSaved(id?: string): Promise<void>; onBack(): void;
+  defaultId?: string; mode: 'metered' | 'subscription'; onMode?(mode: 'metered' | 'subscription'): void; onSaved(id?: string): Promise<void>; onBack(): void;
 }) {
   const { text, language } = useModelLanguage();
   const theme = useDisplayTheme();
@@ -91,10 +97,11 @@ function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onSave
   const first = available[0];
   const [draft, setDraft] = useState<ModelConnection>(current ? connectionSettings(current) : {
     id: `connection:${crypto.randomUUID()}`, name: first.name, adapterId: first.id, billingMode: mode,
-    baseUrl: first.defaultBaseUrl, credentialKind: mode === 'subscription' ? 'oauth' : first.authMethods.includes('none') ? 'none' : 'apiKey',
+    baseUrl: first.defaultBaseUrl, credentialKind: adapterCredentialKind(first),
   });
   const adapter = adapters.find(a => a.id === draft.adapterId)!;
   const [apiKey, setApiKey] = useState('');
+  const [initialModel, setInitialModel] = useState(first.models[0]?.model ?? '');
   const [newProfile, setNewProfile] = useState<LlmProviderProfile | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -102,30 +109,43 @@ function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onSave
   useAutoDismiss(saved, () => setSaved(false));
   const models = profiles.filter(p => p.connectionId === draft.id);
   const baseline = useRef(JSON.stringify(draft));
-  useInterfaceReloadGuard(!!apiKey || JSON.stringify(draft) !== (current ? JSON.stringify(connectionSettings(current)) : baseline.current), draft.name, busy);
+  const initialModelBaseline = useRef(initialModel);
+  useInterfaceReloadGuard(!!apiKey || !current && initialModel !== initialModelBaseline.current || JSON.stringify(draft) !== (current ? JSON.stringify(connectionSettings(current)) : baseline.current), draft.name, busy);
   const save = async () => {
     setBusy(true); setError(''); setSaved(false);
     try {
-      data(await patchModelConnections({ connection: draft, ...(apiKey ? { apiKey } : {}) }));
+      const template = adapter.models.find(model => model.model === initialModel);
+      const profile = { ...newModel(draft, template ? adapter : { ...adapter, models: [] }), ...(template ?? { name: initialModel.trim(), model: initialModel.trim() }) };
+      data(await patchModelConnections({ connection: draft, ...(apiKey ? { apiKey } : {}), ...(!current ? { profile } : {}) }));
       setApiKey(''); await onSaved(draft.id); setSaved(true);
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   };
   return <>
     <div className="model-heading"><h2>{current?.name ?? (mode === 'subscription' ? text('添加 Coding Plan', 'Add Coding Plan') : text('添加 API 连接', 'Add API connection'))}</h2></div>
+    {!current && onMode && <div className="model-mode-switch" role="group" aria-label={text('接入方式', 'Connection type')}>
+      <button type="button" aria-pressed={mode === 'metered'} onClick={() => onMode('metered')}>{text('API / 本地模型', 'API / local model')}</button>
+      <button type="button" aria-pressed={mode === 'subscription'} onClick={() => onMode('subscription')}>Coding Plan</button>
+    </div>}
     <form className="model-connection-form" onSubmit={e => { e.preventDefault(); void save(); }}>
       <fieldset disabled={busy}>
         <div className="model-form-grid">
-          {!current && <label>{text('服务', 'Service')}<NativeSelect value={draft.adapterId} onChange={e => { const a = adapters.find(a => a.id === e.target.value)!; setDraft(p => ({ ...p, adapterId: a.id, name: a.name, baseUrl: a.defaultBaseUrl, credentialKind: mode === 'subscription' ? 'oauth' : a.authMethods.includes('none') ? 'none' : 'apiKey' })); }}>{available.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</NativeSelect></label>}
+          {!current && <label>{text('服务', 'Service')}<NativeSelect value={draft.adapterId} onChange={e => { const a = adapters.find(a => a.id === e.target.value)!; setDraft(p => ({ ...p, adapterId: a.id, name: a.name, baseUrl: a.defaultBaseUrl, credentialKind: adapterCredentialKind(a) })); setApiKey(''); setInitialModel(a.models[0]?.model ?? ''); }}>{available.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</NativeSelect></label>}
           <label>{text('连接名称', 'Connection name')}<input required value={draft.name} onChange={e => { setDraft(p => ({ ...p, name: e.target.value })); setSaved(false); }} /></label>
-          {mode === 'metered' && <label className="model-wide">{text('API 地址', 'API address')}<input type="url" required value={draft.baseUrl} onChange={e => { setDraft(p => ({ ...p, baseUrl: e.target.value })); setSaved(false); }} /></label>}
-          {draft.credentialKind === 'apiKey' && <label className="model-wide">API Key<input type="password" autoComplete="off" value={apiKey} placeholder={current?.authStatus === 'ready' ? text('已配置，留空保持', 'Configured; leave blank to keep') : ''} onChange={e => { setApiKey(e.target.value); setSaved(false); }} /></label>}
+          {draft.credentialKind !== 'oauth' && <label className="model-wide">{text('API 地址', 'API address')}<input type="url" required value={draft.baseUrl} onChange={e => { setDraft(p => ({ ...p, baseUrl: e.target.value })); setSaved(false); }} /></label>}
+          {draft.credentialKind === 'apiKey' && <label className="model-wide">API Key<input type="password" autoComplete="off" required={!current} value={apiKey} placeholder={current?.authStatus === 'ready' ? text('已配置，留空保持', 'Configured; leave blank to keep') : ''} onChange={e => { setApiKey(e.target.value); setSaved(false); }} /></label>}
+          {!current && <label>{text('首个模型', 'First model')}<input required value={initialModel} list="connection-model-templates" placeholder={text('输入服务商提供的模型 ID', 'Enter a model ID from your provider')} onChange={event => setInitialModel(event.target.value)} /><datalist id="connection-model-templates">{adapter.models.map(model => <option key={model.model} value={model.model}>{model.name}</option>)}</datalist></label>}
         </div>
-        <div className="model-actions"><span className="model-feedback" role="status">{saved ? text('已保存', 'Saved') : ''}</span><button className="model-primary model-push" type="submit">{current ? text('保存连接', 'Save connection') : mode === 'subscription' ? text('创建并继续登录', 'Create and continue to sign in') : text('创建连接', 'Create connection')}</button></div>
+        <p className="model-connection-hint">{draft.credentialKind === 'oauth'
+          ? text('使用订阅账号登录，支持浏览器授权或设备码。', 'Sign in with your subscription account using a browser or device code.')
+          : draft.credentialKind === 'none' ? text('连接本机模型服务，无需 API Key。', 'Connect to a local model service without an API key.')
+          : mode === 'subscription' ? text('使用对应套餐和地区的专用 API Key。套餐 Key 与按量 API Key 不通用。', 'Use the API key for this plan and region. Plan keys and metered API keys are separate.')
+          : text('使用该服务的 API Key，费用按服务商规则计算。', 'Use this service’s API key. Your provider determines billing.')}</p>
+        <div className="model-actions"><span className="model-feedback" role="status">{saved ? text('已保存', 'Saved') : ''}</span><button className="model-primary model-push" type="submit">{current ? text('保存连接', 'Save connection') : draft.credentialKind === 'oauth' ? text('创建并继续登录', 'Create and continue to sign in') : text('创建连接', 'Create connection')}</button></div>
       </fieldset>
     </form>
     {error && <div className="settings-error" role="alert">{error}</div>}
     {current && <>
-      {mode === 'subscription' && <SubscriptionAuth connection={current} onChanged={() => onSaved()} />}
+      {current.credentialKind === 'oauth' && <SubscriptionAuth connection={current} onChanged={() => onSaved()} />}
       <UiSettingsContributions slot="settings.connection.detail" onConnectionChanged={() => onSaved()} input={{ kind: 'settings.connection', connection: current, locale: language, theme }} />
       <div className="model-heading model-divider"><h3>{text('模型', 'Models')}</h3><button disabled={!!newProfile} onClick={() => setNewProfile(newModel(draft, adapter))}>{text('添加模型', 'Add model')}</button></div>
       {models.map(profile => <ModelEditor key={profile.id} profile={profile} adapter={adapter} defaultId={defaultId} onSaved={() => onSaved()} />)}
@@ -148,20 +168,19 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
   const [usageError, setUsageError] = useState('');
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
-  const [showAdd, setShowAdd] = useState(false);
   const addButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!active) return;
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]') || (event.target instanceof Element && event.target.closest('[data-escape-layer="open"]'))) return;
-      if (!showAdd && page.kind === 'list') return;
+      if (page.kind === 'list') return;
       event.preventDefault(); event.stopPropagation();
-      if (showAdd) setShowAdd(false); else setPage({ kind: 'list' });
+      setPage({ kind: 'list' });
       requestAnimationFrame(() => addButton.current?.focus({ preventScroll: true }));
     };
     document.addEventListener('keydown', escape, true);
     return () => document.removeEventListener('keydown', escape, true);
-  }, [active, page.kind, showAdd]);
+  }, [active, page.kind]);
   const refresh = useCallback(async (id?: string) => {
     const [connectionsResult, profilesResult] = await Promise.all([getModelConnections(), getLlmProfiles()]);
     setCatalog(data(connectionsResult));
@@ -192,7 +211,7 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
     {error && <div className="settings-error" role="alert">{error}</div>}
     {loading && <div role="status">{text('正在读取…', 'Loading…')}</div>}
     {page.kind === 'list' && <>
-      <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-add"><button ref={addButton} className="model-primary" aria-expanded={showAdd} onClick={() => setShowAdd(v => !v)}>{text('添加连接', 'Add connection')} +</button>{showAdd && <div className="model-add-menu"><button onClick={() => { setPage({ kind: 'new', mode: 'metered' }); setShowAdd(false); }}>{text('API 连接', 'API connection')}</button><button onClick={() => { setPage({ kind: 'new', mode: 'subscription' }); setShowAdd(false); }}>Coding Plan</button></div>}</div></div>
+      <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-connection-entry"><button ref={addButton} onClick={() => setPage({ kind: 'new', mode: 'metered' })}>+ {text('API 连接', 'API connection')}</button><button onClick={() => setPage({ kind: 'new', mode: 'subscription' })}>+ Coding Plan</button></div></div>
       <div className="model-actions model-subheading"><span>{text('最近使用', 'Last used')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
       {profiles && <ApprovalReviewerModel profiles={profiles.profiles} connections={profiles.connections} />}
       {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}
@@ -203,7 +222,7 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
             const stat = usage?.connections.find(v => v.connectionId === c.id);
             const index = catalog!.connections.findIndex(v => v.id === c.id);
             return <div className="model-connection-row" key={c.id}>
-              <button className="model-connection-open" onClick={() => setPage({ kind: 'connection', id: c.id })}><span className={`model-status model-status--${c.authStatus}`} /><span><strong>{c.name}</strong><small>{mode === 'subscription' ? c.account?.label ?? text('未登录', 'Signed out') : catalog?.adapters.find(a => a.id === c.adapterId)?.name} · {profiles?.profiles.filter(p => p.connectionId === c.id && p.enabled).length ?? 0} {text('个模型', 'models')}</small></span></button>
+              <button className="model-connection-open" onClick={() => setPage({ kind: 'connection', id: c.id })}><span className={`model-status model-status--${c.authStatus}`} /><span><strong>{c.name}</strong><small>{c.credentialKind === 'oauth' ? c.account?.label ?? text('未登录', 'Signed out') : `${catalog?.adapters.find(a => a.id === c.adapterId)?.name ?? c.adapterId} · ${c.authStatus === 'ready' ? text('已配置', 'Configured') : text('待配置', 'Not configured')}`} · {profiles?.profiles.filter(p => p.connectionId === c.id && p.enabled).length ?? 0} {text('个模型', 'models')}</small></span></button>
               <button className="model-connection-usage" onClick={() => setPage({ kind: 'usage', connectionId: c.id })}>{mode === 'metered' ? <Cost totals={stat} /> : <span>{stat?.reportedCalls ? (stat.inputTokens + stat.outputTokens).toLocaleString() : '—'} tokens</span>}<small>{stat?.calls ?? (usage ? 0 : '—')} {text('次调用', 'calls')}</small></button>
               <div className="model-reorder"><button aria-label={text('上移', 'Move up')} disabled={index === 0} onClick={() => void reorder(c.id, -1)}>↑</button><button aria-label={text('下移', 'Move down')} disabled={index === (catalog?.connections.length ?? 0)-1} onClick={() => void reorder(c.id, 1)}>↓</button></div>
               <button aria-label={text('配置连接', 'Configure connection')} onClick={() => setPage({ kind: 'connection', id: c.id })}>›</button>
@@ -215,7 +234,7 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
       {usageError && <div className="settings-error" role="alert">{usageError}</div>}
       <div className="model-actions model-divider"><button onClick={() => setPage({ kind: 'web' })}>{text('Web 工具', 'Web tools')} ›</button><button className="model-push" onClick={() => void refresh().catch(e => setError(message(e)))}>{text('重新加载', 'Reload')}</button></div>
     </>}
-    {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onSaved={refresh} onBack={goBack} />}
+    {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onMode={mode => setPage({ kind: 'new', mode })} onSaved={refresh} onBack={goBack} />}
     {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} />}
     {page.kind === 'web' && <AgentSettingsSection category="services" />}
   </section>;

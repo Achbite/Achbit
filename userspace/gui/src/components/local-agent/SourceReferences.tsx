@@ -1,4 +1,4 @@
-import type { ProjectionMessage } from '@deepcode/protocol';
+import type { ProjectionMessage } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 
 export function SourceReferences({ references, language }: {

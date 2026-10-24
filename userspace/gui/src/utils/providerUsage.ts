@@ -1,4 +1,4 @@
-import type { ProviderTokenUsage } from '@deepcode/protocol';
+import type { ProviderTokenUsage } from '@achbit/protocol';
 
 export interface CanonicalProviderInputCacheUsage {
   providerCallCount: number;

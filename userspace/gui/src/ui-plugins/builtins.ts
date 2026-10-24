@@ -12,6 +12,6 @@ export function withBuiltinRegions(files: UiPluginFile[], usageEnabled = true): 
     manifest: { id: 'deepcode.usage', name: 'Usage', entry: 'builtinUsage.mjs', slots: ['usage.widget'], capabilities: ['usage.read', 'quota.read'] },
     source: usageSource, error: null }] : [];
   return [...files, ...usage, ...(slots.length ? [{ path: 'builtin:regions', enabled: true,
-    manifest: { id: 'deepcode.regions', name: 'DeepCode', entry: 'builtinRegions.mjs', slots },
+    manifest: { id: 'deepcode.regions', name: 'Achbit', entry: 'builtinRegions.mjs', slots },
     source: regionSource, error: null }] : [])];
 }

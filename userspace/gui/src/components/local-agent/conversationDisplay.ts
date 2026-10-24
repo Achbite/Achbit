@@ -1,4 +1,4 @@
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 
 /** UI delivery order only. Execution and artifact facts remain in Session. */
 export function conversationDisplay(

@@ -1,4 +1,4 @@
-# DeepCode Debug CLI 速查
+# Achbit Debug CLI 速查
 
 Debug 用于独立、定向验证。工具和 UI 操作直接调用接口，不需要模型或 Agent Loop；只有验证 Session、Provider 或模型审批本身时才启动任务。生成 Debug 包不等于执行标准安装包、CLI/TUI 或发布验收。
 
@@ -9,12 +9,12 @@ Debug 用于独立、定向验证。工具和 UI 操作直接调用接口，不�
 在产物目录中运行，测试工作区须已存在：
 
 ```sh
-./deepcode-debug launch --artifact . --workspace /absolute/test-workspace --state-root /absolute/debug-state
+./achbit-debug launch --artifact . --workspace /absolute/test-workspace --state-root /absolute/debug-state
 export DEEPCODE_USER_ROOT=/absolute/debug-state
-./deepcode-debug inspect
+./achbit-debug inspect
 ```
 
-Windows 使用 `.\deepcode-debug.cmd`，PowerShell 中设置 `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'`。每个连接命令都需要显式状态目录；不要复用标准版数据或默认复制其凭据。
+Windows 使用 `.\achbit-debug.cmd`，PowerShell 中设置 `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'`。每个连接命令都需要显式状态目录；不要复用标准版数据或默认复制其凭据。
 
 ## 接口选择
 
@@ -33,7 +33,7 @@ Windows 使用 `.\deepcode-debug.cmd`，PowerShell 中设置 `$env:DEEPCODE_USER
 | 查询计时/用量 | `metrics query --kind tool\|ui\|component\|session\|provider` |
 | 清理本轮实例 | `stop`；`detach` 只解除控制，不取消任务 |
 
-以上命令均接在 `./deepcode-debug` 后。参数可用 `@JSON文件`。先 inspect 获取实际 selector、组件 ID、动作签名和可用性；不要猜工具或控件名。
+以上命令均接在 `./achbit-debug` 后。参数可用 `@JSON文件`。先 inspect 获取实际 selector、组件 ID、动作签名和可用性；不要猜工具或控件名。
 
 直接工具上下文目前不提供 run 所属的浏览器/桌面绑定，激活 Computer Use 不等于这些工具可调用。适用时使用 GUI 的 surface/action；缺少入口时报告限制，不为构造界面状态另搭模拟 Provider。
 
@@ -41,4 +41,4 @@ UI 动作可通过 `waitFor` 等待 DOM 或组件状态。动作返回不等于�
 
 任务观察使用一条 `--follow` 连接，按批次接收文本、工具、决定和终态，不轮询状态。按任务自身终态判断成功，不以观察流关闭代替完成。
 
-完整参数与示例见 [Debug control](product/debug-control.md)，产品内用 `doc.read` 的 `name="debug-control.md"` 读取。构建不更新运行进程；只在授权范围内重启目标 GUI/Host，标准版保持独立。
+完整参数与示例见 [Debug control](product/debug-control.md)，产品内通过 Shell 读取 `productDocsPath` 下的同名文件。构建不更新运行进程；只在授权范围内重启目标 GUI/Host，标准版保持独立。

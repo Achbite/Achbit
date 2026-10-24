@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
-import { projectCommittedText } from '@deepcode/presentation-core';
-import type { SessionProjection } from '@deepcode/protocol';
+import { projectCommittedText } from '@achbit/presentation-core';
+import type { SessionProjection } from '@achbit/protocol';
 import { MarkdownContent } from '../components/local-agent/BufferedMarkdown';
 import { UiPluginSlotView, useDisplayTheme, useUiPlugins } from '../ui-plugins/UiPlugins';
 

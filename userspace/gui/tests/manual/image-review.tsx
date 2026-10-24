@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ImageReview } from '../../src/components/local-agent/ImageReview';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
 import '../../src/components/local-agent/localAgentPanel.css';

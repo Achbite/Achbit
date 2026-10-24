@@ -34,8 +34,8 @@
 .agent-tasks__overview > section + section { margin-top:24px; }
 .agent-tasks__overview h3 { display:flex; gap:8px; margin:0 0 8px; font:inherit; font-weight:600; }
 .agent-tasks__overview h3 > span { color:var(--dc-muted); font-weight:400; }
-.agent-tasks__overview .deepcode-gui-agent-member { padding:10px 6px; align-items:flex-start; }
-.agent-tasks__overview .deepcode-gui-agent-member > span { display:grid; gap:4px; }
-.agent-tasks__overview .deepcode-gui-agent-member strong { color:var(--dc-foreground); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
-.agent-tasks__overview .deepcode-gui-agent-member small { overflow:hidden; text-overflow:ellipsis; font:inherit; }
+.agent-tasks__overview .achbit-gui-agent-member { padding:10px 6px; align-items:flex-start; }
+.agent-tasks__overview .achbit-gui-agent-member > span { display:grid; gap:4px; }
+.agent-tasks__overview .achbit-gui-agent-member strong { color:var(--dc-foreground); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
+.agent-tasks__overview .achbit-gui-agent-member small { overflow:hidden; text-overflow:ellipsis; font:inherit; }
 .agent-tasks__list-empty { margin:24px; color:var(--dc-muted); }

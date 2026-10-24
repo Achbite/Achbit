@@ -1,18 +1,22 @@
-# DeepCode
+# Achbit
 
-DeepCode is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and edit projects, run tools, inspect results, and continue in shared conversations. Connect your preferred model service and extend the agent with Skills, CLI tools, and MCP.
+Achbit is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and edit projects, run tools, inspect results, and continue in shared conversations. Connect your preferred model service and extend the agent with Skills, CLI tools, and MCP.
+
+**Achbit** uses an **AC** monogram, recalling “Accepted” in programming contests. See [model services](docs/product/model-services.md) for API and Coding Plan setup.
 
 **[Quick start](#quick-start) · [Download](https://github.com/Achbite/DeepCode/releases) · [DeepSeek guide](docs/product/deepseek.md) · [简体中文](README.zh-CN.md)**
 
 ## See it in use
 
-![DeepCode GUI showing a project delivery dashboard beside the conversation](assets/readme/workspace-en.jpg)
+![Achbit GUI with its AC monogram](assets/readme/achbit-workspace.png)
 
-*A real GUI task using fictional project data: read a CSV, create an interactive dashboard, and inspect its preview. Try the [sample CSV](examples/delivery-dashboard/delivery-data.csv). This is a general product demonstration.*
+*Current Achbit GUI, captured from the isolated macOS Debug build on 2026-10-23.*
 
-![English illustration of DeepCode TUI with mathematical notation](assets/readme/tui-borderless-en.png)
+![API and Coding Plan connection selection](assets/readme/achbit-model-services.png)
 
-*Based on a real TUI conversation; image editing translated the interface labels into English and removed the outer white border. The [original Chinese screenshot](assets/readme/tui-native-zh.png) remains available. See [image notes](assets/readme/README.md).*
+*The model settings preserve the shared interface style and separate API keys from account login. This Chinese-language capture shows a GLM Coding Plan form; it does not demonstrate a live provider request.*
+
+**Real task:** DeepSeek API researches a public page, builds an interactive checklist and verifies it with Computer Use. [See the walkthrough and more examples →](examples/README.md)
 
 ## Quick start
 
@@ -22,9 +26,9 @@ Choose a package for your platform from [Releases](https://github.com/Achbite/De
 
 | Platform | Install or launch |
 | --- | --- |
-| macOS Apple Silicon | Install `DeepCode-<version>-macos-arm64.pkg`, then open `/Applications/DeepCode-GUI.app`. For the portable archive, open `DeepCode-GUI.app` inside the extracted directory. |
-| Windows x64 | Run `DeepCode-<version>-win64-setup.exe` and open DeepCode from the Start menu, or open `DeepCode-GUI.exe` in the portable package. |
-| Linux x64 / ARM64 | Extract the matching package and run `./DeepCode-GUI`. |
+| macOS Apple Silicon | Install `Achbit-<version>-macos-arm64.pkg`, then open `/Applications/Achbit.app`. For the portable archive, open `Achbit.app` inside the extracted directory. |
+| Windows x64 | Run `Achbit-<version>-win64-setup.exe` and open Achbit from the Start menu, or open `Achbit.exe` in the portable package. |
+| Linux x64 / ARM64 | Extract the matching package and run `./Achbit`. |
 
 1. Open **Settings → Models & services** and configure an API connection or a supported Coding Plan.
 2. Select a project folder and a model. For DeepSeek, follow the [English](docs/product/deepseek.md) or [简体中文](docs/product/deepseek.zh-CN.md) guide.
@@ -39,8 +43,8 @@ Install Docker and GNU Make. On Windows, use WSL2 with Docker integration. For m
 **On the host:**
 
 ```bash
-git clone --branch main https://github.com/Achbite/DeepCode.git
-cd DeepCode
+git clone --branch main https://github.com/Achbite/DeepCode.git Achbit
+cd Achbit
 
 # macOS only: prepare your persistent local signing identity once,
 # before packaging. Follow any Keychain confirmation shown by macOS.
@@ -53,7 +57,7 @@ Skip the signing command on Windows and Linux. `main` contains the stable source
 
 **Inside the container (`/workspace`):**
 
-For daily development, run `bash ./build.sh` (or `pnpm build`). It compiles and updates the development host's complete runnable product in `bin/`, including current native programs, Session code and GUI resources, without creating archives or installers. On macOS, open `bin/macos-arm64/DeepCode-GUI.app` after the build. Docker uses the host platform supplied by `make shell`; Windows/WSL selects `bin/win64`, and Linux selects its container architecture. To build and package every available platform, explicitly run `bash ./build.sh --stage package` (or `pnpm package`). Select a single distribution package below:
+For daily development, run `bash ./build.sh` (or `pnpm build`). It compiles and updates the development host's complete runnable product in `bin/`, including current native programs, Session code and GUI resources, without creating archives or installers. On macOS, open `bin/macos-arm64/Achbit.app` after the build. Docker uses the host platform supplied by `make shell`; Windows/WSL selects `bin/win64`, and Linux selects its container architecture. To build and package every available platform, explicitly run `bash ./build.sh --stage package` (or `pnpm package`). Select a single distribution package below:
 
 | Target | Command | Output in the checkout |
 | --- | --- | --- |
@@ -67,30 +71,30 @@ After a successful runtime build or packaging, run `exit` to leave the container
 
 ```bash
 # macOS
-open bin/macos-arm64/DeepCode-GUI.app
-./bin/macos-arm64/DeepCode-TUI.command -C /path/to/project
+open bin/macos-arm64/Achbit.app
+./bin/macos-arm64/Achbit-TUI.command -C /path/to/project
 
 # Linux: use linux-x64 instead if that is the generated architecture
-./bin/linux-arm64/DeepCode-GUI
-./bin/linux-arm64/deepcode-tui -C /path/to/project
+./bin/linux-arm64/Achbit
+./bin/linux-arm64/achbit-tui -C /path/to/project
 ```
 
-On Windows, open the checkout from Windows and launch `bin\win64\DeepCode-GUI.exe`, or run `bin\win64\deepcode-tui.bat -C C:\path\to\project` in a Windows terminal. Continue with the model connection and first task above. The [development guide](docs/development.md) covers build options and updating an existing package.
+On Windows, open the checkout from Windows and launch `bin\win64\Achbit.exe`, or run `bin\win64\achbit-tui.bat -C C:\path\to\project` in a Windows terminal. Continue with the model connection and first task above. The [development guide](docs/development.md) covers build options and updating an existing package.
 
 ### Use the terminal
 
-After a macOS PKG or Windows Setup installation, use `deepcode-cli` and `deepcode-tui` directly; reopen the Windows terminal after installation. Portable packages provide these launchers:
+After a macOS PKG or Windows Setup installation, use `achbit-cli` and `achbit-tui` directly; reopen the Windows terminal after installation. Portable packages provide these launchers:
 
 | Platform | CLI | TUI |
 | --- | --- | --- |
-| macOS | `./DeepCode-CLI.command` | `./DeepCode-TUI.command` |
-| Windows | `.\deepcode-cli.bat` | `.\deepcode-tui.bat` |
-| Linux | `./deepcode-cli` | `./deepcode-tui` |
+| macOS | `./Achbit-CLI.command` | `./Achbit-TUI.command` |
+| Windows | `.\achbit-cli.bat` | `.\achbit-tui.bat` |
+| Linux | `./achbit-cli` | `./achbit-tui` |
 
 ```bash
-deepcode-cli connections
-deepcode-cli --model <profile-id> chat -C /path/to/project
-deepcode-tui -C /path/to/project
+achbit-cli connections
+achbit-cli --model <profile-id> chat -C /path/to/project
+achbit-tui -C /path/to/project
 ```
 
 For portable packages, replace the command with its launcher. Copy `<profile-id>` from `connections`; it is a saved configuration ID. In TUI, use `/model` to select a model, `/sessions` and `/resume` to continue a conversation, and `/` for available commands. Use `/language en-US` or `/language zh-CN` to change and save the interface language; this is separate from the language requested in a message. See [terminal and window behavior](docs/distribution.md).

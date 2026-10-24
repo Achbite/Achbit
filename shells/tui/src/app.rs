@@ -1,11 +1,11 @@
 use crate::i18n::Language;
 use crate::renderer::Renderer;
-use crossterm::event::KeyCode;
-use deepcode_kernel_client::{
+use achbit_kernel_client::{
     cancel_command, is_terminal_run_status, plan_cancel_command, ConversationResourceReadResult,
     ConversationSessionSummary, CreateConversationSessionRequest, HttpKernelClient,
     PluginCatalogItem, PluginCatalogProjection, PluginSelectionInput, SessionProjection,
 };
+use crossterm::event::KeyCode;
 use serde_json::json;
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn agent_status_key(status: deepcode_kernel_client::AgentTaskStatus) -> &'static str {
-    use deepcode_kernel_client::AgentTaskStatus::*;
+fn agent_status_key(status: achbit_kernel_client::AgentTaskStatus) -> &'static str {
+    use achbit_kernel_client::AgentTaskStatus::*;
     match status {
         Running => "agent.team.status.running",
         Completed => "agent.team.status.completed",
@@ -125,8 +125,8 @@ pub struct TuiApp {
     status: String,
     connection_error: Option<String>,
     next_message_profile_id: Option<String>,
-    model_connections: Option<deepcode_kernel_client::ModelConnections>,
-    model_profiles: Vec<deepcode_kernel_client::ModelProfile>,
+    model_connections: Option<achbit_kernel_client::ModelConnections>,
+    model_profiles: Vec<achbit_kernel_client::ModelProfile>,
     model_picker: Option<ModelPicker>,
     session_list: Option<Vec<ConversationSessionSummary>>,
     session_picker: Option<usize>,
@@ -213,7 +213,7 @@ impl TuiApp {
             plugin_selections_from_uris(self.host.language, &catalog, &self.host.plugin_uris)?;
         self.plugin_catalog = Some(catalog);
         self.initialized = true;
-        self.status = self.host.language.text("tui.readyHelp").to_string();
+        self.status = self.host.language.text("tui.ready").to_string();
         Ok(())
     }
 
@@ -725,7 +725,7 @@ impl TuiApp {
         let mut seen = HashSet::new();
         for task in projection.agent_tasks.iter().flatten().rev() {
             if seen.insert(&task.agent_session_id)
-                && task.status == deepcode_kernel_client::AgentTaskStatus::Running
+                && task.status == achbit_kernel_client::AgentTaskStatus::Running
             {
                 *counts
                     .entry(agent_status_key(task.status))
@@ -2075,7 +2075,7 @@ mod input_tests {
     use crate::conversation_input::fixtures::{pending_decisions, waiting_projection};
     fn test_app() -> TuiApp {
         let client = HttpKernelClient::new(
-            deepcode_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
+            achbit_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
                 .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
         )
         .unwrap();
@@ -2116,7 +2116,7 @@ mod input_tests {
         assert!(app.detail_preview().unwrap().contains("second"));
         assert_eq!(app.projection.as_ref().unwrap().revision, revision);
         app.submit_line("/help").await;
-        assert!(app.detail_preview().unwrap().contains("DeepCode 命令"));
+        assert!(app.detail_preview().unwrap().contains("AC 命令"));
         assert!(!app.detail_preview().unwrap().contains("second"));
         app.submit_line("/close").await;
         assert!(app.detail_preview().is_none());
@@ -2137,7 +2137,7 @@ mod input_tests {
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             app.client = HttpKernelClient::new(
-                deepcode_kernel_client::KernelClientConfig::new(format!(
+                achbit_kernel_client::KernelClientConfig::new(format!(
                     "http://{}",
                     listener.local_addr().unwrap()
                 ))
@@ -2268,7 +2268,7 @@ mod input_tests {
             assert!(!app.command_completion_key(KeyCode::Enter));
             let input = app.take_input();
             assert!(app.submit_line(&input).await);
-            assert!(app.detail_preview().unwrap().contains("DeepCode 命令"));
+            assert!(app.detail_preview().unwrap().contains("AC 命令"));
 
             app.push_input_text("/att");
             assert!(app.command_completion_key(key));
@@ -2375,7 +2375,7 @@ mod input_tests {
                     .unwrap();
                 let cursor = terminal.get_cursor_position().unwrap();
                 assert!(
-                    cursor.x < width && cursor.y >= height - 5 && cursor.y < height - 2,
+                    cursor.x < width && cursor.y >= height - 4 && cursor.y < height - 1,
                     "{cursor:?}"
                 );
             }
@@ -2491,7 +2491,7 @@ mod input_tests {
             .agent_tasks
             .as_mut()
             .unwrap()[1]
-            .status = deepcode_kernel_client::AgentTaskStatus::Completed;
+            .status = achbit_kernel_client::AgentTaskStatus::Completed;
         assert!(app.agent_status().is_empty());
         assert_eq!(app.agent_entries().len(), 1);
     }
@@ -2626,10 +2626,7 @@ mod input_tests {
             assert!(text.contains("profile:current"), "{text}");
             assert!(text.contains("下次 profile:next"), "{text}");
             let cursor = terminal.get_cursor_position().unwrap();
-            assert!(
-                cursor.x < 59 && cursor.y < 19 && cursor.y > 10,
-                "{cursor:?}"
-            );
+            assert!(cursor.x < 59 && cursor.y == 19, "{cursor:?}");
             assert_eq!(
                 app.projection, before,
                 "rendering must not mutate Session facts"
@@ -2771,6 +2768,30 @@ mod input_tests {
         app.backspace_input();
         assert_eq!(app.input(), "中文");
         assert!(app.projection().is_none());
+    }
+
+    #[test]
+    fn footer_uses_one_row_and_prioritizes_status_in_both_languages() {
+        for language in [Language::ZhCn, Language::EnUs] {
+            let mut app = test_app();
+            app.host.language = language;
+            app.initialized = true;
+            app.status = language.text("tui.ready").to_string();
+            for width in [32, 100] {
+                let rows = screen_rows(&app, width, 24);
+                let footer = rows.last().unwrap();
+                assert!(
+                    footer.trim_start().starts_with(language.text("tui.ready")),
+                    "{footer}"
+                );
+                assert_eq!(footer.matches("/help").count(), 1, "{footer}");
+                assert!(rows[22].trim().is_empty(), "{:?}", rows[22]);
+                app.status = "连接失败 connection failed".to_string();
+                let rows = screen_rows(&app, width, 24);
+                assert!(rows[23].contains("连接失败 connection"), "{:?}", rows[23]);
+                app.status = language.text("tui.ready").to_string();
+            }
+        }
     }
 
     #[test]
@@ -2970,7 +2991,7 @@ mod input_tests {
         assert!(screen_rows(&app, 80, 24)
             .join("\n")
             .contains("草稿\n\n 第一段"));
-        if let deepcode_kernel_client::AssistantDraftBlockProjection::FinalMessage {
+        if let achbit_kernel_client::AssistantDraftBlockProjection::FinalMessage {
             content, ..
         } = &mut app
             .projection
@@ -3089,7 +3110,7 @@ mod input_tests {
         for (language, help, context, tasks, reply, error_label) in [
             (
                 Language::ZhCn,
-                "DeepCode 命令",
+                "AC 命令",
                 "上下文",
                 "任务",
                 "等待回答",
@@ -3097,7 +3118,7 @@ mod input_tests {
             ),
             (
                 Language::EnUs,
-                "DeepCode commands",
+                "AC commands",
                 "Context",
                 "Tasks",
                 "Awaiting reply",
@@ -3106,7 +3127,7 @@ mod input_tests {
         ] {
             let mut app = test_app();
             app.host.language = language;
-            app.status = language.text("tui.readyHelp").to_string();
+            app.status = language.text("tui.ready").to_string();
             app.projection = Some(waiting_projection(
                 "pendingInteraction",
                 json!({

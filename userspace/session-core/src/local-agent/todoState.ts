@@ -1,4 +1,4 @@
-import type { NewSessionEvent, TodoItem, TodoListProjection, SessionEvent } from '@deepcode/protocol';
+import type { NewSessionEvent, TodoItem, TodoListProjection, SessionEvent } from '@achbit/protocol';
 
 export function todoUpdateFact(
   sessionId: string, runId: string, previous: TodoListProjection | null,

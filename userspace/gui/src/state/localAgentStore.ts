@@ -1,5 +1,5 @@
 import type { PastedImageInput } from '../services/pastedImage';
-import type { UserSettings, ShellAuthorizationScope } from '@deepcode/protocol';
+import type { UserSettings, ShellAuthorizationScope } from '@achbit/protocol';
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
 import { create } from 'zustand';
 import type {
@@ -18,8 +18,8 @@ import type {
   PlanResponse,
   SessionProjection,
   HostWindowBinding,
-} from '@deepcode/protocol';
-import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@deepcode/protocol';
+} from '@achbit/protocol';
+import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import type { PastedTextInput } from '../services/pastedText';
@@ -118,6 +118,7 @@ export interface LocalAgentState {
   respondApproval(decision: 'allow' | 'deny', authorizationScope?: ShellAuthorizationScope): Promise<CommandReply>;
   respondPlan(response: PlanResponse): Promise<CommandReply>;
   cancelRun(): Promise<CommandReply>;
+  cancelTool(sessionId: string, runId: string, callId: string): Promise<CommandReply>;
   createProject(title: string, workspacePaths?: string[]): Promise<void>;
   updateProject(projectId: string, input: { title?: string; workspacePaths?: string[] }): Promise<void>;
   addProjectWorkspace(projectId: string, canonicalRoot: string): Promise<void>;
@@ -738,6 +739,10 @@ const store = create<LocalAgentState>((set, get) => ({
   },
 
   respondPlan: async (response) => await submitPlanResponse(set, get, response),
+
+  cancelTool: async (sessionId, runId, callId) => submitDecision(set, get, `cancel-tool:${sessionId}:${callId}`, () => ({
+    schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'tool.cancel', commandId: nextId('command'), sessionId, runId, callId,
+  })),
 
   cancelRun: async () => {
     const state = get();

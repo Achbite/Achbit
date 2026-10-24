@@ -1,6 +1,6 @@
 {
-  "name": "@deepcode/presentation-core",
-  "version": "0.6.58",
+  "name": "@achbit/presentation-core",
+  "version": "0.6.60",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@deepcode/protocol": "workspace:*"
+    "@achbit/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

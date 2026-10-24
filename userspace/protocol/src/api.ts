@@ -19,7 +19,7 @@ import type { WorkspaceSummary } from './workspace.js';
  * 旧 Node server 不再作为默认 API 事实源。
  */
 export interface HealthStatus {
-  service: 'deepcode-host-web' | 'deepcode-kernel-daemon' | string;
+  service: 'achbit-host-web' | 'achbit-kernel-daemon' | string;
   ok: boolean;
   status: 'ok' | 'degraded';
   version?: string;

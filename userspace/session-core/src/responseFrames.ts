@@ -1,4 +1,4 @@
-import { LOCAL_AGENT_PROTOCOL_VERSION } from '@deepcode/protocol';
+import { LOCAL_AGENT_PROTOCOL_VERSION } from '@achbit/protocol';
 
 /** A logical reply may span multiple bounded NDJSON transport frames. */
 export function* responseFrames(value: unknown): Generator<string> {

@@ -1,5 +1,6 @@
+import { shellCommandIntents } from './shellIntent.js';
 import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
-import { isManagedProcessSnapshot, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { isManagedProcessSnapshot, providerRuntimeForPurpose } from '@achbit/protocol';
 import { advanceDeliverables, compareDeliverables } from './deliverables.js';
 import { advanceTodoList } from './todoState.js';
 import { providerTextStreamId } from './streamIdentity.js';
@@ -28,7 +29,7 @@ import type {
   ShellExecutionEnvironmentProjection,
   ToolExecutionRecord,
   WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
@@ -36,7 +37,7 @@ import {
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
   SESSION_PROJECTION_VERSION, permissionSettings, validatePermissionPatches, isLocalAgentErrorValue,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 
 export interface SessionState {
   subagentSettings?: SessionProjection['subagentSettings'];
@@ -690,6 +691,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (['bash', 'powershell'].includes(event.payload.toolName) && typeof input.command === 'string') {
         next.activities[toolActivityId(event.callId)].tool = {
           operation: event.payload.toolName, resources: [],
+          shellIntents: shellCommandIntents(input.command, event.payload.toolName),
           shell: { command: input.command, cwd: '.',
             executionScope: typeof input.requestHostPermission === 'string' ? 'host' : 'workspace',
             terminal: input.terminal !== undefined },
@@ -777,7 +779,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         tool,
       };
       const record = event.payload.record;
-      if (record.preparedEffect.providerRef === 'deepcode:processes' && record.input.action === 'start'
+      if (['process', 'bash', 'powershell', 'container'].includes(record.toolName)
         && record.outcome === 'completed' && isRecord(record.output)) {
         const initial = record.output.job;
         if (isManagedProcessSnapshot(initial) && initial.callId === event.callId && initial.runId === event.runId
@@ -830,6 +832,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
         event.type === 'agent.control.completed' ? SESSION_CONTROL_AGENT : SESSION_CONTROL_SESSION, event.sequence);
       break;
+    case 'process.wait.changed':
     case 'wake.scheduled':
     case 'wake.cancelled':
     case 'wake.triggered':
@@ -946,6 +949,12 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       const currentTurnCallIds = currentTurnCallFacts.map(([callId]) => callId);
       const settlement = event.payload;
       if (settlement.outcome === 'completed') {
+        if (settlement.purpose === 'approvalReview'
+          && (currentTurnCallFacts.some(([, fact]) => !['fs.read', 'session.read'].includes(fact.toolName))
+            || settlement.hostedWebSearchCalls?.length
+            || settlement.orderedOutputBlocks?.some(block => block.kind === 'providerHosted'))) {
+          throw new Error('approval_review_tool_invalid');
+        }
         if (new Set(settlement.orderedCallIds).size !== settlement.orderedCallIds.length) {
           throw new Error('provider_turn_call_order_invalid');
         }
@@ -983,7 +992,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
           })) {
             throw new Error('provider_turn_call_identity_mismatch');
           }
-          if (settlement.purpose !== 'agent') {
+          if (settlement.purpose !== 'agent' && settlement.purpose !== 'approvalReview') {
             throw new Error('provider_output_blocks_purpose_invalid');
           }
           if (
@@ -2055,6 +2064,7 @@ function cloneActivity(activity: ActivityProjection): ActivityProjection {
             ...activity.tool,
             ...(activity.tool.error ? { error: structuredClone(activity.tool.error) } : {}),
             resources: activity.tool.resources.map((resource) => ({ ...resource })),
+            ...(activity.tool.shellIntents ? { shellIntents: structuredClone(activity.tool.shellIntents) } : {}),
             ...(activity.tool.fileChanges ? { fileChanges: structuredClone(activity.tool.fileChanges) } : {}),
             ...(activity.tool.shell
               ? {
@@ -2121,10 +2131,11 @@ function projectProcess(state: SessionState, job: ManagedProcessSnapshot): void 
     tool: { recordId: previous.tool?.recordId, operation: job.toolName,
       resources: job.targets.map(label => ({kind: 'logicalTarget', label})),
       process: { jobId: job.jobId, command: job.command, output: structuredClone(job.output) },
+      shellIntents: shellCommandIntents(job.command, job.toolName),
       ...(job.error ? { error: structuredClone(job.error) } : {}) } };
   delete activity.liveOutput;
   if (job.status === 'active') activity.liveOutput = structuredClone(job.output);
-  if (job.result != null) {
+  if (job.result != null && !(job.toolName === 'container' && isRecord(job.result) && job.result.exitCode === undefined)) {
     const result = job.result;
     if (isRecord(result) && (result.exitCode === null || Number.isSafeInteger(result.exitCode))
       && isNaturalSafeInteger(result.durationMs) && typeof result.timedOut === 'boolean') {
@@ -2189,7 +2200,8 @@ function projectToolRecord(record: ToolExecutionRecord, activities: SessionState
       }
       return { kind: 'logicalTarget' as const, label: target };
     });
-    if (['bash', 'powershell'].includes(preparedEffect.operation)) tool.shell = projectShellActivity(record);
+    if (['bash', 'powershell'].includes(preparedEffect.operation) && !('output' in record && isRecord(record.output) && isManagedProcessSnapshot(record.output.job))) tool.shell = projectShellActivity(record);
+    if (tool.shell) tool.shellIntents = shellCommandIntents(tool.shell.command, preparedEffect.operation);
     Object.assign(tool, projectFileChanges(record));
     artifacts = artifactsFromRecord(record);
     const computer = projectComputerActivity(record, artifacts, activities);
@@ -2456,7 +2468,7 @@ export function combineTokenUsage(
 }
 
 /** Replay compact receipts without loading child prompts, outputs or execution state. */
-export function providerUsageFromEvents(read: import('@deepcode/protocol').ProviderUsageRead): SessionProjection['tokenUsage'] {
+export function providerUsageFromEvents(read: import('@achbit/protocol').ProviderUsageRead): SessionProjection['tokenUsage'] {
   let usage = emptySessionState(read.sessionId).tokenUsage;
   const completed = new Set<string>(), reported = new Set<string>();
   let previous = 0;
@@ -2522,7 +2534,7 @@ function projectFileChanges(record: ToolExecutionRecord): Pick<NonNullable<Activ
   })) };
 }
 
-function projectFileChangeSide({ exists, contentRef, sizeBytes, error }: import('@deepcode/protocol').FileChangeSide) {
+function projectFileChangeSide({ exists, contentRef, sizeBytes, error }: import('@achbit/protocol').FileChangeSide) {
   return { exists, ...(contentRef === undefined ? {} : { contentRef }),
     ...(sizeBytes === undefined ? {} : { sizeBytes }), ...(error === undefined ? {} : { error }) };
 }

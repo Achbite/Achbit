@@ -444,7 +444,7 @@
 .settings-search-result span { color: var(--dc-muted); font-size: calc(12px * var(--dc-ui-font-scale, 1)); flex-shrink: 0; }
 .settings-body [tabindex="-1"]:focus { outline: none; }
 .settings-body [data-settings-revealed] { background-color: var(--dc-surface-hover); }
-.settings-help-tooltip { position: fixed; inset: auto; margin: 0; width: min(340px, calc(100vw - 32px)); box-sizing: border-box; padding: 10px 12px; color: var(--dc-foreground); background: var(--dc-surface-raised); border: 1px solid var(--dc-border); border-radius: 8px; font: calc(12px * var(--dc-ui-font-scale, 1))/1.6 var(--dc-font-ui, -apple-system, sans-serif); box-shadow: var(--dc-shadow-panel); overflow-wrap: anywhere; }
+.settings-help-tooltip { pointer-events: none; position: fixed; inset: auto; margin: 0; width: min(340px, calc(100vw - 32px)); box-sizing: border-box; padding: 10px 12px; color: var(--dc-foreground); background: var(--dc-surface-raised); border: 1px solid var(--dc-border); border-radius: 8px; font: calc(12px * var(--dc-ui-font-scale, 1))/1.6 var(--dc-font-ui, -apple-system, sans-serif); box-shadow: var(--dc-shadow-panel); overflow-wrap: anywhere; }
 .plugin-manager__add { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; padding: 0 10px; line-height: 18px; white-space: nowrap; }
 .plugin-manager__add svg { width: 15px; height: 15px; flex: none; }
 .settings-center .reader-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 6px; background: transparent; color: var(--dc-muted); cursor: pointer; }

@@ -2,7 +2,7 @@
 // Unrelated UI is deliberately blank. No daemon, Provider or user settings are accessed.
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { COMMAND_REPLY_VERSION, SESSION_PROJECTION_VERSION, type ActivityProjection, type AgentSettings, type CommandReply, type LlmProviderProfile, type SessionProjection } from '@deepcode/protocol';
+import { COMMAND_REPLY_VERSION, SESSION_PROJECTION_VERSION, type ActivityProjection, type AgentSettings, type CommandReply, type LlmProviderProfile, type SessionProjection } from '@achbit/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { ConversationSessionScope } from '../../src/components/local-agent/ConversationSessionScope';
 import { FileChanges } from '../../src/components/local-agent/FileChanges';
@@ -11,9 +11,9 @@ import { useConversationViewport } from '../../src/components/local-agent/useCon
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
-import '../../src/deepcode-gui/styles/deepcodeShell.css';
+import '../../src/achbit-gui/styles/achbitShell.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 import '../../src/components/local-agent/richContent.css';
 import '../../src/components/shared/focus.css';

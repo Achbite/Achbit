@@ -1,6 +1,6 @@
 {
-  "name": "@deepcode/protocol",
-  "version": "0.6.58",
+  "name": "@achbit/protocol",
+  "version": "0.6.60",
   "license": "MIT",
   "private": true,
   "type": "module",

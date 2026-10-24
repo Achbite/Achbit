@@ -1,4 +1,4 @@
-import type { JsonObject, SessionEvent } from '@deepcode/protocol';
+import type { JsonObject, SessionEvent } from '@achbit/protocol';
 
 const WINDOW = 8 * 1024;
 type Part = { kind: 'text' | 'summary'; content: string };

@@ -8,10 +8,10 @@
     "jsx": "react-jsx",
     "types": ["node", "vite/client"],
     "paths": {
-      "@deepcode/presentation-core": ["../presentation-core/dist/index.d.ts"],
-      "@deepcode/presentation-core/*": ["../presentation-core/dist/*"],
-      "@deepcode/protocol": ["../protocol/dist/index.d.ts"],
-      "@deepcode/protocol/*": ["../protocol/dist/*"]
+      "@achbit/presentation-core": ["../presentation-core/dist/index.d.ts"],
+      "@achbit/presentation-core/*": ["../presentation-core/dist/*"],
+      "@achbit/protocol": ["../protocol/dist/index.d.ts"],
+      "@achbit/protocol/*": ["../protocol/dist/*"]
     }
   },
   "references": [

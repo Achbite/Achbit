@@ -5,7 +5,7 @@ import { useSettingsSearchEntries } from '../settingsSearch';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
 import ModalDialog from '../../shared/ModalDialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { PluginCatalogItem } from '@deepcode/protocol';
+import type { PluginCatalogItem } from '@achbit/protocol';
 import { normalizeUiLanguage, t, activeT } from '../../../i18n';
 import { getPluginCatalog } from '../../../services/localAgentApi';
 import { useLocalAgentStore } from '../../../state/localAgentStore';
@@ -14,7 +14,7 @@ import { useUiPlugins } from '../../../ui-plugins/UiPlugins';
 import { inspectLocalPlugin, type LocalPluginInspection } from '../../../ui-plugins/source';
 import { UiPluginShowcase } from '../../../ui-plugins/UiPluginShowcase';
 import { errorText } from '../../../ui-plugins/runtime';
-import DeepCodeShellIcon from '../../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../../workspace-open-dialog/ProjectFolderDialog';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../shared/interactionFocus';
 
@@ -310,7 +310,7 @@ export default function PluginsSection() {
           disabled={busy}
           onClick={() => setChoosing(true)}
         >
-          <DeepCodeShellIcon name="plus" />
+          <AchbitShellIcon name="plus" />
           {chinese ? '添加…' : 'Add…'}
         </button>
       </header>
@@ -331,7 +331,7 @@ export default function PluginsSection() {
           ))}
         </div>
         <label>
-          <DeepCodeShellIcon name="search" />
+          <AchbitShellIcon name="search" />
           <input
             placeholder={chinese ? '搜索插件' : 'Search plugins'}
             aria-label={chinese ? '搜索插件' : 'Search plugins'}
@@ -348,7 +348,7 @@ export default function PluginsSection() {
             ui.refresh?.();
           }}
         >
-          <DeepCodeShellIcon name="refresh" />
+          <AchbitShellIcon name="refresh" />
         </button>
       </div>
       {(error || config.error || ui.connectionError) && (
@@ -361,7 +361,7 @@ export default function PluginsSection() {
           <section id={`setting-plugin-${item.id}`} tabIndex={-1} className="plugin-manager__item" key={item.id}>
             <div className="plugin-manager__row">
               <span className="plugin-manager__icon">
-                <DeepCodeShellIcon
+                <AchbitShellIcon
                   name={
                     item.kind === 'ui'
                       ? 'extension'
@@ -403,7 +403,7 @@ export default function PluginsSection() {
                 aria-expanded={expanded === item.id}
                 onClick={() => setExpanded(expanded === item.id ? null : item.id)}
               >
-                <DeepCodeShellIcon name={expanded === item.id ? 'chevronDown' : 'chevronRight'} />
+                <AchbitShellIcon name={expanded === item.id ? 'chevronDown' : 'chevronRight'} />
               </button>
             </div>
             {(item.error || itemErrors[item.id]) && (

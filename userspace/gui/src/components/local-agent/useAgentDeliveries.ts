@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ArtifactProjection, SessionProjection } from '@deepcode/protocol';
+import type { ArtifactProjection, SessionProjection } from '@achbit/protocol';
 import { getLocalAgentProjection } from '../../services/localAgentApi';
 import { conversationDisplay } from './conversationDisplay';
 

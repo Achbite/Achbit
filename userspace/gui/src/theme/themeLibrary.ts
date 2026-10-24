@@ -1,5 +1,5 @@
 import { PALETTE_FIELDS, UI_PALETTE, decodePaletteOverrides, paletteToken, resetPaletteTheme, type PaletteField, type PaletteOverrides } from './palette';
-import type { GuiResolvedTheme } from './deepcodeGuiTheme';
+import type { GuiResolvedTheme } from './achbitGuiTheme';
 
 export const THEME_LIBRARY_SETTING = 'gui.themeLibrary';
 export interface ThemeDocument {

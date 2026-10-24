@@ -1,4 +1,4 @@
-import type { LocalAgentError, NewSessionEvent } from '@deepcode/protocol';
+import type { LocalAgentError, NewSessionEvent } from '@achbit/protocol';
 import { pendingToolRequests, type LoopSnapshot } from './loop.js';
 
 /** A bounded index into the journal, not a second copy of the conversation. */

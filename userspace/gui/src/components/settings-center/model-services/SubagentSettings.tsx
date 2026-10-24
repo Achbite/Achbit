@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { modelReasoningEfforts, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@deepcode/protocol';
+import { modelReasoningEfforts, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@achbit/protocol';
 import SubagentModelFields from '../../shared/SubagentModelFields';
 import ToggleSwitch from '../../shared/ToggleSwitch';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';

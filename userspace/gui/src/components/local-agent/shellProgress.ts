@@ -1,4 +1,4 @@
-import type { ActivityProjection } from '@deepcode/protocol';
+import type { ActivityProjection } from '@achbit/protocol';
 
 export const isPendingShell = (activity: ActivityProjection): boolean =>
   Boolean(activity.tool?.shell || activity.tool?.process)

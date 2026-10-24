@@ -1,4 +1,4 @@
-import type { NewSessionEvent, RunTimingFact } from '@deepcode/protocol';
+import type { NewSessionEvent, RunTimingFact } from '@achbit/protocol';
 import { randomUUID } from 'node:crypto';
 
 /** Wall times identify facts; durations use only this Actor's monotonic clock. */

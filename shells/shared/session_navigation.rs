@@ -1,5 +1,5 @@
 use crate::i18n::Language;
-use deepcode_kernel_client::{
+use achbit_kernel_client::{
     is_terminal_run_status, ConversationCatalog, ConversationSessionSummary, SessionProjection,
 };
 

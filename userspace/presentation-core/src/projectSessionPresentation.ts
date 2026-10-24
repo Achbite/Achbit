@@ -1,4 +1,4 @@
-import type { SessionProjection } from '@deepcode/protocol';
+import type { SessionProjection } from '@achbit/protocol';
 
 export interface CommittedTextBlock {
   blockId: string;

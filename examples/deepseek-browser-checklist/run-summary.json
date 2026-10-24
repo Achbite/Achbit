@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-23",
+  "product": "Achbit",
+  "version": "0.6.58",
+  "runtime": "isolated macOS arm64 Debug GUI",
+  "provider": "DeepSeek API",
+  "model": "deepseek-flash",
+  "reasoningEffort": "max",
+  "realProvider": true,
+  "sessionId": "session:f47b1e62f205ed6e22170c4340a15743",
+  "outcome": "completed",
+  "acceptedAt": "2026-10-23T06:12:47.572Z",
+  "settledAt": "2026-10-23T06:18:03.504Z",
+  "durationMs": 315924.223958,
+  "usage": {
+    "providerCallCount": 38,
+    "inputTokens": 2654337,
+    "outputTokens": 52520,
+    "cacheReadInputTokens": 2553728,
+    "cacheMissInputTokens": 100609
+  },
+  "toolOutcomes": [
+    {
+      "tool": "artifact.prepare",
+      "outcome": "completed",
+      "count": 3
+    },
+    {
+      "tool": "bash",
+      "outcome": "completed",
+      "count": 5
+    },
+    {
+      "tool": "browser.capture",
+      "outcome": "completed",
+      "count": 2
+    },
+    {
+      "tool": "browser.observe",
+      "outcome": "completed",
+      "count": 9
+    },
+    {
+      "tool": "browser.open",
+      "outcome": "completed",
+      "count": 1
+    },
+    {
+      "tool": "browser.page",
+      "outcome": "completed",
+      "count": 8
+    },
+    {
+      "tool": "browser.page",
+      "outcome": "failed",
+      "count": 3
+    },
+    {
+      "tool": "doc.read",
+      "outcome": "completed",
+      "count": 1
+    },
+    {
+      "tool": "fs.edit",
+      "outcome": "completed",
+      "count": 1
+    },
+    {
+      "tool": "fs.write",
+      "outcome": "completed",
+      "count": 2
+    },
+    {
+      "tool": "plugin.search",
+      "outcome": "completed",
+      "count": 1
+    }
+  ],
+  "observedViewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "observedInteraction": {
+    "checkedCount": 1,
+    "totalCount": 18,
+    "groupCheckedCount": 1,
+    "groupTotalCount": 3,
+    "displayedPercent": 6,
+    "restoredAfterReload": true
+  },
+  "limitations": [
+    "No Chromium/Firefox/WebKit compatibility suite was run.",
+    "The checked item demonstrates the checklist UI only; its real acceptance task was not executed.",
+    "Narrow-screen layout and external native-app control were not validated."
+  ],
+  "retainedFailures": [
+    "Initial page open returned navigation_not_ready while loading; the agent subsequently observed the same preview.",
+    "A file URL passed to URL navigation was rejected; the agent continued with supported page interactions.",
+    "Clicking the covered checkbox input was rejected; the visible label interaction and resulting state were inspected."
+  ]
+}

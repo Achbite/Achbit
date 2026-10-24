@@ -1,4 +1,4 @@
-import { DEFAULT_USER_SETTINGS, type UserSettings } from '@deepcode/protocol';
+import { DEFAULT_USER_SETTINGS, type UserSettings } from '@achbit/protocol';
 
 // The base choice is shared by the three presentation groups until overridden.
 export const UI_FONT_FAMILY_SETTING = 'gui.fontFamily';
@@ -11,10 +11,10 @@ export const CODE_FONT_SIZE_SETTING = 'gui.codeFontSize';
 const SYSTEM_UI = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif';
 const SYSTEM_MONO = 'ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace';
 export const UI_FONT_PRESETS = {
-  warm: `"DeepCode Quiet Reading SC", ${SYSTEM_UI}`,
-  'warm-sans': `"DeepCode Quiet Reading Sans SC", ${SYSTEM_UI}`,
-  'compact-kai': `"DeepCode Quiet Mono Kai SC", ${SYSTEM_MONO}`,
-  compact: `"DeepCode Quiet Mono SC", ${SYSTEM_MONO}`,
+  warm: `"Achbit Quiet Reading SC", ${SYSTEM_UI}`,
+  'warm-sans': `"Achbit Quiet Reading Sans SC", ${SYSTEM_UI}`,
+  'compact-kai': `"Achbit Quiet Mono Kai SC", ${SYSTEM_MONO}`,
+  compact: `"Achbit Quiet Mono SC", ${SYSTEM_MONO}`,
   system: SYSTEM_UI,
   sans: 'Arial, "PingFang SC", "Microsoft YaHei", sans-serif',
   serif: 'Georgia, "Songti SC", "SimSun", serif',

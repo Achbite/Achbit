@@ -9,7 +9,7 @@ import type {
   PlanOperation,
   ProviderToolDefinition,
   TodoItem,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   isLlmReasoningEffort,
   decodeAgentContribution,
@@ -23,7 +23,7 @@ import {
   SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 
 export interface SessionControlWireNames {
   interactionRequest: string;
@@ -44,17 +44,13 @@ export function sessionControlInstructions(
   optionalTools?: readonly string[],
   planEnabled = true,
 ): string {
-  const decisions = ` Ask early for missing facts or required decisions with ${names.interactionRequest}. Use mode=continue while independent work can proceed; use mode=wait otherwise. Confirmations always wait. An unanswered question stays pending: proceed only on independent work, and ask it once. Put alternatives in options with stable IDs and concise labels; explain context in prompt. Tool execution approval is separate.`;
-  const plugins = hasPluginDiscovery ? ` Use CLI or MCP for program operations and GUI tools for interface actions or visual confirmation; combine them as needed. Capture screenshots when visual evidence is needed. Discover capabilities with a short product or capability query, activate relevant results with ${names.pluginActivate} alone, then use their declared tools. Activation and execution permission are separate.` : '';
-  const delivery = ` Use ${names.artifactPresent} to deliver requested results or review materials. Prepare a file with artifact.prepare or register a live URL with artifact.preview first. Keep temporary scripts, logs and observation images intermediate unless requested. Update a delivered resource using its deliveryId and cite the returned URI; use Markdown images for visual review. Archiving alone does not deliver a resource, and presentation does not resend pixels to the model.`;
-  const progress = ` Use ${names.todoUpdate} for meaningful progress on multi-step work. Keep a few outcome-oriented phases and update the complete list when status changes, optionally alongside ordinary calls. Simple tasks and unchanged status need no update. Todo tracks progress, not permission or completion gates; leave unfinished work open.`;
-  const selectedDelivery = optionalTools && !optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT) ? '' : delivery;
-  const selectedProgress = optionalTools && !optionalTools.includes(SESSION_CONTROL_TODO_UPDATE) ? '' : progress;
-  if (!hasWorkspaceBindings) {
-    return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${names.interactionRequest} must be the only call in its turn.${decisions}${plugins}${selectedDelivery}`;
-  }
-  const isolatedControls = planEnabled ? `${names.interactionRequest} and ${names.planPublish} must each be the only call in their turn.` : `${names.interactionRequest} must be the only call in its turn.`;
-  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${isolatedControls} Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.${selectedProgress}${decisions}${plugins}${selectedDelivery}`;
+  const controls = [names.interactionRequest, ...(hasWorkspaceBindings && planEnabled ? [names.planPublish] : [])];
+  const routes = [
+    ...(hasPluginDiscovery ? [`Discover optional capabilities with plugin.search, then ${names.pluginActivate}.`] : []),
+    ...(!optionalTools || optionalTools.includes(SESSION_CONTROL_TODO_UPDATE) ? [`Track useful progress with ${names.todoUpdate}.`] : []),
+    ...(!optionalTools || optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT) ? [`Deliver requested resources with ${names.artifactPresent}.`] : []),
+  ];
+  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${controls.join(' and ')} must each be the only call in their turn.${hasWorkspaceBindings ? ' Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.' : ''} ${routes.join(' ')}`;
 }
 
 const INTERACTION_SCHEMA: JsonObject = {
@@ -248,18 +244,18 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
   const id = { type: 'string', minLength: 1 };
   return [
     operation('models', 'Discover available operations and model profiles.'),
-    ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Context budget and compaction rules inherit from the parent; override only when useful. doc.read model-services.md has examples.', {
+    ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Permissions and configuration inherit from the parent. Select a template; the coordinator may customize it. model-services.md in productDocsPath has examples.', {
       task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
-      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'analysis contacts its task owner; collaboration also contacts teammates. Neither delegates further by default. Both retain the instance. Combine capabilities and Loop choices; a preset does not define a fixed agent type.' },
-      capabilities: { type: 'object', additionalProperties: false, properties: {
+      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'analysis contacts its task owner; collaboration also contacts teammates. Neither delegates further by default. Both retain the instance. The coordinator can customize these defaults; a preset does not define a fixed agent type.' },
+      ...(options.coordinator !== false ? { capabilities: { type: 'object', additionalProperties: false, properties: {
         messaging: { enum: messaging === true ? [false, 'parent', true] : messaging === 'parent' ? [false, 'parent'] : [false], description: 'false: no messages; parent: only the parent; true: the related team.' },
         continuation: { type: 'boolean', ...(!continuation ? { const: false } : {}), description: 'Accept follow-up tasks in the same Session.' },
         delegation: { type: 'boolean', ...(options.allowChildDelegation === false ? { const: false } : {}), description: 'Create child agents.' },
-      } },
+      } } } : {}),
       profileId: { ...id, ...(options.profileIds ? { enum: options.profileIds } : {}), description: 'Use a model allowed by the returned preset rules; omit to follow the selected preset.' },
-      ...(options.fullConfiguration ? { reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Override using an effort supported by the selected model.' },
+      ...(options.coordinator !== false && options.fullConfiguration ? { reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Override using an effort supported by the selected model.' },
         context: { type: 'object', description: 'Optional context override. journal.parameters.maxTokens caps context including output reserve; omit to inherit.' } } : {}),
-      loop: { type: 'object', additionalProperties: false, properties: {
+      ...(options.coordinator !== false ? { loop: { type: 'object', additionalProperties: false, properties: {
         controls: { type: 'object', description: 'A returned controls contribution id and its supported parameters.' },
         compaction: { type: 'object', description: 'Optional compaction override. summary.parameters supports enabled, thresholdTokens and pressureRatio; omitted values inherit.' },
       } },
@@ -269,7 +265,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
       workspaceSandbox: { type: 'object', additionalProperties: false, required: ['backendId'], properties: {
         backendId: { type: 'string', description: 'platform-default or the observed available backend.' },
         requireIsolatedProcesses: { type: 'boolean', description: 'Require usable Shell isolation and prohibit Host/external execution routes.' },
-      } },
+      } } } : {}),
     }, ['task', 'name', 'delivery'])] : []),
     ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
@@ -302,24 +298,24 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
       description: (capabilities && !capabilities.delegation
         ? capabilities.messaging === 'parent' ? 'Contact your current task owner. Call action=models for contacts and operations. Send findings, questions or scope needs; messages do not grant permissions or start tasks. Use session wait for a needed reply; return a final answer when done. Retaining the Session needs no active wait.'
           : 'Coordinate directly with teammates. Agree on shared interfaces and one writer per shared file; send unresolved disagreements or scope needs to the coordinator. Messages are not agreement or permission. Use session wait for needed replies; finish with a final answer and evidence, not an indefinite wait. Call action=models for contacts and operations. Multiple messages may share a turn.'
-        : 'When enabled, proactively delegate independent work asynchronously with necessary context, scope and expected evidence. No user reminder is needed. Use collaboration for communicating teammates; give shared files one writer, resolve disagreements and verify results. Await final task results; completed tasks release execution without close. Keep short or tightly coupled work direct and continue independent work. Call action=models for operations and configuration. Disabling blocks new tasks, not existing work.') + agentTurnInstruction,
+        : 'Delegate useful independent work when enabled; keep coupled work local. Supply context, scope and expected evidence; coordinate shared edits and verify final results. Completed tasks release execution without close. Disabling blocks new tasks. Call action=models for operations and configuration; operations.md in productDocsPath explains coordination.') + agentTurnInstruction,
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
     },
     {
       name: SESSION_CONTROL_ARTIFACT_PRESENT,
-      description: 'Deliver selected archived resources as requested results or review materials. Supply exact artifactIds from tools, artifact.prepare or artifact.preview; reuse deliveryId for updates. Returns references for final prose. Intermediate logs, scripts and observations stay internal unless selected for delivery. Submit alone; items can include all deliveries. Presentation does not resend image pixels to the model.',
+      description: 'Deliver requested results using artifactIds from tools, artifact.prepare or artifact.preview. Reuse deliveryId to update. Submit alone. Archiving alone does not deliver. Cite returned references in final prose; presentation does not load pixels into model context.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['items'], properties: {
         items: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
           required: ['artifactId', 'label'], properties: {
-            artifactId: {type:'string',minLength:1}, label: {type:'string',minLength:1}, deliveryId: {type:'string',minLength:1},
+            artifactId: {type:'string',minLength:1}, label: {type:'string',minLength:1}, deliveryId: {type:'string',minLength:1,description:'Existing deliveryId returned by an earlier presentation. Omit for the first delivery; do not invent an ID.'},
           } } },
       } },
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Load needed installed, enabled plugins using exact URIs from plugin search. Tools and instructions become available in the next request of this run. User mentions are optional and remain separate. Activation leaves installation, settings and execution permissions unchanged. Submit alone.',
+      description: 'Activate enabled plugins by exact URIs from plugin.search. Tools become available next request; permissions stay unchanged. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -327,17 +323,17 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     },
     {
       name: SESSION_CONTROL_INTERACTION_REQUEST,
-      description: 'Ask the user for missing information or a required decision. Use mode to wait for the answer or continue independent work.',
+      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. mode=continue allows independent work. Confirmations always wait. Tool execution approval is separate.',
       inputSchema: structuredClone(INTERACTION_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Publish a Plan for changes needing new authorization; use extendScope before expanding confirmed scope. Reuse confirmed scope for related edits. Confirmation follows current settings; a Kernel scope rejection still requires the missing authorization. Keep outcome-oriented phases. A full revision replaces the Plan and includes the complete manifest. For Shell, writablePaths defines write scope; command is an optional example. Todo is independent.',
+      description: 'Publish changes needing new authorization; reuse confirmed scope for related work. extendScope adds scope; a full revision replaces the Plan and complete manifest. Follow current confirmation settings. Shell writablePaths defines write scope; command is an example. Todo is independent.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_TODO_UPDATE,
-      description: 'Replace the complete ordered task list when progress changes. Use a few meaningful phases with pending, inProgress, completed or blocked status; an empty list clears it. Independent of Plan, approval and record IDs. Unfinished items stay open and do not prevent answering. At most one update per turn; ordinary calls may accompany it.',
+      description: 'Replace the full progress list when it changes; [] clears it. Use meaningful phases. Todo grants no authority and unfinished items do not prevent answering. At most one update per turn; ordinary calls may accompany it.',
       inputSchema: {
         type: 'object', additionalProperties: false, required: ['items'],
         properties: { items: { type: 'array', items: {

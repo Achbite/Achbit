@@ -1,11 +1,12 @@
 import { RunTiming } from './runTiming.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
-import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@deepcode/protocol';
+import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
-import type { SessionOperation, JsonObject } from '@deepcode/protocol';
+import type { SessionOperation, JsonObject } from '@achbit/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
+import { activeProcessWait, PROCESS_WAIT_REVIEW_MS } from './processWait.js';
 import { ManagedProcesses } from './managedProcesses.js';
-import { validatePermissionPatches, providerRuntimeForPurpose } from '@deepcode/protocol';
+import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/protocol';
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
@@ -26,11 +27,11 @@ import type {
   RunSettlement,
   SessionEvent,
   SessionProjection,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   COMMAND_REPLY_VERSION,
   SESSION_EVENT_VERSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { SessionCapabilityManager } from './sessionCapabilities.js';
 import {
@@ -139,14 +140,14 @@ export class SessionActor {
     });
   }
 
-  async agentCapabilities(runId: string): Promise<import('@deepcode/protocol').AgentCapabilities> {
+  async agentCapabilities(runId: string): Promise<import('@achbit/protocol').AgentCapabilities> {
     const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
     return decodeAgentCapabilities(runtime.agentCapabilities);
   }
 
   /** Freeze inherited context rules from the caller's actual run, not later global defaults. */
-  async contextConfiguration(runId: string): Promise<import('@deepcode/protocol').AgentConfiguration> {
+  async contextConfiguration(runId: string): Promise<import('@achbit/protocol').AgentConfiguration> {
     const snapshot = await this.loadSnapshot();
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
@@ -187,7 +188,7 @@ export class SessionActor {
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
-  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@deepcode/protocol').JsonObject }> {
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@achbit/protocol').JsonObject }> {
     const state = (await this.loadSnapshot()).state;
     return structuredClone({ sessionId: state.sessionId, recipe: state.recipe, subagentSettings: state.subagentSettings, agentContext: state.agentContext,
       agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
@@ -436,6 +437,8 @@ export class SessionActor {
         return await this.handleFocus(command);
       case 'message.feedback.set':
         return await this.handleMessageFeedback(command);
+      case 'tool.cancel':
+        return await this.handleToolCancel(command);
       case 'run.cancel':
         return await this.handleCancel(command);
       case 'interaction.respond':
@@ -1154,6 +1157,24 @@ export class SessionActor {
     return reply;
   }
 
+  private async handleToolCancel(command: Extract<ConversationCommand, {type: 'tool.cancel'}>): Promise<CommandReply> {
+    const snapshot = await this.loadSnapshot();
+    const request = snapshot.events.findLast(event => event.type === 'tool.requested'
+      && event.runId === command.runId && event.callId === command.callId);
+    if (snapshot.state.run?.runId !== command.runId || isTerminal(snapshot.state.run.status)
+      || request?.type !== 'tool.requested') return this.recordRejection(command, 'tool_not_active', '该命令不属于当前运行。');
+    const job = Object.values(snapshot.state.processes).find(job => job.callId === command.callId && job.runId === command.runId);
+    // This control path never waits for a Provider response or aborts the Run.
+    if (job) {
+      await this.#composition.kernel.readProcesses({sessionId: this.sessionId, runId: command.runId, cancelJobId: job.jobId});
+      await this.ensureProcesses(command.runId);
+      await this.#processes?.sync();
+    } else {
+      await this.#composition.kernel.cancel(command.callId, request.payload.attemptId);
+    }
+    return this.commitCommand(command, [], acceptedReply(command));
+  }
+
   private async handleCancel(
     command: Extract<ConversationCommand, { type: 'run.cancel' }>,
   ): Promise<CommandReply> {
@@ -1228,9 +1249,19 @@ export class SessionActor {
         capabilities: this.#capabilities,
         ...(this.#agents ? { agents: this.#agents } : {}),
         sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
-        waitForInput: (runId, wait, signal) => this.waitForInput(runId, signal, undefined, undefined, wait),
+        waitForInput: async (runId, wait, signal) => {
+          await this.ensureProcesses(runId);
+          await this.#processes?.sync();
+          const current = await this.loadSnapshot();
+          if (Object.values(current.state.processes).some(job => job.runId === runId && job.status === 'active')) {
+            await this.waitForProcesses(runId, signal, undefined,
+              wait.deadline === undefined ? undefined : Math.max(0, (wait.deadline - Date.now()) / 1000), wait.afterSequence);
+            return {};
+          }
+          return this.waitForInput(runId, signal, undefined, undefined, wait);
+        },
         syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
-        waitProcesses: signal => this.#processes?.wait(signal) ?? Promise.resolve(),
+        waitProcesses: (signal, jobIds, timeoutSeconds) => this.waitForProcesses(command.runId, signal, jobIds, timeoutSeconds),
         waitForChange: (revision, signal, permissions) => this.waitForChange(revision, signal, permissions),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
         commit: (events) => this.withWrite(async () => {
@@ -1414,10 +1445,55 @@ export class SessionActor {
     await this.finalizeRunRuntime(snapshot, runId, settlement);
   }
 
+  private async waitForProcesses(runId: string, signal: AbortSignal, jobIds?: string[], timeoutSeconds?: number,
+    afterSequence?: number): Promise<void> {
+    await this.ensureProcesses(runId);
+    await this.#processes?.sync();
+    let current = await this.loadSnapshot();
+    const targets = jobIds ?? Object.values(current.state.processes).filter(job => job.runId === runId && job.status === 'active').map(job => job.jobId);
+    const active = (snapshot: LoopSnapshot) => targets.some(id => snapshot.state.processes[id]?.status === 'active');
+    let previous = activeProcessWait(current.events, runId);
+    const record = async (payload: import('@achbit/protocol').ProcessWaitState) => this.withWrite(async () => {
+      const snapshot = await this.loadSnapshot();
+      if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return;
+      await this.appendEvents([{type: 'process.wait.changed', sessionId: this.sessionId, runId, payload}], snapshot);
+    });
+    if (!active(current)) {
+      if (previous) await record({...previous, phase: 'released'});
+      return;
+    }
+    // A normal input suspends this clock while the model does useful work. A review
+    // and any repair keep the logical wait identity and its consumed allowance.
+    const startedAt = previous?.phase === 'waiting' ? previous.startedAt : Date.now();
+    const composition = current.events.findLast(event => event.type === 'context.composed' && event.runId === runId && event.payload.purpose === 'agent');
+    const boundary = composition?.type === 'context.composed' ? composition.payload.modelView?.throughSequence ?? composition.sequence : current.state.revision;
+    const wait = {waitId: previous?.waitId ?? this.#nextId('process-wait'), phase: 'waiting' as const,
+      jobIds: targets, startedAt, reviewAt: startedAt + PROCESS_WAIT_REVIEW_MS,
+      reviewed: previous?.reviewed ?? false, afterSequence: afterSequence ?? boundary};
+    await record(wait);
+    const deadline = Math.min(wait.reviewed ? Infinity : wait.reviewAt,
+      timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000);
+    const revisions = new Map(targets.map(id => [id, current.state.processes[id]?.revision]));
+    await this.waitForInput(runId, signal, undefined, snapshot => !active(snapshot)
+      || targets.some(id => snapshot.state.processes[id]?.status !== 'active' && snapshot.state.processes[id]?.revision !== revisions.get(id)),
+      {afterSequence: wait.afterSequence, ...(Number.isFinite(deadline) ? {deadline} : {})});
+    signal.throwIfAborted();
+    // Reconcile completion at the deadline before deciding whether to wake the model.
+    await this.#processes?.sync();
+    await this.withWrite(async () => {
+      current = await this.loadSnapshot();
+      if (current.state.run?.runId !== runId || isTerminal(current.state.run.status) || signal.aborted) return;
+      previous = activeProcessWait(current.events, runId);
+      if (previous?.waitId !== wait.waitId) return;
+      const phase = !active(current) ? 'released' : !wait.reviewed && Date.now() >= wait.reviewAt ? 'review' : 'resumed';
+      await this.appendEvents([{type: 'process.wait.changed', sessionId: this.sessionId, runId,
+        payload: {...wait, phase, reviewed: wait.reviewed || phase === 'review'}}], current);
+    });
+  }
+
   private async ensureProcesses(runId: string): Promise<void> {
     const snapshot = await this.loadSnapshot();
-    const runtime = snapshot.state.runToolViews[runId] ?? snapshot.state.runRuntimeSnapshots[runId];
-    if (!this.#processes && runtime?.selectedPlugins.plugins.some(plugin => plugin.uri === 'plugin://processes@builtin')) {
+    if (!this.#processes && Object.values(snapshot.state.processes).some(job => job.runId === runId)) {
       this.#processes = new ManagedProcesses(this.sessionId, runId, this.#composition.kernel,
         jobs => this.withWrite(async () => {
           const current = await this.loadSnapshot();

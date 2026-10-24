@@ -1,7 +1,7 @@
 // Production settings and typography with isolated HTTP fixtures. No Provider or live Host calls.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_USER_SETTINGS, type LlmProviderProfile, type ModelConnection, type ProviderAdapterDescriptor, type UserSettings } from '@deepcode/protocol';
+import { DEFAULT_USER_SETTINGS, type LlmProviderProfile, type ModelConnection, type ProviderAdapterDescriptor, type UserSettings } from '@achbit/protocol';
 import SettingsCenter from '../../src/components/settings-center/SettingsCenter';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
@@ -9,7 +9,7 @@ import GuiTypography from '../../src/theme/GuiTypography';
 import PaletteOverrides from '../../src/theme/PaletteOverrides';
 import { typographyStyles } from '../../src/theme/typography';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 
 installPaletteDefaults();

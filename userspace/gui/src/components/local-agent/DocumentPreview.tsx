@@ -7,12 +7,18 @@ import { readDocumentText, type DocumentFormat } from './documentResources';
 import './documentPreview.css';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import SourceFileView from './SourceFileView';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { ImageReview } from './ImageReview';
+import { HtmlDocumentFrame } from './HtmlDocumentFrame';
+import { BrowserViewportControl } from './BrowserViewportControl';
+import { DEFAULT_BROWSER_VIEWPORT } from './browserViewport';
+import type { BrowserViewport } from '../../services/nativeBrowser';
 
 const PdfDocumentPreview = lazy(() => loadInterfaceModule(() => import('./PdfDocumentPreview')));
 
 export function DocumentPreview({ blob, format, filename, language, readingKey, actions }: { blob: Blob; format: DocumentFormat | 'image'; filename: string; language: UiLanguage; readingKey?: string; actions?: React.ReactNode }) {
+  const [viewport, setViewport] = useState<BrowserViewport>(DEFAULT_BROWSER_VIEWPORT);
+  useEffect(() => setViewport(DEFAULT_BROWSER_VIEWPORT), [readingKey, filename]);
   const chinese = language === 'zh-CN';
   const theme = useDisplayTheme();
   const [source, setSource] = useState<{ blob: Blob; text: string } | null>(null);
@@ -35,13 +41,14 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
       <span className="document-preview__format">{format === 'markdown' ? 'Markdown' : format === 'image' ? (chinese ? '图片' : 'Image') : format.toUpperCase()}</span>
       <div className="document-preview__actions">
         {actions}
+        {format === 'html' && !showSource && <BrowserViewportControl value={viewport} onChange={setViewport} language={language} />}
         {format !== 'pdf' && format !== 'image' && <button className="reader-icon-button" type="button" aria-pressed={showSource} onClick={() => setShowSource((value) => !value)}
           aria-label={showSource ? (chinese ? '返回预览' : 'Return to preview') : (chinese ? '查看源码' : 'View source')}
           title={showSource ? (chinese ? '返回预览' : 'Return to preview') : (chinese ? '查看源码' : 'View source')}>
-          <DeepCodeShellIcon name="code" />
+          <AchbitShellIcon name="code" />
         </button>}
         <a className="reader-icon-button" href={download || undefined} download={filename.split(/[\\/]/).at(-1)} aria-label={chinese ? '下载文档' : 'Download'} title={chinese ? '下载文档' : 'Download'}>
-          <DeepCodeShellIcon name="download" />
+          <AchbitShellIcon name="download" />
         </a>
       </div>
     </div>
@@ -50,7 +57,7 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
         : format === 'image' ? <ImageReview source={download || undefined} alt={filename} imageClassName="document-preview__image" /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>
           {format === 'pdf' ? <InterfaceLoadBoundary><Suspense fallback={loading}><PdfDocumentPreview blob={blob} language={language} readingKey={readingKey} /></Suspense></InterfaceLoadBoundary>
             : content === null ? loading
-            : format === 'html' ? <iframe className="document-preview__html" title={filename} sandbox="" srcDoc={content} />
+            : format === 'html' ? <HtmlDocumentFrame content={content} title={filename} viewport={viewport} />
               : <div className="document-preview__markdown"><MarkdownContent>{content}</MarkdownContent></div>}
           </UiPluginSlotView>}
   </div>;

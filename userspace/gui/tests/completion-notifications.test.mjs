@@ -7,7 +7,7 @@ const status = (sessionId, revision, state, runId = 'run-1') => ({
 });
 
 test('completion reminders observe each successful run once, including background and fast subsequent runs', async t => {
-  const { CompletionNotifications } = await loadGuiModule(t, '/src/deepcode-gui/layout/completionNotifications.ts');
+  const { CompletionNotifications } = await loadGuiModule(t, '/src/achbit-gui/layout/completionNotifications.ts');
   const tracker = new CompletionNotifications();
   const ids = ['history', 'active', 'background'];
   const update = rows => tracker.update(Object.fromEntries(rows.map(row => [row.sessionId, row])), ids).map(row => row.sessionId);
@@ -22,7 +22,7 @@ test('completion reminders observe each successful run once, including backgroun
 });
 
 test('failed and cancelled runs do not ring; a recovered successful transition still rings and deleted histories are forgotten', async t => {
-  const { CompletionNotifications } = await loadGuiModule(t, '/src/deepcode-gui/layout/completionNotifications.ts');
+  const { CompletionNotifications } = await loadGuiModule(t, '/src/achbit-gui/layout/completionNotifications.ts');
   const tracker = new CompletionNotifications();
   for (const state of ['failed', 'cancelled', 'releaseFailed', 'indeterminate', 'waiting', 'releasing']) {
     tracker.update({ s: status('s', 1, 'running') }, ['s']);

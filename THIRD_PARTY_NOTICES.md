@@ -18,7 +18,7 @@ Distribution artifacts should preserve third-party license texts where required 
 
 ## Bundled Fonts
 
-The DeepCode Quiet SC families are renamed derivatives distributed under the SIL Open Font License 1.1. Gentle reading and Compact terminal each have WenKai and sans-serif Chinese variants; the macOS and Windows TUI include separate fixed-cell versions. They use these sources:
+The Achbit Quiet SC families are renamed derivatives distributed under the SIL Open Font License 1.1. Gentle reading and Compact terminal each have WenKai and sans-serif Chinese variants; the macOS and Windows TUI include separate fixed-cell versions. They use these sources:
 
 | Source | Version | Use | Local notice |
 | --- | --- | --- | --- |

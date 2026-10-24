@@ -1,6 +1,6 @@
-import { permissionSettings, decodeAgentCapabilities, decodeAgentSettings, decodeAgentModelParameters, decodeContextManagementSettings, isLlmReasoningEffort } from '@deepcode/protocol';
-import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@deepcode/protocol';
-import { isLocalAgentErrorValue } from '@deepcode/protocol';
+import { permissionSettings, decodeAgentCapabilities, decodeAgentSettings, decodeAgentModelParameters, decodeContextManagementSettings, isLlmReasoningEffort } from '@achbit/protocol';
+import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@achbit/protocol';
+import { isLocalAgentErrorValue } from '@achbit/protocol';
 import type {
   JsonObject,
   AgentHostPort,
@@ -38,7 +38,7 @@ import type {
   ToolExecutionReply,
   ToolExecutionRequest,
   ToolExecutionProgress,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   KERNEL_REPLY_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
@@ -47,7 +47,7 @@ import {
   SESSION_CONTROL_TODO_UPDATE,
   SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { createProviderToolAliases } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
 import { postLocalStream } from './localHttpStream.js';
@@ -84,7 +84,7 @@ class LocalAgentHttpPort {
 
   protected postStream(path: string, value: unknown, signal: AbortSignal): Promise<Response> {
     const url = `${this.apiBase}${path}`;
-    const headers = { 'x-deepcode-session-service-token': this.serviceToken, 'content-type': 'application/json' };
+    const headers = { 'x-achbit-session-service-token': this.serviceToken, 'content-type': 'application/json' };
     const body = JSON.stringify(value);
     return this.#streamFetch
       ? this.#streamFetch(url, { method: 'POST', headers, body, signal })
@@ -97,7 +97,7 @@ class LocalAgentHttpPort {
       response = await this.fetchImpl(`${this.apiBase}${path}`, {
         ...init,
         headers: {
-          'x-deepcode-session-service-token': this.serviceToken,
+          'x-achbit-session-service-token': this.serviceToken,
           ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
           ...init.headers,
         },
@@ -202,15 +202,15 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     );
   }
 
-  async readAgentLifecycle(sessionId: string): Promise<import('@deepcode/protocol').AgentLifecycleRead> {
+  async readAgentLifecycle(sessionId: string): Promise<import('@achbit/protocol').AgentLifecycleRead> {
     return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/agent-lifecycle`);
   }
 
-  async readProviderUsage(sessionId: string): Promise<import('@deepcode/protocol').ProviderUsageRead> {
+  async readProviderUsage(sessionId: string): Promise<import('@achbit/protocol').ProviderUsageRead> {
     return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/provider-usage`);
   }
 
-  async readResources(sessionId: string, recordIds: readonly string[] = []): Promise<import('@deepcode/protocol').ResourceJournalRead> {
+  async readResources(sessionId: string, recordIds: readonly string[] = []): Promise<import('@achbit/protocol').ResourceJournalRead> {
     return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/resources`, {
       method: 'POST', body: JSON.stringify({ recordIds }),
     });
@@ -894,9 +894,10 @@ function decodeProviderFrame(frame: string): ProviderEvent {
       }
     case 'tool.call':
       if (
-        !(isExactRecord(value.data, ['callId', 'name', 'input']) && isRecord(value.data.input)
-          || isExactRecord(value.data, ['callId', 'name', 'arguments']) && typeof value.data.arguments === 'string')
+        !(isExactRecord(value.data, ['callId', 'name', 'input'], ['thoughtSignature']) && isRecord(value.data.input)
+          || isExactRecord(value.data, ['callId', 'name', 'arguments'], ['thoughtSignature']) && typeof value.data.arguments === 'string')
         || !isNonEmptyText(value.data.callId)
+        || value.data.thoughtSignature !== undefined && !isNonEmptyText(value.data.thoughtSignature)
         || !isNonEmptyText(value.data.name)
       ) throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');
       break;

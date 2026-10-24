@@ -6,7 +6,7 @@ import type {
   ModelMessage,
   ProviderPort,
   RunPreparationPort,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import type { buildAgentProviderRequest } from './contextComposer.js';
 import type { estimateContextInput, prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
 import type { decodeSessionControlCall } from './sessionControls.js';

@@ -125,7 +125,7 @@ test('manual preview position stays in the run and is constrained by sidebar, Re
 test('one preview image control distinguishes drag from activation and preserves keyboard movement', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/deepcode-gui/layout/ComputerTargetPreview.tsx');
+  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/achbit-gui/layout/ComputerTargetPreview.tsx');
   const moves = [], activations = [], captures = new Set();
   // DOMRect exposes these coordinates through prototype accessors, not own enumerable properties.
   class PreviewBounds { get left() { return 100; } get top() { return 200; } }
@@ -170,7 +170,7 @@ test('one preview image control distinguishes drag from activation and preserves
 test('preview can still move while target activation is pending without submitting another activation', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/deepcode-gui/layout/ComputerTargetPreview.tsx');
+  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/achbit-gui/layout/ComputerTargetPreview.tsx');
   const moves = [];
   function Probe() {
     const control = ComputerPreviewTarget({ view: { state: 'active', target, frame }, language: 'en-US', activating: true,
@@ -188,7 +188,7 @@ test('preview can still move while target activation is pending without submitti
 test('two preview controls move and activate their own targets without sharing drag or pending state', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/deepcode-gui/layout/ComputerTargetPreview.tsx');
+  const { ComputerPreviewTarget } = await loadGuiModule(t, '/src/achbit-gui/layout/ComputerTargetPreview.tsx');
   const page = { hostInstanceId: 'host:1', windowLabel: 'main', sessionId: 'session:1', previewId: 'page:2', url: 'https://example.test/preview' };
   const positions = [{ left: 900, top: 400 }, { left: 876, top: 424 }], activated = [];
   const captures = new Set();

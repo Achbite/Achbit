@@ -11,14 +11,14 @@ import time
 
 from macos_signing import require_same_identity, sign_app, signing_identity
 
-APP_NAME = 'DeepCode Computer Use.app'
-WINDOWS_EXECUTABLE = 'DeepCode-Computer-Use.exe'
+APP_NAME = 'Achbit Computer Use.app'
+WINDOWS_EXECUTABLE = 'Achbit-Computer-Use.exe'
 # The GUI Host deletes these after it has retired the process that mapped them.
 WINDOWS_RETIRED = WINDOWS_EXECUTABLE + '.retired-'
 
 
 def update_windows(native, destination, strip='x86_64-w64-mingw32-strip'):
-    """Replace the executor beside DeepCode-GUI.exe while the old one may still run.
+    """Replace the executor beside Achbit.exe while the old one may still run.
 
     Windows cannot overwrite a mapped image but can rename it. The Host notices
     the new file between calls, retires the old process, then starts this one.
@@ -52,20 +52,20 @@ def update_windows(native, destination, strip='x86_64-w64-mingw32-strip'):
 
 def assemble(root, native, destination, identity):
     debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
-    app = destination / ('DeepCode Debug Computer Use.app' if debug else APP_NAME)
+    app = destination / ('Achbit Debug Computer Use.app' if debug else APP_NAME)
     binaries = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
     binaries.mkdir(parents=True)
     resources.mkdir()
-    shutil.copy2(native / 'DeepCode-Computer-Use', binaries / 'DeepCode-Computer-Use')
+    shutil.copy2(native / 'Achbit-Computer-Use', binaries / 'Achbit-Computer-Use')
     version = json.loads((root / 'package.json').read_text())['version']
-    info = dict(CFBundleIdentifier='com.achbite.deepcode.computer-use', CFBundleExecutable='DeepCode-Computer-Use',
-        CFBundleName='DeepCode Computer Use', CFBundleDisplayName='DeepCode Computer Use', CFBundlePackageType='APPL',
+    info = dict(CFBundleIdentifier='com.achbite.deepcode.computer-use', CFBundleExecutable='Achbit-Computer-Use',
+        CFBundleName='Achbit Computer Use', CFBundleDisplayName='Achbit Computer Use', CFBundlePackageType='APPL',
         CFBundleInfoDictionaryVersion='6.0', CFBundleVersion=version, CFBundleShortVersionString=version,
         LSMinimumSystemVersion='15.2', LSUIElement=True, NSHighResolutionCapable=True, NSPrincipalClass='NSApplication')
     if debug:
         info.update(CFBundleIdentifier='com.achbite.deepcode.debug.computer-use',
-                    CFBundleName='DeepCode Debug Computer Use', CFBundleDisplayName='DeepCode Debug Computer Use')
+                    CFBundleName='Achbit Debug Computer Use', CFBundleDisplayName='Achbit Debug Computer Use')
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     shutil.copytree(root / 'plugins/computer-use/native/resources', resources, dirs_exist_ok=True)
     (resources / 'BUILDINFO.json').write_text(json.dumps(dict(version=version,
@@ -97,7 +97,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--windows', action='store_true', help='Update DeepCode-Computer-Use.exe in a win64 runtime.')
+    parser.add_argument('--windows', action='store_true', help='Update Achbit-Computer-Use.exe in a win64 runtime.')
     args = parser.parse_args()
     if args.windows:
         update_windows(args.native / WINDOWS_EXECUTABLE, args.output)

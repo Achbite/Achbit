@@ -1,8 +1,8 @@
 export const BUILTIN_FONTS = {
-  warm: 'DeepCodeQuietTerminalReadingSC-Regular',
-  'warm-sans': 'DeepCodeQuietTerminalReadingSansSC-Regular',
-  'compact-kai': 'DeepCodeQuietTerminalMonoKaiSC-Regular',
-  compact: 'DeepCodeQuietTerminalMonoSC-Regular',
+  warm: 'AchbitQuietTerminalReadingSC-Regular',
+  'warm-sans': 'AchbitQuietTerminalReadingSansSC-Regular',
+  'compact-kai': 'AchbitQuietTerminalMonoKaiSC-Regular',
+  compact: 'AchbitQuietTerminalMonoSC-Regular',
 };
 
 export function fontPreference(settings, defaults, choice = 'follow', platform = 'darwin') {
@@ -17,8 +17,8 @@ export function fontPreference(settings, defaults, choice = 'follow', platform =
   }
   const size = value('gui.codeFontSize');
   if (!Number.isInteger(size) || size < 10 || size > 18) throw new Error('Code font size must be an integer from 10 to 18.');
-  const windowsNames = { warm: 'DeepCode TUI Reading SC', 'warm-sans': 'DeepCode TUI Reading Sans SC',
-    'compact-kai': 'DeepCode TUI Mono Kai SC', compact: 'DeepCode TUI Mono SC', system: 'Consolas', mono: 'Consolas' };
+  const windowsNames = { warm: 'Achbit TUI Reading SC', 'warm-sans': 'Achbit TUI Reading Sans SC',
+    'compact-kai': 'Achbit TUI Mono Kai SC', compact: 'Achbit TUI Mono SC', system: 'Consolas', mono: 'Consolas' };
   return {
     family, size,
     name: (platform === 'win32' ? windowsNames[family] : BUILTIN_FONTS[family])

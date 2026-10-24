@@ -1,4 +1,4 @@
-import type { ApiResponse, HealthStatus } from '@deepcode/protocol';
+import type { ApiResponse, HealthStatus } from '@achbit/protocol';
 import { activeT } from '../i18n';
 import * as api from './apiClient';
 import { isRemoteHost } from './hostTarget';
@@ -49,6 +49,7 @@ export function hasDesktopNotifications(): boolean {
 }
 
 export interface CompletionReminder {
+  foregroundSound: boolean;
   sessionId: string;
   title: string;
   body: string;
@@ -212,6 +213,13 @@ export async function startKernelAfterPermission(): Promise<ApiResponse<KernelSt
   } catch (error) {
     return { ok: false, error: 'kernel_start_failed', message: String(error) };
   }
+}
+
+export async function onHostStartupComplete(listener: () => void): Promise<() => void> {
+  if (typeof window === 'undefined' || !tauriInvoke()) return () => {};
+  const events = window.__TAURI__?.event;
+  if (!events) throw new Error('desktop_events_unavailable');
+  return events.listen('deepcode:host-startup-complete', listener);
 }
 
 export async function getHostStartupStatus(): Promise<ApiResponse<HostStartupStatusV1>> {

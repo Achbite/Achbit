@@ -1,5 +1,5 @@
-import { isSessionAuthorizationScope } from '@deepcode/protocol';
-import type { ConversationSessionStatus, RunLifecycleEvent, SessionEvent } from '@deepcode/protocol';
+import { isSessionAuthorizationScope } from '@achbit/protocol';
+import type { ConversationSessionStatus, RunLifecycleEvent, SessionEvent } from '@achbit/protocol';
 
 /** Only the pending identities needed to apply run status transitions. */
 export interface RunLifecycleState {

@@ -1,5 +1,5 @@
 import React, { useId, useState } from 'react';
-import type { ApiResponse, UsageQuery, UsageTotals } from '@deepcode/protocol';
+import type { ApiResponse, UsageQuery, UsageTotals } from '@achbit/protocol';
 import { normalizeUiLanguage } from '../../../i18n';
 import { formatUsageCost, useUsageCostDisplay } from '../../../ui-plugins/usageCost';
 import { useSettingsStore } from '../../../state/settingsStore';

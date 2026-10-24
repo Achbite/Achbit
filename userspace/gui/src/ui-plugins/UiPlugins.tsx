@@ -24,7 +24,7 @@ import type {
   UiViewActions,
 } from './types';
 import { queryModelUsage, startModelAuth, getModelAuth, cancelModelAuth, logoutModelConnection, getModelQuota } from '../services/apiClient';
-import type { ApiResponse } from '@deepcode/protocol';
+import type { ApiResponse } from '@achbit/protocol';
 import './uiPlugins.css';
 function result<T>(response: ApiResponse<T>): T {
   if (!response.ok || response.data === undefined) throw new Error(response.message ?? response.error ?? 'Empty response');
@@ -210,7 +210,7 @@ export function UiPluginSlotView({
         const viewScope = {
           ...scope,
           ...((slot.startsWith('settings.') || slot === 'usage.widget') && entry.manifest?.capabilities?.includes('usage.read') ? {
-            usage: { query: async (query: import('@deepcode/protocol').UsageQuery, signal: AbortSignal) => result(await queryModelUsage(query, AbortSignal.any([scope.signal, signal]))) },
+            usage: { query: async (query: import('@achbit/protocol').UsageQuery, signal: AbortSignal) => result(await queryModelUsage(query, AbortSignal.any([scope.signal, signal]))) },
           } : {}),
           ...(slot === 'usage.widget' && entry.manifest?.capabilities?.includes('quota.read') ? {
             quota: { read: async (signal: AbortSignal) => {

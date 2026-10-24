@@ -2,7 +2,7 @@ import type {
   ContextCompositionReceipt,
   ContextModelViewContribution,
   SessionEvent,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 
 /** Read derived views from the same journal; execution facts remain authoritative. */
 export function journalModelViews(events: readonly SessionEvent[]): {

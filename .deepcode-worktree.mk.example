@@ -1,4 +1,0 @@
-# Copy this file to .deepcode-worktree.mk in a persistent module worktree.
-# The local file is ignored by Git and must use a stable worktree identity.
-DEEPCODE_WORKTREE_ID := module
-DEEPCODE_HOST_PORT := 31247

@@ -1,4 +1,4 @@
-import type { PluginCatalogItem } from '@deepcode/protocol';
+import type { PluginCatalogItem } from '@achbit/protocol';
 import { t, type UiLanguage } from './i18n';
 
 const builtinText: Record<string, string> = {

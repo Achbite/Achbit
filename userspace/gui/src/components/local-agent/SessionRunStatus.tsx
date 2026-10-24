@@ -1,5 +1,5 @@
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
-import type { ConversationSessionStatus } from '@deepcode/protocol';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
+import type { ConversationSessionStatus } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 
 interface SessionRunStatusProps {
@@ -26,9 +26,9 @@ export function SessionRunStatus({ run, language, emptyLabel, compact = false }:
       title={label}
     >
       {spinning ? (
-        <DeepCodeShellIcon name="spinner" className="local-agent__run-status-spinner" />
+        <AchbitShellIcon name="spinner" className="local-agent__run-status-spinner" />
       ) : (
-        <DeepCodeShellIcon className="local-agent__run-status-icon" name={status === 'completed' ? 'check'
+        <AchbitShellIcon className="local-agent__run-status-icon" name={status === 'completed' ? 'check'
           : status === 'waiting' ? 'pause'
             : status === 'failed' || status === 'releaseFailed' || status === 'indeterminate' ? 'warning'
               : status === 'cancelled' ? 'stop' : 'dot'} />

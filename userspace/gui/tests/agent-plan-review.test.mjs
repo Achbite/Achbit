@@ -6,7 +6,7 @@ import { findReactElement, loadGuiModules } from './gui-projection-contract.mjs'
 
 test('the sidebar clears a read cancellation without hiding unread or active runs', async t => {
   const [{ default: Sidebar }, { runReadMarker }] = await loadGuiModules(t, [
-    '/src/deepcode-gui/layout/DeepCodeSidebar.tsx', '/src/deepcode-gui/layout/useReadRunMarkers.ts',
+    '/src/achbit-gui/layout/AchbitSidebar.tsx', '/src/achbit-gui/layout/useReadRunMarkers.ts',
   ]);
   const sessionId = 'session:report';
   const run = { runId: 'run:report', status: 'cancelled' };

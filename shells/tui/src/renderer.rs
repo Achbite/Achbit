@@ -1,6 +1,6 @@
 use crate::app::TuiApp;
 use crate::i18n::Language;
-use deepcode_kernel_client::{
+use achbit_kernel_client::{
     ActivityProjection, AssistantDraftProjection, ContextCompositionProjection,
     ContextUsageProjection, ExecutionPlanStep, NarrativeProjection, PendingPlanProjection,
     PlanProjection, ProjectionMessage, SessionProjection, SessionTimelineItem,
@@ -31,7 +31,7 @@ struct TranscriptKey {
     language: Language,
     session: Option<(String, u64)>,
     draft: Option<AssistantDraftProjection>,
-    live_output: Vec<(String, deepcode_kernel_client::ToolOutputProjection)>,
+    live_output: Vec<(String, achbit_kernel_client::ToolOutputProjection)>,
     reasoning: bool,
     width: u16,
     height: u16,
@@ -166,10 +166,10 @@ fn run_label(language: Language, projection: Option<&SessionProjection>) -> Stri
 
 fn approval_actions(
     language: Language,
-    approval: &deepcode_kernel_client::ApprovalProjection,
+    approval: &achbit_kernel_client::ApprovalProjection,
 ) -> String {
     let mut actions = language.text("tui.authorizationActions").to_owned();
-    for (scope, input) in deepcode_kernel_client::AUTHORIZATION_OPTIONS {
+    for (scope, input) in achbit_kernel_client::AUTHORIZATION_OPTIONS {
         if approval
             .preview
             .authorization_scopes
@@ -465,10 +465,11 @@ fn activity_summary(language: Language, activity: &ActivityProjection) -> String
                     .map_or_else(
                         || status_label(language, &activity.status),
                         |result| {
-                            language.text(if result.reason == "dependencyFailed" {
-                                "tui.status.notExecutedDependencyFailed"
-                            } else {
-                                "tui.status.notExecutedCancelled"
+                            language.text(match result.reason.as_str() {
+                                "approvalRequired" => "tui.status.notExecutedApprovalRequired",
+                                "dependencyFailed" => "tui.status.notExecutedDependencyFailed",
+                                "dependencyPending" => "tui.status.notExecutedDependencyPending",
+                                _ => "tui.status.notExecutedCancelled",
                             })
                         },
                     )
@@ -641,12 +642,17 @@ fn input_lines(input: &str, width: u16) -> Vec<Line<'static>> {
 mod layout_tests {
     use super::*;
     use crate::app::TuiHostOptions;
-    use deepcode_kernel_client::{HttpKernelClient, KernelClientConfig};
+    use achbit_kernel_client::{HttpKernelClient, KernelClientConfig};
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
     fn unexecuted_tools_report_the_explicit_reason() {
         for (status, disposition, expected) in [
+            (
+                "rejected",
+                serde_json::json!({"reason":"approvalRequired"}),
+                "未执行：读取需要额外授权",
+            ),
             (
                 "cancelled",
                 serde_json::json!({"reason":"cancelled"}),
@@ -805,12 +811,12 @@ mod layout_tests {
             .draw(|frame| app.renderer().draw(frame, &app))
             .unwrap();
         let contents = format!("{:?}", terminal.backend().buffer());
-        assert!(contents.contains("DeepCode"));
+        assert!(contents.contains("AC"));
         assert!(contents.contains("最后一行"));
         assert!(!contents.contains("本对话暂无任务"));
         let cursor = terminal.get_cursor_position().unwrap();
         assert!(
-            cursor.x < 79 && cursor.y >= 17 && cursor.y < 21,
+            cursor.x < 79 && cursor.y >= 18 && cursor.y < 22,
             "{cursor:?}"
         );
     }
@@ -864,7 +870,7 @@ impl Renderer {
                 Constraint::Length(decision_height),
                 Constraint::Length(u16::from(working.is_some())),
                 Constraint::Length(input_height),
-                Constraint::Length(2),
+                Constraint::Length(1),
             ])
             .split(area);
         self.draw_header(frame, rows[0], app);
@@ -917,7 +923,7 @@ impl Renderer {
 
     pub fn render_plain(&self, app: &TuiApp) -> String {
         let language = app.language();
-        let mut output = String::from("DeepCode TUI\n");
+        let mut output = String::from("AC TUI\n");
         output.push_str("────────────────────────────────────────\n");
         if let Some(projection) = app.projection() {
             output.push_str(&language.format(
@@ -1187,7 +1193,7 @@ impl Renderer {
         } else {
             run_label(language, projection)
         };
-        let left = format!("DeepCode  ·  {status}");
+        let left = format!("AC  ·  {status}");
         let available = area
             .width
             .saturating_sub(Line::from(left.as_str()).width() as u16 + 2);
@@ -1206,7 +1212,7 @@ impl Renderer {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled("DeepCode", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled("AC", Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled(
                         format!("  ·  {status}"),
                         Style::default().fg(Color::DarkGray),
@@ -1257,19 +1263,23 @@ impl Renderer {
         if !agents.is_empty() {
             metrics.insert(0, agents);
         }
-        let metrics = metrics.join(" · ");
         let hint = if area.width >= 84 {
-            language.text("tui.footerHint")
+            language.text("tui.footerHint").trim()
         } else {
-            "  /help"
+            "/help"
         };
-        let metrics = clipped(&format!("{metrics}{hint}"), area.width);
+        // Keep the current status (including errors) visible before optional metrics.
+        metrics.insert(0, app.status().to_string());
+        metrics.push(hint.to_string());
+        let footer = metrics
+            .iter()
+            .filter(|part| !part.is_empty())
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" · ");
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(metrics),
-                Line::from(clipped(app.status(), area.width)),
-            ])
-            .style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(clipped(&footer, area.width))
+                .style(Style::default().fg(Color::DarkGray)),
             area,
         );
     }
@@ -1303,11 +1313,11 @@ impl Renderer {
                             format!(
                                 " · {}",
                                 language.text(match item.status.as_str() {
-                                    "completed" => "deepcodeGui.tasks.status.completed",
-                                    "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
-                                    "inProgress" => "deepcodeGui.tasks.status.inProgress",
-                                    "blocked" => "deepcodeGui.tasks.status.blocked",
-                                    _ => "deepcodeGui.tasks.status.pending",
+                                    "completed" => "achbitGui.tasks.status.completed",
+                                    "inProgress" if ended => "achbitGui.tasks.lastInProgress",
+                                    "inProgress" => "achbitGui.tasks.status.inProgress",
+                                    "blocked" => "achbitGui.tasks.status.blocked",
+                                    _ => "achbitGui.tasks.status.pending",
                                 })
                             ),
                             Style::default().fg(Color::DarkGray),
@@ -1598,17 +1608,16 @@ impl Renderer {
             )));
         }
         if lines.is_empty() {
-            let logo = if area.width >= 62 && area.height >= 14 {
+            let logo = if area.width >= 24 && area.height >= 14 {
                 vec![
-                    r"  ____                  ____          _",
-                    r" |  _ \  ___  ___ _ __ / ___|___   __| | ___",
-                    r" | | | |/ _ \/ _ \ '_ \ |   / _ \ / _` |/ _ \",
-                    r" | |_| |  __/  __/ |_) | |__| (_) | (_| |  __/",
-                    r" |____/ \___|\___| .__/ \____\___/ \__,_|\___|",
-                    r"                |_|",
+                    r"      _        ____",
+                    r"     / \      / ___|",
+                    r"    / _ \    | |",
+                    r"   / ___ \   | |___",
+                    r"  /_/   \_\   \____|",
                 ]
             } else {
-                vec!["", "  DeepCode", ""]
+                vec!["", "  AC", ""]
             };
             lines.extend(logo.into_iter().map(|line| {
                 Line::from(Span::styled(
@@ -2357,7 +2366,7 @@ fn timeline_items(projection: &SessionProjection) -> Vec<TimelineItem<'_>> {
 
 fn queued_input_lines(
     language: Language,
-    input: &deepcode_kernel_client::QueuedInputProjection,
+    input: &achbit_kernel_client::QueuedInputProjection,
 ) -> Vec<String> {
     let status = if input.status == "queued" {
         language.text("tui.queued")
@@ -2624,11 +2633,11 @@ fn render_todo_plain(language: Language, output: &mut String, projection: &Sessi
             "  {marker} {} · {}\n",
             item.text,
             language.text(match item.status.as_str() {
-                "completed" => "deepcodeGui.tasks.status.completed",
-                "inProgress" if ended => "deepcodeGui.tasks.lastInProgress",
-                "inProgress" => "deepcodeGui.tasks.status.inProgress",
-                "blocked" => "deepcodeGui.tasks.status.blocked",
-                _ => "deepcodeGui.tasks.status.pending",
+                "completed" => "achbitGui.tasks.status.completed",
+                "inProgress" if ended => "achbitGui.tasks.lastInProgress",
+                "inProgress" => "achbitGui.tasks.status.inProgress",
+                "blocked" => "achbitGui.tasks.status.blocked",
+                _ => "achbitGui.tasks.status.pending",
             })
         ));
     }
@@ -2875,7 +2884,7 @@ fn reasoning_effort_label<'a>(language: Language, value: &'a str) -> &'a str {
 
 fn source_references(
     language: Language,
-    references: Option<&deepcode_kernel_client::SourceReferences>,
+    references: Option<&achbit_kernel_client::SourceReferences>,
 ) -> String {
     let mut text = String::new();
     if let Some(references) = references {
@@ -2902,7 +2911,7 @@ mod approval_presentation_tests {
     #[test]
     fn model_review_and_user_decision_have_distinct_actions_and_exact_details() {
         let mut projection: SessionProjection = serde_json::from_value(json!({
-            "schemaVersion":deepcode_kernel_client::SESSION_PROJECTION_VERSION,"sessionId":"session:test","revision":1,
+            "schemaVersion":achbit_kernel_client::SESSION_PROJECTION_VERSION,"sessionId":"session:test","revision":1,
             "display":{"creationTitle":"Review"},"workspaceBindings":[],"sessionDirectoryIndexes":[],"messages":[],"queuedInputs":[],
             "narratives":[],"timeline":[],"plans":[],"interactions":[],"contextCompositions":[],"tokenUsageHistory":[],"activities":[],"artifacts":[],"deliverables":[],
             "permissionOverrides":{},"effectivePermissions":null,"shellAuthorizations":[],

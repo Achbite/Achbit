@@ -1,4 +1,4 @@
-import type { EffectPreview } from '@deepcode/protocol';
+import type { EffectPreview } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 
 export function ApprovalReviewReason({ review, language }: {

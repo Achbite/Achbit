@@ -1,6 +1,6 @@
-import type { ActivityProjection, ArtifactProjection, ComputerActivityProjection, JsonObject } from '@deepcode/protocol';
+import type { ActivityProjection, ArtifactProjection, ComputerActivityProjection, JsonObject } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { ArtifactImageLink } from './ArtifactLinks';
 import { FileChanges } from './FileChanges';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
@@ -78,10 +78,10 @@ export function ComputerActivity({ activity, computer, artifacts, language, stat
   return <div className={`local-agent__tool-entry local-agent__tool-entry--${activity.status} computer-activity`}>
     <button type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded}
       onClick={() => { onExpand(); setExpanded(!expanded); }}>
-      <span className="local-agent__tool-entry-icon"><DeepCodeShellIcon name="browser" /></span>
+      <span className="local-agent__tool-entry-icon"><AchbitShellIcon name="browser" /></span>
       <strong>{summary}</strong>
       {activity.status !== 'completed' && <span>{statusLabel}</span>}
-      <span className="local-agent__tool-entry-chevron" aria-hidden="true"><DeepCodeShellIcon name="chevronRight" /></span>
+      <span className="local-agent__tool-entry-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
     </button>
     {expanded && <UiPluginSlotView slot="tool.result" input={{ kind: 'tool.result', activity, toolId: activity.tool?.operation ?? activity.label, locale: language, theme }}>
     <div className="computer-activity__body">

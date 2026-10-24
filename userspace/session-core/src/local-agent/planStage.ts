@@ -1,7 +1,7 @@
 import type {
   NewSessionEvent, PlanAuthority, SessionProjection,
-} from '@deepcode/protocol';
-import { SESSION_CONTROL_PLAN_PUBLISH } from '@deepcode/protocol';
+} from '@achbit/protocol';
+import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 import { canonicalJsonValue } from './providerToolCodec.js';
 import { LoopFailure } from './loopFailure.js';
 import type { SessionState } from './reducer.js';

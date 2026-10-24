@@ -1,8 +1,8 @@
-import { isSessionAuthorizationScope } from '@deepcode/protocol';
+import { isSessionAuthorizationScope } from '@achbit/protocol';
 import type {
   ResourceJournalEvent, ResourceJournalRead, SessionEvent, SessionProjection,
   SessionResourceProjection, ToolExecutionRecord, WorkspaceBindingDisplay,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { activeConversationEvents } from './conversationHistory.js';
 
 type WorkspaceEvent = Extract<ResourceJournalEvent, { type: 'session.created' | 'session.workspaces.updated'

@@ -1,4 +1,4 @@
-import type { ContextCompositionPartitionKind, ContextCompositionProjection, ContextUsageProjection } from '@deepcode/protocol';
+import type { ContextCompositionPartitionKind, ContextCompositionProjection, ContextUsageProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import type { InputCacheMetric } from '../../utils/providerUsage';
 

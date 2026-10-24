@@ -3,7 +3,7 @@
 // Passing this partial UI check does not constitute system acceptance.
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { COMMAND_REPLY_VERSION, type ActivityProjection, type CommandReply } from '@deepcode/protocol';
+import { COMMAND_REPLY_VERSION, type ActivityProjection, type CommandReply } from '@achbit/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { BufferedMarkdown } from '../../src/components/local-agent/BufferedMarkdown';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
@@ -11,7 +11,7 @@ import { useConversationViewport } from '../../src/components/local-agent/useCon
 import { ProviderHostedDraftGroup, ToolActivityGroup } from '../../src/components/local-agent/ToolActivityDetails';
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
-import '../../src/deepcode-gui/styles/deepcodeDesignTokens.css';
+import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 import '../../src/components/shared/focus.css';

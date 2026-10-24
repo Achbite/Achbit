@@ -1,11 +1,11 @@
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import React from 'react';
-import type { ArtifactProjection } from '@deepcode/protocol';
+import type { ArtifactProjection } from '@achbit/protocol';
 import { workspaceResourceLink } from './documentResources';
 import { requestReader } from './readerState';
 import { useConversationHost } from './ConversationHost';
-import DeepCodeShellIcon from '../shared/DeepCodeShellIcon';
+import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { ImageReview } from './ImageReview';
 
 export function ArtifactLinks({ artifacts, onOpen }: { artifacts: readonly ArtifactProjection[]; onOpen(workspaceId: string, logicalPath: string): Promise<void> }) {
@@ -23,18 +23,18 @@ export function ArtifactLinks({ artifacts, onOpen }: { artifacts: readonly Artif
       const location = artifact.logicalPath ?? artifact.uri ?? artifact.label;
       const title = `${location}\n${formatArtifactTime('updatedAt' in artifact ? String(artifact.updatedAt) : artifact.createdAt)}`;
       if (imagePreview) return <ArtifactImageLink key={artifact.artifactId} artifact={artifact} label={label} title={title} />;
-      const content = <><span className="document-artifacts__thumbnail"><DeepCodeShellIcon name={artifact.contentType === 'text/html' ? 'browser' : 'artifact'} /></span><strong>{label}</strong></>;
-      return fixed || resource || external ? <button type="button" className="deepcode-gui-output-item document-artifacts__item" key={artifact.artifactId}
+      const content = <><span className="document-artifacts__thumbnail"><AchbitShellIcon name={artifact.contentType === 'text/html' ? 'browser' : 'artifact'} /></span><strong>{label}</strong></>;
+      return fixed || resource || external ? <button type="button" className="achbit-gui-output-item document-artifacts__item" key={artifact.artifactId}
         aria-label={label} title={title}
         onClick={() => { setError(null); if(fixed) {requestReader(artifact.sessionId,{kind:'artifact',artifact});return;} void (resource ? onOpen(resource.workspaceId, resource.logicalPath) : host.openExternalLink(external!))
           .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }}>{content}</button>
-        : <div className="deepcode-gui-output-item document-artifacts__item" title={location} key={artifact.artifactId}>{content}</div>;
+        : <div className="achbit-gui-output-item document-artifacts__item" title={location} key={artifact.artifactId}>{content}</div>;
     })}
     {error && <p role="alert" className="local-agent__resource-error">{error}</p>}
   </div>;
 }
 
-export function ArtifactImageLink({ artifact, label, title, className = 'deepcode-gui-output-item document-artifacts__item' }: {
+export function ArtifactImageLink({ artifact, label, title, className = 'achbit-gui-output-item document-artifacts__item' }: {
   artifact: ArtifactProjection; label: string; title: string; className?: string;
 }) {
   const language = useUiLanguage();
@@ -54,7 +54,7 @@ export function ArtifactImageLink({ artifact, label, title, className = 'deepcod
     className={className} title={error ?? title} onError={failed}>
     <span className="document-artifacts__thumbnail">{error ? <span role="alert" title={error}>!</span>
       : url ? <img className="document-artifact-image" src={url} alt="" onError={failed} />
-      : <span aria-label={t(language, 'reader.imageLoading')}><DeepCodeShellIcon name="artifact" /></span>}</span>
+      : <span aria-label={t(language, 'reader.imageLoading')}><AchbitShellIcon name="artifact" /></span>}</span>
     <strong>{label}</strong>
   </ImageReview>;
 }

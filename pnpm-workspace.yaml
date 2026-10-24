@@ -4,6 +4,6 @@ packages:
   - "userspace/protocol"
   - "userspace/presentation-core"
   - "userspace/session-core"
-  - "shells/deepcode-gui"
+  - "shells/achbit-gui"
 allowBuilds:
   esbuild: true

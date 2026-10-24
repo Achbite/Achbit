@@ -1,10 +1,10 @@
 import { pastedImageBytes, type PastedImageInput } from './pastedImage';
-import { isLlmReasoningEffort } from '@deepcode/protocol';
-import { isProcessActivity } from '@deepcode/protocol';
-import { isShellAuthorizationScope } from '@deepcode/protocol';
-import { validatePermissionPatches } from '@deepcode/protocol';
-import { isLocalAgentErrorValue } from '@deepcode/protocol';
-import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@deepcode/protocol';
+import { isLlmReasoningEffort } from '@achbit/protocol';
+import { isProcessActivity } from '@achbit/protocol';
+import { isShellAuthorizationScope } from '@achbit/protocol';
+import { validatePermissionPatches } from '@achbit/protocol';
+import { isLocalAgentErrorValue } from '@achbit/protocol';
+import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
 import type {
   AssistantDraftBlockProjection,
   AgentSettings,
@@ -18,12 +18,12 @@ import type {
   FilesystemReference,
   PluginCatalogProjection,
   SessionProjection,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import {
   COMMAND_REPLY_VERSION,
   RUN_PROJECTION_STATUSES,
   SESSION_PROJECTION_VERSION,
-} from '@deepcode/protocol';
+} from '@achbit/protocol';
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
 import { isShellActivityResult } from './shellActivityCodec';
 
@@ -1436,10 +1436,11 @@ function isActivity(value: unknown): boolean {
         : ['started', 'completed'].includes(String(value.agent.phase)) && isIdentifier(value.agent.taskId)) : value.agent === undefined);
 }
 
-function isNotExecuted(value: unknown): value is { reason: 'cancelled' | 'dependencyFailed'; predecessorCallId?: string } {
+function isNotExecuted(value: unknown): value is { reason: 'cancelled' | 'dependencyFailed' | 'dependencyPending' | 'approvalRequired'; predecessorCallId?: string } {
   return isExactRecord(value, ['reason'], ['predecessorCallId'])
-    && ['cancelled', 'dependencyFailed'].includes(String(value.reason))
-    && (value.predecessorCallId === undefined || isIdentifier(value.predecessorCallId));
+    && ['cancelled', 'dependencyFailed', 'dependencyPending', 'approvalRequired'].includes(String(value.reason))
+    && (['dependencyFailed', 'dependencyPending'].includes(String(value.reason))
+      ? isIdentifier(value.predecessorCallId) : value.predecessorCallId === undefined);
 }
 
 function isLiveToolOutput(value: unknown): boolean {
@@ -1466,9 +1467,13 @@ function isProviderHostedActivity(value: unknown): boolean {
 }
 
 function isToolActivity(value: unknown, activityStatus: string): boolean {
-  return isExactRecord(value, ['operation', 'resources'], ['shell', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
+  return isExactRecord(value, ['operation', 'resources'], ['shell', 'shellIntents', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
     && (value.error === undefined || isLocalAgentError(value.error))
     && (value.projectionError === undefined || isLocalAgentError(value.projectionError))
+    && (value.shellIntents === undefined || isArrayOf(value.shellIntents, intent =>
+      isExactRecord(intent, ['kind', 'targets'], ['query']) && (intent.kind === 'read' || intent.kind === 'search')
+      && isArrayOf(intent.targets, target => typeof target === 'string')
+      && (intent.kind === 'search' ? typeof intent.query === 'string' : intent.query === undefined)))
     && (value.recordId === undefined || isIdentifier(value.recordId))
     && isNonEmptyText(value.operation)
     && isArrayOf(value.resources, isActivityResource)
@@ -1607,8 +1612,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-export async function readConversation(sessionId: string, query: Omit<import('@deepcode/protocol').ConversationReadQuery, 'sessionId'>, signal?: AbortSignal) {
-  return await request<import('@deepcode/protocol').ConversationReadResult>(
+export async function readConversation(sessionId: string, query: Omit<import('@achbit/protocol').ConversationReadQuery, 'sessionId'>, signal?: AbortSignal) {
+  return await request<import('@achbit/protocol').ConversationReadResult>(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`,
     { method: 'POST', body: JSON.stringify(query), signal },
   );

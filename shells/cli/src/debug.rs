@@ -1,7 +1,7 @@
 //! Structured control client shipped only by the explicit Debug build.
-use deepcode_host_connection::{LocalHostConnection, UserDirectories};
-use deepcode_kernel_abi::{HostProcessIdentity, HostShutdownReceipt};
-use deepcode_kernel_client::{KernelBootstrap, KernelBootstrapOptions};
+use achbit_host_connection::{LocalHostConnection, UserDirectories};
+use achbit_kernel_abi::{HostProcessIdentity, HostShutdownReceipt};
+use achbit_kernel_client::{KernelBootstrap, KernelBootstrapOptions};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = r#"DeepCode Debug CLI (debug-only)
+const HELP: &str = r#"Achbit Debug CLI (debug-only)
   launch --artifact DIR --workspace DIR --state-root DIR [--headless]
   instances | inspect | attach --workspace DIR | detach | stop
   tools list | tools inspect --tool fs.read
@@ -237,7 +237,7 @@ impl Client {
         let mut token = reqwest::header::HeaderValue::from_str(connection.shell_token())
             .map_err(|e| e.to_string())?;
         token.set_sensitive(true);
-        headers.insert(deepcode_kernel_abi::HOST_SHELL_TOKEN_HEADER, token);
+        headers.insert(achbit_kernel_abi::HOST_SHELL_TOKEN_HEADER, token);
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(5))
@@ -330,8 +330,8 @@ fn configure(root: &Path, resources: &Path, kernel: &Path) {
     for key in [
         "DEEPCODE_API_URL",
         "DEEPCODE_PORT",
-        deepcode_kernel_abi::HOST_SHELL_TOKEN_ENV,
-        deepcode_kernel_abi::HOST_INSTANCE_ID_ENV,
+        achbit_kernel_abi::HOST_SHELL_TOKEN_ENV,
+        achbit_kernel_abi::HOST_INSTANCE_ID_ENV,
     ] {
         std::env::remove_var(key);
     }
@@ -576,7 +576,7 @@ async fn launch(args: &Args, root: &Path) -> Result<(), String> {
     if !args.flag("headless") {
         let started = Instant::now();
         let log = File::create(dirs.log_dir.join("debug-gui.log")).map_err(|e| e.to_string())?;
-        let mut gui = deepcode_host_connection::process::spawn_independent_shell(
+        let mut gui = achbit_host_connection::process::spawn_independent_shell(
             Command::new(gui_binary)
                 .current_dir(&workspace)
                 .stdin(Stdio::null())
@@ -637,19 +637,19 @@ fn artifact_paths(artifact: &Path, platform: &str) -> Result<(PathBuf, PathBuf, 
     match platform {
         "windows" => Ok((
             artifact.to_path_buf(),
-            artifact.join("deepcode-kernel.exe"),
-            artifact.join("DeepCode-Debug.exe"),
+            artifact.join("achbit-kernel.exe"),
+            artifact.join("Achbit-Debug.exe"),
         )),
         "macos" => {
             let app = if artifact.extension().is_some_and(|x| x == "app") {
                 artifact.to_path_buf()
             } else {
-                artifact.join("DeepCode-Debug.app")
+                artifact.join("Achbit-Debug.app")
             };
             Ok((
                 app.join("Contents/Resources"),
-                app.join("Contents/MacOS/deepcode-kernel"),
-                app.join("Contents/MacOS/DeepCode-GUI"),
+                app.join("Contents/MacOS/achbit-kernel"),
+                app.join("Contents/MacOS/Achbit"),
             ))
         }
         _ => Err(format!("Debug launch is not supported on {platform}")),
@@ -667,11 +667,11 @@ mod tests {
             artifact_paths(root, "windows").unwrap(),
             (
                 root.to_path_buf(),
-                root.join("deepcode-kernel.exe"),
-                root.join("DeepCode-Debug.exe")
+                root.join("achbit-kernel.exe"),
+                root.join("Achbit-Debug.exe")
             )
         );
-        let mac = root.join("DeepCode-Debug.app");
+        let mac = root.join("Achbit-Debug.app");
         assert_eq!(
             artifact_paths(root, "macos").unwrap(),
             artifact_paths(&mac, "macos").unwrap()
@@ -726,7 +726,7 @@ mod tests {
     }
     fn identity(suffix: char) -> HostProcessIdentity {
         HostProcessIdentity {
-            service: deepcode_kernel_abi::KERNEL_DAEMON_SERVICE.into(),
+            service: achbit_kernel_abi::KERNEL_DAEMON_SERVICE.into(),
             instance_id: format!("dcinstance_{}", suffix.to_string().repeat(64)),
             pid: 123,
             address: "http://127.0.0.1:12345".into(),
@@ -753,7 +753,7 @@ mod tests {
         let expected = identity('a');
         let mut result = json!(HostShutdownReceipt {
             accepted: true,
-            owner: deepcode_kernel_abi::HOST_SHUTDOWN_OWNER.into(),
+            owner: achbit_kernel_abi::HOST_SHUTDOWN_OWNER.into(),
             identity: expected.clone(),
             cleanup_complete: true,
         });
