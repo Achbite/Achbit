@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "achbit-gui-tauri-shell"
-version = "0.6.58"
+version = "0.6.60"
 dependencies = [
  "achbit-host-connection",
  "achbit-kernel-abi",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "achbit-host-connection"
-version = "0.6.58"
+version = "0.6.60"
 dependencies = [
  "achbit-kernel-abi",
  "base64 0.22.1",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "achbit-kernel-abi"
-version = "0.6.58"
+version = "0.6.60"
 dependencies = [
  "serde",
  "serde_json",
