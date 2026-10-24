@@ -1,12 +1,12 @@
-[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [Achbit](https://github.com/Achbite/DeepCode/blob/main/README.zh-CN.md)
+[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [Achbit](https://github.com/Achbite/Achbit/blob/main/README.zh-CN.md)
 
 # 在 Achbit (Achbite) 中使用 DeepSeek
 
-[Achbit](https://github.com/Achbite/DeepCode) 是采用 MIT 许可证、提供 GUI、TUI 和 CLI 的本地优先编程 Agent。本指南通过 **Responses API** 接入 **DeepSeek Flash**，完成项目读取、工具执行和继续对话。
+[Achbit](https://github.com/Achbite/Achbit) 是采用 MIT 许可证、提供 GUI、TUI 和 CLI 的本地优先编程 Agent。本指南通过 **Responses API** 接入 **DeepSeek Flash**，完成项目读取、工具执行和继续对话。
 
 ## 1. 安装并打开 Achbit
 
-在 [Achbit Releases](https://github.com/Achbite/DeepCode/releases) 下载实际提供的平台包。选择安装包或解压版前，先阅读该版本的平台说明。
+在 [Achbit Releases](https://github.com/Achbite/Achbit/releases) 下载实际提供的平台包。选择安装包或解压版前，先阅读该版本的平台说明。
 
 | 平台 | 打开 GUI | 解压版终端启动器 |
 | --- | --- | --- |
@@ -21,8 +21,8 @@
 **在宿主机执行：**
 
 ```bash
-git clone --branch main https://github.com/Achbite/DeepCode.git
-cd DeepCode
+git clone --branch main https://github.com/Achbite/Achbit.git Achbit
+cd Achbit
 # 仅 macOS：打包前执行一次；Windows 和 Linux 跳过。
 bash scripts/setup-macos-signing.sh
 make shell
@@ -36,7 +36,7 @@ make shell
 | Windows x64 | `bash ./build.sh --stage package-windows` | `bin/win64/` |
 | Linux，与容器架构一致 | `bash ./build.sh --stage package-linux` | `bin/linux-x64/` 或 `bin/linux-arm64/` |
 
-构建成功后运行 `exit`，**回到宿主机**打开输出目录中的 GUI 或终端启动器；例如 macOS 执行 `open bin/macos-arm64/Achbit.app`。Windows 产物需从 Windows 打开。各平台完整启动命令见[源码构建说明](https://github.com/Achbite/DeepCode/blob/main/README.zh-CN.md#从源码构建)。
+构建成功后运行 `exit`，**回到宿主机**打开输出目录中的 GUI 或终端启动器；例如 macOS 执行 `open bin/macos-arm64/Achbit.app`。Windows 产物需从 Windows 打开。各平台完整启动命令见[源码构建说明](https://github.com/Achbite/Achbit/blob/main/README.zh-CN.md#从源码构建)。
 
 ## 2. 保存 DeepSeek 连接与模型
 
@@ -64,10 +64,6 @@ API 模型名继续使用 `deepseek-flash`。DeepSeek [2026 年 10 月 17 日的
 DeepSeek 官方说明支持 **1M token 上下文**和**最高 384K token 输出**。上表数值是 Achbit 的 token 预算配置。上下文包含输入与生成输出，最大输出预算不代表必须生成这么多内容。内置预设开启 Thinking 和图像输入，并将推理强度设为 `max`；已保存的模型配置保留原有设置。详见[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)。
 
 模型编辑器的**联网搜索**选项控制 Responses API 内置工具。Flash [会忽略该工具](https://api-docs.deepseek.com/guides/responses_api/)，因此预设将它关闭。Achbit 独立的 `web.search` 工具使用 [DeepSeek Search API](https://api-docs.deepseek.com/guides/search/)：`POST https://api.deepseek.com/v1/tools/search`。使用官方 DeepSeek API 连接且未显式覆盖搜索配置时，自动复用该连接的 API Key，直接取得搜索结果与摘要，无需额外模型请求。查询支持服务提供的搜索操作符，最长 128 个 Unicode 字符；工具的结果数量范围仍为 1–10。搜索沿用现有公网访问权限，并按请求独立计费，详见[官方价格](https://api-docs.deepseek.com/quick_start/pricing/)。
-
-![Achbit 模型编辑器保存 DeepSeek V4.1 Flash、Responses API 和 Max](assets/deepseek-settings-en.png)
-
-*macOS GUI 中已保存的配置，画面没有包含 API Key。*
 
 模型编辑页的 **测试** 只发送一条短连接探测，会消耗 API 用量。探测成功后，继续完成下方真实任务。
 
