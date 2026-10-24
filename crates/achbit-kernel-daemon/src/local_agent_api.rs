@@ -1885,14 +1885,19 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
             }
         }
         "approvalReview" => {
-            if body.response_constraint != "answerOnly"
-                || !body.tools.is_empty()
+            // Wire tool names are aliases; the Session resolves them against the
+            // frozen run catalog and admits only fs.read/session.read evidence.
+            let reading = body.response_constraint == "normal"
+                && !body.tools.is_empty()
+                && body.response_format.is_none();
+            let deciding = body.response_constraint == "answerOnly"
+                && body.tools.is_empty()
+                && body.response_format.is_some();
+            if (!reading && !deciding)
                 || !body.hosted_tools.is_empty()
                 || body.max_output_tokens == 0
             {
-                return Err(
-                    "自动审批请求必须使用 answerOnly、空工具目录和固定的完整输出预算。".to_string(),
-                );
+                return Err("自动审批取证必须使用 normal 和读取工具；最终裁决必须使用无工具的 answerOnly 及结构化决策格式。".into());
             }
         }
         _ => return Err("Provider 请求的 purpose 无效。".to_string()),
@@ -1997,6 +2002,17 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
             return Err("只有 assistant 消息可以携带 providerOutputBlocks。".to_string());
         }
         let provider_items = message.provider_items.as_deref().unwrap_or_default();
+        if body.purpose == "approvalReview"
+            && (!provider_items.is_empty()
+                || message
+                    .provider_output_blocks
+                    .as_ref()
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|block| block["kind"] == "providerHosted")
+                    }))
+        {
+            return Err("自动审批不能回放 Provider hosted search。".into());
+        }
         let mut provider_item_ids = std::collections::HashSet::new();
         for item in provider_items {
             let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
@@ -2280,6 +2296,49 @@ mod tests {
     }
 
     #[test]
+    fn approval_review_requests_separate_evidence_reads_from_structured_decisions() {
+        let base = json!({"protocolVersion":"deepcode.local-agent", "requestId":"request:review",
+            "sessionId":"session:review", "runId":"run:review", "providerRuntimeRef":"provider-runtime:test",
+            "profileId":"profile:test", "purpose":"approvalReview", "responseConstraint":"normal",
+            "maxOutputTokens":512, "workspaceBindings":[], "messages":[{"role":"user","content":"Read the evidence."}],
+            "tools":[{"name":"frozen_read_alias","description":"Read existing evidence","inputSchema":{"type":"object"}}],
+            "hostedTools":[]});
+        let validate =
+            |value: Value| validate_local_provider_request(&serde_json::from_value(value).unwrap());
+        validate(base.clone()).unwrap();
+        let mut final_request = base.clone();
+        final_request["responseConstraint"] = json!("answerOnly");
+        final_request["tools"] = json!([]);
+        assert!(
+            validate(final_request.clone()).is_err(),
+            "a final review needs structured output"
+        );
+        final_request["responseFormat"] = json!({"name":"execution_permission_decision", "schema":{
+            "type":"object", "additionalProperties":false, "required":["decision","reason"],
+            "properties":{"decision":{"enum":["allow","deny","needsUser"]},"reason":{"type":"string"}}}});
+        validate(final_request.clone()).unwrap();
+        final_request["tools"] = base["tools"].clone();
+        assert!(validate(final_request).is_err());
+        let mut no_tools = base.clone();
+        no_tools["tools"] = json!([]);
+        assert!(validate(no_tools).is_err());
+        let mut hosted = base.clone();
+        hosted["hostedTools"] = json!([{"type":"webSearch","providerToolType":"web_search"}]);
+        assert!(validate(hosted).is_err());
+        for field in ["providerItems", "providerOutputBlocks"] {
+            let mut replay = base.clone();
+            replay["messages"] = json!([{"role":"assistant","content":"",field: if field == "providerItems" {
+                json!([{"type":"web_search_call","id":"search:one","status":"completed"}])
+            } else { json!([{"kind":"providerHosted","outputIndex":0,"providerToolType":"web_search",
+                "providerCallId":"search:one","activityId":"activity:search", "item":{"type":"web_search_call","id":"search:one","status":"completed"}}]) }}]);
+            assert!(
+                validate(replay).is_err(),
+                "review must not replay hosted search"
+            );
+        }
+    }
+
+    #[test]
     fn search_owner_is_frozen_from_provider_permission_and_kernel_adapter() {
         let responses = provider_runtime("responses", "web_search");
         let chat = provider_runtime("chatCompletions", "none");
@@ -2307,7 +2366,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_retains_hosted_definitions_and_approval_remains_tool_free() {
+    fn compaction_retains_hosted_definitions_and_approval_disables_hosted_search() {
         let runtime = RunProviderRuntime {
             reasoning_effort_override: None,
             provider_runtime_ref: "provider-runtime:test".to_string(),

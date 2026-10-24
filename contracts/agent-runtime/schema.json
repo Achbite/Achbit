@@ -830,7 +830,7 @@
       },
       "allOf": [
         {
-          "if": {"properties": {"purpose": {"enum": ["contextCompaction", "approvalReview"]}}},
+          "if": {"properties": {"purpose": {"const": "contextCompaction"}}},
           "then": {
             "properties": {"responseConstraint": {"const": "answerOnly"}}
           }
@@ -838,7 +838,17 @@
         {
           "if": {"properties": {"purpose": {"const": "approvalReview"}}},
           "then": {
-            "properties": {"tools": {"maxItems": 0}, "hostedTools": {"maxItems": 0}}
+            "properties": {"hostedTools": {"maxItems": 0}},
+            "oneOf": [
+              {
+                "properties": {"responseConstraint": {"const": "normal"}, "tools": {"minItems": 1}},
+                "not": {"required": ["responseFormat"]}
+              },
+              {
+                "properties": {"responseConstraint": {"const": "answerOnly"}, "tools": {"maxItems": 0}},
+                "required": ["responseFormat"]
+              }
+            ]
           }
         }
       ],
@@ -4162,7 +4172,7 @@
         "tools": {"type": "array", "items": {"$ref": "#/$defs/ContextCompositionTool"}},
         "reviewInput": {
           "type": "object", "additionalProperties": false, "required": ["instructions", "content"],
-          "properties": {"instructions": {"type": "string", "minLength": 1, "maxLength": 18000}, "content": {"type": "string", "minLength": 1, "maxLength": 18000}}
+          "properties": {"instructions": {"type": "string", "minLength": 1}, "content": {"type": "string", "minLength": 1}}
         },
         "modelView": {
           "type": "object",

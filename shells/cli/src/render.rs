@@ -556,10 +556,11 @@ pub(crate) fn render_tool_activity(
         .not_executed
         .as_ref()
         .map_or(activity.status.as_str(), |result| {
-            if result.reason == "dependencyFailed" {
-                "未执行：前序调用未成功"
-            } else {
-                "未执行：已取消"
+            match result.reason.as_str() {
+                "approvalRequired" => "未执行：读取需要额外授权",
+                "dependencyFailed" => "未执行：前序调用未成功",
+                "dependencyPending" => "未执行：前序调用仍在运行",
+                _ => "未执行：已取消",
             }
         });
     writeln!(out, "工具 {operation} [{status}]")?;
@@ -1014,6 +1015,11 @@ mod tests {
     #[test]
     fn unexecuted_tools_report_the_explicit_reason() {
         for (status, disposition, expected) in [
+            (
+                "rejected",
+                json!({"reason":"approvalRequired"}),
+                "未执行：读取需要额外授权",
+            ),
             ("cancelled", json!({"reason":"cancelled"}), "未执行：已取消"),
             (
                 "rejected",

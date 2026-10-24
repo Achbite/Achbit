@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptySessionState } from '../dist/index.js';
 import { prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
+import { preparePlanReview } from '../dist/local-agent/planReview.js';
 import { errorFact } from '../dist/local-agent/loopFailure.js';
 import { readConversation } from '../dist/local-agent/conversationRead.js';
 import { runtimeSnapshot, workspaceBinding } from './local-agent-fixtures.mjs';
@@ -27,6 +28,7 @@ function reviewFixture(command, user = 'Inspect this checkout. Do not modify pro
 
 test('review budgets optional observations after complete authorization and operation', () => {
   const fixture = reviewFixture('printf inspect; # ' + 'a'.repeat(4000));
+  fixture.runtime.provider.contextWindowTokens = 6000;
   const { request } = prepareApprovalReview(fixture.snapshot, fixture.runtime, fixture.approval, 'request:bounded');
   const packet = JSON.parse(request.messages[1].content);
   assert.deepEqual(packet.operation, fixture.operation);
@@ -45,7 +47,7 @@ test('oversized mandatory review material has an approval-specific code and budg
   assert.equal(failure.code, 'approval_review_context_too_large');
   assert.equal(failure.diagnostics.phase, 'approvalReview');
   assert.match(failure.message, /模型尚未调用/);
-  assert.match(failure.diagnostics.causes[0].message, /budgetCharacters=18000/);
+  assert.match(failure.diagnostics.causes[0].message, /contextWindowTokens=4096; maxOutputTokens=512/);
 });
 
 for (const ordered of [false, true]) test(`provider-turn sibling rejections and Session control limits remain visible without losing a pagination sibling (ordered=${ordered})`, async () => {
@@ -99,4 +101,25 @@ test('tool reads and context reads include rejected input and pre-provider appro
   const context = await readConversation(journal, { sessionId, view: 'context', providerRequestId: 'request:not-sent' });
   assert.equal(context.items[0].contextPrepared, false);
   assert.equal(context.items[0].reviewInput, undefined, 'a failed preparation is not a sent model input');
+});
+
+// A configured large reviewer must not inherit the removed fixed 18k character ceiling.
+test('review admits complete authorization over 18k when the configured model has capacity', () => {
+  const fixture = reviewFixture('inspect', 'Required user restriction. '.repeat(1000));
+  fixture.runtime.provider.contextWindowTokens = 131072;
+  const { request } = prepareApprovalReview(fixture.snapshot, fixture.runtime, fixture.approval, 'request:large-model');
+  assert.ok(request.messages[1].content.length > 18000);
+  assert.equal(JSON.parse(request.messages[1].content).userMessages[0].content, fixture.user);
+});
+
+test('Plan review uses model capacity while retaining its separate tool-free decision', () => {
+  const fixture = reviewFixture('inspect', 'Required user restriction. '.repeat(1000));
+  const plan = { runId: fixture.approval.runId, planId: 'plan:budget', revision: 1, title: 'Inspect', summary: 'Review requested files', steps: [], mutationManifest: [], workspaceRequests: [] };
+  assert.throws(() => preparePlanReview(fixture.snapshot, fixture.runtime, plan, 'request:small-plan'), error => error.code === 'plan_review_context_too_large');
+  fixture.runtime.provider.contextWindowTokens = 131072;
+  const { request } = preparePlanReview(fixture.snapshot, fixture.runtime, plan, 'request:large-plan');
+  assert.ok(request.messages[1].content.length > 18000);
+  assert.deepEqual(request.tools, []);
+  assert.equal(request.responseConstraint, 'answerOnly');
+  assert.equal(JSON.parse(request.messages[1].content).userMessages[0].content, fixture.user);
 });

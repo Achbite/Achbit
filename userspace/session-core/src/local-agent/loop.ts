@@ -1,7 +1,7 @@
 import { pendingProcessWait } from './processWait.js';
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
-import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure } from './approvalReview.js';
+import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
 import { preparePlanReview } from './planReview.js';
 import type {
@@ -1144,7 +1144,7 @@ async function consumeProvider(
   runId: string,
   deps: AgentLoopDeps,
   signal: AbortSignal,
-  controls: SessionCapabilities['controls'],
+  controls: Pick<SessionCapabilities['controls'], 'decode'>,
 ): Promise<ProviderTurn> {
   return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
     consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls, onEvent)
@@ -1158,7 +1158,7 @@ async function consumeProviderOutput(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   onCompleted: () => void,
-  controls: SessionCapabilities['controls'],
+  controls: Pick<SessionCapabilities['controls'], 'decode'>,
   onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
@@ -1302,6 +1302,7 @@ async function consumeProviderOutput(
       'Provider 同一 turn 混用了有序 output item 与聚合完成事件。',
     );
   }
+  if (request.purpose === 'approvalReview' && hostedWebSearchCalls.length) throw new LoopFailure('approval_review_read_scope', '审批不能调用网络搜索。');
   if (completeMessage) {
     if (
       completeMessage.reasoningContent !== undefined
@@ -1355,10 +1356,10 @@ async function consumeProviderOutput(
   }
 
   const decodedOutputBlocks = orderedOutputItems.map((output) => (
-    decodeProviderOutputBlock(output, toolCodec)
+    reviewOutputBlock(decodeProviderOutputBlock(output, toolCodec), request)
   ));
   const aggregateBlocks = aggregateCalls.map((call, outputIndex) => (
-    decodeProviderOutputBlock({
+    reviewOutputBlock(decodeProviderOutputBlock({
       outputIndex,
       item: {
         type: 'function_call',
@@ -1367,7 +1368,7 @@ async function consumeProviderOutput(
         arguments: call.arguments ?? JSON.stringify(call.input),
         ...(call.thoughtSignature !== undefined ? { thoughtSignature: call.thoughtSignature } : {}),
       },
-    }, toolCodec)
+    }, toolCodec), request)
   ));
   // A conflicting control batch is rejected as a whole, before requesting any effect.
   const inputBlocks = [...decodedOutputBlocks, ...aggregateBlocks].filter((block) => (
@@ -1620,7 +1621,7 @@ async function consumeProviderOutput(
   });
   const completion: ProviderTurnCompletion = {
     providerRequestId: request.requestId,
-    purpose: 'agent',
+    purpose: request.purpose,
     providerRuntimeRef: request.providerRuntimeRef,
     orderedCallIds: calls.map((call) => call.callId),
     ...(aggregateBlocks.length > 0 ? {
@@ -1795,6 +1796,20 @@ function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {
       publish();
     },
   };
+}
+
+/** Enforce the independent review's read scope before creating any executable call fact. */
+function reviewOutputBlock(block: DecodedProviderOutputBlock, request: ProviderRequest): DecodedProviderOutputBlock {
+  if (request.purpose !== 'approvalReview') return block;
+  if (block.kind === 'providerHosted') throw new LoopFailure('approval_review_read_scope', '审批不能调用网络搜索。');
+  if (block.kind !== 'toolCall') return block;
+  const allowed = block.name === 'session.read'
+    ? block.input.sessionId === request.sessionId && ['summary', 'messages', 'tools', 'plans'].includes(String(block.input.view ?? 'summary'))
+    : block.name === 'fs.read' && request.workspaceBindings.some(binding => binding.workspaceId === block.input.workspaceId);
+  if (allowed) return block;
+  return { ...block, kind: 'toolCallRejected', error: { code: 'approval_review_read_scope',
+    message: '审批只可读取当前会话的任务历史或绑定工作区的关联材料，不能访问其他会话、修改状态或扩大权限。',
+    issues: [{ path: '$', rule: 'approval_read_scope', message: 'Use session.read for this session (summary/messages/tools/plans) or fs.read in a bound workspace.' }] } };
 }
 
 function decodeProviderOutputBlock(
@@ -2162,6 +2177,36 @@ async function reviewPendingPlan(deps: AgentLoopDeps, plan: NonNullable<SessionS
   });
 }
 
+/** A manual decision or permission change retires only this execution review. */
+function createApprovalReviewScope(deps: AgentLoopDeps, approvalId: string, permissions: string, signal: AbortSignal) {
+  const controller = new AbortController(), observer = new AbortController();
+  const obsolete = new LoopFailure('approval_review_obsolete', '审批已由人工决定或权限变更替代。', {
+    source: 'session', phase: 'approvalReview', category: 'cancelled', retryable: false, causes: [],
+  });
+  const onAbort = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  const watching = (async () => {
+    while (!observer.signal.aborted && !controller.signal.aborted) {
+      const current = await deps.readSnapshot();
+      if (!current.state.pendingApprovals.some(item => item.approvalId === approvalId)
+        || JSON.stringify(current.state.publishedPermissions ?? current.state.permissionOverrides) !== permissions) {
+        controller.abort(obsolete);
+        return;
+      }
+      if (!deps.waitForChange) return;
+      await deps.waitForChange(current.state.revision, observer.signal, current.state.publishedPermissions);
+    }
+  })().catch(error => {
+    if (!(observer.signal.aborted && error === observer.signal.reason)) controller.abort(error);
+  });
+  return { signal: controller.signal, obsolete, async close() {
+    observer.abort();
+    signal.removeEventListener('abort', onAbort);
+    await watching;
+  } };
+}
+
 async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEvent, reply: ToolExecutionReply,
   signal: AbortSignal): Promise<'terminal' | 'approval' | 'retry'> {
   const runId = requestEvent.runId;
@@ -2197,61 +2242,153 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
       let reviewRecorded = false;
       let reviewFailure: LocalAgentError | undefined;
       let verdict: ReturnType<typeof decodeApprovalReview> = { decision: 'ask', reason: '自动审查未完成。' };
-      for (let attempt = 0; attempt < 2; attempt++) {
-        reviewRequestId = deps.nextId('provider-request');
-        reviewRecorded = false;
-        reviewFailure = undefined;
-        let review: ReturnType<typeof prepareApprovalReview> | undefined;
-        try {
-          review = prepareApprovalReview(reviewSnapshot, runtime, pending, reviewRequestId, attempt > 0);
-          await commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId, payload: review.receipt });
-          const result = await consumeTextProvider(review.request, deps, signal);
-          // The Provider completed even if its decision is malformed. Preserve its
-          // completion and usage; interpretation errors belong to the review fact.
-          await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
-            ...(result.contextUsage ? [{ type: 'context.updated' as const,
-            sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
-          if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)) return 'retry';
-          verdict = decodeApprovalReview(result.summary);
-          break;
-        } catch (error) {
-          if (signal.aborted) throw error;
-          const fact = errorFact(error);
-          reviewFailure = fact;
-          if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
-            sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
-              purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
-          verdict = { decision: 'ask', reason: `自动审查无法完成，需要你决定是否执行。\n${fact.code}：${fact.message}` };
-          const retryFormat = attempt === 0 && error instanceof ApprovalReviewFormatFailure
-            && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline
-            && snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId);
-          if (error instanceof ApprovalReviewFormatFailure) {
-            const response = fact.diagnostics?.causes.find(cause => cause.kind === 'response')?.message;
-            verdict = { decision: 'ask', reason: `${retryFormat ? '审批结果格式无效，正在按原请求重试一次。' : '无法读取有效的审核结果，需要你决定是否执行。'}\n${fact.message}\n原始响应：${response}` };
-            // Withhold authority without entering run.waiting during recovery.
-            await commit({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId,
-              callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict, error: fact } });
-            reviewRecorded = true;
+      const evidenceEvents: SessionEvent[] = [];
+      let formatRetried = false;
+      const reviewScope = createApprovalReviewScope(deps, approvalId, baseline, signal);
+      try {
+        for (let round = 0; round <= MAX_APPROVAL_EVIDENCE_ROUNDS + 1; round++) {
+          reviewRequestId = deps.nextId('provider-request');
+          reviewRecorded = false;
+          reviewFailure = undefined;
+          let review: ReturnType<typeof prepareApprovalReview> | undefined;
+          try {
+            reviewScope.signal.throwIfAborted();
+            review = prepareApprovalReview(reviewSnapshot, runtime, pending, reviewRequestId, formatRetried, evidenceEvents, round >= MAX_APPROVAL_EVIDENCE_ROUNDS);
+            await commit({ type: 'context.composed', sessionId: snapshot.state.sessionId, runId, payload: review.receipt });
+            let summary: string;
+            if (review.request.tools.length) {
+              const result = await consumeProvider(review.request, review.toolCodec, runId, deps, reviewScope.signal, { decode: () => null });
+              if (result.kind !== 'tools' && result.kind !== 'answer') throw new LoopFailure('approval_review_read_scope', '审批返回了不支持的控制操作。');
+              const facts: NewSessionEvent[] = result.kind === 'tools' ? result.calls.map(call => {
+                if (call.owner !== 'kernel') throw new LoopFailure('approval_review_read_scope', '审批不能调用控制操作。');
+                return { type: 'tool.requested', sessionId: snapshot.state.sessionId, runId, callId: call.callId,
+                  payload: { providerCallId: call.providerCallId, attemptId: deps.nextId('attempt'), toolName: call.name, input: call.input } };
+              }) : [];
+              await commit([...orderedProviderCallFacts(result.completion, facts),
+                providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
+                ...(result.contextUsage ? [{ type: 'context.updated' as const, sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
+              if (result.kind === 'tools') {
+                const dispatched = new Set<string>();
+                let evidenceFailure: { error: unknown } | undefined;
+                try {
+                  for (const call of result.calls) {
+                    const event = snapshot.events.find(event => event.type === 'tool.requested' && event.callId === call.callId) as ToolRequestEvent;
+                    snapshot = await deps.readSnapshot();
+                    const obsolete = !snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)
+                      || JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) !== baseline;
+                    if (obsolete) {
+                      await commit({ type: 'tool.not-executed', sessionId: snapshot.state.sessionId, runId, callId: event.callId,
+                        payload: { attemptId: event.payload.attemptId, reason: 'cancelled' } });
+                      continue;
+                    }
+                    reviewScope.signal.throwIfAborted();
+                    const execution = executionRequest(snapshot, event, deps);
+                    dispatched.add(event.callId);
+                    const evidenceReply = await executeUntilAbort(deps, execution, reviewScope.signal);
+                    if (evidenceReply.callId !== event.callId) throw new LoopFailure('kernel_call_identity_mismatch', '审批读取返回了其他调用的结果。');
+                    if (evidenceReply.status === 'approvalRequired') {
+                      // No recursive review and no authority is granted for evidence collection.
+                      await commit({ type: 'tool.not-executed', sessionId: snapshot.state.sessionId, runId, callId: event.callId,
+                        payload: { attemptId: event.payload.attemptId, reason: 'approvalRequired' } });
+                    } else if (evidenceReply.status === 'inputRejected') {
+                      assertToolRecordIdentity(evidenceReply.rejection, expectedToolRecordIdentity(snapshot, event));
+                      await commit({ type: 'tool.input-rejected', sessionId: snapshot.state.sessionId, runId, callId: event.callId,
+                        payload: { rejection: evidenceReply.rejection } });
+                    } else await commitToolRecord(evidenceReply.record, expectedToolRecordIdentity(snapshot, event), commit);
+                  }
+                } catch (error) {
+                  evidenceFailure = { error };
+                  throw error;
+                } finally {
+                  try {
+                    const current = await deps.readSnapshot();
+                    const unresolved = pendingToolRequests(current.events, runId);
+                    const notDispatched = unresolved.filter(event => !dispatched.has(event.callId)
+                      && result.calls.some(call => call.callId === event.callId));
+                    if (notDispatched.length) await commit(notDispatched.map(event => ({
+                      type: 'tool.not-executed', sessionId: event.sessionId, runId, callId: event.callId,
+                      payload: { attemptId: event.payload.attemptId, reason: 'cancelled' },
+                    })));
+                  } catch (error) {
+                    if (evidenceFailure && evidenceFailure.error !== error) {
+                      throw new AggregateError([evidenceFailure.error, error], 'approval_review_call_cleanup_failed');
+                    }
+                    throw error;
+                  }
+                }
+                reviewScope.signal.throwIfAborted();
+                if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)
+                  || JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) !== baseline) return 'retry';
+                // Include the exact composed request so persisted aliases and bindings
+                // stay attached to their calls, including rejected Provider inputs.
+                const evidenceCallIds = new Set(result.calls.map(call => call.callId));
+                evidenceEvents.push(...snapshot.events.filter(event => (
+                  (event.type === 'context.composed' || event.type === 'provider.turn.settled' || event.type === 'context.updated')
+                    ? event.payload.providerRequestId === reviewRequestId
+                    : event.type.startsWith('tool.') && 'callId' in event && typeof event.callId === 'string' && evidenceCallIds.has(event.callId)
+                )));
+                continue;
+              }
+              summary = result.content;
+            } else {
+              const result = await consumeTextProvider(review.request, deps, reviewScope.signal);
+              await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, result.completion),
+                ...(result.contextUsage ? [{ type: 'context.updated' as const,
+                  sessionId: snapshot.state.sessionId, runId, payload: result.contextUsage }] : [])]);
+              summary = result.summary;
+            }
+            if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)) return 'retry';
+            verdict = decodeApprovalReview(summary);
+            break;
+          } catch (error) {
+            if (reviewScope.signal.aborted && error === reviewScope.obsolete) {
+              snapshot = await deps.readSnapshot();
+              if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
+                sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
+                  purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'cancelled' } });
+              return 'retry';
+            }
+            if (signal.aborted || reviewScope.signal.aborted) throw error;
+            const fact = errorFact(error);
+            reviewFailure = fact;
+            if (review && !snapshot.state.providerTurns[review.request.requestId]) await commit({ type: 'provider.turn.settled',
+              sessionId: snapshot.state.sessionId, runId, payload: { providerRequestId: review.request.requestId,
+                purpose: 'approvalReview', providerRuntimeRef: review.request.providerRuntimeRef, outcome: 'failed', error: fact } });
+            verdict = { decision: 'ask', reason: `自动审查无法完成，需要你决定是否执行。\n${fact.code}：${fact.message}` };
+            const retryFormat = !formatRetried && error instanceof ApprovalReviewFormatFailure
+              && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline
+              && snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId);
+            if (error instanceof ApprovalReviewFormatFailure) {
+              const response = fact.diagnostics?.causes.find(cause => cause.kind === 'response')?.message;
+              verdict = { decision: 'ask', reason: `${retryFormat ? '审批结果格式无效，正在按原请求重试一次。' : '无法读取有效的审核结果，需要你决定是否执行。'}\n${fact.message}\n原始响应：${response}` };
+              // Withhold authority without entering run.waiting during recovery.
+              await commit({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId,
+                callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict, error: fact } });
+              reviewRecorded = true;
+            }
+            // Recording the failure yields to the Actor; a user decision or a
+            // permission update during that commit must prevent the next review.
+            if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)) return 'retry';
+            if (retryFormat && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline) { formatRetried = true; continue; }
+            break;
           }
-          // Recording the failure yields to the Actor; a user decision or a
-          // permission update during that commit must prevent the next review.
-          if (!snapshot.state.pendingApprovals.some(item => item.approvalId === approvalId)) return 'retry';
-          if (retryFormat && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === baseline) continue;
-          break;
         }
-      }
-      if (!reviewRecorded) {
-        await commit(current => {
-          const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
-            callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict,
-              ...(reviewFailure ? { error: reviewFailure } : {}) } }];
-          if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
-            callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
-              authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });
-          return events;
-        });
-      }
-      if (!snapshot.state.pendingApprovals.some(item => item.callId === requestEvent.callId)) return 'retry';
+        if (!reviewRecorded) {
+          await commit(current => {
+            if (!current.state.pendingApprovals.some(item => item.approvalId === approvalId)
+              || JSON.stringify(current.state.publishedPermissions ?? current.state.permissionOverrides) !== baseline) return [];
+            const events: NewSessionEvent[] = [{ type: 'approval.reviewed', sessionId: current.state.sessionId, runId,
+              callId: requestEvent.callId, payload: { approvalId, providerRequestId: reviewRequestId, ...verdict,
+                ...(reviewFailure ? { error: reviewFailure } : {}) } }];
+            if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
+              callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
+                authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });
+            return events;
+          });
+        }
+        if (!snapshot.state.pendingApprovals.some(item => item.callId === requestEvent.callId)
+          || JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) !== baseline) return 'retry';
+      } finally { await reviewScope.close(); }
     }
     return 'approval';
   }

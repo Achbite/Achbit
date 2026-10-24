@@ -1828,6 +1828,8 @@ export interface ConversationReadQuery {
   before?: number;
   limit?: number;
   recordId?: string;
+  /** Exact committed message identity for bounded content chunks. */
+  messageId?: string;
   providerRequestId?: string;
 }
 

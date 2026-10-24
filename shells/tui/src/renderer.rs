@@ -465,10 +465,11 @@ fn activity_summary(language: Language, activity: &ActivityProjection) -> String
                     .map_or_else(
                         || status_label(language, &activity.status),
                         |result| {
-                            language.text(if result.reason == "dependencyFailed" {
-                                "tui.status.notExecutedDependencyFailed"
-                            } else {
-                                "tui.status.notExecutedCancelled"
+                            language.text(match result.reason.as_str() {
+                                "approvalRequired" => "tui.status.notExecutedApprovalRequired",
+                                "dependencyFailed" => "tui.status.notExecutedDependencyFailed",
+                                "dependencyPending" => "tui.status.notExecutedDependencyPending",
+                                _ => "tui.status.notExecutedCancelled",
                             })
                         },
                     )
@@ -647,6 +648,11 @@ mod layout_tests {
     #[test]
     fn unexecuted_tools_report_the_explicit_reason() {
         for (status, disposition, expected) in [
+            (
+                "rejected",
+                serde_json::json!({"reason":"approvalRequired"}),
+                "未执行：读取需要额外授权",
+            ),
             (
                 "cancelled",
                 serde_json::json!({"reason":"cancelled"}),

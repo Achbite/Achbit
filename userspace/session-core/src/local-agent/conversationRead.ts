@@ -12,7 +12,7 @@ const MAX_PAGE_BYTES = 48 * 1024;
 export function decodeConversationReadQuery(value: unknown): ConversationReadQuery {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('conversation_read_invalid');
   const query = value as Record<string, unknown>;
-  if (Object.keys(query).some((key) => !['sessionId', 'view', 'before', 'limit', 'recordId', 'providerRequestId', 'offset', 'imageIds'].includes(key))
+  if (Object.keys(query).some((key) => !['sessionId', 'view', 'before', 'limit', 'recordId', 'messageId', 'providerRequestId', 'offset', 'imageIds'].includes(key))
     || !identifier(query.sessionId)
     || (query.view !== undefined && (typeof query.view !== 'string' || !['summary', 'messages', 'tools', 'plans', 'context', 'reasoning', 'images'].includes(query.view)))
     || (query.imageIds !== undefined && (query.view !== 'images' || !Array.isArray(query.imageIds)
@@ -21,8 +21,11 @@ export function decodeConversationReadQuery(value: unknown): ConversationReadQue
     || (query.before !== undefined && (!Number.isSafeInteger(query.before) || Number(query.before) < 1))
     || (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) < 1 || Number(query.limit) > 50))
     || (query.recordId !== undefined && (!identifier(query.recordId) || query.view !== 'tools'))
+    || (query.messageId !== undefined && (!identifier(query.messageId) || query.view !== 'messages'))
     || (query.providerRequestId !== undefined && (!identifier(query.providerRequestId) || !['context', 'reasoning'].includes(String(query.view))))
-    || (query.offset !== undefined && (query.view !== 'reasoning' || !Number.isSafeInteger(query.offset) || Number(query.offset) < 0))) {
+    || (query.offset !== undefined && ((!['reasoning', 'messages', 'tools'].includes(String(query.view))
+      || query.view === 'messages' && query.messageId === undefined || query.view === 'tools' && query.recordId === undefined)
+      || !Number.isSafeInteger(query.offset) || Number(query.offset) < 0))) {
     throw new Error('conversation_read_invalid');
   }
   return query as unknown as ConversationReadQuery;
@@ -83,7 +86,9 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
     if (event.sequence >= (query.before ?? Infinity)) return false;
     switch (view) {
       case 'summary': return isToolHistory(event);
-      case 'messages': return event.type === 'message.committed' || event.type === 'narrative.committed';
+      case 'messages': return event.type === 'message.committed'
+        ? !query.messageId || event.payload.messageId === query.messageId
+        : event.type === 'narrative.committed' && !query.messageId;
       case 'tools': return event.type === 'tool.completed'
         ? !query.recordId || event.payload.record.recordId === query.recordId
         : isToolHistory(event) && !query.recordId;
@@ -97,14 +102,26 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
     }
   }).reverse();
   if (query.recordId && !candidates.length) throw new Error('tool_record_not_found');
+  if (query.messageId && !candidates.length) throw new Error('message_not_found');
   if (query.providerRequestId && !candidates.length) throw new Error(view === 'reasoning' ? 'reasoning_not_found' : 'context_composition_not_found');
-  let size = encoder.encode(JSON.stringify(result)).byteLength;
+  const envelopeBytes = encoder.encode(JSON.stringify(result)).byteLength;
+  let size = envelopeBytes;
   const limit = query.limit ?? (view === 'summary' ? 5 : 10);
   for (const event of candidates) {
-    const item = view === 'reasoning' && event.type === 'provider.turn.settled'
+    let item = view === 'reasoning' && event.type === 'provider.turn.settled'
       ? reasoningReadItem(event, query.providerRequestId ? query.offset ?? 0 : null)
-      : readItem(event, view === 'summary', events, Boolean(query.providerRequestId));
-    const itemBytes = encoder.encode(JSON.stringify(item)).byteLength;
+      : readItem(event, view === 'summary', events, Boolean(query.providerRequestId),
+        query.messageId || query.recordId ? query.offset ?? 0 : null);
+    // A named context can contain an arbitrarily large archived review input.
+    // Preserve small detail responses; expose oversized detail as an explicit
+    // excerpt rather than allowing the first item to bypass the page budget.
+    if (view === 'context' && encoder.encode(JSON.stringify(item)).byteLength + envelopeBytes > MAX_PAGE_BYTES) {
+      const identity = { sequence: item.sequence, eventId: item.eventId, type: item.type, runId: item.runId,
+        providerRequestId: item.providerRequestId, detailTruncated: true };
+      const budget = MAX_PAGE_BYTES - envelopeBytes - encoder.encode(JSON.stringify(identity)).byteLength - 256;
+      item = { ...identity, data: textExcerpt(JSON.stringify(item), budget) };
+    }
+    const itemBytes = encoder.encode(JSON.stringify(item)).byteLength + 1;
     if (result.items.length >= limit || (result.items.length > 0 && size + itemBytes > MAX_PAGE_BYTES)) {
       result.nextBefore = Number(result.items.at(-1)!.sequence);
       break;
@@ -132,10 +149,12 @@ function isToolHistory(event: SessionEvent): boolean {
     || rejectedProviderCalls(event).length > 0;
 }
 
-function readItem(event: SessionEvent, summary: boolean, events: readonly SessionEvent[], detail = false): JsonObject {
+function readItem(event: SessionEvent, summary: boolean, events: readonly SessionEvent[], detail = false, offset: number | null = null): JsonObject {
   const base = { sequence: event.sequence, eventId: event.eventId, type: event.type, runId: 'runId' in event ? event.runId ?? null : null };
   if (event.type === 'message.committed' || event.type === 'narrative.committed') {
-    return { ...base, role: event.type === 'message.committed' ? event.payload.role : 'assistant', ...textExcerpt(event.payload.content, 12 * 1024) };
+    return { ...base, role: event.type === 'message.committed' ? event.payload.role : 'assistant',
+      ...(event.type === 'message.committed' ? { messageId: event.payload.messageId } : { narrativeId: event.payload.narrativeId }),
+      ...(offset === null ? textExcerpt(event.payload.content, 12 * 1024) : textChunk(event.payload.content, 12 * 1024, offset)) };
   }
   if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
   if (event.type === 'session.control.rejected') return { ...base, callId: event.callId,
@@ -167,9 +186,13 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
     const record = event.payload.record;
     return {
       ...base, recordId: record.recordId, toolName: record.toolName, outcome: record.outcome,
-      input: textExcerpt(JSON.stringify(record.input), summary ? 600 : 4000),
-      ...(summary ? {} : { output: textExcerpt(JSON.stringify('output' in record ? record.output : null), 12 * 1024) }),
-      error: 'error' in record ? textExcerpt(JSON.stringify(record.error), 2000) : null,
+      input: offset === null ? textExcerpt(JSON.stringify(record.input), summary ? 600 : 4000)
+        : textChunk(JSON.stringify(record.input), 4000, offset),
+      ...(summary ? {} : { output: offset === null
+        ? textExcerpt(JSON.stringify('output' in record ? record.output : null), 12 * 1024)
+        : textChunk(JSON.stringify('output' in record ? record.output : null), 12 * 1024, offset) }),
+      error: 'error' in record ? offset === null ? textExcerpt(JSON.stringify(record.error), 2000)
+        : textChunk(JSON.stringify(record.error), 2000, offset) : null,
     };
   }
   if (event.type === 'context.composed') {
@@ -195,16 +218,28 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
 }
 
 function textExcerpt(content: string, maxBytes: number): JsonObject {
+  const chunk = textChunk(content, maxBytes, 0);
+  return { content: chunk.content, truncated: chunk.truncated, totalBytes: chunk.totalBytes };
+}
+
+function textChunk(content: string, maxBytes: number, requestedOffset: number): JsonObject {
+  // Each record field has its own cursor. An offset from another field may be
+  // beyond this field or inside a surrogate pair; report the actual boundary.
+  let offset = Math.min(requestedOffset, content.length);
+  if (offset > 0 && offset < content.length && /[\uDC00-\uDFFF]/u.test(content[offset])
+    && /[\uD800-\uDBFF]/u.test(content[offset - 1])) offset -= 1;
   // Bound the serialized string, including JSON escaping, not only raw UTF-8.
-  let low = 0;
+  let low = offset;
   let high = content.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (encoder.encode(JSON.stringify(content.slice(0, middle))).byteLength <= maxBytes) low = middle;
+    if (encoder.encode(JSON.stringify(content.slice(offset, middle))).byteLength <= maxBytes) low = middle;
     else high = middle - 1;
   }
-  if (low > 0 && low < content.length && /[\uD800-\uDBFF]/u.test(content[low - 1])) low -= 1;
-  return { content: content.slice(0, low), truncated: low < content.length, totalBytes: encoder.encode(content).byteLength };
+  if (low > offset && low < content.length && /[\uD800-\uDBFF]/u.test(content[low - 1])
+    && /[\uDC00-\uDFFF]/u.test(content[low])) low -= 1;
+  return { content: content.slice(offset, low), offset, nextOffset: low < content.length ? low : null,
+    totalCharacters: content.length, truncated: low < content.length, totalBytes: encoder.encode(content).byteLength };
 }
 
 function identifier(value: unknown): value is string {

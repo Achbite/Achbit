@@ -232,19 +232,28 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       admitModelView(event.payload, events);
       const compaction = events.some((item) => item.type === 'context.compaction.requested'
         && item.runId === runId && item.payload.providerRequestId === event.payload.providerRequestId);
+      const runtime = state.runRuntimeSnapshots[event.runId];
+      const view = state.runToolViews[event.runId] ?? runtime;
       if (event.payload.purpose === 'approvalReview') {
         const planReview = state.pendingPlan?.review?.status === 'reviewing'
           && state.pendingPlan.review.providerRequestId === event.payload.providerRequestId;
-        if ((!state.pendingApproval && !planReview) || event.payload.tools.length
-          || (state.pendingApproval && planReview)) throw new Error('approval_review_context_invalid');
+        const reading = event.payload.responseConstraint === 'normal' && event.payload.tools.length > 0 && !planReview;
+        const deciding = event.payload.responseConstraint === 'answerOnly' && event.payload.tools.length === 0;
+        if ((!state.pendingApproval && !planReview) || (state.pendingApproval && planReview) || (!reading && !deciding)
+          || event.payload.tools.some(tool => {
+            const declared = view.tools.find(candidate => candidate.name === tool.canonicalName && candidate.availability === 'callable');
+            const alias = view.providerToolAliases.find(candidate => candidate.canonicalName === tool.canonicalName);
+            return !['fs.read', 'session.read'].includes(tool.canonicalName) || !declared || !alias
+              || tool.itemId !== declared.name || tool.wireName !== alias.wireName
+              || tool.origin !== declared.origin || tool.availability !== declared.availability
+              || tool.pluginUri !== declared.pluginUri;
+          })) throw new Error('approval_review_context_invalid');
       }
       if ((event.payload.purpose === 'contextCompaction') !== compaction) throw new Error('context_composition_purpose_mismatch');
       if (JSON.stringify(event.payload.workspaceBindings.map(binding => binding.itemId))
         !== JSON.stringify(requestResourceBindings(state.run?.workspaceBindings ?? [], events).map(binding => binding.workspaceId))) {
         throw new Error('context_workspace_snapshot_mismatch');
       }
-      const runtime = state.runRuntimeSnapshots[event.runId];
-      const view = state.runToolViews[event.runId] ?? runtime;
       if (event.payload.kernelCatalogSnapshotRef && event.payload.kernelCatalogSnapshotRef !== view.kernelCatalogSnapshotRef) {
         throw new Error('tool_request_binding_missing');
       }

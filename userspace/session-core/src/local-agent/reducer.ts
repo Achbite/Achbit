@@ -949,6 +949,12 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       const currentTurnCallIds = currentTurnCallFacts.map(([callId]) => callId);
       const settlement = event.payload;
       if (settlement.outcome === 'completed') {
+        if (settlement.purpose === 'approvalReview'
+          && (currentTurnCallFacts.some(([, fact]) => !['fs.read', 'session.read'].includes(fact.toolName))
+            || settlement.hostedWebSearchCalls?.length
+            || settlement.orderedOutputBlocks?.some(block => block.kind === 'providerHosted'))) {
+          throw new Error('approval_review_tool_invalid');
+        }
         if (new Set(settlement.orderedCallIds).size !== settlement.orderedCallIds.length) {
           throw new Error('provider_turn_call_order_invalid');
         }
@@ -986,7 +992,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
           })) {
             throw new Error('provider_turn_call_identity_mismatch');
           }
-          if (settlement.purpose !== 'agent') {
+          if (settlement.purpose !== 'agent' && settlement.purpose !== 'approvalReview') {
             throw new Error('provider_output_blocks_purpose_invalid');
           }
           if (

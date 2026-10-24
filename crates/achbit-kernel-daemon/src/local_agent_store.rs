@@ -2881,14 +2881,16 @@ fn validate_new_event(
             }
             if let Some(input) = payload.get("reviewInput") {
                 exact_object(input, &["instructions", "content"], &[])?;
-                let instructions = required_string(input, "instructions")?;
-                let content = required_string(input, "content")?;
-                if payload["purpose"] != "approvalReview"
-                    || instructions.chars().count() + content.chars().count() > 18000
-                {
-                    return Err(LocalAgentStoreError::new("approval_review_input_invalid",
-                        "Approval input must belong to an independent review and fit its input budget."));
+                required_string(input, "instructions")?;
+                required_string(input, "content")?;
+                if payload["purpose"] != "approvalReview" {
+                    return Err(LocalAgentStoreError::new(
+                        "approval_review_input_invalid",
+                        "Approval input must belong to an independent review.",
+                    ));
                 }
+                // The Session composer owns the selected reviewer's token budget.
+                // The journal preserves the exact sent input without a second character cap.
             }
         }
         "provider.turn.settled" => {
@@ -3016,12 +3018,14 @@ fn validate_new_event(
                         }
                     }
                     if let Some(calls) = payload.get("toolCallInputs") {
-                        if required_string(payload, "purpose")? != "agent"
-                            || payload.get("orderedOutputBlocks").is_some()
+                        if !matches!(
+                            required_string(payload, "purpose")?,
+                            "agent" | "approvalReview"
+                        ) || payload.get("orderedOutputBlocks").is_some()
                         {
                             return Err(LocalAgentStoreError::new(
                                 "session_event_invalid",
-                                "聚合工具输入只能属于普通 Agent turn，不能与有序原生项混用。",
+                                "聚合工具输入只能属于 Agent 或审批取证 turn，不能与有序原生项混用。",
                             ));
                         }
                         let calls = calls
@@ -3062,6 +3066,17 @@ fn validate_new_event(
                             if let Some(error) = call.get("error") {
                                 validate_input_rejection_error(error)?;
                             } else {
+                                if payload["purpose"] == "approvalReview"
+                                    && !matches!(
+                                        call["toolName"].as_str(),
+                                        Some("fs.read" | "session.read")
+                                    )
+                                {
+                                    return Err(LocalAgentStoreError::new(
+                                        "approval_review_tool_invalid",
+                                        "Approval review can only execute fs.read or session.read.",
+                                    ));
+                                }
                                 accepted.push(json!(id));
                             }
                         }
@@ -3073,11 +3088,29 @@ fn validate_new_event(
                         }
                     }
                     if let Some(blocks) = payload.get("orderedOutputBlocks") {
-                        if required_string(payload, "purpose")? != "agent" {
+                        if !matches!(
+                            required_string(payload, "purpose")?,
+                            "agent" | "approvalReview"
+                        ) {
                             return Err(LocalAgentStoreError::new(
                                 "session_event_invalid",
-                                "只有普通 Agent turn 可以记录 orderedOutputBlocks。",
+                                "只有 Agent 或审批取证 turn 可以记录 orderedOutputBlocks。",
                             ));
+                        }
+                        if payload["purpose"] == "approvalReview"
+                            && blocks.as_array().is_some_and(|blocks| {
+                                blocks.iter().any(|block| {
+                                    block["kind"] == "providerHosted"
+                                        || block["kind"] == "toolCall"
+                                            && !matches!(
+                                                block["toolName"].as_str(),
+                                                Some("fs.read" | "session.read")
+                                            )
+                                })
+                            })
+                        {
+                            return Err(LocalAgentStoreError::new("approval_review_tool_invalid",
+                                "Approval review can only execute fs.read or session.read without hosted search."));
                         }
                         validate_provider_turn_output_blocks(
                             blocks,
@@ -6057,6 +6090,90 @@ mod tests {
             );
             assert_eq!(publication.as_object().unwrap().len(), 2);
         }
+    }
+
+    #[test]
+    fn approval_review_journal_preserves_read_calls_and_rejects_executable_controls() {
+        let mut event = json!({"type":"provider.turn.settled", "sessionId":"session:review", "runId":"run:review",
+            "payload":{"providerRequestId":"request:review", "purpose":"approvalReview",
+            "providerRuntimeRef":"provider-runtime:test", "outcome":"completed", "orderedCallIds":["call:read"],
+            "toolCallInputs":[{"callId":"call:read","providerCallId":"provider:read","toolName":"fs.read","arguments":"{}"}]}});
+        validate_new_event(&event, false).unwrap();
+        event["payload"]["toolCallInputs"][0]["toolName"] = json!("session.read");
+        validate_new_event(&event, false).unwrap();
+        event["payload"]["toolCallInputs"][0]["toolName"] = json!("bash");
+        assert_eq!(
+            validate_new_event(&event, false).unwrap_err().code,
+            "approval_review_tool_invalid"
+        );
+        event["payload"]["orderedCallIds"] = json!([]);
+        event["payload"]["toolCallInputs"][0]["error"] = json!({"code":"unknown_tool", "message":"Not admitted",
+            "issues":[{"path":"$.name","rule":"tool","message":"Not a review read tool"}]});
+        validate_new_event(&event, false).unwrap();
+        event["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("toolCallInputs");
+        event["payload"]["orderedCallIds"] = json!(["call:read"]);
+        event["payload"]["orderedOutputBlocks"] = json!([{"kind":"toolCall","outputIndex":0,
+            "callId":"call:read","providerCallId":"provider:read","toolName":"fs.read",
+            "item":{"type":"function_call","call_id":"provider:read","name":"frozen_read_alias","arguments":"{}"}}]);
+        validate_new_event(&event, false).unwrap();
+        event["payload"]["orderedOutputBlocks"][0]["toolName"] = json!("session.control");
+        assert_eq!(
+            validate_new_event(&event, false).unwrap_err().code,
+            "approval_review_tool_invalid"
+        );
+        event["payload"]["orderedOutputBlocks"][0]["kind"] = json!("providerHosted");
+        assert_eq!(
+            validate_new_event(&event, false).unwrap_err().code,
+            "approval_review_tool_invalid"
+        );
+    }
+
+    #[test]
+    fn approval_review_input_uses_the_request_budget_and_stays_purpose_scoped() {
+        let partitions = [
+            "instructions",
+            "sessionControls",
+            "tools",
+            "workspaceBindings",
+            "contextProviders",
+            "journalMessages",
+            "filesystemReferences",
+        ]
+        .map(|kind| json!({"kind":kind,"itemCount":0,"requestShapeUnits":usize::from(kind == "instructions")}));
+        let mut event = json!({"type":"context.composed","sessionId":"session:review","runId":"run:review",
+            "payload":{"providerRequestId":"request:review", "purpose":"approvalReview","responseConstraint":"normal",
+            "dynamicInstructionBytes":0,"messages":[],"workspaceBindings":[],"tools":[],"partitions":partitions,
+            "reviewInput":{"instructions":"Read evidence.","content":"evidence ".repeat(4000)}}});
+        validate_new_event(&event, false).unwrap();
+        event["payload"]["purpose"] = json!("agent");
+        assert_eq!(
+            validate_new_event(&event, false).unwrap_err().code,
+            "approval_review_input_invalid"
+        );
+    }
+
+    #[test]
+    fn approval_required_read_disposition_is_not_a_dependency_or_execution() {
+        let mut event = json!({"type":"tool.not-executed","sessionId":"session:review","runId":"run:review","callId":"call:read",
+            "payload":{"attemptId":"attempt:read","reason":"approvalRequired"}});
+        validate_new_event(&event, false).unwrap();
+        event["payload"]["predecessorCallId"] = json!("call:other");
+        assert_eq!(
+            validate_new_event(&event, false).unwrap_err().code,
+            "tool_not_executed_invalid"
+        );
+        event["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("predecessorCallId");
+        event["payload"]["reason"] = json!("dependencyFailed");
+        assert_eq!(
+            validate_new_event(&event, false).unwrap_err().code,
+            "tool_not_executed_invalid"
+        );
     }
 
     #[test]

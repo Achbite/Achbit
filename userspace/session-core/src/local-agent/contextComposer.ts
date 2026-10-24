@@ -270,7 +270,17 @@ export function messagesFromJournal(
   runId: string,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   modelViewEvents: readonly SessionEvent[] = events,
+  includeReviewEvidence = false,
 ): ContextMessageContribution[] {
+  if (!includeReviewEvidence) {
+    // Reviewer reads belong to that independent review, not the working Agent's
+    // transcript. Their ordinary Kernel records remain in the Session journal.
+    const reviewCalls = new Set(events.flatMap(event => event.type === 'provider.turn.settled'
+      && event.payload.purpose === 'approvalReview' && event.payload.outcome === 'completed'
+      ? event.payload.orderedCallIds : []));
+    events = events.filter(event => !(event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview')
+      && !('callId' in event && event.callId && reviewCalls.has(event.callId)));
+  }
   const messages: ContextMessageContribution[] = [];
   const fixed = journalModelViews(modelViewEvents);
   const throughSequence = events.at(-1)?.sequence ?? 0;
@@ -1160,7 +1170,6 @@ function applyProviderTurnCompletions(
     if (
       event.type !== 'provider.turn.settled'
       || event.payload.outcome !== 'completed'
-      || event.payload.purpose !== 'agent'
     ) continue;
     const turnMessages = new Set<ModelMessage>();
     let projectedCallCount = 0;

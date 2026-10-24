@@ -5,6 +5,7 @@ import { buildContextCompositionReceipt } from './contextComposer.js';
 import { LoopFailure } from './loopFailure.js';
 import type { LoopSnapshot } from './loop.js';
 import type { ContextMessageContribution } from './plugins.js';
+import { estimateContextInput } from './compaction.js';
 import { requestResourceBindings } from './workspaceBindings.js';
 
 export const PLAN_REVIEW_INSTRUCTIONS = `Review one proposed Plan revision on the user's behalf. This is a fresh Plan-only review, separate from the working Agent and every execution/Shell review.
@@ -36,9 +37,6 @@ export function preparePlanReview(snapshot: LoopSnapshot, runtime: RunRuntimeSna
       steps: plan.steps, mutationManifest: plan.mutationManifest, workspaceRequests: plan.workspaceRequests },
     confirmedScope: previous && { planId: previous.planId, revision: previous.revision, mutationManifest: previous.mutationManifest },
     grant: 'thisPlanRevisionOnly' });
-  if (content.length + PLAN_REVIEW_INSTRUCTIONS.length > 18000) {
-    throw new LoopFailure('plan_review_context_too_large', '计划或原始用户约束超过独立审批预算，未截断授权依据，需要人工确认。');
-  }
   const contributions: ContextMessageContribution[] = [
     { contributionId: `plan-review:${requestId}:instructions`, contributionKind: 'instructions', label: '独立计划审批',
       message: { role: 'system', content: PLAN_REVIEW_INSTRUCTIONS } },
@@ -54,7 +52,11 @@ export function preparePlanReview(snapshot: LoopSnapshot, runtime: RunRuntimeSna
     workspaceBindings: requestResourceBindings(snapshot.state.run.workspaceBindings, snapshot.events),
     messages: contributions.map(item => item.message), tools: [], hostedTools: [],
   };
-  return { request, receipt: { ...buildContextCompositionReceipt(requestId, 'approvalReview', 'answerOnly', contributions,
+  const receipt = { ...buildContextCompositionReceipt(requestId, 'approvalReview', 'answerOnly', contributions,
     [], [], [], new Map(), [], runtime, request.workspaceBindings, snapshot.events),
-    reviewInput: { instructions: PLAN_REVIEW_INSTRUCTIONS, content } } };
+    reviewInput: { instructions: PLAN_REVIEW_INSTRUCTIONS, content } };
+  if (estimateContextInput(snapshot, receipt, { ...runtime, provider: reviewer }) + reviewer.maxOutputTokens >= reviewer.contextWindowTokens) {
+    throw new LoopFailure('plan_review_context_too_large', '计划或原始用户约束超过审批模型上下文预算，未截断授权依据，需要人工确认。');
+  }
+  return { request, receipt };
 }

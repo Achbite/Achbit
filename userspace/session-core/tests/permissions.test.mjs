@@ -394,7 +394,7 @@ test('Plan and Shell use distinct independent review contexts and distinct autho
         assert.equal(packet.operation.arguments.command, 'make check');
         assert.equal(packet.plan.confirmed, true, 'confirmed scope is evidence, not a Shell grant');
         assert.doesNotMatch(JSON.stringify(request.messages), /PLAN_REVIEW_PRIVATE_REASON/);
-        assert.match(request.messages[0].content, /You do not approve Plans/);
+        assert.match(request.messages[0].content, /neither future access nor Plan approval/);
         yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"SHELL_REVIEW_PRIVATE_REASON"}' });
       }
     } else if (++turns === 1) {
@@ -770,8 +770,8 @@ for (const nextMode of ['ask', 'allow']) for (const malformed of [false, true]) 
   releaseReview();
   const state = await waitForProjection(actor, state => state.run?.status === (nextMode === 'ask' ? 'waiting' : 'completed'));
   assert.equal(reviews, 1); assert.equal(executions, nextMode === 'ask' ? 0 : 1);
-  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), !malformed,
-    'Only a valid review is retained as authority evidence; current Kernel admission still decides whether it grants execution.');
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved' && event.payload.source === 'agent'), false,
+    'A permission change stops the obsolete review; current Kernel admission decides whether execution is allowed.');
   if (nextMode === 'ask') {
     assert.equal(state.pendingApproval.preview.approvalReviewer, 'user');
     assert.equal(state.activities.filter(activity => activity.kind === 'approval' && activity.status === 'waiting').length, 1);
@@ -816,8 +816,8 @@ test('desktop review uses the exact observation as evidence without treating Age
   assert.equal(request.messages[1].content.includes('I guarantee'), false);
   assert.equal(request.messages[1].content.includes('pixels-must-not-be-replayed'), false);
   assert.equal(request.messages[1].content.includes(observed.contentRef), false);
-  assert.match(request.messages[0].content, /never allow solely because the requester promises safety/);
-  assert.match(request.messages[0].content, /return ask to withhold automatic approval/);
+  assert.match(request.messages[0].content, /Never invent missing facts or treat promises of safety as evidence/);
+  assert.match(request.messages[0].content, /Ask only when missing target, effect or authorization evidence prevents a decision/);
   assert.deepEqual(request.tools, []);
   args.action = 'press'; args.elementId = 'element:1'; delete args.x; delete args.y;
   const semantic = JSON.parse(prepare().messages[1].content).observedTarget;
@@ -874,7 +874,7 @@ test('Chrome review supplies exact page and all target UIDs with recorded proven
   assert.doesNotMatch(request.messages[1].content, /pixels-must-not-be-replayed|Do not infer target identity/);
   assert.equal(packet.grant, 'thisCallOnly');
   assert.deepEqual(request.tools, []);
-  assert.match(request.messages[0].content, /return ask to withhold automatic approval/);
+  assert.match(request.messages[0].content, /Ask only when missing target, effect or authorization evidence prevents a decision/);
   f.runtime.kernelCatalogSnapshotRef = 'kernel-catalog:expanded';
   f.runtime.extensionGenerationRef = 'extension-generation:expanded';
   f.runtime.tools = f.runtime.tools.map(tool => ({ ...tool, toolBindingRef: `${tool.toolBindingRef}:expanded` }));
@@ -930,4 +930,98 @@ test('permission decision wire fields remain English while the reason preserves 
     { decision: 'allow', reason: '按用户要求读取文件' });
   assert.throws(() => decodeApprovalReview('{"决策":"允许","原因":"读取文件"}'), /approval_review_invalid/);
   assert.deepEqual(APPROVAL_REVIEW_SCHEMA.properties.decision.enum, ['allow', 'deny', 'ask']);
+});
+
+
+const reviewHistoryTool = { toolBindingRef: 'binding:session-read', name: 'session.read', origin: 'coreBuiltin',
+  availability: 'callable', description: 'Read session history', possibleEffects: ['localRead'],
+  inputSchema: { type: 'object', properties: { sessionId: { type: 'string' }, view: { type: 'string' } }, required: ['sessionId'] } };
+const reviewFileTool = { toolBindingRef: 'binding:fs-read', name: 'fs.read', origin: 'coreBuiltin',
+  availability: 'callable', description: 'Read file', possibleEffects: ['workspaceRead'],
+  inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } };
+
+for (const mode of ['read', 'file', 'permission', 'other-session', 'write-tool', 'native', 'bounded']) test(`approval evidence loop keeps read scope and returns a decision (${mode})`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:evidence-${mode}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  let main = 0, reviews = 0, reads = 0, executions = 0;
+  const prep = reviewerPreparation({ tools: [shell, reviewHistoryTool, reviewFileTool], permissions: { 'agent.permissions.shell': 'review' } });
+  const provider = { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      const final = mode === 'bounded' && reviews === 7;
+      assert.deepEqual(request.tools.map(tool => tool.name).sort(), final ? [] : ['fs_read', 'session_read']);
+      if (final) assert.equal(request.responseConstraint, 'answerOnly');
+      if (reviews === 1 || mode === 'bounded' && reviews <= 6) {
+        const name = mode === 'write-tool' ? 'bash' : ['permission', 'file'].includes(mode) ? 'fs_read' : 'session_read';
+        const input = mode === 'write-tool' ? { workspace: 'primary', command: 'touch forbidden' }
+          : ['permission', 'file'].includes(mode) ? { workspace: 'primary', path: 'AGENTS.md' }
+          : { sessionId: mode === 'other-session' ? 'session:unrelated' : sessionId, view: 'messages' };
+        if (mode === 'native') yield providerEvent(request.requestId, 'output.item.completed', { outputIndex: 0,
+          item: { type: 'function_call', call_id: 'provider:evidence', name, arguments: JSON.stringify(input) } });
+        else yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:evidence', name, input });
+      } else {
+        assert.equal(reviews, mode === 'bounded' ? 7 : 2);
+        const toolResult = request.messages.findLast(message => message.role === 'tool');
+        assert.ok(toolResult, 'the evidence/rejection is replayed as a proper tool result');
+        if (['read', 'file', 'native', 'bounded'].includes(mode)) assert.match(toolResult.content, /ORIGINAL_USER_LIMIT/);
+        else if (mode === 'permission') assert.match(toolResult.content, /approvalRequired/);
+        else assert.match(toolResult.content, mode === 'other-session' ? /approval_review_read_scope/ : /provider_tool_alias_unknown/);
+        yield providerEvent(request.requestId, 'assistant.message', { content: JSON.stringify({ decision: mode === 'permission' ? 'ask' : 'allow', reason: 'Reviewed the available evidence.' }) });
+      }
+    } else if (++main === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:operation', name: 'bash', input: { workspace: 'primary', command: 'make check' } });
+    else {
+      assert.doesNotMatch(JSON.stringify(request.messages), /ORIGINAL_USER_LIMIT|provider:evidence|approval_review_read_scope/,
+        'review evidence must not become working-Agent transcript');
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'Done.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  const actor = actorWith(journal, sessionId, provider, emptyKernel({ async execute(request) {
+    if (request.toolName === 'session.read') {
+      reads++; assert.equal(request.input.sessionId, sessionId);
+      return completedExecutionReply(request, { items: [{ role: 'user', content: 'ORIGINAL_USER_LIMIT' }] });
+    }
+    if (request.toolName === 'fs.read') {
+      reads++; assert.equal(request.nonWorkspaceAuthority, undefined);
+      if (mode === 'file') return completedExecutionReply(request, { content: 'ORIGINAL_USER_LIMIT from project rules' });
+      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+        status: 'approvalRequired', preview: { summary: 'Read file requires additional permission', effects: ['workspaceRead'], logicalTargets: ['AGENTS.md'], approvalReviewer: 'agent' } };
+    }
+    if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
+    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
+        approvalReviewer: 'agent', authorizationContext: context } };
+  } }), prep.port, `evidence-${mode}`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Run make check using the task rules.'));
+  await waitForProjection(actor, state => state.run?.status === (mode === 'permission' ? 'waiting' : 'completed'));
+  assert.equal(reviews, mode === 'bounded' ? 7 : 2);
+  assert.equal(reads, mode === 'bounded' ? 6 : ['read', 'file', 'native', 'permission'].includes(mode) ? 1 : 0);
+  assert.equal(executions, mode === 'permission' ? 0 : 1);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'approval.requested').length, 1, 'evidence reads never recursively request approval');
+  const completedReviews = events.filter(event => event.type === 'provider.turn.settled' && event.payload.purpose === 'approvalReview');
+  assert.equal(completedReviews.length, mode === 'bounded' ? 7 : 2);
+  assert.ok(completedReviews.every(event => event.payload.outcome === 'completed'));
+  if (mode === 'permission') assert.ok(events.some(event => event.type === 'tool.not-executed' && event.payload.reason === 'approvalRequired'));
+});
+
+test('desktop review aggregates repetitive AX failures and keeps their original record reference', () => {
+  const runId = 'run:ax-budget', callId = 'call:ax-write';
+  const args = { action: 'setValue', app: 'example.app', observationId: 'observation:ax', elementId: 'element:edit', value: 'test' };
+  const errors = Array.from({ length: 1800 }, (_, index) => ({ depth: index % 4, message: 'Could not read AXChildren (AX error -25202)' }));
+  const snapshot = { state: { ...emptySessionState('session:ax-budget'), run: { runId, workspaceBindings: [] } }, events: [
+    { type: 'tool.completed', runId, sequence: 1, payload: { record: { recordId: 'record:ax-original', toolName: 'computer.control', input: { action: 'observe', app: args.app }, outcome: 'completed',
+      output: { observationId: args.observationId, app: args.app, accessibility: { complete: false, errors }, elements: [] } } } },
+    { type: 'tool.requested', runId, callId, sequence: 2, payload: { toolName: 'computer.control', input: args } },
+  ] };
+  const { request } = prepareApprovalReview(snapshot, runtimeSnapshot(runId), { runId, callId,
+    preview: { operation: { toolName: 'computer.control', arguments: args }, effects: ['external'], logicalTargets: [] } }, 'request:ax');
+  const target = JSON.parse(request.messages[1].content).observedTarget;
+  assert.equal(target.accessibility.complete, false);
+  assert.equal(target.accessibility.errorCount, 1800);
+  assert.deepEqual(target.accessibility.errorGroups, [{ error: { message: 'Could not read AXChildren (AX error -25202)' }, count: 1800 }]);
+  assert.equal(target.observation.recordId, 'record:ax-original');
+  assert.equal(snapshot.events[0].payload.record.output.accessibility.errors.length, 1800);
+  assert.ok(request.messages[1].content.length < 6000);
 });

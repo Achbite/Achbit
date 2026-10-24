@@ -133,7 +133,7 @@ impl ProductTools {
                     "offset":{"type":"integer","minimum":0,"description":"Use nextOffset from the previous result with the same query; defaults to 0."}
                 }
             })),
-            ("session.read", "Read persisted Achbit conversation facts without resuming the session. Query directly; no prior Skill read is required. Start with summary; use messages, tools, plans or context for details. view=resources lists and reads managed workdirs belonging to this session or its descendants; use exact references returned by the listing. view=images lists archived image references. To inspect images from the current session, pass imageIds with exact referenceId/artifactId values; their pixels enter the next visual input. Include all images needed for comparison. imageIds=[] releases current images. before is an exclusive event-sequence cursor; nextBefore continues older items. Excerpts report truncation. A session ID is required.".into(), json!({
+            ("session.read", "Read persisted Achbit conversation facts without resuming the session. Query directly; no prior Skill read is required. Start with summary; use messages, tools, plans or context for details. view=resources lists and reads managed workdirs belonging to this session or its descendants; use exact references returned by the listing. view=images lists archived image references. To inspect images from the current session, pass imageIds with exact referenceId/artifactId values; their pixels enter the next visual input. Include all images needed for comparison. imageIds=[] releases current images. before is an exclusive event-sequence cursor; nextBefore continues older items. For complete long text, select messageId with view=messages or recordId with view=tools, then use each content/input/output/error chunk's nextOffset as offset on the same query until null. Fields have independent cursors; use each returned actual offset (UTF-16 character units). Excerpts report truncation. A session ID is required.".into(), json!({
                 "type":"object", "additionalProperties":false, "required":["sessionId"],
                 "properties": {
                     "sessionId":{"type":"string","description":"Exact complete ID from the user or Achbit. Preserve it verbatim, including prefixes such as session:."},
@@ -146,9 +146,10 @@ impl ProductTools {
                     "imageIds":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1},"description":"Requires view=images. Exact current-session image references to inspect together. Select only images needed for the current comparison. Omit to list references; [] releases pixels. Do not combine with before or limit."},
                     "before":{"type":"integer","minimum":1},
                     "limit":{"type":"integer","minimum":1,"maximum":50},
-                    "recordId":{"type":"string","description":"Exact ToolRecord ID; requires view=tools."},
+                    "recordId":{"type":"string","description":"Exact ToolRecord ID; requires view=tools. Input/output/error return separately bounded chunks; continue each field using its nextOffset."},
+                    "messageId":{"type":"string","description":"Exact committed message ID returned by view=messages; returns a bounded content chunk. Continue with its nextOffset."},
                     "providerRequestId":{"type":"string","description":"Exact Provider request ID; requires view=context or reasoning."},
-                    "offset":{"type":"integer","minimum":0,"description":"Character offset for a bounded reasoning page."}
+                    "offset":{"type":"integer","minimum":0,"description":"UTF-16 character cursor. Use nextOffset from reasoning, an exact messageId (view=messages), or a field of an exact recordId (view=tools). Fields return independent actual offset/nextOffset and totalCharacters/totalBytes; null nextOffset means that field is complete."}
                 }
             })),
             ("skill.read", format!("Read a Achbit product Skill or its reference when guidance is needed. Read only content relevant to the current question. Available: {}. Omit path to read SKILL.md.",
