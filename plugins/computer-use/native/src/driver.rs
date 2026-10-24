@@ -657,6 +657,7 @@ unsafe fn observe(
     bundle: &str,
     pid: i32,
     binding: &Value,
+    activate_requested: bool,
 ) -> Result<(Observation, Value), String> {
     let window_id = input["windowId"].as_u64().map(|id| id as u32);
     let foreground = input["mode"].as_str().unwrap_or(if window_id.is_some() {
@@ -669,7 +670,7 @@ unsafe fn observe(
         pid,
         move |root| {
             let (element, window_id, bounds) = select_window(root, window_id, pid)?;
-            if foreground {
+            if foreground && activate_requested {
                 activate_window(pid, element.0)?;
             }
             let window_info = json!({"windowId":window_id,"title":text_attribute(element.0, "AXTitle")?,"bounds":rect_json(bounds)});
@@ -1005,7 +1006,7 @@ pub fn execute(
                 return Err(format!("Window sharing is unavailable: {sharing}"));
             }
             *observation = None;
-            let (fresh, output) = observe(gui, input, bundle, pid, binding)?;
+            let (fresh, output) = observe(gui, input, bundle, pid, binding, true)?;
             *observation = Some(fresh);
             return Ok(output);
         }
@@ -1111,7 +1112,10 @@ pub fn execute(
         } else {
             "background"
         });
-        match observe(gui, &next, bundle, pid, binding) {
+        // Keep the observation's input mode, but do not activate the application
+        // just to read the result. A later HID action restores and verifies the
+        // retained window before dispatch; AX actions do not need that focus.
+        match observe(gui, &next, bundle, pid, binding, false) {
             Ok((fresh, mut output)) => {
                 *observation = Some(fresh);
                 output
