@@ -501,7 +501,7 @@ pub(crate) fn summary(gui: &GuiState) -> Result<Value, String> {
     Ok(json!({"connections": values, "adapters": adapter_descriptors()}))
 }
 
-pub(crate) async fn get(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     match summary(&state.gui.lock().expect("gui state")) {
         Ok(value) => ApiResponse::ok(value),
         Err(error) => ApiResponse::error("connections_read_failed", error),
@@ -526,7 +526,7 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
 }
 
 pub(crate) async fn patch(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(edit): Json<Edit>,
 ) -> Json<ApiResponse> {
     let removed = edit.remove_connection_id.clone();

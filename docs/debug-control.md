@@ -16,6 +16,14 @@ export DEEPCODE_USER_ROOT=/absolute/debug-state
 
 Windows 使用 `.\achbit-debug.cmd`，PowerShell 中设置 `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'`。每个连接命令都需要显式状态目录；不要复用标准版数据或默认复制其凭据。
 
+## 启动分段诊断
+
+需要诊断启动延迟时，给目标进程设置 `DEEPCODE_STARTUP_TIMING=1`。GUI 和它启动的 Host 会在 stderr 输出 `[startup-timing]` 记录，只包含阶段、PID、墙钟微秒和进程内经过时间；默认关闭，不含连接令牌或用户内容。GUI 的记录在其 stderr，Host 的记录在该实例启动诊断目录中的 `daemon.stderr.log`。
+
+`gui.window_begin` 到 `gui.index_begin` 覆盖原生 WebView 建立和首次导航；`gui.index_begin` 到 `gui.index_end` 只测入口 HTML 的路径解析与资源读取。之后需结合 WebView 内的模块、请求和可见控件观测，不能把资源读取完成等同于首屏可用。
+
+使用外部发起启动的时间与 `gui.entry` 区分入口前等待，再比较 `gui.daemon_start`、`kernel.entry`、`kernel.published`、`gui.daemon_ready` 和 `gui.proxy_ready`。`kernel.execution_finished` 只表示初始化结束，成功或失败仍以 readiness/health 的原始结果为准。不同线程和进程的区间可能重叠，不能机械相加；新制品首次运行、同路径再次运行与清空系统缓存后的冷启动也应分别记录。
+
 ## 接口选择
 
 | 目标 | 命令 |

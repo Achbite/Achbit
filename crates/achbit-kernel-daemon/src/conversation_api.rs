@@ -4,6 +4,8 @@ use crate::conversation_catalog::{
     ConversationTitleSource, ConversationWorkspaceRecord, WorkspaceBindingDisplayRecord,
 };
 use crate::prelude::*;
+use crate::HostState;
+use crate::ReadyState;
 use crate::{ApiResponse, AppState, GuiState, SessionServiceError, SessionServiceProcess};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -113,7 +115,7 @@ struct FilesystemReferencePathInput {
 }
 
 pub(crate) async fn conversation_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(mut body): Json<Value>,
 ) -> Json<ApiResponse> {
@@ -164,15 +166,36 @@ fn visible_catalog_response(
     ApiResponse::ok(value)
 }
 
-pub(crate) async fn conversation_catalog_get(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn conversation_catalog_get(State(state): State<HostState>) -> Json<ApiResponse> {
     let gui = state.gui.lock().expect("gui state lock");
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    visible_catalog_response(&gui, &state.local_agent.journal, false)
+    let visible = match gui
+        .conversation_catalog
+        .sessions
+        .iter()
+        .filter_map(
+            |session| match state.catalog_reader.agent_context(&session.id) {
+                Ok(None) => Some(Ok(session.id.clone())),
+                Ok(Some(_)) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect::<Result<HashSet<_>, _>>()
+    {
+        Ok(visible) => visible,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = gui.conversation_catalog.public_value();
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
 }
 
-pub(crate) async fn conversation_statuses_get(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     let session_ids: Vec<String> = {
         let gui = state.gui.lock().expect("gui state lock");
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
@@ -209,7 +232,7 @@ pub(crate) async fn conversation_statuses_get(State(state): State<AppState>) -> 
 }
 
 pub(crate) async fn conversation_skill_settings_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
 ) -> Json<ApiResponse> {
     let settings = state
         .gui
@@ -224,17 +247,22 @@ pub(crate) async fn conversation_skill_settings_get(
 }
 
 pub(crate) async fn conversation_plugin_catalog_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
 ) -> Json<ApiResponse> {
-    let gui = state.gui.lock().expect("gui state lock");
-    match crate::local_agent_plugins::plugin_catalog_projection(&gui.user_settings) {
+    let settings = state
+        .gui
+        .lock()
+        .expect("gui state lock")
+        .user_settings
+        .clone();
+    match crate::local_agent_plugins::plugin_catalog_projection(&settings) {
         Ok(catalog) => ApiResponse::ok(catalog),
         Err(error) => ApiResponse::error("plugin_catalog_unavailable", error),
     }
 }
 
 pub(crate) async fn conversation_resource_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(body): Json<ReadConversationResourceRequest>,
 ) -> Response {
@@ -335,7 +363,7 @@ pub(crate) async fn conversation_resource_read(
 }
 
 pub(crate) async fn conversation_artifact_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path((session_id, artifact_id)): Path<(String, String)>,
 ) -> Response {
     let projection = match request_service(
@@ -601,7 +629,7 @@ pub(crate) struct ReadFileChangeRequest {
 }
 
 pub(crate) async fn conversation_change_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(body): Json<ReadFileChangeRequest>,
 ) -> Json<ApiResponse> {
@@ -667,7 +695,7 @@ fn read_file_change_response(change: &Value) -> Json<ApiResponse> {
 }
 
 pub(crate) async fn conversation_filesystem_references_resolve(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(body): Json<ResolveConversationFilesystemReferencesRequest>,
 ) -> Json<ApiResponse> {
@@ -709,7 +737,7 @@ pub(crate) async fn conversation_filesystem_references_resolve(
 }
 
 pub(crate) async fn conversation_directory_index_attach(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(body): Json<AttachConversationDirectoryIndexRequest>,
 ) -> Json<ApiResponse> {
@@ -819,7 +847,7 @@ pub(crate) async fn conversation_directory_index_attach(
 }
 
 pub(crate) async fn conversation_directory_index_detach(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path((session_id, workspace_id)): Path<(String, String)>,
 ) -> Json<ApiResponse> {
     if !valid_id(&session_id) || !valid_id(&workspace_id) {
@@ -902,7 +930,7 @@ pub(crate) async fn conversation_directory_index_detach(
 /// consumed by an explicit folder picker/project-management dialog, never by
 /// an ordinary conversation projection.
 pub(crate) async fn conversation_catalog_management_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
 ) -> Json<ApiResponse> {
     let gui = state.gui.lock().expect("gui state lock");
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
@@ -912,7 +940,7 @@ pub(crate) async fn conversation_catalog_management_get(
 }
 
 pub(crate) async fn conversation_project_create(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(body): Json<CreateConversationProjectRequest>,
 ) -> Json<ApiResponse> {
     let title = match clean_title(&body.title) {
@@ -950,11 +978,32 @@ pub(crate) async fn conversation_project_create(
     if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    visible_catalog_response(&gui, &state.local_agent.journal, false)
+    let visible = match gui
+        .conversation_catalog
+        .sessions
+        .iter()
+        .filter_map(
+            |session| match state.catalog_reader.agent_context(&session.id) {
+                Ok(None) => Some(Ok(session.id.clone())),
+                Ok(Some(_)) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect::<Result<HashSet<_>, _>>()
+    {
+        Ok(visible) => visible,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = gui.conversation_catalog.public_value();
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
 }
 
 pub(crate) async fn conversation_project_update(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(project_id): Path<String>,
     Json(body): Json<UpdateConversationProjectRequest>,
 ) -> Json<ApiResponse> {
@@ -1014,7 +1063,28 @@ pub(crate) async fn conversation_project_update(
         }
     }
     let gui = state.gui.lock().expect("gui state lock");
-    visible_catalog_response(&gui, &state.local_agent.journal, false)
+    let visible = match gui
+        .conversation_catalog
+        .sessions
+        .iter()
+        .filter_map(
+            |session| match state.catalog_reader.agent_context(&session.id) {
+                Ok(None) => Some(Ok(session.id.clone())),
+                Ok(Some(_)) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect::<Result<HashSet<_>, _>>()
+    {
+        Ok(visible) => visible,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = gui.conversation_catalog.public_value();
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
 }
 
 /// Project metadata selects roots; each Session commits its own effective bindings.
@@ -1085,7 +1155,7 @@ fn require_workspace_command(reply: &Value) -> Result<(), SessionServiceError> {
 }
 
 pub(crate) async fn conversation_project_delete(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(project_id): Path<String>,
 ) -> Json<ApiResponse> {
     let now = crate::now_text();
@@ -1103,11 +1173,32 @@ pub(crate) async fn conversation_project_delete(
     {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    visible_catalog_response(&gui, &state.local_agent.journal, false)
+    let visible = match gui
+        .conversation_catalog
+        .sessions
+        .iter()
+        .filter_map(
+            |session| match state.catalog_reader.agent_context(&session.id) {
+                Ok(None) => Some(Ok(session.id.clone())),
+                Ok(Some(_)) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect::<Result<HashSet<_>, _>>()
+    {
+        Ok(visible) => visible,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = gui.conversation_catalog.public_value();
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
 }
 
 pub(crate) async fn conversation_session_create(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(mut body): Json<CreateConversationSessionRequest>,
 ) -> Json<ApiResponse> {
     let recipe = match body
@@ -1460,7 +1551,7 @@ pub(crate) async fn create_agent_session(
 }
 
 pub(crate) async fn conversation_session_update(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(body): Json<UpdateConversationSessionRequest>,
 ) -> Json<ApiResponse> {
@@ -1508,11 +1599,32 @@ pub(crate) async fn conversation_session_update(
             task.abort();
         }
     }
-    visible_catalog_response(&gui, &state.local_agent.journal, false)
+    let visible = match gui
+        .conversation_catalog
+        .sessions
+        .iter()
+        .filter_map(
+            |session| match state.catalog_reader.agent_context(&session.id) {
+                Ok(None) => Some(Ok(session.id.clone())),
+                Ok(Some(_)) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect::<Result<HashSet<_>, _>>()
+    {
+        Ok(visible) => visible,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = gui.conversation_catalog.public_value();
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
 }
 
 pub(crate) async fn conversation_session_delete(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
     delete_conversation_session(state, session_id, false).await
@@ -1617,7 +1729,28 @@ async fn delete_conversation_session(
         );
     }
     let gui = state.gui.lock().expect("gui state lock");
-    visible_catalog_response(&gui, &state.local_agent.journal, false)
+    let visible = match gui
+        .conversation_catalog
+        .sessions
+        .iter()
+        .filter_map(
+            |session| match state.catalog_reader.agent_context(&session.id) {
+                Ok(None) => Some(Ok(session.id.clone())),
+                Ok(Some(_)) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect::<Result<HashSet<_>, _>>()
+    {
+        Ok(visible) => visible,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let mut value = gui.conversation_catalog.public_value();
+    value["sessions"]
+        .as_array_mut()
+        .expect("catalog sessions")
+        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
+    ApiResponse::ok(value)
 }
 
 fn deletion_cleanup_ids(
@@ -1814,7 +1947,7 @@ fn save_input_bytes(
 }
 
 pub(crate) async fn conversation_input_upload(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path((session_id, input_id)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
@@ -1857,7 +1990,7 @@ pub(crate) async fn conversation_input_upload(
 }
 
 pub(crate) async fn conversation_command_submit(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(mut command): Json<Value>,
 ) -> Json<ApiResponse> {
@@ -2185,7 +2318,7 @@ async fn confirm_plan_workspaces(
             }
         }
         let response = conversation_project_update(
-            State(state.clone()),
+            ReadyState(state.clone()),
             Path(project_id),
             Json(UpdateConversationProjectRequest {
                 title: None,
@@ -2497,7 +2630,7 @@ fn prepare_session_workdir(
 }
 
 pub(crate) async fn conversation_projection_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
     match request_service(
@@ -2520,7 +2653,7 @@ pub(crate) async fn conversation_projection_get(
 }
 
 pub(crate) async fn conversation_context_composition_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path((session_id, provider_request_id)): Path<(String, String)>,
 ) -> Json<ApiResponse> {
     match request_service(

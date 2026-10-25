@@ -20,7 +20,7 @@ import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions'
 import { ConversationTranscript } from './ConversationTranscript';
 import { ConversationLayoutCache } from './conversationVirtualizer';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
-import { ArtifactLinks } from './ArtifactLinks';
+import { ArtifactLinks, ArtifactShortcuts } from './ArtifactLinks';
 import './localAgentPanel.css';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import { AgentPlanReview } from './AgentPlanReview';
@@ -49,6 +49,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const projection = useLocalAgentStore((state) => state.projection);
   const loading = useLocalAgentStore((state) => state.loading);
+  const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
+  const loadingPurpose = useLocalAgentStore((state) => state.loadingPurpose);
   const refresh = useLocalAgentStore((state) => state.refresh);
   const hostReady = useAppStatusStore((state) => state.apiStatus === 'connected');
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
@@ -163,7 +165,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           onDisplayed={display.onDisplayed}
           showReasoning={showReasoning}
           language={language}
-          loading={loading}
+          loading={loading && loadingPurpose === 'session'}
           projection={projection}
           activeProject={activeProject}
           hasConversationContent={hasConversationContent}
@@ -178,10 +180,9 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           automaticReview={automaticReview}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
-        {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">
-          <summary>{t(language, 'achbitGui.outputs.title')}</summary>
-          <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />
-        </details>}
+        {mode !== 'panel' && !!display.artifacts.length && <ArtifactShortcuts
+          title={t(language, 'achbitGui.outputs.title')} artifacts={display.artifacts}
+          onOpen={resourcePreview.openWorkspaceResource} />}
       </div>
       {showJumpToLatest && hasConversationContent && (
           <button
@@ -204,7 +205,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         uiActionError={uiActionError}
         onDismissUiActionError={() => setUiActionError(null)}
       />
-      <ResourcePreview language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview}
+      <ResourcePreview ready={runtimeReady} language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview}
         onAttach={async selections => {
           if (useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
           await composer.selectMessageAttachments(selections);

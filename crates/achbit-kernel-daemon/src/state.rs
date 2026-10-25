@@ -2,14 +2,60 @@ use crate::prelude::*;
 use crate::*;
 
 #[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) local_agent: crate::local_agent_api::LocalAgentRuntime,
-    pub(crate) session_service: crate::session_service::SessionServiceProcess,
+pub(crate) struct HostState {
     pub(crate) host_connection: crate::host_connection::HostConnection,
     pub(crate) gui: Arc<Mutex<GuiState>>,
+    pub(crate) catalog_reader: crate::local_agent_store::SessionCatalogReader,
+    pub(crate) execution: crate::host_runtime::HostRuntime,
     pub(crate) host_services: HostServices,
     pub(crate) model_usage: Arc<crate::model_usage::UsageStore>,
     pub(crate) model_auth: Arc<crate::model_auth::AuthService>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub(crate) local_agent: crate::local_agent_api::LocalAgentRuntime,
+    pub(crate) session_service: crate::session_service::SessionServiceProcess,
+    pub(crate) host: HostState,
+}
+
+impl std::ops::Deref for AppState {
+    type Target = HostState;
+    fn deref(&self) -> &HostState {
+        &self.host
+    }
+}
+
+/// Execution routes cannot observe partially restored Kernel permissions.
+pub(crate) struct ReadyState(pub(crate) AppState);
+
+#[axum::async_trait]
+impl axum::extract::FromRequestParts<HostState> for ReadyState {
+    type Rejection = Response;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        host: &HostState,
+    ) -> Result<Self, Self::Rejection> {
+        // Session must still append settlement facts while shutdown drains work.
+        // These internal routes retain their separate service-token authorization.
+        let internal = parts.uri.path().starts_with("/api/local-agent/");
+        host.execution
+            .admit(internal)
+            .map(|services| {
+                Self(AppState {
+                    local_agent: services.local_agent,
+                    session_service: services.session_service,
+                    host: host.clone(),
+                })
+            })
+            .map_err(|error| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ApiResponse::error(error.code, error.message),
+                )
+                    .into_response()
+            })
+    }
 }
 
 #[derive(Debug)]
@@ -49,8 +95,10 @@ impl GuiState {
         directories: &achbit_host_connection::UserDirectories,
     ) -> Result<Self, String> {
         directories.create().map_err(|error| error.to_string())?;
+        achbit_host_connection::startup::timing("kernel.config_directories");
         let paths = HostPaths::in_directories(directories);
         let config_root_lease = ConfigRootLease::acquire(&paths.root_owner_lease_path)?;
+        achbit_host_connection::startup::timing("kernel.config_lease");
         let preparation = crate::config_setup::prepare_locked(&paths)?;
         if let Some(backup) = preparation.backup_directory {
             eprintln!(
@@ -58,6 +106,7 @@ impl GuiState {
                 backup.display()
             );
         }
+        achbit_host_connection::startup::timing("kernel.config_prepare");
         let user_settings = match read_optional_json_file(&paths.settings_path)? {
             Some(value @ Value::Object(_)) => {
                 validate_agent_runtime_settings(&value)?;
@@ -68,8 +117,10 @@ impl GuiState {
             Some(_) => return Err("本地用户设置文件必须是 JSON 对象。".to_string()),
             None => default_user_settings(),
         };
+        achbit_host_connection::startup::timing("kernel.settings");
         let llm_profiles =
             LlmProfileStore::load_with_secrets(&paths.llm_profiles_path, &paths.llm_secrets_path);
+        achbit_host_connection::startup::timing("kernel.profiles");
         let (conversation_catalog, conversation_catalog_error) =
             match crate::conversation_catalog::ConversationCatalog::load(&paths.catalog_store_path)
             {

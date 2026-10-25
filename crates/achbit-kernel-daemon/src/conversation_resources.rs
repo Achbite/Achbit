@@ -2,6 +2,7 @@ use crate::conversation_api::{
     projection_references_workspace, request_service, session_service_error, valid_id,
 };
 use crate::prelude::*;
+use crate::ReadyState;
 use crate::{ApiResponse, AppState};
 use achbit_kernel_runtime::file_watch::FileWatch;
 use axum::response::{sse::Event, IntoResponse, Response, Sse};
@@ -266,7 +267,7 @@ pub(crate) fn resource_entry(
 }
 
 pub(crate) async fn conversation_resource_roots(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
     let projection = match resource_projection(&state, &session_id, &[]).await {
@@ -389,7 +390,7 @@ fn resource_roots(
 }
 
 pub(crate) async fn conversation_resource_list(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(resource): Json<ResourceReference>,
 ) -> Json<ApiResponse> {
@@ -440,7 +441,7 @@ pub(crate) struct WatchResourcesRequest {
 }
 
 pub(crate) async fn conversation_resources_watch(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
     Json(body): Json<WatchResourcesRequest>,
 ) -> Response {

@@ -81,7 +81,7 @@ export default defineConfig(({ command }) => {
             ) {
               return 'markdown-renderer';
             }
-            if (id.includes('react') || id.includes('react-dom') || id.includes('zustand')) {
+            if (/\/node_modules\/(react|react-dom|scheduler|zustand)\//.test(id)) {
               return 'vendor';
             }
             return undefined;

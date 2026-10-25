@@ -1,3 +1,4 @@
+import { useLocalAgentStore } from '../../state/localAgentStore';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import React from 'react';
@@ -38,17 +39,19 @@ export function ArtifactImageLink({ artifact, label, title, className = 'achbit-
   artifact: ArtifactProjection; label: string; title: string; className?: string;
 }) {
   const language = useUiLanguage();
+  const runtimeReady = useLocalAgentStore(state => state.runtimeReady);
   const host=useConversationHost();
   const [url,setUrl]=React.useState('');
   const [error,setError]=React.useState<string|null>(null);
   React.useEffect(()=>{
+    if (!runtimeReady) return;
     const controller=new AbortController();let release:(()=>void)|undefined;
     setUrl('');setError(null);
     void host.loadImage(artifact.sessionId,`artifact://${artifact.artifactId}`,controller.signal).then((result)=>{
       if(controller.signal.aborted){result.release?.();return;}release=result.release;setUrl(result.url);
     }).catch((reason:unknown)=>{if(!controller.signal.aborted)setError(String(reason));});
     return ()=>{controller.abort();release?.();};
-  },[artifact.sessionId,artifact.artifactId,host]);
+  },[artifact.sessionId,artifact.artifactId,host,runtimeReady]);
   const failed = () => setError(t(language, 'content.image.decodeError'));
   return <ImageReview source={error ? undefined : url || undefined} alt={label}
     className={className} title={error ?? title} onError={failed}>
@@ -62,4 +65,15 @@ export function ArtifactImageLink({ artifact, label, title, className = 'achbit-
 function formatArtifactTime(value: string): string {
   const date = new Date(/^\d+$/u.test(value) ? Number(value) : value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+/** Hidden shortcuts do not fetch thumbnails. Retain them after the first opening. */
+export function ArtifactShortcuts({ title, ...props }: React.ComponentProps<typeof ArtifactLinks> & { title: string }) {
+  const [opened, setOpened] = React.useState(false);
+  return <details className="conversation-artifact-shortcuts" onToggle={event => {
+    if (event.currentTarget.open) setOpened(true);
+  }}>
+    <summary>{title}</summary>
+    {opened && <ArtifactLinks {...props} />}
+  </details>;
 }

@@ -41,9 +41,32 @@ export async function readChangeStatistics(
   return result;
 }
 
+// Session projections are immutable. Build all round memberships once per projection.
+const roundChangesCache = new WeakMap<SessionProjection, Map<string, ActivityProjection[]>>();
+
 export function roundChangeActivities(projection: SessionProjection | null, runId: string): ActivityProjection[] {
-  const records = new Set(projection?.fileChangeRounds?.find((round) => round.runId === runId)?.recordIds ?? []);
-  return projection?.activities.filter((activity) => activity.tool?.recordId && records.has(activity.tool.recordId)) ?? [];
+  if (!projection) return [];
+  let rounds = roundChangesCache.get(projection);
+  if (!rounds) {
+    rounds = new Map();
+    const recordRounds = new Map<string, Set<ActivityProjection[]>>();
+    for (const round of projection.fileChangeRounds ?? []) {
+      if (rounds.has(round.runId)) continue;
+      const activities: ActivityProjection[] = [];
+      rounds.set(round.runId, activities);
+      for (const recordId of round.recordIds) {
+        let owners = recordRounds.get(recordId);
+        if (!owners) { owners = new Set(); recordRounds.set(recordId, owners); }
+        owners.add(activities);
+      }
+    }
+    for (const activity of projection.activities) {
+      const recordId = activity.tool?.recordId;
+      if (recordId) for (const activities of recordRounds.get(recordId) ?? []) activities.push(activity);
+    }
+    roundChangesCache.set(projection, rounds);
+  }
+  return rounds.get(runId) ?? [];
 }
 
 export function changedFiles(activities: ActivityProjection[]): ChangedFile[] {

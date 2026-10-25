@@ -315,6 +315,7 @@ impl Drop for HostProcessGroup {
 }
 
 fn main() {
+    achbit_host_connection::startup::timing("gui.entry");
     let completion_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         notifications::deepcode_dismiss_completion,
         notifications::deepcode_open_completion
@@ -367,7 +368,9 @@ fn main() {
             handler(invoke)
         })
         .setup(|app| {
+            achbit_host_connection::startup::timing("gui.setup");
             initialize_runtime_locations()?;
+            achbit_host_connection::startup::timing("gui.locations");
             let target = match resolve_launch_target() {
                 Ok(target) => target,
                 Err(error) => {
@@ -382,6 +385,7 @@ fn main() {
                     return Ok(());
                 }
             };
+            achbit_host_connection::startup::timing("gui.target");
             let mut host_tokens = HostConnectionTokens::resolve()?;
             let registration = Arc::clone(&host_tokens.browser_registration);
             #[cfg(windows)]
@@ -487,6 +491,7 @@ fn main() {
                 )
                 .map_err(std::io::Error::other)?;
             }
+            achbit_host_connection::startup::timing("gui.browser");
             app.manage(target.clone());
             app.manage(host_tokens.clone());
             app.manage(HostProcessGroup::new(None));
@@ -498,6 +503,7 @@ fn main() {
             let startup_target = target.clone();
             let startup_tokens = host_tokens.clone();
             std::thread::spawn(move || {
+                achbit_host_connection::startup::timing("gui.host_thread");
                 let processes = app_handle.state::<HostProcessGroup>();
                 let status = app_handle.state::<HostStartupStatusStore>();
                 start_host_processes(
@@ -515,6 +521,7 @@ fn main() {
                     (),
                 );
             });
+            achbit_host_connection::startup::timing("gui.window_begin");
             if let Err(error) = initialize_main_window(app, &target, &host_tokens) {
                 if let Some(browser) = app.try_state::<native_browser::NativeBrowser>() {
                     browser.stop();
@@ -522,6 +529,7 @@ fn main() {
                 app.state::<HostProcessGroup>().detach();
                 return Err(error);
             }
+            achbit_host_connection::startup::timing("gui.window_end");
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -1001,7 +1009,11 @@ fn trusted_app_navigation(url: &tauri::Url) -> bool {
 }
 
 fn serve_bundled_asset(web_dir_name: &str, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
-    match resolve_asset_path(web_dir_name, request.uri().path()) {
+    let is_entry = matches!(request.uri().path(), "/" | "/index.html");
+    if is_entry {
+        achbit_host_connection::startup::timing("gui.index_begin");
+    }
+    let response = match resolve_asset_path(web_dir_name, request.uri().path()) {
         Ok(path) => match std::fs::read(&path) {
             Ok(bytes) => Response::builder()
                 .status(StatusCode::OK)
@@ -1012,7 +1024,11 @@ fn serve_bundled_asset(web_dir_name: &str, request: Request<Vec<u8>>) -> Respons
             Err(_) => text_response(StatusCode::NOT_FOUND, "asset not found"),
         },
         Err(message) => text_response(StatusCode::BAD_REQUEST, &message),
+    };
+    if is_entry {
+        achbit_host_connection::startup::timing("gui.index_end");
     }
+    response
 }
 
 fn resolve_asset_path(web_dir_name: &str, uri_path: &str) -> Result<PathBuf, String> {
@@ -1180,6 +1196,7 @@ fn start_host_processes(
             None,
         );
     }
+    achbit_host_connection::startup::timing("gui.start_admitted");
     let diagnostic = prepare_host_startup_diagnostics(&attempt_id).ok();
     let diagnostic_ref = diagnostic.as_ref().map(|value| value.reference.clone());
     status.update(
@@ -1336,6 +1353,7 @@ fn spawn_host_processes_if_available(
     let proxy_dir = parent_dir(&proxy_path).unwrap_or_else(|| exe_dir.clone());
     let data_root = runtime_locations().user.data_dir.clone();
 
+    achbit_host_connection::startup::timing("gui.binaries");
     let shared_start_guard = achbit_host_connection::HostStartGuard::acquire_until(
         &data_root, deadline,
     )
@@ -1386,6 +1404,7 @@ fn spawn_host_processes_if_available(
         .clone()
         .unwrap_or_else(|| runtime_locations().resources.join(APP_ASSET_DIR));
 
+    achbit_host_connection::startup::timing("gui.discovered");
     let (mut daemon, daemon_identity) = if let Some(connection) = shared {
         match authenticated_health_status_until(
             &target.host,
@@ -1461,6 +1480,7 @@ fn spawn_host_processes_if_available(
             ));
         }
 
+        achbit_host_connection::startup::timing("gui.daemon_start");
         let (daemon, daemon_identity) = start_gui_component(
             &mut daemon_command,
             &target.host,
@@ -1474,6 +1494,7 @@ fn spawn_host_processes_if_available(
             diagnostic,
         )?;
 
+        achbit_host_connection::startup::timing("gui.daemon_ready");
         (Some(daemon), daemon_identity)
     };
 
@@ -1545,6 +1566,7 @@ fn spawn_host_processes_if_available(
             ),
         ));
     }
+    achbit_host_connection::startup::timing("gui.proxy_start");
     let (proxy, _) = match start_gui_component(
         &mut proxy_command,
         &proxy_host,
@@ -1560,6 +1582,7 @@ fn spawn_host_processes_if_available(
         Ok(ready) => ready,
         Err(failure) => return Err(cleanup_startup_daemon(&mut daemon, deadline, failure)),
     };
+    achbit_host_connection::startup::timing("gui.proxy_ready");
     let mut children = OwnedHostChildren {
         daemon,
         start_guard: Some(shared_start_guard),
@@ -1880,7 +1903,13 @@ fn authenticated_health_status_until(
     token: &str,
     deadline: Instant,
 ) -> std::io::Result<AuthenticatedHealthStatus> {
-    let request = http_request(host, port, "GET", "/api/health", &[(token_header, token)]);
+    let request = http_request(
+        host,
+        port,
+        "GET",
+        "/api/host/readiness",
+        &[(token_header, token)],
+    );
     let envelope = match request_loopback_json_until::<HostApiEnvelope<HostHealthData>>(
         host, port, &request, deadline,
     ) {

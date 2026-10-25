@@ -1,7 +1,7 @@
 //! Physical Host lifetime. Session remains the sole owner of active work.
 use crate::prelude::*;
 use crate::{
-    request_host_shutdown, shutdown_owned_host_resources, wait_for_host_shutdown, AppState,
+    request_host_shutdown, shutdown_owned_host_resources, wait_for_host_shutdown, HostState,
 };
 use axum::body::Body;
 use std::convert::Infallible;
@@ -109,7 +109,7 @@ pub(crate) async fn host_client(Query(query): Query<ClientQuery>) -> Response {
         .expect("Host client response")
 }
 
-pub(crate) async fn monitor_host_lifetime(state: AppState) {
+pub(crate) async fn monitor_host_lifetime(state: HostState) {
     if let Err(error) = observe_host_lifetime(&state).await {
         if !begin_host_shutdown() {
             return;
@@ -132,7 +132,7 @@ pub(crate) fn begin_host_shutdown() -> bool {
     started
 }
 
-async fn observe_host_lifetime(state: &AppState) -> Result<(), String> {
+async fn observe_host_lifetime(state: &HostState) -> Result<(), String> {
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if LIFETIME
@@ -144,11 +144,18 @@ async fn observe_host_lifetime(state: &AppState) -> Result<(), String> {
         {
             return Ok(());
         }
-        let service = state.session_service.clone();
-        tokio::task::spawn_blocking(move || service.check_ready())
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let services = match state.execution.current() {
+            Some(Ok(services)) => Some(services),
+            // No Session can own work yet. Client leases still own Host lifetime.
+            None | Some(Err(_)) => None,
+        };
+        if let Some(services) = &services {
+            let service = services.session_service.clone();
+            tokio::task::spawn_blocking(move || service.check_ready())
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        }
         let revision = LIFETIME
             .get()
             .expect("Host lifetime configured")
@@ -158,19 +165,24 @@ async fn observe_host_lifetime(state: &AppState) -> Result<(), String> {
         let Some(revision) = revision else {
             continue;
         };
-        let service = state.session_service.clone();
-        let result =
-            tokio::task::spawn_blocking(move || service.request("activity", json!({}))).await;
-        let active = match result {
-            Ok(Ok(value)) => match value.get("active").and_then(Value::as_bool) {
-                Some(active) => active,
-                None => {
-                    return Err("host_lifecycle_activity_invalid".into());
+        let active = if let Some(services) = services {
+            let service = services.session_service;
+            let result =
+                tokio::task::spawn_blocking(move || service.request("activity", json!({}))).await;
+            let active = match result {
+                Ok(Ok(value)) => match value.get("active").and_then(Value::as_bool) {
+                    Some(active) => active,
+                    None => {
+                        return Err("host_lifecycle_activity_invalid".into());
+                    }
+                },
+                error => {
+                    return Err(format!("host_lifecycle_activity_failed: {error:?}"));
                 }
-            },
-            error => {
-                return Err(format!("host_lifecycle_activity_failed: {error:?}"));
-            }
+            };
+            active
+        } else {
+            false
         };
         if LIFETIME
             .get()

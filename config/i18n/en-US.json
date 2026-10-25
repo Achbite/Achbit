@@ -347,6 +347,8 @@
     "achbitGui.nav.newChat": "New chat",
     "achbitGui.sidebar.project": "Projects",
     "achbitGui.sidebar.chats": "Chats",
+    "achbitGui.sidebar.loading": "Loading conversations…",
+    "achbitGui.sidebar.loadFailed": "Unable to load conversations.",
     "achbitGui.sidebar.noChats": "No chats yet",
     "achbitGui.sidebar.showMore": "Show {count} more",
     "achbitGui.sidebar.showLess": "Show less",

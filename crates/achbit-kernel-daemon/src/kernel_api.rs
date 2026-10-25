@@ -1,7 +1,16 @@
 use crate::prelude::*;
 use crate::*;
 
-pub(crate) async fn health(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn health(State(host): State<HostState>) -> Json<ApiResponse> {
+    let services = match host.execution.wait().await {
+        Ok(services) => services,
+        Err(error) => return ApiResponse::error(error.code, error.message),
+    };
+    let state = AppState {
+        local_agent: services.local_agent,
+        session_service: services.session_service,
+        host,
+    };
     let service = state.session_service.clone();
     match tokio::task::spawn_blocking(move || service.check_ready()).await {
         Ok(Ok(())) => {}
@@ -29,7 +38,7 @@ pub(crate) async fn health(State(state): State<AppState>) -> Json<ApiResponse> {
     }))
 }
 
-fn build_commit() -> String {
+pub(crate) fn build_commit() -> String {
     std::env::var("DEEPCODE_BUILD_COMMIT")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -49,7 +58,7 @@ fn read_packaged_build_commit() -> Option<String> {
         .filter(|commit| !commit.trim().is_empty())
 }
 
-fn packaged_build_info() -> Option<Value> {
+pub(crate) fn packaged_build_info() -> Option<Value> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(PathBuf::from))?;

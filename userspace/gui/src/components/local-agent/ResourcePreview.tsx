@@ -314,6 +314,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
 }
 
 export function ResourcePreview({
+  ready = true,
   language,
   preview,
   tabsTarget,
@@ -322,6 +323,7 @@ export function ResourcePreview({
 }: {
   language: UiLanguage;
   preview: ReturnType<typeof useResourcePreview>;
+  ready?: boolean;
   tabsTarget?: HTMLElement | null;
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
   onAttach?: AttachTreeResource;
@@ -410,7 +412,7 @@ export function ResourcePreview({
           </button>
           <div className="reader-tabs__actions">
             <UiRegion slot="reader.toolbar" data={readerData} actions={readerActions}>
-              <ReaderFileActions sessionId={activeSessionId} target={activeTarget} language={language} />
+              {ready && <ReaderFileActions sessionId={activeSessionId} target={activeTarget} language={language} />}
             </UiRegion>
           </div>
         </header>
@@ -442,7 +444,7 @@ export function ResourcePreview({
               hidden={preview.activeId !== tab.id}
               role="tabpanel" id={`${tabsId}-panel-${index}`} aria-labelledby={`${tabsId}-tab-${index}`}
             >
-              {tab.target.kind === 'browser' && preview.sessionId ? (
+              {!ready ? <div role="status" aria-busy="true" /> : tab.target.kind === 'browser' && preview.sessionId ? (
                 <NativeBrowserPreview
                   sessionId={preview.sessionId}
                   active={preview.visible && preview.activeId === tab.id}
@@ -470,7 +472,7 @@ export function ResourcePreview({
               )}
             </div>
           ))}
-          {preview.activeId === null && preview.sessionId && (
+          {ready && preview.activeId === null && preview.sessionId && (
             <ReaderStart
               language={language}
               openTarget={preview.openTarget}
@@ -478,7 +480,7 @@ export function ResourcePreview({
             />
           )}
         </div>
-        {activeSessionId && activeTarget?.kind !== 'agent' && <div className="reader-tree-panel" hidden={!preview.visible || !preview.treeVisible} style={{ width: treeWidth.width }}>
+        {ready && activeSessionId && activeTarget?.kind !== 'agent' && <div className="reader-tree-panel" hidden={!preview.visible || !preview.treeVisible} style={{ width: treeWidth.width }}>
           {preview.visible && preview.treeVisible && <ResizeHandle className="reader-tree-resize" label={chinese ? '调整文件树宽度' : 'Resize file tree'}
             value={treeWidth.width} min={treeWidth.min} max={treeWidth.max} step={PANE_GEOMETRY.fileTree.step}
             direction={-1} onResize={treeWidth.setWidth} />}

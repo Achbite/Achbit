@@ -87,3 +87,53 @@ test('automatic tool and Plan review leave the ordinary composer and draft intac
   assert.equal(foregroundApproval(manual.pendingApproval,manual.run),manual.pendingApproval);
   assert.equal(foregroundApproval(manual.pendingApproval,{...manual.run,status:'running'}),manual.pendingApproval,'explicit ask is already a user decision');
 });
+
+
+test('file change rounds preserve record ownership, source order and later projection updates', async t => {
+  const { roundChangeActivities } = await loadGuiModule(t, '/src/components/local-agent/fileChangeSummary.ts');
+  const activity = (id, recordId, runId) => ({ activityId: id, runId, tool: { recordId } });
+  const first = activity('first', 'record:shared', 'run:other');
+  const second = activity('second', 'record:one', 'run:other');
+  const unrelated = activity('unrelated', 'record:unrelated', 'run:one');
+  const projection = { activities: [first, second, unrelated], fileChangeRounds: [
+    { runId: 'run:one', recordIds: ['record:one', 'record:shared', 'record:shared'] },
+    { runId: 'run:two', recordIds: ['record:shared'] },
+    { runId: 'run:one', recordIds: ['record:unrelated'] },
+  ] };
+  const before = structuredClone(projection);
+  assert.deepEqual(roundChangeActivities(projection, 'run:one'), [first, second]);
+  assert.deepEqual(roundChangeActivities(projection, 'run:two'), [first]);
+  assert.deepEqual(roundChangeActivities(projection, 'run:missing'), []);
+  assert.deepEqual(roundChangeActivities(null, 'run:one'), []);
+  assert.deepEqual(roundChangeActivities({ ...projection, fileChangeRounds: undefined }, 'run:one'), []);
+  const next = { ...projection, activities: [...projection.activities, activity('later', 'record:one', 'run:one')] };
+  assert.deepEqual(roundChangeActivities(next, 'run:one'), [first, second, next.activities[3]]);
+  assert.deepEqual(roundChangeActivities(projection, 'run:one'), [first, second]);
+  assert.deepEqual(projection, before, 'indexing does not change the canonical projection');
+});
+
+test('closed output shortcuts do not mount artifact image readers', async t => {
+  const { ArtifactShortcuts } = await loadGuiModule(t, '/src/components/local-agent/ArtifactLinks.tsx');
+  const markup = renderToStaticMarkup(createElement(ArtifactShortcuts, { title:'Outputs',
+    artifacts:[{artifactId:'artifact:image',sessionId:'session:history',title:'Deferred image',contentMode:'fixed',mediaType:'image/png'}],
+    onOpen:async()=>{},
+  }));
+  assert.match(markup, /<summary>Outputs<\/summary>/);
+  assert.doesNotMatch(markup, /document-artifact|Deferred image/, 'no thumbnail reader mounts before the disclosure is opened');
+});
+
+
+test('artifact thumbnails wait for execution readiness, then read and release normally',async t=>{
+  const React=await import('react');
+  const [{ArtifactImageLink},{useLocalAgentStore:store},{useConversationHost}]=await loadGuiModules(t,[
+    '/src/components/local-agent/ArtifactLinks.tsx','/src/state/localAgentStore.ts','/src/components/local-agent/ConversationHost.tsx']);
+  let effect,reads=0,releases=0;
+  t.mock.method(React.default,'useEffect', callback=>{effect=callback;});
+  t.mock.method(useConversationHost(),'loadImage',async()=>{reads++;return {url:'blob:test',release(){releases++;}};});
+  function Probe(){ArtifactImageLink({artifact:{artifactId:'artifact:pending',sessionId:'session:history'},label:'Image',title:'Image'});return null;}
+  store.setState({runtimeReady:false});Object.assign(store.getInitialState(),store.getState());
+  renderToStaticMarkup(createElement(Probe));effect();await Promise.resolve();assert.equal(reads,0);
+  store.setState({runtimeReady:true});Object.assign(store.getInitialState(),store.getState());
+  renderToStaticMarkup(createElement(Probe));const dispose=effect();await Promise.resolve();assert.equal(reads,1);
+  dispose();assert.equal(releases,1);
+});
