@@ -1421,7 +1421,8 @@
   box-shadow: none;
 }
 
-.local-agent button {
+/* Component surfaces must win even when this fallback loads in a later lazy chunk. */
+:where(.local-agent) button {
   min-height: 30px;
   padding: 5px 10px;
   border: 1px solid var(--dc-border);
