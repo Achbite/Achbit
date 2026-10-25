@@ -6,6 +6,25 @@ use std::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Opt-in startup diagnostics. Stage labels and process IDs only; never credentials.
+/// Wall time aligns owned processes; elapsed time measures work in this process.
+pub fn timing(stage: &'static str) {
+    use std::io::Write;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("DEEPCODE_STARTUP_TIMING").as_deref() == Ok("1")) {
+        return;
+    }
+    let elapsed = ORIGIN.get_or_init(Instant::now).elapsed().as_micros();
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    let _ = writeln!(std::io::stderr().lock(), "[startup-timing] {{\"stage\":\"{stage}\",\"pid\":{},\"atUs\":{wall},\"elapsedUs\":{elapsed}}}", std::process::id());
+}
+
 pub const STARTUP_BUDGET: Duration = Duration::from_secs(15);
 const ATTEMPT_BUDGET: Duration = Duration::from_secs(6);
 const PROBE_INTERVAL: Duration = Duration::from_millis(75);
@@ -53,6 +72,7 @@ pub fn start_owned_ready<T>(
     let mut first_error = None;
     for attempt in 0..2 {
         remaining(deadline).map_err(|error| startup_error(first_error.clone(), error, None))?;
+        timing("child.spawn.begin");
         let mut process = match spawn_owned_host_process(command) {
             Ok(process) => process,
             Err(error) => {
@@ -64,6 +84,7 @@ pub fn start_owned_ready<T>(
                 return Err(startup_error(first_error, error, None));
             }
         };
+        timing("child.spawn.return");
         // Leave a bounded interval to kill/reap the owned tree even on the last attempt.
         let attempt_deadline = (Instant::now() + ATTEMPT_BUDGET)
             .min(deadline.checked_sub(CLEANUP_RESERVE).unwrap_or(deadline));

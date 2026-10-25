@@ -95,8 +95,10 @@ impl GuiState {
         directories: &achbit_host_connection::UserDirectories,
     ) -> Result<Self, String> {
         directories.create().map_err(|error| error.to_string())?;
+        achbit_host_connection::startup::timing("kernel.config_directories");
         let paths = HostPaths::in_directories(directories);
         let config_root_lease = ConfigRootLease::acquire(&paths.root_owner_lease_path)?;
+        achbit_host_connection::startup::timing("kernel.config_lease");
         let preparation = crate::config_setup::prepare_locked(&paths)?;
         if let Some(backup) = preparation.backup_directory {
             eprintln!(
@@ -104,6 +106,7 @@ impl GuiState {
                 backup.display()
             );
         }
+        achbit_host_connection::startup::timing("kernel.config_prepare");
         let user_settings = match read_optional_json_file(&paths.settings_path)? {
             Some(value @ Value::Object(_)) => {
                 validate_agent_runtime_settings(&value)?;
@@ -114,8 +117,10 @@ impl GuiState {
             Some(_) => return Err("本地用户设置文件必须是 JSON 对象。".to_string()),
             None => default_user_settings(),
         };
+        achbit_host_connection::startup::timing("kernel.settings");
         let llm_profiles =
             LlmProfileStore::load_with_secrets(&paths.llm_profiles_path, &paths.llm_secrets_path);
+        achbit_host_connection::startup::timing("kernel.profiles");
         let (conversation_catalog, conversation_catalog_error) =
             match crate::conversation_catalog::ConversationCatalog::load(&paths.catalog_store_path)
             {

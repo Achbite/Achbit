@@ -80,8 +80,17 @@ pub(crate) use state::*;
 pub(crate) use utils::*;
 pub(crate) use workspace_api::*;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    achbit_host_connection::startup::timing("kernel.entry");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("create async runtime");
+    achbit_host_connection::startup::timing("kernel.runtime");
+    runtime.block_on(run());
+}
+
+async fn run() {
     if std::env::args().nth(1).as_deref() == Some("--kernel-tool-worker") {
         if let Err(error) = kernel_tool_worker::run() {
             eprintln!("{error}");
@@ -91,6 +100,7 @@ async fn main() {
     }
     let user_directories =
         achbit_host_connection::UserDirectories::resolve().expect("解析 DeepCode 用户目录");
+    achbit_host_connection::startup::timing("kernel.directories");
     #[cfg(windows)]
     {
         achbit_kernel_runtime::executors::suppress_error_dialogs();
@@ -161,9 +171,11 @@ async fn main() {
     );
 
     let gui_state = GuiState::open_in(&user_directories).expect("打开当前用户目录");
+    achbit_host_connection::startup::timing("kernel.gui_state");
     let model_usage = Arc::new(
         model_usage::UsageStore::open(&gui_state.paths.usage_store_path).expect("打开用量索引"),
     );
+    achbit_host_connection::startup::timing("kernel.usage");
     let session_store_path = gui_state.paths.session_store_path.clone();
     let tool_record_store_path = gui_state.paths.tool_record_store_path.clone();
     let user_settings = gui_state.user_settings.clone();
@@ -171,6 +183,7 @@ async fn main() {
         .await
         .unwrap_or_else(|error| panic!("无法绑定 DeepCode 本地 daemon：{error}"));
     let addr = listener.local_addr().expect("读取 Host 监听地址");
+    achbit_host_connection::startup::timing("kernel.listener");
     let gui = Arc::new(Mutex::new(gui_state));
     let workspace_resolver = Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
         gui.clone(),
@@ -180,8 +193,10 @@ async fn main() {
         host_process_identity().instance_id.clone(),
         std::env::var(HOST_SHELL_TOKEN_ENV).expect("Host shell token"),
     ));
+    achbit_host_connection::startup::timing("kernel.identity_desktop");
     let catalog_reader = local_agent_store::SessionCatalogReader::open(&session_store_path)
         .expect("打开 Session 目录读取器");
+    achbit_host_connection::startup::timing("kernel.catalog_reader");
     let host_connection =
         HostConnection::from_environment().expect("初始化 Host Shell 本地连接凭证");
     let state = HostState {
@@ -244,9 +259,12 @@ async fn main() {
             eprintln!("{}: {}", error.code, error.message);
         }
         execution.publish(result);
+        achbit_host_connection::startup::timing("kernel.execution_finished");
     });
+    achbit_host_connection::startup::timing("kernel.execution_spawned");
     configure_host_lifetime().expect("初始化 Host 生命周期");
     let app = routes::build_app(state.clone());
+    achbit_host_connection::startup::timing("kernel.routes");
     let lifetime_monitor = tokio::spawn(monitor_host_lifetime(state.clone()));
     // Host bootstrap publishes transport credentials while the config-root lease
     // is held. Shells attach to this instance; they never copy Session state.
@@ -256,6 +274,7 @@ async fn main() {
     )
     .and_then(|connection| connection.publish(&user_directories.data_dir))
     .expect("发布共享 Host 本地连接");
+    achbit_host_connection::startup::timing("kernel.published");
     println!("DeepCode local Agent daemon listening on http://{addr}");
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(wait_for_host_shutdown())
