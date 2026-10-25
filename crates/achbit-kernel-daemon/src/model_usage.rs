@@ -492,7 +492,7 @@ fn make_buckets(query: &UsageQuery, tz: Tz) -> Result<Vec<Bucket>, String> {
     Ok(buckets)
 }
 pub(crate) async fn query(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(query): Json<UsageQuery>,
 ) -> Json<ApiResponse> {
     match state.model_usage.query(&query) {

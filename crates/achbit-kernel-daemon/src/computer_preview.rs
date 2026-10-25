@@ -1,6 +1,6 @@
 //! GUI-only current target preview. Frames never enter tool records or Session history.
 use crate::prelude::*;
-use crate::AppState;
+use crate::ReadyState;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -20,7 +20,7 @@ pub(crate) struct ActivateRequest {
 }
 
 pub(crate) async fn preview(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(input): Json<PreviewRequest>,
 ) -> Json<Value> {
     let desktop = state.local_agent.kernel.desktop.clone();
@@ -33,7 +33,7 @@ pub(crate) async fn preview(
 }
 
 pub(crate) async fn activate(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(input): Json<ActivateRequest>,
 ) -> Json<Value> {
     let desktop = state.local_agent.kernel.desktop.clone();

@@ -1,6 +1,6 @@
 use crate::api_response::ApiResponse;
 use crate::prelude::*;
-use crate::AppState;
+use crate::{AppState, HostState};
 use achbit_kernel_abi::{
     is_valid_host_instance_id, HostProcessIdentity, HostShutdownReceipt, HostShutdownRequest,
     HOST_INSTANCE_ID_ENV, HOST_SHUTDOWN_IDENTITY_CONFLICT, HOST_SHUTDOWN_OWNER,
@@ -49,7 +49,7 @@ pub(crate) async fn host_identity() -> Json<ApiResponse> {
 }
 
 pub(crate) async fn host_shutdown(
-    State(state): State<AppState>,
+    State(state): State<HostState>,
     Json(request): Json<HostShutdownRequest>,
 ) -> Response {
     let identity = host_process_identity();
@@ -80,8 +80,19 @@ pub(crate) async fn host_shutdown(
         .into_response()
 }
 
-pub(crate) async fn shutdown_owned_host_resources(state: &AppState) -> bool {
+pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
+    host.execution.stop_admission();
     crate::host_lifecycle::begin_host_shutdown();
+    let services = match host.execution.wait().await {
+        Ok(services) => services,
+        // Initialization cleans up its partial resources before publishing errors.
+        Err(_) => return host.execution.initialization_cleanup_complete(),
+    };
+    let state = &AppState {
+        local_agent: services.local_agent,
+        session_service: services.session_service,
+        host: host.clone(),
+    };
     crate::conversation_api::shutdown_conversation_titles(state).await;
     let session_service = state.session_service.clone();
     let session_cleanup_ok =

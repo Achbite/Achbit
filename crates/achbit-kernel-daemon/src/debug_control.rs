@@ -1,7 +1,8 @@
 //! Debug-only Host adapter. Execution facts remain in Kernel / Session / GUI.
+use crate::ReadyState;
 use crate::{ApiResponse, AppState};
 use axum::{
-    extract::{Path, State},
+    extract::Path,
     response::{IntoResponse, Response},
     Json,
 };
@@ -120,7 +121,7 @@ async fn gui_command(action: &str, mut params: Value) -> Result<Value, String> {
 }
 
 pub(crate) async fn command(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(command): Json<Command>,
 ) -> Json<ApiResponse> {
     match dispatch(state, &command.method, command.params).await {
@@ -280,7 +281,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
                 let request = serde_json::from_value(json!({"workspacePaths":[selected.workspace],"profileId":params["profileId"],"recipe":params["recipe"],"subagentSettings":params["subagentSettings"]})).map_err(|e| e.to_string())?;
                 let projection = data(
                     crate::conversation_api::conversation_session_create(
-                        State(state.clone()),
+                        ReadyState(state.clone()),
                         Json(request),
                     )
                     .await,
@@ -304,7 +305,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         }
         let submitted = data(
             crate::conversation_api::conversation_command_submit(
-                State(state.clone()),
+                ReadyState(state.clone()),
                 Path(session_id.clone()),
                 Json(command),
             )
@@ -361,7 +362,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         command["sessionId"] = json!(session);
         return data(
             crate::conversation_api::conversation_command_submit(
-                State(state),
+                ReadyState(state),
                 Path(session),
                 Json(command),
             )
@@ -376,8 +377,11 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         task_scope(&state, &session, &selected.workspace)?;
         if method == "task.inspect" {
             return data(
-                crate::conversation_api::conversation_projection_get(State(state), Path(session))
-                    .await,
+                crate::conversation_api::conversation_projection_get(
+                    ReadyState(state),
+                    Path(session),
+                )
+                .await,
             );
         }
         let service = state.session_service.clone();
@@ -394,7 +398,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
     if method.starts_with("metrics.") && params["kind"] == "usage" {
         let query = serde_json::from_value(params["query"].clone())
             .map_err(|e| format!("usage_query_invalid: {e}"))?;
-        return data(crate::model_usage::query(State(state), Json(query)).await);
+        return data(crate::model_usage::query(ReadyState(state), Json(query)).await);
     }
     if method.starts_with("metrics.") {
         return crate::debug_tools::dispatch(&state, method, params).await;
@@ -442,7 +446,7 @@ impl Drop for SubscriptionGuard {
     }
 }
 pub(crate) async fn observe(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(request): Json<ObserveRequest>,
 ) -> Response {
     let result = (|| -> Result<Subscription, String> {

@@ -49,6 +49,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const projection = useLocalAgentStore((state) => state.projection);
   const loading = useLocalAgentStore((state) => state.loading);
+  const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
   const loadingPurpose = useLocalAgentStore((state) => state.loadingPurpose);
   const refresh = useLocalAgentStore((state) => state.refresh);
   const hostReady = useAppStatusStore((state) => state.apiStatus === 'connected');
@@ -204,7 +205,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         uiActionError={uiActionError}
         onDismissUiActionError={() => setUiActionError(null)}
       />
-      <ResourcePreview language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview}
+      <ResourcePreview ready={runtimeReady} language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview}
         onAttach={async selections => {
           if (useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
           await composer.selectMessageAttachments(selections);

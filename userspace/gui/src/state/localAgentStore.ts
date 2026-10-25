@@ -85,7 +85,8 @@ export interface LocalAgentState {
   catalogBusy: boolean;
   error: string | null;
   errorSource: StoreErrorSource | null;
-  initialize(): Promise<void>;
+  runtimeReady: boolean;
+  initialize(runtimeReady?: Promise<void>): Promise<void>;
   refreshProfiles(): Promise<void>;
   refreshCatalog(): Promise<void>;
   refreshPluginCatalog(): Promise<void>;
@@ -144,6 +145,18 @@ type StoreGet = () => LocalAgentState;
 
 export function createLocalAgentStore() {
 let initialization: Promise<void> | null = null;
+let executionReady: Promise<void> = Promise.resolve();
+async function waitForExecution(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  if (!signal) return executionReady;
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try { await Promise.race([executionReady, cancelled]); signal.throwIfAborted(); }
+  finally { signal.removeEventListener('abort', abort); }
+}
 let generation = 0;
 let catalogVersion = 0;
 let viewReadController = new AbortController();
@@ -246,8 +259,13 @@ const store = create<LocalAgentState>((set, get) => ({
   error: null,
   errorSource: null,
 
-  initialize: async () => {
+  runtimeReady: true,
+  initialize: async (runtimeReady) => {
     if (initialization) return await initialization;
+    if (runtimeReady) {
+      set({ runtimeReady: false });
+      executionReady = runtimeReady.then(() => { set({ runtimeReady: true }); });
+    }
     const currentGeneration = advanceView();
     initialization = (async () => {
       const readVersion = catalogVersion;
@@ -265,13 +283,14 @@ const store = create<LocalAgentState>((set, get) => ({
             if (currentGeneration === generation) {
               set({ loading: false, loadingPurpose: null });
               const restored = takeRestoredInterfaceView<{ sessionId: string | null; draftProjectId: string | null } | null>('conversation', null);
-              if (restored?.sessionId && catalog.sessions.some(item => item.id === restored.sessionId)) await get().activateSession(restored.sessionId);
-              else if (restored?.draftProjectId && catalog.projects.some(item => item.id === restored.draftProjectId)) set({ draftProjectId: restored.draftProjectId });
+              const selectedSessionId = get().sessionId ?? restored?.sessionId;
+              if (selectedSessionId && !get().projection && catalog.sessions.some(item => item.id === selectedSessionId)) await get().activateSession(selectedSessionId);
+              else if (!get().sessionId && restored?.draftProjectId && catalog.projects.some(item => item.id === restored.draftProjectId)) set({ draftProjectId: restored.draftProjectId });
             }
           }),
-          getPluginCatalog().then(pluginCatalog => set({ pluginCatalog })),
+          executionReady.then(() => getPluginCatalog()).then(pluginCatalog => set({ pluginCatalog })),
           // Publish model configuration independently of filesystem plugin discovery.
-          refreshProfileConfiguration(set),
+          executionReady.then(() => refreshProfileConfiguration(set)),
         ]);
         // Restoring a history entry may finish after profiles and replace an
         // absent historical model with null. Keep the existing default rule.
@@ -282,7 +301,9 @@ const store = create<LocalAgentState>((set, get) => ({
             reasoningEffortOverride: state.profiles.find(profile => profile.id === state.defaultProfileId)?.reasoningEffort ?? null,
           } : {}),
         }));
-        void get().refresh();
+        // A selected history entry owns its first projection read. Do not queue
+        // another full read of a child-bearing session behind that activation.
+        if (!get().sessionId || (currentGeneration === generation && get().projection)) void get().refresh();
 
       } catch (error) {
         if (currentGeneration === generation) {
@@ -351,7 +372,7 @@ const store = create<LocalAgentState>((set, get) => ({
       error: null,
       errorSource: null,
     });
-    void useSettingsStore.getState().loadUserSettings();
+    if (get().runtimeReady) void useSettingsStore.getState().loadUserSettings();
   },
 
   activateSession: async (sessionId) => {
@@ -383,28 +404,32 @@ const store = create<LocalAgentState>((set, get) => ({
     activeSubmissionCount = 0;
     const cached = projectionCache.get(sessionId) ?? null;
     if (cached) cacheProjection(cached);
+    const visibleCached = get().runtimeReady ? cached : null;
     set({
       submitting: false,
       modelSettingsBusy: false,
       draftSubagentSettings: null,
       subagentSettingsBusy: false,
-      loading: !cached,
-      loadingPurpose: cached ? null : 'session',
+      loading: !visibleCached,
+      loadingPurpose: visibleCached ? null : 'session',
       error: null,
       errorSource: null,
       sessionId,
       selectedProfileId: cached?.modelSettings?.profileId ?? summary.profileId ?? null,
       reasoningEffortOverride: cached?.modelSettings?.reasoningEffortOverride ?? null,
-      projection: cached,
+      projection: visibleCached,
       draftProjectId: null,
     });
+    try {
+      if (!get().runtimeReady) await waitForExecution(signal);
+      if (currentGeneration !== generation) return;
     if (cached) {
+      if (!visibleCached) set({ projection: cached, loading: false, loadingPurpose: null });
       // Paint the cached view immediately; the small status reply decides whether
       // any full snapshot is needed. Viewing history never reopens a Session run.
       await get().refresh();
       return;
     }
-    try {
       const projection = await readProjection(sessionId, signal);
       if (currentGeneration !== generation) return;
       set({
@@ -468,6 +493,7 @@ const store = create<LocalAgentState>((set, get) => ({
   },
 
   refresh: async () => {
+    if (!get().runtimeReady) return;
     const { sessionId } = get();
     const refreshGeneration = generation;
     const signal = viewReadController.signal;

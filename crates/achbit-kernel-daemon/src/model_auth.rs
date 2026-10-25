@@ -277,7 +277,7 @@ async fn callback(
 }
 
 pub(crate) async fn start(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(input): Json<StartAuth>,
 ) -> Json<ApiResponse> {
     match start_flow(state, input).await {
@@ -477,7 +477,7 @@ async fn start_flow(state: AppState, input: StartAuth) -> Result<AuthFlow, Strin
 }
 
 pub(crate) async fn read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(id): Path<String>,
 ) -> Json<ApiResponse> {
     match state.model_auth.flows.lock().expect("auth flows").get(&id) {
@@ -487,7 +487,7 @@ pub(crate) async fn read(
 }
 
 pub(crate) async fn cancel(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(id): Path<String>,
 ) -> Json<ApiResponse> {
     let result = {
@@ -515,7 +515,7 @@ pub(crate) async fn cancel(
 }
 
 pub(crate) async fn logout(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(id): Path<String>,
 ) -> Json<ApiResponse> {
     state.model_auth.cancel_connection(&id).await;
@@ -549,7 +549,7 @@ pub(crate) async fn logout(
 }
 
 pub(crate) async fn quota(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Path(id): Path<String>,
 ) -> Json<ApiResponse> {
     match read_quota(&state, &id).await {

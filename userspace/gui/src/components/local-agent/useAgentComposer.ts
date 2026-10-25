@@ -69,6 +69,7 @@ export function useAgentComposer(
       ? `${conversationKey}:interaction:${pendingInteraction.interactionId}`
       : editingMessage ? `${conversationKey}:edit:${editingMessage.message.messageId}` : conversationKey;
   const loading = useLocalAgentStore((state) => state.loading);
+  const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
   const submitting = useLocalAgentStore((state) => state.submitting);
   const selectInteraction = (index: number) => {
     const interaction = pendingInteractions[index];
@@ -708,7 +709,7 @@ export function useAgentComposer(
   };
   const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
   const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
-  const canSend = readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
+  const canSend = !runtimeReady || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
     ? Boolean(draft.trim()) && (!pendingInteraction || pendingInteraction.allowFreeform)
     : Boolean(draft.trim() || pastedTexts.length || pastedImages.length || pendingFilesystemPaths.length || editingMessage?.message.filesystemReferences.length)
       && !modelSettingsBusy && !catalogBusy

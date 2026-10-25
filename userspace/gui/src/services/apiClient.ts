@@ -124,6 +124,15 @@ function queryString(values: Record<string, string | undefined>): string {
   return encoded ? `?${encoded}` : '';
 }
 
+export type HostReadiness = Pick<HealthStatus, 'service' | 'ok' | 'status' | 'version' | 'buildCommit'> & {
+  catalog: 'readable'; hostInstanceId: string; hostPid: number;
+  kernel: 'starting' | 'ready' | 'failed'; session: 'starting' | 'ready' | 'failed';
+  runtimeError?: { code: string; message: string } | null;
+};
+export function getHostReadiness(): Promise<ApiResponse<HostReadiness>> {
+  return getJson(`${API_BASE}/host/readiness`);
+}
+
 export function getHealth(): Promise<ApiResponse<HealthStatus>> {
   return getJson(`${API_BASE}/health`);
 }

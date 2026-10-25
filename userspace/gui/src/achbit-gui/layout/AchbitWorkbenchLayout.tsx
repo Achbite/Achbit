@@ -187,7 +187,8 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     error: string | null;
   } | null>(null);
   const selectionBusy = submitting || catalogBusy || !!navigationPending;
-  const busy = loading || selectionBusy;
+  const runtimeReady = useLocalAgentStore(state => state.runtimeReady);
+  const busy = !runtimeReady || loading || selectionBusy;
   useEffect(() => {
     if (loading || !readerLocation || readerLocation.sessionId !== activeSessionId) return;
     const location: WorkbenchLocation = { sessionId: activeSessionId, draftProjectId, settingsOpen, reader: readerLocation };

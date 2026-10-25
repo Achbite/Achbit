@@ -30,6 +30,70 @@ pub(crate) struct LocalAgentJournal {
     permissions: Arc<RwLock<KernelPermissionModel>>,
 }
 
+/// Catalog reads need creation facts, but never an unrecovered permission model.
+#[derive(Clone)]
+pub(crate) struct SessionCatalogReader(Arc<Mutex<Connection>>);
+
+impl SessionCatalogReader {
+    pub(crate) fn open(path: &Path) -> Result<Self, LocalAgentStoreError> {
+        Ok(Self(Arc::new(Mutex::new(open_session_store(path)?))))
+    }
+
+    pub(crate) fn agent_context(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Value>, LocalAgentStoreError> {
+        let connection = self.0.lock().map_err(|_| {
+            LocalAgentStoreError::new("session_store_lock_failed", "Session Store 锁已损坏。")
+        })?;
+        read_agent_context(&connection, session_id)
+    }
+}
+
+fn open_session_store(path: &Path) -> Result<Connection, LocalAgentStoreError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            LocalAgentStoreError::new(
+                "session_store_directory_failed",
+                format!("创建 Session Store 目录失败：{error}"),
+            )
+        })?;
+    }
+    let existed = path.exists();
+    let connection = Connection::open(path).map_err(sql_open_error)?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(sql_error("session_store_busy_timeout_failed"))?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;")
+        .map_err(sql_error("session_store_pragma_failed"))?;
+    if !existed || sqlite_is_empty(&connection)? {
+        connection
+            .execute_batch(SESSION_STORE_SCHEMA)
+            .map_err(sql_error("session_store_schema_create_failed"))?;
+    }
+    verify_session_store(&connection)?;
+    Ok(connection)
+}
+
+fn read_agent_context(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<Value>, LocalAgentStoreError> {
+    validate_id("sessionId", session_id)?;
+    let encoded = connection.query_row(
+            "SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.created'",
+            [session_id], |row| row.get::<_, String>(0),
+        ).optional().map_err(sql_error("session_creation_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session creation fact 不存在。"))?;
+    let payload = decode_json(&encoded, "session_creation_corrupt")?;
+    let context = payload.get("agentContext").cloned();
+    if let Some(context) = context.as_ref() {
+        validate_agent_context(context, session_id)?;
+    }
+    Ok(context)
+}
+
 #[derive(Debug)]
 struct ValidatedNewEvent<'a>(&'a Value);
 
@@ -70,28 +134,7 @@ pub(crate) struct RunProviderRuntime {
 
 impl LocalAgentJournal {
     pub(crate) fn open(path: &Path) -> Result<Self, LocalAgentStoreError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                LocalAgentStoreError::new(
-                    "session_store_directory_failed",
-                    format!("创建 Session Store 目录失败：{error}"),
-                )
-            })?;
-        }
-        let existed = path.exists();
-        let connection = Connection::open(path).map_err(sql_open_error)?;
-        connection
-            .busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(sql_error("session_store_busy_timeout_failed"))?;
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;")
-            .map_err(sql_error("session_store_pragma_failed"))?;
-        if !existed || sqlite_is_empty(&connection)? {
-            connection
-                .execute_batch(SESSION_STORE_SCHEMA)
-                .map_err(sql_error("session_store_schema_create_failed"))?;
-        }
-        verify_session_store(&connection)?;
+        let connection = open_session_store(path)?;
         let mut permissions = KernelPermissionModel::default();
         {
             let observed_types = encode_json(
@@ -250,19 +293,7 @@ impl LocalAgentJournal {
         &self,
         session_id: &str,
     ) -> Result<Option<Value>, LocalAgentStoreError> {
-        validate_id("sessionId", session_id)?;
-        let connection = self.lock()?;
-        let encoded = connection.query_row(
-            "SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.created'",
-            [session_id], |row| row.get::<_, String>(0),
-        ).optional().map_err(sql_error("session_creation_read_failed"))?
-            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session creation fact 不存在。"))?;
-        let payload = decode_json(&encoded, "session_creation_corrupt")?;
-        let context = payload.get("agentContext").cloned();
-        if let Some(context) = context.as_ref() {
-            validate_agent_context(context, session_id)?;
-        }
-        Ok(context)
+        read_agent_context(&*self.lock()?, session_id)
     }
 
     pub(crate) fn append(&self, event: &Value) -> Result<Value, LocalAgentStoreError> {
@@ -5964,6 +5995,62 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn catalog_reader_uses_creation_facts_without_skipping_execution_validation() {
+        let store = Store::new();
+        let reader = SessionCatalogReader::open(&store.path()).unwrap();
+        assert_eq!(
+            reader.agent_context("session:missing").unwrap_err().code,
+            "session_not_found"
+        );
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let context = json!({"capabilities":{"messaging":true,"continuation":false,"delegation":false},
+            "ownerSessionId":"session:owner", "parentSessionId":"session:parent",
+            "parentRunId":"run:parent", "parentCallId":"call:spawn"});
+        journal
+            .create_session("session:parent", "Parent", &json!([]), None, None)
+            .unwrap();
+        journal
+            .create_session("session:child", "Child", &json!([]), None, Some(&context))
+            .unwrap();
+        assert_eq!(
+            reader.agent_context("session:parent").unwrap(),
+            journal.agent_context("session:parent").unwrap()
+        );
+        assert_eq!(
+            reader.agent_context("session:child").unwrap(),
+            Some(context)
+        );
+        let event = journal
+            .append(
+                &json!({"type":"message.committed", "sessionId":"session:parent",
+            "payload":{"messageId":"message:bad", "role":"user", "content":"history"}}),
+            )
+            .unwrap();
+        let connection = Connection::open(store.path()).unwrap();
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints=ON;")
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_events SET payload_json='{' WHERE event_id=?1",
+                [event["eventId"].as_str().unwrap()],
+            )
+            .unwrap();
+        assert_eq!(reader.agent_context("session:parent").unwrap(), None);
+        assert_eq!(
+            LocalAgentJournal::open(&store.path()).err().unwrap().code,
+            "permission_model_restore_failed"
+        );
+        connection.execute("UPDATE session_events SET payload_json='{' WHERE session_id='session:child' AND event_type='session.created'", []).unwrap();
+        let error = reader.agent_context("session:child").unwrap_err();
+        assert_eq!(error.code, "session_creation_corrupt");
+        assert_eq!(
+            error.message,
+            journal.agent_context("session:child").unwrap_err().message
+        );
     }
 
     fn runtime_snapshot() -> Value {

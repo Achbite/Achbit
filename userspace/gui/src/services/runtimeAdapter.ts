@@ -185,13 +185,13 @@ export async function openExternalUrl(url: string): Promise<void> {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
-export function healthVersion(health?: HealthStatus): string {
+export function healthVersion(health?: Pick<HealthStatus, 'version' | 'buildCommit'>): string {
   return health?.version || health?.buildCommit || 'unknown';
 }
 
-export function isRuntimeReady(
-  response: ApiResponse<HealthStatus>,
-): response is ApiResponse<HealthStatus> & { data: HealthStatus } {
+export function isRuntimeReady<T extends { ok: boolean; status: string; kernel: string; session: string }>(
+  response: ApiResponse<T>,
+): response is ApiResponse<T> & { data: T } {
   return response.ok === true
     && response.data?.ok === true
     && response.data.status === 'ok'
@@ -256,6 +256,7 @@ export async function getDefaultWorkspacePath(): Promise<ApiResponse<string | nu
 }
 
 export const getHealth = api.getHealth;
+export const getHostReadiness = api.getHostReadiness;
 
 export interface SshTarget {
   destination: string;

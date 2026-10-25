@@ -13,7 +13,7 @@ pub(crate) struct FileQuery {
     pub(crate) path: Option<String>,
 }
 
-pub(crate) async fn workspace_current(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn workspace_current(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     let service = &state.host_services.workspace;
     match service.current() {
         Ok(result) => match host_workspace_payload(result.output) {
@@ -33,7 +33,7 @@ pub(crate) async fn workspace_default_path() -> Json<ApiResponse> {
 }
 
 pub(crate) async fn workspace_open(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(body): Json<OpenWorkspaceRequest>,
 ) -> Json<ApiResponse> {
     let service = &state.host_services.workspace;
@@ -47,7 +47,7 @@ pub(crate) async fn workspace_open(
 }
 
 pub(crate) async fn workspace_save_file(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
     let service = &state.host_services.workspace;
@@ -64,7 +64,7 @@ pub(crate) async fn workspace_save_file(
     }
 }
 
-pub(crate) async fn fs_initial_locations(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn fs_initial_locations(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     let mut locations = Vec::new();
     if let Some(home) = home_dir() {
         locations.push(json!({

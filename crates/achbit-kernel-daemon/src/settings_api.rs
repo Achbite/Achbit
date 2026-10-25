@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use crate::*;
 
-pub(crate) async fn workspace_sandbox_setup(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     #[cfg(windows)]
     {
         let result = tokio::task::spawn_blocking(
@@ -56,7 +56,7 @@ fn setting_activates_at_next_run(key: &str) -> bool {
         || key == "agent.projectEnvironments"
 }
 
-pub(crate) async fn user_settings_get(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn user_settings_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     let _transition = match state.local_agent.runtime_transition() {
         Ok(guard) => guard,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
@@ -87,7 +87,7 @@ pub(crate) async fn user_settings_get(State(state): State<AppState>) -> Json<Api
 }
 
 pub(crate) async fn user_settings_patch(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
     match tokio::task::spawn_blocking(move || apply_user_settings_patch(state, body)).await {
@@ -181,14 +181,14 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
     }))
 }
 
-pub(crate) async fn llm_profiles_get(State(state): State<AppState>) -> Json<ApiResponse> {
+pub(crate) async fn llm_profiles_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
     let gui = state.gui.lock().expect("gui state lock");
     gui.llm_profiles
         .settings_response(&gui.paths.llm_profiles_path)
 }
 
 pub(crate) async fn llm_profiles_patch(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
     let _transition = match state.local_agent.runtime_transition() {
@@ -228,7 +228,7 @@ pub(crate) async fn llm_profiles_patch(
 }
 
 pub(crate) async fn llm_probe(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
     let started = now_millis();

@@ -7,6 +7,7 @@ import useAppStatusStore from '../state/appStatusStore';
 import { useSettingsStore } from '../state/settingsStore';
 import { initializeHostWorkspace } from '../services/workspaceInitialization';
 import { isRemoteHost } from '../services/hostTarget';
+import { createHostCatalogStartup } from '../services/hostCatalogStartup';
 import { requestInterfaceReload } from '../services/interfaceReload';
 import { useLocalAgentStore } from '../state/localAgentStore';
 import { normalizeUiLanguage, setActiveUiLanguage, t, type UiLanguage } from '../i18n';
@@ -19,6 +20,7 @@ import {
   APP_CLOSE_REQUEST_EVENT,
   closeAppWindow,
   getHealth,
+  getHostReadiness,
   getHostStartupStatus,
   onHostStartupComplete,
   healthVersion,
@@ -117,10 +119,13 @@ const AchbitGuiApp: React.FC = () => {
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const loadedIncarnationRef = useRef<string | null>(null);
   const healthWasReadyRef = useRef(false);
+  const catalogStartup = useRef(createHostCatalogStartup(ready => useLocalAgentStore.getState().initialize(ready))).current;
+  const loadedHostRef = useRef<string | null>(null);
   const healthConnectionSequenceRef = useRef(0);
   const [connectedIncarnation, setConnectedIncarnation] = useState<string | null>(null);
   const [kernelStartBusy, setKernelStartBusy] = useState(false);
   const [hostStartup, setHostStartup] = useState<HostStartupStatusV1 | null>(null);
+  const [runtimeInitializationError, setRuntimeInitializationError] = useState<string | null>(null);
   const [workspaceInitializationError, setWorkspaceInitializationError] = useState<string | null>(null);
   const recordRuntimeReady = useCallback((attemptId: string | null) => {
     if (attemptId) {
@@ -158,7 +163,11 @@ const AchbitGuiApp: React.FC = () => {
     for (let attempt = 0; attempt < 24; attempt += 1) {
       const result = await getHealth();
       if (isRuntimeReady(result)) {
-        recordRuntimeReady(hostAttemptId(startupStatus));
+        const readiness = await getHostReadiness();
+        if (readiness.data?.catalog === 'readable') await catalogStartup.observe(readiness.data);
+        recordRuntimeReady(readiness.data
+          ? `${catalogStartup.hostId()}:${hostAttemptId(startupStatus) ?? 'connection'}`
+          : hostAttemptId(startupStatus));
         setApiStatus('connected');
         setServerVersion(healthVersion(result.data));
         setKernelStartBusy(false);
@@ -176,7 +185,7 @@ const AchbitGuiApp: React.FC = () => {
     setApiStatus('error');
     setErrorMessage(message);
     setKernelStartBusy(false);
-  }, [language, recordRuntimeReady, setApiStatus, setErrorMessage, setServerVersion]);
+  }, [language, catalogStartup, recordRuntimeReady, setApiStatus, setErrorMessage, setServerVersion]);
 
   useEffect(() => {
     document.documentElement.dataset.product = 'deepcode-gui';
@@ -188,7 +197,9 @@ const AchbitGuiApp: React.FC = () => {
       || !connectedIncarnation
       || loadedIncarnationRef.current === connectedIncarnation
     ) return;
-    const reconnectingRemote = isRemoteHost() && loadedIncarnationRef.current !== null;
+    const reconnectingRemote = isRemoteHost() && loadedIncarnationRef.current !== null
+      && loadedHostRef.current === catalogStartup.hostId();
+    loadedHostRef.current = catalogStartup.hostId();
     loadedIncarnationRef.current = connectedIncarnation;
     setWorkspaceInitializationError(null);
     void initializeHostWorkspace().catch((error: unknown) => {
@@ -205,10 +216,10 @@ const AchbitGuiApp: React.FC = () => {
       void store.refreshPluginCatalog();
       void store.refreshProfiles();
       void store.refresh();
-    } else {
+    } else if (!catalogStartup.hostId()) {
       void store.initialize();
     }
-  }, [apiStatus, connectedIncarnation, loadUserSettings]);
+  }, [apiStatus, connectedIncarnation, loadUserSettings, catalogStartup]);
 
 
   useEffect(() => {
@@ -249,20 +260,41 @@ const AchbitGuiApp: React.FC = () => {
       checking = true;
       try {
         const [result, startup] = await Promise.all([
-          getHealth(),
+          getHostReadiness(),
           getHostStartupStatus(),
         ]);
         if (cancelled) return;
         setHostStartup(startup.ok ? startup.data ?? null : null);
+        if (result.data?.catalog === 'readable') {
+          const changed = await catalogStartup.observe(result.data);
+          if (cancelled) return;
+          if (changed) {
+            // The existing full-health request wakes us at execution readiness;
+            // directory discovery does not wait for it or a polling interval.
+            void getHealth().then(() => { if (!cancelled) void check(); });
+          }
+          const error = result.data.runtimeError;
+          if (error) setRuntimeInitializationError(`${error.code}: ${error.message}`);
+        } else if (startup.ok && startup.data && ['failed', 'blocked'].includes(startup.data.phase)) {
+          catalogStartup.fail(new Error(startup.data.message || startup.data.code));
+        }
         if (isRuntimeReady(result)) {
           const attemptId = startup.ok ? hostAttemptId(startup.data) : null;
-          recordRuntimeReady(attemptId);
+          recordRuntimeReady(`${catalogStartup.hostId()}:${attemptId ?? 'connection'}`);
           setApiStatus('connected');
+          setRuntimeInitializationError(null);
           setServerVersion(healthVersion(result.data));
           timeout = window.setTimeout(() => void check(), isRemoteHost() ? 5000 : 30000);
         } else {
           healthWasReadyRef.current = false;
-          if (startup.ok && startup.data) {
+          if (result.ok && result.data?.catalog === 'readable' && !result.data.runtimeError) {
+            setApiStatus('checking');
+            timeout = window.setTimeout(() => void check(), 500);
+          } else if (result.data?.runtimeError) {
+            setApiStatus('error');
+            setErrorMessage(result.data.runtimeError.message);
+            timeout = window.setTimeout(() => void check(), 5000);
+          } else if (startup.ok && startup.data) {
             const message = startupStatusMessage(language, startup.data);
             if (startup.data.phase === 'starting' || startup.data.phase === 'idle') {
               setApiStatus('checking');
@@ -297,6 +329,7 @@ const AchbitGuiApp: React.FC = () => {
     };
   }, [
     language,
+    catalogStartup,
     recordRuntimeReady,
     setApiStatus,
     setErrorMessage,
@@ -312,7 +345,7 @@ const AchbitGuiApp: React.FC = () => {
   }, []);
 
   return (<>
-    <HostStartupDiagnostic status={apiStatus === 'connected' ? null : hostStartup} workspaceError={workspaceInitializationError} language={language} busy={kernelStartBusy} onRetry={() => void retryKernelStart()} />
+    <HostStartupDiagnostic status={apiStatus === 'connected' ? null : hostStartup} workspaceError={workspaceInitializationError} runtimeError={runtimeInitializationError} language={language} busy={kernelStartBusy} onRetry={() => void retryKernelStart()} />
     <ConversationDisplayProvider><Suspense fallback={<BootFallback language={language} />}>
       <AchbitWorkbenchLayout
         apiStatus={apiStatus}

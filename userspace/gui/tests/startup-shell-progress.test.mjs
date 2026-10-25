@@ -456,3 +456,168 @@ test('late history restoration cannot swallow the initial profile error', async 
   assert.equal(store.getState().errorSource,'profiles');
   assert.equal(store.getState().error,'original profile failure');
 });
+
+
+test('catalog is selectable while execution waits; only the latest choice reads history', async t => {
+  let ready;
+  const execution = new Promise(resolve => { ready = resolve; });
+  t.after(ready);
+  const ids = ['session:pending-a', 'session:pending-b', 'session:pending-c'];
+  const reads = [], other = [];
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:ids.map(id=>({id,title:id,workspaceBindings:[],createdAt:'1',updatedAt:'1'}))}});
+    if (url.pathname.endsWith('/projection')) {
+      const id = decodeURIComponent(url.pathname.split('/').at(-2)); reads.push(id);
+      return Response.json({ok:true,data:projectSession(emptySessionState(id))});
+    }
+    other.push(url.pathname);
+    if (url.pathname.endsWith('/plugins')) return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
+    if (url.pathname.endsWith('/profiles')) return Response.json({ok:true,data:{profiles:[]}});
+    if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const store = await loadGuiModelStore(t);
+  const initializing = store.getState().initialize(execution);
+  await waitUntil(()=>store.getState().catalogStatus==='ready','catalog before execution');
+  const a=store.getState().activateSession(ids[0]);
+  const b=store.getState().activateSession(ids[1]);
+  const c=store.getState().activateSession(ids[2]);
+  await Promise.all([a,b]);
+  await store.getState().refresh();
+  assert.equal(store.getState().sessionId,ids[2]);
+  assert.equal(store.getState().runtimeReady,false);
+  assert.equal(store.getState().loading,true);
+  assert.deepEqual(reads,[]); assert.deepEqual(other,[]);
+  let activated=false; void c.then(()=>{activated=true;});
+  await Promise.resolve(); assert.equal(activated,false,'activation is not complete until its projection arrives');
+  ready(); ready(); await Promise.all([initializing,c]);
+  assert.equal(store.getState().runtimeReady,true);
+  assert.equal(store.getState().projection.sessionId,ids[2]);
+  assert.deepEqual(reads,[ids[2]]);
+});
+
+test('new conversation cancels a pending history open and startup failure keeps its original error', async t => {
+  for (const fail of [false,true]) await t.test(fail?'failure':'cancel',async t=>{
+    let ready, reject;
+    const execution=new Promise((yes,no)=>{ready=yes;reject=no;});
+    t.after(ready);
+    const id='session:pending-cancel'; let reads=0;
+    installGuiFetch(t,async url=>{
+      if(url.pathname.endsWith('/catalog'))return Response.json({ok:true,data:{projects:[],sessions:[{id,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
+      if(url.pathname.endsWith('/projection')){reads++;return Response.json({ok:true,data:projectSession(emptySessionState(id))});}
+      if(url.pathname.endsWith('/plugins'))return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
+      if(url.pathname.endsWith('/profiles'))return Response.json({ok:true,data:{profiles:[]}});
+      if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
+      if(url.pathname.endsWith('/user-settings'))return Response.json({ok:true,data:{settings:{}}});
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const store=await loadGuiModelStore(t);
+    const init=store.getState().initialize(execution);
+    await waitUntil(()=>store.getState().catalogStatus==='ready','pending catalog');
+    const activation=store.getState().activateSession(id);
+    if(fail){reject(new Error('permission_model_restore_failed: corrupt payload'));}
+    else {store.getState().startNewSession(); await activation; ready();}
+    await Promise.all([init,activation]);
+    assert.equal(reads,0);
+    assert.equal(store.getState().catalogStatus,'ready');
+    if(fail){assert.equal(store.getState().runtimeReady,false);assert.equal(store.getState().error,'permission_model_restore_failed: corrupt payload');}
+    else {assert.equal(store.getState().sessionId,null);assert.equal(store.getState().projection,null);}
+    assert.equal(store.getState().loading,false);
+  });
+});
+
+test('execution readiness before the catalog still opens the selected history exactly once',async t=>{
+  let catalogReady;
+  const held=new Promise(resolve=>{catalogReady=resolve;});t.after(catalogReady);
+  const id='session:early-execution';let reads=0;
+  installGuiFetch(t,async url=>{
+    if(url.pathname.endsWith('/catalog')){await held;return Response.json({ok:true,data:{projects:[],sessions:[{id,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});}
+    if(url.pathname.endsWith('/projection')){reads++;return Response.json({ok:true,data:projectSession(emptySessionState(id))});}
+    if(url.pathname.endsWith('/plugins'))return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
+    if(url.pathname.endsWith('/profiles'))return Response.json({ok:true,data:{profiles:[]}});
+    if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const store=await loadGuiModelStore(t);
+  const init=store.getState().initialize(Promise.resolve());
+  await waitUntil(()=>store.getState().runtimeReady,'execution');
+  assert.equal(store.getState().catalogStatus,'pending');
+  const open=store.getState().activateSession(id);catalogReady();
+  await Promise.all([init,open]);
+  assert.equal(store.getState().projection.sessionId,id);assert.equal(reads,1);
+});
+
+
+test('replacing a pending or ready Host installs its own gate and preserves the current selection',async t=>{
+  const [{createLocalAgentStore},{createHostCatalogStartup}]=await loadGuiModules(t,[
+    '/src/state/localAgentStore.ts','/src/services/hostCatalogStartup.ts']);
+  const store=createLocalAgentStore();
+  const initializations=[];
+  const startup=createHostCatalogStartup(ready=>{const promise=store.getState().initialize(ready);initializations.push(promise);return promise;});
+  const ids=['session:host-a','session:host-b'];let catalogs=0,plugins=0,profiles=0;const reads=[];
+  installGuiFetch(t,async url=>{
+    if(url.pathname.endsWith('/catalog')){catalogs++;return Response.json({ok:true,data:{projects:[],sessions:ids.map(id=>({id,title:id,workspaceBindings:[],createdAt:'1',updatedAt:'1'}))}});}
+    if(url.pathname.endsWith('/projection')){const id=decodeURIComponent(url.pathname.split('/').at(-2));reads.push(id);return Response.json({ok:true,data:projectSession(emptySessionState(id))});}
+    if(url.pathname.endsWith('/plugins')){plugins++;return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});}
+    if(url.pathname.endsWith('/profiles')){profiles++;return Response.json({ok:true,data:{profiles:[]}});}
+    if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const status=(hostPid,ready=false)=>({catalog:'readable',hostInstanceId:'host:shared',hostPid,kernel:ready?'ready':'starting',session:ready?'ready':'starting'});
+  await startup.observe(status(101));
+  await waitUntil(()=>store.getState().catalogStatus==='ready','A catalog');
+  const a=store.getState().activateSession(ids[0]);
+  await startup.observe(status(102));
+  await a;
+  await waitUntil(()=>catalogs===2 && store.getState().catalogStatus==='ready','B catalog');
+  assert.equal(store.getState().runtimeReady,false);
+  const b=store.getState().activateSession(ids[1]);
+  await startup.observe(status(102,true));await Promise.all([...initializations,b]);
+  assert.deepEqual(reads,[ids[1]]);
+  assert.equal(store.getState().projection.sessionId,ids[1]);
+  await startup.observe(status(103));
+  assert.equal(store.getState().runtimeReady,false);
+  assert.equal(store.getState().sessionId,ids[1]);
+  await startup.observe(status(103,true));await Promise.all(initializations);
+  await waitUntil(()=>reads.length===2,'current view revalidated after replacement');
+  assert.equal(catalogs,3);assert.equal(plugins,2);assert.equal(profiles,2);
+  assert.deepEqual(reads,[ids[1],ids[1]]);
+  assert.equal(store.getState().sessionId,ids[1]);
+});
+
+test('Reader restores its selected tab before runtime but mounts no content or tree reads',async t=>{
+  const [{ResourcePreview}]=await loadGuiModules(t,['/src/components/local-agent/ResourcePreview.tsx']);
+  const preview={sessionId:'session:reader-pending',tabs:[{id:'readme',target:{kind:'workspace',workspaceId:'workspace:one',logicalPath:'README.md'}}],
+    activeId:'readme',visible:true,expanded:false,width:55,error:null,treeVisible:true,
+    selectTab(){},closeTab(){},newPage(){},expand(){},resize(){},openTarget(){}};
+  const pending=renderToStaticMarkup(createElement(ResourcePreview,{ready:false,language:'en-US',preview}));
+  assert.match(pending,/README.md/);assert.match(pending,/aria-selected="true"/);assert.match(pending,/aria-busy="true"/);
+  assert.doesNotMatch(pending,/reader-tree-panel|reader-document|reader-file-actions/);
+  const ready=renderToStaticMarkup(createElement(ResourcePreview,{ready:true,language:'en-US',preview}));
+  assert.match(ready,/README.md/);assert.match(ready,/reader-tree-panel/);
+});
+
+
+test('a transport failure while starting can resume on the same live Host',async t=>{
+  const [{createLocalAgentStore},{createHostCatalogStartup}]=await loadGuiModules(t,[
+    '/src/state/localAgentStore.ts','/src/services/hostCatalogStartup.ts']);
+  const store=createLocalAgentStore(), initializations=[];
+  const startup=createHostCatalogStartup(ready=>{const promise=store.getState().initialize(ready);initializations.push(promise);return promise;});
+  installGuiFetch(t,async url=>{
+    if(url.pathname.endsWith('/catalog'))return Response.json({ok:true,data:{projects:[],sessions:[]}});
+    if(url.pathname.endsWith('/plugins'))return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
+    if(url.pathname.endsWith('/profiles'))return Response.json({ok:true,data:{profiles:[]}});
+    if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const pending={catalog:'readable',hostInstanceId:'host:remote',hostPid:123,kernel:'starting',session:'starting'};
+  await startup.observe(pending);
+  await waitUntil(()=>store.getState().catalogStatus==='ready','early remote catalog');
+  startup.fail(new Error('SSH transport closed'));
+  await initializations[0];assert.equal(store.getState().runtimeReady,false);
+  await startup.observe({...pending,kernel:'ready',session:'ready'});
+  await Promise.all(initializations);
+  assert.equal(store.getState().runtimeReady,true);assert.equal(store.getState().error,null);
+  await startup.observe({...pending,kernel:'ready',session:'ready'});
+  assert.equal(initializations.length,2,'ordinary repeated readiness does not restart initialization');
+});

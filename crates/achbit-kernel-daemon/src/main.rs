@@ -16,6 +16,7 @@ mod debug_tools;
 mod host_connection;
 mod host_inspection;
 mod host_lifecycle;
+mod host_runtime;
 mod host_services;
 mod host_shutdown;
 mod kernel_api;
@@ -179,35 +180,71 @@ async fn main() {
         host_process_identity().instance_id.clone(),
         std::env::var(HOST_SHELL_TOKEN_ENV).expect("Host shell token"),
     ));
-    let mut local_agent = LocalAgentRuntime::open(
-        &session_store_path,
-        &tool_record_store_path,
-        workspace_resolver,
-        &user_settings,
-    )
-    .expect("打开本地 Agent Runtime");
-    local_agent.kernel.desktop = desktop;
-    let session_service = match SessionServiceProcess::spawn(
-        &format!("http://{addr}"),
-        local_agent.service_token(),
-    ) {
-        Ok(service) => service,
-        Err(error) => {
-            let _ = local_agent.shutdown_plugins();
-            panic!("启动长驻 Session Service 失败：{error:?}");
-        }
-    };
+    let catalog_reader = local_agent_store::SessionCatalogReader::open(&session_store_path)
+        .expect("打开 Session 目录读取器");
     let host_connection =
         HostConnection::from_environment().expect("初始化 Host Shell 本地连接凭证");
-    let state = AppState {
-        local_agent,
-        session_service,
+    let state = HostState {
         host_connection,
         gui,
+        catalog_reader,
+        execution: host_runtime::HostRuntime::default(),
         host_services: HostServices::new(),
         model_auth: Arc::new(model_auth::AuthService::default()),
         model_usage,
     };
+    let execution = state.execution.clone();
+    tokio::spawn(async move {
+        let cleanup = execution.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut local_agent = LocalAgentRuntime::open(
+                &session_store_path,
+                &tool_record_store_path,
+                workspace_resolver,
+                &user_settings,
+            )
+            .map_err(|message| {
+                let code = message
+                    .split_once(": ")
+                    .map(|(code, _)| code)
+                    .unwrap_or("host_runtime_initialization_failed")
+                    .to_string();
+                SessionServiceError::new(code, message)
+            })?;
+            local_agent.kernel.desktop = desktop;
+            let session_service = match SessionServiceProcess::spawn(
+                &format!("http://{addr}"),
+                local_agent.service_token(),
+            ) {
+                Ok(service) => service,
+                Err(mut error) => {
+                    if let Err(message) = local_agent.shutdown_plugins() {
+                        cleanup.record_cleanup_failure();
+                        error
+                            .message
+                            .push_str(&format!("; Kernel cleanup failed: {message}"));
+                    }
+                    return Err(error);
+                }
+            };
+            Ok(host_runtime::ExecutionServices {
+                local_agent,
+                session_service,
+            })
+        })
+        .await
+        .unwrap_or_else(|error| {
+            execution.record_cleanup_failure();
+            Err(SessionServiceError::new(
+                "host_runtime_initialization_failed",
+                error.to_string(),
+            ))
+        });
+        if let Err(error) = &result {
+            eprintln!("{}: {}", error.code, error.message);
+        }
+        execution.publish(result);
+    });
     configure_host_lifetime().expect("初始化 Host 生命周期");
     let app = routes::build_app(state.clone());
     let lifetime_monitor = tokio::spawn(monitor_host_lifetime(state.clone()));

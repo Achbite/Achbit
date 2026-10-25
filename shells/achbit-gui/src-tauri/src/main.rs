@@ -1880,7 +1880,7 @@ fn authenticated_health_status_until(
     token: &str,
     deadline: Instant,
 ) -> std::io::Result<AuthenticatedHealthStatus> {
-    let request = http_request(host, port, "GET", "/api/health", &[(token_header, token)]);
+    let request = http_request(host, port, "GET", "/api/host/readiness", &[(token_header, token)]);
     let envelope = match request_loopback_json_until::<HostApiEnvelope<HostHealthData>>(
         host, port, &request, deadline,
     ) {

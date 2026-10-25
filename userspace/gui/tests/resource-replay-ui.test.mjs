@@ -121,3 +121,19 @@ test('closed output shortcuts do not mount artifact image readers', async t => {
   assert.match(markup, /<summary>Outputs<\/summary>/);
   assert.doesNotMatch(markup, /document-artifact|Deferred image/, 'no thumbnail reader mounts before the disclosure is opened');
 });
+
+
+test('artifact thumbnails wait for execution readiness, then read and release normally',async t=>{
+  const React=await import('react');
+  const [{ArtifactImageLink},{useLocalAgentStore:store},{useConversationHost}]=await loadGuiModules(t,[
+    '/src/components/local-agent/ArtifactLinks.tsx','/src/state/localAgentStore.ts','/src/components/local-agent/ConversationHost.tsx']);
+  let effect,reads=0,releases=0;
+  t.mock.method(React.default,'useEffect', callback=>{effect=callback;});
+  t.mock.method(useConversationHost(),'loadImage',async()=>{reads++;return {url:'blob:test',release(){releases++;}};});
+  function Probe(){ArtifactImageLink({artifact:{artifactId:'artifact:pending',sessionId:'session:history'},label:'Image',title:'Image'});return null;}
+  store.setState({runtimeReady:false});Object.assign(store.getInitialState(),store.getState());
+  renderToStaticMarkup(createElement(Probe));effect();await Promise.resolve();assert.equal(reads,0);
+  store.setState({runtimeReady:true});Object.assign(store.getInitialState(),store.getState());
+  renderToStaticMarkup(createElement(Probe));const dispose=effect();await Promise.resolve();assert.equal(reads,1);
+  dispose();assert.equal(releases,1);
+});

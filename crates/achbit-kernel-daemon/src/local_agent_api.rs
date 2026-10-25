@@ -1076,7 +1076,7 @@ pub(crate) struct LocalProviderHostedTool {
 }
 
 pub(crate) async fn local_agent_session_create(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<CreateLocalSessionRequest>,
 ) -> Json<ApiResponse> {
@@ -1098,7 +1098,7 @@ pub(crate) async fn local_agent_session_create(
 }
 
 pub(crate) async fn local_agent_settings_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
 ) -> Json<ApiResponse> {
     if let Err(response) = require_session_service(&state, &headers) {
@@ -1131,7 +1131,7 @@ pub(crate) async fn local_agent_settings_get(
 }
 
 pub(crate) async fn local_agent_settings_set(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
@@ -1148,11 +1148,12 @@ pub(crate) async fn local_agent_settings_set(
         .map(|(field, value)| (format!("agent.subagents.{field}"), value.clone()))
         .collect::<serde_json::Map<_, _>>();
     // Session owns when defaults are updated; Host uses the existing atomic settings writer.
-    crate::settings_api::user_settings_patch(State(state), Json(json!({"patches": patches}))).await
+    crate::settings_api::user_settings_patch(ReadyState(state), Json(json!({"patches": patches})))
+        .await
 }
 
 pub(crate) async fn local_agent_models_get(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
 ) -> Json<ApiResponse> {
     if let Err(response) = require_session_service(&state, &headers) {
@@ -1209,7 +1210,7 @@ pub(crate) async fn local_agent_models_get(
 }
 
 pub(crate) async fn local_agent_child_session_create(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<crate::conversation_api::CreateAgentSessionRequest>,
 ) -> Json<ApiResponse> {
@@ -1220,7 +1221,7 @@ pub(crate) async fn local_agent_child_session_create(
 }
 
 pub(crate) async fn local_agent_session_delete(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
@@ -1243,7 +1244,7 @@ pub(crate) async fn local_agent_session_delete(
 }
 
 pub(crate) async fn local_agent_event_append(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
@@ -1262,7 +1263,7 @@ pub(crate) async fn local_agent_event_append(
 }
 
 pub(crate) async fn local_agent_events_append_batch(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<AppendLocalEventsRequest>,
 ) -> Json<ApiResponse> {
@@ -1285,7 +1286,7 @@ pub(crate) async fn local_agent_events_append_batch(
 }
 
 pub(crate) async fn local_agent_events_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Query(query): Query<LocalSessionEventsQuery>,
@@ -1317,7 +1318,7 @@ pub(crate) struct ReadResourceJournalRequest {
 }
 
 pub(crate) async fn local_agent_resources_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Json(body): Json<ReadResourceJournalRequest>,
@@ -1336,7 +1337,7 @@ pub(crate) async fn local_agent_resources_read(
 }
 
 pub(crate) async fn local_agent_run_lifecycle_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Query(query): Query<LocalSessionEventsQuery>,
@@ -1355,7 +1356,7 @@ pub(crate) async fn local_agent_run_lifecycle_read(
 }
 
 pub(crate) async fn local_agent_agent_lifecycle_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
@@ -1369,7 +1370,7 @@ pub(crate) async fn local_agent_agent_lifecycle_read(
 }
 
 pub(crate) async fn local_agent_provider_usage_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
@@ -1383,7 +1384,7 @@ pub(crate) async fn local_agent_provider_usage_read(
 }
 
 pub(crate) async fn local_agent_command_read(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path((session_id, command_id)): Path<(String, String)>,
 ) -> Json<ApiResponse> {
@@ -1401,7 +1402,7 @@ pub(crate) async fn local_agent_command_read(
 }
 
 pub(crate) async fn local_agent_command_commit(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<ApiResponse> {
@@ -1424,7 +1425,7 @@ pub(crate) async fn local_agent_command_commit(
 }
 
 pub(crate) async fn local_agent_run_runtime_prepare(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<PrepareRunRuntimeRequest>,
 ) -> Json<ApiResponse> {
@@ -1441,7 +1442,7 @@ pub(crate) async fn local_agent_run_runtime_prepare(
 }
 
 pub(crate) async fn local_agent_tool_views_retire(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<RetireToolViewsRequest>,
 ) -> Json<ApiResponse> {
@@ -1455,7 +1456,7 @@ pub(crate) async fn local_agent_tool_views_retire(
 }
 
 pub(crate) async fn local_agent_run_runtime_release(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<ReleaseToolCatalogRequest>,
 ) -> Json<ApiResponse> {
@@ -1469,7 +1470,7 @@ pub(crate) async fn local_agent_run_runtime_release(
 }
 
 pub(crate) async fn local_agent_kernel_prepare(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<crate::local_agent_kernel::LocalToolPreparationRequest>,
 ) -> Json<ApiResponse> {
@@ -1485,7 +1486,7 @@ pub(crate) async fn local_agent_kernel_prepare(
 }
 
 pub(crate) async fn local_agent_tool_execute(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<LocalToolExecutionRequest>,
 ) -> axum::response::Response {
@@ -1536,7 +1537,7 @@ pub(crate) async fn local_agent_tool_execute(
 }
 
 pub(crate) async fn local_agent_plan_admission(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<crate::local_agent_kernel::PlanAdmissionRequest>,
 ) -> Json<ApiResponse> {
@@ -1550,7 +1551,7 @@ pub(crate) async fn local_agent_plan_admission(
 }
 
 pub(crate) async fn local_agent_tool_cancel(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<CancelLocalToolRequest>,
 ) -> Json<ApiResponse> {
@@ -1567,7 +1568,7 @@ pub(crate) async fn local_agent_tool_cancel(
 }
 
 pub(crate) async fn local_agent_processes(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<crate::managed_processes::ReadRequest>,
 ) -> Json<ApiResponse> {
@@ -1605,7 +1606,7 @@ pub(crate) async fn local_agent_processes(
 }
 
 pub(crate) async fn local_agent_tool_record(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Path(call_id): Path<String>,
 ) -> Json<ApiResponse> {
@@ -1619,7 +1620,7 @@ pub(crate) async fn local_agent_tool_record(
 }
 
 pub(crate) async fn local_agent_provider_stream(
-    State(state): State<AppState>,
+    ReadyState(state): ReadyState,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {

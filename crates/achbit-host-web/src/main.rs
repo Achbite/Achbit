@@ -465,6 +465,7 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "conversation", "sessions", _, "resources", "list" | "watch"]) => true,
 
         ("GET", ["api", "health"])
+        | ("GET", ["api", "host", "readiness"])
         | ("GET", ["api", "workspaces", "current"])
         | ("GET", ["api", "workspaces", "default-path"])
         | ("POST", ["api", "workspaces", "open"])

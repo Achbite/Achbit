@@ -4,12 +4,13 @@ use axum::routing::delete;
 #[path = "computer_preview.rs"]
 mod computer_preview;
 
-pub(crate) fn build_app(state: AppState) -> Router {
+pub(crate) fn build_app(state: HostState) -> Router {
     let host_connection = state.host_connection.clone();
     let app = Router::new()
         .route("/api/host/identity", get(host_identity))
         .route("/api/host/client", get(host_client))
         .route("/api/health", get(health))
+        .route("/api/host/readiness", get(crate::host_runtime::readiness))
         .route("/api/host/shutdown", post(host_shutdown))
         .route(
             "/api/host/computer-preview",
