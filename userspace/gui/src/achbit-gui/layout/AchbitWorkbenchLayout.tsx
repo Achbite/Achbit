@@ -19,7 +19,6 @@ import type {
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
-import AchbitConversationShell from './AchbitConversationShell';
 import AchbitSidebar from './AchbitSidebar';
 import SidebarMenu from './SidebarMenu';
 import { useReadRunMarkers } from './useReadRunMarkers';
@@ -27,7 +26,6 @@ import { useCompletionNotifications } from './useCompletionNotifications';
 import { onCompletionOpen } from '../../services/runtimeAdapter';
 import { DismissibleError } from '../../components/local-agent/DismissibleError';
 import { useSidebarOrder } from './useSidebarOrder';
-import AchbitTaskPanel from './AchbitTaskPanel';
 import AchbitTitlebar from './AchbitTitlebar';
 import type { ReaderLocation, ReaderNavigationRequest } from '../../components/local-agent/readerState';
 import { forgetClosedBrowser, locationKey, visitLocation, type NavigationHistory, type WorkbenchLocation } from './navigationHistory';
@@ -40,6 +38,15 @@ interface AchbitWorkbenchLayoutProps {
   apiStatus: string;
   serverVersion?: string;
 }
+
+// Navigation commits without waiting for Markdown, Reader or task rendering.
+// React starts these imports independently of the selected Session's request.
+const AchbitConversationShell = lazy(
+  () => loadInterfaceModule(() => import('./AchbitConversationShell')),
+);
+const AchbitTaskPanel = lazy(
+  () => loadInterfaceModule(() => import('./AchbitTaskPanel')),
+);
 
 const SettingsCenter = lazy(
   () => loadInterfaceModule(() => import('../../components/settings-center/SettingsCenter')),
@@ -72,6 +79,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   const activeSessionId = useLocalAgentStore((state) => state.sessionId);
   const draftProjectId = useLocalAgentStore((state) => state.draftProjectId);
   const catalog = useLocalAgentStore((state) => state.catalog);
+  const catalogStatus = useLocalAgentStore((state) => state.catalogStatus);
   const sidebarOrder = useSidebarOrder(catalog.projects, catalog.sessions);
   const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const statusError = useLocalAgentStore((state) => state.statusError);
@@ -106,9 +114,16 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   const workbench = useRef<HTMLDivElement>(null);
   const navigationWidth = usePaneWidth('navigationWidth', PANE_GEOMETRY.navigation, workbench);
   useInterfaceReloadView('navigationCollapsed', navigationCollapsed);
-  const [readerLocation, setReaderLocation] = useState<ReaderLocation | null>(null);
+  const [readerLocation, setReaderLocation] = useState<ReaderLocation | null>(() => (
+    activeSessionId === null && !restoredInterfaceView('conversation', null) && !restoredInterfaceView('reader', null)
+      ? { sessionId: null, target: null, visible: false, expanded: false } : null
+  ));
   const [readerRequest, setReaderRequest] = useState<ReaderNavigationRequest | null>(null);
-  const [history, setHistory] = useState<NavigationHistory>({ entries: [], cursor: -1 });
+  // Record the initial draft before a user can select history while the body
+  // module is loading. Reload restoration waits for the Reader's saved location.
+  const [history, setHistory] = useState<NavigationHistory>(() => readerLocation
+    ? { entries: [{ sessionId: activeSessionId, draftProjectId, settingsOpen, reader: readerLocation }], cursor: 0 }
+    : { entries: [], cursor: -1 });
   const [navigationPending, setNavigationPending] = useState<{ index: number; location: WorkbenchLocation } | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const navigationRequestId = useRef(0);
@@ -171,7 +186,8 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     loading: boolean;
     error: string | null;
   } | null>(null);
-  const busy = loading || submitting || catalogBusy || !!navigationPending;
+  const selectionBusy = submitting || catalogBusy || !!navigationPending;
+  const busy = loading || selectionBusy;
   useEffect(() => {
     if (loading || !readerLocation || readerLocation.sessionId !== activeSessionId) return;
     const location: WorkbenchLocation = { sessionId: activeSessionId, draftProjectId, settingsOpen, reader: readerLocation };
@@ -364,10 +380,10 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
           {t(language, 'achbitGui.settings.close')} <kbd>esc</kbd>
         </button>
       </> : undefined} /></>,
-        navigation: <UiRegion slot="navigation" data={{ kind: 'navigation', projects: sidebarOrder.projects, sessions: sidebarOrder.sessions, activeSessionId, busy }}
-          debugActions={{ activateSession: { unavailableReason: busy ? 'conversation_navigation_busy' : null, completion: 'session-loaded' } }}
+        navigation: <UiRegion slot="navigation" data={{ kind: 'navigation', projects: sidebarOrder.projects, sessions: sidebarOrder.sessions, activeSessionId, busy: selectionBusy }}
+          debugActions={{ activateSession: { unavailableReason: selectionBusy ? 'conversation_navigation_busy' : null, completion: 'session-loaded' } }}
           actions={{ activateSession: async (id: string) => {
-            if (busy) throw new Error('conversation_navigation_busy');
+            if (selectionBusy) throw new Error('conversation_navigation_busy');
             await activateSession(id);
             const state = useLocalAgentStore.getState();
             if (state.error) throw new Error(state.error);
@@ -383,6 +399,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
           </>}>
         <AchbitSidebar
           language={language}
+          catalogStatus={catalogStatus}
           projects={sidebarOrder.projects}
           sessions={sidebarOrder.sessions}
           reorderDisabled={sidebarOrder.disabled}
@@ -395,6 +412,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
           activeSessionId={activeSessionId}
           draftProjectId={draftProjectId}
           busy={busy}
+          activationBusy={selectionBusy}
           projectCreateMenuOpen={Boolean(projectCreateMenu)}
           onCreatePrimarySession={createPrimarySession}
           onOpenProjectCreateMenu={openProjectCreateMenu}
@@ -419,11 +437,15 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
         data-navigation-density={navigationDensity}
       >
         <div className="achbit-gui-main-surfaces" inert={settingsOpen} aria-hidden={settingsOpen || undefined}>
+          <InterfaceLoadBoundary><Suspense fallback={<main className="achbit-gui-session-main" aria-busy="true" />}>
           <AchbitConversationShell headerTarget={sessionHeader} onReaderLayoutChange={setReaderLayout} readerNavigation={{
             request: readerRequest, onChange: setReaderLocation,
             onTabClosed: (sessionId, tabId) => setHistory(current => forgetClosedBrowser(current, sessionId, tabId)),
           }} />
-          {showContextRail && <AchbitTaskPanel language={language} projection={projection} />}
+          </Suspense></InterfaceLoadBoundary>
+          {showContextRail && <InterfaceLoadBoundary><Suspense fallback={null}>
+            <AchbitTaskPanel language={language} projection={projection} />
+          </Suspense></InterfaceLoadBoundary>}
         </div>
         <UsageWidget readerLayout={readerLayout} hidden={settingsOpen} />
         <ComputerTargetPreview readerLayout={readerLayout} language={language} hidden={settingsOpen} />

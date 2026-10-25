@@ -10,7 +10,7 @@ test('the sidebar clears a read cancellation without hiding unread or active run
   ]);
   const sessionId = 'session:report';
   const run = { runId: 'run:report', status: 'cancelled' };
-  const props = { language: 'en-US', projects: [], sessions: [{ id: sessionId, title: 'Report' }],
+  const props = { language: 'en-US', catalogStatus: 'ready', projects: [], sessions: [{ id: sessionId, title: 'Report' }],
     collapsedProjectIds: new Set(), activeSessionId: sessionId, readRunMarkers: {},
     sessionStatuses: { [sessionId]: { sessionId, revision: 12, run } } };
   const render = () => renderToStaticMarkup(createElement(Sidebar, props));

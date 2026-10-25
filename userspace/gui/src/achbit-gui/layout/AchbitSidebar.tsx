@@ -13,6 +13,7 @@ import { canDropSidebarItem, type SidebarDragItem, type SidebarDropEdge } from '
 
 interface AchbitSidebarProps {
   language: UiLanguage;
+  catalogStatus: 'pending' | 'ready' | 'error';
   projects: ConversationProject[];
   sessions: ConversationSessionSummary[];
   sessionStatuses: Readonly<Record<string, ConversationSessionStatus>>;
@@ -22,6 +23,7 @@ interface AchbitSidebarProps {
   activeSessionId: string | null;
   draftProjectId: string | null;
   busy: boolean;
+  activationBusy?: boolean;
   reorderDisabled: boolean;
   reorderError: string | null;
   onReorder: (source: SidebarDragItem, target: SidebarDragItem, edge: SidebarDropEdge) => void;
@@ -46,6 +48,7 @@ const PROJECT_SESSION_PREVIEW_LIMIT = 6;
 
 const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
   language,
+  catalogStatus,
   projects,
   sessions,
   sessionStatuses,
@@ -55,6 +58,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
   activeSessionId,
   draftProjectId,
   busy,
+  activationBusy = busy,
   reorderDisabled,
   reorderError,
   onReorder,
@@ -185,7 +189,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
       if (event.key === 'Meta' || event.metaKey) setCommandPressed(true);
-      if (!event.metaKey || event.altKey || event.ctrlKey || event.shiftKey || busy) return;
+      if (!event.metaKey || event.altKey || event.ctrlKey || event.shiftKey || activationBusy) return;
       const match = /^Digit([1-9])$/u.exec(event.code);
       if (!match) return;
       const session = shortcutSessions[Number(match[1]) - 1];
@@ -205,7 +209,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', reset);
     };
-  }, [busy, onActivateSession, shortcutSessions]);
+  }, [activationBusy, onActivateSession, shortcutSessions]);
 
   const renderSession = (session: ConversationSessionSummary) => {
     const shortcut = shortcutBySessionId.get(session.id);
@@ -220,7 +224,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           className={session.id === activeSessionId ? 'active' : ''}
           onClick={() => onActivateSession(session)}
           onContextMenu={(event) => onOpenSessionContextMenu(event, session)}
-          disabled={busy}
+          disabled={activationBusy}
           title={session.title || session.id}
           aria-keyshortcuts={shortcut ? `Meta+${shortcut}` : undefined}
         >
@@ -307,7 +311,8 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
 
         {projects.length === 0 ? (
           <div className="achbit-gui-sidebar-empty">
-            {t(language, 'achbitGui.project.empty')}
+            {t(language, catalogStatus === 'pending' ? 'achbitGui.sidebar.loading'
+              : catalogStatus === 'error' ? 'achbitGui.sidebar.loadFailed' : 'achbitGui.project.empty')}
           </div>
         ) : (
           <div className="achbit-gui-project-archive-list">
@@ -422,7 +427,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
         </div>
         {standalone.length === 0 ? (
           <div className="achbit-gui-sidebar-empty">
-            {t(language, 'achbitGui.sidebar.noChats')}
+            {catalogStatus === 'ready' ? t(language, 'achbitGui.sidebar.noChats') : null}
           </div>
         ) : (
           <div className="achbit-gui-session-list">

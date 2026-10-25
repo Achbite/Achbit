@@ -74,11 +74,13 @@ export interface LocalAgentState {
   connections: ModelConnection[];
   defaultProfileId: string | null;
   catalog: ConversationCatalog;
+  catalogStatus: 'pending' | 'ready' | 'error';
   sessionStatuses: Record<string, ConversationSessionStatus>;
   statusError: string | null;
   pluginCatalog: PluginCatalogProjection;
   projection: SessionProjection | null;
   loading: boolean;
+  loadingPurpose: 'initialization' | 'session' | null;
   submitting: boolean;
   catalogBusy: boolean;
   error: string | null;
@@ -143,6 +145,7 @@ type StoreGet = () => LocalAgentState;
 export function createLocalAgentStore() {
 let initialization: Promise<void> | null = null;
 let generation = 0;
+let catalogVersion = 0;
 let viewReadController = new AbortController();
 function advanceView(): number {
   viewReadController.abort();
@@ -186,6 +189,39 @@ let projectionRefreshFlight: {
   promise: Promise<void>;
 } | null = null;
 
+
+async function refreshProfileConfiguration(set: StoreSet): Promise<string | null> {
+  const profileResult = await getLlmProfiles();
+  if (!profileResult.ok) {
+    set({
+      error: profileResult.message ?? 'llm_profiles_unavailable',
+      errorSource: 'profiles',
+    });
+    return profileResult.message ?? 'llm_profiles_unavailable';
+  }
+  const profiles = (profileResult.data?.profiles ?? []);
+  const defaultProfileId = initialProfileId(
+    profiles,
+    profileResult.data?.defaultProfileId,
+  );
+  set((state) => {
+    const summary = state.sessionId
+      ? state.catalog.sessions.find((session) => session.id === state.sessionId)
+      : undefined;
+    return {
+      profiles,
+      connections: profileResult.data?.connections ?? [],
+      defaultProfileId,
+      selectedProfileId: state.selectedProfileId ?? summary?.profileId ?? defaultProfileId,
+      ...(!state.selectedProfileId && !state.sessionId ? {
+        reasoningEffortOverride: profiles.find(profile => profile.id === defaultProfileId)?.reasoningEffort ?? null,
+      } : {}),
+      ...(state.errorSource === 'profiles' ? { error: null, errorSource: null } : {}),
+    };
+  });
+  return null;
+}
+
 const store = create<LocalAgentState>((set, get) => ({
   welcomeIndex: Math.floor(Math.random() * 4),
   sessionId: null,
@@ -199,11 +235,12 @@ const store = create<LocalAgentState>((set, get) => ({
   connections: [],
   defaultProfileId: null,
   catalog: EMPTY_CATALOG,
+  catalogStatus: 'pending',
   sessionStatuses: {},
   statusError: null,
   pluginCatalog: EMPTY_PLUGIN_CATALOG,
   projection: null,
-  loading: false,
+  loading: false, loadingPurpose: null,
   submitting: false,
   catalogBusy: false,
   error: null,
@@ -213,63 +250,44 @@ const store = create<LocalAgentState>((set, get) => ({
     if (initialization) return await initialization;
     const currentGeneration = advanceView();
     initialization = (async () => {
-      set({ loading: true, error: null, errorSource: null });
+      const readVersion = catalogVersion;
+      set({ loading: true, loadingPurpose: 'initialization', catalogStatus: 'pending', error: null, errorSource: null });
       try {
         // Publish navigation as soon as its own request is ready. Plugin discovery
         // and model configuration must not gate history or a restored conversation.
-        const [, pluginCatalog, profileResult] = await Promise.all([
-          getConversationCatalog().then(async (catalog) => {
-            set({ catalog });
+        const [, , profileError] = await Promise.all([
+          getConversationCatalog().catch((error) => {
+            if (readVersion === catalogVersion) set({ catalogStatus: 'error' });
+            throw error;
+          }).then(async (catalog) => {
+            catalogVersion += 1;
+            set({ catalog, catalogStatus: 'ready' });
             if (currentGeneration === generation) {
-              set({ loading: false });
+              set({ loading: false, loadingPurpose: null });
               const restored = takeRestoredInterfaceView<{ sessionId: string | null; draftProjectId: string | null } | null>('conversation', null);
               if (restored?.sessionId && catalog.sessions.some(item => item.id === restored.sessionId)) await get().activateSession(restored.sessionId);
               else if (restored?.draftProjectId && catalog.projects.some(item => item.id === restored.draftProjectId)) set({ draftProjectId: restored.draftProjectId });
             }
           }),
-          getPluginCatalog(),
-          getLlmProfiles(),
+          getPluginCatalog().then(pluginCatalog => set({ pluginCatalog })),
+          // Publish model configuration independently of filesystem plugin discovery.
+          refreshProfileConfiguration(set),
         ]);
-        const profiles = profileResult.ok
-          ? (profileResult.data?.profiles ?? [])
-          : [];
-        const defaultProfileId = initialProfileId(
-          profiles,
-          profileResult.ok ? profileResult.data?.defaultProfileId : undefined,
-        );
-        // The catalog request and later catalog operations own navigation data.
-        set({ pluginCatalog, profiles, connections: profileResult.data?.connections ?? [], defaultProfileId });
+        // Restoring a history entry may finish after profiles and replace an
+        // absent historical model with null. Keep the existing default rule.
+        set(state => ({
+          selectedProfileId: state.selectedProfileId ?? state.defaultProfileId,
+          ...(profileError ? { error: profileError, errorSource: 'profiles' as const } : {}),
+          ...(!state.selectedProfileId && !state.sessionId ? {
+            reasoningEffortOverride: state.profiles.find(profile => profile.id === state.defaultProfileId)?.reasoningEffort ?? null,
+          } : {}),
+        }));
         void get().refresh();
-        if (currentGeneration !== generation) {
-          set({
-            selectedProfileId: get().selectedProfileId ?? defaultProfileId,
-            ...(!get().selectedProfileId && !get().sessionId ? {
-              reasoningEffortOverride: profiles.find(profile => profile.id === defaultProfileId)?.reasoningEffort ?? null,
-            } : {}),
-          });
-          if (!profileResult.ok) {
-            set({
-              error: profileResult.message ?? 'llm_profiles_unavailable',
-              errorSource: 'profiles',
-            });
-          }
-          return;
-        }
-        set({
-          selectedProfileId: defaultProfileId,
-          reasoningEffortOverride: profiles.find(profile => profile.id === defaultProfileId)?.reasoningEffort ?? null,
-          sessionId: null,
-          projection: null,
-          draftProjectId: get().draftProjectId,
-          loading: false,
-          error: profileResult.ok ? null : (profileResult.message ?? 'llm_profiles_unavailable'),
-          errorSource: profileResult.ok ? null : 'profiles',
-        });
 
       } catch (error) {
         if (currentGeneration === generation) {
           set({
-            loading: false,
+            loading: false, loadingPurpose: null,
             error: errorMessage(error),
             errorSource: 'initialization',
           });
@@ -283,46 +301,21 @@ const store = create<LocalAgentState>((set, get) => ({
     }
   },
 
-  refreshProfiles: async () => {
-    const profileResult = await getLlmProfiles();
-    if (!profileResult.ok) {
-      set({
-        error: profileResult.message ?? 'llm_profiles_unavailable',
-        errorSource: 'profiles',
-      });
-      return;
-    }
-    const profiles = (profileResult.data?.profiles ?? []);
-    const defaultProfileId = initialProfileId(
-      profiles,
-      profileResult.data?.defaultProfileId,
-    );
-    set((state) => {
-      const summary = state.sessionId
-        ? state.catalog.sessions.find((session) => session.id === state.sessionId)
-        : undefined;
-      return {
-        profiles,
-        connections: profileResult.data?.connections ?? [],
-        defaultProfileId,
-        selectedProfileId: state.selectedProfileId ?? summary?.profileId ?? defaultProfileId,
-        ...(!state.selectedProfileId && !state.sessionId ? {
-          reasoningEffortOverride: profiles.find(profile => profile.id === defaultProfileId)?.reasoningEffort ?? null,
-        } : {}),
-        ...(state.errorSource === 'profiles' ? { error: null, errorSource: null } : {}),
-      };
-    });
-  },
+  refreshProfiles: async () => { await refreshProfileConfiguration(set); },
 
   refreshCatalog: async () => {
+    const readVersion = catalogVersion;
     try {
       const catalog = await getConversationCatalog();
+      catalogVersion += 1;
       set((state) => ({
         catalog,
+        catalogStatus: 'ready',
         ...(state.errorSource === 'catalog' ? { error: null, errorSource: null } : {}),
       }));
     } catch (error) {
-      set({ error: errorMessage(error), errorSource: 'catalog' });
+      set({ ...(readVersion === catalogVersion ? { catalogStatus: 'error' as const } : {}),
+        error: errorMessage(error), errorSource: 'catalog' });
     }
   },
 
@@ -353,7 +346,7 @@ const store = create<LocalAgentState>((set, get) => ({
       subagentSettingsBusy: false,
       selectedProfileId: get().defaultProfileId,
       reasoningEffortOverride: get().profiles.find(profile => profile.id === get().defaultProfileId)?.reasoningEffort ?? null,
-      loading: false,
+      loading: false, loadingPurpose: null,
       submitting: activeSubmissionCount > 0,
       error: null,
       errorSource: null,
@@ -368,19 +361,23 @@ const store = create<LocalAgentState>((set, get) => ({
     let summary = get().catalog.sessions.find((session) => session.id === sessionId);
     if (!summary) {
       // CLI and other windows can create conversations after this view's catalog read.
-      set({ loading: true, error: null, errorSource: null });
+      const readVersion = catalogVersion;
+      set({ loading: true, loadingPurpose: 'session', error: null, errorSource: null });
       try {
         const catalog = await getConversationCatalog(signal);
         if (currentGeneration !== generation) return;
-        set({ catalog });
+        catalogVersion += 1;
+        set({ catalog, catalogStatus: 'ready' });
         summary = catalog.sessions.find((session) => session.id === sessionId);
       } catch (error) {
-        if (currentGeneration === generation) set({ loading: false, error: errorMessage(error), errorSource: 'catalog' });
+        if (currentGeneration === generation) set({ loading: false, loadingPurpose: null,
+          ...(readVersion === catalogVersion ? { catalogStatus: 'error' as const } : {}),
+          error: errorMessage(error), errorSource: 'catalog' });
         return;
       }
     }
     if (!summary) {
-      set({ loading: false, error: 'conversation_session_not_found', errorSource: 'operation' });
+      set({ loading: false, loadingPurpose: null, error: 'conversation_session_not_found', errorSource: 'operation' });
       return;
     }
     activeSubmissionCount = 0;
@@ -392,6 +389,7 @@ const store = create<LocalAgentState>((set, get) => ({
       draftSubagentSettings: null,
       subagentSettingsBusy: false,
       loading: !cached,
+      loadingPurpose: cached ? null : 'session',
       error: null,
       errorSource: null,
       sessionId,
@@ -414,12 +412,12 @@ const store = create<LocalAgentState>((set, get) => ({
         selectedProfileId: projection.modelSettings?.profileId ?? summary.profileId ?? null,
         reasoningEffortOverride: projection.modelSettings?.reasoningEffortOverride ?? null,
         projection,
-        loading: false,
+        loading: false, loadingPurpose: null,
       });
     } catch (error) {
       if (currentGeneration === generation) {
         set({
-          loading: false,
+          loading: false, loadingPurpose: null,
           error: errorMessage(error),
           errorSource: 'projection',
         });
@@ -1103,7 +1101,8 @@ async function mutateCatalog(
   set({ catalogBusy: true, error: null, errorSource: null });
   try {
     const activeCatalog = await operation();
-    set({ catalog: activeCatalog });
+    catalogVersion += 1;
+    set({ catalog: activeCatalog, catalogStatus: 'ready' });
   } catch (error) {
     set({ error: errorMessage(error), errorSource: 'operation' });
     throw error;

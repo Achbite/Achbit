@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModules, loadGuiModelStore, installGuiFetch, decodeGuiProjection } from './gui-projection-contract.mjs';
+import { findReactElement, loadGuiModules, loadGuiModelStore, installGuiFetch, decodeGuiProjection } from './gui-projection-contract.mjs';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
 import { workspaceBinding, actorWith, createSession, fakeRunPreparation, emptyKernel, completedExecutionReply, providerEvent, messageCommand, waitForProjection, waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
 import { emptySessionState, projectSession } from '../../session-core/dist/index.js';
@@ -167,4 +167,292 @@ test('native startup completion wakes the observer and its subscription is relea
   globalThis.window.__DEEPCODE_BROWSER_PREVIEW__ = true;
   const previewStop = await onHostStartupComplete(() => observed++);
   previewStop(); assert.equal(observed, 1);
+});
+
+
+test('catalog loading and failure never masquerade as an empty history', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  let failed = true;
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) {
+      await held;
+      if (failed) throw new Error('catalog transport failed');
+      return Response.json({ ok: true, data: { projects: [], sessions: [] } });
+    }
+    if (url.pathname.endsWith('/plugins')) return Response.json({ ok: true, data: { revision: 'catalog:empty', plugins: [] } });
+    if (url.pathname.endsWith('/profiles')) return Response.json({ ok: true, data: { profiles: [] } });
+    if (url.pathname.endsWith('/statuses')) return Response.json({ ok: true, data: [] });
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const [{ useLocalAgentStore: store }, { default: Sidebar }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/achbit-gui/layout/AchbitSidebar.tsx',
+  ]);
+  const render = () => renderToStaticMarkup(createElement(Sidebar, {
+    language: 'en-US', ...store.getState().catalog, catalogStatus: store.getState().catalogStatus,
+    collapsedProjectIds: new Set(), sessionStatuses: {}, readRunMarkers: {},
+  }));
+  const initializing = store.getState().initialize();
+  assert.equal(store.getState().catalogStatus, 'pending');
+  assert.match(render(), /Loading conversations/);
+  assert.doesNotMatch(render(), /No projects yet|No chats yet/);
+  release(); await initializing;
+  assert.equal(store.getState().catalogStatus, 'error');
+  assert.equal(store.getState().error, 'catalog transport failed');
+  assert.match(render(), /Unable to load conversations/);
+  assert.doesNotMatch(render(), /No projects yet|No chats yet/);
+  failed = false;
+  await store.getState().refreshCatalog();
+  assert.equal(store.getState().catalogStatus, 'ready');
+  assert.match(render(), /No projects yet/);
+  assert.match(render(), /No chats yet/);
+});
+
+test('plugin discovery failure does not invalidate a successfully loaded catalog', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) return Response.json({ ok: true, data: { projects: [], sessions: [] } });
+    if (url.pathname.endsWith('/plugins')) { await held; throw new Error('plugin discovery failed'); }
+    if (url.pathname.endsWith('/profiles')) return Response.json({ ok: true, data: { profiles: [] } });
+    if (url.pathname.endsWith('/statuses')) return Response.json({ ok: true, data: [] });
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const store = await loadGuiModelStore(t);
+  const initializing = store.getState().initialize();
+  await waitUntil(() => !store.getState().loading, 'catalog ready');
+  assert.equal(store.getState().catalogStatus, 'ready');
+  release(); await initializing;
+  assert.equal(store.getState().catalogStatus, 'ready');
+  assert.equal(store.getState().error, 'plugin discovery failed');
+});
+
+test('the draft welcome stays visible during catalog loading; opening history retains its loading state', async t => {
+  const oldSelf = globalThis.self, oldStorage = globalThis.sessionStorage;
+  globalThis.self = {};
+  globalThis.sessionStorage = { getItem: () => null };
+  t.after(() => {
+    if (oldSelf === undefined) delete globalThis.self; else globalThis.self = oldSelf;
+    if (oldStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = oldStorage;
+  });
+  const [{ default: Panel }, { ConversationTranscript }, { ConversationDisplayProvider },
+    { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/LocalAgentPanel.tsx', '/src/components/local-agent/ConversationTranscript.tsx',
+    '/src/components/local-agent/ConversationDisplayProvider.tsx', '/src/state/localAgentStore.ts',
+  ]);
+  let transcript;
+  function Probe() {
+    transcript = findReactElement(Panel({}), node => node.type === ConversationTranscript);
+    return null;
+  }
+  const render = sessionId => {
+    store.setState({ sessionId, projection: null, loading: true,
+      loadingPurpose: sessionId ? 'session' : 'initialization', catalogStatus: 'pending' });
+    Object.assign(store.getInitialState(), store.getState());
+    renderToStaticMarkup(createElement(ConversationDisplayProvider, null, createElement(Probe)));
+    return renderToStaticMarkup(transcript);
+  };
+  assert.match(render(null), /local-agent__empty--welcome/);
+  assert.equal(store.getState().loading, true, 'the request remains busy while its welcome is shown');
+  assert.doesNotMatch(render('session:opening'), /local-agent__empty--welcome/);
+  assert.equal(transcript.props.loading, true);
+});
+
+
+test('opening an uncatalogued session keeps its loading purpose through lookup failure and cancellation', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) { await held; throw new Error('catalog lookup failed'); }
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const [{ useLocalAgentStore: store }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/state/settingsStore.ts',
+  ]);
+  t.mock.method(useSettingsStore.getState(), 'loadUserSettings', async () => {});
+  store.setState({ catalogStatus: 'ready' });
+  const opening = store.getState().activateSession('session:external');
+  assert.equal(store.getState().sessionId, null, 'identity is not changed before catalog lookup');
+  assert.equal(store.getState().loading, true);
+  assert.equal(store.getState().loadingPurpose, 'session');
+  store.getState().startNewSession();
+  release(); await opening;
+  assert.equal(store.getState().loading, false);
+  assert.equal(store.getState().loadingPurpose, null);
+  assert.equal(store.getState().catalogStatus, 'ready', 'cancelled navigation does not publish a directory error');
+  assert.equal(store.getState().error, null);
+  await store.getState().activateSession('session:external');
+  assert.equal(store.getState().catalogStatus, 'error');
+  assert.equal(store.getState().error, 'catalog lookup failed');
+  assert.equal(store.getState().loadingPurpose, null);
+});
+
+test('an old startup catalog failure cannot invalidate a newer successful catalog', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  let reads = 0;
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) {
+      if (++reads === 1) { await held; throw new Error('old catalog request failed'); }
+      return Response.json({ ok: true, data: { projects: [], sessions: [] } });
+    }
+    if (url.pathname.endsWith('/plugins')) throw new Error('plugin discovery failed early');
+    if (url.pathname.endsWith('/profiles')) return Response.json({ ok: true, data: { profiles: [] } });
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const store = await loadGuiModelStore(t);
+  await store.getState().initialize();
+  await store.getState().refreshCatalog();
+  assert.equal(store.getState().catalogStatus, 'ready');
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.getState().catalogStatus, 'ready');
+  assert.equal(store.getState().error, 'plugin discovery failed early', 'the original initialization failure is retained');
+});
+
+
+test('cancelling a catalog lookup does not leave failed startup permanently pending', async t => {
+  let releaseStartup, releaseLookup;
+  const startup = new Promise(resolve => { releaseStartup = resolve; });
+  const lookup = new Promise(resolve => { releaseLookup = resolve; });
+  t.after(() => { releaseStartup(); releaseLookup(); });
+  let reads = 0;
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) {
+      await (++reads === 1 ? startup : lookup);
+      throw new Error('directory unavailable');
+    }
+    if (url.pathname.endsWith('/plugins')) return Response.json({ ok: true, data: { revision: 'catalog:empty', plugins: [] } });
+    if (url.pathname.endsWith('/profiles')) return Response.json({ ok: true, data: { profiles: [] } });
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const [{ useLocalAgentStore: store }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/state/settingsStore.ts',
+  ]);
+  t.mock.method(useSettingsStore.getState(), 'loadUserSettings', async () => {});
+  const initializing = store.getState().initialize();
+  const opening = store.getState().activateSession('session:external');
+  store.getState().startNewSession();
+  releaseLookup(); await opening;
+  assert.equal(store.getState().catalogStatus, 'pending');
+  releaseStartup(); await initializing;
+  assert.equal(store.getState().catalogStatus, 'error');
+  assert.equal(store.getState().sessionId, null);
+  assert.equal(store.getState().loadingPurpose, null);
+});
+
+test('startup publishes models before plugin discovery and preserves a later user selection', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  const profiles = [
+    { id: 'profile:first', enabled: true, reasoningEffort: 'medium' },
+    { id: 'profile:chosen', enabled: true, reasoningEffort: 'high' },
+  ];
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) return Response.json({ ok:true, data:{projects:[],sessions:[]} });
+    if (url.pathname.endsWith('/profiles')) return Response.json({ok:true,data:{profiles,defaultProfileId:profiles[0].id}});
+    if (url.pathname.endsWith('/plugins')) { await held; throw new Error('plugin discovery unavailable'); }
+    if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const store = await loadGuiModelStore(t);
+  const initializing = store.getState().initialize();
+  await waitUntil(() => store.getState().profiles.length === 2, 'independent model configuration');
+  assert.equal(store.getState().selectedProfileId, profiles[0].id);
+  store.setState({selectedProfileId:profiles[1].id,reasoningEffortOverride:'high'});
+  release(); await initializing;
+  assert.equal(store.getState().selectedProfileId, profiles[1].id);
+  assert.equal(store.getState().reasoningEffortOverride, 'high');
+  assert.equal(store.getState().catalogStatus, 'ready');
+  assert.equal(store.getState().error, 'plugin discovery unavailable');
+});
+
+test('history selection can supersede a pending read while mutations remain busy', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  const sessions = ['slow','chosen'].map(name => ({id:`session:${name}`,title:name,workspaceBindings:[],createdAt:'1',updatedAt:'1'}));
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
+    if (url.pathname.endsWith('/projection')) {
+      const id = decodeURIComponent(url.pathname.split('/').at(-2));
+      if (id === sessions[0].id) await held;
+      return Response.json({ok:true,data:projectSession(emptySessionState(id))});
+    }
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const [{ useLocalAgentStore: store }, { default: Sidebar }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/achbit-gui/layout/AchbitSidebar.tsx', '/src/state/settingsStore.ts',
+  ]);
+  t.mock.method(useSettingsStore.getState(), 'loadUserSettings', async () => {});
+  store.setState({catalog:{projects:[],sessions},catalogStatus:'ready'});
+  const slow = store.getState().activateSession(sessions[0].id);
+  await waitUntil(() => store.getState().loading, 'pending history');
+  let tree;
+  function Probe() {
+    tree = Sidebar({language:'en-US',projects:[],sessions,catalogStatus:'ready',
+      sessionStatuses:{},readRunMarkers:{},collapsedProjectIds:new Set(),busy:true,activationBusy:false,
+      onActivateSession: session => store.getState().activateSession(session.id)});
+    return tree;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  const choose = findReactElement(tree, node => node.type === 'button' && node.props.title === 'chosen');
+  assert.equal(choose.props.disabled, false, 'history loading does not disable another selection');
+  await choose.props.onClick();
+  assert.equal(store.getState().projection.sessionId, sessions[1].id);
+  release(); await slow;
+  assert.equal(store.getState().projection.sessionId, sessions[1].id, 'the late old read cannot replace the chosen view');
+  assert.equal(store.getState().loading, false);
+});
+
+test('late history restoration still receives the initial default model', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  const sessionId = 'session:no-recorded-model';
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:[{id:sessionId,title:'Old history',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
+    if (url.pathname.endsWith('/profiles')) return Response.json({ok:true,data:{profiles:[{id:'profile:default',enabled:true}]}});
+    if (url.pathname.endsWith('/plugins')) { await held; return Response.json({ok:true,data:{revision:'catalog:empty',plugins:[]}}); }
+    if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
+    if (url.pathname.endsWith('/projection')) return Response.json({ok:true,data:projectSession(emptySessionState(sessionId))});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const [{useLocalAgentStore:store},{useSettingsStore}] = await loadGuiModules(t, ['/src/state/localAgentStore.ts','/src/state/settingsStore.ts']);
+  t.mock.method(useSettingsStore.getState(),'loadUserSettings',async()=>{});
+  const initializing=store.getState().initialize();
+  await waitUntil(()=>store.getState().defaultProfileId==='profile:default','initial profiles');
+  await store.getState().activateSession(sessionId);
+  release(); await initializing;
+  assert.equal(store.getState().sessionId,sessionId);
+  assert.equal(store.getState().selectedProfileId,'profile:default');
+});
+
+test('late history restoration cannot swallow the initial profile error', async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  const sessionId = 'session:profile-failure';
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:[{id:sessionId,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
+    if (url.pathname.endsWith('/profiles')) return Response.json({ok:false,message:'original profile failure'});
+    if (url.pathname.endsWith('/plugins')) { await held; return Response.json({ok:true,data:{revision:'catalog:empty',plugins:[]}}); }
+    if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
+    if (url.pathname.endsWith('/projection')) return Response.json({ok:true,data:projectSession(emptySessionState(sessionId))});
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const [{useLocalAgentStore:store},{useSettingsStore}] = await loadGuiModules(t, ['/src/state/localAgentStore.ts','/src/state/settingsStore.ts']);
+  t.mock.method(useSettingsStore.getState(),'loadUserSettings',async()=>{});
+  const initializing=store.getState().initialize();
+  await waitUntil(()=>store.getState().errorSource==='profiles','initial profile failure');
+  await store.getState().activateSession(sessionId);
+  release(); await initializing;
+  assert.equal(store.getState().sessionId,sessionId);
+  assert.equal(store.getState().errorSource,'profiles');
+  assert.equal(store.getState().error,'original profile failure');
 });

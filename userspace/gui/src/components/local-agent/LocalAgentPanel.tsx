@@ -49,6 +49,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const projection = useLocalAgentStore((state) => state.projection);
   const loading = useLocalAgentStore((state) => state.loading);
+  const loadingPurpose = useLocalAgentStore((state) => state.loadingPurpose);
   const refresh = useLocalAgentStore((state) => state.refresh);
   const hostReady = useAppStatusStore((state) => state.apiStatus === 'connected');
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
@@ -163,7 +164,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           onDisplayed={display.onDisplayed}
           showReasoning={showReasoning}
           language={language}
-          loading={loading}
+          loading={loading && loadingPurpose === 'session'}
           projection={projection}
           activeProject={activeProject}
           hasConversationContent={hasConversationContent}

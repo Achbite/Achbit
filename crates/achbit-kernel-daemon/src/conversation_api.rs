@@ -226,8 +226,13 @@ pub(crate) async fn conversation_skill_settings_get(
 pub(crate) async fn conversation_plugin_catalog_get(
     State(state): State<AppState>,
 ) -> Json<ApiResponse> {
-    let gui = state.gui.lock().expect("gui state lock");
-    match crate::local_agent_plugins::plugin_catalog_projection(&gui.user_settings) {
+    let settings = state
+        .gui
+        .lock()
+        .expect("gui state lock")
+        .user_settings
+        .clone();
+    match crate::local_agent_plugins::plugin_catalog_projection(&settings) {
         Ok(catalog) => ApiResponse::ok(catalog),
         Err(error) => ApiResponse::error("plugin_catalog_unavailable", error),
     }

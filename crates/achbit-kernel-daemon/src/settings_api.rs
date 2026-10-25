@@ -67,17 +67,22 @@ pub(crate) async fn user_settings_get(State(state): State<AppState>) -> Json<Api
             return ApiResponse::error("active_runtime_settings_unavailable", error);
         }
     };
-    let gui = state.gui.lock().expect("gui state lock");
-    let environment = match crate::session_environment::prepare(&gui.user_settings, None, false) {
+    let (settings, store_path) = {
+        let gui = state.gui.lock().expect("gui state lock");
+        (gui.user_settings.clone(), gui.paths.settings_path.clone())
+    };
+    // Environment probes can launch a login shell. Keep the runtime transition
+    // stable without holding the catalog's GUI lock while those probes finish.
+    let environment = match crate::session_environment::prepare(&settings, None, false) {
         Ok(value) => value,
         Err(message) => return ApiResponse::error("session_environment_invalid", message),
     };
     ApiResponse::ok(json!({
         "environment": environment,
-        "settings": gui.user_settings,
+        "settings": settings,
         "runtimeSettings": runtime_settings,
         "overriddenKeys": [],
-        "storePath": gui.paths.settings_path.to_string_lossy()
+        "storePath": store_path.to_string_lossy()
     }))
 }
 
