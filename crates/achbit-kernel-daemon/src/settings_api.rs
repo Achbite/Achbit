@@ -22,7 +22,7 @@ pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Js
             .unwrap_or(0)
             + 1;
         user_settings_patch(
-            State(state),
+            ReadyState(state),
             Json(json!({"patches":{"agent.environmentRevision": revision}})),
         )
         .await
