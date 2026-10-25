@@ -748,15 +748,9 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'tool.input-rejected': {
-      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
-      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
-      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
-      settleActivity(next, toolActivityId(event.callId), 'rejected');
-      next.activities[toolActivityId(event.callId)] = {
-        ...next.activities[toolActivityId(event.callId)],
+      settleUnrecordedTool(next, event.callId, 'rejected', {
         inputRejection: structuredClone(event.payload.rejection.error),
-      };
-      delete next.activities[toolActivityId(event.callId)].tool;
+      });
       break;
     }
     case 'process.updated': {
@@ -796,12 +790,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'tool.not-executed': {
-      const approval = next.pendingApprovals.find(item => item.callId === event.callId);
-      if (approval) settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
-      settleActivity(next, toolActivityId(event.callId), event.payload.reason === 'cancelled' ? 'cancelled' : 'rejected');
-      next.activities[toolActivityId(event.callId)] = { ...next.activities[toolActivityId(event.callId)],
-        notExecuted: { reason: event.payload.reason, ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) } };
-      next.pendingApprovals = next.pendingApprovals.filter(item => item.callId !== event.callId);
+      settleUnrecordedTool(next, event.callId, event.payload.reason === 'cancelled' ? 'cancelled' : 'rejected', {
+        notExecuted: { reason: event.payload.reason,
+          ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) },
+      });
       break;
     }
     case 'tool.interrupted':
@@ -809,11 +801,9 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         || !['requested', 'active'].includes(next.activities[toolActivityId(event.callId)]?.status ?? '')) {
         throw new Error('tool_interruption_state_invalid');
       }
-      settleActivity(next, toolActivityId(event.callId), 'indeterminate');
-      next.activities[toolActivityId(event.callId)] = {
-        ...next.activities[toolActivityId(event.callId)],
-        interruption: { ...event.payload.error },
-      };
+      settleUnrecordedTool(next, event.callId, 'indeterminate', {
+        interruption: structuredClone(event.payload.error),
+      });
       break;
     case 'agent.task.created':
       assertRunningRun(next, event.runId, 'agent_task_run_not_active');
@@ -1164,6 +1154,9 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       next.pendingRunSettlements[event.runId] = cloneRunSettlement(event.payload);
       next.activePlanRef = null;
       closeInteractions(next, event.runId);
+      for (const approval of next.pendingApprovals) {
+        settleActivity(next, approvalActivityId(approval.approvalId), 'cancelled');
+      }
       next.pendingApprovals = [];
       next.pendingApproval = null;
       break;
@@ -1660,9 +1653,19 @@ function projectTimeline(state: SessionState): SessionProjection['timeline'] {
       timelineId: activity.activityId, sequence: activity.sequence, activityIds: [activity.activityId] }] });
   }
   for (const turn of Object.values(state.providerTurns)) {
-    if (turn.purpose !== 'agent' || turn.outcome !== 'completed') continue;
+    if (turn.outcome !== 'completed' || turn.purpose === 'contextCompaction') continue;
     const composition = index.compositions.get(index.requestKey(turn));
     if (!composition) throw new Error('provider_turn_composition_missing');
+    if (turn.purpose === 'approvalReview') {
+      // Evidence calls are ordinary Kernel facts owned by this review turn.
+      // Its reasoning and decision JSON are not Agent messages or narratives.
+      const callIds = turn.orderedOutputBlocks
+        ? turn.orderedOutputBlocks.flatMap(block => block.kind === 'toolCall' || block.kind === 'toolCallRejected' ? [block.callId] : [])
+        : turn.toolCallInputs?.map(call => call.callId) ?? turn.orderedCallIds ?? [];
+      const item = providerToolGroup(turn, callIds, index);
+      if (item) groups.push({ sequence: composition.sequence, items: [item] });
+      continue;
+    }
     if (turn.orderedOutputBlocks) {
       const items = projectOrderedProviderTurnTimeline(state, turn, index);
       if (items.length > 0) groups.push({ sequence: composition.sequence, items });
@@ -1703,24 +1706,31 @@ function projectTimeline(state: SessionState): SessionProjection['timeline'] {
         revision: plan.revision,
       });
     }
-    const toolActivities = orderedCallIds.flatMap((callId) => {
-      const activity = index.calls.get(callId);
-      return activity ? [...index.approvals.get(callId) ?? [], activity] : [];
-    });
-    if (toolActivities.length > 0) {
-      items.push({
-        kind: 'toolGroup',
-        timelineId: `provider-turn:${turn.providerRequestId}:tools`,
-        sequence: Math.max(...toolActivities.map((activity) => activity.sequence)),
-        providerRequestId: turn.providerRequestId,
-        activityIds: toolActivities.map((activity) => activity.activityId),
-      });
-    }
+    const toolGroup = providerToolGroup(turn, orderedCallIds, index);
+    if (toolGroup) items.push(toolGroup);
     if (items.length > 0) groups.push({ sequence: composition.sequence, items });
   }
   return groups
     .sort((left, right) => left.sequence - right.sequence)
     .flatMap((group) => group.items);
+}
+
+function providerToolGroup(
+  turn: ProviderTurnState,
+  callIds: readonly string[],
+  index: ReturnType<typeof timelineIndexes>,
+): Extract<SessionProjection['timeline'][number], { kind: 'toolGroup' }> | undefined {
+  const activities = callIds.flatMap(callId => {
+    const activity = index.calls.get(callId);
+    return activity ? [...index.approvals.get(callId) ?? [], activity] : [];
+  });
+  if (!activities.length) return undefined;
+  return {
+    kind: 'toolGroup', timelineId: `provider-turn:${turn.providerRequestId}:tools`,
+    sequence: Math.max(...activities.map(activity => activity.sequence)),
+    providerRequestId: turn.providerRequestId,
+    activityIds: activities.map(activity => activity.activityId),
+  };
 }
 
 function projectOrderedProviderTurnTimeline(
@@ -2121,6 +2131,28 @@ function settleActivity(
   const activity = state.activities[activityId];
   if (!activity) throw new Error(`activity_source_missing:${activityId}`);
   writableRecord(state, 'activities')[activityId] = { ...activity, status };
+}
+
+/** A request preview is not an execution receipt. These terminal facts replace
+ * it instead of inheriting details from requested/active tool presentation. */
+function settleUnrecordedTool(
+  state: SessionState,
+  callId: string,
+  status: 'rejected' | 'cancelled' | 'indeterminate',
+  detail: Pick<ActivityProjection, 'inputRejection' | 'notExecuted' | 'interruption'>,
+): void {
+  const id = toolActivityId(callId);
+  const activity = state.activities[id];
+  if (!activity || activity.kind !== 'tool') throw new Error(`activity_source_missing:${id}`);
+  const approval = state.pendingApprovals.find(item => item.callId === callId);
+  if (approval) settleActivity(state, approvalActivityId(approval.approvalId), 'cancelled');
+  state.pendingApprovals = state.pendingApprovals.filter(item => item.callId !== callId);
+  writableRecord(state, 'activities')[id] = {
+    activityId: activity.activityId, kind: 'tool', status, label: activity.label,
+    runId: activity.runId, callId, sequence: activity.sequence,
+    ...(activity.startedAt === undefined ? {} : { startedAt: activity.startedAt }),
+    ...detail,
+  };
 }
 
 function projectProcess(state: SessionState, job: ManagedProcessSnapshot): void {
