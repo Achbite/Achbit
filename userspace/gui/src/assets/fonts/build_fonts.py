@@ -8,6 +8,7 @@ import sys
 import unicodedata
 import zipfile
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.woff2 import WOFF2FlavorData
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.transformPen import TransformPen
@@ -175,6 +176,10 @@ def build(kind, family, cjk_style):
         assert all(font["hmtx"][final_cmap[cp]][0] == 500 for cp in range(0x20, 0x7f))
         assert all(font["hmtx"][name][0] == 1000 for cp, name in final_cmap.items() if 0x4E00 <= cp <= 0x9FFF)
     font.flavor = "woff2"
+    if kind == "reading" and cjk_style == "sans":
+        # Keep the default GUI face complete, but avoid outline reconstruction
+        # on the WebView's startup path. Other faces retain their encoding.
+        font.flavorData = WOFF2FlavorData(transformedTables=set())
     font.save(ROOT / (ps + ".woff2"))
     receipt = {
         "family": family, "kind": kind, "cjkStyle": cjk_style, "file": output.name,
