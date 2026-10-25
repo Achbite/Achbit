@@ -2290,9 +2290,6 @@
 .local-agent__permission-save-rule { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 .local-agent__permission-grants code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-.achbit-session-model__efforts { display:flex; gap:4px; padding:6px; }
-.achbit-session-model__efforts button { justify-content:center; flex:1; }
-.achbit-session-model__efforts button[aria-checked=true] { background:var(--dc-surface-hover); color:var(--dc-accent); }
 
 .local-agent__auto-review { padding: 18px 19px 12px; }
 .local-agent__auto-review > header { display: flex; align-items: center; gap: 12px; padding-bottom: 17px; }

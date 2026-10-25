@@ -1647,7 +1647,8 @@
 .achbit-session-model__current strong { font-size: var(--dc-font-body); font-weight: 600; }
 .achbit-session-model__current span { display: flex; align-items: center; justify-content: center; gap: 3px; min-width: 0; color: var(--dc-muted); }
 .achbit-session-model__current span > svg { flex-shrink: 0; }
-.achbit-session-model__efforts { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; padding-top: 8px; }
+/* Own the full inset here so lazy conversation CSS cannot change this surface. */
+.achbit-session-model__efforts { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; padding: 8px 6px 6px; }
 .achbit-session-model__menu .achbit-session-model__efforts button { flex: 1 0 auto; width: auto; justify-content: center; min-height: 32px; padding: 7px 9px; }
 .achbit-session-model__efforts button[aria-checked="true"] { color: var(--dc-foreground-strong); font-weight: 600; }
 .achbit-session-model__error { margin: 10px 6px 4px; color: var(--dc-danger); font-size: var(--dc-font-caption); overflow-wrap: anywhere; }
