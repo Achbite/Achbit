@@ -20,7 +20,7 @@ import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions'
 import { ConversationTranscript } from './ConversationTranscript';
 import { ConversationLayoutCache } from './conversationVirtualizer';
 import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourcePreview';
-import { ArtifactLinks } from './ArtifactLinks';
+import { ArtifactLinks, ArtifactShortcuts } from './ArtifactLinks';
 import './localAgentPanel.css';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import { AgentPlanReview } from './AgentPlanReview';
@@ -178,10 +178,9 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           automaticReview={automaticReview}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
-        {mode !== 'panel' && !!display.artifacts.length && <details className="conversation-artifact-shortcuts">
-          <summary>{t(language, 'achbitGui.outputs.title')}</summary>
-          <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />
-        </details>}
+        {mode !== 'panel' && !!display.artifacts.length && <ArtifactShortcuts
+          title={t(language, 'achbitGui.outputs.title')} artifacts={display.artifacts}
+          onOpen={resourcePreview.openWorkspaceResource} />}
       </div>
       {showJumpToLatest && hasConversationContent && (
           <button

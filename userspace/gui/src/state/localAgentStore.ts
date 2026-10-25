@@ -1149,6 +1149,7 @@ function shouldApplyProjection(
   current: SessionProjection | null,
   incoming: SessionProjection,
 ): boolean {
+  if (current === incoming) return false;
   if (!current || incoming.revision > current.revision) return true;
   if (incoming.revision < current.revision) return false;
   // Reads are serialized. The producer owns all live fields, including inherited

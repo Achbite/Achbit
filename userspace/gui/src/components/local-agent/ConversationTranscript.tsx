@@ -340,6 +340,13 @@ export function ConversationTranscript({
       )}
 </>;
   const rounds = useMemo(() => conversationRounds(conversationItems, draftItems, projection?.run?.runId), [conversationItems, draftItems, projection?.run?.runId]);
+  const timingsByRun = useMemo(() => {
+    const timings = new Map<string, NonNullable<SessionProjection['runTimings']>[number]>();
+    for (const timing of projection?.runTimings ?? []) {
+      if (!timings.has(timing.runId)) timings.set(timing.runId, timing);
+    }
+    return timings;
+  }, [projection?.runTimings]);
   const sessionKey = projection?.sessionId ?? '';
   const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), viewport.preserveReadingPosition), [layoutCache, sessionKey, viewport.preserveReadingPosition]);
   const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
@@ -402,7 +409,7 @@ export function ConversationTranscript({
         const current = projection?.run?.runId === round.runId;
         const displaySettled = displaySettledRunIds.has(round.runId);
         const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
-        const timing = projection?.runTimings?.find(timing => timing.runId === round.runId);
+        const timing = timingsByRun.get(round.runId);
         const rows = round.rows.map((row) => ({
           key: row.key,
           process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',

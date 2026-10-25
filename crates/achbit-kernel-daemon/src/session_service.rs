@@ -104,15 +104,13 @@ impl SessionServiceProcess {
             loop {
                 let encoded = read_response(&mut stdout);
                 #[cfg(feature = "debug-control")]
-                if let Ok(ref bytes) = encoded {
-                    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
-                        if value.get("type").and_then(Value::as_str) == Some("debug.observation") {
-                            if let Ok(mut pending) = reader_responses.lock() {
-                                pending.deliver_debug_observation(value);
-                            }
-                            continue;
-                        }
+                if encoded.as_ref().is_ok_and(|value| {
+                    value.get("type").and_then(Value::as_str) == Some("debug.observation")
+                }) {
+                    if let Ok(mut pending) = reader_responses.lock() {
+                        pending.deliver_debug_observation(encoded.expect("decoded observation"));
                     }
+                    continue;
                 }
                 let response = encoded.and_then(decode_response);
                 let Ok(mut pending) = reader_responses.lock() else {
@@ -721,13 +719,13 @@ fn read_frame(reader: &mut impl BufRead) -> Result<Vec<u8>, SessionServiceError>
     Ok(encoded)
 }
 
-fn read_response(reader: &mut impl BufRead) -> Result<Vec<u8>, SessionServiceError> {
+fn read_response(reader: &mut impl BufRead) -> Result<Value, SessionServiceError> {
     let first = read_frame(reader)?;
     let first_value: Value = serde_json::from_slice(&first).map_err(|error| {
         SessionServiceError::new("session_service_response_invalid", error.to_string())
     })?;
     if first_value.get("type").and_then(Value::as_str) != Some("response.chunk") {
-        return Ok(first);
+        return Ok(first_value);
     }
     let mut chunk = first_value;
     let mut response = Vec::new();
@@ -747,7 +745,7 @@ fn read_response(reader: &mut impl BufRead) -> Result<Vec<u8>, SessionServiceErr
         }
         response.extend_from_slice(text.expect("validated chunk text").as_bytes());
         if final_chunk == Some(true) {
-            return Ok(response);
+            return decode_response_json(&response);
         }
         index += 1;
         chunk = serde_json::from_slice(&read_frame(reader)?).map_err(|error| {
@@ -780,15 +778,18 @@ fn message_with_stderr(message: &str, receipt: &Arc<Mutex<Vec<u8>>>) -> String {
     }
 }
 
-fn decode_response(
-    encoded: Vec<u8>,
-) -> Result<(String, Result<Value, SessionServiceError>), SessionServiceError> {
-    let value: Value = serde_json::from_slice(&encoded).map_err(|error| {
+fn decode_response_json(encoded: &[u8]) -> Result<Value, SessionServiceError> {
+    serde_json::from_slice(encoded).map_err(|error| {
         SessionServiceError::new(
             "session_service_response_json_invalid",
             format!("Session Service 回复不是有效 JSON：{error}"),
         )
-    })?;
+    })
+}
+
+fn decode_response(
+    mut value: Value,
+) -> Result<(String, Result<Value, SessionServiceError>), SessionServiceError> {
     let request_id = value
         .get("requestId")
         .and_then(Value::as_str)
@@ -801,8 +802,12 @@ fn decode_response(
             "Session Service 回复身份无效。",
         ));
     }
+    let request_id = request_id.expect("validated requestId").to_string();
     let result = if value.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(value.get("data").cloned().unwrap_or(Value::Null))
+        Ok(value
+            .get_mut("data")
+            .map(Value::take)
+            .unwrap_or(Value::Null))
     } else {
         let error = value.get("error").and_then(Value::as_object);
         let mut failure = SessionServiceError::new(
@@ -818,7 +823,7 @@ fn decode_response(
         failure.details = error.and_then(|value| value.get("details")).cloned();
         Err(failure)
     };
-    Ok((request_id.expect("validated requestId").to_string(), result))
+    Ok((request_id, result))
 }
 
 fn resolve_bridge() -> Result<PathBuf, SessionServiceError> {
@@ -952,10 +957,10 @@ input.on('line', line => {
     fn partial_deletion_response_preserves_original_error_and_structured_details() {
         let details =
             json!({"deletedSessionIds":["session:child"],"remainingSessionIds":["session:owner"]});
-        let (_, result) = decode_response(serde_json::to_vec(&json!({
+        let (_, result) = decode_response(json!({
             "protocolVersion":PROTOCOL_VERSION,"requestId":"request:delete","ok":false,
             "error":{"code":"session_delete_partial","message":"session_delete_partial: original journal failure","details":details}
-        })).unwrap()).unwrap();
+        })).unwrap();
         let error = result.unwrap_err();
         assert_eq!(error.code, "session_delete_partial");
         assert_eq!(
@@ -1138,6 +1143,24 @@ input.once('line', line => {
     }
 
     #[test]
+    fn invalid_wire_and_reassembled_json_keep_distinct_diagnostics() {
+        let error = read_response(&mut Cursor::new("{\n")).unwrap_err();
+        assert_eq!(error.code, "session_service_response_invalid");
+        let chunk = json!({"protocolVersion": PROTOCOL_VERSION, "type": "response.chunk",
+            "index": 0, "final": true, "text": "{\"data\":"});
+        let error = read_response(&mut Cursor::new(format!("{chunk}\n"))).unwrap_err();
+        assert_eq!(error.code, "session_service_response_json_invalid");
+        assert!(error
+            .message
+            .starts_with("Session Service 回复不是有效 JSON："));
+        let value = read_response(&mut Cursor::new("null\n")).unwrap();
+        assert_eq!(
+            decode_response(value).unwrap_err().code,
+            "session_service_response_identity_mismatch"
+        );
+    }
+
+    #[test]
     fn local_frame_reader_decodes_one_session_service_response() {
         let encoded = format!(
             "{}\r\n",
@@ -1150,8 +1173,8 @@ input.once('line', line => {
         );
         let mut reader = BufReader::new(Cursor::new(encoded.into_bytes()));
 
-        let frame = read_frame(&mut reader).expect("read response frame");
-        let (request_id, data) = decode_response(frame).expect("decode response identity");
+        let value = read_response(&mut reader).expect("read response frame");
+        let (request_id, data) = decode_response(value).expect("decode response identity");
         assert_eq!(request_id, "request:test");
         let data = data.unwrap();
 

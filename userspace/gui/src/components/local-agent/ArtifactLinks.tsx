@@ -63,3 +63,14 @@ function formatArtifactTime(value: string): string {
   const date = new Date(/^\d+$/u.test(value) ? Number(value) : value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
+
+/** Hidden shortcuts do not fetch thumbnails. Retain them after the first opening. */
+export function ArtifactShortcuts({ title, ...props }: React.ComponentProps<typeof ArtifactLinks> & { title: string }) {
+  const [opened, setOpened] = React.useState(false);
+  return <details className="conversation-artifact-shortcuts" onToggle={event => {
+    if (event.currentTarget.open) setOpened(true);
+  }}>
+    <summary>{title}</summary>
+    {opened && <ArtifactLinks {...props} />}
+  </details>;
+}
