@@ -3,12 +3,48 @@
 | Requested output | `document.render` input |
 | --- | --- |
 | HTML | `format: "html"`, `.html` path, complete UTF-8 HTML in `content` |
-| PDF | `format: "pdf"`, `.pdf` path, complete HTML in `content` |
+| PDF | `format: "pdf"`, `.pdf` path, complete UTF-8 Typst source in `content` |
 | Markdown | `format: "markdown"`, `.md` path, Markdown in `content` |
 
-For HTML/PDF, embed CSS and required images/SVG. PDF uses WeasyPrint and does not execute JavaScript; use fonts available in that rendering environment. A missing renderer is an error, not a successful export or permission to install dependencies. HTML/Markdown are not automatic substitutes for a requested PDF.
+PDF is compiled locally from Typst. Author one self-contained source with inline definitions, data and images. HTML and Markdown remain their own output formats.
 
-Use semantic headings, readable code and tables only where useful. Adapt `assets/document.html` rather than retaining its example sections. An available PDF reader can check text/pages; text extraction alone does not prove layout.
+## PDF source
+
+Start from `assets/document.typ` and replace its example content. Set the page and text style, then use Typst markup for the document:
+
+```typst
+#set page(paper: "a4", margin: 20mm)
+#set text(size: 11pt, lang: "zh")
+
+= 文档标题
+
+正文内容。可以写 *强调*，公式 $a^2 + b^2 = c^2$，以及列表。
+
+#table(
+  columns: (1fr, auto),
+  table.header([项目], [金额]),
+  [示例], [30.50],
+)
+```
+
+Pass this source string as `content`, without the code fence. Keep user content separate from Typst syntax: escape markup characters such as `#`, `$`, `[` and `]` when they must appear literally, or use `raw` for code. Use `#pagebreak()` only where the document needs an explicit new page; otherwise let content flow.
+
+Embed diagrams as SVG bytes, for example:
+
+```typst
+#let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 30'><rect width='80' height='30' fill='#1b365d'/></svg>"
+#image(bytes(svg), format: "svg", width: 30mm)
+```
+
+For raster graphics, pass the complete encoded image bytes to `image` with the appropriate format. Keep assets in the source rather than referencing file paths, URLs or external packages. Use available fonts and keep font fallback enabled for mixed Chinese and Latin text.
+
+## HTML and Markdown
+
+For HTML, embed CSS and required images/SVG. Set UTF-8 and the document language, and adapt `assets/document.html` rather than retaining its example sections. Markdown input is ordinary Markdown. Use semantic headings, readable code and tables only where useful.
+
+## Inspection and delivery
+
+An available PDF reader can check text and pages; text extraction alone does not prove layout. A rendering error is a failed export. Fix its cause and render the requested format again; HTML/Markdown are not substitutes for a requested PDF.
 
 After successful generation, call `artifact.present` with the returned artifact ID and readable label, then cite the returned URI. For an existing file, call `artifact.prepare` first. For a live HTTP(S) preview, `artifact.preview` registers the URL without fetching or verifying it.
 

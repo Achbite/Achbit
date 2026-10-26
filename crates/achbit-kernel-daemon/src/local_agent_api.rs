@@ -563,12 +563,7 @@ impl LocalAgentRuntime {
                             binding["runId"] = json!(request.run_id);
                             binding
                         },
-                    ))
-                    .with_document_python(
-                        settings
-                            .get("agent.documents.pythonPath")
-                            .and_then(Value::as_str),
-                    ),
+                    )),
             ),
         )
         .map_err(RunPreparationError::from)?;

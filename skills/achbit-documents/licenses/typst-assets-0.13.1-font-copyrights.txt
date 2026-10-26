@@ -1,0 +1,117 @@
+Font copyright and version records from typst-assets 0.13.1
+Source: OpenType/TrueType name tables in the published crate, files/fonts/.
+Values below are copied from name ID 0 (copyright) and name ID 5 (version).
+Full license terms are preserved in typst-assets-0.13.1-NOTICE.txt and LPPL-1.3c.txt.
+
+========================================================================
+DejaVuSansMono-Bold.ttf
+Version record: Version 2.37
+Copyright record:
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
+DejaVu changes are in public domain
+
+
+========================================================================
+DejaVuSansMono-BoldOblique.ttf
+Version record: Version 2.37
+Copyright record:
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
+DejaVu changes are in public domain
+
+
+========================================================================
+DejaVuSansMono-Oblique.ttf
+Version record: Version 2.37
+Copyright record:
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
+DejaVu changes are in public domain
+
+
+========================================================================
+DejaVuSansMono.ttf
+Version record: Version 2.37
+Copyright record:
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
+DejaVu changes are in public domain
+
+
+========================================================================
+LibertinusSerif-Bold.otf
+Version record: Version 7.051;RELEASE
+Copyright record:
+Copyright © 2012-2024 The Libertinus Project Authors.
+
+========================================================================
+LibertinusSerif-BoldItalic.otf
+Version record: Version 7.051;RELEASE
+Copyright record:
+Copyright © 2012-2024 The Libertinus Project Authors.
+
+========================================================================
+LibertinusSerif-Italic.otf
+Version record: Version 7.051;RELEASE
+Copyright record:
+Copyright © 2012-2024 The Libertinus Project Authors.
+
+========================================================================
+LibertinusSerif-Regular.otf
+Version record: Version 7.051;RELEASE
+Copyright record:
+Copyright © 2012-2024 The Libertinus Project Authors.
+
+========================================================================
+LibertinusSerif-Semibold.otf
+Version record: Version 7.051;RELEASE
+Copyright record:
+Copyright © 2012-2024 The Libertinus Project Authors.
+
+========================================================================
+LibertinusSerif-SemiboldItalic.otf
+Version record: Version 7.051;RELEASE
+Copyright record:
+Copyright © 2012-2024 The Libertinus Project Authors.
+
+========================================================================
+NewCM10-Bold.otf
+Version record: Version: 7.0.1
+Copyright record:
+(C) 2019-2020 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+
+========================================================================
+NewCM10-BoldItalic.otf
+Version record: Version: 7.0.1
+Copyright record:
+Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+
+========================================================================
+NewCM10-Italic.otf
+Version record: Version: 7.0.1
+Copyright record:
+Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+
+========================================================================
+NewCM10-Regular.otf
+Version record: Version: 7.0.1
+Copyright record:
+(C) 2019-2024 Antonis Tsolomitis. This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+
+========================================================================
+NewCMMath-Bold.otf
+Version record: 5.3.0
+Copyright record:
+(C) 2019-2021 Antonis Tsolomitis. 
+This work is released under the GUST Font License -- see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+
+========================================================================
+NewCMMath-Book.otf
+Version record: 4.0
+Copyright record:
+(C) 2019-2021 Antonis Tsolomitis. 
+This work is released under the GUST Font License -- see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.
+
+========================================================================
+NewCMMath-Regular.otf
+Version record: 4.0
+Copyright record:
+(C) 2019-2021 Antonis Tsolomitis. 
+This work is released under the GUST Font License -- see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details.

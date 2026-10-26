@@ -913,7 +913,7 @@
     "settings.search.terms.general": "语言 文件 默认打开 阅读 导航密度 上下文栏 用量浮窗 货币 推理详情",
     "settings.search.terms.gui": "主题 强调色 字体 字号 配色 外观",
     "settings.search.terms.agent": "系统提示 回复语言 自动上下文管理 压缩 阈值 token",
-    "settings.search.terms.environment": "项目执行环境 运行位置 PDF 生成环境 Python WeasyPrint 工作区 Shell 环境上下文 开发命令 刷新",
+    "settings.search.terms.environment": "项目执行环境 运行位置 工作区 Shell 环境上下文 开发命令 刷新",
     "settings.search.terms.permissions": "读写 权限 工程决策 网络 外部操作 命令黑名单 command denylist blacklist",
     "settings.search.terms.llm": "模型 服务 供应商 模型名 API 密钥 用量 缓存 token",
     "settings.search.terms.plugins": "工具 界面 扩展 添加 本地 位置 连接",
@@ -1543,10 +1543,6 @@
     "agent.web.search.authHeaderName": {
       "label": "Web 搜索认证头",
       "description": "自定义搜索端点使用的认证头；Brave 使用 X-Subscription-Token。"
-    },
-    "agent.documents.pythonPath": {
-      "label": "PDF 渲染 Python",
-      "description": "已安装 WeasyPrint 的 Python 解释器。留空使用文档运行环境或系统 Python；HTML 和 Markdown 导出无需额外运行环境。"
     },
     "agent.web.search.authSecretRef": {
       "label": "Web 搜索认证 Secret",

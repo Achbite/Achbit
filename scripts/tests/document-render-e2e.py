@@ -22,6 +22,7 @@ HTML = (fixture.ROOT / "skills/achbit-documents/assets/document.html").read_text
     "替换为用户要求的正文。根据实际内容增删章节，不保留示例文字。",
     "Document rendering verification. 中文正文、标题层级和留白。<strong>重点信息</strong>保持清晰。").replace(
     "</main>", '<section style="break-before:page"><h2>第二页 · Second page</h2><p>Selectable PDF text.</p></section></main>')
+TYPST = (fixture.ROOT / "skills/achbit-documents/assets/document.typ").read_text()
 MARKDOWN = "# 文档报告\n\n清晰的 **Markdown** 正文。\n\n| 格式 | 用途 |\n| --- | --- |\n| PDF | 分享 |\n| HTML | 浏览 |\n"
 
 
@@ -76,7 +77,7 @@ class Handler(fixture.MockProviderHandler):
             elif state.calls == 3:
                 self._send_tool_calls([
                     ("html", renderer, {"path": "报告.html", "format": "html", "content": HTML}),
-                    ("pdf", renderer, {"path": "报告.pdf", "format": "pdf", "content": HTML}),
+                    ("pdf", renderer, {"path": "报告.pdf", "format": "pdf", "content": TYPST}),
                     ("markdown", renderer, {"path": "报告.md", "format": "markdown", "content": MARKDOWN}),
                     ("missing", reader, {"path": "missing.txt"}),
                 ])

@@ -15,7 +15,6 @@ import CompletionSoundSettings from '../CompletionSoundSettings';
 import { hasDesktopNotifications } from '../../../services/runtimeAdapter';
 import SettingsField from '../SettingsField';
 import WorkspaceSandboxSettings from './WorkspaceSandboxSettings';
-import DocumentEnvironmentSettings from './DocumentEnvironmentSettings';
 import CommandDenylistSettings from './CommandDenylistSettings';
 
 interface RuntimeProps {
@@ -78,7 +77,7 @@ export function settingsSearchDefinitions(language: ReturnType<typeof normalizeU
     general: GENERAL_KEYS,
     gui: APPEARANCE_KEYS,
     agent: [...AGENT_RESPONSE_KEYS, ...CONTEXT_MANAGEMENT_KEYS, ...AGENT_INSTRUCTION_KEYS],
-    environment: [...(os === 'windows' ? AGENT_SHELL_KEYS : []), 'agent.documents.pythonPath'],
+    environment: os === 'windows' ? AGENT_SHELL_KEYS : [],
     permissions: AGENT_PERMISSION_KEYS,
     llm: AGENT_WEB_KEYS,
   };
@@ -228,7 +227,6 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
       {category === 'agent' && renderCard(null, [...response, ...contextManagement, ...instructions])}
       {category === 'environment' && environment?.os === 'windows' && renderCard('Windows Shell', shellSettings)}
-      {category === 'environment' && <DocumentEnvironmentSettings language={language} />}
       {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
       {category === 'environment' && <div className="settings-card">
         <h3 className="settings-card__title">{chinese ? '环境上下文' : 'Environment context'}</h3>

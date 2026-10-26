@@ -109,6 +109,8 @@ class SharedResourcesTests(unittest.TestCase):
             write(root, 'userspace/gui/dist-achbit-gui/index.html', b'GUI')
             write(root, 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp/index.js', b'upstream')
             write(root, 'LICENSE', b'license')
+            write(root, 'skills/achbit-documents/licenses/typst.txt', b'Native renderer license')
+            write(root, 'skills/achbit-documents/THIRD_PARTY_NOTICES.md', b'Native renderer notices')
             write(root, 'dependencies.json', b'[]')
             public = {
                 'distribution.md': b'Installation',
@@ -123,6 +125,8 @@ class SharedResourcesTests(unittest.TestCase):
             package.shared(root, destination, root / 'dependencies.json')
 
             self.assertEqual(files(destination / 'docs'), public)
+            self.assertEqual((destination / 'licenses/documents/licenses/typst.txt').read_bytes(), b'Native renderer license')
+            self.assertEqual((destination / 'licenses/documents/THIRD_PARTY_NOTICES.md').read_bytes(), b'Native renderer notices')
             self.assertEqual((destination / 'session-core/dist/index.js').read_bytes(), b'export {};')
             self.assertFalse((destination / 'session-core/dist/debug').exists())
 

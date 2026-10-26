@@ -73,7 +73,7 @@ Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 �
 
 Skill、CLI 插件及运行设置的生效边界适用于 GUI、CLI 和 TUI；UI 插件仅影响图形界面。完整程序更新后重新打开 Achbit。详见[插件说明](product/ui-plugins.md)和[模型服务](product/model-services.md)。
 
-PDF 阅读使用包内 Web 阅读器，不需要安装 Python。PDF 导出需要可用的 WeasyPrint Python 环境，可在设置中指定 Python 路径。
+PDF 阅读使用包内 Web 阅读器和本地 Rust PDF 插件。Documents 插件的 PDF 导出使用包内 Rust Typst 渲染器，输入为自包含 Typst 源码；HTML 和 Markdown 导出保持原格式。用户无需安装或配置 Python。
 
 ## 品牌与保留标识
 

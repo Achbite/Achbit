@@ -492,7 +492,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
     } else if (calls === 2) {
       const renderer = request.tools.find((entry) => entry.inputSchema.properties?.format?.enum?.includes('pdf'));
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:document-render', name: renderer.name,
-        input: { workspace: 'primary', path: '报告.pdf', format: 'pdf', content: '<h1>Report</h1>' } });
+        input: { workspace: 'primary', path: '报告.pdf', format: 'pdf', content: '= Report' } });
     } else if (calls === 3) {
       const current = await actor.snapshot();
       assert.equal(current.todoList, null, 'confirmation and file execution do not manufacture progress');
@@ -507,6 +507,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
   const kernel = emptyKernel({ async execute(request) {
     assert.equal(request.toolName, 'document.render');
     assert.equal(request.input.workspaceId, workspaceBinding.workspaceId);
+    assert.equal(request.input.content, '= Report');
     assert.deepEqual(request.planAuthorities[0].coveredOperations, [{ workspaceId: workspaceBinding.workspaceId, operation: 'document.render', target: '报告.pdf' }]);
     const reply = completedExecutionReply(request, { artifacts: [artifact] });
     documentRecordId = reply.record.recordId;
@@ -3570,14 +3571,14 @@ test('settings drafts survive refreshes and failed saves without converting an e
 
 test('settings search matches words across field and model metadata without order dependence', async (t) => {
   const { matchesSettingsQuery } = await loadGuiModule(t, '/src/components/settings-center/settingsSearch.tsx');
-  assert.equal(matchesSettingsQuery('PDF Python', 'PDF 生成环境', 'WeasyPrint Python'), true);
+  assert.equal(matchesSettingsQuery('项目 Shell', '项目执行环境', 'Shell 配置'), true);
   assert.equal(matchesSettingsQuery('flash deepseek', 'DeepSeek Flash', 'deepseek-v4-flash'), true);
   assert.equal(matchesSettingsQuery('shell windows', 'Windows Shell'), true);
   assert.equal(matchesSettingsQuery('github python', 'GitHub', 'Read repositories'), false);
 });
 
-test('environment settings use the Host platform for Windows controls without changing persisted values', async (t) => {
-  const [{ AgentSettingsSection }, { useSettingsStore }] = await loadGuiModules(t, [
+test('environment settings keep Windows controls platform-specific and need no document interpreter', async (t) => {
+  const [{ AgentSettingsSection, settingsSearchDefinitions }, { useSettingsStore, agentSettingDefinitions }] = await loadGuiModules(t, [
     '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
     '/src/state/settingsStore.ts',
   ]);
@@ -3593,7 +3594,12 @@ test('environment settings use the Host platform for Windows controls without ch
   const mac = renderToStaticMarkup(React.createElement(AgentSettingsSection, { category: 'environment' }));
   assert.doesNotMatch(mac, /aria-label="Windows Shell"/);
   assert.doesNotMatch(mac, /aria-label="Git Bash (路径|path)"/);
-  assert.match(mac, /WeasyPrint/);
+  assert.doesNotMatch(mac, /PDF generation environment|PDF 生成环境|WeasyPrint/);
+  assert.equal(Object.hasOwn(settings, 'agent.documents.pythonPath'), false);
+  assert.equal(agentSettingDefinitions().some(({ key }) => key === 'agent.documents.pythonPath'), false);
+  for (const os of ['macos', 'windows']) {
+    assert.equal(settingsSearchDefinitions('en-US', os).some(({ id }) => id === 'agent.documents.pythonPath'), false);
+  }
   initialSnapshot.environment = { os: 'windows' };
   useSettingsStore.setState({ environment: initialSnapshot.environment });
   const windows = renderToStaticMarkup(React.createElement(AgentSettingsSection, { category: 'environment' }));

@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_PDF_BYTES: usize = 32 * 1024 * 1024;
 const PDF_TIMEOUT: Duration = Duration::from_secs(90);
-const PDF_SCRIPT: &str = include_str!("../../../skills/achbit-documents/scripts/render_pdf.py");
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -28,7 +27,7 @@ pub struct DocumentContext<'a> {
     pub invocation_id: &'a str,
     pub workspace_id: &'a str,
     pub target: &'a Path,
-    pub python: Option<&'a Path>,
+    pub renderer: &'a Path,
     pub cancelled: &'a dyn Fn() -> bool,
 }
 
@@ -39,7 +38,7 @@ pub fn input_schema() -> Value {
         "properties": {
             "path":{"type":"string", "minLength":1, "description":"Workspace-relative output filename, ending in .html, .pdf or .md."},
             "format":{"type":"string", "enum":["html","pdf","markdown"]},
-            "content":{"type":"string", "minLength":1, "description":"Complete self-contained HTML for html/pdf, or Markdown source for markdown. Up to 1 MiB UTF-8."}
+            "content":{"type":"string", "minLength":1, "description":"Complete self-contained Typst source for pdf, HTML source for html, or Markdown source for markdown. For PDF, images must use inline bytes; external files and imports are unavailable. Up to 1 MiB UTF-8."}
         }
     })
 }
@@ -82,7 +81,12 @@ pub fn prepare(input: Value) -> ToolResult<DocumentInput> {
 pub fn render(input: &DocumentInput, context: DocumentContext<'_>) -> ToolResult<Value> {
     check_cancelled(context.cancelled)?;
     let bytes = if input.format == "pdf" {
-        render_pdf(&input.content, context.python, context.cancelled)?
+        render_pdf(
+            &input.content,
+            context.renderer,
+            context.cancelled,
+            PDF_TIMEOUT,
+        )?
     } else {
         input.content.as_bytes().to_vec()
     };
@@ -156,20 +160,19 @@ impl Drop for RendererProcess {
 }
 
 fn render_pdf(
-    html: &str,
-    python: Option<&Path>,
+    source: &str,
+    program: &Path,
     cancelled: &dyn Fn() -> bool,
+    timeout: Duration,
 ) -> ToolResult<Vec<u8>> {
-    let program =
-        python.unwrap_or_else(|| Path::new(if cfg!(windows) { "python" } else { "python3" }));
     let mut command = Command::new(program);
     command
-        .args(["-I", "-c", PDF_SCRIPT])
+        .arg("--render-pdf")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let owned = spawn_owned_host_process(&mut command).map_err(|error| {
-        ToolError::new("document_renderer_unavailable", format!("Cannot start {}: {error}. Configure the document Python interpreter with WeasyPrint installed.", program.display()))
+        ToolError::new("document_renderer_unavailable", format!("Cannot start {}: {error}. The bundled document renderer is required for PDF output.", program.display()))
     })?;
     let mut process = RendererProcess {
         owned,
@@ -194,7 +197,7 @@ fn render_pdf(
         .take()
         .expect("renderer stderr is piped");
     std::thread::scope(|scope| {
-        let writer = scope.spawn(move || stdin.write_all(html.as_bytes()));
+        let writer = scope.spawn(move || stdin.write_all(source.as_bytes()));
         let output = scope.spawn(move || read_bounded(stdout, MAX_PDF_BYTES));
         let errors = scope.spawn(move || read_bounded(stderr, 16 * 1024));
         let start = Instant::now();
@@ -206,7 +209,7 @@ fn render_pdf(
                     "PDF rendering was cancelled.",
                 ));
             }
-            if start.elapsed() >= PDF_TIMEOUT {
+            if start.elapsed() >= timeout {
                 process.stop();
                 break Err(ToolError::new(
                     "document_render_timeout",
@@ -279,7 +282,7 @@ mod tests {
             invocation_id: "attempt:document",
             workspace_id: "workspace:documents",
             target,
-            python: None,
+            renderer: Path::new("unused-renderer"),
             cancelled,
         }
     }
@@ -348,12 +351,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("report.pdf");
         std::fs::write(&target, "original file").unwrap();
-        let missing = directory.path().join("missing-python");
+        let missing = directory.path().join("missing-renderer");
         let mut scope = context(&target, &|| false);
-        scope.python = Some(&missing);
+        scope.renderer = &missing;
         let error = render(
-            &prepare(json!({"path":"report.pdf", "format":"pdf", "content":"<h1>Report</h1>"}))
-                .unwrap(),
+            &prepare(json!({"path":"report.pdf", "format":"pdf", "content":"= Report"})).unwrap(),
             scope,
         )
         .unwrap_err();
@@ -361,18 +363,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "original file");
     }
 
+    #[cfg(unix)]
+    fn renderer_script(directory: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = directory.join("renderer");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn pdf_export_uses_the_document_runtime_and_retains_readable_text() {
+    fn renderer_output_is_bounded_and_deadline_stops_the_process() {
         let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("report.pdf");
-        let python = std::env::var_os("DEEPCODE_DOCUMENT_PYTHON").map(std::path::PathBuf::from)
-            .expect("Run required tests in the project Docker environment, which includes the document renderer.");
-        let mut scope = context(&target, &|| false);
-        scope.python = Some(&python);
-        let result = render(&prepare(json!({"path":"report.pdf", "format":"pdf", "content":"<!doctype html><html><meta charset=utf-8><style>@page { size:A4; margin:20mm } body {font-family: sans-serif}</style><h1>Document export</h1><p>Readable output from the real renderer.</p></html>"})).unwrap(), scope).unwrap();
-        assert_eq!(result["mediaType"], "application/pdf");
-        let extracted = pdf_extract::extract_text(&target).unwrap();
-        assert!(extracted.contains("Document export"));
-        assert!(extracted.contains("Readable output"));
+        let oversized = renderer_script(directory.path(), "head -c 33554433 /dev/zero");
+        let error = render_pdf("= Report", &oversized, &|| false, PDF_TIMEOUT).unwrap_err();
+        assert_eq!(error.code, "document_output_invalid");
+
+        let pid_file = directory.path().join("pid");
+        let script = renderer_script(
+            directory.path(),
+            &format!("echo $$ > '{}'\nexec sleep 30", pid_file.display()),
+        );
+        let started = Instant::now();
+        let error =
+            render_pdf("= Report", &script, &|| false, Duration::from_millis(250)).unwrap_err();
+        assert_eq!(error.code, "document_render_timeout");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        assert!(!Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
     }
 }

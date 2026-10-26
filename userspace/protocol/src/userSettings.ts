@@ -67,7 +67,6 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   'agent.web.search.endpointTemplate': '',
   'agent.web.search.authHeaderName': 'Authorization',
   'agent.web.search.authSecretRef': '',
-  'agent.documents.pythonPath': '',
   'skills.autoLoad': true,
   'skills.mounts': '[]',
   'mcp.autoLoad': false,

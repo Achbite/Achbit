@@ -913,7 +913,7 @@
     "settings.search.terms.general": "language files default open reading Reader VS Code navigation density context rail usage widget currency reasoning details",
     "settings.search.terms.gui": "theme accent font size palette colors appearance",
     "settings.search.terms.agent": "system prompt response language automatic context management compaction threshold tokens",
-    "settings.search.terms.environment": "project execution environment run location PDF Python WeasyPrint workspace shell context developer commands refresh",
+    "settings.search.terms.environment": "project execution environment run location workspace shell context developer commands refresh",
     "settings.search.terms.permissions": "read write permissions engineering decisions network external actions command denylist blacklist",
     "settings.search.terms.llm": "models services provider name API key usage cache token",
     "settings.search.terms.plugins": "tools interface extensions add local location connection",
@@ -1543,10 +1543,6 @@
     "agent.web.search.authHeaderName": {
       "label": "Web Search Auth Header",
       "description": "Authentication header for a custom search endpoint; Brave uses X-Subscription-Token."
-    },
-    "agent.documents.pythonPath": {
-      "label": "PDF renderer Python",
-      "description": "Python interpreter with WeasyPrint installed. Leave empty to use the document runtime environment or system Python. HTML and Markdown export need no extra runtime."
     },
     "agent.web.search.authSecretRef": {
       "label": "Web Search Auth Secret",

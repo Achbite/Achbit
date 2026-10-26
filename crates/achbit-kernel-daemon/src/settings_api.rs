@@ -330,7 +330,6 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.web.search.endpointTemplate": "",
         "agent.web.search.authHeaderName": "Authorization",
         "agent.web.search.authSecretRef": "",
-        "agent.documents.pythonPath": "",
         "skills.autoLoad": true,
         "skills.mounts": "[]",
         "mcp.autoLoad": false,
@@ -432,12 +431,6 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
     }
     crate::local_agent_kernel::LocalAgentPermissionPolicy::from_settings(settings)
         .map_err(|error| error.message)?;
-    if settings
-        .get("agent.documents.pythonPath")
-        .is_some_and(|value| !value.is_string())
-    {
-        return Err("agent.documents.pythonPath 必须是字符串。".into());
-    }
     crate::session_environment::response_language_setting(settings)?;
     crate::session_environment::validate_settings(settings)?;
     if let Some(object) = settings.as_object() {

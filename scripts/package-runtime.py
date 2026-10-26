@@ -42,6 +42,9 @@ def shared(root, destination, dependency_list):
     shutil.copytree(root / 'docs/product', destination / 'docs/product')
     shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
+    document_notices = root / 'skills/achbit-documents'
+    shutil.copytree(document_notices / 'licenses', destination / 'licenses/documents/licenses')
+    shutil.copy2(document_notices / 'THIRD_PARTY_NOTICES.md', destination / 'licenses/documents/THIRD_PARTY_NOTICES.md')
     # The upstream package bundles its runtime dependencies. Keep its public
     # entrypoint and licenses intact; no host npm installation or downloads.
     chrome = (root / 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp').resolve()
