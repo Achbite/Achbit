@@ -1153,7 +1153,8 @@ async function consumeProviderOutput(
   onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
-  deps = { ...deps, updateAssistantDraft: activity.updateDraft };
+  deps = { ...deps, updateAssistantDraft: activity.updateDraft,
+    recordVisibleResponse: request.purpose === 'agent' ? deps.recordVisibleResponse : undefined };
   let deltas = '';
   let reasoningDeltas = '';
   let completeMessage: {
@@ -1766,11 +1767,17 @@ function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {
   publish();
   return {
     updateDraft(next) {
+      // Independent reviews and compaction report activity, never dialogue content.
+      if (request.purpose !== 'agent') return;
       draft = next ? { ...next, ...(draft.planPreview ? { planPreview: draft.planPreview } : {}) }
         : { runId: request.runId, turnId: request.requestId, blocks: [] };
       publish();
     },
-    updatePlanPreview(preview) { draft = { ...draft, planPreview: preview }; publish(); },
+    updatePlanPreview(preview) {
+      if (request.purpose !== 'agent') return;
+      draft = { ...draft, planPreview: preview };
+      publish();
+    },
     observe(event) {
       if (event.type === 'reasoning.delta' && event.data.text) {
         activity.phase = 'reasoning';
