@@ -106,12 +106,12 @@ function isIdentifier(value: unknown): value is string {
 
 export function permissionInstructionText(settings: UserSettings, interactionRequest = 'interaction_request', planPublish = 'plan_publish'): string {
   const workspaceAutonomyInstruction = settings['agent.permissions.workspaceMutation'] === 'allow'
-    ? 'Work directly within the bound workspaces. Separate execution permissions still apply.'
+    ? "Work directly within the bound workspaces and the user's authorized scope; no additional Plan approval is required. Still clarify missing facts or material decisions. Separate execution permissions still apply."
     : settings['agent.permissions.workspaceMutation'] === 'review'
-      ? `For project changes outside confirmed scope, call ${planPublish}. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope for related work. Shell execution approval is separate.`
-    : `For project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Proceed directly with related work inside confirmed scope, including delegated parent scope. Project reads need no Plan.`;
+      ? `Submit a Plan with ${planPublish} for project changes outside confirmed scope. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope and submit again only when new or expanded authorization is needed. Project reads need no Plan.`
+    : `Investigate as needed and propose a clearly scoped change. Before making project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Then carry out related work within that scope autonomously, including delegated parent scope, without seeking approval again for ordinary implementation details. Request additional scope only when needed. Project reads need no Plan.`;
   const engineeringDecisionInstruction = settings['agent.permissions.engineeringDecisions'] === 'delegate'
     ? `Engineering decisions are delegated. Choose the smallest sound approach; use ${interactionRequest} for missing facts or decisions outside the task.`
     : `Choose local implementation details within the agreed approach. Use ${interactionRequest} before materially changing requirements, public contracts, fact ownership or that approach.`;
-  return `${workspaceAutonomyInstruction}\nSession working directories hold editable drafts and previews; changes there need no Plan.\n${engineeringDecisionInstruction}`;
+  return `${workspaceAutonomyInstruction}\nSession working directories may hold drafts and previews without a Plan. Follow the current engineering-decision setting independently of Plan approval. Plan authority, execution approval, and progress tracking serve different purposes; a Todo list grants no authority and does not prevent reporting a result.\n${engineeringDecisionInstruction}`;
 }

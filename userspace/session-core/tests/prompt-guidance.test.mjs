@@ -23,7 +23,20 @@ test('core guidance supports autonomous work while retaining evidence and execut
   assert.match(text, /completion claims with evidence/u);
   assert.match(text, /declared build\/test entrypoints and required environment/u);
   assert.match(text, /Read relevant product guidance when needed/u);
-  assert.ok(text.length < 1200, 'stable guidance remains compact; procedures live in product docs');
+  // TCR: test-change-requests/TCR-core-guidance-pi-20261027.md in the parent workspace.
+  // Preserve essential behavior rather than imposing the previous 1200-character ceiling.
+  assert.match(text, /only analysis, a proposal, or a review, stay within that stage/u);
+  assert.match(text, /Before a substantial investigation or multi-step task, briefly explain/u);
+  assert.match(text, /Answer simple questions directly/u);
+  assert.match(text, /meaningful findings, changes of approach, blockers, or substantial waits/u);
+  assert.match(text, /Avoid long silent chains of tools and narration of every operation/u);
+  assert.match(text, /Reuse existing results; repeat a check only to resolve a concrete uncertainty/u);
+  assert.match(text, /Distinguish observations, inferences, and unverified hypotheses/u);
+  assert.match(text, /false premise or no change needed is a valid outcome/u);
+  assert.match(text, /If blocked, explain what is complete/u);
+  assert.match(text, /language and format for progress and final answers/u);
+  assert.doesNotMatch(text, /plan_publish|interaction_request|workspaceId|mutationManifest|\[DONE:|\[PLAN MODE ACTIVE\]/u,
+    'tool syntax, dynamic identities and mode-specific formats do not belong in the stable core');
 });
 
 test('delegation guidance describes opportunities, direct work and context needed by the child', () => {
@@ -88,13 +101,24 @@ test('concise session guidance preserves aliases, pending decisions and optional
   assert.ok(ask.includes(names.interactionRequest));
   assert.match(ask, /Choose local implementation details/u);
   assert.match(ask, /before materially changing requirements/u);
+  assert.match(ask, /wait for confirmation/u);
+  assert.match(ask, /without seeking approval again for ordinary implementation details/u);
+  assert.match(ask, /Project reads need no Plan/u);
+  assert.match(ask, /drafts and previews without a Plan/u);
+  assert.match(ask, /Todo list grants no authority/u);
   const delegated = permissionInstructionText({ 'agent.permissions.workspaceMutation': 'allow', 'agent.permissions.engineeringDecisions': 'delegate' });
   assert.match(delegated, /Work directly within the bound workspaces/u);
   assert.match(delegated, /execution permissions still apply/u);
   assert.doesNotMatch(delegated, /confirmed automatically/u);
+  assert.match(delegated, /no additional Plan approval is required/u);
+  assert.doesNotMatch(delegated, /plan_publish|wait for confirmation|independent Plan reviewer/u);
   const review = permissionInstructionText({ 'agent.permissions.workspaceMutation': 'review' }, names.interactionRequest, names.planPublish);
   assert.match(review, /independent Plan reviewer/u);
   assert.match(review, /you do not approve your own Plan/u);
+  assert.match(review, /new or expanded authorization is needed/u);
+  assert.match(review, /Project reads need no Plan/u);
+  assert.match(review, /drafts and previews without a Plan/u);
+  assert.doesNotMatch(review, /wait for confirmation|no additional Plan approval/u);
   const noPlan = sessionControlInstructions(names, true, true, undefined, false);
   assert.equal(noPlan.includes(names.planPublish), false);
 });
