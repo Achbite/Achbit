@@ -1,3 +1,5 @@
+import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
+import { openExternalUrl } from '../../../services/runtimeAdapter';
 import ToggleSwitch from '../../shared/ToggleSwitch';
 import { localizePlugin } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
@@ -38,7 +40,8 @@ type Item = {
   path?: string;
   error?: string;
   status: string;
-  kind: 'ui' | 'tool' | 'guidance';
+  kind: 'ui' | 'tool' | 'guidance' | 'service';
+  service?: ServicePluginStatus;
   source?: Source;
 };
 function sourceList(value: unknown): Source[] {
@@ -56,6 +59,8 @@ export default function PluginsSection() {
   const language = normalizeUiLanguage(settings['workbench.language']),
     chinese = language === 'zh-CN';
   const ui = useUiPlugins();
+  const [services, setServices] = useState<ServicePluginStatus[]>([]);
+  const [serviceError, setServiceError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<PluginCatalogItem[]>([]);
   const [metadata, setMetadata] = useState<Record<string, LocalPluginInspection>>({});
   const [metadataErrors, setMetadataErrors] = useState<Record<string, string>>({});
@@ -104,6 +109,16 @@ export default function PluginsSection() {
     settings['plugins.disabled'],
     revision,
   ]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void watchServicePlugins(controller.signal, (value) => {
+      setServices(value);
+      setServiceError(null);
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setServiceError(errorText(reason));
+    });
+    return () => controller.abort();
+  }, [settings['plugins.services'], revision]);
   useEffect(() => {
     const controller = new AbortController();
     for (const source of config.ui) {
@@ -181,6 +196,16 @@ export default function PluginsSection() {
       source,
     });
   }
+  for (const service of services) {
+    items.push({
+      id: `service:${service.id}`, name: service.name, description: service.description,
+      enabled: service.enabled, key: 'plugins.services', sourceId: service.id, path: service.path,
+      error: service.error ?? undefined, kind: 'service', service,
+      status: service.status === 'running' ? (chinese ? '运行中' : 'Running')
+        : service.status === 'failed' ? t(language, 'settings.plugins.failed')
+        : service.enabled ? (chinese ? '已停止' : 'Stopped') : t(language, 'settings.plugins.disabled'),
+    });
+  }
   useSettingsSearchEntries('plugins', items.map((item) => ({ id: `plugin-${item.id}`, title: item.name, keywords: item.description, category: 'plugins' })));
   const shown = items.filter(
     (item) =>
@@ -249,7 +274,9 @@ export default function PluginsSection() {
       const key =
         candidate.kind === 'ui'
           ? 'workbench.uiPlugins'
-          : candidate.kind === 'cli'
+          : candidate.kind === 'service'
+            ? 'plugins.services'
+            : candidate.kind === 'cli'
             ? 'plugins.sources'
             : 'skills.mounts';
       const list = sourceList(useSettingsStore.getState().effectiveSettings[key]);
@@ -257,7 +284,7 @@ export default function PluginsSection() {
         list.some(
           (source) =>
             source.path === candidate.path ||
-            (candidate.kind === 'cli' && source.id === candidate.id),
+            (['cli', 'service'].includes(candidate.kind) && source.id === candidate.id),
         )
       )
         throw new Error(t(language, 'settings.plugins.duplicate'));
@@ -265,7 +292,7 @@ export default function PluginsSection() {
         candidate.kind === 'ui'
           ? { path: candidate.path, enabled: true }
           : {
-              id: candidate.kind === 'cli' ? candidate.id : crypto.randomUUID(),
+              id: ['cli', 'service'].includes(candidate.kind) ? candidate.id : crypto.randomUUID(),
               path: candidate.path,
               enabled: true,
             };
@@ -420,9 +447,18 @@ export default function PluginsSection() {
                   <dd>
                     {item.kind === 'ui'
                       ? t(language, 'settings.plugins.uiUpdate')
+                      : item.kind === 'service' ? (chinese ? '停用后重新启用以加载更新。' : 'Disable and enable to load updates.')
                       : t(language, 'settings.plugins.toolUpdate')}
                   </dd>
                 </dl>
+                {item.service && (
+                  <div>
+                    {item.service.baseUrl && <p>{chinese ? '服务地址：' : 'Service URL: '}<code>{item.service.baseUrl}</code></p>}
+                    {item.service.pageUrl && <button className="settings-button" onClick={() => void openExternalUrl(item.service!.pageUrl!).catch(reason => setItemErrors(old => ({ ...old, [item.id]: errorText(reason) })))}>{chinese ? '打开插件页面' : 'Open plugin page'}</button>}
+                    {item.service.baseUrl && <button className="settings-button" onClick={() => void navigator.clipboard.writeText(item.service!.baseUrl!).catch(reason => setItemErrors(old => ({ ...old, [item.id]: errorText(reason) })))}>{chinese ? '复制服务地址' : 'Copy service URL'}</button>}
+                    <details><summary>{chinese ? '插件数据位置' : 'Plugin data location'}</summary><code>{item.service.stateDirectory}</code></details>
+                  </div>
+                )}
                 {item.path && (
                   <details>
                     <summary>{t(language, 'settings.plugins.location')}</summary>
@@ -481,6 +517,7 @@ export default function PluginsSection() {
           </section>
         ))}
       </div>
+      {serviceError && <p role="alert" className="settings-error">{serviceError}</p>}
       {!shown.length && !error && (
         <p className="settings-plugin-empty">
           {chinese ? '暂无匹配的插件。' : 'No matching plugins.'}

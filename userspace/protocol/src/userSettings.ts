@@ -72,6 +72,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   'mcp.autoLoad': false,
   'mcp.servers': '[]',
   'plugins.sources': '[]',
+  'plugins.services': '[]',
   'plugins.disabled': '[]',
 };
 

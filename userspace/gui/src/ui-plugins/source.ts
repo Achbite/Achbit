@@ -39,7 +39,7 @@ export async function watchUiPlugins(sources: UiPluginSource[], signal: AbortSig
 }
 
 export interface LocalPluginInspection {
-  kind: 'ui' | 'cli' | 'guidance'; path: string; id: string; name: string; description: string;
+  kind: 'ui' | 'cli' | 'guidance' | 'service'; path: string; id: string; name: string; description: string;
   slots?: string[]; command?: string; args?: string[]; entry?: string;
 }
 export async function inspectLocalPlugin(path: string, signal?: AbortSignal): Promise<LocalPluginInspection> {
@@ -50,6 +50,6 @@ export async function inspectLocalPlugin(path: string, signal?: AbortSignal): Pr
   const result = await response.json();
   if (!result.ok) throw new Error(`${result.error}: ${result.message}`);
   const item = result.data;
-  if (!item || !['ui','cli','guidance'].includes(item.kind) || !['path','id','name','description'].every(key=>typeof item[key]==='string')) throw new Error('Invalid plugin manifest metadata.');
+  if (!item || !['ui','cli','guidance','service'].includes(item.kind) || !['path','id','name','description'].every(key=>typeof item[key]==='string')) throw new Error('Invalid plugin manifest metadata.');
   return item;
 }

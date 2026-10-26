@@ -83,10 +83,25 @@ pub(crate) async fn host_shutdown(
 pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
     host.execution.stop_admission();
     crate::host_lifecycle::begin_host_shutdown();
+    let gui = host.gui.clone();
+    let service_cleanup_ok = match tokio::task::spawn_blocking(move || {
+        gui.lock()
+            .map_err(|_| "Service plugin state lock poisoned".to_string())?
+            .service_plugins
+            .shutdown()
+    })
+    .await
+    {
+        Ok(Ok(())) => true,
+        result => {
+            eprintln!("Service plugin shutdown failed: {result:?}");
+            false
+        }
+    };
     let services = match host.execution.wait().await {
         Ok(services) => services,
         // Initialization cleans up its partial resources before publishing errors.
-        Err(_) => return host.execution.initialization_cleanup_complete(),
+        Err(_) => return service_cleanup_ok && host.execution.initialization_cleanup_complete(),
     };
     let state = &AppState {
         local_agent: services.local_agent,
@@ -120,7 +135,7 @@ pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
                 false
             }
         };
-    session_cleanup_ok && plugin_cleanup_ok
+    service_cleanup_ok && session_cleanup_ok && plugin_cleanup_ok
 }
 
 pub(crate) fn request_host_shutdown() {

@@ -477,6 +477,8 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "host", "inspect"])
         | ("POST", ["api", "host", "computer-preview"])
         | ("POST", ["api", "host", "computer-preview", "activate"])
+        | ("GET", ["api", "plugin-services"])
+        | ("GET", ["api", "plugin-services", "events"])
         | ("GET", ["api", "user-settings"])
         | ("PATCH", ["api", "user-settings"])
         | ("POST", ["api", "user-settings", "workspace-sandbox"])
@@ -488,7 +490,9 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "llm", "usage"])
         | ("GET", ["api", "llm", "prices"])
         | ("POST", ["api", "llm", "auth"])
+        | ("GET", ["api", "conversation", "events"])
         | ("GET", ["api", "conversation", "catalog"])
+        | ("GET", ["api", "conversation", "catalog", "events"])
         | ("GET", ["api", "conversation", "statuses"])
         | ("GET", ["api", "conversation", "plugins"])
         | ("GET", ["api", "conversation", "plugins", "skills"])
@@ -598,6 +602,25 @@ mod tests {
             "GET",
             "/api/conversation/plugins/extra"
         ));
+    }
+
+    #[test]
+    fn host_proxy_exposes_service_status_to_the_plugins_page() {
+        assert!(host_proxy_path_allowed("GET", "/api/plugin-services"));
+        assert!(!host_proxy_path_allowed("POST", "/api/plugin-services"));
+        assert!(!host_proxy_path_allowed(
+            "GET",
+            "/api/plugin-services/extra"
+        ));
+    }
+
+    #[test]
+    fn host_proxy_exposes_live_notifications_only_as_get() {
+        for path in ["/api/conversation/events", "/api/plugin-services/events"] {
+            assert!(host_proxy_path_allowed("GET", path), "{path}");
+            assert!(!host_proxy_path_allowed("POST", path), "{path}");
+            assert!(!host_proxy_path_allowed("GET", &format!("{path}/extra")));
+        }
     }
 
     #[test]

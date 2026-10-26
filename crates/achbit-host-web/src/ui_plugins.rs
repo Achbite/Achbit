@@ -296,40 +296,44 @@ fn inspect_path(path: &str) -> Result<serde_json::Value, String> {
             .and_then(|name| name.to_str())
             .ok_or("插件文件名无法读取")?
     } else {
-        let manifests = ["achbit-ui.json", "achbit-tool.json", "SKILL.md"]
-            .into_iter()
-            .filter(|name| root.join(name).is_file())
-            .collect::<Vec<_>>();
+        let manifests = [
+            "achbit-ui.json",
+            "achbit-tool.json",
+            "achbit-service.json",
+            "SKILL.md",
+        ]
+        .into_iter()
+        .filter(|name| root.join(name).is_file())
+        .collect::<Vec<_>>();
         match manifests.as_slice() {
             [name] => *name,
             [] => return Err(format!("{}：没有找到插件清单", root.display())),
             _ => return Err("文件夹中有多份插件清单，请直接选择需要添加的清单文件。".into()),
         }
     };
+    if manifest_name == achbit_kernel_abi::SERVICE_PLUGIN_MANIFEST {
+        let (manifest, _) = achbit_kernel_abi::ServicePluginManifest::read(root)?;
+        return Ok(
+            json!({"kind":"service","path":root,"id":manifest.id,"name":manifest.name,"description":manifest.description,"entry":manifest.entry,"debugOnly":manifest.debug_only}),
+        );
+    }
     if manifest_name == "achbit-ui.json" {
         let (manifest, _) = read_module(root)?;
         return Ok(
             json!({"kind":"ui","path":root,"id":manifest.id,"name":manifest.name,"description":manifest.description.unwrap_or_else(||"自定阅读、正文或主题展示。".into()),"slots":manifest.slots}),
         );
     }
-    if manifest_name == "achbit-tool.json" {
-        let value: serde_json::Value =
-            serde_json::from_str(&read_utf8(&root.join("achbit-tool.json"), 64 * 1024)?)
-                .map_err(|error| error.to_string())?;
-        for key in ["id", "name", "description", "command", "entry"] {
-            if value[key]
-                .as_str()
-                .is_none_or(|text| text.trim().is_empty())
-            {
-                return Err(format!("achbit-tool.json requires {key}"));
-            }
-        }
+    if manifest_name == achbit_kernel_abi::TOOL_PLUGIN_MANIFEST {
+        let artifact = achbit_kernel_abi::ToolPluginManifest::read(root)?;
+        let manifest = artifact.manifest;
         return Ok(
-            json!({"kind":"cli","path":root,"id":value["id"],"name":value["name"],"description":value["description"],"command":value["command"],"args":value["args"],"entry":value["entry"]}),
+            json!({"kind":"cli","path":root,"id":manifest.id,"name":manifest.name,"description":manifest.description,"command":manifest.command,"args":manifest.args,"entry":manifest.entry}),
         );
     }
     if manifest_name != "SKILL.md" {
-        return Err("请选择 achbit-ui.json、achbit-tool.json 或 SKILL.md。".into());
+        return Err(
+            "请选择 achbit-ui.json、achbit-tool.json、achbit-service.json 或 SKILL.md。".into(),
+        );
     }
     let skill = if chosen.is_file() {
         chosen.clone()
@@ -357,4 +361,64 @@ fn inspect_path(path: &str) -> Result<serde_json::Value, String> {
         });
     let description = field("description").unwrap_or_else(|| "提供任务方法与指导资料。".into());
     Ok(json!({"kind":"guidance","path":skill,"id":name,"name":name,"description":description}))
+}
+
+#[cfg(test)]
+mod plugin_import_tests {
+    #[test]
+    fn service_manifest_inspection_never_runs_entry() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("entry.mjs"),
+            "throw new Error('must not execute during import inspection')",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("achbit-service.json"), r#"{"schema":"achbit.service-plugin.v1","id":"sample","name":"Sample","description":"Import test","entry":"entry.mjs"}"#).unwrap();
+        let value = super::inspect_path(root.path().to_str().unwrap()).unwrap();
+        assert_eq!(value["kind"], "service");
+        assert_eq!(value["id"], "sample");
+        assert_eq!(value["entry"], "entry.mjs");
+    }
+    #[test]
+    fn tool_import_and_runtime_discovery_share_artifact_validation() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let entry = root.path().join("entry.mjs");
+        let path = root.path().join("achbit-tool.json");
+        let valid = json!({"id":"contract-test","name":"Contract test","description":"Protocol test", "command":"node","entry":"entry.mjs","tools":[{"name":"inspect","description":"Read test input","inputSchema":{"type":"object"}}]});
+        let write = |value: &serde_json::Value| {
+            std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap()
+        };
+        std::fs::write(&entry, "throw new Error('inspection must not execute')").unwrap();
+        write(&valid);
+        assert_eq!(
+            super::inspect_path(root.path().to_str().unwrap()).unwrap()["kind"],
+            "cli"
+        );
+        assert_eq!(
+            super::inspect_path(path.to_str().unwrap()).unwrap()["id"],
+            "contract-test"
+        );
+        for invalid in [
+            json!({"tools":[]}),
+            json!({"entry":"nested/entry.mjs"}),
+            json!({"id":"invalid/id"}),
+            json!({"tools":[valid["tools"][0].clone(),valid["tools"][0].clone()]}),
+            json!({"tools":[{"name":"inspect","description":"Protocol test","inputSchema":[]}]}),
+        ] {
+            let mut value = valid.clone();
+            for (key, field) in invalid.as_object().unwrap() {
+                value[key] = field.clone();
+            }
+            write(&value);
+            let imported = super::inspect_path(root.path().to_str().unwrap()).unwrap_err();
+            let discovered = achbit_kernel_abi::ToolPluginManifest::read(root.path())
+                .err()
+                .unwrap();
+            assert_eq!(imported, discovered);
+        }
+        write(&valid);
+        std::fs::remove_file(&entry).unwrap();
+        assert!(super::inspect_path(path.to_str().unwrap()).is_err());
+    }
 }

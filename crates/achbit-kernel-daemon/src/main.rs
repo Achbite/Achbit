@@ -48,6 +48,7 @@ mod model_usage;
 mod prelude;
 mod provider_transport;
 mod routes;
+mod service_plugins;
 mod session_environment;
 mod session_service;
 mod settings_api;
@@ -170,7 +171,7 @@ async fn run() {
         "DeepCode 本地 daemon 只监听 loopback"
     );
 
-    let gui_state = GuiState::open_in(&user_directories).expect("打开当前用户目录");
+    let mut gui_state = GuiState::open_in(&user_directories).expect("打开当前用户目录");
     achbit_host_connection::startup::timing("kernel.gui_state");
     let model_usage = Arc::new(
         model_usage::UsageStore::open(&gui_state.paths.usage_store_path).expect("打开用量索引"),
@@ -184,6 +185,12 @@ async fn run() {
         .unwrap_or_else(|error| panic!("无法绑定 DeepCode 本地 daemon：{error}"));
     let addr = listener.local_addr().expect("读取 Host 监听地址");
     achbit_host_connection::startup::timing("kernel.listener");
+    match service_plugins::sources(&user_settings) {
+        Ok(sources) => gui_state
+            .service_plugins
+            .activate(&sources, &user_directories.data_dir),
+        Err(error) => eprintln!("Service plugin settings invalid: {error}"),
+    }
     let gui = Arc::new(Mutex::new(gui_state));
     let workspace_resolver = Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
         gui.clone(),

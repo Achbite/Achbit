@@ -39,7 +39,7 @@ pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Js
 
 fn setting_activates_at_next_run(key: &str) -> bool {
     // These are defaults read once when Session creates a new conversation.
-    if key.starts_with("agent.subagents.") {
+    if key == "plugins.services" || key.starts_with("agent.subagents.") {
         return false;
     }
     key.starts_with("skills.")
@@ -114,6 +114,14 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
     if let Err(message) = validate_agent_runtime_settings(&next_settings) {
         return ApiResponse::error("invalid_agent_runtime_settings", message);
     }
+    let service_sources = if patch_object.contains_key("plugins.services") {
+        match crate::service_plugins::sources(&next_settings) {
+            Ok(sources) => Some(sources),
+            Err(error) => return ApiResponse::error("invalid_service_plugins", error),
+        }
+    } else {
+        None
+    };
     if next_settings["agent.subagents.enabled"].as_bool() == Some(true)
         && [
             "agent.subagents.enabled",
@@ -164,6 +172,11 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
                 )
             }
         };
+        if let Some(sources) = &service_sources {
+            if let Err(error) = gui.service_plugins.prepare(sources) {
+                return ApiResponse::error("service_plugin_stop_failed", error);
+            }
+        }
         if let Err(error) = state
             .local_agent
             .publish_runtime_settings(&immediate_patch, || {
@@ -173,6 +186,10 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
             return ApiResponse::error("write_settings_failed", error);
         }
         gui.user_settings = next_settings.clone();
+        if let Some(sources) = &service_sources {
+            let data = gui.paths.directories.data_dir.clone();
+            gui.service_plugins.activate(sources, &data);
+        }
     }
     ApiResponse::ok(json!({
         "settings": next_settings,
@@ -335,6 +352,7 @@ pub(crate) fn default_user_settings() -> Value {
         "mcp.autoLoad": false,
         "mcp.servers": "[]",
         "plugins.sources": "[]",
+        "plugins.services": "[]",
         "plugins.disabled": "[]",
         "gui.colorTheme": "light",
         "gui.accentColor": "blue",
