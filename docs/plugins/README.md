@@ -22,7 +22,7 @@ Managed Shell activity, containers and plugin activation have their own resource
 
 ## Artifacts and import
 
-Prepare a plugin directory containing its manifest and runtime files. In **Settings → Plugins → Add**, select the directory or the exact manifest file. Inspection reads metadata and validates the entry; it does not execute plugin code. A directory with multiple recognized manifests requires choosing the specific file. An archive must be unpacked first; ZIP files are not directly imported.
+Prepare a plugin directory containing its manifest and runtime files. In **Settings → Plugins → Add**, select a ZIP, the directory or the exact manifest file. Inspection reads metadata and validates the entry; it does not execute plugin code. A directory with multiple recognized manifests requires choosing the specific file. You may also select a ZIP directly for installation or update. A ZIP contains one plugin with its manifest at the archive root or inside one enclosing directory. The Host extracts it temporarily, validates the same manifest/entry contract, then installs its own copy; preview/cancel/failure leaves no extracted installation. ZIPs support stored/Deflate entries, up to 512 MiB unpacked, with regular files/directories only. Ambiguous manifests, invalid entries and extraction errors remain explicit failures.
 
 | Kind | Recognized file | Saved setting | Activation |
 | --- | --- | --- | --- |

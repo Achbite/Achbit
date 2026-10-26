@@ -15,6 +15,8 @@ serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true
 base64.workspace = true
+tempfile = "3"
+zip = { version = "6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

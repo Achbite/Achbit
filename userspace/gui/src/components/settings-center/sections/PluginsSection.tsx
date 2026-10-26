@@ -423,16 +423,18 @@ export default function PluginsSection() {
                   <dd>{item.status}</dd>
                 </dl>
                 {item.service && (
-                  <div>
-                    {item.service.baseUrl && <p>{chinese ? '服务地址：' : 'Service URL: '}<code>{item.service.baseUrl}</code></p>}
+                  <div className="plugin-manager__service">
+                    {item.service.baseUrl && <dl><dt>{chinese ? '服务地址' : 'Service URL'}</dt><dd><code>{item.service.baseUrl}</code></dd></dl>}
+                    <div className="settings-actions">
                     {item.service.pageUrl && <button className="settings-button" onClick={() => void openExternalUrl(item.service!.pageUrl!).catch(reason => setItemErrors(old => ({ ...old, [item.id]: errorText(reason) })))}>{chinese ? '打开插件页面' : 'Open plugin page'}</button>}
                     {item.service.baseUrl && <button className="settings-button" onClick={() => void navigator.clipboard.writeText(item.service!.baseUrl!).catch(reason => setItemErrors(old => ({ ...old, [item.id]: errorText(reason) })))}>{chinese ? '复制服务地址' : 'Copy service URL'}</button>}
-                    <details><summary>{chinese ? '插件数据位置' : 'Plugin data location'}</summary><code>{item.service.stateDirectory}</code></details>
+                    </div>
+                    <details className="settings-disclosure"><summary><AchbitShellIcon name="chevronRight" size={14} />{chinese ? '插件数据位置' : 'Plugin data location'}</summary><code>{item.service.stateDirectory}</code></details>
                   </div>
                 )}
                 {item.path && (
-                  <details>
-                    <summary>{t(language, 'settings.plugins.location')}</summary>
+                  <details className="settings-disclosure">
+                    <summary><AchbitShellIcon name="chevronRight" size={14} />{t(language, 'settings.plugins.location')}</summary>
                     <div className="plugin-manager__location">
                       <code>{item.path}</code>
                       <button
@@ -484,8 +486,8 @@ export default function PluginsSection() {
                   )}
                 </div>
                 {item.kind === 'ui' && item.enabled && (
-                  <details>
-                    <summary>{t(language, 'settings.plugins.showcase')}</summary>
+                  <details className="settings-disclosure">
+                    <summary><AchbitShellIcon name="chevronRight" size={14} />{t(language, 'settings.plugins.showcase')}</summary>
                     <UiPluginShowcase language={language} />
                   </details>
                 )}
@@ -500,8 +502,8 @@ export default function PluginsSection() {
           {chinese ? '暂无匹配的插件。' : 'No matching plugins.'}
         </p>
       )}
-      <details className="plugin-manager__manual">
-        <summary>{chinese ? '手动指定位置' : 'Enter a location'}</summary>
+      <details className="settings-disclosure plugin-manager__manual">
+        <summary><AchbitShellIcon name="chevronRight" size={14} />{chinese ? '手动指定位置' : 'Enter a location'}</summary>
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -518,8 +520,8 @@ export default function PluginsSection() {
           </button>
         </form>
       </details>
-      <details className="plugin-manager__manual">
-        <summary>{chinese ? '连接外部工具' : 'Connect external tools'}</summary>
+      <details className="settings-disclosure plugin-manager__manual">
+        <summary><AchbitShellIcon name="chevronRight" size={14} />{chinese ? '连接外部工具' : 'Connect external tools'}</summary>
         {connection ? (
           <>
             <PluginConnectionForm
@@ -549,8 +551,8 @@ export default function PluginsSection() {
             <strong>{candidate.name}</strong>
             <p>{candidate.description}</p>
             <p>{chinese ? (updating ? '保留当前启用状态、登录和插件数据。' : '安装到当前 Achbit 并启用。') : (updating ? 'Keep the enabled state, sign-in and plugin data.' : 'Install into this Achbit and enable.')}</p>
-            <details>
-              <summary>{t(language, 'settings.plugins.location')}</summary>
+            <details className="settings-disclosure">
+              <summary><AchbitShellIcon name="chevronRight" size={14} />{t(language, 'settings.plugins.location')}</summary>
               <code>{candidate.path}</code>
             </details>
             {error && (
@@ -581,7 +583,8 @@ export default function PluginsSection() {
         <ProjectFolderDialog
           language={language}
           selectionMode="path"
-          title={chinese ? '选择插件文件或文件夹' : 'Choose plugin file or folder'}
+          title={chinese ? '选择插件 ZIP、文件夹或清单' : 'Choose plugin ZIP, folder or manifest'}
+          filters={[{ name: chinese ? '插件' : 'Plugins', extensions: ['zip', 'json', 'md'] }]}
           onCancel={() => { setChoosing(false); setUpdating(null); }}
           onSelect={(path) => void inspect(path)}
         />

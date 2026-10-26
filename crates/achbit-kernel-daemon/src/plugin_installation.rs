@@ -1,7 +1,7 @@
 //! Host-owned artifact installation. Settings remain the only installed selection.
 use crate::prelude::*;
 use crate::{ApiResponse, AppState, ReadyState};
-use achbit_host_connection::plugin_artifact::{copy_plugin, inspect_plugin};
+use achbit_host_connection::plugin_artifact::{copy_plugin, inspect_plugin, prepare_plugin};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,8 +28,9 @@ fn install_owned(state: AppState, request: InstallRequest) -> Json<ApiResponse> 
         (gui.user_settings.clone(), gui.paths.directories.data_dir.clone())
     };
     let result = (|| -> Result<_, String> {
-        let candidate = inspect_plugin(&request.path)?;
-        let key = settings_key(&candidate)?;
+        let prepared = prepare_plugin(&request.path)?;
+        let candidate = &prepared.inspection;
+        let key = settings_key(candidate)?;
         let mut sources = source_list(&settings, key)?;
         let replacement = match &request.replace_path {
             Some(path) => {
@@ -62,7 +63,7 @@ fn install_owned(state: AppState, request: InstallRequest) -> Json<ApiResponse> 
         let source_root = if key == "skills.mounts" { source_path.parent().ok_or("Skill parent missing")? } else { source_path };
         let leaf = source_root.file_name().ok_or("Plugin directory name missing")?;
         fs::create_dir(&directory).map_err(|e| e.to_string())?;
-        let installed = match copy_plugin(&candidate, &directory.join(leaf)) {
+        let installed = match copy_plugin(candidate, &directory.join(leaf)) {
             Ok(installed) => installed,
             Err(error) => {
                 if let Err(cleanup) = fs::remove_dir_all(&directory) {

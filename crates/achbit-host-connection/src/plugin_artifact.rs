@@ -113,7 +113,38 @@ pub fn read_ui_module(root: &Path) -> Result<(UiPluginManifest, String), String>
     Ok((manifest, code))
 }
 
+mod archive;
+
+/// Owns temporary extraction until installation has copied the inspected artifact.
+pub struct PreparedPlugin {
+    pub inspection: serde_json::Value,
+    extraction: Option<tempfile::TempDir>,
+}
+
+pub fn prepare_plugin(path: &str) -> Result<PreparedPlugin, String> {
+    let source = Path::new(path);
+    if source.is_file() && source.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
+        let (extraction, root) = archive::unpack(source)?;
+        let inspection = inspect_directory(root.to_str().ok_or("Plugin path is not UTF-8")?)?;
+        Ok(PreparedPlugin { inspection, extraction: Some(extraction) })
+    } else {
+        Ok(PreparedPlugin { inspection: inspect_directory(path)?, extraction: None })
+    }
+}
+
 pub fn inspect_plugin(path: &str) -> Result<serde_json::Value, String> {
+    let prepared = prepare_plugin(path)?;
+    let mut inspection = prepared.inspection.clone();
+    if prepared.extraction.is_some() {
+        // Preview returns the selected archive, never a temporary extraction path.
+        let source = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+        inspection["path"] = serde_json::json!(source);
+        inspection["manifestPath"] = serde_json::json!(source);
+    }
+    Ok(inspection)
+}
+
+fn inspect_directory(path: &str) -> Result<serde_json::Value, String> {
     use serde_json::json;
     let chosen = std::fs::canonicalize(path).map_err(|error| format!("{path}: {error}"))?;
     let root = if chosen.is_dir() {
