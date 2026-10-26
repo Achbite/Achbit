@@ -475,6 +475,7 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("GET", ["api", "fs", "browse"])
         | ("POST", ["api", "fs", "read"])
         | ("POST", ["api", "host", "inspect"])
+        | ("POST", ["api", "host", "plugins", "install"])
         | ("POST", ["api", "host", "computer-preview"])
         | ("POST", ["api", "host", "computer-preview", "activate"])
         | ("GET", ["api", "plugin-services"])
@@ -541,6 +542,13 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_installation_has_one_explicit_host_proxy_route() {
+        assert!(host_proxy_path_allowed("POST", "/api/host/plugins/install"));
+        assert!(!host_proxy_path_allowed("GET", "/api/host/plugins/install"));
+        assert!(!host_proxy_path_allowed("POST", "/api/host/plugins/install/extra"));
+    }
 
     #[tokio::test]
     async fn proxy_transport_error_preserves_the_underlying_failure() {

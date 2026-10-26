@@ -16,6 +16,9 @@ pub struct ServicePluginManifest {
     pub args: Vec<String>,
     #[serde(default)]
     pub debug_only: bool,
+    /// Optional artifact file list. Runtime state is supplied separately by Host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
 }
 
 impl ServicePluginManifest {

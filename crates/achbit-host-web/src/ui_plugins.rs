@@ -1,4 +1,5 @@
 //! Local display modules belong to the Host, independently of Agent/tool activation.
+use achbit_host_connection::plugin_artifact::{inspect_plugin as inspect_path, read_ui_module as read_module, UiPluginManifest as Manifest};
 use crate::{host_connection_rejected, ApiResponse, AppState};
 use axum::{
     body::Body,
@@ -9,40 +10,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    io::Read,
-    path::{Component, Path},
+    path::Path,
     time::Duration,
 };
-
-const SLOTS: &[&str] = &[
-    "workbench.layout",
-    "navigation",
-    "conversation.header",
-    "activity.row",
-    "activity.summary",
-    "activity.detail",
-    "composer.layout",
-    "composer.model",
-    "composer.attachments",
-    "composer.actions",
-    "task.panel",
-    "artifact.panel",
-    "reader.layout",
-    "reader.toolbar",
-    "reader.tree",
-    "settings.navigation",
-    "usage.widget",
-    "message.plain",
-    "message.markdown",
-    "document.html",
-    "document.markdown",
-    "document.pdf",
-    "theme",
-    "settings.models.overview",
-    "settings.connection.detail",
-    "settings.usage.panel",
-    "tool.result",
-];
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct Source {
@@ -53,23 +23,6 @@ pub(crate) struct Source {
 #[derive(Deserialize)]
 pub(crate) struct WatchRequest {
     sources: Vec<Source>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Manifest {
-    id: String,
-    name: String,
-    entry: String,
-    slots: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    adapter_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tool_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    capabilities: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -153,70 +106,6 @@ fn read_source(source: &Source) -> PluginSource {
     result
 }
 
-fn read_utf8(path: &Path, limit: usize) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    let file = std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    file.take(limit as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    if bytes.len() > limit {
-        return Err(format!("{} exceeds {limit} bytes", path.display()));
-    }
-    String::from_utf8(bytes).map_err(|error| format!("{}: {error}", path.display()))
-}
-
-fn read_module(root: &Path) -> Result<(Manifest, String), String> {
-    let manifest_path = root.join("achbit-ui.json");
-    let manifest: Manifest = serde_json::from_str(&read_utf8(&manifest_path, 64 * 1024)?)
-        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-    if manifest.id.trim().is_empty()
-        || manifest.name.trim().is_empty()
-        || (manifest.slots.iter().any(|s| s == "tool.result")
-            && manifest.tool_id.as_deref().is_none_or(str::is_empty))
-        || manifest
-            .capabilities
-            .iter()
-            .any(|c| !matches!(c.as_str(), "usage.read" | "quota.read" | "connection.auth"))
-        || (manifest.capabilities.iter().any(|c| c == "connection.auth")
-            && !manifest
-                .slots
-                .iter()
-                .any(|s| s == "settings.connection.detail"))
-        || manifest.slots.is_empty()
-        || manifest
-            .slots
-            .iter()
-            .any(|slot| !SLOTS.contains(&slot.as_str()))
-        || manifest
-            .slots
-            .iter()
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-            != manifest.slots.len()
-    {
-        return Err(format!(
-            "{}: id, name and unique supported slots are required",
-            manifest_path.display()
-        ));
-    }
-    let entry = Path::new(&manifest.entry);
-    if manifest.entry.trim().is_empty()
-        || entry
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(format!(
-            "{}: entry must be a relative file inside the plugin folder",
-            manifest_path.display()
-        ));
-    }
-    let code = read_utf8(&root.join(entry), 4 * 1024 * 1024)?;
-    if code.trim().is_empty() {
-        return Err(format!("{}: module is empty", root.join(entry).display()));
-    }
-    Ok((manifest, code))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,87 +171,6 @@ pub(crate) async fn inspect(
         }
     }
 }
-fn inspect_path(path: &str) -> Result<serde_json::Value, String> {
-    use serde_json::json;
-    let chosen = std::fs::canonicalize(path).map_err(|error| format!("{path}: {error}"))?;
-    let root = if chosen.is_dir() {
-        chosen.as_path()
-    } else {
-        chosen.parent().ok_or("Plugin parent missing")?
-    };
-    let manifest_name = if chosen.is_file() {
-        chosen
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or("插件文件名无法读取")?
-    } else {
-        let manifests = [
-            "achbit-ui.json",
-            "achbit-tool.json",
-            "achbit-service.json",
-            "SKILL.md",
-        ]
-        .into_iter()
-        .filter(|name| root.join(name).is_file())
-        .collect::<Vec<_>>();
-        match manifests.as_slice() {
-            [name] => *name,
-            [] => return Err(format!("{}：没有找到插件清单", root.display())),
-            _ => return Err("文件夹中有多份插件清单，请直接选择需要添加的清单文件。".into()),
-        }
-    };
-    if manifest_name == achbit_kernel_abi::SERVICE_PLUGIN_MANIFEST {
-        let (manifest, _) = achbit_kernel_abi::ServicePluginManifest::read(root)?;
-        return Ok(
-            json!({"kind":"service","path":root,"id":manifest.id,"name":manifest.name,"description":manifest.description,"entry":manifest.entry,"debugOnly":manifest.debug_only}),
-        );
-    }
-    if manifest_name == "achbit-ui.json" {
-        let (manifest, _) = read_module(root)?;
-        return Ok(
-            json!({"kind":"ui","path":root,"id":manifest.id,"name":manifest.name,"description":manifest.description.unwrap_or_else(||"自定阅读、正文或主题展示。".into()),"slots":manifest.slots}),
-        );
-    }
-    if manifest_name == achbit_kernel_abi::TOOL_PLUGIN_MANIFEST {
-        let artifact = achbit_kernel_abi::ToolPluginManifest::read(root)?;
-        let manifest = artifact.manifest;
-        return Ok(
-            json!({"kind":"cli","path":root,"id":manifest.id,"name":manifest.name,"description":manifest.description,"command":manifest.command,"args":manifest.args,"entry":manifest.entry}),
-        );
-    }
-    if manifest_name != "SKILL.md" {
-        return Err(
-            "请选择 achbit-ui.json、achbit-tool.json、achbit-service.json 或 SKILL.md。".into(),
-        );
-    }
-    let skill = if chosen.is_file() {
-        chosen.clone()
-    } else {
-        root.join("SKILL.md")
-    };
-    let instructions = read_utf8(&skill, 512 * 1024)?;
-    let field = |key: &str| {
-        instructions
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(&format!("{key}:")))
-            .map(|line| line.trim().trim_matches(['\'', '"']).to_string())
-    };
-    let name = field("name")
-        .or_else(|| {
-            instructions
-                .lines()
-                .find_map(|line| line.strip_prefix("# ").map(str::to_owned))
-        })
-        .unwrap_or_else(|| {
-            root.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        });
-    let description = field("description").unwrap_or_else(|| "提供任务方法与指导资料。".into());
-    Ok(json!({"kind":"guidance","path":skill,"id":name,"name":name,"description":description}))
-}
-
 #[cfg(test)]
 mod plugin_import_tests {
     #[test]

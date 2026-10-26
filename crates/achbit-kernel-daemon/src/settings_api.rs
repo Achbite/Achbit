@@ -101,6 +101,11 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
     };
+    apply_user_settings_patch_locked(&state, body)
+}
+
+/// Caller owns the runtime transition across artifact installation and settings publication.
+pub(crate) fn apply_user_settings_patch_locked(state: &AppState, body: Value) -> Json<ApiResponse> {
     let patches = body.get("patches").cloned().unwrap_or_else(|| json!({}));
     let Some(patch_object) = patches.as_object() else {
         return ApiResponse::error("invalid_user_settings", "设置补丁必须是 JSON 对象。");

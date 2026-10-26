@@ -48,6 +48,7 @@ mod model_usage;
 mod prelude;
 mod provider_transport;
 mod routes;
+mod plugin_installation;
 mod service_plugins;
 mod session_environment;
 mod session_events;

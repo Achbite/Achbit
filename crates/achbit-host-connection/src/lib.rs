@@ -1,4 +1,5 @@
 //! Local Host transport discovery and user directories. No Session or Kernel business state.
+pub mod plugin_artifact;
 mod user_directories;
 pub use user_directories::UserDirectories;
 mod paths;

@@ -22,7 +22,7 @@ Managed Shell activity, containers and plugin activation have their own resource
 
 ## Artifacts and import
 
-Keep a plugin in a stable directory. In **Settings → Plugins → Add**, select the directory or the exact manifest file. Inspection reads metadata and validates the entry; it does not execute plugin code. A directory with multiple recognized manifests requires choosing the specific file. An archive must be unpacked first; ZIP files are not directly imported.
+Prepare a plugin directory containing its manifest and runtime files. In **Settings → Plugins → Add**, select the directory or the exact manifest file. Inspection reads metadata and validates the entry; it does not execute plugin code. A directory with multiple recognized manifests requires choosing the specific file. An archive must be unpacked first; ZIP files are not directly imported.
 
 | Kind | Recognized file | Saved setting | Activation |
 | --- | --- | --- | --- |
@@ -32,7 +32,13 @@ Keep a plugin in a stable directory. In **Settings → Plugins → Add**, select
 | Skill | `SKILL.md` | `skills.mounts` | Guidance is selected/read for a task. |
 | External MCP | Configure the server in Settings | `mcp.servers` | Existing MCP discovery and activation. No new Achbit manifest is needed. |
 
-Import stores a reference to the local source; it does not copy the source into the application or make it built-in. Keep the directory present after import. A logical plugin ID identifies the source, not a running process, tool attempt or conversation. Updating an artifact under that ID does not authorize new effects. If its ID changes, remove the old registration and import the new one.
+After installation is confirmed, the Host copies the artifact into `plugins/packages/<installation-id>` under its own data directory, validates that copy, then saves the installed path. Moving or deleting the downloaded/extracted source no longer affects the installation or makes the plugin built-in. MCP connections retain their existing configuration; remote servers are not copied.
+
+Choose **Update…** in plugin details and select an artifact with the same kind and plugin ID. The Host prepares a new copy, then replaces the installed path while preserving the enabled setting. Services stop the old process and start the replacement with the same `stateDirectory`. Previous artifacts remain available to active tasks that may still reference them. Copy/validation failures do not switch the registration; startup failures remain visible and require an explicit re-enable after correction. Updating an existing direct-path registration converts it into a managed copy. Removing a registration does not delete plugin data or sign-in information.
+
+JSON manifests may declare an optional `files` array, for example `"files": ["entry.mjs", "public", "vendor"]`. Each entry is a relative file/directory inside the artifact; globs, absolute paths and `..` are unsupported. The selected manifest is included automatically. If omitted, the complete artifact directory is copied. `SKILL.md` is copied with its sibling support resources. Distribute a clean directory or declare the runtime resources explicitly to exclude accounts, development caches and test data. The CLI single-file execution contract is unchanged.
+
+A logical plugin ID identifies the plugin, not an installation, process, tool attempt or conversation. An update does not authorize new effects. A different ID or kind is installed as a separate plugin.
 
 Package the manifest, compiled entry and required assets/dependencies. Keep login data, API keys, state directories, runtime logs and test conversations outside the distributable. For a service restricted to experiments, set `debugOnly: true`; normal builds will reject activation. Do not add experimental plugins to the built-in catalog or normal package.
 
@@ -98,7 +104,7 @@ Artifact registration/delivery is owned by Kernel/Session. A path printed in too
 }
 ```
 
-All fields except `args` and `debugOnly` are required; those default to `[]` and `false`. Unknown fields are rejected. ID length is 1–128 ASCII characters, starts with a letter/digit, and otherwise permits letters/digits, `.`, `_`, `-`. The manifest is at most 64 KiB. `entry` must resolve to an existing file inside the plugin directory; relative subdirectories are supported.
+All fields except `args`, `debugOnly` and `files` are required. The first two default to `[]` and `false`; `files` follows the copy rules above. Unknown fields are rejected. ID length is 1–128 ASCII characters, starts with a letter/digit, and otherwise permits letters/digits, `.`, `_`, `-`. The manifest is at most 64 KiB. `entry` must resolve to an existing file inside the plugin directory; relative subdirectories are supported.
 
 The Host starts `node <entry> ...args` and writes one newline-terminated initialization object to stdin:
 
@@ -116,7 +122,7 @@ After successfully binding its endpoint, the service writes one newline-terminat
 
 EOF on stdin means the Host is stopping the service. Stop accepting work, cancel in-flight requests, close listeners and child resources, then exit promptly. Disable, removal, source replacement and Host shutdown use this owner-controlled path. The Host gives graceful shutdown one second, then terminates the owned process tree. Unexpected exit clears published endpoints, preserves a failure and notifies subscribers; reading the plugin list is not required to notice the exit. There is no implicit restart loop. Re-enable explicitly after resolving the failure.
 
-Persistent service data belongs in `stateDirectory`. Stopping/restarting the process preserves this directory; removing registration does not imply logout or deletion of credentials. The plugin implements explicit account/logout operations. Source files and transient process IDs are not persistence stores.
+Persistent service data belongs in `stateDirectory`. Stopping/restarting the process preserves this directory; removing registration does not imply logout or deletion of credentials. The plugin owns login/logout and first-use onboarding: it may open its own login browser when no saved credentials exist and reuse an existing login otherwise. The Host does not read third-party account credentials or mix them into artifacts. Source files and transient process IDs are not persistence stores.
 
 The endpoint's application protocol belongs to the plugin. A service offering a compatible LLM API can be entered in the existing model connection settings, just like any local endpoint. Hosting it does not change the Agent Loop or register a new model type. API authentication remains separate from the lifecycle handshake.
 

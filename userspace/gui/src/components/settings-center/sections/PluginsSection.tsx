@@ -13,7 +13,7 @@ import { getPluginCatalog } from '../../../services/localAgentApi';
 import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useUiPlugins } from '../../../ui-plugins/UiPlugins';
-import { inspectLocalPlugin, type LocalPluginInspection } from '../../../ui-plugins/source';
+import { inspectLocalPlugin, installLocalPlugin, type LocalPluginInspection } from '../../../ui-plugins/source';
 import { UiPluginShowcase } from '../../../ui-plugins/UiPluginShowcase';
 import { errorText } from '../../../ui-plugins/runtime';
 import AchbitShellIcon from '../../shared/AchbitShellIcon';
@@ -73,6 +73,7 @@ export default function PluginsSection() {
   const [expanded, setExpanded] = useState<string | null>(null),
     [choosing, setChoosing] = useState(false);
   const [candidate, setCandidate] = useState<LocalPluginInspection | null>(null);
+  const [updating, setUpdating] = useState<Item | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const readButton = useRef<HTMLButtonElement>(null);
   const interaction = useInteractionFocus();
@@ -261,6 +262,7 @@ export default function PluginsSection() {
     try {
       setCandidate(await inspectLocalPlugin(path));
     } catch (reason) {
+      setUpdating(null);
       setError(errorText(reason));
     } finally {
       setBusy(false);
@@ -271,33 +273,9 @@ export default function PluginsSection() {
     setBusy(true);
     setError(null);
     try {
-      const key =
-        candidate.kind === 'ui'
-          ? 'workbench.uiPlugins'
-          : candidate.kind === 'service'
-            ? 'plugins.services'
-            : candidate.kind === 'cli'
-            ? 'plugins.sources'
-            : 'skills.mounts';
-      const list = sourceList(useSettingsStore.getState().effectiveSettings[key]);
-      if (
-        list.some(
-          (source) =>
-            source.path === candidate.path ||
-            (['cli', 'service'].includes(candidate.kind) && source.id === candidate.id),
-        )
-      )
-        throw new Error(t(language, 'settings.plugins.duplicate'));
-      const source =
-        candidate.kind === 'ui'
-          ? { path: candidate.path, enabled: true }
-          : {
-              id: ['cli', 'service'].includes(candidate.kind) ? candidate.id : crypto.randomUUID(),
-              path: candidate.path,
-              enabled: true,
-            };
-      if (!(await patch(key, JSON.stringify([...list, source]))))
-        throw new Error(useSettingsStore.getState().errorMessage ?? t(language, 'settings.plugins.notSaved'));
+      await installLocalPlugin(candidate.manifestPath, updating?.path);
+      await useSettingsStore.getState().loadUserSettings();
+      setUpdating(null);
       setCandidate(null);
       setManualPath('');
       setRevision((value) => value + 1);
@@ -335,7 +313,7 @@ export default function PluginsSection() {
           className="settings-button plugin-manager__add"
           ref={addButton}
           disabled={busy}
-          onClick={() => setChoosing(true)}
+          onClick={() => { setUpdating(null); setChoosing(true); }}
         >
           <AchbitShellIcon name="plus" />
           {chinese ? '添加…' : 'Add…'}
@@ -443,13 +421,6 @@ export default function PluginsSection() {
                 <dl>
                   <dt>{t(language, 'settings.plugins.status')}</dt>
                   <dd>{item.status}</dd>
-                  <dt>{t(language, 'settings.plugins.update')}</dt>
-                  <dd>
-                    {item.kind === 'ui'
-                      ? t(language, 'settings.plugins.uiUpdate')
-                      : item.kind === 'service' ? (chinese ? '停用后重新启用以加载更新。' : 'Disable and enable to load updates.')
-                      : t(language, 'settings.plugins.toolUpdate')}
-                  </dd>
                 </dl>
                 {item.service && (
                   <div>
@@ -487,6 +458,12 @@ export default function PluginsSection() {
                   />
                 )}
                 <div className="settings-actions">
+                  {item.path && ['workbench.uiPlugins', 'plugins.services', 'plugins.sources', 'skills.mounts'].includes(item.key) && (
+                    <button className="settings-button" disabled={busy}
+                      onClick={() => { setUpdating(item); setChoosing(true); }}>
+                      {chinese ? '更新…' : 'Update…'}
+                    </button>
+                  )}
                   {item.kind === 'ui' && (
                     <button
                       className="settings-button"
@@ -566,11 +543,12 @@ export default function PluginsSection() {
         )}
       </details>
       {candidate && (
-        <ModalDialog className="plugin-import-overlay" busy={busy} onClose={() => setCandidate(null)} aria-label={chinese ? '添加插件' : 'Add plugin'}>
+        <ModalDialog className="plugin-import-overlay" busy={busy} onClose={() => { setCandidate(null); setUpdating(null); }} aria-label={updating ? (chinese ? '更新插件' : 'Update plugin') : (chinese ? '安装插件' : 'Install plugin')}>
           <section className="plugin-import">
-            <h3>{t(language, 'settings.plugins.add')}</h3>
+            <h3>{updating ? (chinese ? '更新插件' : 'Update plugin') : (chinese ? '安装插件' : 'Install plugin')}</h3>
             <strong>{candidate.name}</strong>
             <p>{candidate.description}</p>
+            <p>{chinese ? (updating ? '保留当前启用状态、登录和插件数据。' : '安装到当前 Achbit 并启用。') : (updating ? 'Keep the enabled state, sign-in and plugin data.' : 'Install into this Achbit and enable.')}</p>
             <details>
               <summary>{t(language, 'settings.plugins.location')}</summary>
               <code>{candidate.path}</code>
@@ -584,7 +562,7 @@ export default function PluginsSection() {
               <button
                 className="settings-button"
                 disabled={busy}
-                onClick={() => setCandidate(null)}
+                onClick={() => { setCandidate(null); setUpdating(null); }}
               >
                 {t(language, 'settings.plugins.cancel')}
               </button>
@@ -593,7 +571,7 @@ export default function PluginsSection() {
                 disabled={busy}
                 onClick={() => void add()}
               >
-                {t(language, 'settings.plugins.addEnable')}
+                {updating ? (chinese ? '更新' : 'Update') : t(language, 'settings.plugins.addEnable')}
               </button>
             </div>
           </section>
@@ -604,7 +582,7 @@ export default function PluginsSection() {
           language={language}
           selectionMode="path"
           title={chinese ? '选择插件文件或文件夹' : 'Choose plugin file or folder'}
-          onCancel={() => setChoosing(false)}
+          onCancel={() => { setChoosing(false); setUpdating(null); }}
           onSelect={(path) => void inspect(path)}
         />
       )}
