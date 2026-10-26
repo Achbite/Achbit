@@ -18,8 +18,8 @@ DEEPCODE_HOST_PORT ?= 31246
 DEEPCODE_CONTAINER_PORT ?= 31246
 DEEPCODE_RUST_TOOLCHAIN ?= $(shell awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $$2; exit }' rust-toolchain.toml)
 DEEPCODE_RUST_VERSION ?= $(patsubst %.0,%,$(DEEPCODE_RUST_TOOLCHAIN))
-DEEPCODE_APT_MIRROR ?= https://mirrors.tuna.tsinghua.edu.cn/debian
-DEEPCODE_APT_SECURITY_MIRROR ?= https://mirrors.tuna.tsinghua.edu.cn/debian-security
+DEEPCODE_APT_MIRROR ?= https://deb.debian.org/debian
+DEEPCODE_APT_SECURITY_MIRROR ?= https://deb.debian.org/debian-security
 DEEPCODE_NODE_VERSION ?= 22.22.3
 DEEPCODE_NODE_DIST_BASE ?= https://npmmirror.com/mirrors/node
 DEEPCODE_NPM_REGISTRY ?= https://registry.npmmirror.com

@@ -8,8 +8,8 @@
 ARG DEEPCODE_RUST_VERSION=1.88
 FROM rust:${DEEPCODE_RUST_VERSION}-bookworm
 
-ARG DEEPCODE_APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
-ARG DEEPCODE_APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG DEEPCODE_APT_MIRROR=https://deb.debian.org/debian
+ARG DEEPCODE_APT_SECURITY_MIRROR=https://deb.debian.org/debian-security
 ARG DEEPCODE_NODE_VERSION=22.22.3
 ARG DEEPCODE_NODE_DIST_BASE=https://npmmirror.com/mirrors/node
 
