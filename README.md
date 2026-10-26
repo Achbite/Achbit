@@ -14,6 +14,8 @@ Achbit is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and 
 
 Connect your preferred model service, then extend the agent with Skills, CLI tools, MCP, and plugins. The **AC** mark recalls “Accepted” in programming contests.
 
+[Quick start](#quick-start) · [Computer Use](#computer-use) · [Terminal](#terminal) · [Plugins](#plugins) · [Architecture](#how-it-fits-together) · [Build](#build-from-source) · [Documentation](#documentation)
+
 ## Quick start
 
 Download a package from [Releases](https://github.com/Achbite/Achbit/releases).
@@ -58,6 +60,14 @@ achbit-tui -C /path/to/project
 
 Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a model and `/sessions` to continue a conversation. GUI, TUI, and CLI share connections and Session state. Portable launchers are listed in the [distribution guide](docs/distribution.md).
 
+## Plugins
+
+Import an external plugin from **Settings → Plugins → Add**, selecting its directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. Archives must be unpacked before import.
+
+Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
+
+See the **[complete plugin development rules](docs/plugins/README.md)** for artifact layout, manifest fields, stdin/stdout contracts, lifecycle, file transport and validation; [中文文档](docs/plugins/README.zh-CN.md) is also available. This describes generic extension contracts and does not add experimental plugins to the built-in catalog.
+
 ## How it fits together
 
 | Part | Responsibility |
@@ -96,6 +106,7 @@ Return to the host and open the program in `bin/macos-arm64`, `bin/win64`, or th
 
 - [Models, subscriptions, and usage](docs/product/model-services.md)
 - [Conversations, settings, and extensions](docs/product/operations.md)
+- [Plugin development and protocols](docs/plugins/README.md)
 - [Workspace environments and permissions](docs/product/execution-environments.md)
 - [Installation, updates, and local data](docs/distribution.md)
 - [Examples](examples/README.md)

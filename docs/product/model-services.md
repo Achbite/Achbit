@@ -99,3 +99,11 @@ Hosted search citations need a source-to-URL mapping. An unresolved `[?]` cannot
 Attach supported PNG/JPEG/WebP/GIF files through Files and folders or CLI `--file`. The profile must support image input; enable the capability for a custom model only when its service supports it. The local limit is 8 MiB per image; encoded data also counts toward request size.
 
 Pixels enter one successful logical request, including its retries. Later requests carry archived references; reopen exact current-session images with `session.read` → `images` for comparison. A filename, live preview or archived resource alone is not visual evidence. File attachment does not grant access to its parent directory.
+
+## Task tool selection
+
+A Session recipe may select `tools.kernel` (canonical Kernel tool names), `tools.controls` (Session controls), and `tools.plugins` (whether extension activation is part of this task). Omitted groups keep the inherited selection; an empty array installs none. A child may narrow this selection but cannot expand its parent's tools or plugin access. This selection does not grant filesystem, process or external permissions.
+
+The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":[],"plugins":false}`. Give it a reading task and exact file references. Use `collaboration` when the work needs editing, messaging or other installed capabilities; explicit task selections can narrow that preset as well. `fs.read` does not search unknown paths.
+
+Kernel prepares only the selected callable bindings. Session sends those tools, the task, relevant file addresses and active usage guidance to the model. Unstarted modules, disabled tools, plugin registration lists and internal policy/runtime configuration remain diagnostic facts, not model instructions. Enabled delegation retains proactive delegation guidance. Managed process activity and plugin activation are optional Session contributions over the same Loop and journal; container and other extension tools use the existing Kernel catalog disposal lifecycle.

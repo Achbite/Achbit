@@ -14,6 +14,8 @@ Achbit 是一个本地优先的编程 Agent，提供桌面 GUI、TUI 和 CLI。�
 
 连接你选择的模型服务，通过 Skill、CLI 工具、MCP 和插件扩展能力。**AC** 图标取意于编程竞赛中的 “Accepted”。
 
+[快速开始](#快速开始) · [Computer Use](#computer-use) · [终端](#终端) · [插件](#插件) · [结构](#结构) · [构建](#从源码构建) · [文档](#文档)
+
 ## 快速开始
 
 在 [Releases](https://github.com/Achbite/Achbit/releases) 下载对应平台的程序包。
@@ -58,6 +60,14 @@ achbit-tui -C /path/to/project
 
 从 `connections` 复制保存的模型配置 ID。TUI 中使用 `/model` 选择模型，使用 `/sessions` 继续已有会话。GUI、TUI 和 CLI 共享连接与 Session 状态。解压版启动器见[分发说明](docs/distribution.md)。
 
+## 插件
+
+打开 **设置 → 插件 → 添加**，选择外部插件目录或清单文件。Achbit 能识别 CLI 工具（`achbit-tool.json`）、托管服务（`achbit-service.json`）、展示模块（`achbit-ui.json`）与 Skill（`SKILL.md`）；MCP 服务沿用已有 MCP 设置。压缩包需要先解压再导入。
+
+插件遵循共享的发现、调用和资源释放协议。托管服务随启用启动，停用后释放进程和端口；兼容模型端点仍通过普通模型连接配置使用。任务工具与上下文在请求前装配，可选能力独立于主 Loop。
+
+完整的制品布局、清单字段、stdin/stdout 合同、生命周期、文件传输和验证规则见 **[插件开发文档](docs/plugins/README.zh-CN.md)**，另有 [English version](docs/plugins/README.md)。文档说明通用扩展协议，实验插件不会因此加入内置目录。
+
 ## 结构
 
 | 组成 | 职责 |
@@ -96,6 +106,7 @@ bash ./test.sh required  # 标准检查
 
 - [模型、订阅与用量](docs/product/model-services.md)
 - [会话、设置与扩展](docs/product/operations.md)
+- [插件开发与协议](docs/plugins/README.zh-CN.md)
 - [工作区环境与权限](docs/product/execution-environments.md)
 - [安装、更新与本地数据](docs/distribution.md)
 - [示例项目](examples/README.zh-CN.md)

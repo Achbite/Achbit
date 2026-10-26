@@ -25,9 +25,12 @@ Activate relevant enabled results with `plugin.activate` alone, using their exac
 | Source | Registration |
 | --- | --- |
 | Local CLI tools | `plugins.sources`, `achbit-tool.json` |
+| Hosted services | `plugins.services`, `achbit-service.json`; enabled processes are owned and stopped by Host |
 | External MCP | `mcp.servers`; include a useful capability `description` |
 | Custom Skills | `skills.mounts`; folder or `SKILL.md` |
 | Display plugins | `workbench.uiPlugins`, `achbit-ui.json`; see [UI plugins](ui-plugins.md) |
+
+For importable artifacts, manifest fields, invocation and cleanup rules, see [Plugin development](../plugins/README.md) ([简体中文](../plugins/README.zh-CN.md)).
 
 Settings switches/selections save immediately; numeric fields commit with Enter. Text edits and new connections retain Save/Create. Saved runtime configuration generally applies to the next run; selected Skill/CLI-plugin content is refreshed before the next request. In-flight calls keep their captured bindings. Relevant permission revocation is checked before execution.
 
@@ -55,7 +58,7 @@ Use `interaction.request` alone to ask a necessary question. `mode: continue` pe
 
 Call `agent` with `action: models` for the current operation schemas. When enabled, delegate useful independent work with enough context, scope and expected evidence; keep short or coupled work local. Use collaboration for communicating teammates and assign one writer per shared file.
 
-The fixed templates are `analysis` (contact the task owner) and `collaboration` (contact teammates). Permissions and runtime configuration inherit from the parent. The main conversation can configure templates and customize a child within its authority; ordinary members select those templates and cannot override permissions or Loop configuration.
+The fixed templates are `analysis` (read exact file references and return findings; no messaging controls) and `collaboration` (communicate with teammates). Permissions and runtime configuration inherit from the parent within each template's tool selection. The main conversation can configure templates and customize a child within its authority; ordinary members select those templates and cannot override permissions or Loop configuration.
 
 Await final results and verify them. Completed tasks release execution automatically; `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message, not authorization or a new assignment.
 

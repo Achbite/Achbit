@@ -40,6 +40,7 @@ def shared(root, destination, dependency_list):
     gui_dist = root / '.build-cache/gui-debug' if debug else root / 'userspace/gui/dist-achbit-gui'
     shutil.copytree(gui_dist, destination / 'web-achbit-gui')
     shutil.copytree(root / 'docs/product', destination / 'docs/product')
+    shutil.copytree(root / 'docs/plugins', destination / 'docs/plugins')
     shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
     document_notices = root / 'skills/achbit-documents'

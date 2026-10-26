@@ -115,6 +115,8 @@ class SharedResourcesTests(unittest.TestCase):
             public = {
                 'distribution.md': b'Installation',
                 'product/operations.md': b'User operations',
+                'plugins/README.md': b'Plugin contracts',
+                'plugins/README.zh-CN.md': b'Bilingual plugin contracts',
                 'product/images/example.svg': b'<svg/>',
             }
             for name, content in public.items():
