@@ -29,10 +29,11 @@ test('core guidance supports autonomous work while retaining evidence and execut
 test('delegation guidance describes opportunities, direct work and context needed by the child', () => {
   const agent = sessionControlToolDefinitions(capabilities).find(tool => tool.name === 'agent');
   assert.ok(agent);
-  for (const phrase of ['independent work when enabled', 'keep coupled work local', 'context, scope and expected evidence',
-    'coordinate shared edits', 'verify final results', 'release execution without close', 'Disabling blocks new tasks', 'action=models']) {
+  for (const phrase of ['Proactively delegate useful independent work', 'keep coupled work local', 'context, scope and expected evidence',
+    'coordinate shared edits', 'verify final results', 'release execution without close', 'analysis for reading', 'action=models']) {
     assert.ok(agent.description.includes(phrase), phrase);
   }
+  assert.doesNotMatch(agent.description, /Disabling|when enabled/u);
   assert.match(operations, /Use collaboration/);
   assert.match(operations, /one writer per shared file/);
   assert.match(operations, /Await final results and verify/);

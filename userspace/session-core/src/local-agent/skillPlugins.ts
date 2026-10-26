@@ -75,10 +75,6 @@ export function runtimeInstructions(
       id: 'deepcode.workspace-autonomy',
       text: permissionInstructionText(config.permissions, controlNames.interactionRequest, controlNames.planPublish),
     },
-    ...config.selectedPlugins.map((plugin) => ({
-      id: `plugin.${instructionId(plugin.uri)}`,
-      text: `Loaded plugin: ${plugin.displayName}. ${plugin.capabilitySummary}`,
-    })),
   ];
   const seen = new Set<string>();
   for (const instruction of instructions) {
@@ -90,10 +86,6 @@ export function runtimeInstructions(
   return Object.freeze(instructions
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map((instruction) => Object.freeze({ ...instruction })));
-}
-
-function instructionId(uri: string): string {
-  return uri.replace(/^plugin:\/\//u, '').replace('@', '.');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

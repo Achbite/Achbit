@@ -3,7 +3,7 @@ import { decodeAgentRecipe, permissionPolicyConstraints } from '@achbit/protocol
 
 const ENVIRONMENT_ID = 'deepcode.session-environment';
 
-export function environmentInstruction(value: unknown): RunRuntimeSnapshot['instructions'][number] {
+export function environmentInstruction(value: unknown, toolNames: readonly string[] = []): RunRuntimeSnapshot['instructions'][number] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('session_environment_invalid');
   }
@@ -58,18 +58,15 @@ export function environmentInstruction(value: unknown): RunRuntimeSnapshot['inst
     || ['locale', 'responseLanguage', 'userShell'].some((key) => data[key] !== null && typeof data[key] !== 'string')) {
     throw new Error('session_environment_invalid');
   }
+  const hasShell = toolNames.some(name => name === 'bash' || name === 'powershell');
+  const execution = hasShell ? `Command environment: ${JSON.stringify({
+    os: data.os, arch: data.arch, shell: data.shell,
+    ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }),
+    ...(typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
+  })}. ` : '';
   return {
     id: ENVIRONMENT_ID,
-    text: `Tool execution context:\n${JSON.stringify({
-      os: data.os,
-      arch: data.arch,
-      locale: data.locale,
-      userShell: data.userShell,
-      ...(typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
-      ...(data.agentComposition ? { agentComposition: data.agentComposition } : {}),
-      ...(data.executionPath !== undefined ? { executionPath: data.executionPath } : {}),
-      ...(data.executionTarget ? { executionTarget: data.executionTarget, shell: data.shell, ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }) } : {}),
-    })}\ncommandPaths describes the prepared PATH. Workspace execution is sandboxed; host access requires its existing authorization.${typeof data.productDocsPath === 'string' ? ' Search and read bundled Markdown docs at productDocsPath with the shell when needed.' : ''}\nUse ${data.responseLanguage ?? "the user's language"} for all user-facing text, including progress updates, unless the user explicitly requests another language.`,
+    text: `${execution}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,
   };
 }
 

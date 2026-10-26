@@ -163,7 +163,15 @@ pub(crate) fn build_app(state: HostState) -> Router {
             "/api/conversation/sessions",
             post(conversation_session_create),
         )
+        .route(
+            "/api/conversation/events",
+            get(crate::session_events::conversation_events),
+        )
         .route("/api/conversation/catalog", get(conversation_catalog_get))
+        .route(
+            "/api/conversation/catalog/events",
+            get(conversation_catalog_events),
+        )
         .route("/api/conversation/statuses", get(conversation_statuses_get))
         .route(
             "/api/conversation/plugins",

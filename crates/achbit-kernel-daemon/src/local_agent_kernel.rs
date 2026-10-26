@@ -600,6 +600,7 @@ impl LocalAgentKernel {
         secret_provider: Arc<dyn SecretProvider>,
         mcp: McpRuntime,
         permissions: LocalAgentPermissionPolicy,
+        selection: &crate::local_agent_recipe::ToolSelection,
         enable_web_search: bool,
         product: Arc<crate::local_agent_product_tools::ProductTools>,
     ) -> Result<PreparedKernelGeneration, LocalAgentKernelError> {
@@ -610,6 +611,7 @@ impl LocalAgentKernel {
             mcp,
             enable_web_search,
             product,
+            selection,
         )
         .map_err(catalog_error)?;
         Ok(PreparedKernelGeneration {
@@ -4010,6 +4012,7 @@ mod attempt_control_tests {
             Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
             McpRuntime::default(),
             LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+            &Default::default(),
             false,
             product,
         )
@@ -6080,6 +6083,7 @@ mod attempt_control_tests {
             Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
             McpRuntime::default(),
             LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+            &Default::default(),
             false,
             crate::local_agent_product_tools::test_product_tools(),
         )

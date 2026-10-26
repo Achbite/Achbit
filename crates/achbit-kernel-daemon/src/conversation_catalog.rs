@@ -73,11 +73,23 @@ pub(crate) struct ConversationSessionRecord {
     pub(crate) updated_at: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct ConversationCatalog {
+    pub(crate) changes: tokio::sync::watch::Sender<()>,
     pub(crate) workspaces: Vec<ConversationWorkspaceRecord>,
     pub(crate) projects: Vec<ConversationProjectRecord>,
     pub(crate) sessions: Vec<ConversationSessionRecord>,
+}
+
+impl Default for ConversationCatalog {
+    fn default() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            projects: Vec::new(),
+            sessions: Vec::new(),
+            changes: tokio::sync::watch::channel(()).0,
+        }
+    }
 }
 
 impl ConversationCatalog {
@@ -208,12 +220,17 @@ impl ConversationCatalog {
         transaction
             .commit()
             .map_err(|error| format!("Commit catalog: {error}"))?;
+        let changed = !workspaces.is_empty() || project.is_some() || session.is_some();
         self.workspaces.extend(workspaces);
         if let Some(project) = project {
             self.insert_project(project);
         }
         if let Some(session) = session {
             self.insert_session(session);
+        }
+        // Publish only after both the durable write and in-memory catalog succeed.
+        if changed {
+            self.changes.send_replace(());
         }
         Ok(())
     }
@@ -257,7 +274,9 @@ impl ConversationCatalog {
             .execute("DELETE FROM projects WHERE project_id=?1", [id])
             .map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())?;
-        self.delete_project(id, now);
+        if self.delete_project(id, now) {
+            self.changes.send_replace(());
+        }
         Ok(())
     }
 
@@ -273,7 +292,9 @@ impl ConversationCatalog {
             .execute("DELETE FROM workspaces WHERE owner_session_id=?1", [id])
             .map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())?;
-        self.delete_session(id);
+        if self.delete_session(id) {
+            self.changes.send_replace(());
+        }
         Ok(())
     }
 
@@ -940,6 +961,51 @@ mod tests {
         assert!(reopened.workspace("workspace:shared").is_some());
         assert!(reopened.workspace("workspace:attachment").is_none());
         assert_eq!(catalog.management_value(), reopened.management_value());
+    }
+
+    #[test]
+    fn catalog_changes_are_published_only_after_committed_mutations() {
+        let store = Store::new();
+        let path = store.path();
+        let mut catalog = ConversationCatalog::load(&path).unwrap();
+        let mut changes = catalog.changes.subscribe();
+        assert!(!changes.has_changed().unwrap());
+        let mut invalid = session("session:invalid");
+        invalid.project_id = Some("project:missing".into());
+        assert!(catalog
+            .write_rows(&path, vec![], None, Some(invalid))
+            .is_err());
+        assert!(
+            !changes.has_changed().unwrap(),
+            "failed writes must not notify"
+        );
+        catalog
+            .write_rows(&path, vec![], None, Some(session("session:one")))
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert!(ConversationCatalog::load(&path)
+            .unwrap()
+            .session("session:one")
+            .is_some());
+        catalog
+            .set_generated_title(&path, "session:one", "Generated title".into())
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert!(!catalog
+            .set_generated_title(&path, "session:one", "Ignored title".into())
+            .unwrap());
+        assert!(
+            !changes.has_changed().unwrap(),
+            "ignored title changes do not notify"
+        );
+        catalog.remove_session(&path, "session:one").unwrap();
+        assert!(changes.has_changed().unwrap());
+        assert!(ConversationCatalog::load(&path)
+            .unwrap()
+            .session("session:one")
+            .is_none());
     }
 
     #[test]

@@ -202,6 +202,7 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         Arc::new(secrets),
         mcp,
         LocalAgentPermissionPolicy::from_settings(&settings).map_err(error)?,
+        &Default::default(),
         enable_web,
         Arc::new(product),
     )

@@ -130,6 +130,7 @@ pub(crate) struct RunProviderRuntime {
     pub(crate) api_surface: String,
     pub(crate) hosted_web_search: String,
     pub(crate) web_search_owner: String,
+    pub(crate) file_input_media_types: Vec<String>,
 }
 
 impl LocalAgentJournal {
@@ -5085,8 +5086,13 @@ fn validate_run_runtime_snapshot(
             "approvalReviewer",
             "approvalReviewerError",
             "agentToolsEnabled",
+            "toolSelection",
         ],
     )?;
+    if let Some(selection) = value.get("toolSelection") {
+        crate::local_agent_recipe::AgentRecipe::decode(&json!({"tools":selection}))
+            .map_err(|message| LocalAgentStoreError::new("agent_tools_invalid", message))?;
+    }
     validate_agent_capabilities(&value["agentCapabilities"])?;
     let context = &value["contextManagement"];
     exact_object(context, &["enabled", "thresholdTokens"], &[])?;
@@ -5638,7 +5644,12 @@ fn validate_provider_runtime_snapshot(
             "apiSurface",
             "hostedWebSearch",
         ],
-        &["reasoningEffort", "reasoningEffortOverride", "thinking"],
+        &[
+            "reasoningEffort",
+            "reasoningEffortOverride",
+            "thinking",
+            "fileInputMediaTypes",
+        ],
     )?;
     let provider_runtime_ref = required_string(provider, "providerRuntimeRef")?;
     let profile_id = required_string(provider, "profileId")?;
@@ -5648,6 +5659,15 @@ fn validate_provider_runtime_snapshot(
     let max_output_tokens = required_u64(provider, "maxOutputTokens")?;
     let api_surface = required_string(provider, "apiSurface")?;
     let hosted_web_search = required_string(provider, "hostedWebSearch")?;
+    let file_input_media_types = crate::llm_profiles::resolve_file_input_media_types(
+        if api_surface == "chatCompletions" {
+            "openaiCompatible"
+        } else {
+            api_surface
+        },
+        provider.get("fileInputMediaTypes"),
+    )
+    .map_err(|message| LocalAgentStoreError::new("session_event_invalid", message))?;
     for field in ["reasoningEffort", "reasoningEffortOverride"] {
         if let Some(effort) = provider.get(field) {
             if effort.is_null() {
@@ -5715,6 +5735,7 @@ fn validate_provider_runtime_snapshot(
         api_surface: api_surface.to_string(),
         hosted_web_search: hosted_web_search.to_string(),
         web_search_owner: "unavailable".to_string(),
+        file_input_media_types,
     })
 }
 
@@ -5978,6 +5999,38 @@ fn sql_error(code: &'static str) -> impl FnOnce(rusqlite::Error) -> LocalAgentSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_pdf_capability_is_frozen_in_the_run_journal() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        journal
+            .create_session("session:pdf", "PDF", &json!([]), None, None)
+            .unwrap();
+        let mut runtime = runtime_snapshot();
+        assert!(validate_provider_runtime_snapshot(&runtime["provider"])
+            .unwrap()
+            .file_input_media_types
+            .is_empty());
+        runtime["provider"]["fileInputMediaTypes"] = json!(["application/pdf"]);
+        journal.append(&json!({"type":"run.started", "sessionId":"session:pdf", "runId":"run:pdf",
+            "payload":{"inputMessageId":"message:pdf", "workspaceBindings":[], "runtimeSnapshot":runtime}})).unwrap();
+        runtime["provider"]["fileInputMediaTypes"] = json!([]);
+        assert_eq!(
+            journal
+                .run_provider_runtime("session:pdf", "run:pdf", "agent")
+                .unwrap()
+                .file_input_media_types,
+            vec!["application/pdf"]
+        );
+        runtime["provider"]["apiSurface"] = json!("responses");
+        runtime["provider"]["fileInputMediaTypes"] = json!(["application/pdf"]);
+        assert_eq!(
+            validate_provider_runtime_snapshot(&runtime["provider"])
+                .unwrap_err()
+                .code,
+            "session_event_invalid"
+        );
+    }
 
     struct Store(std::path::PathBuf);
     impl Store {
@@ -6924,6 +6977,30 @@ mod tests {
         validate_plugin_selection_list(&json!(selections)).unwrap();
         journal.append(&json!({"type":"session.plugins.activated", "sessionId":"session:delivery", "runId":"run:delivery", "callId":"call:plugins",
             "payload":{"providerCallId":"provider:plugins","kernelCatalogSnapshotRef":"catalog:plugins","pluginUris":selections.iter().map(|item|item["uri"].clone()).collect::<Vec<_>>()}})).unwrap();
+    }
+
+    #[test]
+    fn task_tool_selection_round_trips_through_run_journal() {
+        let store = Store::new();
+        let selection = json!({"kernel":["fs.read"],"controls":[],"plugins":false});
+        {
+            let journal = LocalAgentJournal::open(&store.path()).unwrap();
+            journal
+                .create_session("session:selection", "Read task", &json!([]), None, None)
+                .unwrap();
+            let mut runtime = runtime_snapshot();
+            runtime["toolSelection"] = selection.clone();
+            journal.append(&json!({"type":"run.started","sessionId":"session:selection","runId":"run:selection",
+                "payload":{"inputMessageId":"message:selection","workspaceBindings":[],"runtimeSnapshot":runtime}})).unwrap();
+            runtime["toolSelection"]["plugins"] = json!("false");
+            assert!(validate_run_runtime_snapshot(&runtime).is_err());
+        }
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let events = journal.read_events("session:selection", 0).unwrap();
+        assert_eq!(
+            events[1]["payload"]["runtimeSnapshot"]["toolSelection"],
+            selection
+        );
     }
 
     #[test]

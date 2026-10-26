@@ -30,6 +30,8 @@ export interface LlmProviderProfile {
   thinking?: LlmThinkingMode;
   hostedWebSearch?: LlmHostedWebSearch;
   imageInput?: boolean;
+  /** Native file formats accepted by this profile. Omitted means none. */
+  fileInputMediaTypes?: string[];
   enabled: boolean;
 }
 

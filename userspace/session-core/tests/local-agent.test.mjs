@@ -532,7 +532,9 @@ test('subagent models discovery uses the Host port without starting children', a
   try {
     const discovered = await manager.execute('session:member', 'run:models', 'call:models',
       { action: 'models' }, new AbortController().signal);
-    assert.deepEqual(discovered.models, models);
+    assert.deepEqual(discovered.models, models.map(model => ({ ...model,
+      parameters: { ...model.parameters, fileInputMediaTypes: [] },
+    })));
     assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
       presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false, coordinator: false,
     }));
@@ -1020,7 +1022,7 @@ import {
 test('agent discovery appends contracts while preserving tool definitions and the ordinary model prefix', async () => {
   const runtime = runtimeSnapshot('run:agent-directory');
   const input = { sessionId: 'session:agent-directory', runId: 'run:agent-directory', runtime,
-    events: [], workspaceBindings: [], providerRequestId: 'request:directory', responseConstraint: 'normal' };
+    events: [{ type: 'session.created', payload: { subagentSettings: { enabled: true } } }], workspaceBindings: [], providerRequestId: 'request:directory', responseConstraint: 'normal' };
   const disabled = await buildAgentProviderRequest(input);
   const analysis = await buildAgentProviderRequest({ ...input, runtime: { ...runtime, agentToolsEnabled: true, agentCapabilities: NO_AGENT_CAPS } });
   assert.equal(disabled.request.tools.some(tool => tool.name === 'agent'), false);
@@ -1035,6 +1037,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
   const header = { schemaVersion: 'deepcode.session-event.v5', sessionId: input.sessionId,
     runId: input.runId, occurredAt: '2026-10-12T00:00:00.000Z' };
   const preparedEvents = [
+    ...input.events,
     { ...header, eventId: 'event:models-run', sequence: 1, type: 'run.started',
       payload: { inputMessageId: 'message:models-input', workspaceBindings: [], runtimeSnapshot: memberRuntime } },
     { ...header, eventId: 'event:models-context', sequence: 2, type: 'context.composed', payload: member.receipt },
@@ -1051,7 +1054,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
   assert.deepEqual(discovered.request.tools, member.request.tools);
   assert.deepEqual(discovered.request.messages.slice(0, member.request.messages.length), member.request.messages);
   assert.deepEqual(discovered.request.messages.filter(message => message.role === 'system'), disabled.request.messages);
-  const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled],
+  const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled].map(event => event.type === 'session.created' ? { ...event, payload: { ...event.payload, agentContext: {} } } : event),
     runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
   assert.deepEqual(limitedMember.request.tools.filter(tool => tool.name !== 'agent'), member.request.tools.filter(tool => tool.name !== 'agent'));
   assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /Coordinate directly with teammates/u);
@@ -1523,11 +1526,13 @@ test('new runs refresh execution facts while restart and compaction retain each 
     workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
     runtimeExecutables: { kernel: '/opt/deepcode/achbit-kernel', cli: '/opt/deepcode/achbit-cli' } };
   const saved = environmentInstruction(observed);
-  const modelEnvironment = JSON.parse(saved.text.split('\n')[1]);
-  for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox']) {
+  assert.equal(saved.text, 'Use zh-CN for user-facing text unless the user requests another language.');
+  const shellText = environmentInstruction(observed, ['bash']).text;
+  const modelEnvironment = JSON.parse(shellText.slice('Command environment: '.length, shellText.indexOf('}. Use') + 1));
+  for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox', 'executionPath', 'agentComposition', 'executionTarget']) {
     assert.equal(modelEnvironment[field], undefined);
   }
-  for (const field of ['os', 'arch', 'executionTarget', 'shell', 'executionPath', 'developerCommands', 'productDocsPath']) {
+  for (const field of ['os', 'arch', 'shell', 'productDocsPath']) {
     assert.deepEqual(modelEnvironment[field], observed[field]);
   }
   assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
@@ -4537,8 +4542,8 @@ test('runtime instructions use configured aliases and plugin input while control
   const pluginInstruction = planAsk.find((instruction) => (
     instruction.id === 'plugin.fixture.skill'
   ))?.text ?? '';
-  assert.ok(pluginInstruction.includes(baseConfig.selectedPlugins[0].displayName));
-  assert.ok(pluginInstruction.includes(baseConfig.selectedPlugins[0].capabilitySummary));
+  assert.equal(pluginInstruction, '', 'plugin registration is not model guidance');
+  assert.doesNotMatch(JSON.stringify(planAsk), /Loaded plugin|Fixture/u);
   for (const instructions of [planAsk, allowDelegate]) {
     assert.deepEqual(instructions.find(instruction => instruction.id === stableCore[0].id), stableCore[0]);
   }
@@ -5441,6 +5446,17 @@ test('the real Session bridge persists model commands and passes effort through 
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   const lines = createInterface({ input: child.stdout });
   const frames = lines[Symbol.asyncIterator]();
+  const notifications = [];
+  const nextReply = async () => {
+    for (;;) {
+      const frame = await frames.next();
+      assert.equal(frame.done, false, stderr);
+      const value = JSON.parse(frame.value);
+      if (value.type !== 'session.notification') return value;
+      assert.equal(value.protocolVersion, 'deepcode.local-agent');
+      notifications.push(value.notification);
+    }
+  };
   t.after(async () => {
     releaseHeldPreparation();
     if (child.exitCode === null) child.kill();
@@ -5452,9 +5468,7 @@ test('the real Session bridge persists model commands and passes effort through 
   const send = async (operation, data) => {
     const requestId = `bridge-request:${++next}`;
     child.stdin.write(`${JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId, operation, data })}\n`);
-    const frame = await frames.next();
-    assert.equal(frame.done, false, stderr);
-    const reply = JSON.parse(frame.value);
+    const reply = await nextReply();
     assert.equal(reply.requestId, requestId);
     return reply;
   };
@@ -5465,7 +5479,7 @@ test('the real Session bridge persists model commands and passes effort through 
   const encodedFull = JSON.stringify(fullRequest);
   assert.equal(Buffer.byteLength(encodedFull), 1024 * 1024);
   child.stdin.write(`${encodedFull}\n${JSON.stringify({ ...fullRequest, requestId: 'bridge-next', data: { padding: '下一个🙂' } })}\n`);
-  const healthReplies = [JSON.parse((await frames.next()).value), JSON.parse((await frames.next()).value)];
+  const healthReplies = [await nextReply(), await nextReply()];
   assert.deepEqual(new Set(healthReplies.map((reply) => reply.requestId)), new Set(['bridge-limit', 'bridge-next']));
   assert.ok(healthReplies.every((reply) => reply.ok && reply.data.state === 'ready'));
   const sessionId = 'session:bridge-settings';
@@ -5476,6 +5490,9 @@ test('the real Session bridge persists model commands and passes effort through 
   const projection = (await send('snapshot', { sessionId })).data;
   assert.deepEqual(projection.modelSettings, command.settings);
   assert.equal(projection.run, null);
+  assert.ok(notifications.some(value => value.kind === 'change' && value.sessionId === sessionId),
+    'the ordinary bridge pushes committed changes without a debug subscription');
+  assert.ok(notifications.every(value => !('content' in value) && !('messages' in value)));
   assert.equal(prepared.length, 0);
   for (const type of ['message.submit', 'context.focus']) {
     const reply = await send('submit', { command: { schemaVersion: 'deepcode.command.v3', type, commandId: `command:${type}`, sessionId, [type === 'message.submit' ? 'text' : 'task']: 'Inspect source.', reasoningEffortOverride: 'low' } });
@@ -5493,7 +5510,7 @@ test('the real Session bridge persists model commands and passes effort through 
   assert.equal((await send('submit', { command: { ...command, commandId: 'command:wire-concurrent',
     settings: { profileId: 'profile:wire', reasoningEffortOverride: 'high' } } })).ok, true);
   releaseHeldPreparation();
-  const heldReply = JSON.parse((await frames.next()).value);
+  const heldReply = await nextReply();
   assert.equal(heldReply.requestId, 'bridge-held');
   assert.deepEqual(heldReply.error, { code: 'fixture_prepare_boundary', message: 'Preparation reached; no Provider is started.' });
   assert.equal((await send('shutdown', {})).ok, true);

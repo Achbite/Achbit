@@ -1,3 +1,4 @@
+use crate::session_events::{SessionEvents, SessionNotification};
 use achbit_host_connection::process::{
     spawn_owned_host_process, terminate_owned_process_tree_checked, OwnedHostProcess,
 };
@@ -103,6 +104,25 @@ impl SessionServiceProcess {
             let mut stdout = BufReader::new(stdout);
             loop {
                 let encoded = read_response(&mut stdout);
+                if encoded.as_ref().is_ok_and(|value| {
+                    value.get("type").and_then(Value::as_str) == Some("session.notification")
+                }) {
+                    let notification = decode_notification(encoded.expect("decoded notification"));
+                    let Ok(mut pending) = reader_responses.lock() else {
+                        break;
+                    };
+                    if pending.terminal_error.is_some() {
+                        break;
+                    }
+                    match notification {
+                        Ok(notification) => pending.events.publish(notification),
+                        Err(error) => {
+                            pending.fail(error);
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 #[cfg(feature = "debug-control")]
                 if encoded.as_ref().is_ok_and(|value| {
                     value.get("type").and_then(Value::as_str) == Some("debug.observation")
@@ -195,6 +215,21 @@ impl SessionServiceProcess {
         data: Value,
     ) -> Result<Value, SessionServiceError> {
         self.request_with_timeout(operation, data, REQUEST_TIMEOUT)
+    }
+
+    /// Live-only subscription. Register before the client reads its current Session baseline.
+    pub(crate) fn subscribe_events(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<SessionNotification>, SessionServiceError> {
+        let process = self.process.lock().map_err(|_| transport_lock_error())?;
+        let pending = process
+            .responses
+            .lock()
+            .map_err(|_| transport_lock_error())?;
+        if let Some(error) = pending.terminal_error.as_ref() {
+            return Err(error.clone());
+        }
+        Ok(pending.events.subscribe())
     }
 
     /// Register before submitting a task. The stdout reader delivers events without polling.
@@ -386,6 +421,7 @@ enum SessionReply {
 struct PendingResponses {
     requests: HashMap<String, mpsc::Sender<SessionReply>>,
     terminal_error: Option<SessionServiceError>,
+    events: SessionEvents,
     #[cfg(feature = "debug-control")]
     debug_observers: HashMap<String, DebugObserver>,
 }
@@ -444,6 +480,12 @@ impl PendingResponses {
         }
     }
     fn fail(&mut self, error: SessionServiceError) -> SessionServiceError {
+        if self.terminal_error.is_none() {
+            self.events.publish(SessionNotification::Error {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            });
+        }
         let error = self.terminal_error.get_or_insert(error).clone();
         #[cfg(feature = "debug-control")]
         for observer in self.debug_observers.values_mut() {
@@ -837,7 +879,7 @@ fn resolve_bridge() -> Result<PathBuf, SessionServiceError> {
     )
 }
 
-fn resolve_node() -> Result<PathBuf, SessionServiceError> {
+pub(crate) fn resolve_node() -> Result<PathBuf, SessionServiceError> {
     runtime_file(
         "DEEPCODE_NODE",
         if cfg!(windows) {
@@ -889,10 +931,100 @@ fn process_wait_error(error: std::io::Error) -> SessionServiceError {
     )
 }
 
+fn decode_notification(value: Value) -> Result<SessionNotification, SessionServiceError> {
+    if value["protocolVersion"] != PROTOCOL_VERSION {
+        return Err(SessionServiceError::new(
+            "session_notification_invalid",
+            "Session notification protocol is invalid.",
+        ));
+    }
+    serde_json::from_value(value["notification"].clone()).map_err(|error| {
+        SessionServiceError::new(
+            "session_notification_invalid",
+            format!("Invalid Session notification: {error}"),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn ordinary_session_notifications_share_ipc_and_disconnect_independently() {
+        let child = spawn_owned_host_process(Command::new("node").arg("-e").arg(r#"
+const input = require('node:readline').createInterface({ input: process.stdin });
+function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
+function notify(notification) { process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', type: 'session.notification', notification }) + '\n'); }
+input.on('line', line => {
+  const request = JSON.parse(line);
+  if (request.operation === 'health') reply(request, { state: 'ready' });
+  else if (request.operation === 'complete') {
+    notify({kind:'change', sessionId:'session:new'});
+    notify({kind:'settled', sessionId:'session:new', runId:'run:new', eventSequence:12, outcome:'completed'});
+    reply(request, { done: true });
+  } else if (request.operation === 'shutdown') { reply(request, {}); input.close(); process.stdin.destroy(); }
+});
+"#).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())).unwrap();
+        let service = SessionServiceProcess::from_process(child).unwrap();
+        let mut first = service.subscribe_events().unwrap();
+        let mut second = service.subscribe_events().unwrap();
+        assert_eq!(
+            service.request("complete", json!({})).unwrap()["done"],
+            true
+        );
+        assert_eq!(
+            first.blocking_recv().unwrap(),
+            SessionNotification::Change {
+                session_id: "session:new".into()
+            }
+        );
+        assert_eq!(
+            second.blocking_recv().unwrap(),
+            SessionNotification::Change {
+                session_id: "session:new".into()
+            }
+        );
+        drop(first);
+        assert_eq!(
+            second.blocking_recv().unwrap(),
+            SessionNotification::Settled {
+                session_id: "session:new".into(),
+                run_id: "run:new".into(),
+                event_sequence: 12,
+                outcome: crate::session_events::RunOutcome::Completed,
+            }
+        );
+        let mut later = service.subscribe_events().unwrap();
+        assert!(matches!(
+            later.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            service.request("health", json!({})).unwrap()["state"],
+            "ready"
+        );
+        service.shutdown().unwrap();
+        assert!(matches!(
+            second.blocking_recv().unwrap(),
+            SessionNotification::Error { .. }
+        ));
+        assert!(service.subscribe_events().is_err());
+    }
+
+    #[test]
+    fn notification_decoding_rejects_invalid_protocol_and_outcome_without_fake_completion() {
+        for frame in [
+            json!({"protocolVersion":"wrong","notification":{"kind":"change","sessionId":"session:one"}}),
+            json!({"protocolVersion":PROTOCOL_VERSION,"notification":{"kind":"settled","sessionId":"session:one","runId":"run:one","eventSequence":1,"outcome":"running"}}),
+        ] {
+            assert_eq!(
+                decode_notification(frame).unwrap_err().code,
+                "session_notification_invalid"
+            );
+        }
+    }
 
     #[cfg(feature = "debug-control")]
     #[test]

@@ -112,7 +112,7 @@ export class AgentManager {
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
             defaultProfileId: settings.profileId || owner.run?.profileId,
-            ...(!caller.agentContext ? { runners: this.loops.describe(),
+            ...(fullConfiguration ? { runners: this.loops.describe(),
             permissionPolicies: [
               { id: 'local-standard', description: 'Keep Kernel admission and automatic Plan/file gates. Parameters can only restrict the inherited policy.',
                 parametersSchema: { type: 'object', additionalProperties: false, properties: {
@@ -200,7 +200,7 @@ export class AgentManager {
     const settings = caller.subagentSettings;
     if (!settings.enabled) throw new Error('agent_disabled');
     if (!existingChild && caller.agentContext && [operation.capabilities, operation.permissions, operation.runner,
-      operation.permissionPolicy, operation.workspaceSandbox, operation.context, operation.loop, operation.reasoningEffort]
+      operation.permissionPolicy, operation.workspaceSandbox, operation.tools, operation.context, operation.loop, operation.reasoningEffort]
       .some(value => value !== undefined)) throw new Error('agent_coordinator_configuration_required');
     const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
     if (this.#blockedOwners.has(ownerId)) throw new Error('agent_owner_deleting');
@@ -237,6 +237,7 @@ export class AgentManager {
     }
     const recipe = !existingChild ? inheritAgentRecipe(caller.recipe, {
       configuration, runner: this.loops.validate(operation.runner ?? preset.runner ?? caller.recipe?.runner),
+      tools: operation.tools ?? preset.tools,
       permissionPolicy: operation.permissionPolicy ?? preset.permissionPolicy,
       workspaceSandbox: operation.workspaceSandbox ?? preset.workspaceSandbox,
       profileId: modelSelection!.profileId, ...(modelSelection!.reasoningEffortOverride ? { reasoningEffort: modelSelection!.reasoningEffortOverride } : {}),

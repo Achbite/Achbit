@@ -125,8 +125,13 @@ class OwnedDaemon:
             except (OSError, ValueError, urllib.error.URLError):
                 return None
 
-        self.identity = wait_until(ready, 12, "Daemon 未进入 ready")
+        self.identity = wait_until(ready, 12, "Daemon 未提供 identity")
         require(self.identity.get("instanceId") == self.instance_id, "Daemon identity 不匹配")
+        # Identity/catalog can be available while execution is still starting.
+        # Health waits on the Host's initialization notification and checks Session.
+        health = api_json(self.base_url, "/api/health", token=self.token, timeout=12)
+        require(isinstance(health, dict) and health.get("kernel") == "ready" and health.get("session") == "ready",
+            f"Daemon execution services 未就绪：{health}")
 
     def shutdown(self) -> None:
         require(self.process is not None, "Daemon 尚未启动")

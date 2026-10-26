@@ -562,7 +562,10 @@ export class SessionService implements ConversationPort {
     }
     const actor = new SessionActor(sessionId, this.journal, installed.composition, {
       initialEvents: events,
-      ...(this.observation ? { observation: this.observation } : {}),
+      ...(this.observation ? { observation: {
+        accept: input => this.observation!.accept({ ...input, parentSessionId: first.payload.agentContext?.parentSessionId ?? null }),
+        failed: (id, error) => this.observation!.failed(id, error),
+      } satisfies SessionObservationSink } : {}),
       ...(this.#agents ? { agents: this.#agents.forSession(sessionId) } : {}),
       ...(profileId ? { profileId } : {}),
     });

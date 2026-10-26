@@ -50,6 +50,7 @@ mod provider_transport;
 mod routes;
 mod service_plugins;
 mod session_environment;
+mod session_events;
 mod session_service;
 mod settings_api;
 mod state;

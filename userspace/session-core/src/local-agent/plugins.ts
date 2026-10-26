@@ -1,5 +1,7 @@
 import type {
   ContextCompositionPartitionKind,
+  SessionEvent,
+  PreparedRunRuntime,
   ContextManagementSettings,
   RunRuntimeSnapshot,
   KernelPort,
@@ -14,6 +16,7 @@ import type { publishPlan } from './planStage.js';
 import type { presentArtifacts } from './deliverables.js';
 import type { todoUpdateFact } from './todoState.js';
 import type { AgentLoopDriver } from './loopRegistry.js';
+import type { LoopSnapshot } from './loop.js';
 
 export interface ContextMessageContribution {
   contributionId: string;
@@ -21,6 +24,25 @@ export interface ContextMessageContribution {
   label: string;
   message: ModelMessage;
   sourceSequence?: number;
+}
+
+/** Optional ongoing execution. The Loop does not interpret process/container state. */
+export interface RunActivity {
+  waitPending(snapshot: LoopSnapshot, signal: AbortSignal): Promise<void>;
+  sync(): Promise<void>;
+  checkpoint(snapshot: LoopSnapshot): void;
+  needsContinuation(snapshot: LoopSnapshot): boolean;
+  wait(signal: AbortSignal): Promise<void>;
+  blocksFollowingCalls(snapshot: LoopSnapshot, call: Extract<SessionEvent, { type: 'tool.requested' }>): boolean;
+}
+
+export interface PluginActivationInput {
+  sessionId: string;
+  runId: string;
+  runtime: RunRuntimeSnapshot;
+  pluginUris: readonly string[];
+  nextId(kind: string): string;
+  preparation: RunPreparationPort;
 }
 
 /** Implementations are selected together for one logical request, including retries. */
@@ -42,6 +64,7 @@ export interface SessionCapabilities {
   readonly controls: {
     readonly optionalTools?: readonly string[];
     readonly decode: typeof decodeSessionControlCall;
+    readonly preparePlugins: (input: PluginActivationInput) => Promise<PreparedRunRuntime>;
     readonly publishPlan: typeof publishPlan;
     readonly presentArtifacts: typeof presentArtifacts;
     readonly updateTodo: typeof todoUpdateFact;

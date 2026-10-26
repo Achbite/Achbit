@@ -6,6 +6,7 @@ import type { SessionOperation, JsonObject } from '@achbit/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { activeProcessWait, PROCESS_WAIT_REVIEW_MS } from './processWait.js';
 import { ManagedProcesses } from './managedProcesses.js';
+import { createProcessActivity } from './processActivity.js';
 import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/protocol';
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
@@ -1260,8 +1261,13 @@ export class SessionActor {
           }
           return this.waitForInput(runId, signal, undefined, undefined, wait);
         },
-        syncProcesses: async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
-        waitProcesses: (signal, jobIds, timeoutSeconds) => this.waitForProcesses(command.runId, signal, jobIds, timeoutSeconds),
+        ...((snapshot.state.runRuntimeSnapshots[command.runId]?.tools.some(tool => tool.possibleEffects.includes('process'))
+          || snapshot.state.runRuntimeSnapshots[command.runId]?.toolSelection?.plugins !== false
+          || Object.values(snapshot.state.processes).some(job => job.runId === command.runId)) ? {
+          activity: createProcessActivity(command.runId,
+            async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
+            (signal, jobIds, timeoutSeconds) => this.waitForProcesses(command.runId, signal, jobIds, timeoutSeconds)),
+        } : {}),
         waitForChange: (revision, signal, permissions) => this.waitForChange(revision, signal, permissions),
         readSnapshot: () => this.withWrite(() => this.loadSnapshot()),
         commit: (events) => this.withWrite(async () => {
@@ -1462,33 +1468,42 @@ export class SessionActor {
       if (previous) await record({...previous, phase: 'released'});
       return;
     }
-    // A normal input suspends this clock while the model does useful work. A review
-    // and any repair keep the logical wait identity and its consumed allowance.
+    // A normal input suspends this clock while the model does useful work. The
+    // scheduled check belongs to the Host; healthy work does not request a model turn.
     const startedAt = previous?.phase === 'waiting' ? previous.startedAt : Date.now();
     const composition = current.events.findLast(event => event.type === 'context.composed' && event.runId === runId && event.payload.purpose === 'agent');
     const boundary = composition?.type === 'context.composed' ? composition.payload.modelView?.throughSequence ?? composition.sequence : current.state.revision;
-    const wait = {waitId: previous?.waitId ?? this.#nextId('process-wait'), phase: 'waiting' as const,
+    let wait = {waitId: previous?.waitId ?? this.#nextId('process-wait'), phase: 'waiting' as const,
       jobIds: targets, startedAt, reviewAt: startedAt + PROCESS_WAIT_REVIEW_MS,
       reviewed: previous?.reviewed ?? false, afterSequence: afterSequence ?? boundary};
     await record(wait);
-    const deadline = Math.min(wait.reviewed ? Infinity : wait.reviewAt,
-      timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000);
+    const explicitDeadline = timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000;
     const revisions = new Map(targets.map(id => [id, current.state.processes[id]?.revision]));
-    await this.waitForInput(runId, signal, undefined, snapshot => !active(snapshot)
-      || targets.some(id => snapshot.state.processes[id]?.status !== 'active' && snapshot.state.processes[id]?.revision !== revisions.get(id)),
-      {afterSequence: wait.afterSequence, ...(Number.isFinite(deadline) ? {deadline} : {})});
-    signal.throwIfAborted();
-    // Reconcile completion at the deadline before deciding whether to wake the model.
-    await this.#processes?.sync();
-    await this.withWrite(async () => {
-      current = await this.loadSnapshot();
-      if (current.state.run?.runId !== runId || isTerminal(current.state.run.status) || signal.aborted) return;
-      previous = activeProcessWait(current.events, runId);
-      if (previous?.waitId !== wait.waitId) return;
-      const phase = !active(current) ? 'released' : !wait.reviewed && Date.now() >= wait.reviewAt ? 'review' : 'resumed';
-      await this.appendEvents([{type: 'process.wait.changed', sessionId: this.sessionId, runId,
-        payload: {...wait, phase, reviewed: wait.reviewed || phase === 'review'}}], current);
-    });
+    const hasResult = (snapshot: LoopSnapshot) => targets.some(id => snapshot.state.processes[id]?.status !== 'active'
+      && snapshot.state.processes[id]?.revision !== revisions.get(id));
+    for (;;) {
+      const deadline = Math.min(wait.reviewed ? Infinity : wait.reviewAt, explicitDeadline);
+      const result = await this.waitForInput(runId, signal, undefined, snapshot => !active(snapshot) || hasResult(snapshot),
+        {afterSequence: wait.afterSequence, ...(Number.isFinite(deadline) ? {deadline} : {})});
+      signal.throwIfAborted();
+      // Reconcile completion, errors and user input before accepting a healthy check.
+      await this.#processes?.sync();
+      let keepWaiting = false;
+      await this.withWrite(async () => {
+        current = await this.loadSnapshot();
+        if (current.state.run?.runId !== runId || isTerminal(current.state.run.status) || signal.aborted) return;
+        previous = activeProcessWait(current.events, runId);
+        if (previous?.waitId !== wait.waitId) return;
+        keepWaiting = result.timedOut === true && !wait.reviewed && Date.now() >= wait.reviewAt
+          && Date.now() < explicitDeadline && active(current) && !hasResult(current)
+          && !inputAfter(current.events, runId, wait.afterSequence);
+        if (keepWaiting) wait = {...wait, reviewed: true};
+        const phase = !active(current) ? 'released' : keepWaiting ? 'waiting' : 'resumed';
+        await this.appendEvents([{type: 'process.wait.changed', sessionId: this.sessionId, runId,
+          payload: {...wait, phase}}], current);
+      });
+      if (!keepWaiting) return;
+    }
   }
 
   private async ensureProcesses(runId: string): Promise<void> {

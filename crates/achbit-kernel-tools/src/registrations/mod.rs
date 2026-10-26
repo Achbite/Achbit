@@ -86,7 +86,7 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
         KernelToolKind::FsRead => (
             "Read bounded UTF-8 text from a workspace file. The content field preserves source text and whitespace. Check truncation and returned ranges before reading more. For PDFs or binary files, use a reader suited to that format.",
             &[
-                "Use for a bounded read of a known text file with an exact file reference. Use Shell for search or combined inspection.",
+                "Use for a bounded read of a known text file with an exact file reference.",
                 "Use startLine and maxLines for a line range; startByte and maxBytes for byte bounds."
             ],
         ),

@@ -1457,12 +1457,12 @@ test('unknown drivers and child policy escalation are rejected before child crea
   assert.deepEqual((await completed(fixture.service, ownerId)).agentTasks ?? [], []);
 });
 
-test('Session delegation settings append ordered facts without changing tools or accepting disabled tasks', async t => {
+test('Session delegation settings change declared tools without injecting state or accepting disabled tasks', async t => {
   const ownerId = 'session:delegation-toggle';
   let fixture;
   fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
     assert.equal(sessionId, ownerId, 'disabled delegation must not start a child');
-    assert.ok(request.tools.some(tool => tool.name === 'agent'), 'the installed handler remains discoverable when off');
+    assert.equal(request.tools.some(tool => tool.name === 'agent'), false, 'unstarted delegation has no model tool');
     if (turn === 1) {
       for (const enabled of [true, false, true, true, false]) {
         await service.submit(subagentSettingsCommand(ownerId, `command:toggle:${(await service.snapshot(ownerId)).revision}`, { ...fixture.settings, enabled }));
@@ -1472,12 +1472,12 @@ test('Session delegation settings append ordered facts without changing tools or
       const first = fixture.requests.get(ownerId)[0];
       assert.deepEqual(request.tools, first.tools);
       assert.deepEqual(request.messages.slice(0, first.messages.length), first.messages);
-      assert.equal(occurrences(textOf(request), 'stop delegating new tasks'), 3);
-      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 3);
+      assert.equal(occurrences(textOf(request), 'stop delegating new tasks'), 0);
+      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 0);
       yield call(request, 'toggle:rejected', 'agent', { action: 'spawn', name: 'Disabled', task: 'Must not start', delivery: 'async' });
     } else {
       assert.equal(turn, 3);
-      assert.match(textOf(request), /agent_disabled/u);
+      assert.match(textOf(request), /provider_tool_alias_unknown/u);
       yield answer(request, 'Continued without delegating.');
     }
     yield done(request);
@@ -1495,8 +1495,7 @@ test('Session delegation settings append ordered facts without changing tools or
       summary: 'The task inspected available agent operations.' } }];
   const retained = messagesFromJournal(compacted, state.run.runId, [workspaceBinding]);
   const policies = retained.filter(item => item.contributionId.startsWith('agent-delegation:'));
-  assert.equal(policies.length, 1, 'compaction retains the latest exact policy independently of summary wording');
-  assert.match(policies[0].message.content, /stop delegating new tasks/u);
+  assert.equal(policies.length, 0, 'settings remain journal facts and do not become model text');
   const before = fixture.requests.get(ownerId).length;
   await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:toggle:after', { ...fixture.settings, enabled: true }));
   assert.equal(fixture.requests.get(ownerId).length, before, 'a setting change does not start a model request');
@@ -1518,9 +1517,8 @@ test('delegation changes during execution preserve the provider call and result 
       assert.equal(result.role, 'tool', 'runtime notices must not split the call/result group');
       assert.equal(result.providerCallId, 'toggle:read');
       const notices = request.messages.slice(callIndex + 2).filter(message => message.role === 'user' && message.content.startsWith('Runtime setting changed:'));
-      assert.equal(notices.length, 2);
-      assert.match(notices[0].content, /stop delegating new tasks/u);
-      assert.match(notices[1].content, /new agent delegation is enabled/u);
+      assert.equal(notices.length, 0);
+      assert.ok(request.tools.some(tool => tool.name === 'agent'), 'latest active selection is declared');
       yield answer(request, 'Read complete.');
     }
     yield done(request);
@@ -1538,7 +1536,8 @@ test('Session settings isolate peers, update future defaults, survive reopen and
   const ownerId = 'session:settings-b';
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
     if (sessionId === ownerId && turn === 1) {
-      assert.match(textOf(request), /Proactively delegate independent work; use collaboration/u);
+      assert.match(request.tools.find(tool => tool.name === 'agent').description, /Proactively delegate useful independent work/u);
+      assert.doesNotMatch(textOf(request), /new agent delegation is enabled|stop delegating new tasks/u);
       yield call(request, 'settings:spawn', 'agent', { action: 'spawn', name: 'Inspector', task: 'Inspect independently.', delivery: 'wait' });
     } else yield answer(request, 'Independent evidence.');
     yield done(request);

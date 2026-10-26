@@ -862,17 +862,6 @@ struct LocalPluginSource {
     #[serde(default = "enabled_by_default")]
     enabled: bool,
 }
-#[derive(Deserialize)]
-struct LocalCliManifest {
-    id: String,
-    name: String,
-    description: String,
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    entry: String,
-    tools: Vec<RemoteToolDefinition>,
-}
 fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
     let mut result = McpServerSource {
         setting: McpServerSetting {
@@ -910,47 +899,13 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
         if !root.is_absolute() {
             return Err("插件目录必须是绝对路径".into());
         }
-        let encoded = std::fs::read(root.join("achbit-tool.json"))
-            .map_err(|error| format!("{}: {error}", root.display()))?;
-        let manifest: LocalCliManifest =
-            serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-        if manifest.id != source.id
-            || manifest.id.is_empty()
-            || normalized_name(&manifest.id) != manifest.id
-            || manifest.name.trim().is_empty()
-            || manifest.description.trim().is_empty()
-            || manifest.tools.is_empty()
-            || manifest.command.trim().is_empty()
-        {
-            return Err("插件需要有效的 id、name、description、command 和 tools".into());
+        let artifact = achbit_kernel_abi::ToolPluginManifest::read(root)?;
+        let manifest = artifact.manifest;
+        if manifest.id != source.id {
+            return Err("Tool plugin id changed; remove it and import again".into());
         }
-        let entry = std::path::Path::new(&manifest.entry);
-        if entry.components().count() != 1
-            || !matches!(
-                entry.components().next(),
-                Some(std::path::Component::Normal(_))
-            )
-        {
-            return Err("CLI entry 必须是插件目录中的单文件构建产物".into());
-        }
-        let bytes = std::fs::read(root.join(entry)).map_err(|error| error.to_string())?;
-        if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
-            return Err("CLI entry 必须是非空且不超过 4 MiB 的文件".into());
-        }
-        let mut names = BTreeSet::new();
-        for tool in &manifest.tools {
-            if tool.name.is_empty()
-                || normalized_name(&tool.name) != tool.name
-                || !names.insert(&tool.name)
-                || !tool.input_schema.is_object()
-                || tool.description.as_deref().is_none_or(str::is_empty)
-            {
-                return Err("工具需要唯一名称、用途和 inputSchema".into());
-            }
-        }
-        result.descriptor.implementation =
-            serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-        result.descriptor.content = Arc::from(bytes.as_slice());
+        result.descriptor.implementation = artifact.implementation;
+        result.descriptor.content = Arc::from(artifact.entry_bytes.as_slice());
         result.descriptor.name = manifest.name.clone();
         result.descriptor.short_description = manifest.description.clone();
         result.descriptor.capability_summary = format!(
@@ -959,13 +914,7 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
             manifest
                 .tools
                 .iter()
-                .map(|tool| format!(
-                    "- {}: {}",
-                    tool.name,
-                    tool.description
-                        .as_deref()
-                        .expect("validated tool description")
-                ))
+                .map(|tool| format!("- {}: {}", tool.name, tool.description))
                 .collect::<Vec<_>>()
                 .join("\n")
         );
@@ -977,9 +926,17 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
         result.setting.name = manifest.name;
         result.setting.description = manifest.description;
         result.setting.command = manifest.command;
-        result.cli_entry = Some((manifest.entry, bytes));
+        result.cli_entry = Some((manifest.entry, artifact.entry_bytes));
         result.contract = McpServerContract::LocalCli {
-            tools: manifest.tools,
+            tools: manifest
+                .tools
+                .into_iter()
+                .map(|tool| RemoteToolDefinition {
+                    name: tool.name,
+                    description: Some(tool.description),
+                    input_schema: tool.input_schema,
+                })
+                .collect(),
             args: manifest.args,
         };
         Ok(())
@@ -2119,7 +2076,7 @@ for line in sys.stdin:
         let pid_path = directory.0.join("pid");
         let cli = CliClient {
             command: "python3".into(),
-            args: vec!["-c".into(), "import json,os,sys,subprocess; from pathlib import Path; json.load(sys.stdin); Path(sys.argv[1]).write_text(str(os.getpid())); child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(json.dumps({'childPid':child.pid}),flush=True)".into(), pid_path.to_string_lossy().into()],
+            args: vec!["-c".into(), "import json,os,sys,subprocess; from pathlib import Path; json.load(sys.stdin); Path(sys.argv[1]+'.tmp').write_text(str(os.getpid())); os.replace(sys.argv[1]+'.tmp',sys.argv[1]); child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(json.dumps({'childPid':child.pid}),flush=True)".into(), pid_path.to_string_lossy().into()],
             entry: None,
         };
         let (send, receive) = mpsc::channel();

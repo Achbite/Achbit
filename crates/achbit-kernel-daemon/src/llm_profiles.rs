@@ -127,6 +127,7 @@ pub(crate) fn validate_llm_profile(profile: &Value) -> Result<(), String> {
         "hostedWebSearch",
         "enabled",
         "imageInput",
+        "fileInputMediaTypes",
     ];
     let profile = profile.as_object().ok_or("Profile 必须是 JSON 对象。")?;
     if let Some(field) = profile
@@ -161,6 +162,10 @@ pub(crate) fn validate_llm_profile(profile: &Value) -> Result<(), String> {
     ) {
         return Err("kind 必须是 openaiCompatible、responses、anthropic 或 ollama。".into());
     }
+    resolve_file_input_media_types(
+        profile["kind"].as_str().unwrap(),
+        profile.get("fileInputMediaTypes"),
+    )?;
     if !matches!(
         profile.get("providerFlavor").and_then(Value::as_str),
         Some("openai" | "deepseek" | "zhipu" | "moonshot")
@@ -211,6 +216,36 @@ pub(crate) fn validate_llm_profile(profile: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_file_input_media_types(
+    kind: &str,
+    media_types: &[String],
+) -> Result<(), String> {
+    if !media_types.is_empty() && kind != "openaiCompatible" {
+        return Err("fileInputMediaTypes 目前仅支持 Chat Compatible 模型。".into());
+    }
+    let mut seen = HashSet::new();
+    if media_types
+        .iter()
+        .any(|media| media != "application/pdf" || !seen.insert(media))
+    {
+        return Err("fileInputMediaTypes 目前仅支持不重复的 application/pdf。".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_file_input_media_types(
+    kind: &str,
+    value: Option<&Value>,
+) -> Result<Vec<String>, String> {
+    let media_types: Vec<String> = match value {
+        None => Vec::new(),
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| "fileInputMediaTypes 必须是字符串数组。".to_string())?,
+    };
+    validate_file_input_media_types(kind, &media_types)?;
+    Ok(media_types)
 }
 
 pub(crate) fn validate_profile_document(config: &Value) -> Result<(), String> {
@@ -532,5 +567,36 @@ mod tests {
         assert!(response.data.is_none());
         assert_eq!(response.message.as_deref(), Some(error.as_str()));
         assert_eq!(fs::read_to_string(root.profile_path()).unwrap(), original);
+    }
+
+    #[test]
+    fn native_pdf_profile_capability_is_explicit_and_chat_compatible_only() {
+        let mut profile = json!({"id":"pdf", "name":"PDF", "kind":"openaiCompatible", "providerFlavor":"openai",
+            "model":"custom", "connectionId":"connection:test", "enabled":true});
+        validate_llm_profile(&profile).unwrap();
+        assert!(resolve_file_input_media_types(
+            "openaiCompatible",
+            profile.get("fileInputMediaTypes")
+        )
+        .unwrap()
+        .is_empty());
+        profile["fileInputMediaTypes"] = json!(["application/pdf"]);
+        validate_llm_profile(&profile).unwrap();
+        for kind in ["responses", "anthropic", "ollama"] {
+            profile["kind"] = json!(kind);
+            assert!(validate_llm_profile(&profile)
+                .unwrap_err()
+                .contains("Chat Compatible"));
+        }
+        profile["kind"] = json!("openaiCompatible");
+        for invalid in [
+            json!(null),
+            json!("application/pdf"),
+            json!(["text/plain"]),
+            json!(["application/pdf", "application/pdf"]),
+        ] {
+            profile["fileInputMediaTypes"] = invalid;
+            assert!(validate_llm_profile(&profile).is_err());
+        }
     }
 }

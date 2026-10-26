@@ -25,14 +25,21 @@ pub(crate) struct Input {
     pub wait_seconds: Option<u32>,
 }
 
-pub(crate) fn schema() -> Value {
-    json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
+pub(crate) fn schema(targets: &[&str]) -> Value {
+    let mut schema = json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
         "action":{"type":"string","enum":["start","wait","status","cancel"]},
-        "tool":{"type":"string","enum":["bash","powershell","container"],"description":"For start: an available execution tool. Container jobs accept create or exec."},
+        "tool":{"type":"string","enum":targets,"description":"For start: the execution tool. Container jobs accept create or exec."},
         "input":{"type":"object","description":"For start: the chosen tool's exact input, excluding workspace and workspaceId; select workspace on this process call. Include any permission request. Omit timeout for no runtime limit."},
         "jobId":{"type":"string","description":"For wait/status/cancel: the jobId returned by start."},
-        "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional explicit dependency-wait deadline, without stopping the job. Normally omit; completion wakes the Loop automatically."}
-    }})
+        "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional explicit dependency-wait deadline, without stopping the job. Normally omit; completion resumes the task."}
+    }});
+    if targets.is_empty() {
+        schema["properties"]["action"]["enum"] = json!(["wait", "status", "cancel"]);
+        let properties = schema["properties"].as_object_mut().expect("object schema");
+        properties.remove("tool");
+        properties.remove("input");
+    }
+    schema
 }
 
 pub(crate) fn parse(raw: Value) -> Result<Input, String> {

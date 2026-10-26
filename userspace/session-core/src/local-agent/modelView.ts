@@ -40,7 +40,7 @@ export function admitModelView(receipt: ContextCompositionReceipt, events: reado
     if (!message || existing.has(contribution.contributionId)
       || !factSequences.has(contribution.sourceSequence) || contribution.sourceSequence > throughSequence
       || message.role !== contribution.message.role || message.contributionKind !== contribution.contributionKind
-      || contribution.message.images?.length || contribution.message.toolImages?.length) {
+      || contribution.message.images?.length || contribution.message.toolImages?.length || contribution.message.files?.length) {
       throw new Error('context_model_view_contribution_invalid');
     }
     existing.set(contribution.contributionId, contribution);

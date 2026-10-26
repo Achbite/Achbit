@@ -1355,6 +1355,7 @@ mod tests {
                 Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
                 McpRuntime::default(),
                 LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+                &Default::default(),
                 false,
                 crate::local_agent_product_tools::test_product_tools(),
             )

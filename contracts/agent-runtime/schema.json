@@ -68,6 +68,7 @@
             "runner": {"$ref": "#/$defs/AgentContributionSelection"},
             "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
             "workspaceSandbox": {"$ref": "#/$defs/AgentRecipe/properties/workspaceSandbox"},
+            "tools": {"$ref": "#/$defs/AgentToolSelection"},
             "loop": {"type": "object", "additionalProperties": false, "properties": {
               "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
               "controls": {"$ref": "#/$defs/AgentContributionSelection"}
@@ -133,9 +134,18 @@
         "controls": {"$ref": "#/$defs/AgentContributionSelection"}
       }
     },
+    "AgentToolSelection": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "kernel": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
+        "controls": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
+        "plugins": {"type":"boolean"}
+      }
+    },
     "AgentRecipe": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "tools": {"$ref": "#/$defs/AgentToolSelection"},
         "profileId": {"$ref": "#/$defs/Id"},
         "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
         "configuration": {"$ref": "#/$defs/AgentConfiguration"},
@@ -162,7 +172,10 @@
               "required":["adapterId","kind","providerFlavor","contextWindowTokens","maxOutputTokens","imageInput","temperature","hostedWebSearch"],
               "properties":{"adapterId":{"type":"string","minLength":1},"kind":{"enum":["responses","openaiCompatible","anthropic","ollama"]},"providerFlavor":{"type":["string","null"]},
                 "contextWindowTokens":{"type":"integer","minimum":1},"maxOutputTokens":{"type":"integer","minimum":1},"imageInput":{"type":"boolean"},
-                "temperature":{"type":["number","null"]},"hostedWebSearch":{"enum":[null,"web_search"]}}}
+                "fileInputMediaTypes":{"type":"array","uniqueItems":true,"items":{"const":"application/pdf"}},
+                "temperature":{"type":["number","null"]},"hostedWebSearch":{"enum":[null,"web_search"]}},
+              "if":{"required":["fileInputMediaTypes"],"properties":{"fileInputMediaTypes":{"minItems":1}}},
+              "then":{"properties":{"kind":{"const":"openaiCompatible"}}}}
           }},
         "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "ownerSessionId": {"$ref": "#/$defs/Id"},
@@ -489,6 +502,19 @@
                 }
               }
             },
+            "files": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["workspaceId", "logicalPath", "mediaType", "displayName"],
+                "properties": {
+                  "workspaceId": {"$ref": "#/$defs/Id"},
+                  "logicalPath": {"$ref": "#/$defs/Id"},
+                  "mediaType": {"const": "application/pdf"},
+                  "displayName": {"$ref": "#/$defs/Id"}
+                }
+              }
+            },
             "images": {
               "type": "array",
               "items": {
@@ -505,10 +531,11 @@
           },
           "anyOf": [
             {"properties": {"content": {"minLength": 1}}},
+            {"required": ["files"], "properties": {"files": {"minItems": 1}}},
             {"required": ["images"], "properties": {"images": {"minItems": 1}}},
             {"required": ["toolImages"], "properties": {"toolImages": {"minItems": 1}}}
           ],
-          "if": {"required": ["toolImages"]},
+          "if": {"anyOf": [{"required": ["toolImages"]}, {"required": ["files"]}]},
           "then": {"properties": {"role": {"const": "user"}}}
         },
         {
@@ -571,6 +598,7 @@
       "properties": {
         "providerRuntimeRef": {"$ref": "#/$defs/Id"},
         "profileId": {"$ref": "#/$defs/Id"},
+        "fileInputMediaTypes": {"type": "array", "uniqueItems": true, "items": {"const": "application/pdf"}},
         "contextWindowTokens": {"type": "integer", "minimum": 1},
         "maxOutputTokens": {"type": "integer", "minimum": 1},
         "apiSurface": {"enum": ["chatCompletions", "responses", "anthropicMessages", "ollamaChat"]},
@@ -578,7 +606,9 @@
         "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
         "reasoningEffortOverride": {"enum": ["low", "medium", "high", "xhigh", "max"]},
         "thinking": {"enum": ["enabled", "disabled"]}
-      }
+      },
+      "if": {"required": ["fileInputMediaTypes"], "properties": {"fileInputMediaTypes": {"minItems": 1}}},
+      "then": {"properties": {"apiSurface": {"const": "chatCompletions"}}}
     },
     "ToolUnavailabilityReason": {
       "type": "object",
@@ -745,6 +775,7 @@
         "contextManagement"
       ],
       "properties": {
+        "toolSelection": {"$ref": "#/$defs/AgentToolSelection"},
         "runRuntimeSnapshotRef": {"$ref": "#/$defs/Id"},
         "extensionGenerationRef": {"$ref": "#/$defs/Id"},
         "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"},
@@ -3552,6 +3583,7 @@
         "hostBinding": {"$ref": "#/$defs/HostWindowBinding"},
         "runId": {"$ref": "#/$defs/Id"},
         "profileId": {"$ref": "#/$defs/Id"},
+        "fileInputMediaTypes": {"type": "array", "uniqueItems": true, "items": {"const": "application/pdf"}},
         "waitingReason": {"enum": ["approval", "userInput", "plan"]},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
         "status": {
