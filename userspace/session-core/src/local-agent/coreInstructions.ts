@@ -5,5 +5,5 @@ export const stableCoreInstructions = Object.freeze([{
 
 Inspect relevant evidence, make focused changes, and use the project's declared build/test entrypoints and required environment. Support completion claims with evidence; preserve original errors and distinguish completed, failed and unverified work. Rejected input was not executed. The Kernel enforces execution scope; resolve missing authority before retrying.
 
-Use the current tool schemas. Read relevant product guidance when needed. Share meaningful progress and concise, useful results. Match the user's language and format; link exact file paths and source URLs.`,
+Use the current tool schemas. Read relevant product guidance when needed. Share meaningful progress and concise, useful results. Use the user's language for all user-facing text, including progress updates and final answers. Follow the requested format; link exact file paths and source URLs.`,
 }]);

@@ -40,20 +40,24 @@ export function ReasoningDetails({ sessionId, requestId, live = false, summary }
   </details>;
 }
 
-export function ReasoningHistory({ sessionId, runId }: { sessionId: string; runId: string }) {
+export function ReasoningHistory({ sessionId, runId, activeTurnId, throughTimelineId }: {
+  sessionId: string; runId: string; activeTurnId?: string; throughTimelineId?: string;
+}) {
   const language = useUiLanguage();
   const { readConversation } = useConversationHost();
   const [items, setItems] = useState<JsonObject[]>([]);
   const [before, setBefore] = useState<number | undefined>();
   const [next, setNext] = useState<number | null>(null);
   const [error, setError] = useState('');
+  // Canonical timeline changes also cover turns that complete before any draft is observed.
+  // Text deltas retain these identities and do not cause repeated history reads.
   useEffect(() => {
     const controller = new AbortController();
     void readConversation(sessionId, { view: 'reasoning', limit: 50, ...(before ? { before } : {}) }, controller.signal).then((result) => {
       if (!controller.signal.aborted) { setItems(result.items); setNext(result.nextBefore); setError(''); }
     }).catch((error: unknown) => { if (!controller.signal.aborted) setError(String(error)); });
     return () => controller.abort();
-  }, [readConversation, sessionId, runId, before]);
+  }, [readConversation, sessionId, runId, before, activeTurnId, throughTimelineId]);
   return <>{error && <p role="alert">{error}</p>}{items.filter((item) => item.runId === runId
     && Array.isArray(item.kinds) && item.kinds.length).map((item) => <ReasoningDetails key={String(item.providerRequestId)} sessionId={sessionId} requestId={String(item.providerRequestId)} />)}
     {next !== null && <button type="button" onClick={() => setBefore(next)}>{t(language, 'agent.reasoning.earlier')}</button>}</>;
