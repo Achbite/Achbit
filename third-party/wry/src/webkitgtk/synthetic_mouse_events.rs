@@ -19,8 +19,10 @@ pub fn setup(webview: &WebView) {
       8 => {
         inhibit = true;
         bf_state_c.set(BACK);
-        webview.run_javascript(
+        webview.evaluate_javascript(
           &create_js_mouse_event(event, true, &bf_state_c),
+          None,
+          None,
           None::<&gtk::gio::Cancellable>,
           |_| {},
         );
@@ -29,8 +31,10 @@ pub fn setup(webview: &WebView) {
       9 => {
         inhibit = true;
         bf_state_c.set(FORWARD);
-        webview.run_javascript(
+        webview.evaluate_javascript(
           &create_js_mouse_event(event, true, &bf_state_c),
+          None,
+          None,
           None::<&gtk::gio::Cancellable>,
           |_| {},
         );
@@ -53,8 +57,10 @@ pub fn setup(webview: &WebView) {
       8 => {
         inhibit = true;
         bf_state_c.remove(BACK);
-        webview.run_javascript(
+        webview.evaluate_javascript(
           &create_js_mouse_event(event, false, &bf_state_c),
+          None,
+          None,
           None::<&gtk::gio::Cancellable>,
           |_| {},
         );
@@ -63,8 +69,10 @@ pub fn setup(webview: &WebView) {
       9 => {
         inhibit = true;
         bf_state_c.remove(FORWARD);
-        webview.run_javascript(
+        webview.evaluate_javascript(
           &create_js_mouse_event(event, false, &bf_state_c),
+          None,
+          None,
           None::<&gtk::gio::Cancellable>,
           |_| {},
         );

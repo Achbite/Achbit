@@ -32,9 +32,11 @@ use class::{
 use dpi::{LogicalPosition, LogicalSize};
 #[cfg(target_os = "macos")]
 use objc2::runtime::Bool;
+#[cfg(any(debug_assertions, feature = "devtools", feature = "mac-proxy"))]
+use objc2::runtime::NSObject;
 use objc2::{
   rc::Retained,
-  runtime::{AnyObject, NSObject, ProtocolObject},
+  runtime::{AnyObject, ProtocolObject},
   AllocAnyThread, DeclaredClass, MainThreadOnly, Message,
 };
 #[cfg(target_os = "macos")]
@@ -1350,7 +1352,7 @@ r#"Object.defineProperty(window, 'ipc', {
 
 pub fn url_from_webview(webview: &WKWebView) -> Result<String> {
   let url_obj = unsafe { webview.URL().unwrap() };
-  let absolute_url = unsafe { url_obj.absoluteString().unwrap() };
+  let absolute_url = url_obj.absoluteString().unwrap();
 
   let bytes = {
     let bytes: *const c_char = absolute_url.UTF8String();
