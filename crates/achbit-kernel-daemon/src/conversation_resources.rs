@@ -475,11 +475,19 @@ pub(crate) async fn conversation_resources_watch(
         }
     };
     let stream = async_stream::stream! {
+        let shutdown = crate::wait_for_host_shutdown();
+        tokio::pin!(shutdown);
         yield Ok::<_, Infallible>(Event::default().event("ready").data(json!({"indices":indices}).to_string()));
         for failure in failures {
             yield Ok(Event::default().event("resourceError").data(failure.to_string()));
         }
-        while let Some(change) = watch.next().await {
+        loop {
+            let change = tokio::select! {
+                biased;
+                _ = &mut shutdown => break,
+                change = watch.next() => change,
+            };
+            let Some(change) = change else { break; };
             let mut changes = vec![change];
             while let Ok(change) = watch.changes.try_recv() { changes.push(change); }
             let mut affected = std::collections::BTreeSet::new();

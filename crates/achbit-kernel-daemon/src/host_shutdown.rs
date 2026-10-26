@@ -6,10 +6,10 @@ use achbit_kernel_abi::{
     HOST_INSTANCE_ID_ENV, HOST_SHUTDOWN_IDENTITY_CONFLICT, HOST_SHUTDOWN_OWNER,
     KERNEL_DAEMON_SERVICE,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use tokio::sync::watch;
 
-static HOST_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+static HOST_SHUTDOWN_REQUESTED: OnceLock<watch::Sender<bool>> = OnceLock::new();
 static HOST_PROCESS_IDENTITY: OnceLock<HostProcessIdentity> = OnceLock::new();
 
 fn daemon_identity_from_environment(
@@ -138,12 +138,52 @@ pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
     service_cleanup_ok && session_cleanup_ok && plugin_cleanup_ok
 }
 
+fn host_shutdown_signal() -> &'static watch::Sender<bool> {
+    HOST_SHUTDOWN_REQUESTED.get_or_init(|| watch::channel(false).0)
+}
+
 pub(crate) fn request_host_shutdown() {
-    HOST_SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+    // Retain the terminal fact even when no waiter has subscribed yet.
+    host_shutdown_signal().send_replace(true);
 }
 
 pub(crate) async fn wait_for_host_shutdown() {
-    while !HOST_SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    wait_for_shutdown(host_shutdown_signal().subscribe()).await;
+}
+
+async fn wait_for_shutdown(mut requested: watch::Receiver<bool>) {
+    loop {
+        if *requested.borrow_and_update() {
+            return;
+        }
+        requested
+            .changed()
+            .await
+            .expect("Host shutdown signal remains owned for the process lifetime");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_notifies_existing_and_later_waiters() {
+        // A local signal avoids changing the irreversible process-global latch.
+        let (requested, first) = watch::channel(false);
+        let first = tokio::spawn(wait_for_shutdown(first));
+        let second = tokio::spawn(wait_for_shutdown(requested.subscribe()));
+        tokio::task::yield_now().await;
+        assert!(!first.is_finished());
+        assert!(!second.is_finished());
+
+        requested.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            first.await.unwrap();
+            second.await.unwrap();
+            wait_for_shutdown(requested.subscribe()).await;
+        })
+        .await
+        .expect("every shutdown waiter must finish without another notification");
     }
 }

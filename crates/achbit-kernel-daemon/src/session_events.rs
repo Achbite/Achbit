@@ -70,10 +70,17 @@ pub(crate) async fn conversation_events(ReadyState(state): ReadyState) -> Respon
 
 fn events_response(mut receiver: broadcast::Receiver<SessionNotification>) -> Response {
     let stream = async_stream::stream! {
+        let shutdown = crate::wait_for_host_shutdown();
+        tokio::pin!(shutdown);
         // The receiver exists before ready. Baseline reads cannot hide later settlements.
         yield Ok::<_, Infallible>(Event::default().event("ready").data("{}"));
         loop {
-            let notification = match receiver.recv().await {
+            let received = tokio::select! {
+                biased;
+                _ = &mut shutdown => break,
+                received = receiver.recv() => received,
+            };
+            let notification = match received {
                 Ok(notification) => notification,
                 Err(broadcast::error::RecvError::Lagged(count)) => SessionNotification::Error {
                     code: "session_events_lagged".into(),

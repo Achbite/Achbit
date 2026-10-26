@@ -205,9 +205,17 @@ pub(crate) async fn conversation_catalog_events(State(state): State<HostState>) 
         gui.conversation_catalog.changes.subscribe()
     };
     let stream = async_stream::stream! {
+        let shutdown = crate::wait_for_host_shutdown();
+        tokio::pin!(shutdown);
         // Subscribe before ready so the client can read a baseline without a gap.
         yield Ok::<_, Infallible>(Event::default().event("ready").data("{}"));
-        while changes.changed().await.is_ok() {
+        loop {
+            let changed = tokio::select! {
+                biased;
+                _ = &mut shutdown => break,
+                changed = changes.changed() => changed,
+            };
+            if changed.is_err() { break; }
             yield Ok(Event::default().event("change").data("{}"));
         }
     };

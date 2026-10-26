@@ -487,9 +487,17 @@ pub(crate) async fn events(
         .service_plugins
         .subscribe();
     let stream = async_stream::stream! {
+        let shutdown = crate::wait_for_host_shutdown();
+        tokio::pin!(shutdown);
         // Subscribe before ready, then read the inventory without an event gap.
         yield Ok::<_, std::convert::Infallible>(Event::default().event("ready").data("{}"));
-        while changes.changed().await.is_ok() {
+        loop {
+            let changed = tokio::select! {
+                biased;
+                _ = &mut shutdown => break,
+                changed = changes.changed() => changed,
+            };
+            if changed.is_err() { break; }
             yield Ok(Event::default().event("change").data("{}"));
         }
     };

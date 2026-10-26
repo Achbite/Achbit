@@ -184,13 +184,16 @@ async fn observe_host_lifetime(state: &HostState) -> Result<(), String> {
         } else {
             false
         };
-        if LIFETIME
+        let stopping = LIFETIME
             .get()
             .expect("Host lifetime configured")
             .lock()
             .expect("Host lifetime lock")
-            .stop_if_idle(revision, active)
-        {
+            .stop_if_idle(revision, active);
+        if stopping {
+            // Passive HTTP observers do not own Host lifetime. Release owned
+            // processes before graceful HTTP draining can wait on those observers.
+            shutdown_owned_host_resources(state).await;
             request_host_shutdown();
             return Ok(());
         }
