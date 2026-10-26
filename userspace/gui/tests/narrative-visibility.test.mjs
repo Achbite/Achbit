@@ -1,5 +1,5 @@
-// TCR: external evidence/session-progress-20261026/TCR-narrative-visibility.md
-// Authored for the reported display regression; execution was explicitly excluded this turn.
+// TCR: external evidence/process-folding-0660-20261027/TCR.md
+// Preserve the stable 0.6.60 process grouping: narrative and tools fold together.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadGuiModules } from './gui-projection-contract.mjs';
@@ -18,6 +18,7 @@ async function transcript(t) {
     kind: 'tool', status: 'completed', label: 'fs.read', callId: `call:${index}`,
     tool: { operation: 'fs.read', resources: [] } });
   const before = activity(1), after = activity(3);
+  const opening = '我先检查连接配置。';
   const progress = '已确认配置格式，接下来更新连接。';
   const final = '连接已更新。';
   const props = {
@@ -28,6 +29,8 @@ async function transcript(t) {
       pendingApproval: null, terminalError: null, assistantDraft: null },
     hasConversationContent: true, draftItems: [],
     conversationItems: [
+      { type: 'narrative', sequence: 0, streamId: 'stream:opening',
+        value: { runId, narrativeId: 'narrative:opening', content: opening } },
       { type: 'toolGroup', sequence: 1, groupId: 'group:before', values: [before] },
       { type: 'narrative', sequence: 2, streamId: 'stream:progress',
         value: { runId, narrativeId: 'narrative:progress', content: progress } },
@@ -35,12 +38,12 @@ async function transcript(t) {
       { type: 'message', sequence: 4, streamId: 'stream:final',
         value: { runId, messageId: 'message:final', role: 'assistant', content: final, filesystemReferences: [] } },
     ],
-    presentation: { content: id => id.startsWith('narrative:') ? progress : final },
+    presentation: { content: id => id === 'narrative:narrative:opening' ? opening : id.startsWith('narrative:') ? progress : final },
     viewport: { bodyRef: { current: null }, transcriptRef: { current: null }, messageEndRef: { current: null },
       followingLatest: true, setLatestFollowMode() {}, preserveReadingPosition() {}, scrollToAnchor() {}, anchorDisclosure() {} },
     openWorkspaceResource() {}, setUiActionError() {},
   };
-  return { props, runId, progress, final, render: input => renderToStaticMarkup(createElement(ConversationTranscript, input)) };
+  return { props, runId, opening, progress, final, render: input => renderToStaticMarkup(createElement(ConversationTranscript, input)) };
 }
 
 function rowTag(html, key) {
@@ -49,22 +52,39 @@ function rowTag(html, key) {
   return tag;
 }
 
-test('a committed progress narrative remains visible and ordered when execution details collapse', async t => {
-  const { props, runId, progress, final, render } = await transcript(t);
+test('progress and tools remain ordered, collapse together after the answer, and restore on reopening', async t => {
+  const { props, runId, opening, progress, final, render } = await transcript(t);
+  const processKeys = ['stream:opening', 'group:before', 'stream:progress', 'group:after'];
+  const allKeys = [...processKeys, 'stream:final'];
+  const assertOrder = html => {
+    const positions = allKeys.map(key => html.indexOf(`data-conversation-anchor="${key}"`));
+    assert.ok(positions.every(position => position >= 0));
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, 'preserve the Session timeline order');
+  };
   const running = render(props);
-  const settled = render({ ...props, displaySettledRunIds: new Set([runId]),
-    projection: { ...props.projection, run: { runId, status: 'completed' } } });
-  for (const html of [running, settled]) {
-    assert.ok(html.includes(progress));
-    assert.ok(html.includes(final));
-    assert.doesNotMatch(rowTag(html, 'stream:progress'), /\bhidden=/);
-    const positions = ['group:before', 'stream:progress', 'group:after', 'stream:final']
-      .map(key => html.indexOf(`data-conversation-anchor="${key}"`));
-    assert.deepEqual([...positions].sort((a, b) => a - b), positions, 'presentation keeps the Session timeline order');
-  }
-  assert.match(rowTag(settled, 'group:before'), /\bhidden=/);
-  assert.match(rowTag(settled, 'group:after'), /\bhidden=/);
+  assertOrder(running);
+  for (const key of allKeys) assert.doesNotMatch(rowTag(running, key), /\bhidden=/);
+  for (const text of [opening, progress, final]) assert.ok(running.includes(text));
+
+  const settledProps = { ...props, displaySettledRunIds: new Set([runId]),
+    projection: { ...props.projection, run: { runId, status: 'completed' } } };
+  const settled = render(settledProps);
+  assertOrder(settled);
+  for (const key of processKeys) assert.match(rowTag(settled, key), /\bhidden=/);
   assert.doesNotMatch(rowTag(settled, 'stream:final'), /\bhidden=/);
+  assert.ok(settled.includes(final));
+  assert.ok(!settled.includes(opening) && !settled.includes(progress));
+  assert.match(settled, /conversation-process-toggle[^>]*aria-expanded="false"/);
+
+  // Reopening the same run restores its retained presentation choice and every row.
+  const disclosure = props.layoutCache.session(props.projection.sessionId).get(`${runId}:disclosure`);
+  assert.ok(disclosure);
+  disclosure.state.set('process', { displaySettled: true, open: true });
+  const reopened = render(settledProps);
+  assertOrder(reopened);
+  for (const key of allKeys) assert.doesNotMatch(rowTag(reopened, key), /\bhidden=/);
+  for (const text of [opening, progress, final]) assert.ok(reopened.includes(text));
+  assert.match(reopened, /conversation-process-toggle[^>]*aria-expanded="true"/);
 });
 
 test('running reasoning history stays mounted only when the existing display preference is enabled', async t => {

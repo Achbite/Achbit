@@ -412,8 +412,8 @@ export function ConversationTranscript({
         const timing = timingsByRun.get(round.runId);
         const rows = round.rows.map((row) => ({
           key: row.key,
-          // User-facing progress stays in the transcript; only execution details fold.
-          process: row.item ? row.item.type !== 'message' && row.item.type !== 'narrative' : row.draft?.type !== 'text',
+          // Progress narratives and execution details share the run's process disclosure.
+          process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
           required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
             || row.item?.type === 'interaction' && row.item.value.status === 'pending',
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
