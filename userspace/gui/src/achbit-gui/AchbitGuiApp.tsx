@@ -223,6 +223,11 @@ const AchbitGuiApp: React.FC = () => {
 
 
   useEffect(() => {
+    if (apiStatus !== 'connected' || !connectedIncarnation) return;
+    return useLocalAgentStore.getState().watchCatalog();
+  }, [apiStatus, connectedIncarnation]);
+
+  useEffect(() => {
     const preference = normalizeGuiThemePreference(effectiveSettings['gui.colorTheme']);
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {

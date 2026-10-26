@@ -23,6 +23,7 @@ import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@achbit/proto
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import type { PastedTextInput } from '../services/pastedText';
+import { supportsNativeFileInput } from '../services/modelFileInput';
 import {
   attachConversationDirectoryIndex,
   createConversationProject as createProjectRequest,
@@ -32,6 +33,7 @@ import {
   deleteConversationSession as deleteSessionRequest,
   getConversationCatalog,
   getConversationStatuses,
+  watchConversationCatalog,
   getConversationCatalogManagement,
   getPluginCatalog,
   getLocalAgentProjection,
@@ -43,6 +45,8 @@ import {
   updateConversationSession as updateSessionRequest,
 } from '../services/localAgentApi';
 
+
+let retryCatalogObservation: (() => void) | null = null;
 
 const EMPTY_CATALOG: ConversationCatalog = { projects: [], sessions: [] };
 const EMPTY_PLUGIN_CATALOG: PluginCatalogProjection = { revision: 'plugin-catalog:empty', plugins: [] };
@@ -75,6 +79,7 @@ export interface LocalAgentState {
   defaultProfileId: string | null;
   catalog: ConversationCatalog;
   catalogStatus: 'pending' | 'ready' | 'error';
+  catalogWatchError: string | null;
   sessionStatuses: Record<string, ConversationSessionStatus>;
   statusError: string | null;
   pluginCatalog: PluginCatalogProjection;
@@ -89,6 +94,8 @@ export interface LocalAgentState {
   initialize(runtimeReady?: Promise<void>): Promise<void>;
   refreshProfiles(): Promise<void>;
   refreshCatalog(): Promise<void>;
+  watchCatalog(): () => void;
+  retryCatalogWatch(): void;
   refreshPluginCatalog(): Promise<void>;
   startNewSession(projectId?: string | null): void;
   activateSession(sessionId: string): Promise<void>;
@@ -249,6 +256,7 @@ const store = create<LocalAgentState>((set, get) => ({
   defaultProfileId: null,
   catalog: EMPTY_CATALOG,
   catalogStatus: 'pending',
+  catalogWatchError: null,
   sessionStatuses: {},
   statusError: null,
   pluginCatalog: EMPTY_PLUGIN_CATALOG,
@@ -278,8 +286,8 @@ const store = create<LocalAgentState>((set, get) => ({
             if (readVersion === catalogVersion) set({ catalogStatus: 'error' });
             throw error;
           }).then(async (catalog) => {
-            catalogVersion += 1;
-            set({ catalog, catalogStatus: 'ready' });
+            if (readVersion !== catalogVersion) catalog = get().catalog;
+            else { catalogVersion += 1; set({ catalog, catalogStatus: 'ready' }); }
             if (currentGeneration === generation) {
               set({ loading: false, loadingPurpose: null });
               const restored = takeRestoredInterfaceView<{ sessionId: string | null; draftProjectId: string | null } | null>('conversation', null);
@@ -324,10 +332,58 @@ const store = create<LocalAgentState>((set, get) => ({
 
   refreshProfiles: async () => { await refreshProfileConfiguration(set); },
 
+  watchCatalog: () => {
+    const connect = () => {
+      const controller = new AbortController();
+      let dirty = false, reading = false;
+      const refreshChangedCatalog = async () => {
+        if (reading || controller.signal.aborted || get().catalogBusy) return;
+        reading = true;
+        try {
+          while (dirty && !controller.signal.aborted && !get().catalogBusy) {
+            dirty = false;
+            const readVersion = catalogVersion;
+            try {
+              const catalog = await getConversationCatalog(controller.signal);
+              if (controller.signal.aborted) break;
+              if (readVersion !== catalogVersion || get().catalogBusy) { dirty = true; continue; }
+              catalogVersion += 1;
+              set((state) => ({ catalog, catalogStatus: 'ready',
+                ...(state.errorSource === 'catalog' ? { error: null, errorSource: null } : {}) }));
+            } catch (error) {
+              if (!controller.signal.aborted) set({ catalogStatus: 'error', error: errorMessage(error), errorSource: 'catalog' });
+            }
+          }
+        } finally { reading = false; }
+      };
+      const unsubscribe = store.subscribe((state, previous) => {
+        if (previous.catalogBusy && !state.catalogBusy && dirty) void refreshChangedCatalog();
+      });
+      void watchConversationCatalog(controller.signal, () => {
+        set({ catalogWatchError: null });
+        dirty = true;
+        void refreshChangedCatalog();
+      }).catch(error => {
+        if (!controller.signal.aborted) set({ catalogWatchError: errorMessage(error) });
+      });
+      return () => { controller.abort(); unsubscribe(); };
+    };
+    let dispose = connect();
+    const retry = () => { dispose(); dispose = connect(); };
+    retryCatalogObservation = retry;
+    return () => {
+      dispose();
+      if (retryCatalogObservation === retry) retryCatalogObservation = null;
+    };
+  },
+
+  retryCatalogWatch: () => { retryCatalogObservation?.(); },
+
   refreshCatalog: async () => {
     const readVersion = catalogVersion;
     try {
       const catalog = await getConversationCatalog();
+      if (readVersion !== catalogVersion) return;
       catalogVersion += 1;
       set((state) => ({
         catalog,
@@ -385,10 +441,10 @@ const store = create<LocalAgentState>((set, get) => ({
       const readVersion = catalogVersion;
       set({ loading: true, loadingPurpose: 'session', error: null, errorSource: null });
       try {
-        const catalog = await getConversationCatalog(signal);
+        let catalog = await getConversationCatalog(signal);
         if (currentGeneration !== generation) return;
-        catalogVersion += 1;
-        set({ catalog, catalogStatus: 'ready' });
+        if (readVersion !== catalogVersion) catalog = get().catalog;
+        else { catalogVersion += 1; set({ catalog, catalogStatus: 'ready' }); }
         summary = catalog.sessions.find((session) => session.id === sessionId);
       } catch (error) {
         if (currentGeneration === generation) set({ loading: false, loadingPurpose: null,
@@ -916,6 +972,8 @@ async function submitNewRun(
       pluginCatalog,
       filesystemPaths,
       pluginSelections,
+      supportsNativeFileInput('application/pdf', get().profiles.find(profile => profile.id === messageProfileId),
+        queuedMessage ? activeRun : null),
     );
     for (const selection of effectivePluginSelections) {
       const plugin = pluginCatalog.plugins.find((item) => item.uri === selection.uri);
@@ -1187,11 +1245,12 @@ function requiredFilesystemPluginSelections(
   catalog: PluginCatalogProjection,
   filesystemPaths: readonly PendingFilesystemPath[],
   explicitSelections: readonly PluginSelectionInput[],
+  nativePdfInput: boolean,
 ): PluginSelectionInput[] {
   const selections = explicitSelections.map((selection) => ({ ...selection }));
   const selectedUris = new Set(selections.map((selection) => selection.uri));
   const requiredMediaTypes = new Set(filesystemPaths.flatMap((reference) => (
-    reference.kind === 'file' && reference.path.toLocaleLowerCase().endsWith('.pdf')
+    !nativePdfInput && reference.kind === 'file' && reference.path.toLocaleLowerCase().endsWith('.pdf')
       ? ['application/pdf']
       : []
   )));

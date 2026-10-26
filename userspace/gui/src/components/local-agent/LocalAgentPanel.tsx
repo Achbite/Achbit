@@ -10,7 +10,8 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import { projectionItems, assistantDraftItems } from './conversationItems';
 import { useConversationViewport } from './useConversationViewport';
-import { useProjectionPolling, useProfilesUpdated } from './useProjectionPolling';
+import { useConversationUpdates, useProfilesUpdated } from './useConversationUpdates';
+import { DismissibleError } from './DismissibleError';
 import { useAgentComposer } from './useAgentComposer';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { useDisplayedConversation } from './ConversationDisplayProvider';
@@ -46,7 +47,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const sessionId = useLocalAgentStore((state) => state.sessionId);
   const draftProjectId = useLocalAgentStore((state) => state.draftProjectId);
   const catalog = useLocalAgentStore((state) => state.catalog);
-  const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const projection = useLocalAgentStore((state) => state.projection);
   const loading = useLocalAgentStore((state) => state.loading);
   const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
@@ -79,11 +79,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
       ? block.status
       : block.content.length}`
   )).join('|') ?? ''}|${JSON.stringify(assistantDraft?.planPreview ?? null)}`;
-  const projectionPollingActive = Boolean(
-    projection?.run && ['running', 'waiting', 'releasing'].includes(projection.run.status),
-  ) || Object.values(sessionStatuses).some((item) => (
-    item.run && ['running', 'releasing'].includes(item.run.status)
-  ));
   const timelineExtentKey = projection?.timeline.map((item) => (
     item.kind === 'toolGroup'
       ? `${item.timelineId}:${item.activityIds.length}`
@@ -96,7 +91,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     || Boolean(projection?.pendingPlan)
     || Boolean(projection?.terminalError);
   useProfilesUpdated(refreshProfiles);
-  useProjectionPolling(sessionId, projectionPollingActive, refresh, hostReady);
+  const updates = useConversationUpdates(sessionId, refresh, hostReady);
   const viewport = useConversationViewport({
     sessionId,
     loading,
@@ -197,6 +192,9 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         )}
       </div>
 
+      {updates.error && <DismissibleError language={language} onDismiss={updates.dismiss}>{updates.error}
+        <button type="button" onClick={updates.retry}>{t(language, 'achbitGui.statusAction.retry')}</button>
+      </DismissibleError>}
       <ConversationComposer
         onEditBrowserReview={resourcePreview.editBrowserReview}
         changeBar={showChangeBar && <FileChanges key={`${sessionId}:${projection.run!.runId}`} activities={roundChangeActivities(projection, projection.run!.runId)} compact />}

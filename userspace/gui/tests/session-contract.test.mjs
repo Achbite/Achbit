@@ -2408,49 +2408,31 @@ test('streamed text keeps Unicode pairs intact and settled history displays imme
   assert.equal(history.complete, true);
 });
 
-test('projection polling stays serial through visibility changes and stops after unmount', async (t) => {
-  const { startProjectionPolling } = await loadGuiModule(t, '/src/components/local-agent/useProjectionPolling.ts');
-  const previousWindow = globalThis.window;
-  const previousDocument = globalThis.document;
-  const timers = new Map();
-  const listeners = new Set();
-  let nextId = 0;
-  globalThis.window = { setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id) { timers.delete(id); } };
-  globalThis.document = { visibilityState: 'visible', addEventListener(_event, callback) { listeners.add(callback); }, removeEventListener(_event, callback) { listeners.delete(callback); } };
-  let stop = () => {};
-  let stopIdle = () => {};
-  t.after(() => { stop(); stopIdle(); globalThis.window = previousWindow; globalThis.document = previousDocument; });
-  const fire = () => { assert.equal(timers.size, 1); const [id, timer] = timers.entries().next().value; timers.delete(id); timer.callback(); };
-  const visibility = (state) => { document.visibilityState = state; for (const listener of listeners) listener(); };
-  let calls = 0;
-  let release;
-  const stopDisconnected = startProjectionPolling(true, async () => { calls += 1; }, false);
-  visibility('hidden'); visibility('visible');
-  assert.equal(calls, 0, 'authentication and disconnected Hosts must not read session status');
-  assert.equal(timers.size, 0);
-  assert.equal(listeners.size, 0);
-  stopDisconnected();
-  stop = startProjectionPolling(true, () => { calls += 1; return new Promise((resolve) => { release = resolve; }); }, true);
-  const activeDelay = timers.values().next().value.delay;
-  assert.ok(Number.isFinite(activeDelay) && activeDelay > 0, 'connected active sessions schedule a finite positive delay');
-  fire();
-  visibility('hidden'); visibility('visible');
-  assert.equal(calls, 1);
-  assert.equal(timers.size, 0, 'a slow refresh must not accumulate polling timers');
-  release(); await Promise.resolve();
-  assert.equal(timers.size, 1);
-  visibility('hidden');
-  const hiddenDelay = timers.values().next().value.delay;
-  assert.ok(Number.isFinite(hiddenDelay) && hiddenDelay > activeDelay, 'hidden sessions poll less frequently');
-  visibility('visible');
-  assert.equal(calls, 2);
-  stop(); release(); await Promise.resolve();
-  assert.equal(timers.size, 0);
-  assert.equal(listeners.size, 0);
-  stopIdle = startProjectionPolling(false, async () => {}, true);
-  const idleDelay = timers.values().next().value.delay;
-  assert.ok(Number.isFinite(idleDelay) && idleDelay > activeDelay, 'idle sessions poll less frequently');
-  stopIdle();
+test('the main conversation observes changes only after Host readiness and releases observation on unmount', async (t) => {
+  const { startConversationUpdates } = await loadGuiModule(t, '/src/components/local-agent/useConversationUpdates.ts');
+  let subscriptions = 0, signal, reject, refreshes = 0;
+  const errors = [];
+  const refresh = async () => { refreshes++; };
+  const watch = (sessionId, receivedSignal, read) => {
+    assert.equal(sessionId, null, 'sidebar and child changes can affect the current projection');
+    subscriptions++; signal = receivedSignal;
+    assert.equal(read, refresh);
+    return new Promise((_resolve, fail) => { reject = fail; });
+  };
+  startConversationUpdates(refresh, false, error => errors.push(error), watch)();
+  assert.equal(subscriptions, 0, 'disconnected Hosts do not subscribe or read');
+  let stop = startConversationUpdates(refresh, true, error => errors.push(error), watch);
+  assert.equal(subscriptions, 1);
+  assert.equal(refreshes, 0, 'the event observer owns the initial read boundary');
+  reject(new Error('original observation failure'));
+  await Promise.resolve();
+  assert.deepEqual(errors, ['original observation failure']);
+  assert.equal(subscriptions, 1, 'a failure does not start automatic polling or reconnect');
+  stop(); assert.equal(signal.aborted, true);
+  stop = startConversationUpdates(refresh, true, error => errors.push(error), watch);
+  assert.equal(subscriptions, 2, 'an explicit retry can create a fresh subscription');
+  stop(); reject(new Error('aborted read')); await Promise.resolve();
+  assert.deepEqual(errors, ['original observation failure']);
 });
 
 test('unchanged status snapshots do not publish redundant GUI state updates', async (t) => {

@@ -1,22 +1,14 @@
-import type { ConversationSessionStatus } from '@achbit/protocol';
+import type { ConversationEvent } from '../../services/conversationEvents';
 
-/** Observe transitions, never replay the completed history loaded when a window opens. */
+/** Only new Host settlement events can notify; history snapshots and ready boundaries cannot. */
 export class CompletionNotifications {
-  private seen = new Map<string, ConversationSessionStatus>();
+  private seen = new Map<string, { runId: string; sequence: number }>();
 
-  update(statuses: Record<string, ConversationSessionStatus>, sessionIds: string[]): ConversationSessionStatus[] {
-    const completed: ConversationSessionStatus[] = [];
-    for (const current of Object.values(statuses)) {
-      const previous = this.seen.get(current.sessionId);
-      if (previous && current.revision <= previous.revision) continue;
-      this.seen.set(current.sessionId, current);
-      if (previous && current.run?.status === 'completed'
-        && (previous.run?.runId !== current.run.runId || previous.run.status !== 'completed')) {
-        completed.push(current);
-      }
-    }
-    const retained = new Set([...sessionIds, ...Object.keys(statuses)]);
-    for (const id of this.seen.keys()) if (!retained.has(id)) this.seen.delete(id);
-    return completed;
+  accept(event: ConversationEvent): boolean {
+    if (event.type !== 'settled' || event.outcome !== 'completed') return false;
+    const previous = this.seen.get(event.sessionId);
+    if (previous && (event.eventSequence <= previous.sequence || event.runId === previous.runId)) return false;
+    this.seen.set(event.sessionId, { runId: event.runId, sequence: event.eventSequence });
+    return true;
   }
 }

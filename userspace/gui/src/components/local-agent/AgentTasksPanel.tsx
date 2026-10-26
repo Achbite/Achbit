@@ -27,7 +27,7 @@ export function AgentConversationPage({ target, language, active }: {
   target: AgentReaderTarget; language: UiLanguage; active: boolean;
 }) {
   const main = useLocalAgentStore(state => state.projection?.sessionId === target.parentSessionId ? state.projection : null);
-  const parent = useAgentChildConversation(target.parentSessionId, '', false, active && !main);
+  const parent = useAgentChildConversation(target.parentSessionId, active && !main);
   const projection = main ?? parent.projection;
   if (!projection) return <div className="agent-tasks__child-body">
     {parent.readError ? <div role="alert" className="agent-tasks__error"><p>{parent.readError}</p>
@@ -58,8 +58,7 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
 }) {
   const body = useRef<HTMLDivElement>(null);
   const decision = useRef<HTMLDivElement>(null);
-  const revision = tasks.map(task => `${task.taskId}:${task.childRunId ?? ''}:${task.status}`).join('|');
-  const child = useAgentChildConversation(sessionId, revision, tasks.some(task => task.status === 'running'), expanded);
+  const child = useAgentChildConversation(sessionId, expanded);
   const projection = child.projection;
   const name = instance?.displayName ?? tasks[0]?.displayName ?? displayName!;
   const pendingKey = agentDecisionKey(projection);

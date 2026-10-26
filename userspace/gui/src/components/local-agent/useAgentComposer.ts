@@ -13,6 +13,7 @@ import { planScopeAddition } from './planReview';
 import { foregroundApproval, foregroundPlan } from './composerDecisions';
 import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
+import { supportsNativeFileInput } from '../../services/modelFileInput';
 import { cloneComposerState, composerStateIsEmpty, emptyComposerState, submitComposerState, type ComposerState } from './composerSubmission';
 
 function readComposerDraft(key:string):ComposerState {
@@ -596,7 +597,9 @@ export function useAgentComposer(
       if (pendingFilesystemPaths.length + pastedTexts.length + pastedImages.length + additions.length > 8) {
         throw new Error(t(language, 'agent.attachment.error.maxFiles'));
       }
-      if (additions.some(item => item.kind === 'file' && mediaTypeForPath(item.path) === 'application/pdf')) {
+      if (additions.some(item => item.kind === 'file' && mediaTypeForPath(item.path) === 'application/pdf')
+        && !supportsNativeFileInput('application/pdf', selectedProfile,
+          parseComposerCommand(draft)?.name === 'focus' ? null : projection?.run)) {
         const matches = pluginCatalog.plugins.filter((plugin) => (
           plugin.activationMediaTypes.includes('application/pdf')
         ));

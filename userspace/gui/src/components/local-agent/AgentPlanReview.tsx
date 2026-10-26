@@ -40,7 +40,7 @@ export function AgentPlanReview({ decisions, language, refresh }: {
 function AgentPlanReviewDialog({ decision, language, onDismiss, onResolved }: {
   decision: PendingAgentDecision; language: UiLanguage; onDismiss(): void; onResolved(): void;
 }) {
-  const child = useAgentChildConversation(decision.agentSessionId, planKey(decision), true, true);
+  const child = useAgentChildConversation(decision.agentSessionId, true);
   const projection = child.projection;
   const matches = projection && matchesAgentPlanReview(decision, projection);
   useEffect(() => {
