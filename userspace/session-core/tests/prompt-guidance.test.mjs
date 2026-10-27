@@ -17,31 +17,34 @@ const capabilities = { messaging: true, delegation: true, continuation: true };
 test('core guidance supports autonomous work while retaining evidence and execution boundaries', () => {
   assert.equal(stableCoreInstructions.length, 1);
   const text = stableCoreInstructions[0].text;
-  // TCR: test-change-requests/TCR-20261027-task-evidence-guidance.md in the parent workspace.
+  // TCR: test-change-requests/TCR-20261027-approved-core-guidance.md in the parent workspace.
   // These are delivery contracts, not a word limit or a guarantee of model behavior.
   assert.match(text, /Work autonomously within the agreed scope/u);
-  assert.match(text, /material decisions that affect correctness or scope/u);
-  assert.match(text, /preserve existing work, and make focused changes/u);
+  assert.match(text, /material decisions that affect correctness, scope or the agreed approach/u);
+  assert.match(text, /preserve existing work and make focused changes/u);
   assert.match(text, /current tool schemas/u);
-  assert.match(text, /treat rejected input as not executed/u);
-  assert.match(text, /Base status claims on actual results, retain meaningful errors/u);
+  assert.match(text, /rejected input was not executed/u);
+  assert.match(text, /Preserve meaningful errors and successful results/u);
+  assert.match(text, /Distinguish completed, failed and unverified work/u);
   assert.match(text, /declared entrypoints and required environment/u);
   assert.match(text, /relevant project or product guidance when needed/u);
-  assert.match(text, /For analysis, review, or planning requests, deliver that result/u);
-  assert.match(text, /carry out changes when the user authorizes implementation/u);
-  assert.match(text, /brief, natural updates when starting an investigation/u);
-  assert.match(text, /simple questions can receive a direct answer/u);
-  assert.match(text, /meaningful finding, changing approach, or encountering a blocker or substantial wait/u);
-  assert.match(text, /Adjust the amount of communication to the task/u);
-  assert.match(text, /task's named files, locations, and existing evidence/u);
-  assert.match(text, /checks whose results can affect the current conclusion or next action/u);
-  assert.match(text, /Reuse valid findings.*observed discrepancy, a changed condition, or missing evidence needed for the task/u);
-  assert.match(text, /Distinguish observations, inferences, and unresolved questions/u);
-  assert.match(text, /When the evidence resolves the request, report the outcome/u);
+  assert.match(text, /provide analysis, review or planning when requested/u);
+  assert.match(text, /implement changes when authorized/u);
+  assert.match(text, /first briefly tell the user what you are about to do and what it will establish/u);
+  assert.match(text, /One explanation can cover a group of related operations/u);
+  assert.match(text, /learn something useful, move to a new stage, change approach or encounter a blocker or substantial wait/u);
+  assert.match(text, /ordinary prose addressed to the user/u);
+  assert.match(text, /Keep them proportionate to the task; simple questions that need no action can be answered directly/u);
+  assert.match(text, /task's named files, locations and existing evidence/u);
+  assert.match(text, /Select checks that can affect the conclusion or next action, and reuse valid findings/u);
+  assert.match(text, /concrete discrepancy, changed condition or missing fact/u);
+  assert.match(text, /Distinguish observations, inferences and unresolved questions/u);
+  assert.match(text, /Conclude when the evidence resolves the request/u);
   assert.match(text, /no change is needed is a valid result/u);
-  assert.match(text, /If blocked, explain the remaining obstacle/u);
-  assert.match(text, /language and format for progress and final answers/u);
-  assert.match(text, /If no response language is specified, follow the language of the user's message/u);
+  assert.match(text, /If blocked, explain what remains/u);
+  assert.match(text, /user's explicitly requested language for all user-facing text; otherwise use the response language specified by the session environment, or the user's language if neither is specified/u);
+  assert.match(text, /opening explanation, updates between operations and the concluding answer/u);
+  assert.match(text, /supplied environment and workspace information to choose the shell, command syntax, paths and execution target/u);
   assert.doesNotMatch(text, /plan_publish|interaction_request|workspaceId|mutationManifest|\[DONE:|\[PLAN MODE ACTIVE\]/u,
     'tool syntax, dynamic identities and mode-specific formats do not belong in the stable core');
 });
