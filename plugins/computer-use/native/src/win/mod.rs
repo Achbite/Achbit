@@ -6,6 +6,8 @@ mod desktop;
 mod indicator;
 mod input;
 mod sharing;
+#[cfg(test)]
+mod tests;
 mod uia;
 mod wgc;
 
@@ -174,7 +176,7 @@ impl Executor {
         let app = desktop::normalize_app(input["app"].as_str().ok_or("Missing app")?)?;
         if action == "observe" {
             self.observation = None;
-            let (observation, output) = self.observe(input, &app, binding)?;
+            let (observation, output) = self.observe(input, &app, binding, true)?;
             self.observation = Some(observation);
             return Ok(output);
         }
@@ -254,7 +256,9 @@ impl Executor {
         } else {
             "background"
         });
-        let observed = self.observe(&next, &app, binding);
+        // Observe the result without raising the target again. Retain foreground
+        // input capability; the next physical input still restores and checks focus.
+        let observed = self.observe(&next, &app, binding, false);
         // Some apps activate themselves asynchronously after the action.
         if foreground.is_none() {
             foreground = guard
@@ -320,6 +324,7 @@ impl Executor {
         input: &Value,
         app: &str,
         binding: &Value,
+        activate_requested: bool,
     ) -> Result<(Observation, Value), String> {
         let directory = capture_directory(input)?;
         let window_id = match input.get("windowId") {
@@ -343,7 +348,7 @@ impl Executor {
             ));
         }
         desktop::ensure_controllable(&window)?;
-        if foreground {
+        if foreground && activate_requested {
             desktop::focus(&window)?;
         }
         let generation = self.sharing.ensure(binding, &window)?;
