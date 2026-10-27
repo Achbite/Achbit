@@ -181,7 +181,9 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
                     Err(error) => json!({"statusError":error}),
                 };
                 json!({"ok":false,"message":message,"diagnostics":{
-                    "phase":request["input"]["action"],"native":native}})
+                    "phase":request["input"]["action"],"native":native,
+                    "target":if crate::protocol::binding_matches(binding, host) {crate::driver::diagnostics(gui)} else {json!({})},
+                    "recovery":"Inspect target-specific errors. Executor permission does not prove target AX availability. After an AX failure, an explicit pixels observation is available with an exact windowId; do not retry unchanged input."}})
             }
         };
         writeln!(stream, "{response}").map_err(|e| e.to_string())?;

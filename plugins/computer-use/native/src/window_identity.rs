@@ -30,17 +30,25 @@ pub fn available() -> bool {
 }
 
 /// `element` must be a live AX window reference, retained by the AppKit thread.
-pub unsafe fn id(element: *const c_void) -> Result<u32, String> {
-    let get_window = api().ok_or("Exact AX window identity is unavailable: _AXUIElementGetWindow is not exported by this macOS runtime")?;
+pub struct IdentityError {
+    pub message: String,
+    pub code: Option<i32>,
+}
+pub unsafe fn id(element: *const c_void) -> Result<u32, IdentityError> {
+    let get_window = api().ok_or_else(|| IdentityError { message:"Exact AX window identity is unavailable: _AXUIElementGetWindow is not exported by this macOS runtime".into(), code:None })?;
     let mut window = 0;
     let error = get_window(element, &mut window);
     if error != 0 {
-        return Err(format!(
-            "Could not read exact AX window identity (AX error {error})"
-        ));
+        return Err(IdentityError {
+            message: format!("Could not read exact AX window identity (AX error {error})"),
+            code: Some(error),
+        });
     }
     if window == 0 {
-        return Err("AX window returned an invalid WindowServer ID".into());
+        return Err(IdentityError {
+            message: "AX window returned an invalid WindowServer ID".into(),
+            code: None,
+        });
     }
     Ok(window)
 }
