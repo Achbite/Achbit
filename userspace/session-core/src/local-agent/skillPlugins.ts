@@ -113,5 +113,5 @@ export function permissionInstructionText(settings: UserSettings, interactionReq
   const engineeringDecisionInstruction = settings['agent.permissions.engineeringDecisions'] === 'delegate'
     ? `Engineering decisions are delegated. Choose the smallest sound approach; use ${interactionRequest} for missing facts or decisions outside the task.`
     : `Choose local implementation details within the agreed approach. Use ${interactionRequest} before materially changing requirements, public contracts, fact ownership or that approach.`;
-  return `${workspaceAutonomyInstruction}\nSession working directories may hold drafts and previews without a Plan. Follow the current engineering-decision setting independently of Plan approval. Plan authority, execution approval, and progress tracking serve different purposes; a Todo list grants no authority and does not prevent reporting a result.\n${engineeringDecisionInstruction}`;
+  return `${workspaceAutonomyInstruction}\nUse the workspace bindings to select the task's project. File and shell tools resolve relative paths from the selected workspace, so use those paths for project work. Product documentation and runtime paths locate Achbit's own resources. The Session working directory holds task drafts and previews, which need no Plan; tool execution permissions still apply.\n${engineeringDecisionInstruction}`;
 }

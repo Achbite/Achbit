@@ -17,24 +17,31 @@ const capabilities = { messaging: true, delegation: true, continuation: true };
 test('core guidance supports autonomous work while retaining evidence and execution boundaries', () => {
   assert.equal(stableCoreInstructions.length, 1);
   const text = stableCoreInstructions[0].text;
-  assert.match(text, /Work autonomously within the authorized task/u);
-  assert.match(text, /Kernel enforces execution scope/u);
-  assert.match(text, /Rejected input was not executed/u);
-  assert.match(text, /completion claims with evidence/u);
-  assert.match(text, /declared build\/test entrypoints and required environment/u);
-  assert.match(text, /Read relevant product guidance when needed/u);
-  // TCR: test-change-requests/TCR-core-guidance-pi-20261027.md in the parent workspace.
-  // Preserve essential behavior rather than imposing the previous 1200-character ceiling.
-  assert.match(text, /only analysis, a proposal, or a review, stay within that stage/u);
-  assert.match(text, /Before a substantial investigation or multi-step task, briefly explain/u);
-  assert.match(text, /Answer simple questions directly/u);
-  assert.match(text, /meaningful findings, changes of approach, blockers, or substantial waits/u);
-  assert.match(text, /Avoid long silent chains of tools and narration of every operation/u);
-  assert.match(text, /Reuse existing results; repeat a check only to resolve a concrete uncertainty/u);
-  assert.match(text, /Distinguish observations, inferences, and unverified hypotheses/u);
-  assert.match(text, /false premise or no change needed is a valid outcome/u);
-  assert.match(text, /If blocked, explain what is complete/u);
+  // TCR: test-change-requests/TCR-20261027-task-evidence-guidance.md in the parent workspace.
+  // These are delivery contracts, not a word limit or a guarantee of model behavior.
+  assert.match(text, /Work autonomously within the agreed scope/u);
+  assert.match(text, /material decisions that affect correctness or scope/u);
+  assert.match(text, /preserve existing work, and make focused changes/u);
+  assert.match(text, /current tool schemas/u);
+  assert.match(text, /treat rejected input as not executed/u);
+  assert.match(text, /Base status claims on actual results, retain meaningful errors/u);
+  assert.match(text, /declared entrypoints and required environment/u);
+  assert.match(text, /relevant project or product guidance when needed/u);
+  assert.match(text, /For analysis, review, or planning requests, deliver that result/u);
+  assert.match(text, /carry out changes when the user authorizes implementation/u);
+  assert.match(text, /brief, natural updates when starting an investigation/u);
+  assert.match(text, /simple questions can receive a direct answer/u);
+  assert.match(text, /meaningful finding, changing approach, or encountering a blocker or substantial wait/u);
+  assert.match(text, /Adjust the amount of communication to the task/u);
+  assert.match(text, /task's named files, locations, and existing evidence/u);
+  assert.match(text, /checks whose results can affect the current conclusion or next action/u);
+  assert.match(text, /Reuse valid findings.*observed discrepancy, a changed condition, or missing evidence needed for the task/u);
+  assert.match(text, /Distinguish observations, inferences, and unresolved questions/u);
+  assert.match(text, /When the evidence resolves the request, report the outcome/u);
+  assert.match(text, /no change is needed is a valid result/u);
+  assert.match(text, /If blocked, explain the remaining obstacle/u);
   assert.match(text, /language and format for progress and final answers/u);
+  assert.match(text, /If no response language is specified, follow the language of the user's message/u);
   assert.doesNotMatch(text, /plan_publish|interaction_request|workspaceId|mutationManifest|\[DONE:|\[PLAN MODE ACTIVE\]/u,
     'tool syntax, dynamic identities and mode-specific formats do not belong in the stable core');
 });
@@ -104,8 +111,11 @@ test('concise session guidance preserves aliases, pending decisions and optional
   assert.match(ask, /wait for confirmation/u);
   assert.match(ask, /without seeking approval again for ordinary implementation details/u);
   assert.match(ask, /Project reads need no Plan/u);
-  assert.match(ask, /drafts and previews without a Plan/u);
-  assert.match(ask, /Todo list grants no authority/u);
+  assert.match(ask, /workspace bindings to select the task's project/u);
+  assert.match(ask, /File and shell tools resolve relative paths from the selected workspace/u);
+  assert.match(ask, /Product documentation and runtime paths locate Achbit's own resources/u);
+  assert.match(ask, /Session working directory holds task drafts and previews, which need no Plan; tool execution permissions still apply/u);
+  assert.match(contracts, /Todo grants no authority and unfinished items do not prevent answering/u);
   const delegated = permissionInstructionText({ 'agent.permissions.workspaceMutation': 'allow', 'agent.permissions.engineeringDecisions': 'delegate' });
   assert.match(delegated, /Work directly within the bound workspaces/u);
   assert.match(delegated, /execution permissions still apply/u);
@@ -117,7 +127,7 @@ test('concise session guidance preserves aliases, pending decisions and optional
   assert.match(review, /you do not approve your own Plan/u);
   assert.match(review, /new or expanded authorization is needed/u);
   assert.match(review, /Project reads need no Plan/u);
-  assert.match(review, /drafts and previews without a Plan/u);
+  assert.match(review, /task drafts and previews, which need no Plan; tool execution permissions still apply/u);
   assert.doesNotMatch(review, /wait for confirmation|no additional Plan approval/u);
   const noPlan = sessionControlInstructions(names, true, true, undefined, false);
   assert.equal(noPlan.includes(names.planPublish), false);
