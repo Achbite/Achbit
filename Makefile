@@ -9,7 +9,7 @@ IMAGE            := $(IMAGE_NAME):$(IMAGE_TAG)
 DOCKERFILE       ?= Dockerfile.dev
 WORKDIR_IN_CTNR  ?= /workspace
 ACHBIT_PROJECT_ROOT := $(realpath $(CURDIR))
-ACHBIT_BUILD_HOST_OS := $(shell uname -s)
+ACHBIT_BUILD_HOST_OS ?= $(shell uname -s)
 UI_PLUGIN ?= ui-plugins/template
 UI_PACKAGE ?=
 CONTAINER_NAME ?= achbit-dev
@@ -109,6 +109,7 @@ RUN_ARGS := \
 	-e ACHBIT_TMPDIR=$(ACHBIT_CONTAINER_TMPDIR) \
 	-e SCCACHE_DIR=$(ACHBIT_CONTAINER_SCCACHE_DIR) \
 	-e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) \
+	-e ACHBIT_MACOS_SIGN_IDENTITY \
 	-e PATH=/root/.local/share/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	$(NETWORK_ENV_ARGS)
 
@@ -176,12 +177,13 @@ _ensure_image: _validate_config
 # ---- _ensure_container：容器懒创建 / 刷新启动 ----
 # 状态机：
 #   not exists  -> docker run -d
-#   stale       -> 精确移除该容器后重建（源码挂载、镜像、端口或嵌套沙箱配置变化）
+#   stale       -> 精确移除该容器后重建（源码挂载、镜像、宿主平台、端口或嵌套沙箱配置变化）
 #   running     -> reuse
 #   exited      -> docker start
 _ensure_container: _ensure_image
 	@if docker container inspect $(CONTAINER_NAME) >/dev/null 2>&1; then \
 		mounted_root=$$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "$(WORKDIR_IN_CTNR)"}}{{.Source}}{{end}}{{end}}' $(CONTAINER_NAME)); \
+		container_host_os=$$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(CONTAINER_NAME) | sed -n 's/^ACHBIT_BUILD_HOST_OS=//p'); \
 		container_image=$$(docker container inspect -f '{{.Image}}' $(CONTAINER_NAME)); \
 		current_image=$$(docker image inspect -f '{{.Id}}' $(IMAGE)); \
 		actual_host_port=$$(docker container port $(CONTAINER_NAME) $(ACHBIT_CONTAINER_PORT)/tcp 2>/dev/null | awk -F: 'NR == 1 { print $$NF }'); \
@@ -191,6 +193,7 @@ _ensure_container: _ensure_image
 		reason=""; \
 		if [ "$$mounted_root" != "$(ACHBIT_PROJECT_ROOT)" ]; then reason="源码挂载已变化"; \
 		elif [ "$$container_image" != "$$current_image" ]; then reason="开发镜像已更新"; \
+		elif [ "$$container_host_os" != "$(ACHBIT_BUILD_HOST_OS)" ]; then reason="构建宿主平台已变化或缺失"; \
 		elif [ "$$actual_host_port" != "$(ACHBIT_HOST_PORT)" ]; then reason="端口配置已变化"; \
 		elif ! printf '%s\n' "$$container_caps" | grep -Eq '^(CAP_)?SYS_ADMIN$$' \
 			|| ! printf '%s\n' "$$container_security" | grep -Fxq 'apparmor=unconfined' \
@@ -235,7 +238,7 @@ _ensure_container: _ensure_image
 # ---- shell：唯一交互入口 ----
 shell: _ensure_container
 	@echo "[make] exec 进入容器 $(CONTAINER_NAME) ..."
-	@docker exec -it $(NETWORK_ENV_ARGS) -e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) $(CONTAINER_NAME) bash
+	@docker exec -it $(NETWORK_ENV_ARGS) -e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) -e ACHBIT_MACOS_SIGN_IDENTITY $(CONTAINER_NAME) bash
 
 build:
 	@bash ./build.sh

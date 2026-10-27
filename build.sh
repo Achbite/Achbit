@@ -35,7 +35,7 @@ Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, ACHBIT_OUTPUT_DIR,
 Tools must already be installed. Package stages use a fresh staging directory;
 Cargo/pnpm caches are retained. User data in existing output directories is retained.
 Runtime builds include current native programs and shared resources; macOS Apps are signed.
-The host platform is supplied to Docker by make shell (ACHBIT_BUILD_HOST_OS).
+Docker runtime builds require the host platform supplied by make shell (ACHBIT_BUILD_HOST_OS).
 The explicit code stage retains compiler outputs without updating bin/.
 Full packaging: bash build.sh --stage package
 On Mac, make shell prepares the host bridge before entering Docker.
@@ -166,7 +166,14 @@ package_selected() {
   return 1
 }
 local_platform() {
-  local build_host_os="${ACHBIT_BUILD_HOST_OS:-$(uname -s)}"
+  local build_host_os="${ACHBIT_BUILD_HOST_OS:-}"
+  if [ -z "$build_host_os" ]; then
+    if [ "$IN_CONTAINER" -eq 1 ]; then
+      printf 'Container host platform is missing (ACHBIT_BUILD_HOST_OS). Re-enter with make shell from the host, or choose --stage runtime-macos/runtime-windows/runtime-linux explicitly.\n' >&2
+      return 2
+    fi
+    build_host_os="$(uname -s)"
+  fi
   case "$build_host_os" in
     Darwin) printf 'macos\n' ;;
     Windows_NT|MINGW*|MSYS*|CYGWIN*) printf 'windows\n' ;;

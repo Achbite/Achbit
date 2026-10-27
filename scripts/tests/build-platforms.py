@@ -246,16 +246,17 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         (self.root / 'scripts').mkdir()
-        for name in ['build.sh', 'scripts/source-identity.sh']:
+        for name in ['build.sh', 'Makefile', 'rust-toolchain.toml', 'scripts/source-identity.sh']:
             shutil.copy2(ROOT / name, self.root / name)
         (self.root / 'scripts/step.py').write_text(STEP)
         (self.root / 'scripts/macos-build-bridge.py').write_text(STEP)
         (self.root / 'scripts/build-platforms.sh').write_text('#!/usr/bin/env bash\nexec python3 "$(dirname "$0")/step.py" "$@"\n')
         self.environment = {**os.environ, 'ACHBIT_OUTPUT_DIR': str(self.root / 'output')}
 
-    def build(self, config, *arguments):
+    def build(self, config, *arguments, via_make=False):
         (self.root / 'fixture.json').write_text(json.dumps(config))
-        return subprocess.run(['bash', str(self.root / 'build.sh'), *arguments], env=self.environment,
+        command = ['make', 'build'] if via_make else ['bash', str(self.root / 'build.sh'), *arguments]
+        return subprocess.run(command, cwd=self.root, env=self.environment,
                               text=True, capture_output=True, timeout=20)
 
     def test_default_updates_only_the_development_host_runtime(self):
@@ -275,6 +276,84 @@ class BuildTests(unittest.TestCase):
                     self.assertTrue(any(call['action'] in ('runtime', '--runtime') for call in calls))
                     self.assertFalse(any(call['action'] in ('package', '--package') for call in calls))
                     self.assertFalse((self.root / '.build-cache/build.lock').exists())
+
+    def test_default_container_build_requires_host_platform_before_compilation(self):
+        for value in (None, ''):
+            with self.subTest(value=value):
+                self.environment.pop('ACHBIT_BUILD_HOST_OS', None)
+                if value is not None:
+                    self.environment['ACHBIT_BUILD_HOST_OS'] = value
+                result = self.build({})
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn('Container host platform is missing', result.stderr)
+                self.assertFalse((self.root / 'calls.jsonl').exists())
+                self.assertFalse((self.root / 'output').exists())
+                self.assertFalse((self.root / '.build-cache/build.lock').exists())
+
+    def test_explicit_runtime_does_not_require_host_platform(self):
+        self.environment.pop('ACHBIT_BUILD_HOST_OS', None)
+        result = self.build({}, '--stage', 'runtime-linux')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('runtimes=1 packages=0 updated="linux"', result.stdout)
+
+    def test_make_build_preserves_inherited_host_platform_inside_container(self):
+        self.environment['ACHBIT_BUILD_HOST_OS'] = 'Darwin'
+        result = self.build({}, via_make=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('runtimes=1 packages=0 updated="macos"', result.stdout)
+        self.assertEqual({path.name for path in (self.root / 'output').iterdir()}, {'macos.txt'})
+
+    def test_container_refreshes_missing_or_changed_host_platform(self):
+        commands = self.root / 'commands'
+        commands.mkdir()
+        docker = commands / 'docker'
+        docker.write_text(r'''#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+root = Path(__file__).resolve().parents[1]
+state_path = root / 'docker-state.json'
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+with (root / 'docker-calls.jsonl').open('a') as log:
+    log.write(json.dumps(args) + '\n')
+if args[:2] == ['container', 'inspect']:
+    if not state['exists']: sys.exit(1)
+    if '-f' in args:
+        field = args[args.index('-f') + 1]
+        if '.Mounts' in field: print(root)
+        elif '.Config.Env' in field:
+            if state['host'] is not None: print('ACHBIT_BUILD_HOST_OS=' + state['host'])
+        elif '.Image' in field: print('fixture-image')
+        elif '.CapAdd' in field: print('SYS_ADMIN')
+        elif '.SecurityOpt' in field: print('apparmor=unconfined\nseccomp=unconfined')
+        elif '.MaskedPaths' in field: print('0 0')
+        elif '.State.Status' in field: print('running')
+        else: sys.exit('Unexpected inspect query: ' + field)
+elif args[:2] == ['image', 'inspect']: print('fixture-image')
+elif args[:2] == ['container', 'port']: print('127.0.0.1:31246')
+elif args[0] == 'build': pass
+elif args[0] in ('rm', 'run'):
+    state['exists'] = args[0] == 'run'
+    state_path.write_text(json.dumps(state))
+else: sys.exit('Unexpected Docker invocation: ' + repr(args))
+''')
+        docker.chmod(0o755)
+        self.environment.update(ACHBIT_BUILD_HOST_OS='Darwin',
+                                PATH=str(commands) + os.pathsep + self.environment['PATH'])
+        (self.root / 'fixture.json').write_text('{}')
+        for host in (None, 'Linux', 'Darwin'):
+            with self.subTest(host=host):
+                (self.root / 'docker-state.json').write_text(json.dumps({'host': host, 'exists': True}))
+                (self.root / 'docker-calls.jsonl').write_text('')
+                result = subprocess.run(['make', '_ensure_container'], cwd=self.root,
+                                        env=self.environment, text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = [json.loads(line) for line in (self.root / 'docker-calls.jsonl').read_text().splitlines()]
+                self.assertEqual(sum(call[0] == 'rm' for call in calls), int(host != 'Darwin'))
+                launches = [call for call in calls if call[0] == 'run']
+                self.assertEqual(len(launches), int(host != 'Darwin'))
+                if launches:
+                    self.assertIn('ACHBIT_BUILD_HOST_OS=Darwin', launches[0])
 
     def test_default_macos_runtime_does_not_fall_back_when_host_is_unavailable(self):
         self.environment['ACHBIT_BUILD_HOST_OS'] = 'Darwin'
