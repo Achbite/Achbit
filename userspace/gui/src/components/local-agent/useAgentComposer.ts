@@ -272,10 +272,7 @@ export function useAgentComposer(
     if (!textDecision && !editingMessage && !pendingApproval) {
       const command = parseComposerCommand(submittedText);
       if (command && !(command.name === 'focus' && command.argument)) {
-        const known = composerCommands.find(item => item.id === command.name);
-        if (!known || command.argument) {
-          setAttachmentError(t(language, 'agent.commands.invalid'));
-        } else await selectCommand(known.id);
+        await selectCommand(command.name);
         return;
       }
     }
@@ -330,9 +327,9 @@ export function useAgentComposer(
           await respondInteraction(submittedText, pendingInteraction.interactionId);
           return;
         }
-        const focusMatch = submittedText.match(/^\/focus(?:\s+)([\s\S]+)$/u);
-        if (focusMatch) {
-          await focusContext(focusMatch[1]!.trim(), submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
+        const command = parseComposerCommand(submittedText);
+        if (command?.name === 'focus' && command.argument) {
+          await focusContext(command.argument, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         } else {
           await sendMessage(submittedText, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         }
@@ -490,10 +487,8 @@ export function useAgentComposer(
       setCommandActiveIndex(0);
       return;
     }
-    // Clear this command in its original draft before /new switches views.
-    setComposerStateForKey(activeComposerStateKeyRef.current, {
-      ...currentComposerStateRef.current, draft: '', selectionStart: 0, selectionEnd: 0, focused: false,
-    });
+    const submittedKey = activeComposerStateKeyRef.current;
+    const submittedDraft = currentComposerStateRef.current.draft;
     setAttachmentMenuOpen(false); setPermissionMenuOpen(false); setPluginPickerOpen(false);
     try {
       switch (id) {
@@ -510,6 +505,12 @@ export function useAgentComposer(
         case 'plugins': openPluginPicker(); break;
         case 'agents': requestAgentOverview(sessionId!); break;
         case 'cancel': await cancelRun(); break;
+      }
+      // Clear only after success, in the original view, without erasing newer edits.
+      const current = activeComposerStateKeyRef.current === submittedKey
+        ? currentComposerStateRef.current : composerStatesRef.current.get(submittedKey);
+      if (current?.draft === submittedDraft) {
+        setComposerStateForKey(submittedKey, { ...current, draft: '', selectionStart: 0, selectionEnd: 0, focused: false });
       }
     } catch (reason) { setAttachmentError(reason instanceof Error ? reason.message : String(reason)); }
   };

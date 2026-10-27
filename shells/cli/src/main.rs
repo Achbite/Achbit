@@ -1140,7 +1140,8 @@ async fn run_chat(
         if input.is_empty() {
             continue;
         }
-        match input {
+        // Only an unescaped registered command can claim this input.
+        match if line.starts_with('/') { input } else { "" } {
             "/quit" | "/exit" => return Ok(Outcome::Done),
             "/sessions" | "/resume" => {
                 session_list = None;
@@ -1266,8 +1267,8 @@ async fn run_chat(
                     .map_err(|error| error.to_string())?;
                 println!("目录已移除，后续请求生效。");
             }
-            value if value.starts_with('@') => {
-                let query = value.trim_start_matches('@').trim();
+            _ if input.starts_with('@') => {
+                let query = input.trim_start_matches('@').trim();
                 if query.is_empty() {
                     plugin_catalog = client
                         .conversation_plugin_catalog()
@@ -1301,17 +1302,15 @@ async fn run_chat(
                     print_plugin_catalog(&plugin_catalog, &selected_plugins, query);
                 }
             }
-            text if !text.starts_with('/')
-                || text == "/focus"
-                || text.starts_with("/focus ")
-                || text == "/reply"
-                || text.starts_with("/reply ")
-                || text.starts_with("/permissions ")
-                || text.starts_with("/revoke ") =>
-            {
-                let consumes_plugins = !text.starts_with("/reply")
-                    && !text.starts_with("/permissions ")
-                    && !text.starts_with("/revoke ");
+            _ => {
+                // Polling may still show a run that settled before this input arrived.
+                projection = refresh_projection(client, &projection.session_id).await?;
+                let text = line.trim_end_matches(['\r', '\n']);
+                let consumes_plugins = match conversation_input::slash_command(text) {
+                    Some(("reply", _)) => false,
+                    Some(("permissions" | "revoke", argument)) => argument.is_empty(),
+                    _ => true,
+                };
                 let plugin_binding = if selected_plugins.is_empty() || !consumes_plugins {
                     None
                 } else {
@@ -1357,8 +1356,6 @@ async fn run_chat(
                 }
                 projection = refresh_projection(client, &projection.session_id).await?;
             }
-            value if value.starts_with('/') => println!("未知命令：{value}"),
-            _ => unreachable!("all non-slash input is handled above"),
         }
     }
 }

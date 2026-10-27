@@ -119,6 +119,7 @@ pub struct TuiApp {
     host: TuiHostOptions,
     projection: Option<SessionProjection>,
     input: String,
+    input_failed: bool,
     command_picker: Option<usize>,
     recent_commands: VecDeque<&'static str>,
     initialized: bool,
@@ -160,6 +161,7 @@ impl TuiApp {
             host,
             projection: None,
             input: String::new(),
+            input_failed: false,
             command_picker: None,
             recent_commands: VecDeque::new(),
             initialized: false,
@@ -277,10 +279,12 @@ impl TuiApp {
         if input.is_empty() {
             return true;
         }
-        self.record_command(input);
+        self.input_failed = false;
+        let command_input = if line.starts_with('/') { input } else { "" };
+        self.record_command(command_input);
         self.tool_detail = None;
         self.transcript_scroll.set(None);
-        match input {
+        match command_input {
             "/quit" | "/exit" => return false,
             "/sessions" | "/resume" => self.open_sessions().await,
             "/agents" => {
@@ -303,6 +307,7 @@ impl TuiApp {
                     self.agent_picker = Some(index);
                     self.select_agent().await;
                 } else {
+                    self.input_failed = true;
                     self.status = self.host.language.text("tui.agentNotFound").into();
                 }
             }
@@ -333,7 +338,10 @@ impl TuiApp {
                             .host
                             .language
                             .format("tui.font.changed", &[choice.into()]),
-                        Err(error) => self.host.language.format("tui.font.failed", &[error]),
+                        Err(error) => {
+                            self.input_failed = true;
+                            self.host.language.format("tui.font.failed", &[error])
+                        }
                     };
             }
             "/language" => {
@@ -459,24 +467,12 @@ impl TuiApp {
                     self.select_model(value.trim_start_matches("/model ").trim());
                 }
             }
-            value
-                if value == "/focus"
-                    || value.starts_with("/focus ")
-                    || value == "/reply"
-                    || value.starts_with("/reply ")
-                    || value.starts_with("/permissions ")
-                    || value.starts_with("/revoke ") =>
-            {
-                self.submit_contextual_input(value).await
-            }
-            value if value.starts_with('/') => {
-                self.status = self
-                    .host
-                    .language
-                    .format("tui.unknownCommand", &[format!("{}", value)])
-            }
-            value if value.starts_with('@') => self.select_plugin_from_plain_input(value).await,
+            _ if input.starts_with('@') => self.select_plugin_from_plain_input(input).await,
             _ => self.submit_contextual_input(line).await,
+        }
+        if self.input_failed && self.input.is_empty() {
+            self.input = line.to_owned();
+            self.sync_input_pickers();
         }
         true
     }
@@ -501,7 +497,10 @@ impl TuiApp {
                 self.session_picker = Some(selected);
                 self.status = self.host.language.text("tui.sessionsHint").into();
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => {
+                self.input_failed = true;
+                self.status = error.to_string();
+            }
         }
     }
 
@@ -545,6 +544,7 @@ impl TuiApp {
         ) {
             Ok(id) => id,
             Err(error) => {
+                self.input_failed = true;
                 self.status = error;
                 return;
             }
@@ -578,7 +578,10 @@ impl TuiApp {
                     self.status.push_str(&format!(" · {notice}"));
                 }
             }
-            Err(error) => self.status = format!("{session_id}: {error}"),
+            Err(error) => {
+                self.input_failed = true;
+                self.status = format!("{session_id}: {error}");
+            }
         }
     }
 
@@ -700,6 +703,7 @@ impl TuiApp {
                 );
             }
             Err(error) => {
+                self.input_failed = true;
                 self.status = error.to_string();
             }
         }
@@ -783,10 +787,27 @@ impl TuiApp {
 
     async fn submit_contextual_input(&mut self, text: &str) {
         if let Err(error) = self.ensure_session().await {
+            self.input_failed = true;
             self.status = error;
             return;
         }
+        // Resolve the input against current facts, not the last display poll.
+        if let Some(projection) = self.projection.as_ref() {
+            match self
+                .client
+                .conversation_projection(&projection.session_id)
+                .await
+            {
+                Ok(current) => self.projection = Some(current),
+                Err(error) => {
+                    self.input_failed = true;
+                    self.status = error.to_string();
+                    return;
+                }
+            }
+        }
         let Some(projection) = self.projection.as_ref() else {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -804,6 +825,7 @@ impl TuiApp {
         {
             Ok(child) => child,
             Err(error) => {
+                self.input_failed = true;
                 self.status = error;
                 return;
             }
@@ -813,14 +835,20 @@ impl TuiApp {
         let command = match self.contextual_input_command(target, text) {
             Ok(command) => command,
             Err(error) => {
+                self.input_failed = true;
                 self.status = error;
                 return;
             }
         };
         if self.viewing_agent() && command["type"] == "message.submit" {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.agentReadOnly").into();
             return;
         }
+        let consumes_plugins = matches!(
+            command["type"].as_str(),
+            Some("message.submit" | "context.focus")
+        );
         if self
             .submit_command(
                 &session_id,
@@ -828,10 +856,7 @@ impl TuiApp {
                 self.host.language.text("tui.messageSubmitFailed"),
             )
             .await
-            && text != "/reply"
-            && !text.starts_with("/reply ")
-            && !text.starts_with("/permissions ")
-            && !text.starts_with("/revoke ")
+            && consumes_plugins
         {
             self.clear_plugin_selections();
         }
@@ -843,10 +868,11 @@ impl TuiApp {
         text: &str,
     ) -> Result<serde_json::Value, String> {
         // TUI selections apply to the next message and remain selected during a reply.
-        let is_reply = text == "/reply"
-            || text.starts_with("/reply ")
-            || text.starts_with("/permissions ")
-            || text.starts_with("/revoke ");
+        let is_reply = match crate::conversation_input::slash_command(text) {
+            Some(("reply", _)) => true,
+            Some(("permissions" | "revoke", argument)) => !argument.is_empty(),
+            _ => false,
+        };
         crate::conversation_input::contextual_input_command(
             self.host.language,
             projection,
@@ -867,6 +893,7 @@ impl TuiApp {
 
     pub async fn cancel_plan(&mut self) {
         let Some(projection) = self.projection.as_ref() else {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -876,6 +903,7 @@ impl TuiApp {
         };
         let Some(plan) = projection.pending_plan.as_ref() else {
             self.clear_input();
+            self.input_failed = true;
             self.status = self.host.language.text("tui.noPendingPlan").to_string();
             return;
         };
@@ -906,6 +934,7 @@ impl TuiApp {
                 self.status = self.host.language.text("tui.connectionPickerHint").into();
             }
             Err(error) => {
+                self.input_failed = true;
                 self.model_picker = None;
                 self.status = self
                     .host
@@ -921,6 +950,7 @@ impl TuiApp {
             .iter()
             .find(|p| p.id == profile_id && p.parameters.enabled)
         else {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.modelUnavailable").into();
             return;
         };
@@ -1052,6 +1082,7 @@ impl TuiApp {
 
     async fn cancel_run(&mut self) {
         let Some(projection) = self.projection.as_ref() else {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -1060,10 +1091,12 @@ impl TuiApp {
             return;
         };
         let Some(run) = projection.run.as_ref() else {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.noRun").to_string();
             return;
         };
         if is_terminal_run_status(&run.status) {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -1106,12 +1139,16 @@ impl TuiApp {
                 self.detail_scroll.set(0);
                 self.resource_preview = Some(resource);
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => {
+                self.input_failed = true;
+                self.status = error.to_string();
+            }
         }
     }
 
     async fn read_detail(&mut self, command: &str, reasoning: bool) {
         if reasoning && !self.reasoning_enabled {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.reasoningEnableFirst").into();
             return;
         }
@@ -1160,7 +1197,10 @@ impl TuiApp {
                 self.context_open = false;
                 self.status = self.host.language.text("tui.detailStatus").into();
             }
-            Err(error) => self.status = error,
+            Err(error) => {
+                self.input_failed = true;
+                self.status = error;
+            }
         }
     }
 
@@ -1168,6 +1208,7 @@ impl TuiApp {
         let mut parts = command.splitn(3, ' ');
         let _ = parts.next();
         let Some(workspace_id) = parts.next().filter(|value| !value.is_empty()) else {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.openUsage").to_string();
             return;
         };
@@ -1176,6 +1217,7 @@ impl TuiApp {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         else {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.openUsage").to_string();
             return;
         };
@@ -1184,6 +1226,7 @@ impl TuiApp {
             .as_ref()
             .map(|projection| projection.session_id.clone())
         else {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -1210,6 +1253,7 @@ impl TuiApp {
                 self.resource_preview = Some(resource);
             }
             Err(error) => {
+                self.input_failed = true;
                 self.status = self
                     .host
                     .language
@@ -1220,10 +1264,12 @@ impl TuiApp {
 
     async fn attach_directory(&mut self, path: &str) {
         if path.is_empty() {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.attachUsage").to_string();
             return;
         }
         if let Err(error) = self.ensure_session().await {
+            self.input_failed = true;
             self.status = error;
             return;
         }
@@ -1232,6 +1278,7 @@ impl TuiApp {
             .as_ref()
             .map(|projection| projection.session_id.clone())
         else {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -1249,6 +1296,7 @@ impl TuiApp {
                 self.status = self.host.language.text("tui.directoryAttached").to_string();
             }
             Err(error) => {
+                self.input_failed = true;
                 self.status = self
                     .host
                     .language
@@ -1259,6 +1307,7 @@ impl TuiApp {
 
     async fn detach_directory(&mut self, workspace_id: &str) {
         if workspace_id.is_empty() {
+            self.input_failed = true;
             self.status = self.host.language.text("tui.detachUsage").to_string();
             return;
         }
@@ -1267,6 +1316,7 @@ impl TuiApp {
             .as_ref()
             .map(|projection| projection.session_id.clone())
         else {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -1284,6 +1334,7 @@ impl TuiApp {
                 self.status = self.host.language.text("tui.directoryDetached").to_string();
             }
             Err(error) => {
+                self.input_failed = true;
                 self.status = self
                     .host
                     .language
@@ -1313,6 +1364,7 @@ impl TuiApp {
                 true
             }
             Ok(reply) => {
+                self.input_failed = true;
                 let error = reply.error;
                 let refresh_plugins = error.as_ref().is_some_and(|error| {
                     matches!(
@@ -1338,6 +1390,7 @@ impl TuiApp {
                 false
             }
             Err(error) => {
+                self.input_failed = true;
                 self.status = format!("{failure_label}：{error}");
                 false
             }
@@ -1368,6 +1421,7 @@ impl TuiApp {
 
     async fn change_language(&mut self, choice: &str) {
         if Language::parse(choice).is_none() {
+            self.input_failed = true;
             self.status = self
                 .host
                 .language
@@ -1388,6 +1442,7 @@ impl TuiApp {
                 self.status = language.text("tui.language.changed").into();
             }
             Err(error) => {
+                self.input_failed = true;
                 self.status = self.host.language.format("tui.language.failed", &[error]);
             }
         }
@@ -1637,7 +1692,7 @@ impl TuiApp {
     }
 
     fn matching_commands(&self) -> Vec<(&'static str, &'static str, bool)> {
-        let query = self.input.trim_start();
+        let query = self.input.as_str();
         if self.input.contains(['\n', '\r'])
             || !query.starts_with('/')
             || query.chars().any(char::is_whitespace)
@@ -1681,7 +1736,7 @@ impl TuiApp {
         self.command_picker = (!commands.is_empty()
             && !commands
                 .iter()
-                .any(|(command, _, _)| *command == self.input.trim_start()))
+                .any(|(command, _, _)| *command == self.input))
         .then_some(0);
         self.sync_plugin_picker_from_input();
     }
@@ -2311,6 +2366,11 @@ mod input_tests {
         assert!(app.detail_preview().unwrap().contains("/font compact-kai"));
         assert!(app.submit_line("/font unavailable").await);
         assert!(app.status().contains("unavailable"));
+        assert_eq!(
+            app.input(),
+            "/font unavailable",
+            "failed command stays editable"
+        );
         assert!(app.projection().is_none());
     }
 
@@ -2319,6 +2379,8 @@ mod input_tests {
         let mut app = test_app();
         for input in [
             "ordinary /he",
+            " /he",
+            "\t/he",
             "/help",
             "/model profile:test",
             "/he\n",
@@ -3157,10 +3219,9 @@ mod input_tests {
             app.submit_line("/tasks").await;
             assert!(screen_rows(&app, 90, 24).join("\n").contains(tasks));
             let projection = app.projection().unwrap();
-            let unknown = app
-                .contextual_input_command(projection, "/bad")
-                .unwrap_err();
-            assert!(unknown.contains("/bad"));
+            let unknown = app.contextual_input_command(projection, "/bad").unwrap();
+            assert_eq!(unknown["type"], "message.submit");
+            assert_eq!(unknown["text"], "/bad");
             assert_eq!(
                 projection.pending_interaction.as_ref().unwrap().prompt,
                 "Provider 原文 {0}"

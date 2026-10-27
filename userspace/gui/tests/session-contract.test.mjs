@@ -2008,6 +2008,69 @@ test('GUI submits an image-only message and keeps its bound attachment', async t
   await assert.rejects(store.getState().sendMessage(''), /message_empty/);
 });
 
+test('GUI composer submits slash text through the real store and Session with its original text and references', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:slash-input';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const reference = { referenceId: 'reference:directory', workspaceId: 'workspace:directory', logicalPath: '.',
+    displayName: 'workspace', kind: 'directory' };
+  const commands = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Received.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'slash-input');
+  t.after(() => actor.dispose());
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname.endsWith('/filesystem-references/resolve')) return Response.json({ ok: true, data: [reference] });
+    if (url.pathname.endsWith('/commands')) {
+      const command = JSON.parse(init.body); commands.push(command);
+      return Response.json({ ok: true, data: await actor.submit(command) });
+    }
+    if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: await actor.snapshot() });
+    if (url.pathname.endsWith('/catalog')) return Response.json({ ok: true, data: { projects: [], sessions: [] } });
+    if (url.pathname.endsWith('/plugins')) return Response.json({ ok: true, data: { revision: 'plugins:slash', plugins: [] } });
+    throw new Error(`unexpected_gui_request:${url.pathname}`);
+  });
+  const [{ useLocalAgentStore: store }, { useAgentComposer }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/components/local-agent/useAgentComposer.ts',
+  ]);
+  const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
+  let draft, composer;
+  globalThis.document = { activeElement: null };
+  globalThis.sessionStorage = {
+    getItem: () => JSON.stringify({ draft, pastedTexts: [], pastedImages: [],
+      filesystemPaths: [{ path: '/remote/workspace', kind: 'directory' }], pluginSelections: [] }),
+    setItem() {},
+  };
+  t.after(() => {
+    if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+  });
+  function Probe() { composer = useAgentComposer('zh-CN', () => {}); return null; }
+  for (const text of ['/Users/example/file.txt 请检查\n保留正文  ', '/tmp', '/unknown 请解释这个名字',
+    '/model 是什么意思？', ' /new', '\t/focus 讨论命令', ' /reply 1']) {
+    draft = text;
+    store.setState({ sessionId, projection: await actor.snapshot(), selectedProfileId: 'profile:test',
+      profiles: [{ id: 'profile:test', enabled: true, thinking: 'disabled' }] });
+    Object.assign(store.getInitialState(), store.getState());
+    renderToStaticMarkup(createElement(Probe));
+    assert.equal(composer.canSend, true, text);
+    await composer.submitDraft();
+    assert.equal(store.getState().error, null, text);
+    const command = commands.at(-1);
+    assert.equal(command.type, 'message.submit', text);
+    assert.equal(command.text, text);
+    assert.deepEqual(command.filesystemReferences, [reference]);
+    const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
+    const message = completed.messages.filter(message => message.role === 'user').at(-1);
+    assert.equal(message.content, text);
+    assert.deepEqual(message.filesystemReferences, [reference]);
+    assert.equal(store.getState().sessionId, sessionId, 'escaped /new keeps the conversation');
+  }
+  assert.equal(commands.length, 7);
+});
+
 test('GUI submission keeps the ordinary message separate from pasted text references', async (t) => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:pasted-message';

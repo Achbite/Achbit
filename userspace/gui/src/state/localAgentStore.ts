@@ -650,7 +650,7 @@ const store = create<LocalAgentState>((set, get) => ({
     const trimmed = text.trim();
     const inputError = !trimmed && !pastedTexts.length && !pastedImages.length && !filesystemPaths.length
       ? 'message_empty'
-      : trimmed.startsWith('/') ? `conversation_command_unknown:${trimmed}` : null;
+      : null;
     if (inputError) {
       set({ error: inputError, errorSource: 'command' });
       throw new Error(inputError);
