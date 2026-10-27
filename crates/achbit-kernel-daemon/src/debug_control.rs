@@ -298,7 +298,12 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
                 .map_err(|e| e.to_string())?
                 .map_err(service_error)?;
         let mut command = json!({"schemaVersion":"achbit.command.v3","type":"message.submit","commandId":id("debug-input")?,"sessionId":session_id,"text":message});
-        for field in ["profileId", "pluginSelections", "guidanceReferences"] {
+        for field in [
+            "profileId",
+            "pluginCatalogRevision",
+            "pluginSelections",
+            "guidanceReferences",
+        ] {
             if let Some(value) = params.get(field) {
                 command[field] = value.clone();
             }
