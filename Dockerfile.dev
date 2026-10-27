@@ -10,8 +10,6 @@ FROM rust:${ACHBIT_RUST_VERSION}-bookworm
 
 ARG ACHBIT_APT_MIRROR=https://deb.debian.org/debian
 ARG ACHBIT_APT_SECURITY_MIRROR=https://deb.debian.org/debian-security
-ARG ACHBIT_NODE_VERSION=22.22.3
-ARG ACHBIT_NODE_DIST_BASE=https://npmmirror.com/mirrors/node
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -28,9 +26,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - 健康检查辅助：iputils-ping / netcat-openbsd / jq
 # - Tauri thin shell 静态检查/打包准备：WebKitGTK、AppIndicator、SVG、patchelf
 # - sccache：由 build.sh 按需启用，ACHBIT_DISABLE_SCCACHE=1 可关闭
+# 保留 BuildKit cache mount 中的 deb，避免基础镜像的 apt hook 在更新索引时删除下载缓存。
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    sed -i \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && sed -i \
         -e "s#http://deb.debian.org/debian-security#${ACHBIT_APT_SECURITY_MIRROR}#g" \
         -e "s#http://deb.debian.org/debian#${ACHBIT_APT_MIRROR}#g" \
         /etc/apt/sources.list.d/debian.sources \
@@ -44,6 +44,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         iputils-ping netcat-openbsd jq xz-utils unzip sccache
 
 # ---- 2. Node.js 22 LTS ----
+ARG ACHBIT_NODE_VERSION=22.22.3
+ARG ACHBIT_NODE_DIST_BASE=https://npmmirror.com/mirrors/node
 # Use the official binary tarball instead of NodeSource apt, so the build is
 # not blocked by a single external Debian repository path.
 RUN set -eux; \

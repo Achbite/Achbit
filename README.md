@@ -95,6 +95,8 @@ bash scripts/setup-macos-signing.sh
 make shell
 ```
 
+`make shell` automatically checks and updates the development image before entering. Docker reuses unchanged layers and rebuilds affected layers when the Dockerfile, entrypoint or image build arguments change. No separate image-update command is needed.
+
 Skip the signing command on Windows and Linux. Inside the container:
 
 ```sh

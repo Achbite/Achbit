@@ -4,7 +4,9 @@ Use the Docker development environment for dependencies, shared TypeScript, GUI 
 
 ## Development container
 
-On the host, run `make shell` from the checkout you intend to build. It evaluates `Dockerfile.dev`, builds changed image layers, creates or reuses the configured container, and opens a shell in `/workspace`. The checkout is mounted into that directory. Dependencies and compiler caches use Docker volumes; `bin/` contains the outputs visible on the host.
+On the host, run `make shell` from the checkout you intend to build. It checks and updates the development image, creates or reuses the configured container, and opens a shell in `/workspace`. The checkout is mounted into that directory. Dependencies and compiler caches use Docker volumes; `bin/` contains the outputs visible on the host.
+
+`make shell` uses Docker's incremental build checks: changes to `Dockerfile.dev`, `entrypoint.sh` or image build arguments automatically rebuild affected layers; unchanged layers use the existing cache. Ordinary application source changes are not image inputs. Image build failures stop entry into the container. APT downloads are retained in a BuildKit cache mount for reuse when a dependency layer needs rebuilding. Mirror overrides can be set in the local, ignored `.achbit-worktree.mk` using `ACHBIT_APT_MIRROR` and `ACHBIT_APT_SECURITY_MIRROR`.
 
 For a separate worktree, select a distinct container name and unused host port to keep an existing development container intact:
 

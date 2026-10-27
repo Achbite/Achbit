@@ -117,6 +117,7 @@ export CONTAINER_NAME WORKDIR_IN_CTNR
 
 help:
 	@echo "make shell / docker-info / reset-dev: 当前 worktree 的 Docker 环境；Mac 自动准备宿主打包通道"
+	@echo "make shell: 自动检查镜像输入；有改动时更新，未变化层直接复用 Docker 缓存"
 	@echo "make build: 编译并更新本机可运行目录；macOS 更新 bin/macos-arm64，不生成安装器或压缩包"
 	@echo "make package: 编译并打包全部可用平台，生成运行目录、压缩包及安装器"
 	@echo "make package-macos: Docker 共享构建 + 宿主 Darwin 编译/组装，支持容器内 build.sh 发起"
@@ -163,12 +164,12 @@ _validate_config:
 package-macos:
 	@bash ./build.sh --stage package-macos
 
-# ---- _ensure_image：每次求值 Dockerfile，未变化时直接命中 Docker 缓存 ----
+# ---- 进入前交由 Docker 按实际构建输入增量更新；失败则停止进入 ----
 _print_image:
 	@printf '%s\n' '$(IMAGE)'
 
 _ensure_image: _validate_config
-	@echo "[make] 更新开发镜像 $(IMAGE)（未变化层使用 Docker 缓存）..."
+	@echo "[make] 检查开发镜像 $(IMAGE)（变更自动更新，未变化层使用 Docker 缓存）..."
 	@docker build --provenance=false $(BUILD_ARGS) -f $(DOCKERFILE) -t $(IMAGE) .
 
 # ---- _ensure_container：容器懒创建 / 刷新启动 ----
