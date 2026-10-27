@@ -1467,7 +1467,7 @@
       "label": "Windows Shell",
       "description": "应用于后续运行。默认优先 PowerShell 7，未安装时使用系统 PowerShell；运行中不切换。",
       "options": {
-        "auto": "自动 · 优先 PowerShell 7",
+        "auto": "PowerShell 7 优先，未安装时使用 5.1",
         "powershell7": "PowerShell 7",
         "windowsPowerShell": "Windows PowerShell 5.1",
         "gitBash": "Git Bash"

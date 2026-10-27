@@ -82,23 +82,27 @@ pub(crate) fn run() -> Result<(), String> {
                         target.path = translate(&target.path.to_string_lossy())?.into();
                     }
                 }
-                for path in context
+                translate_file_access(&mut context.file_access, &distribution)?;
+                // Windows admission cannot inspect the selected Linux runtime.
+                // Apply the same startup read roots as native Linux execution.
+                context
                     .file_access
                     .read
-                    .iter_mut()
-                    .chain(&mut context.file_access.read_only)
-                {
-                    *path = translate(&path.to_string_lossy())?.into();
+                    .extend(achbit_kernel_runtime::file_access::system_read_paths());
+                let mut runtime_roots = std::env::split_paths(&execution_path)
+                    .filter(|path| path.is_absolute() && path.is_dir())
+                    .collect::<Vec<_>>();
+                if tool_id == "bash" {
+                    runtime_roots.extend(
+                        achbit_kernel_runtime::shell_environment::toolchain_homes()
+                            .into_iter()
+                            .map(|(_, path)| path),
+                    );
                 }
-                for target in &mut context.file_access.write {
-                    target.path = translate(&target.path.to_string_lossy())?.into();
+                for path in runtime_roots {
+                    context.file_access.read.push(path.clone());
+                    context.file_access.best_effort_read.push(path);
                 }
-                context.file_access.home = context
-                    .file_access
-                    .home
-                    .as_ref()
-                    .map(|path| translate(&path.to_string_lossy()).map(PathBuf::from))
-                    .transpose()?;
                 let registry = KernelToolRegistry::new();
                 let executors = KernelExecutorRegistry::from_executors(builtin_executors(
                     &registry,
@@ -185,7 +189,30 @@ fn map_archive_references(
     Ok(())
 }
 
+fn translate_file_access(
+    files: &mut achbit_kernel_runtime::file_access::FileAccessScope,
+    distribution: &str,
+) -> Result<(), KernelErrorEnvelope> {
+    for path in files
+        .read
+        .iter_mut()
+        .chain(&mut files.read_only)
+        .chain(&mut files.best_effort_read)
+        .chain(files.home.iter_mut())
+        .chain(files.cache.iter_mut())
+        .chain(files.write.iter_mut().map(|target| &mut target.path))
+    {
+        *path = translate_path(&path.to_string_lossy(), distribution)?.into();
+    }
+    Ok(())
+}
+
 fn translate_path(path: &str, distribution: &str) -> Result<String, KernelErrorEnvelope> {
+    // Environment facts such as productDocsPath originate in this worker and
+    // are already Linux paths. wslpath -u treats them as Windows rooted paths.
+    if path.starts_with('/') && !path.starts_with("//") {
+        return Ok(path.into());
+    }
     let normalized = path
         .strip_prefix(r"\\?\UNC\")
         .map(|suffix| format!(r"\\{suffix}"))
@@ -231,6 +258,58 @@ fn path_error(message: &str) -> KernelErrorEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_scope_translates_all_paths_without_changing_grants() {
+        use achbit_kernel_runtime::file_access::FileAccessScope;
+        let host_root = r"\\wsl.localhost\Ubuntu\home\dev\中文 project";
+        let mut files = FileAccessScope {
+            sandbox_backend: Some("bubblewrap".into()),
+            network_access: false,
+            read: vec![host_root.into(), "/mnt/e/runtime/docs/product".into()],
+            read_only: vec![format!(r"{host_root}\.git").into()],
+            write: vec![WorkspaceWriteTarget {
+                path: format!(r"{host_root}\cache").into(),
+                directory: true,
+            }],
+            home: Some(format!(r"{host_root}\home").into()),
+            cache: Some(format!(r"{host_root}\cache").into()),
+            best_effort_read: vec!["/mnt/e/runtime/docs/product".into()],
+        };
+        translate_file_access(&mut files, "Ubuntu").unwrap();
+        assert_eq!(
+            files.read,
+            vec![
+                PathBuf::from("/home/dev/中文 project"),
+                PathBuf::from("/mnt/e/runtime/docs/product")
+            ]
+        );
+        assert_eq!(
+            files.read_only,
+            vec![PathBuf::from("/home/dev/中文 project/.git")]
+        );
+        assert_eq!(files.home, Some("/home/dev/中文 project/home".into()));
+        assert_eq!(files.cache, Some("/home/dev/中文 project/cache".into()));
+        assert_eq!(
+            files.write[0].path,
+            PathBuf::from("/home/dev/中文 project/cache")
+        );
+        assert!(files.write[0].directory);
+        assert_eq!(
+            files.best_effort_read,
+            vec![PathBuf::from("/mnt/e/runtime/docs/product")]
+        );
+        assert_eq!(files.sandbox_backend.as_deref(), Some("bubblewrap"));
+        assert!(!files.network_access);
+        assert!(translate_file_access(
+            &mut FileAccessScope {
+                cache: Some(r"\\wsl.localhost\Debian\home\dev\cache".into()),
+                ..Default::default()
+            },
+            "Ubuntu"
+        )
+        .is_err());
+    }
     #[test]
     fn archive_references_return_to_the_host_without_rewriting_command_output() {
         let mut output = serde_json::json!({

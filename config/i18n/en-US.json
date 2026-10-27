@@ -1467,7 +1467,7 @@
       "label": "Windows shell",
       "description": "Applies to subsequent runs. Auto prefers PowerShell 7, then Windows PowerShell. Never switches during execution.",
       "options": {
-        "auto": "Auto · prefer PowerShell 7",
+        "auto": "Prefer PowerShell 7, fall back to 5.1",
         "powershell7": "PowerShell 7",
         "windowsPowerShell": "Windows PowerShell 5.1",
         "gitBash": "Git Bash"

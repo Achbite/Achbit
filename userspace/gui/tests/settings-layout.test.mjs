@@ -106,3 +106,29 @@ test('interface reload restores the current settings page once, then subsequent 
   assert.equal(page(), 'general');
   assert.equal(values.has('achbit:interface-reload'), false);
 });
+
+for (const language of ['zh-CN', 'en-US']) test(`Windows automatic fallback offers PowerShell 7 installation from observed state (${language})`, async t => {
+  const [{ useSettingsStore }, { AgentSettingsSection }] = await loadGuiModules(t, [
+    '/src/state/settingsStore.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  ]);
+  const initial = fixture(t, useSettingsStore, language);
+  const fallback = { os: 'windows', shellAvailable: true, configuration: { windowsShell: 'auto' },
+    shell: { dialect: 'windowsPowerShell', executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' } };
+  const render = environment => {
+    initial.environment = environment;
+    return capture(AgentSettingsSection, { category: 'environment' }).html;
+  };
+  const html = render(fallback);
+  assert.match(html, /role="status"/);
+  assert.match(html, /winget install --id Microsoft.PowerShell --source winget/);
+  assert.match(html, language === 'zh-CN' ? /已自动使用 Windows PowerShell 5.1/ : /Windows PowerShell 5.1 is being used automatically/);
+  // A pending preference change must not rewrite the captured discovery result.
+  initial.effectiveSettings['agent.windows.shell'] = 'powershell7';
+  assert.match(render(fallback), /role="status"/);
+  for (const other of [
+    { ...fallback, configuration: { windowsShell: 'windowsPowerShell' } },
+    { ...fallback, shell: { dialect: 'powershell7', executable: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' } },
+    { ...fallback, shellAvailable: false },
+    { ...fallback, os: 'linux' },
+  ]) assert.doesNotMatch(render(other), /winget install --id Microsoft.PowerShell/, 'only an observed automatic fallback should prompt installation');
+});

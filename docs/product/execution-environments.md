@@ -23,6 +23,8 @@ Backends: macOS `sandbox-exec`; Linux/WSL2 Bubblewrap; native Windows LPAC. Back
 
 Settings → Execution environment selects PowerShell 7, Windows PowerShell or Git Bash. Automatic prefers PowerShell 7, then Windows PowerShell 5.1. An explicit choice does not silently fall back. `System32/bash.exe` is WSL, not Git Bash.
 
+When automatic selection falls back to 5.1, the settings page shows an installation prompt for PowerShell 7. After installation, select **Refresh environment**; subsequent runs use the newly detected shell.
+
 Use the recorded shell dialect. PowerShell 5.1 has no `&&` / `||`; after a native command, capture `$LASTEXITCODE` and explicitly return it. Achbit runs PowerShell scripts as temporary UTF-8 files without changing machine execution policy.
 
 For `*_workspace_sandbox_unavailable`, inspect `workspaceSandbox.reason` or use **Check Windows support** in settings. This tests LPAC support, not service readiness. An installed Docker command does not prove daemon access. Preserve startup errors, including nested Store PowerShell failures, rather than treating them as syntax errors or reinstalling automatically.
