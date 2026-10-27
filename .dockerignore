@@ -17,5 +17,7 @@ _agent_tmp_*
 Thumbs.db
 .logs
 .task-artifacts
+.achbit-preview-config*
+.deepcode-preview-config*
 docs/architecture
 docs/task-receipts
