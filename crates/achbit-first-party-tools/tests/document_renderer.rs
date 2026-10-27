@@ -89,8 +89,9 @@ fn active_typst_compilation_can_be_cancelled_without_replacing_output() {
     std::fs::write(&target, "original output").unwrap();
     let started = Instant::now();
     let cancelled = || started.elapsed() >= Duration::from_millis(500);
+    // Typst rejects unbounded while loops; finite work must still be active at cancellation.
     let error = render(
-        &prepare(json!({"path":"report.pdf", "format":"pdf", "content":"#while true {}"})).unwrap(),
+        &prepare(json!({"path":"report.pdf", "format":"pdf", "content":"#for i in range(1000000) { let value = i * i }"})).unwrap(),
         context(&target, &cancelled),
     )
     .unwrap_err();
