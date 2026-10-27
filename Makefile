@@ -9,7 +9,6 @@ IMAGE            := $(IMAGE_NAME):$(IMAGE_TAG)
 DOCKERFILE       ?= Dockerfile.dev
 WORKDIR_IN_CTNR  ?= /workspace
 ACHBIT_PROJECT_ROOT := $(realpath $(CURDIR))
-ACHBIT_BUILD_HOST_OS ?= $(shell uname -s)
 UI_PLUGIN ?= ui-plugins/template
 UI_PACKAGE ?=
 CONTAINER_NAME ?= achbit-dev
@@ -27,9 +26,7 @@ ACHBIT_RUSTUP_DIST_SERVER ?= https://mirrors.ustc.edu.cn/rust-static
 ACHBIT_RUSTUP_UPDATE_ROOT ?= https://mirrors.ustc.edu.cn/rust-static/rustup
 UNAME_R := $(shell uname -r 2>/dev/null)
 IS_WSL := $(findstring Microsoft,$(UNAME_R))$(findstring microsoft,$(UNAME_R))
-ifneq ($(IS_WSL),)
-ACHBIT_BUILD_HOST_OS := Windows_NT
-endif
+ACHBIT_BUILD_HOST_OS ?= $(if $(IS_WSL),Windows_NT,$(shell uname -s))
 ACHBIT_DOCKER_NET_ENV_PASSTHROUGH ?= auto
 ACHBIT_CONTAINER_CARGO_TARGET_DIR ?= $(WORKDIR_IN_CTNR)/target
 ACHBIT_CONTAINER_TMPDIR ?= /tmp/achbit-build
