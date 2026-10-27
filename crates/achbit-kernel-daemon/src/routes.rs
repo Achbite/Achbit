@@ -11,6 +11,7 @@ pub(crate) fn build_app(state: HostState) -> Router {
         .route("/api/host/client", get(host_client))
         .route("/api/health", get(health))
         .route("/api/host/readiness", get(crate::host_runtime::readiness))
+        .route("/api/host/instance", get(crate::host_runtime::instance))
         .route("/api/host/shutdown", post(host_shutdown))
         .route(
             "/api/host/computer-preview",

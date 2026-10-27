@@ -20,6 +20,29 @@ achbit-cli --model PROFILE_ID ask "Explain this code."
 
 TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [English](deepseek.md) or [Chinese](deepseek.zh-CN.md) guide.
 
+## Configure through the CLI
+
+Use the executable and `hostDataDirectory` reported in the command environment. `--host-data-dir` attaches to that existing Host and never starts another instance. It overrides inherited ACHBIT_API_URL/ACHBIT_PORT and works when workspace Shell has an isolated HOME; request Host execution for access to the Host connection and loopback transport. `ACHBIT_USER_ROOT` remains the way to start/select an independent instance outside a task.
+
+```sh
+"/absolute/path/achbit-cli" --host-data-dir "/actual/instance/data" instance
+achbit-cli services
+achbit-cli connections list
+achbit-cli models list
+achbit-cli connections set --input connection.json --api-key-file /absolute/path/api-key
+achbit-cli models set --input profile.json
+achbit-cli models default PROFILE_ID
+achbit-cli models probe PROFILE_ID
+```
+
+`achbit-cli --help` and `achbit-cli models --help` show commands and input shapes without connecting to a Host. Apply the same `--host-data-dir` to subsequent commands when using a task Shell. `instance` reports the connected process, API address and actual config/data/profile/secret paths without secret contents. `services` lists installed service plugins and their current status, endpoint and state directory; `plugin.search` searches callable tools and is not this service inventory.
+
+`connection.json` is `{ "connection": { "id": "local-web", "name": "Local Web", "adapterId": "custom", "billingMode": "metered", "baseUrl": "http://127.0.0.1:17632/v1", "credentialKind": "apiKey" } }`. Use the actual endpoint returned by `services`. Optional `profile` in the same file creates the first profile atomically with a new connection. Updating an existing connection preserves its credential unless `--api-key-file` is supplied; adapter and authentication kind follow the Host's existing edit rules.
+
+`profile.json` contains one full profile object, for example `{ "id": "local-web-chat", "connectionId": "local-web", "name": "Local Web Chat", "model": "MODEL_ID_FROM_SERVICE", "kind": "openaiCompatible", "providerFlavor": "openai", "enabled": true, "contextWindowTokens": 128000, "maxOutputTokens": 16000, "imageInput": false }`. Choose protocol, limits and capabilities supported by the service; the numbers here are examples, not detected limits. `models set` creates or replaces that profile by ID. `connections remove ID` and `models remove ID` use the same validation and reference rules as the GUI.
+
+`--input -` reads JSON from a pipe. `--api-key-file -` reads a key from a pipe without echoing it; JSON and key cannot both consume stdin. Keys are stored by the Host, never printed. Saving a key only establishes local configuration. `models probe` makes the same real request as the GUI Test button, prints the original result and exits nonzero on failure. Settings take effect for new runs; an active run retains its snapshot. Do not edit live settings/secrets files to bypass this update path.
+
 ## API and Coding Plan selection
 
 Choose **API connection** or **Coding Plan** directly in Models & services. The connection form also lets you switch between these modes. Select the service and region, enter its key (or sign in when account authentication is supported), and choose the first model before creating the connection. Models remain editable afterward. GUI, TUI and CLI share the saved connection and model list.

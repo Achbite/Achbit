@@ -1523,15 +1523,19 @@ test('new runs refresh execution facts while restart and compaction retain each 
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
     workspaceShellSupported: false,
     productDocsPath: '/opt/achbit/docs/product',
+    hostDataDirectory: '/actual-host/data',
     workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
     runtimeExecutables: { kernel: '/opt/achbit/achbit-kernel', cli: '/opt/achbit/achbit-cli' } };
   const saved = environmentInstruction(observed);
   assert.equal(saved.text, 'Use zh-CN for user-facing text unless the user requests another language.');
   const shellText = environmentInstruction(observed, ['bash']).text;
-  const modelEnvironment = JSON.parse(shellText.slice('Command environment: '.length, shellText.indexOf('}. Use') + 1));
+  const modelEnvironment = JSON.parse(shellText.slice('Command environment: '.length, shellText.indexOf('}. For Achbit') + 1));
   for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox', 'executionPath', 'agentComposition', 'executionTarget']) {
     assert.equal(modelEnvironment[field], undefined);
   }
+  assert.equal(modelEnvironment.achbitCli, '/opt/achbit/achbit-cli');
+  assert.equal(modelEnvironment.hostDataDirectory, '/actual-host/data');
+  assert.match(shellText, /--host-data-dir/u);
   for (const field of ['os', 'arch', 'shell', 'productDocsPath']) {
     assert.deepEqual(modelEnvironment[field], observed[field]);
   }

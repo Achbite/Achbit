@@ -20,7 +20,7 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
       throw new Error('session_environment_invalid');
     }
   }
-  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'productDocsPath', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition'];
+  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'hostDataDirectory', 'productDocsPath', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition'];
   if (data.agentComposition !== undefined) {
     const composition = data.agentComposition as Record<string, unknown>;
     if (!composition || typeof composition !== 'object' || Array.isArray(composition)
@@ -47,6 +47,9 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     && (typeof data.productDocsPath !== 'string' || !data.productDocsPath)) {
     throw new Error('session_environment_invalid');
   }
+  if (data.hostDataDirectory !== undefined && (typeof data.hostDataDirectory !== 'string' || !data.hostDataDirectory)) {
+    throw new Error('session_environment_invalid');
+  }
   if (data.runtimeExecutables !== undefined) {
     const executables = data.runtimeExecutables;
     if (!executables || typeof executables !== 'object' || Array.isArray(executables)
@@ -58,15 +61,22 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     || ['locale', 'responseLanguage', 'userShell'].some((key) => data[key] !== null && typeof data[key] !== 'string')) {
     throw new Error('session_environment_invalid');
   }
+  const hasLocalCli = (data.executionTarget as Record<string, unknown>).kind === 'native'
+    && typeof (data.runtimeExecutables as Record<string, unknown> | undefined)?.cli === 'string'
+    && typeof data.hostDataDirectory === 'string';
   const hasShell = toolNames.some(name => name === 'bash' || name === 'powershell');
   const execution = hasShell ? `Command environment: ${JSON.stringify({
     os: data.os, arch: data.arch, shell: data.shell,
+    ...(hasLocalCli ? {
+      achbitCli: (data.runtimeExecutables as Record<string, string>).cli,
+      hostDataDirectory: data.hostDataDirectory,
+    } : {}),
     ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }),
     ...(typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
   })}. ` : '';
   return {
     id: ENVIRONMENT_ID,
-    text: `${execution}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,
+    text: `${execution}${hasShell && hasLocalCli ? 'For Achbit configuration use achbitCli with --host-data-dir hostDataDirectory; instance/services/connections/models expose current facts and supported edits. Shell HOME is task-local. Use the existing Host-execution permission when this CLI needs host files and loopback access. ' : ''}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,
   };
 }
 

@@ -20,6 +20,7 @@ pub struct KernelBootstrapOptions {
     pub api: Option<String>,
     pub auto_start: bool,
     pub persistent: bool,
+    pub host_data_dir: Option<PathBuf>,
     host_shell_token: Option<HostShellToken>,
 }
 
@@ -43,8 +44,16 @@ impl KernelBootstrapOptions {
             api,
             auto_start: true,
             persistent: false,
+            host_data_dir: None,
             host_shell_token: None,
         }
+    }
+
+    /// Attach to this exact existing instance, independent of the caller's HOME.
+    /// Never start a new Host when an explicit data directory is selected.
+    pub fn host_data_dir(mut self, directory: Option<PathBuf>) -> Self {
+        self.host_data_dir = directory;
+        self
     }
 
     pub fn auto_start(mut self, auto_start: bool) -> Self {
@@ -106,7 +115,27 @@ impl KernelBootstrap {
         })
     }
 
-    pub async fn connect(options: KernelBootstrapOptions) -> KernelClientResult<Self> {
+    pub async fn connect(mut options: KernelBootstrapOptions) -> KernelClientResult<Self> {
+        if let Some(directory) = &options.host_data_dir {
+            // An explicit directory overrides inherited endpoint variables (Host
+            // Shell carries these). Only two explicit CLI selectors conflict.
+            if options.api.is_some() {
+                return Err(KernelClientError::Bootstrap(
+                    "--host-data-dir cannot be combined with an explicit API endpoint".into(),
+                ));
+            }
+            let connection = achbit_host_connection::LocalHostConnection::discover_until(
+                directory,
+                Instant::now() + startup::STARTUP_BUDGET,
+            )
+            .map_err(|error| KernelClientError::Bootstrap(error.to_string()))?
+            .ok_or_else(|| {
+                KernelClientError::Bootstrap(format!("No running Host in {}", directory.display()))
+            })?;
+            options.api = Some(connection.identity.address.clone());
+            options.host_shell_token = Some(HostShellToken::new(connection.shell_token()));
+            options.auto_start = false;
+        }
         let deadline = Instant::now() + startup::STARTUP_BUDGET;
         let implicit_endpoint = options.api.is_none()
             && std::env::var_os("ACHBIT_API_URL").is_none()

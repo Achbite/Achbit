@@ -68,6 +68,13 @@ async fn main() {
     if values.first().map(String::as_str) == Some("ssh") {
         std::process::exit(ssh::run(&values[1..]));
     }
+    if values
+        .iter()
+        .any(|value| matches!(value.as_str(), "--help" | "-h"))
+    {
+        print_help();
+        return;
+    }
     let args = match Args::parse(values) {
         Ok(args) => args,
         Err(error) => {
@@ -80,12 +87,15 @@ async fn main() {
         print_help();
         return;
     }
-    if matches!(args.command, Command::GuiAttach) && args.api.is_some() {
-        eprintln!("gui-attach uses the shared Host of ACHBIT_USER_ROOT; --api is not supported");
+    if matches!(args.command, Command::GuiAttach)
+        && (args.api.is_some() || args.host_data_dir.is_some())
+    {
+        eprintln!("gui-attach uses the shared Host of ACHBIT_USER_ROOT; --api/--host-data-dir are not supported");
         std::process::exit(EXIT_BAD_ARGS);
     }
     let bootstrap = match KernelBootstrap::connect(
         KernelBootstrapOptions::new(args.api.clone())
+            .host_data_dir(args.host_data_dir.clone())
             .auto_start(!args.no_auto_start_kernel && !matches!(args.command, Command::StopHost))
             .persistent(matches!(
                 args.command,
@@ -120,6 +130,7 @@ async fn main() {
 enum Command {
     Help,
     Connections,
+    Configure(model_services::ConfigCommand),
     AuthLogin {
         selector: String,
         device_code: bool,
@@ -169,6 +180,7 @@ enum Command {
 #[derive(Debug, Clone)]
 struct Args {
     api: Option<String>,
+    host_data_dir: Option<PathBuf>,
     no_auto_start_kernel: bool,
     workspace: Option<PathBuf>,
     session_id: Option<String>,
@@ -184,6 +196,9 @@ struct Args {
 impl Args {
     fn parse(values: Vec<String>) -> Result<Self, String> {
         let mut api = None;
+        let mut host_data_dir = None;
+        let mut config_input = None;
+        let mut api_key_file = None;
         let mut no_auto_start_kernel = false;
         let mut workspace = None;
         let mut session_id = None;
@@ -201,6 +216,22 @@ impl Args {
                 "--api" => {
                     index += 1;
                     api = Some(required_arg(&values, index, "--api")?.to_string());
+                }
+                "--host-data-dir" => {
+                    index += 1;
+                    host_data_dir = Some(PathBuf::from(required_arg(
+                        &values,
+                        index,
+                        "--host-data-dir",
+                    )?));
+                }
+                "--input" => {
+                    index += 1;
+                    config_input = Some(required_arg(&values, index, "--input")?.to_owned());
+                }
+                "--api-key-file" => {
+                    index += 1;
+                    api_key_file = Some(required_arg(&values, index, "--api-key-file")?.to_owned());
                 }
                 "--recipe" => {
                     index += 1;
@@ -279,7 +310,12 @@ impl Args {
                 "--session 指向已有 creation snapshot，不能同时使用 -C/--workspace。".to_string(),
             );
         }
-        let command = match positional.first().map(String::as_str) {
+        let config_command =
+            model_services::ConfigCommand::parse(&positional, config_input, api_key_file)?;
+        let command = if let Some(command) = config_command {
+            Command::Configure(command)
+        } else {
+            match positional.first().map(String::as_str) {
             None => Command::Chat,
             Some("help") => Command::Help,
             Some("status") => Command::Status,
@@ -380,6 +416,7 @@ impl Args {
                 }
             }
             Some(other) => return Err(format!("未知命令：{other}")),
+        }
         };
         if !read_query.is_empty() && !matches!(command, Command::Read { .. }) {
             return Err("--view/--record/--request/--before/--limit 仅用于 read。".into());
@@ -391,6 +428,7 @@ impl Args {
         }
         Ok(Self {
             api,
+            host_data_dir,
             no_auto_start_kernel,
             workspace,
             session_id,
@@ -543,6 +581,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
             Ok(Outcome::Done)
         }
         Command::Connections => model_services::connections(client).await,
+        Command::Configure(command) => model_services::configure(client, command).await,
         Command::AuthLogin {
             selector,
             device_code,
@@ -1489,7 +1528,11 @@ fn new_id(kind: &str) -> String {
 }
 
 fn print_help() {
-    println!("模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days=30]\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
+    println!("配置：instance | services | connections list/set/remove | models list/set/remove/default/probe\nset 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。\n模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days=30]\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
+    println!(
+        r#"配置 JSON：models set 的 --input 是完整 profile 对象；connections set 是 {{"connection":{{...}},"profile":{{...}}}}（profile 可选）。先用 models list/connections list 读取当前字段，修改后通过 set 保存。
+密钥只通过 --api-key-file <文件|-> 提供。models probe <profile-id> 发起真实请求，失败返回非零退出码。help/-h/--help 无需连接 Host。"#
+    );
     println!(
         r#"Achbit 本地编码 Agent
 

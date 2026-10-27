@@ -103,6 +103,8 @@ pub(crate) fn prepare(
         "developerCommands": commands,
         "commandPaths": command_paths,
         "runtimeExecutables": runtime_executables,
+        "hostDataDirectory": achbit_host_connection::UserDirectories::resolve()
+            .map_err(|error| error.to_string())?.data_dir,
         "productDocsPath": product_docs_path,
         "executionPath": execution_path.to_string_lossy(),
         "workspaceShellSupported": sandbox.available,
