@@ -122,19 +122,16 @@ test('desktop activation and explicit selection carry execution availability wit
         assert.ok(request.tools.some(tool => tool.name === 'computer_control'));
         assert.ok(!request.tools.some(tool => tool.name === 'browser_observe'));
         const capabilities = request.messages.find(message => message.role === 'system' && message.content.includes('Execution-layer tool status'));
-        assert.ok(capabilities.content.includes('gui_browser_unavailable'));
-        assert.ok(capabilities.content.includes('"accessibility":true'));
+        assert.equal(capabilities, undefined);
+        assert.doesNotMatch(JSON.stringify(request.messages), /gui_browser_unavailable|accessibility|runtimeStatus/u);
         if (!explicit) {
           const result = request.messages.filter(message => message.role === 'tool')
             .map(message => JSON.parse(message.content)).find(result => result.activated);
           assert.deepEqual(result.activated, [uri]);
-          assert.deepEqual(result.tools, [
-            { name: desktop.name, availability: desktop.availability, runtimeStatus: desktop.runtimeStatus },
-            { name: browser.name, availability: browser.availability, reason: browser.availabilityReason },
-          ]);
+          assert.deepEqual(result.tools, [{ name: desktop.name }]);
         }
         if (!executions) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:desktop', name: 'computer_control', input: { action: 'status' } });
-        else yield providerEvent(request.requestId, 'text.delta', { text: 'Native desktop is available; embedded preview needs a GUI window.' });
+        else yield providerEvent(request.requestId, 'text.delta', { text: 'Native desktop inspection complete.' });
       }
       yield providerEvent(request.requestId, 'completed', {});
     } }, emptyKernel({ async execute(request) {
@@ -151,6 +148,10 @@ test('desktop activation and explicit selection carry execution availability wit
     await waitForProjection(actor, state => state.run?.status === 'completed');
     assert.equal(executions, 1);
     assert.equal(preparation.released.length, 1);
+    const canonical = (await readEvents(journal, sessionId)).flatMap(event => event.type === 'run.started'
+      ? event.payload.runtimeSnapshot.tools : event.type === 'run.tools.prepared' ? event.payload.toolView.tools : []);
+    assert.ok(canonical.some(tool => tool.availabilityReason?.code === 'gui_browser_unavailable'));
+    assert.ok(canonical.some(tool => tool.runtimeStatus?.accessibility === true));
     if (!explicit) {
       const events = await readEvents(journal, sessionId);
       const activated = events.find(event => event.type === 'session.plugins.activated');

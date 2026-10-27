@@ -157,7 +157,7 @@ mod tests {
     use super::*;
     #[test]
     fn fixed_profile_is_reused_and_capabilities_are_deterministic() {
-        let name = format!("DeepCode.Shell.test{}", std::process::id());
+        let name = format!("Achbit.Shell.test{}", std::process::id());
         let first = Profile::open(&name).unwrap();
         let second = Profile::open(&name).expect("an existing profile is opened, not recreated");
         assert_eq!(
@@ -170,8 +170,8 @@ mod tests {
         assert!(directory.is_dir());
         super::super::runner::probe(&first, &Capabilities::derive(&[]).unwrap()).unwrap();
         let names = [
-            "DeepCode.test.Read.0".to_string(),
-            "DeepCode.test.Write.0".to_string(),
+            "Achbit.test.Read.0".to_string(),
+            "Achbit.test.Write.0".to_string(),
         ];
         let (a, b) = (
             Capabilities::derive(&names).unwrap(),

@@ -156,7 +156,7 @@ pub(crate) fn http_get(
         .map_err(|error| ToolError::new("network_client_failed", error.to_string()))?;
     let mut request = client
         .get(url)
-        .header(USER_AGENT, "DeepCode-first-party-tools/0.5");
+        .header(USER_AGENT, "Achbit-first-party-tools/0.5");
     for (name, value) in headers {
         request = request.header(name, value);
     }

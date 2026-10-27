@@ -1,5 +1,5 @@
 {
-  "id": "deepcode.session-usage",
+  "id": "achbit.session-usage",
   "name": "Session 用量",
   "description": "按会话查看已记录的模型用量。",
   "entry": "index.js",

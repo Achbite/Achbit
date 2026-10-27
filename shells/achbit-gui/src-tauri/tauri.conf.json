@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Achbit",
-  "version": "0.6.60",
-  "identifier": "com.achbite.deepcode.gui",
+  "version": "0.6.61",
+  "identifier": "com.achbite.achbit.gui",
   "build": {
     "frontendDist": [],
     "devUrl": "http://127.0.0.1:31246",

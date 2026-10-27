@@ -4,9 +4,9 @@ Display plugins replace named GUI regions or add supported settings panels. They
 
 ## Use a plugin
 
-Settings → Plugins → Add: select a local folder or `achbit-ui.json`. Only load JavaScript intended to run in the application window. The source is stored in `workbench.uiPlugins`, independently of tool/Skill activation.
+Settings → Plugins → Add: select a local folder or `achbit-ui.json`. Only load JavaScript intended to run in the application window. The Host copies the artifact into its managed plugin directory and stores that installed path in `workbench.uiPlugins`, independently of tool/Skill activation. The original download is no longer a runtime dependency. See the [installation and update contract](../plugins/README.md#artifacts-and-import).
 
-Saving the enabled compiled entry or manifest hot-replaces that plugin. TypeScript must first be compiled to its declared entry. Refresh list reconnects the source watch; Reload in plugin details reloads only that module. Disabling removes its effects and restores built-in presentation. Errors stay visible; none of these actions requires restarting the conversation.
+Use **Update…** in plugin details to install a replacement artifact with the same ID and preserve the enabled state. TypeScript must first be compiled to its declared entry. Watches observe the installed copy; changes to the original development/download directory are not applied automatically. Refresh list reconnects the source watch; Reload in plugin details reloads only that module. Disabling removes its effects and restores built-in presentation. Errors stay visible; none of these actions requires restarting the conversation.
 
 ## Manifest and module
 

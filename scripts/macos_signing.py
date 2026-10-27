@@ -9,8 +9,8 @@ import subprocess
 import tempfile
 
 
-DEFAULT_IDENTITY = 'DeepCode Local Development'
-IDENTITY_ENV = 'DEEPCODE_MACOS_SIGN_IDENTITY'
+DEFAULT_IDENTITY = 'Achbit Local Development'
+IDENTITY_ENV = 'ACHBIT_MACOS_SIGN_IDENTITY'
 
 
 def signing_identity():
@@ -31,7 +31,7 @@ def signing_identity():
 
 def require_same_identity(app, identity):
     """An in-place product update must not silently switch the existing app's signer."""
-    with tempfile.TemporaryDirectory(prefix='deepcode-signing-') as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-signing-') as directory:
         prefix = Path(directory) / 'certificate-'
         subprocess.run(['codesign', '--display', f'--extract-certificates={prefix}', str(app)],
                        check=True)

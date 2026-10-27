@@ -27,14 +27,14 @@ export function nativeNavigationInput(address: string): { url: string } | { file
 }
 export function hasNativeBrowser(): boolean {
   return !isRemoteHost() && typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke)
-    && !window.__DEEPCODE_BROWSER_PREVIEW__
-    && document.documentElement.dataset.product === 'deepcode-gui';
+    && !window.__ACHBIT_BROWSER_PREVIEW__
+    && document.documentElement.dataset.product === 'achbit-gui';
 }
 
 export async function listenNativePages(listener:(page:NativePage)=>void):Promise<()=>void> {
   if (!hasNativeBrowser()) return ()=>{};
   if (!window.__TAURI__?.event) throw new Error('Native browser page events are unavailable.');
-  return window.__TAURI__.event.listen<NativePage>('deepcode:browser-page',({payload})=>listener(payload));
+  return window.__TAURI__.event.listen<NativePage>('achbit:browser-page',({payload})=>listener(payload));
 }
 
 /** Subscribe before listing so page changes during the snapshot are retained. */
@@ -68,13 +68,13 @@ export async function watchNativePages(binding: NativeHostBinding, listener: (pa
 export async function listenNativeActivation(listener: (page: NativePage) => void): Promise<() => void> {
   if (!hasNativeBrowser()) return () => {};
   if (!window.__TAURI__?.event) throw new Error('Native browser page events are unavailable.');
-  return window.__TAURI__.event.listen<NativePage>('deepcode:browser-activate', ({ payload }) => listener(payload));
+  return window.__TAURI__.event.listen<NativePage>('achbit:browser-activate', ({ payload }) => listener(payload));
 }
 export async function nativeHostBinding(): Promise<NativeHostBinding | undefined> {
   if (!hasNativeBrowser()) return undefined;
-  return window.__TAURI__!.core!.invoke!<NativeHostBinding>('deepcode_browser_host');
+  return window.__TAURI__!.core!.invoke!<NativeHostBinding>('achbit_browser_host');
 }
 export async function nativeBrowserCommand<T>(binding: NativeHostBinding, input: Record<string, unknown>): Promise<T> {
   if (!hasNativeBrowser()) throw new Error('native_browser_host_unavailable');
-  return window.__TAURI__!.core!.invoke!<T>('deepcode_browser_command', { binding, input });
+  return window.__TAURI__!.core!.invoke!<T>('achbit_browser_command', { binding, input });
 }

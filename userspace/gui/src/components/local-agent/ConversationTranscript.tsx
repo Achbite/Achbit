@@ -412,14 +412,18 @@ export function ConversationTranscript({
         const timing = timingsByRun.get(round.runId);
         const rows = round.rows.map((row) => ({
           key: row.key,
+          // Progress narratives and execution details share the run's process disclosure.
           process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
           required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
             || row.item?.type === 'interaction' && row.item.value.status === 'pending',
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
           content: () => row.item ? renderItem(row.item) : renderDraft(row.draft!),
         }));
+        if (showReasoning && projection) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false,
+          live: current && !displaySettled, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId}
+            activeTurnId={current ? assistantDraft?.turnId : undefined}
+            throughTimelineId={current ? projection.timeline.at(-1)?.timelineId : undefined} /> });
         if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
-        if (showReasoning && projection && displaySettled) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false, live: false, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId} /> });
         const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
         const hasFileChanges = changeActivities.some(activity => activity.tool?.fileChanges?.length);
         return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}

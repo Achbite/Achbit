@@ -13,16 +13,17 @@ import { planScopeAddition } from './planReview';
 import { foregroundApproval, foregroundPlan } from './composerDecisions';
 import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
+import { supportsNativeFileInput } from '../../services/modelFileInput';
 import { cloneComposerState, composerStateIsEmpty, emptyComposerState, submitComposerState, type ComposerState } from './composerSubmission';
 
 function readComposerDraft(key:string):ComposerState {
-  const saved=sessionStorage.getItem(`deepcode:composer:${key}`);
+  const saved=sessionStorage.getItem(`achbit:composer:${key}`);
   if(!saved)return emptyComposerState();
   try{return cloneComposerState(JSON.parse(saved) as ComposerState);}
   catch(error){console.error('Cannot read the saved composer draft.',error);return emptyComposerState();}
 }
 function saveComposerDraft(key:string,state:ComposerState):void {
-  try{sessionStorage.setItem(`deepcode:composer:${key}`,JSON.stringify(state));}
+  try{sessionStorage.setItem(`achbit:composer:${key}`,JSON.stringify(state));}
   catch(error){console.error('Cannot preserve the composer draft across a window reload.',error);}
 }
 
@@ -271,10 +272,7 @@ export function useAgentComposer(
     if (!textDecision && !editingMessage && !pendingApproval) {
       const command = parseComposerCommand(submittedText);
       if (command && !(command.name === 'focus' && command.argument)) {
-        const known = composerCommands.find(item => item.id === command.name);
-        if (!known || command.argument) {
-          setAttachmentError(t(language, 'agent.commands.invalid'));
-        } else await selectCommand(known.id);
+        await selectCommand(command.name);
         return;
       }
     }
@@ -329,9 +327,9 @@ export function useAgentComposer(
           await respondInteraction(submittedText, pendingInteraction.interactionId);
           return;
         }
-        const focusMatch = submittedText.match(/^\/focus(?:\s+)([\s\S]+)$/u);
-        if (focusMatch) {
-          await focusContext(focusMatch[1]!.trim(), submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
+        const command = parseComposerCommand(submittedText);
+        if (command?.name === 'focus' && command.argument) {
+          await focusContext(command.argument, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         } else {
           await sendMessage(submittedText, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         }
@@ -489,10 +487,8 @@ export function useAgentComposer(
       setCommandActiveIndex(0);
       return;
     }
-    // Clear this command in its original draft before /new switches views.
-    setComposerStateForKey(activeComposerStateKeyRef.current, {
-      ...currentComposerStateRef.current, draft: '', selectionStart: 0, selectionEnd: 0, focused: false,
-    });
+    const submittedKey = activeComposerStateKeyRef.current;
+    const submittedDraft = currentComposerStateRef.current.draft;
     setAttachmentMenuOpen(false); setPermissionMenuOpen(false); setPluginPickerOpen(false);
     try {
       switch (id) {
@@ -509,6 +505,12 @@ export function useAgentComposer(
         case 'plugins': openPluginPicker(); break;
         case 'agents': requestAgentOverview(sessionId!); break;
         case 'cancel': await cancelRun(); break;
+      }
+      // Clear only after success, in the original view, without erasing newer edits.
+      const current = activeComposerStateKeyRef.current === submittedKey
+        ? currentComposerStateRef.current : composerStatesRef.current.get(submittedKey);
+      if (current?.draft === submittedDraft) {
+        setComposerStateForKey(submittedKey, { ...current, draft: '', selectionStart: 0, selectionEnd: 0, focused: false });
       }
     } catch (reason) { setAttachmentError(reason instanceof Error ? reason.message : String(reason)); }
   };
@@ -596,7 +598,9 @@ export function useAgentComposer(
       if (pendingFilesystemPaths.length + pastedTexts.length + pastedImages.length + additions.length > 8) {
         throw new Error(t(language, 'agent.attachment.error.maxFiles'));
       }
-      if (additions.some(item => item.kind === 'file' && mediaTypeForPath(item.path) === 'application/pdf')) {
+      if (additions.some(item => item.kind === 'file' && mediaTypeForPath(item.path) === 'application/pdf')
+        && !supportsNativeFileInput('application/pdf', selectedProfile,
+          parseComposerCommand(draft)?.name === 'focus' ? null : projection?.run)) {
         const matches = pluginCatalog.plugins.filter((plugin) => (
           plugin.activationMediaTypes.includes('application/pdf')
         ));

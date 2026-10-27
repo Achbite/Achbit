@@ -14,7 +14,7 @@ import threading
 import urllib.parse
 import urllib.request
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
@@ -277,7 +277,7 @@ def run_storage_checks(root: Path, server, provider) -> None:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="dc-storage-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="ac-storage-") as temporary:
         root = Path(temporary)
         provider = fixture.ProviderState(root)
         with http.server.ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler) as server:

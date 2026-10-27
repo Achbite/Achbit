@@ -9,15 +9,15 @@
   overflow: auto;
   box-sizing: border-box;
   padding: 24px 28px;
-  border: 1px solid var(--dc-border, var(--line));
+  border: 1px solid var(--ac-border, var(--line));
   border-radius: 14px;
-  background: var(--dc-surface, var(--panel));
-  color: var(--dc-foreground, var(--text));
+  background: var(--ac-surface, var(--panel));
+  color: var(--ac-foreground, var(--text));
   font-size: 14px;
 }
 .host-startup-diagnostic h3 { margin: 0 0 12px; font-size: 16px; }
 .host-startup-diagnostic p { margin: 0 0 20px; overflow-wrap: anywhere; }
-.host-startup-diagnostic summary { display: flex; justify-content: space-between; cursor: pointer; padding: 12px 0; border-top: 1px solid var(--dc-border, var(--line)); }
-.host-startup-diagnostic pre { font-size: 12px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 8px; background: color-mix(in srgb, var(--dc-foreground) 8%, transparent); }
+.host-startup-diagnostic summary { display: flex; justify-content: space-between; cursor: pointer; padding: 12px 0; border-top: 1px solid var(--ac-border, var(--line)); }
+.host-startup-diagnostic pre { font-size: 12px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 8px; background: color-mix(in srgb, var(--ac-foreground) 8%, transparent); }
 .host-startup-diagnostic__log { display: grid; gap: 8px; margin-top: 16px; }
 .host-startup-diagnostic__log code { font-size: 12px; overflow-wrap: anywhere; }

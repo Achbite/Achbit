@@ -172,7 +172,7 @@ impl LocalAgentKernel {
         let id = random_id("debug-operation")?;
         let call_id = random_id("call")?;
         let attempt_id = random_id("attempt")?;
-        let record = json!({"schemaVersion":"deepcode.debug-operation.v1", "source":"debugOperation",
+        let record = json!({"schemaVersion":"achbit.debug-operation.v1", "source":"debugOperation",
             "operationId":id,"controlId":control_id,"callId":call_id,"attemptId":attempt_id,
             "toolName":tool,"input":input,"workspaceId":owner.workspace_id,"workspace":owner.workspace,
             "extensionGenerationRef":owner.generation.catalog.extension_generation_ref(),
@@ -1355,6 +1355,7 @@ mod tests {
                 Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
                 McpRuntime::default(),
                 LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+                &Default::default(),
                 false,
                 crate::local_agent_product_tools::test_product_tools(),
             )

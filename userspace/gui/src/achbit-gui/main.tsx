@@ -108,7 +108,7 @@ const isTauriShell =
   '__TAURI_INTERNALS__' in window ||
   '__TAURI__' in window;
 
-document.documentElement.dataset.product = 'deepcode-gui';
+document.documentElement.dataset.product = 'achbit-gui';
 document.documentElement.dataset.shell = isTauriShell ? 'tauri' : 'browser';
 
 installNativeContextMenuGuard();

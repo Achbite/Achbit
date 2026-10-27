@@ -1,4 +1,3 @@
-import { pendingProcessWait } from './processWait.js';
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
@@ -27,7 +26,6 @@ import type {
   SessionEvent,
   PreparedToolDescriptor,
   PreparedRunRuntime,
-  PluginUri,
   ToolExecutionReply,
   ToolExecutionRecord,
   ToolInputRejection,
@@ -46,7 +44,7 @@ import {
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
 } from '@achbit/protocol';
-import type { AgentComposition, SessionCapabilities } from './plugins.js';
+import type { AgentComposition, SessionCapabilities, RunActivity } from './plugins.js';
 import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
 import {
   pendingContextCompaction,
@@ -117,8 +115,7 @@ export interface AgentLoopDeps {
   capabilities?: SessionCapabilityManager;
   readSnapshot(): Promise<LoopSnapshot>;
   waitForChange?(revision: number, signal: AbortSignal, permissions?: SessionState['publishedPermissions']): Promise<void>;
-  syncProcesses?(): Promise<void>;
-  waitProcesses?(signal: AbortSignal, jobIds?: string[], timeoutSeconds?: number): Promise<void>;
+  activity?: RunActivity;
   agents?: {
     execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
     wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
@@ -369,15 +366,14 @@ export async function runAgentLoop(
       const waitingForTools = await dispatchPendingTools(deps, runId, signal);
       if (waitingForTools) return waitingForTools;
       snapshot = await deps.readSnapshot();
-      const processWait = pendingProcessWait(snapshot.events, runId);
-      if (processWait) await deps.waitProcesses?.(signal, processWait.jobIds, processWait.timeoutSeconds);
+      await deps.activity?.waitPending(snapshot, signal);
       snapshot = await deps.readSnapshot();
 
       throwIfAborted(signal);
       snapshot = await deps.takeQueuedInputs(runId);
       runtime = runRuntimeSnapshot(snapshot, runId);
       throwIfAborted(signal);
-      await deps.syncProcesses?.();
+      await deps.activity?.sync();
       snapshot = await deps.readSnapshot();
       try {
         await deps.composition.runPreparation.retireToolViews({
@@ -387,8 +383,7 @@ export async function runAgentLoop(
       } catch (error) {
         throw new ToolViewRetirementFailure(error);
       }
-      const processRevisions = new Map(Object.values(snapshot.state.processes)
-        .filter(job => job.runId === runId).map(job => [job.jobId, job.revision]));
+      deps.activity?.checkpoint(snapshot);
       const agentEvidenceRevision = latestAgentEvidenceSequence(snapshot.events, runId);
       const lease = acquireCapabilities(deps);
       let requestFailure: { error: unknown } | undefined;
@@ -521,12 +516,9 @@ export async function runAgentLoop(
           case 'pluginActivate': {
             let prepared: PreparedRunRuntime;
             try {
-              const uris = [...new Set([...runtime.selectedPlugins.plugins.map(plugin => plugin.uri), ...turn.pluginUris])];
-              prepared = await deps.composition.runPreparation.prepare({
-                sessionId: snapshot.state.sessionId, runId, profileId: runtime.provider.profileId,
-                environment: runtime.environment,
-                ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
-                pluginSelections: uris.map(uri => ({ selectionId: deps.nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) })),
+              prepared = await capabilities.controls.preparePlugins({
+                sessionId: snapshot.state.sessionId, runId, runtime, pluginUris: turn.pluginUris,
+                nextId: deps.nextId, preparation: deps.composition.runPreparation,
               });
             } catch (error) {
               await commit([
@@ -647,13 +639,12 @@ export async function runAgentLoop(
                 payload: { messageId, role: 'assistant', content: turn.content,
                   providerRequestId: turn.completion.providerRequestId } },
             ];
-            await deps.syncProcesses?.();
+            await deps.activity?.sync();
             snapshot = await deps.readSnapshot();
-            const jobs = Object.values(snapshot.state.processes).filter(job => job.runId === runId);
-            if (jobs.some(job => job.status === 'active' || job.revision !== processRevisions.get(job.jobId))) {
+            if (deps.activity?.needsContinuation(snapshot)) {
               await commit(answerFacts);
               await lease.release();
-              await deps.waitProcesses?.(signal);
+              await deps.activity?.wait(signal);
               continue nextTurn;
             }
             const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
@@ -1162,7 +1153,8 @@ async function consumeProviderOutput(
   onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
-  deps = { ...deps, updateAssistantDraft: activity.updateDraft };
+  deps = { ...deps, updateAssistantDraft: activity.updateDraft,
+    recordVisibleResponse: request.purpose === 'agent' ? deps.recordVisibleResponse : undefined };
   let deltas = '';
   let reasoningDeltas = '';
   let completeMessage: {
@@ -1775,11 +1767,17 @@ function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {
   publish();
   return {
     updateDraft(next) {
+      // Independent reviews and compaction report activity, never dialogue content.
+      if (request.purpose !== 'agent') return;
       draft = next ? { ...next, ...(draft.planPreview ? { planPreview: draft.planPreview } : {}) }
         : { runId: request.runId, turnId: request.requestId, blocks: [] };
       publish();
     },
-    updatePlanPreview(preview) { draft = { ...draft, planPreview: preview }; publish(); },
+    updatePlanPreview(preview) {
+      if (request.purpose !== 'agent') return;
+      draft = { ...draft, planPreview: preview };
+      publish();
+    },
     observe(event) {
       if (event.type === 'reasoning.delta' && event.data.text) {
         activity.phase = 'reasoning';
@@ -1850,7 +1848,7 @@ function decodeProviderOutputBlock(
         );
       }
       if (!canonicalName) {
-        const message = `Tool ${wireName} is not available in this request. Use the currently declared tools; discover and activate a plugin in this run before calling its tools.`;
+        const message = `Tool ${wireName} is not available in this request. Use the tools declared for this request.`;
         return {
           outputIndex: output.outputIndex,
           kind: 'toolCallRejected',
@@ -2431,11 +2429,7 @@ async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: 
       const waiting = await executeToolSegment(deps, segment, dependencies, signal);
       if (waiting) return waiting;
       snapshot = await deps.readSnapshot();
-      const job = Object.values(snapshot.state.processes).find(job => job.callId === first.callId && job.status === 'active');
-      const completed = snapshot.events.findLast(event => event.type === 'tool.completed' && event.callId === first.callId);
-      const result = completed?.type === 'tool.completed' && 'output' in completed.payload.record ? completed.payload.record.output as {job?: {status?: string}} | null : null;
-      const explicitWait = first.payload.toolName === 'process' && first.payload.input.action === 'wait' && result?.job?.status === 'active';
-      if (job && first.payload.toolName !== 'process' || explicitWait && pendingProcessWait(snapshot.events, runId)) {
+      if (deps.activity?.blocksFollowingCalls(snapshot, first)) {
         // A yielded execution is not successful completion of a sequential barrier.
         // Pair the remaining calls with honest non-execution receipts before review.
         for (const later of pending.slice(end)) await deps.commit({type: 'tool.not-executed',
@@ -2928,7 +2922,7 @@ function runRuntimeSnapshot(snapshot: LoopSnapshot, runId: string): RunRuntimeSn
     view.environment = { ...view.environment, hostBinding: { ...snapshot.state.run.hostBinding } };
   }
   const permissions = snapshot.state.publishedPermissions ?? permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
-  return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'deepcode.workspace-autonomy'
+  return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'achbit.workspace-autonomy'
     ? { ...instruction, text: permissionInstructionText(permissions,
       view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_INTERACTION_REQUEST)?.wireName,
       view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_PLAN_PUBLISH)?.wireName) } : instruction) };

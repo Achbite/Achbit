@@ -5,10 +5,10 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: var(--dc-background);
-  color: var(--dc-foreground);
+  background: var(--ac-background);
+  color: var(--ac-foreground);
   font-family: var(
-    --dc-font-ui,
+    --ac-font-ui,
     -apple-system,
     BlinkMacSystemFont,
     "PingFang SC",
@@ -42,15 +42,15 @@ button, select, summary, [role='button'] {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--dc-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--ac-accent) 22%, transparent);
   color: inherit;
 }
 
 /* Native selection still owns copy and keyboard navigation; reading highlights
    paint text fragments without WebKit's block-wide selection bands. */
 html[data-reading-selection] ::selection { background: transparent; }
-::highlight(deepcode-reading-selection) {
-  background: color-mix(in srgb, var(--dc-accent) 22%, transparent);
+::highlight(achbit-reading-selection) {
+  background: color-mix(in srgb, var(--ac-accent) 22%, transparent);
   color: inherit;
 }
 
@@ -62,8 +62,8 @@ textarea {
 }
 
 /* Shared, quiet feedback; component-specific disclosure and visibility transitions stay local. */
-:where(:root[data-product='deepcode-gui']) :where(button, [role='button'], [role='tab'], summary, select) {
-  transition: background-color var(--dc-motion-feedback) ease, color var(--dc-motion-feedback) ease, border-color var(--dc-motion-feedback) ease;
+:where(:root[data-product='achbit-gui']) :where(button, [role='button'], [role='tab'], summary, select) {
+  transition: background-color var(--ac-motion-feedback) ease, color var(--ac-motion-feedback) ease, border-color var(--ac-motion-feedback) ease;
 }
 
 [data-ui-icon] {
@@ -74,7 +74,7 @@ textarea {
 /* Move the glyph only: labels, hit targets and neighboring controls stay still. */
 @media (prefers-reduced-motion: no-preference) {
   button > [data-ui-icon]:not([data-ui-icon='spinner']) {
-    transition: transform 100ms var(--dc-ease-out);
+    transition: transform 100ms var(--ac-ease-out);
   }
   button:active:not(:disabled):not([aria-disabled='true']) > [data-ui-icon]:not([data-ui-icon='spinner']) {
     transform: scale(.94);
@@ -87,26 +87,26 @@ textarea {
   .local-agent__path-menu, .achbit-session-model__menu,
   .achbit-session-model__context-popover) {
   transform-origin: center bottom;
-  animation: dc-surface-enter var(--dc-motion-reveal) var(--dc-ease-out);
+  animation: ac-surface-enter var(--ac-motion-reveal) var(--ac-ease-out);
 }
 
 :is(.local-agent__tool-group-items, .local-agent__tool-entry-details,
   .local-agent__approval-record-body, .conversation-reasoning-body) {
-  animation: dc-content-reveal var(--dc-motion-reveal) var(--dc-ease-out);
+  animation: ac-content-reveal var(--ac-motion-reveal) var(--ac-ease-out);
 }
 
-@keyframes dc-surface-enter {
+@keyframes ac-surface-enter {
   from { opacity: 0; transform: translateY(4px) scale(.99); }
   to { opacity: 1; transform: none; }
 }
 
-@keyframes dc-content-reveal {
+@keyframes ac-content-reveal {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-product='deepcode-gui'] :is(button, [role='button'], [role='tab'], summary, select) {
+  :root[data-product='achbit-gui'] :is(button, [role='button'], [role='tab'], summary, select) {
     transition: none;
   }
 }
@@ -118,8 +118,8 @@ textarea {
   height: 100%;
   place-items: center;
   padding: 24px;
-  background: var(--dc-background);
-  color: var(--dc-foreground);
+  background: var(--ac-background);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-boot-shell {
@@ -128,78 +128,78 @@ textarea {
 }
 
 .achbit-gui-boot-shell__title {
-  font-size: calc(18px * var(--dc-ui-font-scale, 1));
+  font-size: calc(18px * var(--ac-ui-font-scale, 1));
   font-weight: 700;
 }
 
 .achbit-gui-boot-shell__body {
-  color: var(--dc-muted);
-  font-size: calc(13px * var(--dc-ui-font-scale, 1));
+  color: var(--ac-muted);
+  font-size: calc(13px * var(--ac-ui-font-scale, 1));
 }
 
 .achbit-gui-bootstrap-error__card {
   width: min(720px, 100%);
   padding: 18px 20px;
-  border: 1px solid var(--dc-border);
+  border: 1px solid var(--ac-border);
   border-radius: 14px;
-  background: var(--dc-surface);
-  box-shadow: var(--dc-shadow-panel);
+  background: var(--ac-surface);
+  box-shadow: var(--ac-shadow-panel);
 }
 
 .achbit-gui-bootstrap-error__card h1 {
   margin: 0;
-  font-size: calc(15px * var(--dc-ui-font-scale, 1));
+  font-size: calc(15px * var(--ac-ui-font-scale, 1));
 }
 
 .achbit-gui-bootstrap-error__card p {
   margin: 8px 0 0;
-  color: var(--dc-muted);
-  font-size: calc(12px * var(--dc-ui-font-scale, 1));
+  color: var(--ac-muted);
+  font-size: calc(12px * var(--ac-ui-font-scale, 1));
 }
 
 .achbit-gui-bootstrap-error__card pre {
   max-height: 360px;
   margin: 14px 0 0;
   overflow: auto;
-  color: var(--dc-muted);
-  font: calc(12px * var(--dc-ui-font-scale, 1))/1.5 var(--dc-font-mono, ui-monospace, monospace);
+  color: var(--ac-muted);
+  font: calc(12px * var(--ac-ui-font-scale, 1))/1.5 var(--ac-font-mono, ui-monospace, monospace);
   white-space: pre-wrap;
 }
 
 /* Native dialogs are portalled to body and share the same applied theme as the workbench. */
-:root[data-product='deepcode-gui'] {
-  --bg-app: var(--dc-background);
-  --bg-sidebar: var(--dc-sidebar);
-  --bg-panel: var(--dc-surface);
-  --bg-surface: var(--dc-surface-subtle);
-  --bg-surface-raised: var(--dc-surface-raised);
-  --surface: var(--dc-surface);
-  --surface-muted: var(--dc-surface-subtle);
-  --surface-raised: var(--dc-surface-raised);
-  --text: var(--dc-foreground);
-  --text-main: var(--dc-foreground);
-  --text-strong: var(--dc-foreground-strong);
-  --text-secondary: var(--dc-muted);
-  --text-muted: var(--dc-muted);
-  --text-faint: var(--dc-faint);
-  --border: var(--dc-border);
-  --line: var(--dc-border);
-  --line-strong: var(--dc-border-strong);
-  --accent: var(--dc-accent);
-  --accent-soft: var(--dc-accent-soft);
-  --radius-md: var(--dc-radius-control);
-  --shadow-sm: var(--dc-shadow-small);
+:root[data-product='achbit-gui'] {
+  --bg-app: var(--ac-background);
+  --bg-sidebar: var(--ac-sidebar);
+  --bg-panel: var(--ac-surface);
+  --bg-surface: var(--ac-surface-subtle);
+  --bg-surface-raised: var(--ac-surface-raised);
+  --surface: var(--ac-surface);
+  --surface-muted: var(--ac-surface-subtle);
+  --surface-raised: var(--ac-surface-raised);
+  --text: var(--ac-foreground);
+  --text-main: var(--ac-foreground);
+  --text-strong: var(--ac-foreground-strong);
+  --text-secondary: var(--ac-muted);
+  --text-muted: var(--ac-muted);
+  --text-faint: var(--ac-faint);
+  --border: var(--ac-border);
+  --line: var(--ac-border);
+  --line-strong: var(--ac-border-strong);
+  --accent: var(--ac-accent);
+  --accent-soft: var(--ac-accent-soft);
+  --radius-md: var(--ac-radius-control);
+  --shadow-sm: var(--ac-shadow-small);
 }
 
 .achbit-gui-titlebar .local-agent__header {
   display: grid; height: 100%; padding: 0; gap: 0;
-  grid-template-columns: minmax(0, 1fr) var(--dc-header-context-width, var(--dc-context-width));
+  grid-template-columns: minmax(0, 1fr) var(--ac-header-context-width, var(--ac-context-width));
   background: transparent;
 }
 .achbit-gui-titlebar .local-agent__header-conversation { padding: 0 8px 0 16px; gap: 8px; }
 .achbit-gui-titlebar .local-agent__header-preview { padding: 0 10px 0 8px; gap: 6px; }
 .achbit-gui-titlebar .local-agent__heading-mark { display: none; }
-.achbit-gui-titlebar .local-agent__heading strong { font-size: calc(14px * var(--dc-ui-font-scale, 1)); font-weight: var(--dc-weight-semibold); }
+.achbit-gui-titlebar .local-agent__heading strong { font-size: calc(14px * var(--ac-ui-font-scale, 1)); font-weight: var(--ac-weight-semibold); }
 .achbit-gui-titlebar .local-agent__run-label { flex: none; padding-inline: 4px; }
 .achbit-gui-titlebar .local-agent__header-actions { flex: none; gap: 4px; }
 .achbit-gui-titlebar .window-controls { margin-left: 0; padding-right: 8px; }
@@ -208,9 +208,9 @@ textarea {
 }
 .achbit-gui-titlebar .local-agent__header--reading .local-agent__header-preview { grid-column: 3; }
 .achbit-gui-titlebar .reader-tabs { min-height: 30px; padding: 0; background: transparent; }
-.achbit-gui-titlebar .reader-tab button { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 6px; border: 0; background: transparent; color: inherit; font: inherit; font-size: calc(12px * var(--dc-ui-font-scale, 1)); cursor: pointer; }
-.achbit-gui-titlebar .reader-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; padding: 5px; border: 0; border-radius: 6px; color: var(--dc-muted); background: transparent; cursor: pointer; }
-.achbit-gui-titlebar .reader-icon-button:is(:hover,[aria-pressed=true]) { color: var(--dc-accent); background: var(--dc-surface-hover); }
+.achbit-gui-titlebar .reader-tab button { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 6px; border: 0; background: transparent; color: inherit; font: inherit; font-size: calc(12px * var(--ac-ui-font-scale, 1)); cursor: pointer; }
+.achbit-gui-titlebar .reader-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; padding: 5px; border: 0; border-radius: 6px; color: var(--ac-muted); background: transparent; cursor: pointer; }
+.achbit-gui-titlebar .reader-icon-button:is(:hover,[aria-pressed=true]) { color: var(--ac-accent); background: var(--ac-surface-hover); }
 .achbit-gui-titlebar .reader-icon-button svg { width: 17px; height: 17px; }
 .achbit-gui-titlebar .local-agent__header--expanded { grid-template-columns: minmax(0, 1fr); }
 .achbit-gui-titlebar .local-agent__header--expanded .local-agent__header-conversation { display: none; }
@@ -219,7 +219,7 @@ textarea {
 @media (max-width: 620px) {
   .achbit-gui-titlebar .local-agent__header--reading { grid-template-columns:minmax(0,1fr); }
   .achbit-gui-titlebar .local-agent__header--reading .local-agent__header-conversation { display:none; }
-  .achbit-gui-titlebar .local-agent__header--reading .local-agent__header-preview { grid-column:1; padding-left:var(--dc-navigation-leading); }
+  .achbit-gui-titlebar .local-agent__header--reading .local-agent__header-preview { grid-column:1; padding-left:var(--ac-navigation-leading); }
 }
 
 .achbit-gui-brand {
@@ -232,9 +232,9 @@ textarea {
 }
 
 .achbit-gui-brand {
-  color: var(--dc-foreground-strong);
-  font-size: var(--dc-font-body);
-  font-weight: var(--dc-weight-semibold);
+  color: var(--ac-foreground-strong);
+  font-size: var(--ac-font-body);
+  font-weight: var(--ac-weight-semibold);
 }
 
 .achbit-gui-brand__mark {
@@ -243,11 +243,11 @@ textarea {
   height: 21px;
   flex: 0 0 21px;
   place-items: center;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--ac-border-strong);
   border-radius: 6px;
-  background: var(--dc-surface-raised);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-bold);
+  background: var(--ac-surface-raised);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-bold);
 }
 
 .achbit-gui-brand__mark svg { width: 17px; height: 17px; display: block; }

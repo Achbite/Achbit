@@ -5,7 +5,7 @@ export interface LocalTarget extends SourcePosition { path: string; absolute: bo
 
 export function parseLocalTarget(href: string, allowRelative = true): LocalTarget | null {
   let path = href;
-  if (/^(file|deepcode-gui):\/\//i.test(href)) {
+  if (/^(file|achbit-gui):\/\//i.test(href)) {
     try {
       const url = new URL(href);
       if (url.hostname && url.hostname !== 'localhost') return null;

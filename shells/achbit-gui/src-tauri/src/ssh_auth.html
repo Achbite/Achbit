@@ -1,6 +1,6 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DeepCode · SSH</title><style>
+<title>Achbit · SSH</title><style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px}
 body{margin:0;padding:24px;background:Canvas;color:CanvasText}h1{font-size:18px;margin:0 0 8px;font-weight:600}
 #endpoint{opacity:.7;overflow-wrap:anywhere}pre{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto;margin:20px 0}
@@ -16,7 +16,7 @@ button[type=submit]{background:#2677e8;color:white;border-color:transparent}smal
 <script>
 (async()=>{
  const invoke=window.__TAURI__.core.invoke;
- const {context,labels}=await invoke('deepcode_ssh_auth_context');
+ const {context,labels}=await invoke('achbit_ssh_auth_context');
  const text=labels[navigator.language.toLowerCase().startsWith('zh')?'zh':'en'];
  const el=id=>document.getElementById(id);
  el('title').textContent=text[context.confirm?'confirmTitle':'title'];
@@ -29,7 +29,7 @@ button[type=submit]{background:#2677e8;color:white;border-color:transparent}smal
  if(!context.confirm)el('secret').focus();
  const respond=async reply=>{
    el('submit').disabled=true;el('cancel').disabled=true;
-   try{await invoke('deepcode_ssh_auth_respond',{id:context.id,reply});el('secret').value='';}
+   try{await invoke('achbit_ssh_auth_respond',{id:context.id,reply});el('secret').value='';}
    catch(error){el('error').textContent=String(error);el('submit').disabled=false;el('cancel').disabled=false;}
  };
  el('form').onsubmit=event=>{event.preventDefault();void respond({value:context.confirm?'yes':el('secret').value,save:context.canSave&&el('save').checked});};

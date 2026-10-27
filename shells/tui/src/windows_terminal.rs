@@ -23,7 +23,7 @@ use windows_sys::Win32::{
     },
 };
 
-const WINDOW_ENV: &str = "DEEPCODE_TUI_OWNED_CONSOLE";
+const WINDOW_ENV: &str = "ACHBIT_TUI_OWNED_CONSOLE";
 static LOADED_FONTS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 fn wide(value: &OsStr) -> Vec<u16> {
@@ -62,7 +62,7 @@ pub fn launch(arguments: &[String]) -> io::Result<ExitStatus> {
     let mut entries: Vec<_> = std::env::vars_os()
         .filter(|(name, _)| {
             !name.eq_ignore_ascii_case(OsStr::new(WINDOW_ENV))
-                && !name.eq_ignore_ascii_case(OsStr::new("DEEPCODE_TUI_READY_FILE"))
+                && !name.eq_ignore_ascii_case(OsStr::new("ACHBIT_TUI_READY_FILE"))
         })
         .chain([(WINDOW_ENV.into(), "1".into())])
         .collect();
@@ -243,12 +243,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    #[ignore = "requires an interactive Windows desktop, DEEPCODE_TEST_TUI_FONTS and a new DEEPCODE_TEST_TUI_RESULT path"]
+    #[ignore = "requires an interactive Windows desktop, ACHBIT_TEST_TUI_FONTS and a new ACHBIT_TEST_TUI_RESULT path"]
     fn dedicated_console_applies_bundled_fonts_and_releases_them() {
         let fonts =
-            PathBuf::from(std::env::var_os("DEEPCODE_TEST_TUI_FONTS").expect("built TUI fonts"));
+            PathBuf::from(std::env::var_os("ACHBIT_TEST_TUI_FONTS").expect("built TUI fonts"));
         let receipt = PathBuf::from(
-            std::env::var_os("DEEPCODE_TEST_TUI_RESULT").expect("new test receipt path"),
+            std::env::var_os("ACHBIT_TEST_TUI_RESULT").expect("new test receipt path"),
         );
         if std::env::var_os(WINDOW_ENV).is_none() {
             assert!(

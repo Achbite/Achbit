@@ -14,7 +14,7 @@ import '../../src/theme/paletteBase.css';
 
 installPaletteDefaults();
 const style = document.createElement('style');
-style.textContent = `*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}body{display:grid;grid-template-rows:60px minmax(0,1fr)}body>header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 24px;border-bottom:1px solid var(--dc-border);font-size:13px}main{position:relative;min-height:0}#usage{position:absolute;inset:0;pointer-events:none}#reader{position:absolute;inset:0 0 0 45%;padding:24px;background:var(--dc-surface-subtle);border-left:1px solid var(--dc-border)}main[data-reading] #usage{right:55%}`;
+style.textContent = `*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:var(--ac-font-ui);color:var(--ac-foreground);background:var(--ac-surface)}body{display:grid;grid-template-rows:60px minmax(0,1fr)}body>header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 24px;border-bottom:1px solid var(--ac-border);font-size:13px}main{position:relative;min-height:0}#usage{position:absolute;inset:0;pointer-events:none}#reader{position:absolute;inset:0 0 0 45%;padding:24px;background:var(--ac-surface-subtle);border-left:1px solid var(--ac-border)}main[data-reading] #usage{right:55%}`;
 document.head.append(style);
 // The browser driver uses HTMLElement.click(), which emits no pointer events.
 // Explicitly exercise the real outside pointerdown path on the blank DOM node.

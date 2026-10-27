@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
@@ -28,7 +28,7 @@ GENERATION_ONE = "SKILL_GENERATION_ONE"
 GENERATION_TWO = "SKILL_GENERATION_TWO"
 ATTACHMENT_CONTENT = "LOCAL_ATTACHMENT_CONTENT_MUST_NOT_REACH_PROVIDER"
 LONG_INPUT = "  原始任务约束与资料🙂\n" * 4000
-PDF_CONTENT = "DEEPCODE_FIRST_PARTY_PDF_BINDING_OK"
+PDF_CONTENT = "ACHBIT_FIRST_PARTY_PDF_BINDING_OK"
 REQUIRED_CORE_TOOLS = {"fs.read", "web.search", "web.fetch"}
 FIRST_PARTY_TOOL_OWNERS = {
     "github.search": "plugin://github@first-party",
@@ -56,6 +56,7 @@ class ProviderState:
         self._new_wire_name: str | None = None
         self._daemon: fixture.OwnedDaemon | None = None
         self._session_id: str | None = None
+        self.skill_path: Path | None = None
         self._consumed_receipts: set[str] = set()
         self._last_receipt_sequence = 0
         self.first_request_started = threading.Event()
@@ -82,6 +83,10 @@ class ProviderState:
             for message in messages
             if isinstance(message, dict)
         )
+        system_text = "\n".join(fixture.message_text(message.get("content"))
+                                for message in messages if message.get("role") == "system")
+        fixture.require(GENERATION_ONE not in system_text and GENERATION_TWO not in system_text,
+                        "Skill 正文被自动注入系统上下文，应通过读取工具按需加载")
         mcp_server_id = "fixture-old" if ordinal <= 2 else "fixture-new"
         reverse_tool = tools_by_name.get(f"mcp.{mcp_server_id}.text.reverse")
         fixture.require(isinstance(reverse_tool, dict),
@@ -109,7 +114,7 @@ class ProviderState:
         }
 
         if ordinal == 1:
-            fixture.require(GENERATION_ONE in joined, "第一轮首个请求未加载旧 Skill generation")
+            fixture.require(GENERATION_ONE not in joined, "未读取的 Skill 正文提前进入首个请求")
             fixture.require(GENERATION_TWO not in joined, "第一轮首个请求提前加载新 Skill generation")
             attachment_messages = [
                 fixture.message_text(message.get("content")) for message in messages
@@ -135,7 +140,7 @@ class ProviderState:
             self.first_request_started.set()
         elif ordinal == 2:
             fixture.require(GENERATION_ONE not in joined, "下一请求仍使用旧 Skill 内容")
-            fixture.require(GENERATION_TWO in joined, "已绑定 Skill 的源码更新没有在下一请求加载")
+            fixture.require(GENERATION_TWO in results.get("provider-call-skill-one", ""), "按需读取没有取得已更新 Skill 正文")
             fixture.require(wire_name == self.old_wire_name(), "nextRun MCP 配置提前影响了当前 run")
             settings = fixture.api_json(self._daemon.base_url, "/api/user-settings", token=self._daemon.token)
             fixture.require(settings["runtimeSettings"]["agent.permissions.networkRead"] == "allow", "内容刷新激活了 nextRun 权限")
@@ -162,13 +167,13 @@ class ProviderState:
         elif ordinal == 3:
             fixture.require(LONG_INPUT not in joined, "长文本仍被整篇内联到 Provider 请求")
             fixture.require('"path":"user-input.txt"' in joined, "长文本资源引用未进入当前输入")
-            fixture.require(GENERATION_TWO in joined, "下一 run 未加载新 Skill generation")
+            fixture.require(GENERATION_TWO in joined, "下一 run 丢失上一轮 Skill 读取结果")
             fixture.require(GENERATION_ONE not in joined, "下一 run 仍暴露旧 Skill generation")
             fixture.require(wire_name != self.old_wire_name(), "下一 run 未取得新的 MCP wire tool")
             with self._lock:
                 self._new_wire_name = wire_name
         elif ordinal == 4:
-            fixture.require(GENERATION_TWO in joined, "第二轮 continuation 丢失新 Skill snapshot")
+            fixture.require(GENERATION_TWO in results.get("provider-call-skill-two", ""), "第二轮显式读取未返回当前 Skill 正文")
             fixture.require(GENERATION_ONE not in joined, "第二轮 continuation 混入旧 Skill snapshot")
             fixture.require(wire_name == self.new_wire_name(), "第二轮 continuation 的 MCP 目录漂移")
             fixture.require(
@@ -341,6 +346,9 @@ class MockProviderHandler(fixture.MockProviderHandler):
                     ("provider-call-fetch-one", wire_names["fetch"], {
                         "url": f"http://127.0.0.1:{self.server.server_port}/fixture-resource",
                     }),
+                    ("provider-call-skill-one", wire_names["read"], {
+                        "workspace": "primary", "path": str(self.provider_state.skill_path),
+                    }),
                 ])
             elif ordinal == 2:
                 self._send_text("round-one-complete")
@@ -353,6 +361,9 @@ class MockProviderHandler(fixture.MockProviderHandler):
                     }),
                     ("provider-call-fetch-two", wire_names["fetch"], {
                         "url": f"http://127.0.0.1:{self.server.server_port}/fixture-resource",
+                    }),
+                    ("provider-call-skill-two", wire_names["read"], {
+                        "workspace": "primary", "path": str(self.provider_state.skill_path),
                     }),
                 ])
             elif ordinal == 4:
@@ -610,8 +621,8 @@ def assert_projection_flow(value: dict[str, Any]) -> None:
         if activity.get("kind") == "tool" and activity.get("status") == "completed"
     ]
     fixture.require(
-        len(completed_tools) == 8,
-        "两轮惰性文件读取/MCP/PDF/web 调用未形成八个 completed activity",
+        len(completed_tools) == 10,
+        "两轮附件/Skill 读取/MCP/PDF/web 调用未形成十个 completed activity",
     )
 
     usage = value.get("tokenUsage") or {}
@@ -675,7 +686,7 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
             "WHERE session_id=? ORDER BY completed_at, call_id",
             (session_id,),
         ).fetchall()
-    fixture.require(len(record_rows) == 8, "两轮链路没有八个文件读取/MCP/PDF/web ToolRecord")
+    fixture.require(len(record_rows) == 10, "两轮链路没有十个附件/Skill 读取/MCP/PDF/web ToolRecord")
     records_by_run: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for run_id, call_id, encoded in record_rows:
         records_by_run.setdefault(run_id, []).append((call_id, json.loads(encoded)))
@@ -756,7 +767,7 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
             "MCP prepared tool 缺少精确 pluginUri",
         )
         run_records = records_by_run.get(run_id, [])
-        expected_record_count = 5 if run_index == 0 else 3
+        expected_record_count = 6 if run_index == 0 else 4
         fixture.require(
             len(run_records) == expected_record_count,
             f"当前 run 没有精确 {expected_record_count} 个 ToolRecord",
@@ -807,13 +818,20 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
         fixture.require("web-fetch-ok" in json.dumps(
             web_records["web.fetch"].get("output"), ensure_ascii=False,
         ), "web.fetch 没有真实获取 HTTP 内容")
+        skill_records = [record for _, record in run_records
+                         if record.get("toolName") == "fs.read"
+                         and record.get("input", {}).get("path") == str(provider.skill_path)]
+        fixture.require(len(skill_records) == 1 and skill_records[0].get("outcome") == "completed",
+                        "当前 run 必须恰好完成一次真实 Skill 文件读取")
+        fixture.require(GENERATION_TWO in json.dumps(skill_records[0].get("output")),
+                        "Skill ToolRecord 未保存实际更新后的正文")
         if run_index == 0:
-            fixture.require(
-                ATTACHMENT_CONTENT in json.dumps(
-                    web_records["fs.read"].get("output"), ensure_ascii=False,
-                ),
-                "fs.read 没有从 Host 文件快照返回真实内容",
-            )
+            attachment_records = [record for _, record in run_records
+                                  if record.get("toolName") == "fs.read"
+                                  and record.get("input", {}).get("path") == "e2e-note.txt"]
+            fixture.require(len(attachment_records) == 1 and ATTACHMENT_CONTENT in json.dumps(
+                attachment_records[0].get("output"), ensure_ascii=False),
+                "fs.read 没有从 Host 文件快照唯一返回附件原文")
 
         event_types = [event_type for event_type, _, _ in lifecycle]
         fixture.require("run.runtime.release_failed" not in event_types, "run runtime release 失败")
@@ -843,9 +861,9 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
             if event_type == "tool.completed"
         ]
         expected_completed_order = (
-            ["fs.read", tool.get("name"), "pdf.read", "web.search", "web.fetch"]
+            ["fs.read", tool.get("name"), "pdf.read", "web.search", "web.fetch", "fs.read"]
             if run_index == 0
-            else [tool.get("name"), "web.search", "web.fetch"]
+            else [tool.get("name"), "web.search", "web.fetch", "fs.read"]
         )
         fixture.require(completed_order == expected_completed_order, "同一 Provider turn 的工具没有严格按请求顺序完成")
         for receipt in receipts:
@@ -940,9 +958,9 @@ def assert_shells_read_projection(
     # Ordinary launchers supply the config root, not process-private credentials.
     # Both shells must discover and authenticate the exact existing Host.
     discovered_environment = os.environ.copy()
-    for key in ("DEEPCODE_API_URL", "DEEPCODE_PORT", "DEEPCODE_HOST_SHELL_TOKEN", "DEEPCODE_HOST_INSTANCE_ID"):
+    for key in ("ACHBIT_API_URL", "ACHBIT_PORT", "ACHBIT_HOST_SHELL_TOKEN", "ACHBIT_HOST_INSTANCE_ID"):
         discovered_environment.pop(key, None)
-    discovered_environment["DEEPCODE_USER_ROOT"] = str(daemon.config_root)
+    discovered_environment["ACHBIT_USER_ROOT"] = str(daemon.config_root)
     for binary, action in ((fixture.TUI_BINARY, "--smoke"), (fixture.CLI_BINARY, "show")):
         attached = subprocess.run(
             [str(binary), "--no-auto-start-kernel", "--session", session_id, action],
@@ -977,7 +995,7 @@ def main() -> None:
     cli_ask: subprocess.Popen[str] | None = None
     with ExitStack() as storage:
         try:
-            temporary = storage.enter_context(tempfile.TemporaryDirectory(prefix="deepcode-basic-loop-e2e-"))
+            temporary = storage.enter_context(tempfile.TemporaryDirectory(prefix="achbit-basic-loop-e2e-"))
             root = Path(temporary)
             config_root = root / "config-root"
             workspace_root = root / "workspace"
@@ -1024,6 +1042,7 @@ def main() -> None:
             created = fixture.create_session(daemon_one, workspace_root)
             session_id = created["sessionId"]
             provider.bind_session(daemon_one, session_id)
+            provider.skill_path = skill_file
             creation_bindings = created.get("workspaceBindings")
             fixture.require(
                 isinstance(creation_bindings, list) and len(creation_bindings) == 1,

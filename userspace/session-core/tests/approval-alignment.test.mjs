@@ -30,7 +30,7 @@ for (const changedTarget of [false, true]) test(`approved operation requires exp
     }
     const invalidated = request.nonWorkspaceAuthority && changedTarget;
     if (invalidated) revalidated = true;
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
       callId: request.callId, status: 'approvalRequired', preview: { summary: 'Check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: 'agent', authorizationContext: { command: 'printf checked', target: revalidated ? 'replacement' : 'original' },
         reviewPolicy: { subject: 'shell', mode: 'review', reviewGrant: 'thisCallOnly' },

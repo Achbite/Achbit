@@ -39,7 +39,7 @@ pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Js
 
 fn setting_activates_at_next_run(key: &str) -> bool {
     // These are defaults read once when Session creates a new conversation.
-    if key.starts_with("agent.subagents.") {
+    if key == "plugins.services" || key.starts_with("agent.subagents.") {
         return false;
     }
     key.starts_with("skills.")
@@ -101,6 +101,11 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
         Ok(transition) => transition,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
     };
+    apply_user_settings_patch_locked(&state, body)
+}
+
+/// Caller owns the runtime transition across artifact installation and settings publication.
+pub(crate) fn apply_user_settings_patch_locked(state: &AppState, body: Value) -> Json<ApiResponse> {
     let patches = body.get("patches").cloned().unwrap_or_else(|| json!({}));
     let Some(patch_object) = patches.as_object() else {
         return ApiResponse::error("invalid_user_settings", "设置补丁必须是 JSON 对象。");
@@ -114,6 +119,14 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
     if let Err(message) = validate_agent_runtime_settings(&next_settings) {
         return ApiResponse::error("invalid_agent_runtime_settings", message);
     }
+    let service_sources = if patch_object.contains_key("plugins.services") {
+        match crate::service_plugins::sources(&next_settings) {
+            Ok(sources) => Some(sources),
+            Err(error) => return ApiResponse::error("invalid_service_plugins", error),
+        }
+    } else {
+        None
+    };
     if next_settings["agent.subagents.enabled"].as_bool() == Some(true)
         && [
             "agent.subagents.enabled",
@@ -164,6 +177,11 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
                 )
             }
         };
+        if let Some(sources) = &service_sources {
+            if let Err(error) = gui.service_plugins.prepare(sources) {
+                return ApiResponse::error("service_plugin_stop_failed", error);
+            }
+        }
         if let Err(error) = state
             .local_agent
             .publish_runtime_settings(&immediate_patch, || {
@@ -173,6 +191,10 @@ fn apply_user_settings_patch(state: AppState, body: Value) -> Json<ApiResponse> 
             return ApiResponse::error("write_settings_failed", error);
         }
         gui.user_settings = next_settings.clone();
+        if let Some(sources) = &service_sources {
+            let data = gui.paths.directories.data_dir.clone();
+            gui.service_plugins.activate(sources, &data);
+        }
     }
     ApiResponse::ok(json!({
         "settings": next_settings,
@@ -330,12 +352,12 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.web.search.endpointTemplate": "",
         "agent.web.search.authHeaderName": "Authorization",
         "agent.web.search.authSecretRef": "",
-        "agent.documents.pythonPath": "",
         "skills.autoLoad": true,
         "skills.mounts": "[]",
         "mcp.autoLoad": false,
         "mcp.servers": "[]",
         "plugins.sources": "[]",
+        "plugins.services": "[]",
         "plugins.disabled": "[]",
         "gui.colorTheme": "light",
         "gui.accentColor": "blue",
@@ -432,12 +454,6 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
     }
     crate::local_agent_kernel::LocalAgentPermissionPolicy::from_settings(settings)
         .map_err(|error| error.message)?;
-    if settings
-        .get("agent.documents.pythonPath")
-        .is_some_and(|value| !value.is_string())
-    {
-        return Err("agent.documents.pythonPath 必须是字符串。".into());
-    }
     crate::session_environment::response_language_setting(settings)?;
     crate::session_environment::validate_settings(settings)?;
     if let Some(object) = settings.as_object() {

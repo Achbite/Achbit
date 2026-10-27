@@ -281,7 +281,7 @@ mod tests {
         }
         for command in [
             "rm -rf build",
-            "rm -rf /tmp/deepcode-owned",
+            "rm -rf /tmp/achbit-owned",
             "rm -rf /System",
             "echo 'rm -rf /'",
             "printf '%s' 'before; rm -rf /'",

@@ -96,9 +96,25 @@ pub(crate) async fn readiness(State(host): State<HostState>) -> Json<ApiResponse
         "kernel": kernel, "session": session,
         "runtimeError": error.as_ref().map(|error| json!({"code": error.code, "message": error.message})),
         "buildCommit": crate::kernel_api::build_commit(),
-        "protocolVersion": "deepcode.local-agent",
+        "protocolVersion": "achbit.local-agent",
     });
     ApiResponse::ok(data)
+}
+
+/// The connected Host owns these paths; callers must not infer them from HOME.
+pub(crate) async fn instance(ReadyState(state): ReadyState) -> Json<ApiResponse> {
+    let gui = state.gui.lock().expect("gui state lock");
+    ApiResponse::ok(json!({
+        "hostInstanceId": host_process_identity().instance_id,
+        "hostPid": host_process_identity().pid,
+        "version": env!("CARGO_PKG_VERSION"),
+        "buildCommit": crate::kernel_api::build_commit(),
+        "directories": gui.paths.directories,
+        "settingsPath": gui.paths.settings_path,
+        "profilesPath": gui.paths.llm_profiles_path,
+        "secretsPath": gui.paths.llm_secrets_path,
+        "configurationAppliesTo": "nextRun"
+    }))
 }
 
 #[cfg(test)]

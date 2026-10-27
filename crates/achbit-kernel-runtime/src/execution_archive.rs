@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn timeline_retains_bytes_order_identity_and_drop_without_overwriting() {
         let directory = std::env::temp_dir().join(format!(
-            "deepcode-archive-{}-{}",
+            "achbit-archive-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

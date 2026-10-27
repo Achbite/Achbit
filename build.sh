@@ -6,11 +6,11 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/source-identity.sh"
 CONTAINER_NAME="${CONTAINER_NAME:-achbit-dev}"
 WORKDIR_IN_CTNR="${WORKDIR_IN_CTNR:-/workspace}"
-OUTPUT_DIR="${DEEPCODE_OUTPUT_DIR:-$ROOT_DIR/bin}"
+OUTPUT_DIR="${ACHBIT_OUTPUT_DIR:-$ROOT_DIR/bin}"
 [[ "$OUTPUT_DIR" = /* ]] || OUTPUT_DIR="$ROOT_DIR/$OUTPUT_DIR"
-export DEEPCODE_BUILD_KIND=normal
-export DEEPCODE_BUILD_COMMIT="${DEEPCODE_BUILD_COMMIT:-$(deepcode_source_commit "$ROOT_DIR")}"
-export DEEPCODE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export ACHBIT_BUILD_KIND=normal
+export ACHBIT_BUILD_COMMIT="${ACHBIT_BUILD_COMMIT:-$(achbit_source_commit "$ROOT_DIR")}"
+export ACHBIT_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STAGES=()
 usage() {
   cat <<'HELP'
@@ -28,14 +28,14 @@ Usage: bash build.sh [-debug] [--stage STAGE]...
   native-gui          Build only the Linux native GUI shell.
   computer-use        Update only the independently signed macOS Computer Use App.
   computer-use-windows  Update only Achbit-Computer-Use.exe in bin/win64 (GUI may keep running).
-Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, DEEPCODE_OUTPUT_DIR,
+Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, ACHBIT_OUTPUT_DIR,
   CARGO_TARGET_DIR, RUSTC_WRAPPER, SCCACHE_DIR,
-  DEEPCODE_MACOS_CARGO, DEEPCODE_MACOS_NODE_BIN, DEEPCODE_MACOS_CARGO_TARGET_DIR,
-  DEEPCODE_MACOS_SIGN_IDENTITY (default: DeepCode Local Development).
+  ACHBIT_MACOS_CARGO, ACHBIT_MACOS_NODE_BIN, ACHBIT_MACOS_CARGO_TARGET_DIR,
+  ACHBIT_MACOS_SIGN_IDENTITY (default: Achbit Local Development).
 Tools must already be installed. Package stages use a fresh staging directory;
 Cargo/pnpm caches are retained. User data in existing output directories is retained.
 Runtime builds include current native programs and shared resources; macOS Apps are signed.
-The host platform is supplied to Docker by make shell (DEEPCODE_BUILD_HOST_OS).
+Docker runtime builds require the host platform supplied by make shell (ACHBIT_BUILD_HOST_OS).
 The explicit code stage retains compiler outputs without updating bin/.
 Full packaging: bash build.sh --stage package
 On Mac, make shell prepares the host bridge before entering Docker.
@@ -43,15 +43,15 @@ HELP
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -debug) export DEEPCODE_BUILD_KIND=debug; shift ;;
+    -debug) export ACHBIT_BUILD_KIND=debug; shift ;;
     --stage) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; STAGES+=("$2"); shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
-if [ "$DEEPCODE_BUILD_KIND" = debug ]; then
-  if [ -n "${DEEPCODE_OUTPUT_DIR+x}" ] && [ "$OUTPUT_DIR" != "$ROOT_DIR/bin/debug" ]; then
-    printf 'Debug output is fixed at bin/debug; remove conflicting DEEPCODE_OUTPUT_DIR.\n' >&2; exit 2
+if [ "$ACHBIT_BUILD_KIND" = debug ]; then
+  if [ -n "${ACHBIT_OUTPUT_DIR+x}" ] && [ "$OUTPUT_DIR" != "$ROOT_DIR/bin/debug" ]; then
+    printf 'Debug output is fixed at bin/debug; remove conflicting ACHBIT_OUTPUT_DIR.\n' >&2; exit 2
   fi
   OUTPUT_DIR="$ROOT_DIR/bin/debug"
   [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
@@ -132,11 +132,11 @@ container_step() {
     bash "$ROOT_DIR/scripts/build-platforms.sh" "$@"
   else
     local name
-    local environment=(-e DEEPCODE_BUILD_COMMIT -e DEEPCODE_BUILD_TIME -e DEEPCODE_BUILD_KIND)
-    for name in PNPM_STORE_DIR DEEPCODE_WINDOWS_NODE_BIN DEEPCODE_NODE_LICENSE DEEPCODE_DISABLE_SCCACHE; do
+    local environment=(-e ACHBIT_BUILD_COMMIT -e ACHBIT_BUILD_TIME -e ACHBIT_BUILD_KIND)
+    for name in PNPM_STORE_DIR ACHBIT_WINDOWS_NODE_BIN ACHBIT_NODE_LICENSE ACHBIT_DISABLE_SCCACHE; do
       [ -z "${!name+x}" ] || environment+=(-e "$name")
     done
-    docker exec -w "$WORKDIR_IN_CTNR" "${environment[@]}" -e DEEPCODE_BUILD_PID_FILE="$(container_path "$TRANSACTION")/container.pid" "$CONTAINER_NAME" setsid --wait bash ./scripts/build-platforms.sh "$@"
+    docker exec -w "$WORKDIR_IN_CTNR" "${environment[@]}" -e ACHBIT_BUILD_PID_FILE="$(container_path "$TRANSACTION")/container.pid" "$CONTAINER_NAME" setsid --wait bash ./scripts/build-platforms.sh "$@"
   fi
 }
 if [ "$IN_CONTAINER" -eq 1 ]; then
@@ -166,7 +166,14 @@ package_selected() {
   return 1
 }
 local_platform() {
-  local build_host_os="${DEEPCODE_BUILD_HOST_OS:-$(uname -s)}"
+  local build_host_os="${ACHBIT_BUILD_HOST_OS:-}"
+  if [ -z "$build_host_os" ]; then
+    if [ "$IN_CONTAINER" -eq 1 ]; then
+      printf 'Container host platform is missing (ACHBIT_BUILD_HOST_OS). Re-enter with make shell from the host, or choose --stage runtime-macos/runtime-windows/runtime-linux explicitly.\n' >&2
+      return 2
+    fi
+    build_host_os="$(uname -s)"
+  fi
   case "$build_host_os" in
     Darwin) printf 'macos\n' ;;
     Windows_NT|MINGW*|MSYS*|CYGWIN*) printf 'windows\n' ;;
@@ -186,7 +193,7 @@ for stage in "${STAGES[@]}"; do
     code) code=1 ;;
     package)
       all=1
-      [ "$DEEPCODE_BUILD_KIND" = debug ] || add_platform linux
+      [ "$ACHBIT_BUILD_KIND" = debug ] || add_platform linux
       add_platform windows; add_platform macos
       ;;
     package-linux|package-windows|package-macos) add_platform "${stage#package-}" ;;

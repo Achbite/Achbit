@@ -32,7 +32,7 @@ export function normalizeUiLanguage(value: unknown): UiLanguage {
 function initialActiveLanguage(): UiLanguage {
   if (typeof window === 'undefined') return DEFAULT_LANGUAGE;
   try {
-    return normalizeUiLanguage(window.localStorage.getItem('deepcode.ui.language'));
+    return normalizeUiLanguage(window.localStorage.getItem('achbit.ui.language'));
   } catch {
     return DEFAULT_LANGUAGE;
   }

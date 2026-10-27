@@ -2,6 +2,7 @@ import { buildAgentProviderRequest } from './contextComposer.js';
 import { estimateContextInput, prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
 import { presentArtifacts } from './deliverables.js';
 import { publishPlan } from './planStage.js';
+import { preparePluginActivation } from './pluginActivation.js';
 import { decodeSessionControlCall } from './sessionControls.js';
 import { todoUpdateFact } from './todoState.js';
 import type { SessionCapabilities } from './plugins.js';
@@ -17,6 +18,7 @@ export function createSessionCapabilities(): SessionCapabilities {
     },
     controls: {
       decode: decodeSessionControlCall,
+      preparePlugins: preparePluginActivation,
       publishPlan,
       presentArtifacts,
       updateTodo: todoUpdateFact,

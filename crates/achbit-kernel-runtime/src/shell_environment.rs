@@ -393,7 +393,7 @@ mod tests {
         let script = "$p = 'C:\\资料 文件\\a.txt'\nWrite-Output \"$p `\"quoted`\"\"\nexit 7";
         let text = format!("{}\n{script}", "# A long script\n".repeat(5000));
         let temporary =
-            std::env::temp_dir().join(format!("deepcode-script-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("achbit-script-test-{}", std::process::id()));
         std::fs::create_dir(&temporary).unwrap();
         let arguments = prepare_script_arguments(&program, &text, &temporary).unwrap();
         let path = PathBuf::from(arguments.last().unwrap());
@@ -446,7 +446,7 @@ pub fn login_shell_path(shell: &Path) -> KernelResult<OsString> {
     };
     let mut command = Command::new(shell);
     command
-        .args(["-ilc", "/usr/bin/printf '\\0DEEPCODE_HOST_PATH\\0' && /usr/bin/printenv PATH && /usr/bin/printf '\\0'"])
+        .args(["-ilc", "/usr/bin/printf '\\0ACHBIT_HOST_PATH\\0' && /usr/bin/printenv PATH && /usr/bin/printf '\\0'"])
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     // An interactive login shell must not inherit the TUI's controlling terminal:
     // a background process group can be stopped before it reports PATH.
@@ -494,7 +494,7 @@ pub fn login_shell_path(shell: &Path) -> KernelResult<OsString> {
     if !status.success() {
         return Err(failure(format!("login shell exited with {status}")));
     }
-    let marker = b"\0DEEPCODE_HOST_PATH\0";
+    let marker = b"\0ACHBIT_HOST_PATH\0";
     let offset = output
         .windows(marker.len())
         .rposition(|part| part == marker)

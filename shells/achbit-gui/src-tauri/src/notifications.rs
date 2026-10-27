@@ -114,7 +114,7 @@ fn show_reminder(app: &tauri::AppHandle, reminder: Reminder) -> Result<(), Strin
 
 /// GUI presentation only: the caller observes the canonical completed run.
 #[tauri::command]
-pub async fn deepcode_notify_completed(
+pub async fn achbit_notify_completed(
     app: tauri::AppHandle,
     reminder: Reminder,
 ) -> Result<(), String> {
@@ -154,14 +154,14 @@ pub async fn deepcode_notify_completed(
 }
 
 #[tauri::command]
-pub fn deepcode_dismiss_completion(window: tauri::WebviewWindow) -> Result<(), String> {
+pub fn achbit_dismiss_completion(window: tauri::WebviewWindow) -> Result<(), String> {
     window.hide().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn deepcode_open_completion(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+pub fn achbit_open_completion(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
     let main = app.get_window("main").ok_or("main_window_unavailable")?;
-    app.emit_to("main", "deepcode:completion-open", session_id)
+    app.emit_to("main", "achbit:completion-open", session_id)
         .map_err(|error| error.to_string())?;
     main.unminimize().map_err(|error| error.to_string())?;
     main.show().map_err(|error| error.to_string())?;

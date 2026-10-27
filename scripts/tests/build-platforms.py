@@ -74,7 +74,7 @@ def files(root):
 
 class ProgramCleanupTests(unittest.TestCase):
     def test_dry_run_reads_program_ownership_without_removing_files(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-clean-dry-run-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-clean-dry-run-') as directory:
             root = Path(directory)
             (root / 'scripts').mkdir()
             for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py'):
@@ -96,7 +96,7 @@ class ProgramCleanupTests(unittest.TestCase):
 
 class SharedResourcesTests(unittest.TestCase):
     def test_only_public_documentation_enters_runtime_resources(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-shared-resources-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-shared-resources-') as directory:
             root = Path(directory) / 'source'
             destination = Path(directory) / 'resources'
             for name in ('session-core', 'protocol'):
@@ -109,10 +109,14 @@ class SharedResourcesTests(unittest.TestCase):
             write(root, 'userspace/gui/dist-achbit-gui/index.html', b'GUI')
             write(root, 'plugins/chrome-devtools/node_modules/chrome-devtools-mcp/index.js', b'upstream')
             write(root, 'LICENSE', b'license')
+            write(root, 'skills/achbit-documents/licenses/typst.txt', b'Native renderer license')
+            write(root, 'skills/achbit-documents/THIRD_PARTY_NOTICES.md', b'Native renderer notices')
             write(root, 'dependencies.json', b'[]')
             public = {
                 'distribution.md': b'Installation',
                 'product/operations.md': b'User operations',
+                'plugins/README.md': b'Plugin contracts',
+                'plugins/README.zh-CN.md': b'Bilingual plugin contracts',
                 'product/images/example.svg': b'<svg/>',
             }
             for name, content in public.items():
@@ -123,6 +127,8 @@ class SharedResourcesTests(unittest.TestCase):
             package.shared(root, destination, root / 'dependencies.json')
 
             self.assertEqual(files(destination / 'docs'), public)
+            self.assertEqual((destination / 'licenses/documents/licenses/typst.txt').read_bytes(), b'Native renderer license')
+            self.assertEqual((destination / 'licenses/documents/THIRD_PARTY_NOTICES.md').read_bytes(), b'Native renderer notices')
             self.assertEqual((destination / 'session-core/dist/index.js').read_bytes(), b'export {};')
             self.assertFalse((destination / 'session-core/dist/debug').exists())
 
@@ -140,7 +146,7 @@ class SharedResourcesTests(unittest.TestCase):
 
 class CodeCompilationTests(unittest.TestCase):
     def setUp(self):
-        scratch = tempfile.TemporaryDirectory(prefix='deepcode-code-build-')
+        scratch = tempfile.TemporaryDirectory(prefix='achbit-code-build-')
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         for name in ('build.sh', 'scripts/source-identity.sh', 'scripts/build-platforms.sh'):
@@ -184,9 +190,9 @@ else: sys.exit('Expected workspace compilation: '+str(args))
         self.environment = {
             **os.environ,
             'PATH': str(self.root / 'commands') + os.pathsep + os.environ['PATH'],
-            'DEEPCODE_BUILD_COMMIT': 'fixture',
-            'DEEPCODE_OUTPUT_DIR': str(self.root / 'bin'),
-            'DEEPCODE_DISABLE_SCCACHE': '1',
+            'ACHBIT_BUILD_COMMIT': 'fixture',
+            'ACHBIT_OUTPUT_DIR': str(self.root / 'bin'),
+            'ACHBIT_DISABLE_SCCACHE': '1',
             'CARGO_TARGET_DIR': str(self.root / 'target'),
             'PNPM_STORE_DIR': str(self.root / 'store'),
         }
@@ -198,7 +204,7 @@ else: sys.exit('Expected workspace compilation: '+str(args))
     def test_explicit_code_compiles_without_touching_packages(self):
         write(self.root, 'bin/macos-arm64/running-product', b'existing macOS')
         write(self.root, 'bin/win64/running-product', b'existing Windows')
-        write(self.root, 'bin/DeepCode-existing.zip', b'existing archive')
+        write(self.root, 'bin/Achbit-existing.zip', b'existing archive')
         before = files(self.root / 'bin')
         for arguments in (['--stage', 'code'],):
             with self.subTest(arguments=arguments):
@@ -236,26 +242,27 @@ else: sys.exit('Expected workspace compilation: '+str(args))
 
 class BuildTests(unittest.TestCase):
     def setUp(self):
-        scratch = tempfile.TemporaryDirectory(prefix='deepcode-build-')
+        scratch = tempfile.TemporaryDirectory(prefix='achbit-build-')
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         (self.root / 'scripts').mkdir()
-        for name in ['build.sh', 'scripts/source-identity.sh']:
+        for name in ['build.sh', 'Makefile', 'rust-toolchain.toml', 'scripts/source-identity.sh']:
             shutil.copy2(ROOT / name, self.root / name)
         (self.root / 'scripts/step.py').write_text(STEP)
         (self.root / 'scripts/macos-build-bridge.py').write_text(STEP)
         (self.root / 'scripts/build-platforms.sh').write_text('#!/usr/bin/env bash\nexec python3 "$(dirname "$0")/step.py" "$@"\n')
-        self.environment = {**os.environ, 'DEEPCODE_OUTPUT_DIR': str(self.root / 'output')}
+        self.environment = {**os.environ, 'ACHBIT_OUTPUT_DIR': str(self.root / 'output')}
 
-    def build(self, config, *arguments):
+    def build(self, config, *arguments, via_make=False):
         (self.root / 'fixture.json').write_text(json.dumps(config))
-        return subprocess.run(['bash', str(self.root / 'build.sh'), *arguments], env=self.environment,
+        command = ['make', 'build'] if via_make else ['bash', str(self.root / 'build.sh'), *arguments]
+        return subprocess.run(command, cwd=self.root, env=self.environment,
                               text=True, capture_output=True, timeout=20)
 
     def test_default_updates_only_the_development_host_runtime(self):
         self.environment.pop('WSL_DISTRO_NAME', None)
         for host, platform in (('Darwin', 'macos'), ('Windows_NT', 'windows'), ('Linux', 'linux')):
-            self.environment['DEEPCODE_BUILD_HOST_OS'] = host
+            self.environment['ACHBIT_BUILD_HOST_OS'] = host
             for content in ('first', 'changed'):
                 with self.subTest(host=host, content=content):
                     (self.root / 'calls.jsonl').write_text('')
@@ -270,8 +277,133 @@ class BuildTests(unittest.TestCase):
                     self.assertFalse(any(call['action'] in ('package', '--package') for call in calls))
                     self.assertFalse((self.root / '.build-cache/build.lock').exists())
 
+    def test_default_container_build_requires_host_platform_before_compilation(self):
+        for value in (None, ''):
+            with self.subTest(value=value):
+                self.environment.pop('ACHBIT_BUILD_HOST_OS', None)
+                if value is not None:
+                    self.environment['ACHBIT_BUILD_HOST_OS'] = value
+                result = self.build({})
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn('Container host platform is missing', result.stderr)
+                self.assertFalse((self.root / 'calls.jsonl').exists())
+                self.assertFalse((self.root / 'output').exists())
+                self.assertFalse((self.root / '.build-cache/build.lock').exists())
+
+    def test_explicit_runtime_does_not_require_host_platform(self):
+        self.environment.pop('ACHBIT_BUILD_HOST_OS', None)
+        result = self.build({}, '--stage', 'runtime-linux')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('runtimes=1 packages=0 updated="linux"', result.stdout)
+
+    def test_make_build_preserves_inherited_host_platform_inside_container(self):
+        self.environment['ACHBIT_BUILD_HOST_OS'] = 'Darwin'
+        result = self.build({}, via_make=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('runtimes=1 packages=0 updated="macos"', result.stdout)
+        self.assertEqual({path.name for path in (self.root / 'output').iterdir()}, {'macos.txt'})
+
+    def prepare_container_fixture(self):
+        commands = self.root / 'commands'
+        commands.mkdir()
+        docker = commands / 'docker'
+        docker.write_text(r'''#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+root = Path(__file__).resolve().parents[1]
+state_path = root / 'docker-state.json'
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+with (root / 'docker-calls.jsonl').open('a') as log:
+    log.write(json.dumps(args) + '\n')
+if args[:2] == ['container', 'inspect']:
+    if not state['exists']: sys.exit(1)
+    if '-f' in args:
+        field = args[args.index('-f') + 1]
+        if '.Mounts' in field: print(root)
+        elif '.Config.Env' in field:
+            if state['host'] is not None: print('ACHBIT_BUILD_HOST_OS=' + state['host'])
+        elif '.Image' in field: print('fixture-image')
+        elif '.CapAdd' in field: print('SYS_ADMIN')
+        elif '.SecurityOpt' in field: print('apparmor=unconfined\nseccomp=unconfined')
+        elif '.MaskedPaths' in field: print('0 0')
+        elif '.State.Status' in field: print('running')
+        else: sys.exit('Unexpected inspect query: ' + field)
+elif args[:2] == ['image', 'inspect']:
+    if not state.get('imageExists', True): sys.exit(1)
+    print('fixture-image')
+elif args[:2] == ['container', 'port']: print('127.0.0.1:31246')
+elif args[0] == 'build':
+    if state.get('buildExit'):
+        print('fixture image build failed', file=sys.stderr)
+        sys.exit(state['buildExit'])
+    state['imageExists'] = True
+    state_path.write_text(json.dumps(state))
+elif args[0] == 'exec':
+    print('fixture shell entered')
+elif args[0] in ('rm', 'run'):
+    state['exists'] = args[0] == 'run'
+    state_path.write_text(json.dumps(state))
+else: sys.exit('Unexpected Docker invocation: ' + repr(args))
+''')
+        docker.chmod(0o755)
+        self.environment.update(ACHBIT_BUILD_HOST_OS='Darwin',
+                                PATH=str(commands) + os.pathsep + self.environment['PATH'])
+        (self.root / 'fixture.json').write_text('{}')
+
+    def test_container_refreshes_missing_or_changed_host_platform(self):
+        self.prepare_container_fixture()
+        for host in (None, 'Linux', 'Darwin'):
+            with self.subTest(host=host):
+                (self.root / 'docker-state.json').write_text(json.dumps({'host': host, 'exists': True}))
+                (self.root / 'docker-calls.jsonl').write_text('')
+                result = subprocess.run(['make', '_ensure_container'], cwd=self.root,
+                                        env=self.environment, text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = [json.loads(line) for line in (self.root / 'docker-calls.jsonl').read_text().splitlines()]
+                self.assertEqual(sum(call[0] == 'build' for call in calls), 1)
+                self.assertEqual(sum(call[0] == 'rm' for call in calls), int(host != 'Darwin'))
+                launches = [call for call in calls if call[0] == 'run']
+                self.assertEqual(len(launches), int(host != 'Darwin'))
+                if launches:
+                    self.assertIn('ACHBIT_BUILD_HOST_OS=Darwin', launches[0])
+
+    def test_shell_updates_image_inputs_before_entering(self):
+        self.prepare_container_fixture()
+        for exists in (True, False):
+            with self.subTest(image_exists=exists):
+                (self.root / 'docker-state.json').write_text(json.dumps(
+                    {'host': 'Darwin', 'exists': True, 'imageExists': exists}))
+                (self.root / 'docker-calls.jsonl').write_text('')
+                result = subprocess.run(['make', 'shell', 'ACHBIT_NODE_VERSION=22.22.4'],
+                                        cwd=self.root, env=self.environment,
+                                        text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('fixture shell entered', result.stdout)
+                calls = [json.loads(line) for line in (self.root / 'docker-calls.jsonl').read_text().splitlines()]
+                builds = [call for call in calls if call[0] == 'build']
+                self.assertEqual(len(builds), 1)
+                self.assertIn('ACHBIT_NODE_VERSION=22.22.4', builds[0])
+                self.assertLess(calls.index(builds[0]), next(i for i, call in enumerate(calls) if call[0] == 'exec'))
+                self.assertFalse(any(call[0] in ('rm', 'run') for call in calls))
+
+    def test_image_update_failure_stops_shell_even_with_an_existing_image(self):
+        self.prepare_container_fixture()
+        for exists in (True, False):
+            with self.subTest(image_exists=exists):
+                (self.root / 'docker-state.json').write_text(json.dumps(
+                    {'host': 'Darwin', 'exists': True, 'imageExists': exists, 'buildExit': 37}))
+                (self.root / 'docker-calls.jsonl').write_text('')
+                result = subprocess.run(['make', 'shell'], cwd=self.root, env=self.environment,
+                                        text=True, capture_output=True, timeout=20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('fixture image build failed', result.stderr)
+                calls = [json.loads(line) for line in (self.root / 'docker-calls.jsonl').read_text().splitlines()]
+                self.assertEqual(sum(call[0] == 'build' for call in calls), 1)
+                self.assertFalse(any(call[0] in ('rm', 'run', 'exec') for call in calls))
+
     def test_default_macos_runtime_does_not_fall_back_when_host_is_unavailable(self):
-        self.environment['DEEPCODE_BUILD_HOST_OS'] = 'Darwin'
+        self.environment['ACHBIT_BUILD_HOST_OS'] = 'Darwin'
         result = self.build({'check': {'macos': 3}})
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
@@ -279,7 +411,7 @@ class BuildTests(unittest.TestCase):
         self.assertFalse((self.root / 'output').exists())
 
     def test_debug_uses_available_windows_and_macos_and_preserves_normal_outputs(self):
-        self.environment.pop('DEEPCODE_OUTPUT_DIR')
+        self.environment.pop('ACHBIT_OUTPUT_DIR')
         write(self.root, 'bin/macos-arm64/running-product', b'unchanged')
         write(self.root, 'bin/win64/running-product', b'unchanged')
         result = self.build({'content': 'debug'}, '-debug')
@@ -294,7 +426,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(sum(c['action'] == '--shared' for c in calls), 1)
 
     def test_debug_windows_build_needs_no_macos_host(self):
-        self.environment.pop('DEEPCODE_OUTPUT_DIR')
+        self.environment.pop('ACHBIT_OUTPUT_DIR')
         result = self.build({'check': {'macos': 3}}, '-debug', '--stage', 'package-windows')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue((self.root / 'bin/debug/windows.txt').is_file())
@@ -305,7 +437,7 @@ class BuildTests(unittest.TestCase):
         result = self.build({}, '-debug')
         self.assertEqual(result.returncode, 2)
         self.assertIn('fixed at bin/debug', result.stderr)
-        self.environment.pop('DEEPCODE_OUTPUT_DIR')
+        self.environment.pop('ACHBIT_OUTPUT_DIR')
         result = self.build({}, '-debug', '--stage', 'package-linux')
         self.assertEqual(result.returncode, 2)
         self.assertIn('not supported', result.stderr)
@@ -378,7 +510,7 @@ class LinuxPackageTests(unittest.TestCase):
                                            node_license=root / 'LICENSE')
                     with patch.object(package.subprocess, 'run'), \
                             patch.object(package.shutil, 'which', return_value=str(root / 'bwrap')), \
-                            patch.dict(os.environ, {'DEEPCODE_BUILD_KIND': 'normal', 'DEEPCODE_BUILD_TIME': 'fixture'}):
+                            patch.dict(os.environ, {'ACHBIT_BUILD_KIND': 'normal', 'ACHBIT_BUILD_TIME': 'fixture'}):
                         package.assemble(args)
                     names = [entry.name for entry in stage.iterdir()]
                     self.assertEqual(len(names), len({name.casefold() for name in names}),
@@ -390,7 +522,7 @@ class LinuxPackageTests(unittest.TestCase):
 
 class WindowsDebugPackageTests(unittest.TestCase):
     def test_debug_and_normal_packages_have_distinct_executable_and_control_launcher(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-win-debug-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-win-debug-') as directory:
             root = Path(directory)
             native, shared = root / 'native', root / 'shared'
             shared.mkdir()
@@ -407,7 +539,7 @@ class WindowsDebugPackageTests(unittest.TestCase):
                 args = SimpleNamespace(root=ROOT, stage=stage, platform='win64', native=native, shared=shared,
                                        node=root / 'node.exe', node_license=root / 'LICENSE', webview_loader=root / 'WebView2Loader.dll')
                 with patch.object(package.subprocess, 'run', side_effect=strip), patch.object(package, 'windows_tui_resources'), \
-                        patch.dict(os.environ, {'DEEPCODE_BUILD_KIND': kind, 'DEEPCODE_BUILD_TIME': 'fixture'}):
+                        patch.dict(os.environ, {'ACHBIT_BUILD_KIND': kind, 'ACHBIT_BUILD_TIME': 'fixture'}):
                     package.assemble(args)
                 debug = kind == 'debug'
                 self.assertEqual((stage / 'Achbit-Debug.exe').exists(), debug)
@@ -424,7 +556,7 @@ class WindowsDebugPackageTests(unittest.TestCase):
 
 class NativeMacArgumentsTests(unittest.TestCase):
     def test_normal_and_debug_cargo_arguments_under_system_bash(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-macos-arguments-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-macos-arguments-') as directory:
             root = Path(directory).resolve()
             (root / 'scripts').mkdir()
             (root / 'commands').mkdir()
@@ -449,10 +581,10 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
             environment = {
                 **os.environ,
                 'PATH': str(root / 'commands') + os.pathsep + os.environ['PATH'],
-                'DEEPCODE_MACOS_CARGO': str(root / 'commands/cargo'),
-                'DEEPCODE_MACOS_NODE_BIN': str(root / 'commands/node'),
-                'DEEPCODE_MACOS_NODE_LICENSE': str(root / 'NODE-LICENSE'),
-                'DEEPCODE_MACOS_CARGO_TARGET_DIR': str(root / 'target'),
+                'ACHBIT_MACOS_CARGO': str(root / 'commands/cargo'),
+                'ACHBIT_MACOS_NODE_BIN': str(root / 'commands/node'),
+                'ACHBIT_MACOS_NODE_LICENSE': str(root / 'NODE-LICENSE'),
+                'ACHBIT_MACOS_CARGO_TARGET_DIR': str(root / 'target'),
             }
             environment.pop('TAURI_CONFIG', None)
             packages = ['-p', 'achbit-kernel-daemon', '-p', 'achbit-first-party-tools',
@@ -464,7 +596,7 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
                     result = subprocess.run(
                         ['/bin/bash', str(root / 'scripts/package-macos.sh'), *options,
                          str(root / 'shared'), str(root / 'output')],
-                        cwd=root, env={**environment, 'DEEPCODE_BUILD_KIND': kind},
+                        cwd=root, env={**environment, 'ACHBIT_BUILD_KIND': kind},
                         text=True, capture_output=True, timeout=20,
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -477,7 +609,7 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
                         ['build', '--release', *gui_features, '--manifest-path',
                          str(root / 'shells/achbit-gui/src-tauri/Cargo.toml')],
                     ])
-                    config = {'productName': 'Achbit-Debug', 'identifier': 'com.achbite.deepcode.debug'} if kind == 'debug' else None
+                    config = {'productName': 'Achbit-Debug', 'identifier': 'com.achbite.achbit.debug'} if kind == 'debug' else None
                     self.assertEqual([json.loads(call['tauriConfig']) if call['tauriConfig'] else None
                                       for call in cargo], [config, config])
                     publication = [call for call in calls if call['name'] == 'package-runtime.py' and call['argv'][0] == 'publish']
@@ -491,7 +623,7 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
 
 class BridgeCleanupTests(unittest.TestCase):
     def test_runtime_request_transfers_current_resources_and_completes_its_transaction(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-runtime-request-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-runtime-request-') as directory:
             root = Path(directory).resolve()
             shared = root / 'transaction/shared'
             shared.mkdir(parents=True)
@@ -512,7 +644,7 @@ class BridgeCleanupTests(unittest.TestCase):
             with patch.object(bridge, 'ROOT', root), patch.object(bridge, 'BRIDGE', channel), \
                     patch.object(bridge, 'WORKER', worker), \
                     patch.object(bridge, 'write_json', side_effect=accept_request), \
-                    patch.dict(os.environ, {'DEEPCODE_BUILD_COMMIT': 'current-source', 'DEEPCODE_BUILD_TIME': 'current-time'}):
+                    patch.dict(os.environ, {'ACHBIT_BUILD_COMMIT': 'current-source', 'ACHBIT_BUILD_TIME': 'current-time'}):
                 self.assertEqual(bridge.request_host('runtime', shared, root / 'bin'), 0)
             request, = captured
             self.assertEqual(request['operation'], 'runtime')
@@ -523,7 +655,7 @@ class BridgeCleanupTests(unittest.TestCase):
             self.assertFalse((shared.parent / 'macos-request').exists())
 
     def test_request_forwards_explicit_signing_selection(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-signing-request-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-signing-request-') as directory:
             root = Path(directory)
             worker = root / 'worker.json'
             worker.write_text(json.dumps({'workerId': 'owned-worker'}))
@@ -537,14 +669,14 @@ class BridgeCleanupTests(unittest.TestCase):
 
             with patch.object(bridge, 'BRIDGE', root), patch.object(bridge, 'WORKER', worker), \
                     patch.object(bridge, 'write_json', side_effect=record_request), \
-                    patch.dict(os.environ, {'DEEPCODE_MACOS_SIGN_IDENTITY': 'selected-certificate'}):
+                    patch.dict(os.environ, {'ACHBIT_MACOS_SIGN_IDENTITY': 'selected-certificate'}):
                 self.assertEqual(bridge.request_host('check'), 0)
             self.assertEqual(captured, [{'workerId': 'owned-worker', 'operation': 'check',
                                          'buildKind': 'normal',
                                          'signingIdentity': 'selected-certificate'}])
 
     def test_worker_publication_failure_releases_watcher(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-worker-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-worker-') as directory:
             root = Path(directory)
             watcher = Mock()
             watcher.poll.return_value = None
@@ -604,7 +736,7 @@ class BridgeCleanupTests(unittest.TestCase):
             self.assertEqual(libc.prctl(36, previous.value, 0, 0, 0), 0)
 
     def test_cleanup_failure_retains_transaction_and_original_failure(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-bridge-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-bridge-') as directory:
             root = Path(directory)
             transaction = root / 'transaction'
             transaction.mkdir()
@@ -625,12 +757,12 @@ class BridgeCleanupTests(unittest.TestCase):
 
 class MacosSigningTests(unittest.TestCase):
     def test_command_launcher_reuses_its_terminal_and_preserves_arguments_and_exit(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-command-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-command-') as directory:
             root = Path(directory) / 'package with spaces'
             native, shared, stage = root / 'native', root / 'shared', root / 'stage'
             shared.mkdir(parents=True)
             stub = b"""#!/bin/sh
-exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])); sys.exit(23)' "$@"
+exec "$ACHBIT_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])); sys.exit(23)' "$@"
 """
             for name in ['achbit-kernel-daemon', 'achbit-first-party-provider', 'achbit-host-web',
                          'achbit-cli', 'achbit-tui', 'Achbit']:
@@ -643,12 +775,12 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
                                    shared=shared, node=root / 'node', node_license=root / 'LICENSE')
             with patch.object(package, 'subprocess'), patch.object(package, 'signing_identity', return_value='fixture'), \
                     patch.object(package, 'sign_app'), patch.object(package, 'assemble_computer_use'), \
-                    patch.object(package, 'macos_tui_resources'), patch.dict(os.environ, {'DEEPCODE_BUILD_TIME': 'fixture'}):
+                    patch.object(package, 'macos_tui_resources'), patch.dict(os.environ, {'ACHBIT_BUILD_TIME': 'fixture'}):
                 package.assemble(args)
             arguments = ['--session', 'session:test', 'argument with spaces', 'literal "$HOME"', '']
             for shell in ('CLI', 'TUI'):
                 result = subprocess.run(['bash', str(stage / f'Achbit-{shell}.command'), *arguments],
-                                        env={**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable},
+                                        env={**os.environ, 'ACHBIT_TEST_PYTHON': sys.executable},
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 23, result.stderr)
                 expected = ([str(stage / 'Achbit.app/Contents/Resources/tui/window.mjs'), '--command-window']
@@ -674,7 +806,7 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
             self.assertTrue((resources / 'tui/fonts/WenKai-OFL.txt').is_file())
 
     def test_windows_tui_fonts_fit_console_family_names_and_keep_all_four_faces(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-windows-tui-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-windows-tui-') as directory:
             resources = Path(directory)
             package.windows_tui_resources(ROOT, resources)
             self.assertTrue((resources / 'tui/font-config.mjs').is_file())
@@ -698,17 +830,17 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
 
     def test_identity_is_explicit_and_never_falls_back_to_ad_hoc(self):
         fingerprint = 'A' * 40
-        listing = f'  1) {fingerprint} "DeepCode Local Development"\n  1 valid identities found\n'
+        listing = f'  1) {fingerprint} "Achbit Local Development"\n  1 valid identities found\n'
         with patch.dict(os.environ, {}, clear=True), \
                 patch.object(macos_signing.subprocess, 'run', return_value=Mock(stdout=listing)) as command:
             self.assertEqual(macos_signing.signing_identity(), fingerprint)
             command.return_value.stdout = '0 valid identities found\n'
             with self.assertRaisesRegex(ValueError, 'found 0'):
                 macos_signing.signing_identity()
-            command.return_value.stdout = listing + f'  2) {"B" * 40} "DeepCode Local Development"\n'
+            command.return_value.stdout = listing + f'  2) {"B" * 40} "Achbit Local Development"\n'
             with self.assertRaisesRegex(ValueError, 'found 2'):
                 macos_signing.signing_identity()
-        with patch.dict(os.environ, {'DEEPCODE_MACOS_SIGN_IDENTITY': '-'}), \
+        with patch.dict(os.environ, {'ACHBIT_MACOS_SIGN_IDENTITY': '-'}), \
                 patch.object(macos_signing.subprocess, 'run') as command:
             with self.assertRaisesRegex(ValueError, 'ad-hoc'):
                 macos_signing.signing_identity()
@@ -716,10 +848,10 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
 
     def test_native_components_have_stable_identifiers_and_vendor_node_is_preserved(self):
         import plistlib
-        with tempfile.TemporaryDirectory(prefix='deepcode-native-sign-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-native-sign-') as directory:
             app = Path(directory) / 'Achbit.app'
             write(app, 'Contents/Info.plist', plistlib.dumps({
-                'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleExecutable': 'Achbit'}))
+                'CFBundleIdentifier': 'com.achbite.achbit.gui', 'CFBundleExecutable': 'Achbit'}))
             for name in ('Achbit', 'achbit-kernel', 'achbit-host-web'):
                 write(app, 'Contents/MacOS/' + name, b'owned native binary')
             write(app, 'Contents/Resources/node/bin/node', b'vendor signed node')
@@ -729,15 +861,15 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:])
             self.assertEqual([call[-1] for call in commands], [
                 str(app / 'Contents/MacOS/achbit-host-web'),
                 str(app / 'Contents/MacOS/achbit-kernel'), str(app), str(app)])
-            self.assertIn('com.achbite.deepcode.gui.achbit-host-web', commands[0])
-            self.assertIn('com.achbite.deepcode.gui.achbit-kernel', commands[1])
+            self.assertIn('com.achbite.achbit.gui.achbit-host-web', commands[0])
+            self.assertIn('com.achbite.achbit.gui.achbit-kernel', commands[1])
             self.assertTrue(all('--deep' not in call for call in commands[:-1]))
             self.assertIn('--verify', commands[-1])
 
 
 class PublicationTests(unittest.TestCase):
     def setUp(self):
-        scratch = tempfile.TemporaryDirectory(prefix='deepcode-publish-')
+        scratch = tempfile.TemporaryDirectory(prefix='achbit-publish-')
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         self.stage, self.destination = self.root / 'stage', self.root / 'portable'
@@ -818,10 +950,10 @@ class PublicationTests(unittest.TestCase):
     def test_installer_publication_failure_restores_program_archive_and_installer(self):
         before = files(self.destination)
         self.archive.write_bytes(b'previous archive')
-        output = self.root / 'DeepCode-setup.exe'
+        output = self.root / 'Achbit-setup.exe'
         output.write_bytes(b'previous installer')
-        source = self.root / 'transaction/DeepCode-setup.exe'
-        write(self.root, 'transaction/DeepCode-setup.exe', b'current installer')
+        source = self.root / 'transaction/Achbit-setup.exe'
+        write(self.root, 'transaction/Achbit-setup.exe', b'current installer')
         replace = Path.replace
         def fail_installer(path, target):
             if path == source:
@@ -862,12 +994,12 @@ class PublicationTests(unittest.TestCase):
 
 class InstallerTests(unittest.TestCase):
     def test_macos_payload_installs_cli_against_the_same_app_resources(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-pkg-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-pkg-') as directory:
             root = Path(directory) / 'fixture with spaces'
             root.mkdir()
             stage = root / 'stage'
             stub = b"""#!/bin/sh
-exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"runtime":os.environ.get("DEEPCODE_RUNTIME_DIR"),"kernel":os.environ.get("DEEPCODE_KERNEL_BIN"),"user":os.environ.get("DEEPCODE_USER_ROOT")})); sys.exit(23)' "$@"
+exec "$ACHBIT_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"runtime":os.environ.get("ACHBIT_RUNTIME_DIR"),"kernel":os.environ.get("ACHBIT_KERNEL_BIN"),"user":os.environ.get("ACHBIT_USER_ROOT")})); sys.exit(23)' "$@"
 """
             write(stage, 'Achbit.app/Contents/MacOS/achbit-cli', stub)
             (stage / 'Achbit.app/Contents/MacOS/achbit-cli').chmod(0o755)
@@ -892,11 +1024,11 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
                     expected_args = ([str(app / 'Contents/Resources/tui/window.mjs')]
                                      if name == 'achbit-tui' else []) + arguments
                     for user_root in (None, str(root / 'independent user data')):
-                        environment = {**os.environ, 'DEEPCODE_TEST_PYTHON': sys.executable,
-                                       'DEEPCODE_RUNTIME_DIR': 'stale-runtime', 'DEEPCODE_KERNEL_BIN': 'stale-kernel'}
-                        environment.pop('DEEPCODE_USER_ROOT', None)
+                        environment = {**os.environ, 'ACHBIT_TEST_PYTHON': sys.executable,
+                                       'ACHBIT_RUNTIME_DIR': 'stale-runtime', 'ACHBIT_KERNEL_BIN': 'stale-kernel'}
+                        environment.pop('ACHBIT_USER_ROOT', None)
                         if user_root is not None:
-                            environment['DEEPCODE_USER_ROOT'] = user_root
+                            environment['ACHBIT_USER_ROOT'] = user_root
                         launched = subprocess.run(['sh', str(relocated), *arguments], env=environment,
                                                   capture_output=True, text=True, timeout=10)
                         self.assertEqual(launched.returncode, 23, launched.stdout + launched.stderr)
@@ -910,12 +1042,12 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
             # Patch only the packager's module reference, so the launcher uses real subprocess.run.
             with patch.object(installers, 'subprocess') as packager:
                 packager.run.side_effect = inspect
-                installers.macos(stage, root / 'DeepCode.pkg', '0.6.2')
+                installers.macos(stage, root / 'Achbit.pkg', '0.6.2')
                 packager.run.assert_called_once()
 
     def test_windows_computer_use_update_renames_the_running_image_aside(self):
         import computer_use_package
-        with tempfile.TemporaryDirectory(prefix='deepcode-cu-update-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-cu-update-') as directory:
             root = Path(directory)
             native = root / 'native.exe'
             native.write_bytes(b'new executor')
@@ -931,12 +1063,12 @@ exec "$DEEPCODE_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sy
             self.assertFalse(any(path.name.endswith('.new') for path in destination.iterdir()))
 
     def test_windows_setup_compiles_from_current_runtime(self):
-        with tempfile.TemporaryDirectory(prefix='deepcode-nsis-') as directory:
+        with tempfile.TemporaryDirectory(prefix='achbit-nsis-') as directory:
             root = Path(directory)
             stage = root / 'stage'
             write(stage, 'Achbit.exe', b'disposable native compiler output')
             write(stage, 'libexec/windows-environment.ps1', b'exit 0')
-            output = root / 'DeepCode-setup.exe'
+            output = root / 'Achbit-setup.exe'
             installers.windows(stage, output, '0.6.2')
             self.assertEqual(output.read_bytes()[:2], b'MZ')
 

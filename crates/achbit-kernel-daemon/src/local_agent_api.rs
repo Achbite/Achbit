@@ -204,6 +204,12 @@ impl LocalAgentRuntime {
                     )
                 });
         }
+        if !recipe.tools.plugins && !request.plugin_selections.is_empty() {
+            return Err(RunPreparationError::new(
+                "agent_tools_not_grantable",
+                "This task does not admit plugin activation.",
+            ));
+        }
         let mut plugin_selection = crate::local_agent_plugins::resolve_plugin_selection(
             settings,
             &mut request.plugin_selections,
@@ -527,11 +533,15 @@ impl LocalAgentRuntime {
         let mut permissions = LocalAgentPermissionPolicy::from_settings(settings)
             .map_err(RunPreparationError::from)?;
         permissions.constraints = policy_constraints;
-        let web_search = prepare_web_search_binding(
-            &provider_runtime,
-            permissions.clone(),
-            web_search_availability(&executor_config) == ToolAvailability::Callable,
-        );
+        let web_search = if recipe.tools.allows_kernel("web.search") {
+            prepare_web_search_binding(
+                &provider_runtime,
+                permissions.clone(),
+                web_search_availability(&executor_config) == ToolAvailability::Callable,
+            )
+        } else {
+            json!({"owner":"unavailable"})
+        };
         let enable_kernel_web_search =
             web_search.get("owner").and_then(Value::as_str) == Some("kernelAdapter");
         let prepared = LocalAgentKernel::prepare_generation(
@@ -540,6 +550,7 @@ impl LocalAgentRuntime {
             Arc::new(secrets.clone()),
             mcp.clone(),
             permissions,
+            &recipe.tools,
             enable_kernel_web_search,
             Arc::new(
                 crate::local_agent_product_tools::ProductTools::new(Arc::new(session_service))
@@ -563,12 +574,7 @@ impl LocalAgentRuntime {
                             binding["runId"] = json!(request.run_id);
                             binding
                         },
-                    ))
-                    .with_document_python(
-                        settings
-                            .get("agent.documents.pythonPath")
-                            .and_then(Value::as_str),
-                    ),
+                    )),
             ),
         )
         .map_err(RunPreparationError::from)?;
@@ -635,7 +641,7 @@ impl LocalAgentRuntime {
             extension_generation_ref.as_str(),
         );
         let mut response = json!({
-            "schemaVersion": "deepcode.local-agent",
+            "schemaVersion": "achbit.local-agent",
             "type": "run.runtime.prepared",
             "sessionId": request.session_id,
             "runId": request.run_id,
@@ -645,8 +651,9 @@ impl LocalAgentRuntime {
             "kernelCatalogSnapshotRef": catalog["kernelCatalogSnapshotRef"],
             "tools": catalog["tools"],
             "toolPromptProviders": crate::local_agent_tool_prompts::run_tool_prompt_providers(
-                &plugin_selection,
+                &plugin_selection, &catalog["tools"],
             ),
+            "toolSelection": recipe.tools,
             "pluginConfig": plugin_config,
             "selectedPlugins": selected_plugins,
             "environment": environment,
@@ -1018,6 +1025,10 @@ pub(crate) struct LocalProviderMessage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) images: Vec<LocalProviderImageReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) files: Vec<LocalProviderFileReference>,
+    #[serde(skip)]
+    pub(crate) file_data: Vec<LocalProviderFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) tool_images: Vec<LocalProviderToolImageReference>,
     #[serde(skip)]
     pub(crate) image_data: Vec<LocalProviderImage>,
@@ -1036,6 +1047,27 @@ pub(crate) struct LocalProviderImageReference {
     pub(crate) workspace_id: String,
     pub(crate) logical_path: String,
     pub(crate) media_type: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LocalProviderFileReference {
+    pub(crate) workspace_id: String,
+    pub(crate) logical_path: String,
+    pub(crate) media_type: String,
+    pub(crate) display_name: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalProviderFile {
+    pub(crate) media_type: String,
+    pub(crate) filename: String,
+    pub(crate) base64: String,
+}
+impl LocalProviderFile {
+    pub(crate) fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.base64)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1193,7 +1225,8 @@ pub(crate) async fn local_agent_models_get(
                 "adapterId":resolved.connection.adapter_id,
                 "kind":resolved.kind, "providerFlavor":resolved.provider_flavor,
                 "contextWindowTokens":snapshot.context_window_tokens, "maxOutputTokens":snapshot.max_output_tokens,
-                "imageInput":resolved.image_input, "temperature":resolved.temperature, "hostedWebSearch":resolved.hosted_web_search
+                "imageInput":resolved.image_input, "fileInputMediaTypes":resolved.file_input_media_types,
+                "temperature":resolved.temperature, "hostedWebSearch":resolved.hosted_web_search
             },
         });
         if let Some(thinking) = &snapshot.thinking {
@@ -1649,7 +1682,7 @@ pub(crate) async fn local_agent_provider_stream(
             )
         }
     };
-    if body.protocol_version != "deepcode.local-agent" {
+    if body.protocol_version != "achbit.local-agent" {
         return local_provider_error(
             &body.request_id,
             "provider_request_version_invalid",
@@ -1764,7 +1797,18 @@ pub(crate) async fn local_agent_provider_stream(
             "Provider 请求的输出预算与 run.started 固定的 runtime 不一致。",
         );
     }
+    if runtime.snapshot().file_input_media_types != frozen_provider_runtime.file_input_media_types {
+        return local_provider_error(
+            &request_id,
+            "provider_file_capability_mismatch",
+            "Provider 文件输入能力与 run.started 固定的 runtime 不一致。",
+        );
+    }
     let mut request_envelope = ProviderRequestInput {
+        request_context: Some(ProviderRequestContext {
+            session_id: body.session_id.clone(),
+            purpose: body.purpose.clone(),
+        }),
         answer_only: body.response_constraint == "answerOnly",
         response_format: body.response_format,
         messages: body.messages,
@@ -1778,6 +1822,14 @@ pub(crate) async fn local_agent_provider_stream(
         runtime.profile().image_input,
     ) {
         return local_provider_error(&request_id, "provider_image_input_failed", &error);
+    }
+    if let Err(error) = crate::conversation_api::resolve_provider_files(
+        &state,
+        &body.session_id,
+        &mut request_envelope.messages,
+        &runtime.snapshot().file_input_media_types,
+    ) {
+        return local_provider_error(&request_id, "provider_file_input_failed", &error);
     }
     let archive_directory = state
         .local_agent
@@ -1915,6 +1967,21 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
     }
     let mut call_ids = std::collections::HashSet::new();
     for message in &body.messages {
+        if !message.files.is_empty()
+            && (message.role != "user"
+                || message.files.len() > 8
+                || message.files.iter().any(|file| {
+                    !body
+                        .workspace_bindings
+                        .iter()
+                        .any(|binding| binding.workspace_id == file.workspace_id)
+                        || file.logical_path.trim().is_empty()
+                        || file.display_name.trim().is_empty()
+                        || file.media_type != "application/pdf"
+                }))
+        {
+            return Err("文件必须引用当前目录集合中的用户 PDF 附件。".into());
+        }
         if !message.images.is_empty()
             && (message.role != "user"
                 || message.images.len() > 8
@@ -2213,7 +2280,7 @@ fn kernel_error(error: LocalAgentKernelError) -> Json<ApiResponse> {
 
 fn local_provider_error(request_id: &str, code: &str, message: &str) -> Response {
     let event = json!({
-        "schemaVersion": "deepcode.provider-event",
+        "schemaVersion": "achbit.provider-event",
         "requestId": request_id,
         "type": "failed",
         "data": { "code": code, "message": message },
@@ -2250,7 +2317,7 @@ mod tests {
             "文".repeat(54)
         ));
         let mut request: LocalProviderRequest = serde_json::from_value(json!({
-            "protocolVersion": "deepcode.local-agent",
+            "protocolVersion": "achbit.local-agent",
             "requestId": "request:test",
             "sessionId": "session:test",
             "runId": "run:test",
@@ -2293,12 +2360,13 @@ mod tests {
             max_output_tokens: 512,
             api_surface,
             hosted_web_search,
+            file_input_media_types: vec![],
         }
     }
 
     #[test]
     fn approval_review_requests_separate_evidence_reads_from_structured_decisions() {
-        let base = json!({"protocolVersion":"deepcode.local-agent", "requestId":"request:review",
+        let base = json!({"protocolVersion":"achbit.local-agent", "requestId":"request:review",
             "sessionId":"session:review", "runId":"run:review", "providerRuntimeRef":"provider-runtime:test",
             "profileId":"profile:test", "purpose":"approvalReview", "responseConstraint":"normal",
             "maxOutputTokens":512, "workspaceBindings":[], "messages":[{"role":"user","content":"Read the evidence."}],
@@ -2377,6 +2445,7 @@ mod tests {
             api_surface: "responses".to_string(),
             hosted_web_search: "web_search".to_string(),
             web_search_owner: "providerHosted".to_string(),
+            file_input_media_types: vec![],
         };
         let hosted_tool = LocalProviderHostedTool {
             tool_type: "webSearch".to_string(),
@@ -2401,5 +2470,25 @@ mod tests {
         assert!(
             validate_provider_search_binding(&runtime, "approvalReview", &[hosted_tool]).is_err()
         );
+    }
+
+    #[test]
+    fn native_pdf_references_must_be_user_inputs_in_the_frozen_workspace_set() {
+        let mut request = json!({"protocolVersion":"achbit.local-agent", "requestId":"request:pdf", "sessionId":"session:pdf",
+            "runId":"run:pdf", "providerRuntimeRef":"provider-runtime:pdf", "profileId":"profile:pdf", "purpose":"agent",
+            "responseConstraint":"normal", "maxOutputTokens":512, "workspaceBindings":[{"workspaceId":"workspace:pdf", "displayName":"PDF"}],
+            "messages":[{"role":"user", "content":"Read this PDF", "files":[{"workspaceId":"workspace:pdf", "logicalPath":"source.pdf", "mediaType":"application/pdf", "displayName":"source.pdf"}]}],
+            "tools":[], "hostedTools":[]});
+        let validate =
+            |value: Value| validate_local_provider_request(&serde_json::from_value(value).unwrap());
+        validate(request.clone()).unwrap();
+        request["messages"][0]["files"][0]["workspaceId"] = json!("workspace:other");
+        assert!(validate(request.clone()).is_err());
+        request["messages"][0]["files"][0]["workspaceId"] = json!("workspace:pdf");
+        request["messages"][0]["role"] = json!("assistant");
+        assert!(validate(request.clone()).is_err());
+        request["messages"][0]["role"] = json!("user");
+        request["messages"][0]["files"][0]["mediaType"] = json!("text/plain");
+        assert!(validate(request).is_err());
     }
 }

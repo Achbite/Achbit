@@ -340,7 +340,7 @@ def main():
     # Keep external-file boundaries outside the OS temporary paths permitted by macOS.
     scratch = fixture.ROOT / '.build-cache'
     scratch.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='deepcode-file-access-', dir=scratch) as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-file-access-', dir=scratch) as directory:
         root = Path(directory)
         workspace = root / 'project'
         workspace.mkdir()

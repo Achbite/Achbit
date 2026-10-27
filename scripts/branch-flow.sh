@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Small single-maintainer helpers for DeepCode task branches.
+# Small single-maintainer helpers for Achbit task branches.
 set -euo pipefail
 
 git() {
   /usr/bin/git "$@"
 }
 
-readonly MANAGED_MARKER='managed-by: deepcode-branch-flow'
+readonly MANAGED_MARKER='managed-by: achbit-branch-flow'
 
 die() {
   printf '==[branch-flow][error]== %s\n' "$*" >&2
@@ -31,7 +31,7 @@ EOF
 require_repo() {
   [ -x /usr/bin/git ] || die '/usr/bin/git is required'
   git rev-parse --show-toplevel >/dev/null 2>&1 \
-    || die 'run this command inside a DeepCode Git worktree'
+    || die 'run this command inside a Achbit Git worktree'
 }
 
 repo_root() {

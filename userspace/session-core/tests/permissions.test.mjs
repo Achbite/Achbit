@@ -46,7 +46,7 @@ test('approval review retains original user constraints without main-model summa
     { type: 'run.started', runId, payload: { inputMessageId: 'message:current', workspaceBindings: [workspaceBinding], runtimeSnapshot: runtime } },
     { type: 'context.compacted', runId, payload: { compactionId: 'compaction:review', providerRequestId: 'provider:compaction', trigger: 'pressure', coveredThroughSequence: 3, summary: 'Keep project changes within the approved scope.' } },
     { type: 'message.committed', runId, payload: { messageId: 'message:guidance', role: 'user', content: 'Use the existing build directory.' } },
-  ].map((event, index) => ({ schemaVersion: 'deepcode.session-event.v5', eventId: `event:${index + 1}`, sessionId,
+  ].map((event, index) => ({ schemaVersion: 'achbit.session-event.v5', eventId: `event:${index + 1}`, sessionId,
     sequence: index + 1, occurredAt: '2026-09-20T00:00:00.000Z', ...event }));
   const attachment = { workspaceId: 'workspace:review-attachment', displayName: 'review-notes.md' };
   const snapshot = { events, state: { ...emptySessionState(sessionId), workspaceBindings: [workspaceBinding],
@@ -92,7 +92,7 @@ test('review preserves corrections from the preceding and confirmed Plan source 
   addRun('current', 'Continue the report.', 'Keep the report in the existing draft.');
   const plan = { planId: 'plan:report', revision: 1, runId: 'run:plan', title: 'Prepare a report',
     summary: 'Inspect the data.', mutationManifest: [] };
-  const snapshot = { events: events.map((event, index) => ({ schemaVersion: 'deepcode.session-event.v5',
+  const snapshot = { events: events.map((event, index) => ({ schemaVersion: 'achbit.session-event.v5',
     sessionId, eventId: `event:${index + 1}`, sequence: index + 1, occurredAt: '2026-09-24T00:00:00.000Z', ...event })),
     state: { ...emptySessionState(sessionId), run: { runId, workspaceBindings: [workspaceBinding] },
       plans: [plan], activePlanRef: { planId: plan.planId, revision: plan.revision } } };
@@ -139,7 +139,7 @@ test('review reasons survive canonical permission metadata removal without chang
 
 test('file resources preserve external targets without assigning a workspace logical path', () => {
   const sessionId = 'session:file-resources', runId = 'run:file-resources', callId = 'call:read';
-  const base = { schemaVersion: 'deepcode.session-event.v5', sessionId, runId, callId, occurredAt: '2026-09-20T00:00:00.000Z' };
+  const base = { schemaVersion: 'achbit.session-event.v5', sessionId, runId, callId, occurredAt: '2026-09-20T00:00:00.000Z' };
   const requested = reduceSession(emptySessionState(sessionId), { ...base, type: 'tool.requested', eventId: 'event:request', sequence: 1,
     payload: { providerCallId: 'provider:read', toolName: 'fs.read', input: { path: '/references/notes.txt' } } });
   const reply = completedExecutionReply({ sessionId, runId, callId, input: { workspaceId: workspaceBinding.workspaceId, path: '/references/notes.txt' }, toolName: 'fs.read' }, {});
@@ -166,7 +166,7 @@ for (const scope of ['sessionFiles', 'sessionHostShell', 'sessionNetwork', 'sess
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
     if (request.nonWorkspaceAuthority) return shellReply(request);
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Read reference files', effects: ['process'], logicalTargets: ['/references/notes.txt'],
         authorizationScope: scope, authorizationScopes: [scope], approvalReviewer: 'user',
         authorizationContext: { ...context, command: request.input.command, fileAccess: { read: ['/references/notes.txt'], write: [] } } } };
@@ -174,13 +174,13 @@ for (const scope of ['sessionFiles', 'sessionHostShell', 'sessionNetwork', 'sess
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:start', 'Read the original reference file.'));
   const { pendingApproval: approval } = await waitForProjection(actor, state => state.run?.status === 'waiting');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', sessionId, commandId: 'command:approve',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', sessionId, commandId: 'command:approve',
     runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'allow', authorizationScope: scope });
   const original = await waitForProjection(actor, state => state.run?.status === 'completed');
   const [grant] = original.shellAuthorizations;
   assert.equal(grant.scope, scope);
   const saved = await readEvents(journal, sessionId);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId, commandId: 'command:edit',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'message.edit', sessionId, commandId: 'command:edit',
     messageId: original.messages[0].messageId, expectedRevision: original.revision, text: 'Use the revised reference question.' });
   const edited = await waitForProjection(actor, state => state.run?.status === 'completed' && state.run.runId !== original.run.runId);
   assert.deepEqual(edited.shellAuthorizations, [grant]);
@@ -188,12 +188,12 @@ for (const scope of ['sessionFiles', 'sessionHostShell', 'sessionNetwork', 'sess
   assert.equal(JSON.stringify(requests.at(-1).messages).includes('Read the original reference file.'), false);
   assert.equal(requests.at(-1).messages.some(message => message.role === 'tool' || message.toolCalls?.length), false);
   assert.deepEqual((await readEvents(journal, sessionId)).slice(0, saved.length), saved);
-  const revoke = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.revoke', sessionId,
+  const revoke = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.revoke', sessionId,
     commandId: 'command:revoke', runId: grant.runId, authorityId: grant.authorityId });
   assert.equal(revoke.status, 'accepted');
   const revoked = await actor.snapshot();
   assert.deepEqual(revoked.shellAuthorizations, []);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId, commandId: 'command:edit-again',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'message.edit', sessionId, commandId: 'command:edit-again',
     messageId: revoked.messages[0].messageId, expectedRevision: revoked.revision, text: 'Keep the permission revoked.' });
   const revisedAgain = await waitForProjection(actor, state => state.run?.status === 'completed' && state.run.runId !== edited.run.runId);
   assert.deepEqual(revisedAgain.shellAuthorizations, []);
@@ -221,7 +221,7 @@ for (const mode of ['ask', 'review', 'allow']) test(`Shell ${mode} has a distinc
       ? { usage: { inputTokens: 120, outputTokens: 24, contextWindowTokens: 8192 } }
       : { usage: { inputTokens: agentTurns * 1000, outputTokens: agentTurns * 10, contextWindowTokens: 4096 } });
   } }, emptyKernel({ async execute(request) {
-    if (mode !== 'allow' && !request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+    if (mode !== 'allow' && !request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
       callId: request.callId, status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         authorizationScope: 'runCommand', authorizationScopes: ['runCommand', 'runHostShell'], authorizationContext: context,
         approvalReviewer: mode === 'review' ? 'agent' : 'user' } };
@@ -240,7 +240,7 @@ for (const mode of ['ask', 'review', 'allow']) test(`Shell ${mode} has a distinc
     const pending = await waitForProjection(actor, state => state.run?.status === 'waiting');
     assert.equal(reviews, 0); assert.equal(executions, 0);
     const approval = pending.pendingApproval;
-    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', sessionId, commandId: 'command:approve', runId: approval.runId,
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', sessionId, commandId: 'command:approve', runId: approval.runId,
       callId: approval.callId, approvalId: approval.approvalId, decision: 'allow', authorizationScope: 'runCommand' });
   }
   const completed = await waitForProjection(actor, state => state.run?.status === 'completed');
@@ -282,7 +282,7 @@ for (const needsReview of [false, true]) test(`a frozen reviewer configuration e
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
     if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: 'agent', authorizationContext: context } };
   } }), preparation.port, 'review-config');
@@ -337,7 +337,7 @@ for (const malformedFirst of [false, true]) test(`cancelling an independent revi
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
     if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: 'agent', authorizationContext: context } };
   } }), preparation.port, 'cancel-review');
@@ -345,7 +345,7 @@ for (const malformedFirst of [false, true]) test(`cancelling an independent revi
   await actor.submit(messageCommand(sessionId, 'command:start', 'Run make check.'));
   await started;
   const running = await actor.snapshot();
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId,
     commandId: 'command:cancel-review', runId: running.run.runId });
   const stopped = await waitForProjection(actor, state => state.run?.status === 'cancelled');
   assert.equal(stopped.terminalError, null);
@@ -409,7 +409,7 @@ test('Plan and Shell use distinct independent review contexts and distinct autho
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async planAdmission() { return { source: 'review', authorities: [] }; }, async execute(request) {
     if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: 'agent', authorizationContext: context, operation: { toolName: 'bash', arguments: { command: 'make check' } } } };
   } }), prep.port, 'delegated');
@@ -498,7 +498,7 @@ test('delegating a waiting manual Plan resumes the same run and its compact life
   await actor.submit(messageCommand(sessionId, 'command:start', 'Update result.txt.'));
   const waiting = await waitForProjection(actor, state => state.run?.status === 'waiting');
   mode = 'review';
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
     commandId: 'command:delegate', patches: { 'agent.permissions.workspaceMutation': 'review' } });
   const reviewing = await waitForProjection(actor, state => state.run?.status === 'running' && reviews === 1);
   assert.equal(reviewing.run.runId, waiting.run.runId);
@@ -532,7 +532,7 @@ test('turning Plan off closes a pending Plan and resumes without a review or Pla
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare a change.'));
   await waitForProjection(actor, state => state.pendingPlan !== null);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
     commandId: 'command:off', patches: { 'agent.permissions.workspaceMutation': 'allow' } });
   const done = await waitForProjection(actor, state => state.run?.status === 'completed');
   assert.equal(done.plans[0].status, 'cancelled');
@@ -559,10 +559,10 @@ test('taking over a running Plan review accepts the user decision and ignores th
   t.after(async () => { release.resolve(); await actor.dispose(); });
   await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare the requested change.'));
   await started.promise;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
     commandId: 'command:takeover', patches: { 'agent.permissions.workspaceMutation': 'plan' } });
   const reviewing = await actor.snapshot(), plan = reviewing.pendingPlan;
-  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId,
     commandId: 'command:confirm', runId: plan.runId, planId: plan.planId, revision: plan.revision,
     response: { kind: 'confirm' } });
   assert.equal(reply.status, 'accepted');
@@ -601,7 +601,7 @@ test('turning Plan off during its review does not apply the late verdict or conf
   t.after(async () => { release.resolve(); await actor.dispose(); });
   await actor.submit(messageCommand(sessionId, 'command:start', 'Prepare a change.'));
   await started.promise;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
     commandId: 'command:off', patches: { 'agent.permissions.workspaceMutation': 'allow' } });
   release.resolve();
   const done = await waitForProjection(actor, state => state.run?.status === 'completed');
@@ -632,7 +632,7 @@ for (const result of ['not JSON', '{"decision":"ask","reason":"Script contents a
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
     if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Script request', effects: ['process'], logicalTargets: ['.'], approvalReviewer: 'agent', authorizationContext: context } };
   } }), prep.port, 'uncertain');
   t.after(() => actor.dispose());
@@ -673,7 +673,7 @@ for (const decision of ['allow', 'deny', 'ask']) test(`one malformed review reco
     yield providerEvent(request.requestId, 'completed', { usage: { inputTokens: 100, outputTokens: 20,
       contextWindowTokens: request.purpose === 'approvalReview' ? 8192 : 4096 } });
   } }, emptyKernel({ async execute(request) {
-    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
       callId: request.callId, status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: 'agent', authorizationContext: context } };
     const reply = shellReply(request);
@@ -757,7 +757,7 @@ for (const nextMode of ['ask', 'allow']) for (const malformed of [false, true]) 
     const changes = (await readEvents(journal, sessionId)).filter(event => event.type === 'session.permissions.updated');
     const mode = changes.at(-1)?.payload.patches['agent.permissions.shell'] ?? 'review';
     if (mode === 'allow' || mode === 'review' && request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: mode === 'review' ? 'agent' : 'user', authorizationContext: context,
         ...(request.nonWorkspaceAuthority ? { revalidation: { authorityId: request.nonWorkspaceAuthority.authorityId, reason: 'revoked' } } : {}) } };
@@ -765,7 +765,7 @@ for (const nextMode of ['ask', 'allow']) for (const malformed of [false, true]) 
   t.after(() => { releaseReview(); actor.dispose(); });
   await actor.submit(messageCommand(sessionId, 'command:start', 'Run make check.'));
   await started;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
     commandId: 'command:change', patches: { 'agent.permissions.shell': nextMode } });
   releaseReview();
   const state = await waitForProjection(actor, state => state.run?.status === (nextMode === 'ask' ? 'waiting' : 'completed'));
@@ -834,7 +834,7 @@ function chromeReviewFixture() {
   const sessionId = 'session:chrome-review', runId = 'run:chrome-review', callId = 'call:chrome-review';
   const pluginUri = 'plugin://chrome-devtools@builtin', pluginInstanceRef = 'plugin-instance:chrome-review';
   const runtime = runtimeSnapshot(runId);
-  const name = action => `mcp.deepcode-chrome.${action}`;
+  const name = action => `mcp.achbit-chrome.${action}`;
   const actions = ['take_snapshot', 'fill_form', 'click', 'drag', 'evaluate_script', 'navigate_page', 'close_page', 'list_pages'];
   runtime.tools = actions.map(action => ({ ...shell, name: name(action), toolBindingRef: `binding:chrome:${action}`,
     pluginUri, origin: 'extension', possibleEffects: ['external'] }));
@@ -880,10 +880,10 @@ test('Chrome review supplies exact page and all target UIDs with recorded proven
   f.runtime.tools = f.runtime.tools.map(tool => ({ ...tool, toolBindingRef: `${tool.toolBindingRef}:expanded` }));
   assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget, packet.observedTarget,
     'unrelated tool-view expansion does not replace the same Chrome instance or its recorded evidence');
-  f.request.payload.toolName = 'mcp.deepcode-chrome.drag';
+  f.request.payload.toolName = 'mcp.achbit-chrome.drag';
   f.request.payload.input = { pageId: 11, from_uid: '1_10', to_uid: '1_15' };
   assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget.selectedElements, f.tree.children);
-  f.request.payload.toolName = 'mcp.deepcode-chrome.evaluate_script';
+  f.request.payload.toolName = 'mcp.achbit-chrome.evaluate_script';
   f.request.payload.input = { pageId: 11, function: '(first, second) => [first.value, second.value]', args: ['1_10', '1_15'] };
   assert.deepEqual(JSON.parse(f.prepare().messages[1].content).observedTarget.selectedElements, f.tree.children);
   f.request.payload.input.args = ['1_10', 'missing'];
@@ -984,11 +984,11 @@ for (const mode of ['read', 'file', 'permission', 'other-session', 'write-tool',
     if (request.toolName === 'fs.read') {
       reads++; assert.equal(request.nonWorkspaceAuthority, undefined);
       if (mode === 'file') return completedExecutionReply(request, { content: 'ORIGINAL_USER_LIMIT from project rules' });
-      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
         status: 'approvalRequired', preview: { summary: 'Read file requires additional permission', effects: ['workspaceRead'], logicalTargets: ['AGENTS.md'], approvalReviewer: 'agent' } };
     }
     if (request.nonWorkspaceAuthority) { executions++; return shellReply(request); }
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
         approvalReviewer: 'agent', authorizationContext: context } };
   } }), prep.port, `evidence-${mode}`);

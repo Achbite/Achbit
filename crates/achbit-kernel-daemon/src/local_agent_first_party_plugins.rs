@@ -92,7 +92,7 @@ pub(crate) fn provider_binary() -> Result<PathBuf, String> {
 fn decode_manifest(encoded: &str) -> Result<FirstPartyPluginDescriptor, String> {
     let manifest: FirstPartyPluginManifest = serde_json::from_str(encoded)
         .map_err(|error| format!("解析 first-party plugin manifest 失败：{error}"))?;
-    if manifest.schema_version != "deepcode.first-party-plugin.v1"
+    if manifest.schema_version != "achbit.first-party-plugin.v1"
         || manifest.id.is_empty()
         || manifest.uri != format!("plugin://{}@first-party", manifest.id)
         || manifest.display_name.trim().is_empty()

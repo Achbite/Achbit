@@ -9,14 +9,16 @@ test('GUI slash menu discovers actions and leaves paths and ordinary messages al
     assert.ok(all.includes(name), name);
   }
   assert.deepEqual(commands.suggestComposerCommands('/mo').map(item => item.id), ['model']);
-  for (const draft of ['ordinary text', '/remote/workspace/file.txt', '/focus fix the error', '/model ']) {
+  for (const draft of ['ordinary text', '/remote/workspace/file.txt', '/focus fix the error', '/model ', ' /mo', '\t/mo']) {
     assert.deepEqual(commands.suggestComposerCommands(draft), [], draft);
   }
   assert.deepEqual(commands.parseComposerCommand('/model'), { name: 'model', argument: '' });
   assert.deepEqual(commands.parseComposerCommand('/focus fix\nthe error'), { name: 'focus', argument: 'fix\nthe error' });
-  assert.equal(commands.parseComposerCommand('/remote/workspace/file.txt'), null);
-  assert.equal(commands.parseComposerCommand('explain /model'), null);
-  assert.deepEqual(commands.parseComposerCommand('/unknown'), { name: 'unknown', argument: '' });
+  for (const draft of ['/remote/workspace/file.txt', '/api/v1', '/tmp', '/unknown', '/unknown 请解释这个名字',
+    '/model 是什么意思？', '/new explain', '/focusdir', ' /new', '\t/focus task', 'explain /model']) {
+    assert.equal(commands.parseComposerCommand(draft), null, draft);
+  }
+  assert.deepEqual(commands.parseComposerCommand('/new  '), { name: 'new', argument: '' });
 });
 
 test('GUI commands dispatch existing actions without sending model prompts or cancelling on view change', async t => {
@@ -29,7 +31,7 @@ test('GUI commands dispatch existing actions without sending model prompts or ca
   let draft = '/new', composer, sent = 0, cancelled = 0;
   globalThis.sessionStorage = {
     getItem: () => JSON.stringify({ draft, pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] }),
-    setItem() {},
+    setItem(_key, value) { draft = JSON.parse(value).draft; },
   };
   t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
   store.setState({ sessionId: 'session:remote', projection: { run: { status: 'running' }, plans: [] },
@@ -48,4 +50,10 @@ test('GUI commands dispatch existing actions without sending model prompts or ca
   await composer.submitDraft();
   assert.equal(cancelled, 1);
   assert.equal(sent, 0);
+  draft = '/cancel';
+  store.setState({ cancelRun: async () => { throw new Error('cancel rejected'); } });
+  render();
+  await composer.submitDraft();
+  assert.equal(draft, '/cancel', 'a matched action failure keeps the draft');
+  assert.equal(sent, 0, 'a failed command never falls through to chat');
 });

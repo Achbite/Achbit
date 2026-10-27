@@ -19,7 +19,6 @@ pub(crate) struct ProductTools {
     resources: Option<crate::local_agent_resources::SessionResources>,
     plugin_settings: Value,
     is_child_agent: bool,
-    pub(crate) document_python: Option<std::path::PathBuf>,
     pub(crate) browser_binding: Option<Value>,
     pub(crate) desktop: Option<crate::desktop_tools::DesktopRun>,
     pub(crate) computer_use_instance: Option<String>,
@@ -34,7 +33,6 @@ impl ProductTools {
             resources: None,
             plugin_settings: json!({}),
             is_child_agent: false,
-            document_python: None,
             browser_binding: None,
             desktop: None,
             computer_use_instance: None,
@@ -78,18 +76,6 @@ impl ProductTools {
 
     pub(crate) fn with_browser_binding(mut self, binding: Option<Value>) -> Self {
         self.browser_binding = binding;
-        self
-    }
-
-    pub(crate) fn with_document_python(mut self, path: Option<&str>) -> Self {
-        self.document_python = path
-            .filter(|path| !path.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("DEEPCODE_DOCUMENT_PYTHON")
-                    .filter(|path| !path.is_empty())
-                    .map(std::path::PathBuf::from)
-            });
         self
     }
 
@@ -246,6 +232,10 @@ const SKILLS: &[ProductSkill] = &[
             (
                 "assets/document.html",
                 include_str!("../../../skills/achbit-documents/assets/document.html"),
+            ),
+            (
+                "assets/document.typ",
+                include_str!("../../../skills/achbit-documents/assets/document.typ"),
             ),
             (
                 "THIRD_PARTY_NOTICES.md",
@@ -444,6 +434,7 @@ mod tests {
             "references/design.md",
             "references/formats.md",
             "assets/document.html",
+            "assets/document.typ",
         ] {
             let resource = tools
                 .call(

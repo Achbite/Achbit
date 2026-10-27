@@ -14,8 +14,8 @@ export default function InterfaceReloadDialog() {
       setError('');
       if (guards.length) setPending(guards); else reload();
     };
-    window.addEventListener('deepcode:request-interface-reload', request);
-    return () => window.removeEventListener('deepcode:request-interface-reload', request);
+    window.addEventListener('achbit:request-interface-reload', request);
+    return () => window.removeEventListener('achbit:request-interface-reload', request);
   }, []);
   if (!pending && !error) return null;
   const busy = pending?.some(guard => guard.busy);

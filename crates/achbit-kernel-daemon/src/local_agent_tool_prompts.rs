@@ -22,12 +22,28 @@ pub(crate) fn core_tool_prompt_providers() -> Value {
 
 pub(crate) fn run_tool_prompt_providers(
     selection: &crate::local_agent_plugins::ResolvedPluginSelection,
+    tools: &Value,
 ) -> Value {
     let mut providers = core_tool_prompt_providers()
         .as_array()
         .expect("core tool prompt providers are an array")
         .clone();
     providers.extend(selection.extension_tool_prompt_providers());
+    let names: std::collections::BTreeSet<_> = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for provider in &mut providers {
+        if let Some(contributions) = provider["contributions"].as_array_mut() {
+            contributions.retain(|item| {
+                item["canonicalToolName"]
+                    .as_str()
+                    .is_some_and(|name| names.contains(name))
+            });
+        }
+    }
     Value::Array(providers)
 }
 

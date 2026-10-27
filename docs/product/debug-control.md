@@ -10,16 +10,16 @@ Run from the package directory; the test workspace must already exist:
 
 ```sh
 ./achbit-debug launch --artifact . --workspace /absolute/test-workspace --state-root /absolute/debug-state
-export DEEPCODE_USER_ROOT=/absolute/debug-state
+export ACHBIT_USER_ROOT=/absolute/debug-state
 ./achbit-debug inspect
 ./achbit-debug --help
 # At the end, release this launch's GUI and Host:
 ./achbit-debug stop
 ```
 
-On Windows use `.\achbit-debug.cmd` and `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'` in PowerShell. Keep the package's relative paths intact.
+On Windows use `.\achbit-debug.cmd` and `$env:ACHBIT_USER_ROOT = 'E:\debug-state'` in PowerShell. Keep the package's relative paths intact.
 
-- Every connected command needs `--state-root DIR` or explicit `DEEPCODE_USER_ROOT`. Keep Debug data separate from the ordinary product; credentials are not copied.
+- Every connected command needs `--state-root DIR` or explicit `ACHBIT_USER_ROOT`. Keep Debug data separate from the ordinary product; credentials are not copied.
 - `launch --headless` starts only the Host. Normal launch checks GUI readiness, not just a PID.
 - `attach --workspace DIR` controls an existing Debug instance; `detach` releases the attachment, not its tasks. `stop` closes only launch-owned processes.
 - Rebuilding does not update running code. Check the intended GUI and Host after a restart; do not stop the ordinary product for Debug validation.
@@ -84,6 +84,8 @@ Receipts retain before/after observations, errors, operation identity, timings a
 ```
 
 `task submit` subscribes before execution. One `--follow` connection delivers grouped text/tool facts, decisions and terminal state. Quiet timeouts do not cancel work; keep that connection instead of repeatedly polling or analyzing each stream fragment. An existing-task subscription covers future events, not history. Read the task's own terminal result; a closed stream is not success.
+
+To select plugins, read `components list` and supply its current `revision` as `pluginCatalogRevision` together with `pluginSelections` in `task submit --params @request.json --follow`. Each selection contains `selectionId`, `uri` and `label`. The revision is forwarded unchanged. A nonempty selection requires a valid revision identifier; the Host resolves plugins from its current catalog without requiring that identifier to match its current revision.
 
 | Need | Command |
 | --- | --- |

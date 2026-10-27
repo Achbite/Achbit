@@ -5,10 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "DeepCode Rust Web host adapter backed by the unified Kernel runtime."
+description = "Achbit Rust Web host adapter backed by the unified Kernel runtime."
 
 [dependencies]
 axum.workspace = true
+achbit-host-connection.workspace = true
 achbit-kernel-abi.workspace = true
 serde.workspace = true
 serde_json.workspace = true

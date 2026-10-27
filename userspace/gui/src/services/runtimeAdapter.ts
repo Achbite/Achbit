@@ -10,11 +10,11 @@ type TauriCoreApi = {
 declare global {
   interface Window {
     __TAURI__?: { core?: TauriCoreApi; event?: {listen<T>(name:string,listener:(event:{payload:T})=>void):Promise<()=>void>} };
-    __DEEPCODE_BROWSER_PREVIEW__?: boolean;
+    __ACHBIT_BROWSER_PREVIEW__?: boolean;
   }
 }
 
-export const APP_CLOSE_REQUEST_EVENT = 'deepcode:app-close-request';
+export const APP_CLOSE_REQUEST_EVENT = 'achbit:app-close-request';
 
 export interface KernelStartResult {
   started: boolean;
@@ -24,7 +24,7 @@ export interface KernelStartResult {
 }
 
 export interface HostStartupStatusV1 {
-  schemaVersion: 'deepcode.host-shell.startup-status';
+  schemaVersion: 'achbit.host-shell.startup-status';
   revision: number;
   attemptId: string;
   mode: 'managed' | 'connectOnly';
@@ -40,7 +40,7 @@ export interface HostStartupStatusV1 {
 }
 
 function tauriInvoke(): TauriCoreApi['invoke'] | null {
-  if (window.__DEEPCODE_BROWSER_PREVIEW__) return null;
+  if (window.__ACHBIT_BROWSER_PREVIEW__) return null;
   return window.__TAURI__?.core?.invoke ?? null;
 }
 
@@ -60,7 +60,7 @@ export interface CompletionReminder {
 export async function notifyTaskCompleted(reminder: CompletionReminder): Promise<void> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('desktop_notifications_unavailable');
-  await invoke('deepcode_notify_completed', { reminder });
+  await invoke('achbit_notify_completed', { reminder });
 }
 
 export interface CompletionSoundInfo { path: string; custom: boolean }
@@ -68,26 +68,26 @@ export interface CompletionSoundInfo { path: string; custom: boolean }
 export async function getCompletionSound(): Promise<CompletionSoundInfo> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('desktop_notifications_unavailable');
-  return invoke<CompletionSoundInfo>('deepcode_completion_sound');
+  return invoke<CompletionSoundInfo>('achbit_completion_sound');
 }
 
 export async function setCompletionSound(data: number[] | null): Promise<CompletionSoundInfo> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('desktop_notifications_unavailable');
-  return invoke<CompletionSoundInfo>('deepcode_set_completion_sound', { data });
+  return invoke<CompletionSoundInfo>('achbit_set_completion_sound', { data });
 }
 
 export async function previewCompletionSound(): Promise<void> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('desktop_notifications_unavailable');
-  await invoke('deepcode_preview_completion_sound');
+  await invoke('achbit_preview_completion_sound');
 }
 
 export async function onCompletionOpen(listener: (sessionId: string) => void): Promise<() => void> {
   if (!hasDesktopNotifications()) return () => {};
   const events = window.__TAURI__?.event;
   if (!events) throw new Error('desktop_events_unavailable');
-  return events.listen<string>('deepcode:completion-open', event => listener(event.payload));
+  return events.listen<string>('achbit:completion-open', event => listener(event.payload));
 }
 
 export interface NativePathOptions {
@@ -111,8 +111,8 @@ export interface NativePathSelection {
 
 export async function pickNativePaths(options: NativePathOptions): Promise<NativePathSelection[] | null> {
   if (!hasNativePathPicker()) throw new Error('native_path_picker_unavailable');
-  if (options.kind === 'path' || (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__)) {
-    return tauriInvoke()!<NativePathSelection[] | null>('deepcode_pick_path', { options: {
+  if (options.kind === 'path' || (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__)) {
+    return tauriInvoke()!<NativePathSelection[] | null>('achbit_pick_path', { options: {
       title: options.title,
       kind: options.kind,
       selectLabel: options.selectLabel ?? 'Select',
@@ -148,9 +148,9 @@ async function windowCommand(
   if (invoke) {
     try {
       await invoke({
-        minimize: 'deepcode_window_minimize',
-        toggleMaximize: 'deepcode_window_toggle_maximize',
-        close: 'deepcode_window_close',
+        minimize: 'achbit_window_minimize',
+        toggleMaximize: 'achbit_window_toggle_maximize',
+        close: 'achbit_window_close',
       }[command]);
     } catch (error) {
       console.warn(`[window] ${command} failed`, error);
@@ -179,7 +179,7 @@ export async function closeAppWindow(): Promise<void> {
 export async function openExternalUrl(url: string): Promise<void> {
   const invoke = tauriInvoke();
   if (invoke) {
-    await invoke('deepcode_open_external_url', { url });
+    await invoke('achbit_open_external_url', { url });
     return;
   }
   window.open(url, '_blank', 'noopener,noreferrer');
@@ -209,7 +209,7 @@ export async function startKernelAfterPermission(): Promise<ApiResponse<KernelSt
     };
   }
   try {
-    return { ok: true, data: await invoke<KernelStartResult>('deepcode_start_kernel_after_permission') };
+    return { ok: true, data: await invoke<KernelStartResult>('achbit_start_kernel_after_permission') };
   } catch (error) {
     return { ok: false, error: 'kernel_start_failed', message: String(error) };
   }
@@ -219,7 +219,7 @@ export async function onHostStartupComplete(listener: () => void): Promise<() =>
   if (typeof window === 'undefined' || !tauriInvoke()) return () => {};
   const events = window.__TAURI__?.event;
   if (!events) throw new Error('desktop_events_unavailable');
-  return events.listen('deepcode:host-startup-complete', listener);
+  return events.listen('achbit:host-startup-complete', listener);
 }
 
 export async function getHostStartupStatus(): Promise<ApiResponse<HostStartupStatusV1>> {
@@ -232,18 +232,18 @@ export async function getHostStartupStatus(): Promise<ApiResponse<HostStartupSta
     };
   }
   try {
-    return { ok: true, data: await invoke<HostStartupStatusV1>('deepcode_host_startup_status') };
+    return { ok: true, data: await invoke<HostStartupStatusV1>('achbit_host_startup_status') };
   } catch (error) {
     return { ok: false, error: 'host_startup_status_failed', message: String(error) };
   }
 }
 
 export async function getDefaultWorkspacePath(): Promise<ApiResponse<string | null>> {
-  if (!isRemoteHost() && document.documentElement.dataset.product === 'deepcode-gui') {
+  if (!isRemoteHost() && document.documentElement.dataset.product === 'achbit-gui') {
     const invoke = tauriInvoke();
     if (invoke) {
       try {
-        return { ok: true, data: await invoke<string | null>('deepcode_default_workspace_path') };
+        return { ok: true, data: await invoke<string | null>('achbit_default_workspace_path') };
       } catch (error) {
         return { ok: false, error: 'default_workspace_failed', message: String(error) };
       }
@@ -271,19 +271,19 @@ export interface SshTarget {
 export async function connectSsh(target: SshTarget): Promise<void> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('ssh_requires_desktop_host');
-  await invoke('deepcode_connect_ssh', { target });
+  await invoke('achbit_connect_ssh', { target });
 }
 
 export async function openLocalWindow(): Promise<void> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('local_window_requires_desktop_host');
-  await invoke('deepcode_open_local');
+  await invoke('achbit_open_local');
 }
 
 export async function getSshTarget(): Promise<SshTarget | null> {
   const invoke = tauriInvoke();
   if (!invoke) return null;
-  return (await invoke<{ ssh: SshTarget | null }>('deepcode_boot_target')).ssh;
+  return (await invoke<{ ssh: SshTarget | null }>('achbit_boot_target')).ssh;
 }
 export const getCurrentWorkspace = api.getCurrentWorkspace;
 export const openWorkspace = api.openWorkspace;

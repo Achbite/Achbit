@@ -23,6 +23,7 @@
   "agent.environmentRevision": 0,
   "agent.projectEnvironments": "{}",
   "plugins.sources": "[]",
+  "plugins.services": "[]",
   "plugins.disabled": "[]",
   "agent.permissions.shell": "ask",
   "agent.permissions.shellAccess": "workspace",

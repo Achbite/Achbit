@@ -34,7 +34,7 @@ test('image paste preserves draft text and follows the same failed-draft ownersh
   } });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(prevented, true);
-  const draft = JSON.parse(saved.get('deepcode:composer:session:paste'));
+  const draft = JSON.parse(saved.get('achbit:composer:session:paste'));
   assert.equal(draft.draft, 'existing draft');
   assert.equal(draft.pastedImages.length, 1);
   assert.equal(draft.pastedImages[0].dataUrl, image.dataUrl);

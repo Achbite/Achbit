@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub(super) const RECEIPT_ENV: &str = "DEEPCODE_GUI_SSH_RECEIPT";
+pub(super) const RECEIPT_ENV: &str = "ACHBIT_GUI_SSH_RECEIPT";
 
 struct Options {
     action: String,
@@ -204,12 +204,12 @@ fn connect_gui(options: Options, endpoint: String) -> io::Result<Value> {
     let mut command = Command::new(&gui);
     command
         .env(
-            "DEEPCODE_GUI_SSH_TARGET",
+            "ACHBIT_GUI_SSH_TARGET",
             serde_json::to_string(&options.target)?,
         )
         .env_remove(RECEIPT_ENV)
-        .env_remove("DEEPCODE_PORT")
-        .env_remove("DEEPCODE_SHELL_CONNECT_ONLY")
+        .env_remove("ACHBIT_PORT")
+        .env_remove("ACHBIT_SHELL_CONNECT_ONLY")
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);

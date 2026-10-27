@@ -1,3 +1,4 @@
+import { messagesFromJournal } from '../dist/local-agent/contextComposer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -44,7 +45,7 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
         output: {stdout: 'building\n', stderr: '', stdoutBytes: 9, stderrBytes: 0, truncated: false}};
       wake();
       const reply = completedExecutionReply(request, {job});
-      reply.record.preparedEffect.providerRef = 'deepcode:processes';
+      reply.record.preparedEffect.providerRef = 'achbit:processes';
       reply.record.preparedEffect.operation = 'bash';
       reply.record.preparedEffect.logicalTargets = ['.'];
       return reply;
@@ -75,7 +76,7 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   assert.equal((await actor.snapshot()).messages.some(m => m.content === 'Premature answer.'), true, 'valid generated text persists while the process still prevents settlement');
   assert.equal((await actor.snapshot()).run.status, 'running');
   if (watchFailure) failWatch();
-  else if (stop) await actor.submit({schemaVersion:'deepcode.command.v3', type:'run.cancel', commandId:'command:stop', sessionId, runId:active.run.runId});
+  else if (stop) await actor.submit({schemaVersion:'achbit.command.v3', type:'run.cancel', commandId:'command:stop', sessionId, runId:active.run.runId});
   else finish('completed');
   const final = await waitForProjection(actor, p => ['completed','cancelled','failed'].includes(p.run?.status));
   assert.equal(final.run.status, watchFailure ? 'failed' : ending);
@@ -110,7 +111,7 @@ function activeJobReply(request) {
     toolName: 'bash', command: 'prepare', targets: ['.'], status: 'active', startedAt: String(Date.now()),
     output: { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, truncated: false } };
   const reply = completedExecutionReply(request, { job });
-  reply.record.preparedEffect.providerRef = 'deepcode:processes';
+  reply.record.preparedEffect.providerRef = 'achbit:processes';
   reply.record.preparedEffect.operation = 'bash';
   reply.record.preparedEffect.logicalTargets = ['.'];
   return { job, reply };
@@ -185,4 +186,54 @@ test('Actor disposal releases its composition when managed process closure fails
     return true;
   });
   assert.equal(compositionDisposals, 1);
+});
+
+
+test('process heartbeats retain journal facts without repeating unchanged model context', () => {
+  const events = [], sessionId = 'session:process-heartbeat', runId = 'run:process-heartbeat';
+  const add = (type, payload) => events.push({ type, payload, sessionId, runId,
+    eventId: `event:${events.length + 1}`, sequence: events.length + 1, occurredAt: '2026-10-26T00:00:00Z' });
+  let job = { jobId: 'job:heartbeat', sessionId, runId, callId: 'call:heartbeat', revision: 1,
+    toolName: 'bash', command: 'build', targets: ['.'], status: 'active', startedAt: '1',
+    output: { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, truncated: false } };
+  const freeze = contributions => {
+    const seen = new Set(events.filter(event => event.type === 'context.composed')
+      .flatMap(event => event.payload.modelView.additions.map(value => value.contributionId)));
+    add('context.composed', { purpose: 'agent', modelView: { throughSequence: events.length,
+      additions: structuredClone(contributions.filter(value => !seen.has(value.contributionId))) } });
+  };
+  const render = () => messagesFromJournal(events, runId, []);
+  add('process.updated', { job });
+  const initial = render();
+  assert.equal(initial.length, 1);
+  freeze(initial);
+  job = { ...job, revision: 2 };
+  add('process.updated', { job });
+  assert.deepEqual(render(), initial, 'a heartbeat-only revision does not append a user message');
+  freeze(render());
+  job = { ...job, revision: 3, lastOutputAt: '2', output: { ...job.output, stdout: 'compiled 1 file', stdoutBytes: 15 } };
+  add('process.updated', { job });
+  const progress = render();
+  assert.deepEqual(progress.slice(0, initial.length), initial, 'the previously observed process snapshot is immutable');
+  assert.equal(progress.length, 2);
+  assert.equal(JSON.parse(progress.at(-1).message.content).process.output.stdout, 'compiled 1 file');
+  freeze(progress);
+  job = { ...job, revision: 4 };
+  add('process.updated', { job });
+  add('message.committed', { messageId: 'message:user', role: 'user', content: 'Please also report the compiler version.' });
+  const withInput = render();
+  assert.equal(withInput.length, 3, 'real user input remains present while the duplicate process update is omitted');
+  assert.equal(withInput.at(-1).message.content, 'Please also report the compiler version.');
+  freeze(withInput);
+  job = { ...job, revision: 5, status: 'failed', completedAt: '3',
+    error: { code: 'build_failed', message: 'Compiler exited with status 1.' }, result: { exitCode: 1, durationMs: 2000, timedOut: false } };
+  add('process.updated', { job });
+  const failed = render();
+  assert.equal(failed.length, 4);
+  assert.equal(JSON.parse(failed.at(-1).message.content).process.status, 'failed');
+  assert.equal(JSON.parse(failed.at(-1).message.content).process.error.message, 'Compiler exited with status 1.');
+  freeze(failed);
+  add('process.updated', { job: { ...job, revision: 6 } });
+  assert.deepEqual(render(), failed, 'a terminal heartbeat does not erase or repeat the failure');
+  assert.equal(events.filter(event => event.type === 'process.updated').length, 6, 'all canonical heartbeat facts remain in the journal');
 });

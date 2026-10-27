@@ -8,7 +8,7 @@ node_modules
 **/.git
 bin
 .build-cache
-.deepcode/build-baselines
+.achbit/build-baselines
 .pnpm-store
 _check_output.txt
 _agent_tmp_*
@@ -17,5 +17,7 @@ _agent_tmp_*
 Thumbs.db
 .logs
 .task-artifacts
+.achbit-preview-config*
+.deepcode-preview-config*
 docs/architecture
 docs/task-receipts

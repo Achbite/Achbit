@@ -30,7 +30,7 @@ useSettingsStore.setState({ patchUserSettingsBatch: async patches => {
 function Fixture() {
   const settings = useSettingsStore(state => state.effectiveSettings);
   return <>
-    <style>{`*{box-sizing:border-box}body{margin:24px auto;max-width:900px;font:14px var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}.fixture-toolbar{display:flex;gap:16px;margin-bottom:24px}main{padding:20px;border:1px solid var(--dc-border);border-radius:12px}output{display:block;margin-top:20px}`}</style>
+    <style>{`*{box-sizing:border-box}body{margin:24px auto;max-width:900px;font:14px var(--ac-font-ui);color:var(--ac-foreground);background:var(--ac-surface)}.fixture-toolbar{display:flex;gap:16px;margin-bottom:24px}main{padding:20px;border:1px solid var(--ac-border);border-radius:12px}output{display:block;margin-top:20px}`}</style>
     <nav className="fixture-toolbar"><label>当前对话模型<select defaultValue="model:enabled" onChange={event => useLocalAgentStore.setState({ selectedProfileId: event.target.value })}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
       <label>界面语言<select defaultValue="zh-CN" onChange={event => useSettingsStore.setState({ effectiveSettings: { ...settings, 'workbench.language': event.target.value } })}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label></nav>
     <main><LlmSection /></main><output aria-label="已保存审批设置">{JSON.stringify({ model: settings['agent.approvalReview.profileId'], effort: settings['agent.approvalReview.reasoningEffort'] })}</output>

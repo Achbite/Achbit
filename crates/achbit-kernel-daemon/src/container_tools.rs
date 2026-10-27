@@ -119,7 +119,7 @@ impl Containers {
     fn metadata(&self, docker_context: Option<&str>, args: &[String]) -> Result<String, String> {
         let archive = MetadataArchive(
             std::env::temp_dir()
-                .join(crate::utils::new_runtime_ref("deepcode-docker")?.replace(':', "-")),
+                .join(crate::utils::new_runtime_ref("achbit-docker")?.replace(':', "-")),
         );
         let context = KernelToolExecutionContext {
             output_directory: Some(archive.0.clone()),
@@ -243,7 +243,7 @@ impl Containers {
             .ok_or("Prepared container ID missing")?;
         let marker = format!(
             "/tmp/{}",
-            crate::utils::new_runtime_ref("deepcode-exec")?.replace(':', "-")
+            crate::utils::new_runtime_ref("achbit-exec")?.replace(':', "-")
         );
         let mut args = vec!["exec".into()];
         if let Some(cwd) = &input.cwd {
@@ -252,7 +252,7 @@ impl Containers {
         // Command is an argument, not interpolated into the wrapper. Cancellation owns this group only.
         args.extend([container.into(),"/bin/sh".into(),"-c".into(),
             "command -v setsid >/dev/null || { echo 'container exec requires setsid' >&2; exit 127; }; setsid /bin/sh -c \"$1\" & child=$!; printf '%s' \"$child\" > \"$2\"; wait \"$child\"; status=$?; kill -TERM -\"$child\" 2>/dev/null || :; kill -KILL -\"$child\" 2>/dev/null || :; rm -f -- \"$2\"; exit \"$status\"".into(),
-            "deepcode".into(),input.command.clone().expect("validated command"),marker.clone()]);
+            "achbit".into(),input.command.clone().expect("validated command"),marker.clone()]);
         let mut result = execute_cli_command(
             id.into(),
             self.cli(Some(docker_context), &args),
@@ -264,7 +264,7 @@ impl Containers {
         .map_err(|e| e.to_string());
         // Killing the Docker client doesn't stop docker exec on the daemon.
         let cleanup = self.metadata(Some(docker_context), &["exec".into(),container.into(),"/bin/sh".into(),"-c".into(),
-            "if [ -f \"$1\" ]; then read -r pid < \"$1\" || :; kill -TERM -\"$pid\" 2>/dev/null || :; kill -KILL -\"$pid\" 2>/dev/null || :; rm -f -- \"$1\"; fi".into(),"deepcode".into(),marker]);
+            "if [ -f \"$1\" ]; then read -r pid < \"$1\" || :; kill -TERM -\"$pid\" 2>/dev/null || :; kill -KILL -\"$pid\" 2>/dev/null || :; rm -f -- \"$1\"; fi".into(),"achbit".into(),marker]);
         if let Err(error) = cleanup {
             let cleanup = format!("container process cleanup: {error}");
             match &mut result {
@@ -300,7 +300,7 @@ impl Containers {
         let docker_context = target["engine"]["context"]
             .as_str()
             .ok_or("Docker context missing")?;
-        let name = crate::utils::new_runtime_ref("deepcode-test")?.replace(':', "-");
+        let name = crate::utils::new_runtime_ref("achbit-test")?.replace(':', "-");
         let work = Path::new(
             target["create"]["workRoot"]
                 .as_str()
@@ -319,7 +319,7 @@ impl Containers {
             "--name".into(),
             name.clone(),
             "--label".into(),
-            format!("deepcode.owner={name}"),
+            format!("achbit.owner={name}"),
             "--init".into(),
             "--network".into(),
             target["create"]["network"]
@@ -396,7 +396,7 @@ impl Containers {
                         "ps".into(),
                         "-aq".into(),
                         "--filter".into(),
-                        format!("label=deepcode.owner={name}"),
+                        format!("label=achbit.owner={name}"),
                     ],
                 )?;
                 if !ids.is_empty() {

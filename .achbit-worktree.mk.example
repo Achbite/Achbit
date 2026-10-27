@@ -1,4 +1,4 @@
 # Copy this file to .achbit-worktree.mk in a persistent module worktree.
 # The local file is ignored by Git and must use a stable worktree identity.
-DEEPCODE_WORKTREE_ID := module
-DEEPCODE_HOST_PORT := 31247
+ACHBIT_WORKTREE_ID := module
+ACHBIT_HOST_PORT := 31247

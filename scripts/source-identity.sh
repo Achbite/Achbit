@@ -2,24 +2,24 @@
 # Shared, path-independent source identity for build and package tooling.
 # This file only defines functions and is safe to source from another script.
 
-deepcode_source_git_available() {
+achbit_source_git_available() {
   local root="$1"
   command -v git >/dev/null 2>&1 || return 1
   git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-deepcode_source_commit() {
+achbit_source_commit() {
   local root="$1"
-  if ! deepcode_source_git_available "$root"; then
+  if ! achbit_source_git_available "$root"; then
     printf 'unknown\n'
     return 0
   fi
   git -C "$root" rev-parse HEAD
 }
 
-deepcode_source_status() {
+achbit_source_status() {
   local root="$1"
-  if ! deepcode_source_git_available "$root"; then
+  if ! achbit_source_git_available "$root"; then
     # Docker compile snapshots can contain a linked-worktree .git file whose
     # host-only absolute gitdir is intentionally unavailable in the container.
     # Keep that state explicit and dirty instead of emitting a Git fatal or
@@ -30,9 +30,9 @@ deepcode_source_status() {
   git -C "$root" status --porcelain=v1 --untracked-files=all
 }
 
-deepcode_source_dirty() {
+achbit_source_dirty() {
   local root="$1"
-  if [ -n "$(deepcode_source_status "$root")" ]; then
+  if [ -n "$(achbit_source_status "$root")" ]; then
     printf '1\n'
   else
     printf '0\n'

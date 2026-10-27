@@ -1,6 +1,6 @@
 <!doctype html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DeepCode</title>
+<title>Achbit</title>
 <style>
   :root { color-scheme: light dark; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   * { box-sizing: border-box; }
@@ -17,7 +17,7 @@
   button:focus-visible { outline: 2px solid #428765; outline-offset: 3px; border-radius: 3px; }
   @media (prefers-color-scheme: dark) { body { background: #242424; color: #f1f1f1; } #body, small, #dismiss { color: #b5b5b5; } .icon { background: #293e32; color: #a7d6b7; } }
 </style></head><body>
-<main><span class="icon" aria-hidden="true">✓</span><button id="open"><small>DeepCode</small><strong id="title"></strong><span id="body"></span></button><button id="dismiss">×</button></main>
+<main><span class="icon" aria-hidden="true">✓</span><button id="open"><small>Achbit</small><strong id="title"></strong><span id="body"></span></button><button id="dismiss">×</button></main>
 <div id="error" role="alert"></div>
 <script>
   const params = new URLSearchParams(location.search);
@@ -29,7 +29,7 @@
     try { await window.__TAURI__.core.invoke(command, args); }
     catch (error) { document.getElementById('error').textContent = String(error); }
   }
-  document.getElementById('open').onclick = () => invoke('deepcode_open_completion', { sessionId: params.get('session') });
-  document.getElementById('dismiss').onclick = () => invoke('deepcode_dismiss_completion');
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') void invoke('deepcode_dismiss_completion'); });
+  document.getElementById('open').onclick = () => invoke('achbit_open_completion', { sessionId: params.get('session') });
+  document.getElementById('dismiss').onclick = () => invoke('achbit_dismiss_completion');
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') void invoke('achbit_dismiss_completion'); });
 </script></body></html>

@@ -45,10 +45,13 @@ mod managed_processes;
 mod model_auth;
 mod model_connections;
 mod model_usage;
+mod plugin_installation;
 mod prelude;
 mod provider_transport;
 mod routes;
+mod service_plugins;
 mod session_environment;
+mod session_events;
 mod session_service;
 mod settings_api;
 mod state;
@@ -99,7 +102,7 @@ async fn run() {
         return;
     }
     let user_directories =
-        achbit_host_connection::UserDirectories::resolve().expect("解析 DeepCode 用户目录");
+        achbit_host_connection::UserDirectories::resolve().expect("解析 Achbit 用户目录");
     achbit_host_connection::startup::timing("kernel.directories");
     #[cfg(windows)]
     {
@@ -154,23 +157,23 @@ async fn run() {
         }
         return;
     }
-    let host = std::env::var("DEEPCODE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = match std::env::var("DEEPCODE_PORT") {
+    let host = std::env::var("ACHBIT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = match std::env::var("ACHBIT_PORT") {
         Ok(value) => achbit_host_connection::loopback_http::parse_port(&value),
         Err(std::env::VarError::NotPresent) => Ok(31245),
         Err(error) => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
     }
     .unwrap_or_else(|error| {
-        eprintln!("host_port_invalid: DEEPCODE_PORT: {error}");
+        eprintln!("host_port_invalid: ACHBIT_PORT: {error}");
         std::process::exit(1);
     });
     let addr: SocketAddr = format!("{host}:{port}").parse().expect("valid host/port");
     assert!(
         addr.ip().is_loopback(),
-        "DeepCode 本地 daemon 只监听 loopback"
+        "Achbit 本地 daemon 只监听 loopback"
     );
 
-    let gui_state = GuiState::open_in(&user_directories).expect("打开当前用户目录");
+    let mut gui_state = GuiState::open_in(&user_directories).expect("打开当前用户目录");
     achbit_host_connection::startup::timing("kernel.gui_state");
     let model_usage = Arc::new(
         model_usage::UsageStore::open(&gui_state.paths.usage_store_path).expect("打开用量索引"),
@@ -181,9 +184,15 @@ async fn run() {
     let user_settings = gui_state.user_settings.clone();
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .unwrap_or_else(|error| panic!("无法绑定 DeepCode 本地 daemon：{error}"));
+        .unwrap_or_else(|error| panic!("无法绑定 Achbit 本地 daemon：{error}"));
     let addr = listener.local_addr().expect("读取 Host 监听地址");
     achbit_host_connection::startup::timing("kernel.listener");
+    match service_plugins::sources(&user_settings) {
+        Ok(sources) => gui_state
+            .service_plugins
+            .activate(&sources, &user_directories.data_dir),
+        Err(error) => eprintln!("Service plugin settings invalid: {error}"),
+    }
     let gui = Arc::new(Mutex::new(gui_state));
     let workspace_resolver = Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
         gui.clone(),
@@ -275,15 +284,15 @@ async fn run() {
     .and_then(|connection| connection.publish(&user_directories.data_dir))
     .expect("发布共享 Host 本地连接");
     achbit_host_connection::startup::timing("kernel.published");
-    println!("DeepCode local Agent daemon listening on http://{addr}");
+    println!("Achbit local Agent daemon listening on http://{addr}");
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(wait_for_host_shutdown())
         .await;
     lifetime_monitor.abort();
     let cleanup_complete = shutdown_owned_host_resources(&state).await;
-    assert!(cleanup_complete, "DeepCode 本地资源未完整回收");
+    assert!(cleanup_complete, "Achbit 本地资源未完整回收");
     if let Err(error) = result {
-        panic!("DeepCode 本地 daemon 运行失败：{error}");
+        panic!("Achbit 本地 daemon 运行失败：{error}");
     }
 }
 

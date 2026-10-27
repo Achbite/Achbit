@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 test('packaged Windows font helper reads settings over stdin and keeps diagnostics off stdout', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'deepcode font config '));
+  const root = await mkdtemp(join(tmpdir(), 'achbit font config '));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'tui/macos'), { recursive: true });
   await mkdir(join(root, 'node_modules/@achbit'), { recursive: true });

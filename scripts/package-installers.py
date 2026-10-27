@@ -22,8 +22,8 @@ def macos(stage, output, version):
             launcher = commands / name
             launcher.write_text('#!/bin/sh\n'
                 'APP_DIR="/Applications/Achbit.app/Contents"\n'
-                'export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"\n'
-                'export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"\n'
+                'export ACHBIT_RUNTIME_DIR="$APP_DIR/Resources"\n'
+                'export ACHBIT_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"\n'
                 + ('exec "$APP_DIR/Resources/node/bin/node" "$APP_DIR/Resources/tui/window.mjs" "$@"\n'
                    if shell == 'tui' else f'exec "$APP_DIR/MacOS/achbit-{shell}" "$@"\n'))
             launcher.chmod(0o755)
@@ -35,7 +35,7 @@ def macos(stage, output, version):
             'BundleOverwriteAction': 'upgrade',
         } for name in ['Achbit.app', 'Achbit Computer Use.app']]))
         subprocess.run(['pkgbuild', '--root', str(payload), '--component-plist', str(components),
-            '--identifier', 'com.achbite.deepcode', '--version', version,
+            '--identifier', 'com.achbite.achbit', '--version', version,
             '--install-location', '/', '--ownership', 'recommended', str(output)], check=True)
 
 

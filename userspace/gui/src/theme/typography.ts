@@ -53,11 +53,11 @@ export function codeFontSize(value: unknown): number {
 
 export function typographyStyles(settings: UserSettings): Record<string, string> {
   return {
-    '--dc-font-ui': uiFontFamily(fontChoice(settings, INTERFACE_FONT_FAMILY_SETTING)),
-    '--dc-font-reading': uiFontFamily(fontChoice(settings, CONTENT_FONT_FAMILY_SETTING)),
-    '--dc-font-code': uiFontFamily(fontChoice(settings, TERMINAL_FONT_FAMILY_SETTING), true),
-    '--dc-ui-font-scale': String(uiFontSize(settings[UI_FONT_SIZE_SETTING]) / 14),
-    '--dc-font-reading-size': `${uiFontSize(settings[CONTENT_FONT_SIZE_SETTING])}px`,
-    '--dc-font-code-size': `${codeFontSize(settings[CODE_FONT_SIZE_SETTING])}px`,
+    '--ac-font-ui': uiFontFamily(fontChoice(settings, INTERFACE_FONT_FAMILY_SETTING)),
+    '--ac-font-reading': uiFontFamily(fontChoice(settings, CONTENT_FONT_FAMILY_SETTING)),
+    '--ac-font-code': uiFontFamily(fontChoice(settings, TERMINAL_FONT_FAMILY_SETTING), true),
+    '--ac-ui-font-scale': String(uiFontSize(settings[UI_FONT_SIZE_SETTING]) / 14),
+    '--ac-font-reading-size': `${uiFontSize(settings[CONTENT_FONT_SIZE_SETTING])}px`,
+    '--ac-font-code-size': `${codeFontSize(settings[CODE_FONT_SIZE_SETTING])}px`,
   };
 }

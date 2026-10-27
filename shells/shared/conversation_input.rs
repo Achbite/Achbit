@@ -8,6 +8,15 @@ use achbit_kernel_client::{
 };
 use serde_json::json;
 
+/// A leading space escapes commands; callers must pass the original input.
+pub fn slash_command(text: &str) -> Option<(&str, &str)> {
+    let command = text.strip_prefix('/')?;
+    let (name, argument) = command
+        .split_once(char::is_whitespace)
+        .unwrap_or((command, ""));
+    Some((name, argument.trim()))
+}
+
 /// Replying from the parent keeps the original child decision identity and command owner.
 pub async fn child_reply_projection(
     language: Language,
@@ -15,8 +24,7 @@ pub async fn child_reply_projection(
     projection: &SessionProjection,
     text: &str,
 ) -> Result<Option<SessionProjection>, String> {
-    let text = text.trim();
-    if !(text == "/reply" || text.starts_with("/reply "))
+    if !matches!(slash_command(text), Some(("reply", _)))
         || projection.pending_plan.is_some()
         || projection.pending_interaction.is_some()
         || projection.pending_approval.is_some()
@@ -86,25 +94,25 @@ pub fn contextual_input_command(
     if text.is_empty() {
         return Err(language.text("tui.emptyInput").to_string());
     }
-    if let Some(patches) = text.strip_prefix("/permissions ") {
+    let command = slash_command(original_text);
+    if let Some(("permissions", patches)) = command.filter(|(_, argument)| !argument.is_empty()) {
         let patches: serde_json::Value =
             serde_json::from_str(patches).map_err(|error| error.to_string())?;
         return Ok(
-            json!({"schemaVersion": "deepcode.command.v3", "type":"session.permissions.set", "commandId":command_id, "sessionId":projection.session_id, "patches":patches}),
+            json!({"schemaVersion": "achbit.command.v3", "type":"session.permissions.set", "commandId":command_id, "sessionId":projection.session_id, "patches":patches}),
         );
     }
-    if let Some(authority) = text.strip_prefix("/revoke ") {
+    if let Some(("revoke", authority)) = command.filter(|(_, argument)| !argument.is_empty()) {
         let grant = projection
             .shell_authorizations
             .iter()
             .find(|grant| grant.authority_id == authority.trim())
             .ok_or("No active grant with this authority ID")?;
         return Ok(
-            json!({"schemaVersion":"deepcode.command.v3", "type":"approval.revoke", "commandId":command_id, "sessionId":projection.session_id, "runId":grant.run_id, "authorityId":grant.authority_id}),
+            json!({"schemaVersion":"achbit.command.v3", "type":"approval.revoke", "commandId":command_id, "sessionId":projection.session_id, "runId":grant.run_id, "authorityId":grant.authority_id}),
         );
     }
-    if text == "/reply" || text.starts_with("/reply ") {
-        let response = text.strip_prefix("/reply").unwrap().trim();
+    if let Some(("reply", response)) = command {
         if response.is_empty() {
             return Err(language.text("tui.replyUsage").to_string());
         }
@@ -165,11 +173,7 @@ pub fn contextual_input_command(
     } else {
         profile_id
     };
-    if let Some(task) = text.strip_prefix("/focus") {
-        if !task.is_empty() && !task.chars().next().is_some_and(char::is_whitespace) {
-            return Err(language.text("tui.focusSeparator").to_string());
-        }
-        let task = task.trim();
+    if let Some(("focus", task)) = command {
         if task.is_empty() {
             return Err(language.text("tui.focusRequired").to_string());
         }
@@ -182,9 +186,6 @@ pub fn contextual_input_command(
             catalog_revision,
             selections,
         ));
-    }
-    if text.starts_with('/') {
-        return Err(language.format("tui.unknownInputCommand", &[format!("{}", text)]));
     }
     let mut command = message_command_with_profile_and_plugins(
         &projection.session_id,
@@ -300,5 +301,102 @@ pub(crate) mod fixtures {
                 json!("allow"),
             ),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unclaimed_slash_text_preserves_body_references_and_plugins() {
+        let projection = fixtures::waiting_projection("pendingPlan", serde_json::Value::Null);
+        let references: Vec<FilesystemReference> = serde_json::from_value(json!([{
+            "referenceId":"reference:directory", "workspaceId":"workspace:test",
+            "logicalPath":".", "displayName":"workspace", "kind":"directory"
+        }]))
+        .unwrap();
+        let selections = [PluginSelectionInput {
+            selection_id: "selection:test".into(),
+            uri: "plugin://web@builtin".into(),
+            label: "Web".into(),
+        }];
+        for text in [
+            "/Users/example/file.txt 请检查\n保留正文  ",
+            "/tmp",
+            "/api/v1",
+            "/",
+            "/unknown 请解释这个名字",
+            "/focusdir",
+            "/reply-later",
+            " /new",
+            "\t/focus task",
+            " /reply 1",
+            " /permissions []",
+            " /revoke authority:test",
+        ] {
+            let command = contextual_input_command(
+                Language::EnUs,
+                &projection,
+                text,
+                "command:test",
+                None,
+                &references,
+                "catalog:test",
+                &selections,
+            )
+            .unwrap();
+            assert_eq!(command["type"], "message.submit", "{text}");
+            assert_eq!(command["text"], text);
+            assert_eq!(command["runId"], "run:test");
+            assert_eq!(
+                command["filesystemReferences"],
+                serde_json::to_value(&references).unwrap()
+            );
+            assert_eq!(
+                command["pluginSelections"],
+                serde_json::to_value(&selections).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn matched_context_commands_keep_success_and_failure_semantics() {
+        let projection = fixtures::waiting_projection("pendingPlan", serde_json::Value::Null);
+        for text in [
+            "/focus",
+            "/reply",
+            "/reply 1",
+            "/permissions invalid",
+            "/revoke missing",
+        ] {
+            assert!(
+                contextual_input_command(
+                    Language::EnUs,
+                    &projection,
+                    text,
+                    "command:test",
+                    None,
+                    &[],
+                    "",
+                    &[]
+                )
+                .is_err(),
+                "{text} must not fall through to chat"
+            );
+        }
+        let command = contextual_input_command(
+            Language::EnUs,
+            &projection,
+            "/focus\t检查\n目录",
+            "command:test",
+            None,
+            &[],
+            "",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(command["type"], "context.focus");
+        assert_eq!(command["task"], "检查\n目录");
     }
 }

@@ -34,18 +34,18 @@ function preparation(reads) {
 }
 
 function needsReview(request) {
-  return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+  return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
     callId: request.callId, status: 'approvalRequired', preview: { summary: 'Run make check', effects: ['process'], logicalTargets: ['.'],
       approvalReviewer: 'agent', authorizationContext: operation } };
 }
 
 async function decide(actor, sessionId, type) {
   const state = await actor.snapshot();
-  if (type === 'run') return actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+  if (type === 'run') return actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
     sessionId, commandId: 'command:cancel', runId: state.run.runId });
   const approval = state.pendingApproval;
   assert.ok(approval);
-  return actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', sessionId,
+  return actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', sessionId,
     commandId: 'command:manual', runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'allow' });
 }
 
@@ -123,7 +123,7 @@ for (const stop of ['run', 'manual']) test(`a ${stop} stop closes undispatched r
     reply.status = reply.record.outcome = 'cancelled';
     delete reply.record.output;
     pendingRead.resolve(reply);
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:review',
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:review',
       callId, attemptId, status: 'cancelled', record: reply.record };
   } }), preparation(true).port, 'review-batch');
   t.after(() => actor.dispose());

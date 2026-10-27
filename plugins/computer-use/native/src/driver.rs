@@ -97,6 +97,7 @@ struct Observation {
     bounds: Rect,
     window_id: u32,
     foreground: bool,
+    pixels: bool,
     binding: Value,
     image_width: f64,
     image_height: f64,
@@ -112,7 +113,39 @@ struct ObservedWindow {
     elements: Vec<Owned>,
 }
 thread_local! {
+    static AX_DIAGNOSTICS: RefCell<Value> = RefCell::new(json!({}));
     static OBSERVED_WINDOW: RefCell<Option<ObservedWindow>> = const { RefCell::new(None) };
+}
+
+// Per-request AX evidence lives on the same AppKit thread as the AX calls.
+fn ax_failure(stage: &str, code: Option<i32>, message: &str) {
+    AX_DIAGNOSTICS.with(|slot| {
+        let mut data = slot.borrow_mut();
+        data["stage"] = json!(stage);
+        data["nativeCode"] = json!(code);
+        if !data["errors"].is_array() {
+            data["errors"] = json!([]);
+        }
+        data["errors"]
+            .as_array_mut()
+            .expect("AX errors")
+            .push(json!({"stage":stage,"nativeCode":code,"message":message}));
+    });
+}
+
+pub fn diagnostics(gui: &crate::runtime::MainThread) -> Value {
+    on_main_thread(
+        gui,
+        || Ok(AX_DIAGNOSTICS.with(|slot| slot.borrow().clone())),
+    )
+    .unwrap_or_else(|error| json!({"diagnosticsError":error}))
+}
+
+unsafe fn exact_window_id(element: Ref) -> Result<u32, String> {
+    crate::window_identity::id(element).map_err(|error| {
+        ax_failure("AXWindowIdentity", error.code, &error.message);
+        error.message
+    })
 }
 
 fn on_main_thread<T: Send + 'static>(
@@ -139,6 +172,11 @@ fn with_accessibility<T: Send + 'static>(
         let root = Owned::new(AXUIElementCreateApplication(pid))?;
         let error = AXUIElementSetMessagingTimeout(root.0, 0.3);
         if error != 0 {
+            ax_failure(
+                "AXMessagingTimeout",
+                Some(error),
+                "Could not set AX messaging timeout",
+            );
             return Err(format!(
                 "Could not set AX messaging timeout (AX error {error})"
             ));
@@ -161,12 +199,19 @@ unsafe fn applications() -> *mut AnyObject {
 unsafe fn target(bundle: &str) -> Result<*mut AnyObject, String> {
     let apps = applications();
     let count: usize = msg_send![apps, count];
+    let mut matched = None;
     for index in 0..count {
         let app: *mut AnyObject = msg_send![apps, objectAtIndex:index];
         let id: *mut NSString = msg_send![app, bundleIdentifier];
         if string(id) == bundle {
-            return Ok(app);
+            if matched.is_some() {
+                return Err("Multiple running applications share this bundle ID; select an exact windowId from listWindows".into());
+            }
+            matched = Some(app);
         }
+    }
+    if let Some(app) = matched {
+        return Ok(app);
     }
     Err(format!(
         "Application is not running: {bundle}. Use listApps to choose a running app."
@@ -179,7 +224,11 @@ unsafe fn attribute(element: Ref, key: &str) -> Result<Option<Owned>, String> {
         0 => Owned::new(result).map(Some),
         // kAXErrorAttributeUnsupported / kAXErrorNoValue are legitimate absence.
         -25205 | -25212 => Ok(None),
-        error => Err(format!("Could not read {key} (AX error {error})")),
+        error => {
+            let message = format!("Could not read {key} (AX error {error})");
+            ax_failure(key, Some(error), &message);
+            Err(message)
+        }
     }
 }
 unsafe fn text_attribute(element: Ref, key: &str) -> Result<Option<String>, String> {
@@ -397,8 +446,8 @@ unsafe fn restore_observed_window(
                 Ok(json!({
                     "AXFrontmost": is_frontmost,
                     "focusedWindowID": focused.as_ref()
-                        .map(|focused| crate::window_identity::id(focused.0)).transpose()?,
-                    "observedWindowID": crate::window_identity::id(window.element.0)?,
+                        .map(|focused| exact_window_id(focused.0)).transpose()?,
+                    "observedWindowID": exact_window_id(window.element.0)?,
                     "CFEqual": focused.as_ref()
                         .map(|focused| CFEqual(focused.0, window.element.0)),
                 }))
@@ -624,8 +673,20 @@ unsafe fn select_window(
         let mut matches = Vec::new();
         for index in 0..CFArrayGetCount(windows.0) {
             let window = CFArrayGetValueAtIndex(windows.0, index);
-            if crate::window_identity::id(window)? == id {
-                matches.push(Owned::new(CFRetain(window))?);
+            match exact_window_id(window) {
+                Ok(found) if found == id => matches.push(Owned::new(CFRetain(window))?),
+                Ok(_) => {}
+                Err(message) => AX_DIAGNOSTICS.with(|slot| {
+                    let mut data = slot.borrow_mut();
+                    if !data["candidateErrors"].is_array() {
+                        data["candidateErrors"] = json!([]);
+                    }
+                    let code = data["nativeCode"].clone();
+                    data["candidateErrors"]
+                        .as_array_mut()
+                        .expect("candidate errors")
+                        .push(json!({"index":index,"nativeCode":code,"message":message}));
+                }),
             }
         }
         if matches.len() != 1 {
@@ -635,7 +696,8 @@ unsafe fn select_window(
     } else {
         attribute(root, "AXFocusedWindow")?.ok_or("Target application has no focused window")?
     };
-    let id = crate::window_identity::id(element.0)?;
+    let id = exact_window_id(element.0)?;
+    AX_DIAGNOSTICS.with(|slot| slot.borrow_mut()["windowId"] = json!(id));
     let (owner, bounds) = window_snapshot(id)?;
     if owner != pid {
         return Err("Window does not belong to the requested app".into());
@@ -661,16 +723,41 @@ unsafe fn observe(
 ) -> Result<(Observation, Value), String> {
     let window_id = input["windowId"].as_u64().map(|id| id as u32);
     let foreground = crate::protocol::foreground_requested(input);
-    let (mut items, accessibility, window_info, window_id, bounds) = with_accessibility(
-        app,
-        pid,
-        move |root| {
+    let pixels = input["observationType"] == "pixels";
+    let (mut items, accessibility, window_info, window_id, bounds) = if pixels {
+        let id =
+            window_id.ok_or("Pixel observation requires an exact windowId from listWindows")?;
+        let (owner, bounds) = window_snapshot(id)?;
+        if owner != pid {
+            return Err("Window does not belong to the requested app".into());
+        }
+        if foreground && activate_requested {
+            activate_pixel_target(app, pid, id, bounds)?;
+        }
+        on_main_thread(app, || {
+            OBSERVED_WINDOW.with(|slot| slot.borrow_mut().take());
+            Ok(())
+        })?;
+        (
+            Vec::new(),
+            json!({"available":false,"reason":"notRequested"}),
+            json!({"windowId":id,"pid":pid,"bounds":rect_json(bounds)}),
+            id,
+            bounds,
+        )
+    } else {
+        with_accessibility(app, pid, move |root| {
             let (element, window_id, bounds) = select_window(root, window_id, pid)?;
             if foreground && activate_requested {
                 activate_window(pid, element.0)?;
             }
             let window_info = json!({"windowId":window_id,"title":text_attribute(element.0, "AXTitle")?,"bounds":rect_json(bounds)});
-            let (items, accessibility, elements) = tree(element.0);
+            let (items, mut accessibility, elements) = tree(element.0);
+            AX_DIAGNOSTICS.with(|slot| {
+                if let Some(errors) = slot.borrow().get("candidateErrors") {
+                    accessibility["candidateErrors"] = errors.clone();
+                }
+            });
             OBSERVED_WINDOW.with(|slot| {
                 *slot.borrow_mut() = Some(ObservedWindow {
                     element,
@@ -679,8 +766,8 @@ unsafe fn observe(
                 })
             });
             Ok((items, accessibility, window_info, window_id, bounds))
-        },
-    )?;
+        })?
+    };
     let mut capture = input.clone();
     capture["windowId"] = json!(window_id);
     let sharing =
@@ -690,13 +777,12 @@ unsafe fn observe(
         .ok_or("Missing sharing generation")?;
     let (id, path, width, height) = capture_pixels(app, &capture, binding)?;
     crate::sharing::validate(binding, window_id, sharing_generation)?;
-    with_observed_window(app, pid, move |_, window| {
-        window.validate_geometry()?;
-        if window_snapshot(window_id)? != (pid, bounds) {
-            return Err("Target window changed during capture; observe again".into());
-        }
-        Ok(())
-    })?;
+    if !pixels {
+        with_observed_window(app, pid, move |_, window| window.validate_geometry())?;
+    }
+    if window_snapshot(window_id)? != (pid, bounds) {
+        return Err("Target window changed during capture; observe again".into());
+    }
     let sx = width / bounds.size.width;
     let sy = height / bounds.size.height;
     for item in &mut items {
@@ -719,7 +805,12 @@ unsafe fn observe(
     };
     let output = json!({"observationId":id,"app":bundle,"window":window_info,"mode":mode,"elements":items,"accessibility":accessibility,
         "contentRef":path,"contentType":"image/png","width":width,"height":height,"capturedAt":captured_at,
-        "coordinateSpace":"window screenshot pixels","sharing":sharing});
+        "coordinateSpace":"window screenshot pixels","sharing":sharing,
+        "observationType":if pixels {"pixels"} else {"accessibility"},
+        "inputFocus":if pixels {"foregroundApplication"} else {"accessibilityWindow"},
+        "supportedActions":if foreground && AXIsProcessTrusted() {
+            if pixels {json!(["click","type","key","scroll","drag"])} else {json!(["press","setValue","click","type","key","scroll","drag"])}
+        } else if pixels {json!([])} else {json!(["press","setValue"])} });
     Ok((
         Observation {
             id,
@@ -729,6 +820,7 @@ unsafe fn observe(
             bounds,
             window_id,
             foreground,
+            pixels,
             binding: binding.clone(),
             image_width: width,
             image_height: height,
@@ -777,7 +869,9 @@ pub fn status() -> Result<Value, String> {
                 "bundleId":string(identifier),"bundlePath":string(path)},
             "permissions":{"accessibility":AXIsProcessTrusted(),"screenCapture":CGPreflightScreenCaptureAccess()},
             "capabilities":{"capture":true,"accessibility":true,"input":true,
-                "exactWindowIdentity":crate::window_identity::available(),"nativeWindowSharing":true}
+                "exactWindowIdentity":crate::window_identity::available(),"nativeWindowSharing":true,
+                "observationTypes":["accessibility","pixels"],"pixelObservationRequiresAccessibility":false,
+                "permissionsAreExecutorOnly":true}
         }))
     })
 }
@@ -809,6 +903,15 @@ pub(crate) unsafe fn window_snapshot(window_id: u32) -> Result<(i32, Rect), Stri
         &mut bounds,
     ) {
         return Err("WindowServer returned invalid geometry".into());
+    }
+    if !bounds.origin.x.is_finite()
+        || !bounds.origin.y.is_finite()
+        || !bounds.size.width.is_finite()
+        || !bounds.size.height.is_finite()
+        || bounds.size.width <= 0.0
+        || bounds.size.height <= 0.0
+    {
+        return Err("Target window has invalid geometry; observe again".into());
     }
     Ok((owner, bounds))
 }
@@ -845,6 +948,68 @@ unsafe fn windows() -> Result<Value, String> {
         windows.push(json!({"windowId":window_id,"pid":pid,"owner":owner,"title":title,"bounds":rect_json(bounds)}));
     }
     Ok(json!({"windows":windows}))
+}
+
+// Pixels carry an exact capture/coordinate target, not an AX focus proof.
+// WindowServer z-order includes system decorations under the app's PID and
+// cannot identify its key window. Verify the foreground app before HID input;
+// the caller checks the bound window's owner, geometry and sharing generation.
+unsafe fn pixel_app_active(pid: i32, window_id: u32) -> Result<bool, String> {
+    let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+    let front: *mut AnyObject = msg_send![workspace, frontmostApplication];
+    let front_pid: Option<i32> = if front.is_null() {
+        None
+    } else {
+        Some(msg_send![front, processIdentifier])
+    };
+    AX_DIAGNOSTICS.with(|slot| {
+        slot.borrow_mut()["focus"] = json!({
+            "frontmostPid":front_pid,"expectedPid":pid,"captureWindowId":window_id,
+            "inputFocus":"foregroundApplication"
+        })
+    });
+    Ok(front_pid == Some(pid))
+}
+
+fn activate_pixel_target(
+    gui: &crate::runtime::MainThread,
+    pid: i32,
+    window_id: u32,
+    bounds: Rect,
+) -> Result<(), String> {
+    on_main_thread(gui, move || unsafe {
+        if window_snapshot(window_id)? != (pid, bounds) {
+            return Err("Target window changed; observe again".into());
+        }
+        if pixel_app_active(pid, window_id)? {
+            return Ok(());
+        }
+        let app: *mut AnyObject =
+            msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier:pid];
+        if app.is_null() {
+            return Err("Target application is no longer running".into());
+        }
+        let accepted: bool = msg_send![app, activateWithOptions:2_usize];
+        if !accepted {
+            return Err("macOS did not accept target application activation".into());
+        }
+        Ok(())
+    })?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if on_main_thread(gui, move || unsafe {
+            if window_snapshot(window_id)? != (pid, bounds) {
+                return Err("Target window changed; observe again".into());
+            }
+            pixel_app_active(pid, window_id)
+        })? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("Pixel target application PID {pid} did not become active; bring the application forward and observe again"));
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
 }
 
 fn key(value: &str) -> Result<(u16, u64), String> {
@@ -936,6 +1101,10 @@ pub fn execute(
     let mut observation = OBSERVATION
         .lock()
         .map_err(|_| "Computer state unavailable")?;
+    on_main_thread(gui, || {
+        AX_DIAGNOSTICS.with(|slot| *slot.borrow_mut() = json!({}));
+        Ok(())
+    })?;
     let result = objc2::rc::autoreleasepool(|_| unsafe {
         let action = input["action"]
             .as_str()
@@ -984,7 +1153,7 @@ pub fn execute(
                 Ok(json!({"applications":result}))
             });
         }
-        if !AXIsProcessTrusted() {
+        if !(action == "observe" && input["observationType"] == "pixels") && !AXIsProcessTrusted() {
             return Err("macOS 辅助功能授权未被当前 Computer Use 辅助 App识别。请先使用 computer.control status 核对进程和应用身份；系统设置中的同名开关不能确认当前实例的状态。".into());
         }
         if !CGPreflightScreenCaptureAccess() {
@@ -992,9 +1161,31 @@ pub fn execute(
         }
         let bundle = input["app"].as_str().ok_or("Missing app")?;
         let target_bundle = bundle.to_string();
+        let target_window = if action == "observe" {
+            input["windowId"].as_u64().map(|id| id as u32)
+        } else {
+            observation.as_ref().map(|saved| saved.window_id)
+        };
         let pid: i32 = on_main_thread(gui, move || {
-            let app = target(&target_bundle)?;
-            Ok(msg_send![app, processIdentifier])
+            AX_DIAGNOSTICS.with(|slot| *slot.borrow_mut() = json!({"targetBundleId":target_bundle,"windowId":target_window,"stage":"target"}));
+            let app = if let Some(id) = target_window {
+                let (pid, _) = window_snapshot(id)?;
+                AX_DIAGNOSTICS.with(|slot| slot.borrow_mut()["targetPid"] = json!(pid));
+                let app: *mut AnyObject = msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier:pid];
+                if app.is_null() {
+                    return Err("Window owner is no longer running".into());
+                }
+                let id: *mut NSString = msg_send![app, bundleIdentifier];
+                if string(id) != target_bundle {
+                    return Err("Window does not belong to the requested app bundle".into());
+                }
+                app
+            } else {
+                target(&target_bundle)?
+            };
+            let pid: i32 = msg_send![app, processIdentifier];
+            AX_DIAGNOSTICS.with(|slot| slot.borrow_mut()["targetPid"] = json!(pid));
+            Ok(pid)
         })?;
         if action == "observe" {
             let sharing = crate::sharing::status(binding)?;
@@ -1018,74 +1209,112 @@ pub fn execute(
             return Err("Observation is stale; observe again before acting".into());
         }
         let semantic = matches!(action, "press" | "setValue");
+        if semantic && saved.pixels {
+            return Err("Pixel observation has no semantic elements; use a supported pixel action or observe with observationType=accessibility".into());
+        }
         if !semantic && !saved.foreground {
             return Err("This input requires an explicit foreground observation; background mode supports press and setValue only".into());
         }
         crate::sharing::validate(binding, saved.window_id, saved.sharing_generation)?;
         if !semantic {
-            restore_observed_window(gui, &saved)?;
+            if saved.pixels {
+                activate_pixel_target(gui, saved.pid, saved.window_id, saved.bounds)?;
+            } else {
+                restore_observed_window(gui, &saved)?;
+            }
         }
         let arguments = input.clone();
         let saved_for_input = saved.clone();
-        let value_target = with_observed_window(gui, pid, move |root, window| {
-            crate::sharing::validate(
-                &saved_for_input.binding,
-                saved_for_input.window_id,
-                saved_for_input.sharing_generation,
-            )?;
-            window.validate_geometry()?;
-            if window_snapshot(saved_for_input.window_id)?
-                != (saved_for_input.pid, saved_for_input.bounds)
-            {
-                return Err("Target window changed; observe again before acting".into());
-            }
-            if semantic {
-                let id = arguments["elementId"].as_str().ok_or("Missing elementId")?;
-                let index = id
-                    .strip_prefix("element:")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .ok_or("Invalid elementId")?;
-                let element = window
-                    .elements
-                    .get(index)
-                    .ok_or("Unknown elementId; observe again")?;
-                let item = tree_item(element.0, 0)?;
-                let marker = item["bounds"].as_object().and_then(|_| {
-                    Some(Point {
-                        x: item["bounds"]["x"].as_f64()? + item["bounds"]["width"].as_f64()? / 2.0,
-                        y: item["bounds"]["y"].as_f64()? + item["bounds"]["height"].as_f64()? / 2.0,
-                    })
-                });
-                crate::indicator::show(
+        let value_target = if saved.pixels {
+            on_main_thread(gui, move || {
+                crate::sharing::validate(
+                    &saved_for_input.binding,
                     saved_for_input.window_id,
-                    marker,
                     saved_for_input.sharing_generation,
                 )?;
-                let error = if arguments["action"] == "computer:press" {
-                    let action = NSString::from_str("AXPress");
-                    AXUIElementPerformAction(element.0, (&*action as *const NSString).cast())
-                } else {
-                    prepare_value_input(element.0, &item["role"])?;
-                    let name = NSString::from_str("AXValue");
-                    let value =
-                        NSString::from_str(arguments["text"].as_str().ok_or("Missing text")?);
-                    AXUIElementSetAttributeValue(
-                        element.0,
-                        (&*name as *const NSString).cast(),
-                        (&*value as *const NSString).cast(),
-                    )
-                };
-                if error != 0 {
-                    return Err(format!("AX operation returned error {error}; effect is not confirmed. Observe before deciding any further action; no HID fallback was attempted."));
-                }
-                Ok((arguments["action"] == "computer:setValue").then_some(index))
-            } else {
-                if !window.focused(root)? {
-                    return Err("Observed window lost focus before input; observe again".into());
+                if window_snapshot(saved_for_input.window_id)?
+                    != (saved_for_input.pid, saved_for_input.bounds)
+                    || !pixel_app_active(saved_for_input.pid, saved_for_input.window_id)?
+                {
+                    return Err(
+                        "Pixel target window changed or application lost foreground before input; observe again"
+                            .into(),
+                    );
                 }
                 dispatch_input(&arguments, &saved_for_input).map(|()| None)
-            }
-        })?;
+            })?
+        } else {
+            with_observed_window(gui, pid, move |root, window| {
+                crate::sharing::validate(
+                    &saved_for_input.binding,
+                    saved_for_input.window_id,
+                    saved_for_input.sharing_generation,
+                )?;
+                window.validate_geometry()?;
+                if window_snapshot(saved_for_input.window_id)?
+                    != (saved_for_input.pid, saved_for_input.bounds)
+                {
+                    return Err("Target window changed; observe again before acting".into());
+                }
+                if semantic {
+                    let id = arguments["elementId"].as_str().ok_or("Missing elementId")?;
+                    let index = id
+                        .strip_prefix("element:")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .ok_or("Invalid elementId")?;
+                    let element = window
+                        .elements
+                        .get(index)
+                        .ok_or("Unknown elementId; observe again")?;
+                    let item = tree_item(element.0, 0)?;
+                    let marker = item["bounds"].as_object().and_then(|_| {
+                        Some(Point {
+                            x: item["bounds"]["x"].as_f64()?
+                                + item["bounds"]["width"].as_f64()? / 2.0,
+                            y: item["bounds"]["y"].as_f64()?
+                                + item["bounds"]["height"].as_f64()? / 2.0,
+                        })
+                    });
+                    crate::indicator::show(
+                        saved_for_input.window_id,
+                        marker,
+                        saved_for_input.sharing_generation,
+                    )?;
+                    let error = if arguments["action"] == "computer:press" {
+                        let action = NSString::from_str("AXPress");
+                        AXUIElementPerformAction(element.0, (&*action as *const NSString).cast())
+                    } else {
+                        prepare_value_input(element.0, &item["role"])?;
+                        let name = NSString::from_str("AXValue");
+                        let value =
+                            NSString::from_str(arguments["text"].as_str().ok_or("Missing text")?);
+                        AXUIElementSetAttributeValue(
+                            element.0,
+                            (&*name as *const NSString).cast(),
+                            (&*value as *const NSString).cast(),
+                        )
+                    };
+                    if error != 0 {
+                        ax_failure(
+                            if arguments["action"] == "computer:press" {
+                                "AXPress"
+                            } else {
+                                "AXSetValue"
+                            },
+                            Some(error),
+                            "AX effect is not confirmed",
+                        );
+                        return Err(format!("AX operation returned error {error}; effect is not confirmed. Observe before deciding any further action; no HID fallback was attempted."));
+                    }
+                    Ok((arguments["action"] == "computer:setValue").then_some(index))
+                } else {
+                    if !window.focused(root)? {
+                        return Err("Observed window lost focus before input; observe again".into());
+                    }
+                    dispatch_input(&arguments, &saved_for_input).map(|()| None)
+                }
+            })?
+        };
         // A short bounded delay lets the application process dispatched input. A
         // screenshot remains an observation, not a claim that backend work settled.
         std::thread::sleep(Duration::from_millis(200));
@@ -1103,6 +1332,11 @@ pub fn execute(
         }
         let mut next = input.clone();
         next["windowId"] = json!(saved.window_id);
+        next["observationType"] = json!(if saved.pixels {
+            "pixels"
+        } else {
+            "accessibility"
+        });
         next["mode"] = json!(if saved.foreground {
             "foreground"
         } else {

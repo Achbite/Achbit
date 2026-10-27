@@ -1,5 +1,6 @@
 use crate::local_agent_mcp::{McpRuntime, McpTool, McpToolEffectScope};
 use crate::local_agent_product_tools::ProductTools;
+use crate::local_agent_recipe::ToolSelection;
 use achbit_first_party_tools::documents::{self, DocumentContext, DocumentInput};
 use achbit_kernel_runtime::executors::{
     builtin_executors, web_search_availability, KernelExecutorConfig, KernelExecutorRegistry,
@@ -57,7 +58,7 @@ enum ToolExecutorBinding {
     Unavailable,
     Container(Arc<crate::container_tools::Containers>),
     Document {
-        python: Option<std::path::PathBuf>,
+        renderer: std::path::PathBuf,
     },
 }
 
@@ -146,26 +147,27 @@ struct ProductToolProvider(Arc<ProductTools>);
 
 struct DocumentToolProvider {
     instance: String,
-    python: Option<std::path::PathBuf>,
 }
 
 impl ToolProvider for DocumentToolProvider {
     fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
+        let renderer = crate::local_agent_first_party_plugins::provider_binary()
+            .map_err(|message| ToolCatalogError::new("document_renderer_unavailable", message))?;
         Ok(InstalledToolProvider {
             tools: vec![PendingToolContribution {
                 origin: "extension",
-                provider_ref: "deepcode:documents".into(),
+                provider_ref: "achbit:documents".into(),
                 plugin_uri: Some("plugin://documents@builtin".into()),
                 plugin_instance_ref: Some(self.instance.clone()),
                 contribution_ref: format!("{}/document.render", self.instance),
                 name: "document.render".into(),
-                description: "Create a polished document artifact in the workspace. Write complete HTML or Markdown, or render self-contained HTML to PDF with WeasyPrint. Output is a workspace mutation; the existing Plan and permission policy applies. PDF requires a configured Python environment with WeasyPrint. Source limit: 1 MiB; PDF limit: 32 MiB.".into(),
+                description: "Create a document artifact in the workspace. Write complete HTML or Markdown, or render self-contained Typst source to PDF. For PDF, images use inline bytes; external files and imports are not supported. Source limit: 1 MiB; PDF limit: 32 MiB.".into(),
                 input_schema: documents::input_schema(),
                 effect_class: None,
                 effect_scope: CatalogEffectScope::WorkspaceMutation,
                 availability: ToolAvailability::Callable,
                 availability_reason: None, runtime_status: None, logical_target: None,
-                binding: ToolExecutorBinding::Document { python: self.python },
+                binding: ToolExecutorBinding::Document { renderer },
             }],
             dispose: Box::new(|| Ok(())),
         })
@@ -179,10 +181,10 @@ impl ToolProvider for ProductToolProvider {
             .map(
                 |(name, description, input_schema)| PendingToolContribution {
                     origin: "coreBuiltin",
-                    provider_ref: "deepcode:product".into(),
+                    provider_ref: "achbit:product".into(),
                     plugin_uri: None,
                     plugin_instance_ref: None,
-                    contribution_ref: format!("deepcode:product/{name}"),
+                    contribution_ref: format!("achbit:product/{name}"),
                     name: name.into(),
                     description,
                     input_schema,
@@ -201,8 +203,8 @@ impl ToolProvider for ProductToolProvider {
             ("artifact.preview", "url", "Register an HTTP(S) live preview reference without fetching or verifying it. Call after updating the preview to record its latest presentation version.", CatalogEffectScope::LocalRead),
         ] {
             tools.push(PendingToolContribution {
-                origin: "coreBuiltin", provider_ref: "deepcode:resources".into(), plugin_uri: None, plugin_instance_ref: None,
-                contribution_ref: format!("deepcode:resources/{name}"), name: name.into(),
+                origin: "coreBuiltin", provider_ref: "achbit:resources".into(), plugin_uri: None, plugin_instance_ref: None,
+                contribution_ref: format!("achbit:resources/{name}"), name: name.into(),
                 description: format!("{description} This does not add it to user outputs. Use artifact.present for requested results or review materials. Temporary scripts, logs and observation images stay intermediate unless explicitly presented."),
                 input_schema: crate::artifact_resources::schema(field), effect_class: Some(ToolEffectClass::Read),
                 effect_scope: scope, availability: ToolAvailability::Callable, availability_reason: None, runtime_status: None, logical_target: None, binding: ToolExecutorBinding::Artifact,
@@ -256,10 +258,10 @@ impl ToolProvider for ProductToolProvider {
                 };
                 tools.push(PendingToolContribution {
                     origin: "extension",
-                    provider_ref: "deepcode:computer-use".into(),
+                    provider_ref: "achbit:computer-use".into(),
                     plugin_uri: Some("plugin://computer-use@builtin".into()),
                     plugin_instance_ref: Some(instance.clone()),
-                    contribution_ref: format!("deepcode:computer-use/{name}"),
+                    contribution_ref: format!("achbit:computer-use/{name}"),
                     name: name.into(), description: description.into(), input_schema,
                     effect_class: None,
                     effect_scope: match name {
@@ -276,19 +278,44 @@ impl ToolProvider for ProductToolProvider {
                 });
             }
         }
-        {
-            tools.push(PendingToolContribution {
-                origin: "coreBuiltin", provider_ref: "deepcode:processes".into(), plugin_uri: None,
-                plugin_instance_ref: None, contribution_ref: "deepcode:processes/process".into(),
-                name: "process".into(), description: "Manage commands in this run: action=start launches a shell or container command; action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion wakes the Loop automatically; do not poll. See managed-processes.md in productDocsPath for recovery.".into(),
-                input_schema: crate::managed_processes::schema(), effect_class: None, effect_scope: CatalogEffectScope::Process,
-                availability: ToolAvailability::Callable, availability_reason: None, runtime_status: None, logical_target: None, binding: ToolExecutorBinding::Process,
-            });
-        }
         Ok(InstalledToolProvider {
             tools,
             dispose: Box::new(|| Ok(())),
         })
+    }
+}
+
+struct ManagedShellToolProvider {
+    shell: BuiltinToolProvider,
+    process: bool,
+}
+
+impl ToolProvider for ManagedShellToolProvider {
+    fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
+        let mut installed = Box::new(self.shell).install()?;
+        installed
+            .tools
+            .retain(|tool| matches!(tool.name.as_str(), "bash" | "powershell"));
+        if self.process {
+            installed.tools.push(PendingToolContribution {
+                origin: "coreBuiltin",
+                provider_ref: "achbit:processes".into(),
+                plugin_uri: None,
+                plugin_instance_ref: None,
+                contribution_ref: "achbit:processes/process".into(),
+                name: "process".into(),
+                description: "Manage owned commands.".into(),
+                input_schema: crate::managed_processes::schema(&[]),
+                effect_class: None,
+                effect_scope: CatalogEffectScope::Process,
+                availability: ToolAvailability::Callable,
+                availability_reason: None,
+                runtime_status: None,
+                logical_target: None,
+                binding: ToolExecutorBinding::Process,
+            });
+        }
+        Ok(installed)
     }
 }
 
@@ -311,7 +338,7 @@ impl ToolProvider for ContainerToolProvider {
     fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
         let adapter = self.adapter.clone();
         Ok(InstalledToolProvider { tools:vec![PendingToolContribution {
-            origin:"extension" , provider_ref:"deepcode:containers".into(), plugin_uri:Some("plugin://containers@builtin".into()),
+            origin:"extension" , provider_ref:"achbit:containers".into(), plugin_uri:Some("plugin://containers@builtin".into()),
             plugin_instance_ref:Some(self.instance.clone()), contribution_ref:format!("{}/container",self.instance),
             name:"container".into(), description:"Run Shell commands in an approved Docker container, inspect it, or create an independent temporary test container. Creation mounts the selected project read-only at /project and writable session test files at /work. Approval can cover this task or conversation; temporary containers are cleaned at task end. Existing containers keep their mounts and network. Linux images need sh and setsid.".into(),
             input_schema:crate::container_tools::input_schema(), effect_class:None,effect_scope:CatalogEffectScope::Process,
@@ -320,6 +347,19 @@ impl ToolProvider for ContainerToolProvider {
     }
 }
 
+struct CoreToolProvider(BuiltinToolProvider);
+
+impl ToolProvider for CoreToolProvider {
+    fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
+        let mut installed = Box::new(self.0).install()?;
+        installed
+            .tools
+            .retain(|tool| !matches!(tool.name.as_str(), "bash" | "powershell"));
+        Ok(installed)
+    }
+}
+
+#[derive(Clone)]
 struct BuiltinToolProvider {
     registry: Arc<KernelToolRegistry>,
     executors: Arc<KernelExecutorRegistry>,
@@ -614,6 +654,7 @@ impl ToolCatalogSnapshot {
         mcp: McpRuntime,
         enable_web_search: bool,
         product: Arc<ProductTools>,
+        selection: &ToolSelection,
     ) -> Result<Arc<Self>, ToolCatalogError> {
         validate_ref("extensionGenerationRef", extension_generation_ref)?;
         let container_provider = product
@@ -632,29 +673,49 @@ impl ToolCatalogSnapshot {
                 .as_ref()
                 .map(|instance| DocumentToolProvider {
                     instance: instance.clone(),
-                    python: product.document_python.clone(),
                 });
+        let builtin =
+            BuiltinToolProvider::prepare(executor_config, secret_provider, enable_web_search)?;
+        let shell = builtin.clone();
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
-            Box::new(BuiltinToolProvider::prepare(
-                executor_config,
-                secret_provider,
-                enable_web_search,
-            )?),
+            Box::new(CoreToolProvider(builtin)),
             Box::new(McpToolProvider::prepare(mcp)?),
             Box::new(ProductToolProvider(product)),
         ];
+        if selection.allows_kernel("bash")
+            || selection.allows_kernel("powershell")
+            || selection.allows_kernel("process")
+        {
+            providers.push(Box::new(ManagedShellToolProvider {
+                shell,
+                process: selection.allows_kernel("process"),
+            }));
+        }
         if let Some(provider) = container_provider {
             providers.push(Box::new(provider));
         }
         if let Some(provider) = document_provider {
             providers.push(Box::new(provider));
         }
-        Self::from_providers(extension_generation_ref, providers)
+        Self::from_selected_providers(extension_generation_ref, providers, selection)
     }
 
+    #[cfg(test)]
     fn from_providers(
         extension_generation_ref: &str,
         providers: Vec<Box<dyn ToolProvider>>,
+    ) -> Result<Arc<Self>, ToolCatalogError> {
+        Self::from_selected_providers(
+            extension_generation_ref,
+            providers,
+            &ToolSelection::default(),
+        )
+    }
+
+    fn from_selected_providers(
+        extension_generation_ref: &str,
+        providers: Vec<Box<dyn ToolProvider>>,
+        selection: &ToolSelection,
     ) -> Result<Arc<Self>, ToolCatalogError> {
         let mut contributions = BTreeMap::new();
         let mut disposers = Vec::new();
@@ -667,6 +728,12 @@ impl ToolCatalogSnapshot {
             };
             disposers.push(installed.dispose);
             for contribution in installed.tools {
+                if contribution.origin == "coreBuiltin"
+                    && !selection.allows_kernel(&contribution.name)
+                    || contribution.origin == "extension" && !selection.plugins
+                {
+                    continue;
+                }
                 if contributions
                     .insert(contribution.name.clone(), contribution)
                     .is_some()
@@ -682,6 +749,31 @@ impl ToolCatalogSnapshot {
             }
         }
 
+        let process_targets: Vec<&str> = ["bash", "powershell", "container"]
+            .into_iter()
+            .filter(|name| {
+                contributions
+                    .get(*name)
+                    .is_some_and(|tool| matches!(tool.availability, ToolAvailability::Callable))
+            })
+            .collect();
+        if let Some(process) = contributions.get_mut("process") {
+            process.input_schema = crate::managed_processes::schema(&process_targets);
+            process.description = format!("{}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically; do not poll.",
+                if process_targets.is_empty() { "Manage existing commands: " } else { "Manage commands: action=start launches one of the declared execution tools; " });
+        }
+
+        if let Some(names) = &selection.kernel {
+            if let Some(name) = names.iter().find(|name| !contributions.contains_key(*name)) {
+                return Err(rollback_installation(
+                    ToolCatalogError::new(
+                        "task_tool_unavailable",
+                        format!("Task tool {name} is not installed"),
+                    ),
+                    disposers,
+                ));
+            }
+        }
         let snapshot_ref = match crate::utils::new_runtime_ref("kernel-catalog") {
             Ok(reference) => reference,
             Err(message) => {
@@ -1115,7 +1207,7 @@ impl PreparedCatalogBinding {
                     run.execute(arguments, &context, invocation_id),
                 ))
             }
-            (ToolExecutorBinding::Document { python }, PreparedToolInput::Document(input)) => {
+            (ToolExecutorBinding::Document { renderer }, PreparedToolInput::Document(input)) => {
                 let workspace_id = context.workspace_id.as_deref().ok_or_else(|| {
                     ToolCatalogError::new(
                         "workspace_binding_required",
@@ -1140,7 +1232,7 @@ impl PreparedCatalogBinding {
                         invocation_id,
                         workspace_id,
                         target: std::path::Path::new(target),
-                        python: python.as_deref(),
+                        renderer,
                         cancelled: &|| context.cancellation.is_cancelled(),
                     },
                 );
@@ -1586,6 +1678,113 @@ mod tests {
     use achbit_kernel_runtime::executors::EmptySecretProvider;
 
     #[test]
+    fn task_selection_removes_dispatch_bindings_and_can_run_without_extensions_or_shell() {
+        for names in [vec!["fs.read".to_owned()], vec![]] {
+            let selection = ToolSelection {
+                kernel: Some(names.clone()),
+                controls: Some(vec![]),
+                plugins: false,
+            };
+            let catalog = ToolCatalogSnapshot::prepare(
+                "extension:task",
+                KernelExecutorConfig::default(),
+                Arc::new(EmptySecretProvider),
+                McpRuntime::default(),
+                false,
+                crate::local_agent_product_tools::test_product_tools(),
+                &selection,
+            )
+            .unwrap();
+            let view = catalog.provider_view();
+            let visible = view.as_array().unwrap();
+            assert_eq!(visible.len(), names.len());
+            for name in [
+                "bash",
+                "powershell",
+                "process",
+                "fs.write",
+                "fs.edit",
+                "plugin.search",
+                "container",
+            ] {
+                assert!(
+                    catalog.binding_for_name(name).is_err(),
+                    "{name} must have no execution binding"
+                );
+            }
+            if !names.is_empty() {
+                assert_eq!(visible[0]["name"], "fs.read");
+                assert!(catalog.binding_for_name("fs.read").is_ok());
+                let binding = visible[0]["toolBindingRef"].as_str().unwrap();
+                assert!(catalog.binding(binding, "fs.write").is_err());
+            }
+            catalog.dispose().unwrap();
+        }
+    }
+
+    #[test]
+    fn process_start_declares_only_installed_execution_targets() {
+        for names in [
+            vec!["process".into()],
+            vec!["process".into(), "bash".into()],
+        ] {
+            let selection = ToolSelection {
+                kernel: Some(names.clone()),
+                plugins: false,
+                ..Default::default()
+            };
+            let catalog = ToolCatalogSnapshot::prepare(
+                "extension:process-selection",
+                KernelExecutorConfig::default(),
+                Arc::new(EmptySecretProvider),
+                McpRuntime::default(),
+                false,
+                crate::local_agent_product_tools::test_product_tools(),
+                &selection,
+            )
+            .unwrap();
+            let view = catalog.provider_view();
+            let process = view
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "process")
+                .unwrap();
+            let properties = &process["inputSchema"]["properties"];
+            if names.len() == 1 {
+                assert_eq!(
+                    properties["action"]["enum"],
+                    json!(["wait", "status", "cancel"])
+                );
+                assert!(properties.get("tool").is_none());
+                assert!(!process["description"].as_str().unwrap().contains("start"));
+            } else {
+                assert_eq!(properties["tool"]["enum"], json!(["bash"]));
+            }
+            catalog.dispose().unwrap();
+        }
+    }
+
+    #[test]
+    fn unknown_task_tools_fail_preparation_instead_of_silent_removal() {
+        let selection = ToolSelection {
+            kernel: Some(vec!["missing.tool".into()]),
+            ..Default::default()
+        };
+        let result = ToolCatalogSnapshot::prepare(
+            "extension:task",
+            KernelExecutorConfig::default(),
+            Arc::new(EmptySecretProvider),
+            McpRuntime::default(),
+            false,
+            crate::local_agent_product_tools::test_product_tools(),
+            &selection,
+        );
+        assert!(result.is_err());
+        assert_eq!(result.err().unwrap().code, "task_tool_unavailable");
+    }
+
+    #[test]
     fn documents_are_selected_extensions_while_process_is_core() {
         for selected in [false, true] {
             let mut product = crate::local_agent_product_tools::test_product_tools();
@@ -1600,6 +1799,7 @@ mod tests {
                 McpRuntime::default(),
                 false,
                 product,
+                &ToolSelection::default(),
             )
             .unwrap();
             let view = catalog.provider_view();
@@ -1657,8 +1857,8 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let address = listener.local_addr().unwrap();
-            let host_id = format!("dcinstance_{case:064x}");
-            let token = format!("dchost_{case:064x}");
+            let host_id = format!("acinstance_{case:064x}");
+            let token = format!("achost_{case:064x}");
             let registration = json!({
                 "hostInstanceId": host_id, "endpoint": address.to_string(),
                 "callbackToken": token, "remove": false,

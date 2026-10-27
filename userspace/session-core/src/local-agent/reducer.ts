@@ -376,6 +376,8 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
           ? { hostBinding: structuredClone(event.payload.runtimeSnapshot.environment.hostBinding) as unknown as NonNullable<RunProjection['hostBinding']> } : {}),
         workspaceBindings: event.payload.workspaceBindings.map((binding) => ({ ...binding })),
         profileId: event.payload.runtimeSnapshot.provider.profileId,
+        ...(event.payload.runtimeSnapshot.provider.fileInputMediaTypes
+          ? { fileInputMediaTypes: [...event.payload.runtimeSnapshot.provider.fileInputMediaTypes] } : {}),
       };
       next.terminalError = null;
       next.activities[runActivityId(event.runId)] = {
@@ -1413,6 +1415,7 @@ export function projectSession(
 function cloneRun(run: NonNullable<SessionProjection['run']>): NonNullable<SessionProjection['run']> {
   return {
     ...run,
+    ...(run.fileInputMediaTypes ? { fileInputMediaTypes: [...run.fileInputMediaTypes] } : {}),
     ...(run.hostBinding ? { hostBinding: { ...run.hostBinding } } : {}),
     workspaceBindings: run.workspaceBindings.map((binding) => ({ ...binding })),
   };
@@ -1440,10 +1443,13 @@ function cloneRunRuntimeSnapshot(snapshot: RunRuntimeSnapshot): RunRuntimeSnapsh
   }));
   return {
     ...snapshot,
+    ...(snapshot.toolSelection ? { toolSelection: structuredClone(snapshot.toolSelection) } : {}),
     ...(snapshot.agentCapabilities !== undefined ? { agentCapabilities: structuredClone(snapshot.agentCapabilities) } : {}),
     environment: structuredClone(snapshot.environment),
-    provider: { ...snapshot.provider },
-    ...(snapshot.approvalReviewer ? { approvalReviewer: { ...snapshot.approvalReviewer } } : {}),
+    provider: { ...snapshot.provider,
+      ...(snapshot.provider.fileInputMediaTypes ? { fileInputMediaTypes: [...snapshot.provider.fileInputMediaTypes] } : {}) },
+    ...(snapshot.approvalReviewer ? { approvalReviewer: { ...snapshot.approvalReviewer,
+      ...(snapshot.approvalReviewer.fileInputMediaTypes ? { fileInputMediaTypes: [...snapshot.approvalReviewer.fileInputMediaTypes] } : {}) } } : {}),
     ...(snapshot.approvalReviewerError ? { approvalReviewerError: structuredClone(snapshot.approvalReviewerError) } : {}),
     webSearch: { ...snapshot.webSearch },
     instructions: snapshot.instructions.map((instruction) => ({ ...instruction })),
@@ -2186,7 +2192,7 @@ class ToolDetailProjectionError extends Error {}
 export function projectResourceTool(record: ToolExecutionRecord) {
   const { tool, artifacts } = projectToolRecord(record, {});
   const job = record.outcome === 'completed' && isRecord(record.output) ? record.output.job : undefined;
-  const managed = record.preparedEffect.providerRef === 'deepcode:processes' && record.input.action === 'start'
+  const managed = record.preparedEffect.providerRef === 'achbit:processes' && record.input.action === 'start'
     && isManagedProcessSnapshot(job) && job.callId === record.callId && job.runId === record.runId && job.sessionId === record.sessionId;
   return { tool: { recordId: record.recordId, ...(!managed && tool.fileChanges ? { fileChanges: tool.fileChanges } : {}) }, artifacts };
 }

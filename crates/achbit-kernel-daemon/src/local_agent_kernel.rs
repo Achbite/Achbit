@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-const KERNEL_REQUEST_VERSION: &str = "deepcode.kernel-request";
-const KERNEL_REPLY_VERSION: &str = "deepcode.kernel-reply";
+const KERNEL_REQUEST_VERSION: &str = "achbit.kernel-request";
+const KERNEL_REPLY_VERSION: &str = "achbit.kernel-reply";
 const TOOL_RECORD_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/tool-record.sql");
 const TOOL_RECORD_STORE_VERSION: u32 = 1;
 const ATTEMPT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -600,6 +600,7 @@ impl LocalAgentKernel {
         secret_provider: Arc<dyn SecretProvider>,
         mcp: McpRuntime,
         permissions: LocalAgentPermissionPolicy,
+        selection: &crate::local_agent_recipe::ToolSelection,
         enable_web_search: bool,
         product: Arc<crate::local_agent_product_tools::ProductTools>,
     ) -> Result<PreparedKernelGeneration, LocalAgentKernelError> {
@@ -610,6 +611,7 @@ impl LocalAgentKernel {
             mcp,
             enable_web_search,
             product,
+            selection,
         )
         .map_err(catalog_error)?;
         Ok(PreparedKernelGeneration {
@@ -2630,7 +2632,7 @@ fn prepare_effect_target(
             if resolved.access.read_only() && scope == PreparedEffectScope::WorkspaceMutation {
                 let mut error = LocalAgentKernelError::input(
                         "$.workspaceId", "readOnlyInput",
-                        "会话输入快照只读。可直接读取或在内部浏览器打开；编辑预览请使用已绑定的 DeepCode 会话工作目录中的副本。",
+                        "会话输入快照只读。可直接读取或在内部浏览器打开；编辑预览请使用已绑定的 Achbit 会话工作目录中的副本。",
                         None,
                     );
                 error.code = "input_resource_read_only";
@@ -4010,6 +4012,7 @@ mod attempt_control_tests {
             Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
             McpRuntime::default(),
             LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+            &Default::default(),
             false,
             product,
         )
@@ -5600,8 +5603,8 @@ mod attempt_control_tests {
             }
         });
         let host = BrowserHost {
-            registration: json!({"hostInstanceId":format!("dcinstance_{}", "b".repeat(64)),
-            "endpoint":endpoint,"callbackToken":format!("dchost_{}", "b".repeat(64)),"remove":false}),
+            registration: json!({"hostInstanceId":format!("acinstance_{}", "b".repeat(64)),
+            "endpoint":endpoint,"callbackToken":format!("achost_{}", "b".repeat(64)),"remove":false}),
             stop,
             thread: Some(thread),
         };
@@ -6080,6 +6083,7 @@ mod attempt_control_tests {
             Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
             McpRuntime::default(),
             LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+            &Default::default(),
             false,
             crate::local_agent_product_tools::test_product_tools(),
         )

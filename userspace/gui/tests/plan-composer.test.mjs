@@ -115,7 +115,7 @@ test('taking over Plan review only requests manual Plan approval and retains the
 test('a revision after Plan review sends the original text as a Plan response rather than a message or approval', async t => {
   const draft = '只整理已确认的目录。\n保留原始报告，不执行额外命令。';
   const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
-  globalThis.sessionStorage = { getItem: key => key.startsWith('deepcode:composer:')
+  globalThis.sessionStorage = { getItem: key => key.startsWith('achbit:composer:')
     ? JSON.stringify({ draft, pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] }) : null, setItem() {}, removeItem() {} };
   t.after(() => {
     if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;

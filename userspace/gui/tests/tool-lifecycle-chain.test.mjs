@@ -28,7 +28,7 @@ function preparation(tools, review = false) {
   return result.port;
 }
 function approval(request) {
-  return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+  return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
     callId: request.callId, status: 'approvalRequired', preview: { summary: 'Review requested operation',
       approvalReviewer: 'agent', effects: ['process'], logicalTargets: ['.'],
       operation: { toolName: request.toolName, arguments: request.input } } };
@@ -162,7 +162,7 @@ test('yielded Shell leaves later calls honestly unexecuted and readable after ca
   const skipped = active.activities.find(a => a.notExecuted);
   assert.equal(skipped.notExecuted.reason, 'dependencyPending');
   assert.equal(skipped.tool, undefined);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', commandId: 'command:stop', sessionId, runId: active.run.runId });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', commandId: 'command:stop', sessionId, runId: active.run.runId });
   const final = await waitForProjection(actor, p => p.run?.status === 'cancelled');
   await readableHistory(journal, sessionId, final);
 });
@@ -222,7 +222,7 @@ test('cancelling a pending execution review closes the approval and keeps its to
   await reviewing;
   const pending = await actor.snapshot();
   assert.deepEqual(await decodeGuiProjection(pending), pending);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
     commandId: 'command:cancel', sessionId, runId: pending.run.runId });
   const final = await waitForProjection(actor, p => p.run?.status === 'cancelled');
   assert.equal(executions, 0);

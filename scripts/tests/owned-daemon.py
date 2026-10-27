@@ -11,7 +11,7 @@ import tempfile
 import threading
 import unittest
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
@@ -26,7 +26,7 @@ class OwnedDaemonTests(unittest.TestCase):
         descendant = None
         reaper = None
         reaped = []
-        with tempfile.TemporaryDirectory(prefix="deepcode-owned-daemon-") as directory:
+        with tempfile.TemporaryDirectory(prefix="achbit-owned-daemon-") as directory:
             daemon = fixture.OwnedDaemon(Path(directory))
             try:
                 daemon.process = subprocess.Popen([

@@ -273,7 +273,7 @@ async fn callback(
     if let Some(sender) = state.sender.lock().expect("auth callback").take() {
         let _ = sender.send(code);
     }
-    (StatusCode::OK, "已收到授权，请返回 DeepCode。")
+    (StatusCode::OK, "已收到授权，请返回 Achbit。")
 }
 
 pub(crate) async fn start(
@@ -350,7 +350,7 @@ async fn start_flow(state: AppState, input: StartAuth) -> Result<AuthFlow, Strin
             ("code_challenge_method", "S256"),
             ("id_token_add_organizations", "true"),
             ("codex_cli_simplified_flow", "true"),
-            ("originator", "deepcode"),
+            ("originator", "achbit"),
         ]);
         flow.verification_url = Some(url.into());
     } else {

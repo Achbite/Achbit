@@ -15,7 +15,6 @@ import CompletionSoundSettings from '../CompletionSoundSettings';
 import { hasDesktopNotifications } from '../../../services/runtimeAdapter';
 import SettingsField from '../SettingsField';
 import WorkspaceSandboxSettings from './WorkspaceSandboxSettings';
-import DocumentEnvironmentSettings from './DocumentEnvironmentSettings';
 import CommandDenylistSettings from './CommandDenylistSettings';
 
 interface RuntimeProps {
@@ -78,7 +77,7 @@ export function settingsSearchDefinitions(language: ReturnType<typeof normalizeU
     general: GENERAL_KEYS,
     gui: APPEARANCE_KEYS,
     agent: [...AGENT_RESPONSE_KEYS, ...CONTEXT_MANAGEMENT_KEYS, ...AGENT_INSTRUCTION_KEYS],
-    environment: [...(os === 'windows' ? AGENT_SHELL_KEYS : []), 'agent.documents.pythonPath'],
+    environment: os === 'windows' ? AGENT_SHELL_KEYS : [],
     permissions: AGENT_PERMISSION_KEYS,
     llm: AGENT_WEB_KEYS,
   };
@@ -175,6 +174,9 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
   const environment = useSettingsStore((state) => state.environment);
   const shellSettings = useMemo(() => definitionsFor(AGENT_SHELL_KEYS, available, language), [available, language]);
   const shell = environment?.shell as { executable?: string; dialect?: string } | undefined;
+  const observedConfiguration = environment?.configuration as { windowsShell?: string } | undefined;
+  const powershellFallback = environment?.os === 'windows' && environment.shellAvailable === true
+    && observedConfiguration?.windowsShell === 'auto' && shell?.dialect === 'windowsPowerShell';
   const commands = Array.isArray(environment?.developerCommands) ? environment.developerCommands.filter((item): item is string => typeof item === 'string') : [];
   const chinese = language === 'zh-CN';
   const response = useMemo(
@@ -227,8 +229,11 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
     <div>
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
       {category === 'agent' && renderCard(null, [...response, ...contextManagement, ...instructions])}
-      {category === 'environment' && environment?.os === 'windows' && renderCard('Windows Shell', shellSettings)}
-      {category === 'environment' && <DocumentEnvironmentSettings language={language} />}
+      {category === 'environment' && environment?.os === 'windows' && renderCard('Windows Shell', shellSettings,
+        powershellFallback && <div className="settings-field__description" role="status">
+          <p>{chinese ? '未检测到 PowerShell 7，已自动使用 Windows PowerShell 5.1。建议安装 PowerShell 7；安装后点击“刷新环境”。' : 'PowerShell 7 was not found. Windows PowerShell 5.1 is being used automatically. Install PowerShell 7, then select Refresh environment.'}</p>
+          <code>winget install --id Microsoft.PowerShell --source winget</code>
+        </div>)}
       {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
       {category === 'environment' && <div className="settings-card">
         <h3 className="settings-card__title">{chinese ? '环境上下文' : 'Environment context'}</h3>

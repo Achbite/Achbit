@@ -1,0 +1,145 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -228 +228 @@
+-features = ["v2_38"]
++features = ["v2_40"]
+--- a/Cargo.toml.orig
++++ b/Cargo.toml.orig
+@@ -58 +58 @@
+-webkit2gtk = { version = "=2.0.2", features = ["v2_38"], optional = true }
++webkit2gtk = { version = "=2.0.2", features = ["v2_40"], optional = true }
+--- a/src/webkitgtk/mod.rs
++++ b/src/webkitgtk/mod.rs
+@@ -359 +359 @@
+-            webview.run_javascript(&script, cancellable, |_| ());
++            webview.evaluate_javascript(&script, None, None, cancellable, |_| ());
+@@ -702 +702 @@
+-      self.webview.run_javascript(js, cancellable, |result| {
++      self.webview.evaluate_javascript(js, None, None, cancellable, |result| {
+@@ -708 +708 @@
+-            .map(|r| r.js_value().and_then(|js| js.to_json(0)))
++            .map(|js| js.to_json(0))
+--- a/src/webkitgtk/synthetic_mouse_events.rs
++++ b/src/webkitgtk/synthetic_mouse_events.rs
+@@ -22 +22 @@
+-        webview.run_javascript(
++        webview.evaluate_javascript(
+@@ -23,0 +24,2 @@
++          None,
++          None,
+@@ -32 +34 @@
+-        webview.run_javascript(
++        webview.evaluate_javascript(
+@@ -33,0 +36,2 @@
++          None,
++          None,
+@@ -56 +60 @@
+-        webview.run_javascript(
++        webview.evaluate_javascript(
+@@ -57,0 +62,2 @@
++          None,
++          None,
+@@ -66 +72 @@
+-        webview.run_javascript(
++        webview.evaluate_javascript(
+@@ -67,0 +74,2 @@
++          None,
++          None,
+--- a/src/wkwebview/class/wry_web_view_parent.rs
++++ b/src/wkwebview/class/wry_web_view_parent.rs
+@@ -33,4 +33,2 @@
+-      unsafe {
+-        if let Some(menu) = app.mainMenu() {
+-          menu.performKeyEquivalent(event);
+-        }
++      if let Some(menu) = app.mainMenu() {
++        menu.performKeyEquivalent(event);
+--- a/src/wkwebview/class/wry_web_view_ui_delegate.rs
++++ b/src/wkwebview/class/wry_web_view_ui_delegate.rs
+@@ -43,3 +43 @@
+-    unsafe {
+-      self.webview.removeFromSuperview();
+-    }
++    self.webview.removeFromSuperview();
+--- a/src/wkwebview/download.rs
++++ b/src/wkwebview/download.rs
+@@ -106 +106 @@
+-  error: &NSError,
++  _error: &NSError,
+@@ -112 +112 @@
+-      let description = error.localizedDescription().to_string();
++      let description = _error.localizedDescription().to_string();
+--- a/src/wkwebview/drag_drop.rs
++++ b/src/wkwebview/drag_drop.rs
+@@ -5 +5 @@
+-use std::{ffi::CStr, path::PathBuf};
++use std::path::PathBuf;
+@@ -8,2 +8,2 @@
+-  runtime::{Bool, ProtocolObject},
+-  DeclaredClass,
++  runtime::{AnyObject, Bool, ProtocolObject},
++  ClassType, DeclaredClass,
+@@ -11,2 +11,2 @@
+-use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSFilenamesPboardType};
+-use objc2_foundation::{NSArray, NSPoint, NSRect, NSString};
++use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSPasteboardURLReadingFileURLsOnlyKey};
++use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSPoint, NSRect, NSURL};
+@@ -21 +21,5 @@
+-  let types = NSArray::arrayWithObject(NSFilenamesPboardType);
++  let classes = NSArray::from_slice(&[NSURL::class()]);
++  let options = NSDictionary::from_slices(
++    &[NSPasteboardURLReadingFileURLsOnlyKey],
++    &[&*NSNumber::new_bool(true) as &AnyObject],
++  );
+@@ -23,7 +27,7 @@
+-  if pb.availableTypeFromArray(&types).is_some() {
+-    let paths = pb.propertyListForType(NSFilenamesPboardType).unwrap();
+-    let paths = paths.downcast::<NSArray>().unwrap();
+-    for path in paths {
+-      let path = path.downcast::<NSString>().unwrap();
+-      let path = CStr::from_ptr(path.UTF8String()).to_string_lossy();
+-      drag_drop_paths.push(PathBuf::from(path.into_owned()));
++  if let Some(urls) = pb.readObjectsForClasses_options(&classes, Some(&options)) {
++    for url in urls {
++      // The pasteboard returns only objects of the requested NSURL class.
++      let url = url.downcast::<NSURL>().unwrap();
++      if let Some(path) = url.path() {
++        drag_drop_paths.push(PathBuf::from(path.to_string()));
++      }
+@@ -40 +44 @@
+-  let dl: NSPoint = unsafe { drag_info.draggingLocation() };
++  let dl: NSPoint = drag_info.draggingLocation();
+@@ -57 +61 @@
+-  let dl: NSPoint = unsafe { drag_info.draggingLocation() };
++  let dl: NSPoint = drag_info.draggingLocation();
+@@ -85 +89 @@
+-  let dl: NSPoint = unsafe { drag_info.draggingLocation() };
++  let dl: NSPoint = drag_info.draggingLocation();
+--- a/src/wkwebview/mod.rs
++++ b/src/wkwebview/mod.rs
+@@ -34,0 +35,2 @@
++#[cfg(any(debug_assertions, feature = "devtools", feature = "mac-proxy"))]
++use objc2::runtime::NSObject;
+@@ -37 +39 @@
+-  runtime::{AnyObject, NSObject, ProtocolObject},
++  runtime::{AnyObject, ProtocolObject},
+@@ -1353 +1355 @@
+-  let absolute_url = unsafe { url_obj.absoluteString().unwrap() };
++  let absolute_url = url_obj.absoluteString().unwrap();
+--- a/src/wkwebview/synthetic_mouse_events.rs
++++ b/src/wkwebview/synthetic_mouse_events.rs
+@@ -1,4 +1 @@
+-use objc2_app_kit::{
+-  NSAlternateKeyMask, NSCommandKeyMask, NSControlKeyMask, NSEvent, NSEventType, NSShiftKeyMask,
+-  NSView,
+-};
++use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView};
+@@ -116,4 +113,4 @@
+-    ctrl_key = mods_flags.contains(NSControlKeyMask),
+-    alt_key = mods_flags.contains(NSAlternateKeyMask),
+-    shift_key = mods_flags.contains(NSShiftKeyMask),
+-    meta_key = mods_flags.contains(NSCommandKeyMask),
++    ctrl_key = mods_flags.contains(NSEventModifierFlags::Control),
++    alt_key = mods_flags.contains(NSEventModifierFlags::Option),
++    shift_key = mods_flags.contains(NSEventModifierFlags::Shift),
++    meta_key = mods_flags.contains(NSEventModifierFlags::Command),

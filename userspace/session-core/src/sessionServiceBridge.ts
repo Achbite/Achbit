@@ -1,3 +1,4 @@
+import { SessionNotifications } from './sessionNotifications.js';
 import type { SessionObservationSink } from './local-agent/observation.js';
 import { LoopFailure } from './local-agent/loopFailure.js';
 import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
@@ -50,8 +51,21 @@ export interface BridgeExtension {
 }
 export async function startSessionServiceBridge(extensionFactory?: (send: (value: unknown) => Promise<void>) => BridgeExtension): Promise<void> {
   const extension = extensionFactory?.(writeFrame);
-  const apiBase = requiredEnvironment('DEEPCODE_LOCAL_AGENT_API_BASE');
-  const serviceToken = requiredEnvironment('DEEPCODE_LOCAL_AGENT_TOKEN');
+  const notifications = new SessionNotifications(writeFrame);
+  const observers = [notifications, ...(extension?.observation ? [extension.observation] : [])];
+  const observation: SessionObservationSink = {
+    accept(input) {
+      for (const observer of observers) {
+        try { observer.accept(input); }
+        catch (error) { try { observer.failed(input.sessionId, error); } catch { /* Observers never own execution. */ } }
+      }
+    },
+    failed(sessionId, error) {
+      for (const observer of observers) { try { observer.failed(sessionId, error); } catch { /* Preserve producer isolation. */ } }
+    },
+  };
+  const apiBase = requiredEnvironment('ACHBIT_LOCAL_AGENT_API_BASE');
+  const serviceToken = requiredEnvironment('ACHBIT_LOCAL_AGENT_TOKEN');
   const journal = new HttpCommandJournal({ apiBase, serviceToken });
   const kernel = new HttpKernelPort({ apiBase, serviceToken });
   const provider = new HttpProviderPort({ apiBase, serviceToken });
@@ -63,7 +77,7 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
   const factory = await loadSessionServiceFactory();
   const candidate: unknown = await factory({
     journal,
-    ...(extension?.observation ? { observation: extension.observation } : {}),
+    observation,
     agentHost: new HttpAgentHostPort({ apiBase, serviceToken }),
     compositions: {
       create: async () => ({
@@ -117,6 +131,7 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
     extension?.dispose();
     await Promise.allSettled(pending);
     await service.dispose();
+    await notifications.close();
     await outputTail;
   }
   if (!shutdownRequest) throw new Error('session_service_input_closed');
@@ -183,7 +198,7 @@ async function dispatch(
 }
 
 async function loadSessionServiceFactory(): Promise<SessionServiceFactory> {
-  const modulePath = process.env.DEEPCODE_SESSION_SERVICE_MODULE;
+  const modulePath = process.env.ACHBIT_SESSION_SERVICE_MODULE;
   if (modulePath === undefined) return createSessionService;
   if (!isAbsolute(modulePath)) throw new Error('session_service_module_path_invalid');
   const module: unknown = await import(pathToFileURL(modulePath).href);

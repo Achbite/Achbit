@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DeepCode 本地开发验证入口。测试直接调用真实构建与运行路径，不经过自定义控制器。
+# Achbit 本地开发验证入口。测试直接调用真实构建与运行路径，不经过自定义控制器。
 # 验证后端链路与显示/输入逻辑（例如权限和问题隔离），不以视觉观感或具体 CSS 写法为断言。
 set -euo pipefail
 
@@ -43,7 +43,7 @@ run_static() {
   for script in ./test.sh ./build.sh ./entrypoint.sh ./scripts/*.sh; do
     bash -n "$script"
   done
-  if deepcode_source_git_available "$ROOT_DIR"; then
+  if achbit_source_git_available "$ROOT_DIR"; then
     git -C "$ROOT_DIR" diff --check
   else
     printf '[test] Git diff check: SKIP (Git metadata is host-owned and unavailable in this compile/test snapshot)\n'
@@ -97,10 +97,10 @@ run_workspace_shell() {
 # E2E scripts consume the outputs selected here; direct calls must supply these paths.
 if [ "$profile" = cli ] || [ "$profile" = full ]; then
   test_target_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
-  export DEEPCODE_E2E_DAEMON="${DEEPCODE_E2E_DAEMON:-$test_target_dir/debug/achbit-kernel-daemon}"
-  export DEEPCODE_E2E_CLI="${DEEPCODE_E2E_CLI:-$test_target_dir/debug/achbit-cli}"
-  export DEEPCODE_E2E_TUI="${DEEPCODE_E2E_TUI:-$test_target_dir/debug/achbit-tui}"
-  export DEEPCODE_E2E_SESSION_BRIDGE="${DEEPCODE_E2E_SESSION_BRIDGE:-$ROOT_DIR/userspace/session-core/dist/sessionServiceBridge.js}"
+  export ACHBIT_E2E_DAEMON="${ACHBIT_E2E_DAEMON:-$test_target_dir/debug/achbit-kernel-daemon}"
+  export ACHBIT_E2E_CLI="${ACHBIT_E2E_CLI:-$test_target_dir/debug/achbit-cli}"
+  export ACHBIT_E2E_TUI="${ACHBIT_E2E_TUI:-$test_target_dir/debug/achbit-tui}"
+  export ACHBIT_E2E_SESSION_BRIDGE="${ACHBIT_E2E_SESSION_BRIDGE:-$ROOT_DIR/userspace/session-core/dist/sessionServiceBridge.js}"
 fi
 
 case "$profile" in

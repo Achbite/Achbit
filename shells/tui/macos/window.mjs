@@ -71,7 +71,7 @@ async function scheduleWindowClose(owner, waitForPid, temporary) {
 // The private stdin pipe has one owner; EOF releases it even after a parent crash.
 export async function withFontSettings(binary, args, use, start = spawn) {
   const child = start(binary, [...args, '--font-settings'], {
-    env: { ...process.env, DEEPCODE_TUI_FONT_SETTINGS_LEASE: '1' },
+    env: { ...process.env, ACHBIT_TUI_FONT_SETTINGS_LEASE: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let output = '', stderr = '', delivered = false, released = false, earlyExit;
@@ -158,9 +158,9 @@ export async function runChild(path) {
     }
     const tty = execFileSync('/usr/bin/tty', { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'] }).trim();
     const environment = { ...process.env, ...payload.environment,
-      DEEPCODE_TUI_WINDOW_TTY: tty, DEEPCODE_TUI_READY_FILE: join(folder, 'rendered.json') };
+      ACHBIT_TUI_WINDOW_TTY: tty, ACHBIT_TUI_READY_FILE: join(folder, 'rendered.json') };
     const apiIndex = payload.args.indexOf('--api');
-    if (apiIndex >= 0) environment.DEEPCODE_API_URL = payload.args[apiIndex + 1];
+    if (apiIndex >= 0) environment.ACHBIT_API_URL = payload.args[apiIndex + 1];
     child = spawn(payload.binary, payload.args, { cwd: payload.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: environment });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', text => {
@@ -257,9 +257,9 @@ export async function runInCurrentWindow(config, callNative = native, start = sp
   const signals = new Map(['SIGINT', 'SIGTERM', 'SIGHUP'].map(signal => [signal, () => child?.kill(signal)]));
   try {
     await callNative('apply', { ...font, windowId: previous.windowId, tty });
-    const env = { ...process.env, ...environment, DEEPCODE_TUI_WINDOW_TTY: tty };
+    const env = { ...process.env, ...environment, ACHBIT_TUI_WINDOW_TTY: tty };
     const apiIndex = args.indexOf('--api');
-    if (apiIndex >= 0) env.DEEPCODE_API_URL = args[apiIndex + 1];
+    if (apiIndex >= 0) env.ACHBIT_API_URL = args[apiIndex + 1];
     child = start(binary, args, { cwd, env, stdio: 'inherit' });
     for (const [signal, handler] of signals) process.on(signal, handler);
     code = await new Promise((accept, reject) => {
@@ -288,7 +288,7 @@ async function main(args) {
   if (args[0] === '--close-finished') { await closeFinishedWindow(JSON.parse(args[1])); return 0; }
   if (args[0] === '--run') return runChild(args[1]);
   if (args[0] === '--apply-font') {
-    const tty = process.env.DEEPCODE_TUI_WINDOW_TTY;
+    const tty = process.env.ACHBIT_TUI_WINDOW_TTY;
     if (!tty) throw new Error('Use the Achbit dedicated terminal window to change its font.');
     return withPreferences([], args[1], font => {
       native('prepare', font);
@@ -308,14 +308,14 @@ async function main(args) {
     });
   }
   return withPreferences(forward, choice, font => {
-    const temporary = process.env.DEEPCODE_USER_ROOT
-      ? join(resolve(process.env.DEEPCODE_USER_ROOT), 'tmp') : join(tmpdir(), 'DeepCode');
+    const temporary = process.env.ACHBIT_USER_ROOT
+      ? join(resolve(process.env.ACHBIT_USER_ROOT), 'tmp') : join(tmpdir(), 'Achbit');
     if (commandWindow && process.env.TERM_PROGRAM === 'Apple_Terminal') {
       const tty = execFileSync('/usr/bin/tty', { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'] }).trim();
       return runInCurrentWindow({ font, tty, binary, args: forward, cwd: process.cwd(), environment: {}, temporary });
     }
-    const environment = Object.fromEntries(['DEEPCODE_RUNTIME_DIR', 'DEEPCODE_KERNEL_BIN',
-      'DEEPCODE_USER_ROOT', 'DEEPCODE_API_URL', 'DEEPCODE_HOST_SHELL_TOKEN']
+    const environment = Object.fromEntries(['ACHBIT_RUNTIME_DIR', 'ACHBIT_KERNEL_BIN',
+      'ACHBIT_USER_ROOT', 'ACHBIT_API_URL', 'ACHBIT_HOST_SHELL_TOKEN']
       .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
     return launchWindow({ font, args: forward, binary, cwd: process.cwd(), environment, temporary });
   });

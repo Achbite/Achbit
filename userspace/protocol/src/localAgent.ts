@@ -4,14 +4,14 @@ import type { ShellAuthorizationScope } from './permissions.js';
 import type { LlmReasoningEffort, LlmThinkingMode } from './llm.js';
 import { isLlmReasoningEffort } from './llm.js';
 
-export const LOCAL_AGENT_PROTOCOL_VERSION = 'deepcode.local-agent' as const;
-export const CONVERSATION_COMMAND_VERSION = 'deepcode.command.v3' as const;
-export const COMMAND_REPLY_VERSION = 'deepcode.command-reply.v3' as const;
-export const SESSION_EVENT_VERSION = 'deepcode.session-event.v5' as const;
-export const SESSION_PROJECTION_VERSION = 'deepcode.session-projection.v6' as const;
-export const PROVIDER_EVENT_VERSION = 'deepcode.provider-event' as const;
-export const KERNEL_REQUEST_VERSION = 'deepcode.kernel-request' as const;
-export const KERNEL_REPLY_VERSION = 'deepcode.kernel-reply' as const;
+export const LOCAL_AGENT_PROTOCOL_VERSION = 'achbit.local-agent' as const;
+export const CONVERSATION_COMMAND_VERSION = 'achbit.command.v3' as const;
+export const COMMAND_REPLY_VERSION = 'achbit.command-reply.v3' as const;
+export const SESSION_EVENT_VERSION = 'achbit.session-event.v5' as const;
+export const SESSION_PROJECTION_VERSION = 'achbit.session-projection.v6' as const;
+export const PROVIDER_EVENT_VERSION = 'achbit.provider-event' as const;
+export const KERNEL_REQUEST_VERSION = 'achbit.kernel-request' as const;
+export const KERNEL_REPLY_VERSION = 'achbit.kernel-reply' as const;
 export const SESSION_CONTROL_INTERACTION_REQUEST = 'interaction.request' as const;
 export const SESSION_CONTROL_PLAN_PUBLISH = 'plan.publish' as const;
 export const SESSION_CONTROL_TODO_UPDATE = 'todo.update' as const;
@@ -76,6 +76,7 @@ export interface AgentModelParameters {
   contextWindowTokens: number;
   maxOutputTokens: number;
   imageInput: boolean;
+  fileInputMediaTypes?: string[];
   temperature: number | null;
   hostedWebSearch: string | null;
 }
@@ -83,14 +84,18 @@ export interface AgentModelParameters {
 export function decodeAgentModelParameters(value: unknown): AgentModelParameters {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_model_parameters_invalid');
   const item = value as AgentModelParameters;
-  if (Object.keys(item).length !== 8 || typeof item.adapterId !== 'string' || !item.adapterId
+  if (Object.keys(item).some(key => !['adapterId', 'kind', 'providerFlavor', 'contextWindowTokens', 'maxOutputTokens', 'imageInput', 'fileInputMediaTypes', 'temperature', 'hostedWebSearch'].includes(key)) || typeof item.adapterId !== 'string' || !item.adapterId
     || !['responses', 'openaiCompatible', 'anthropic', 'ollama'].includes(item.kind)
     || item.providerFlavor !== null && typeof item.providerFlavor !== 'string'
     || !Number.isSafeInteger(item.contextWindowTokens) || !Number.isSafeInteger(item.maxOutputTokens)
     || item.maxOutputTokens <= 0 || item.contextWindowTokens <= item.maxOutputTokens
+    || item.fileInputMediaTypes !== undefined && (!Array.isArray(item.fileInputMediaTypes)
+      || item.fileInputMediaTypes.some(type => type !== 'application/pdf')
+      || new Set(item.fileInputMediaTypes).size !== item.fileInputMediaTypes.length
+      || item.fileInputMediaTypes.length > 0 && item.kind !== 'openaiCompatible')
     || typeof item.imageInput !== 'boolean' || item.temperature !== null && (typeof item.temperature !== 'number' || !Number.isFinite(item.temperature))
     || item.hostedWebSearch !== null && item.hostedWebSearch !== 'web_search') throw new Error('agent_model_parameters_invalid');
-  return structuredClone(item);
+  return { ...structuredClone(item), fileInputMediaTypes: [...(item.fileInputMediaTypes ?? [])] };
 }
 
 /** Instance choices, resolved by the trusted Session contribution registry. */
@@ -181,6 +186,7 @@ export type AgentOperation =
       runner?: AgentContributionSelection;
       permissionPolicy?: AgentContributionSelection;
       workspaceSandbox?: AgentRecipe['workspaceSandbox'];
+      tools?: AgentRecipe['tools'];
       context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
   | { action: 'compact'; agentId: string; focus?: string }
@@ -1551,6 +1557,8 @@ export interface RunProjection {
   /** Current GUI target, changed only by an explicit user rebind command. */
   hostBinding?: HostWindowBinding;
   profileId: string;
+  /** Native file formats frozen by run.started; omission means none. */
+  fileInputMediaTypes?: string[];
   reasoningEffort?: LlmReasoningEffort;
   thinking?: LlmThinkingMode;
   waitingReason?: 'approval' | 'userInput' | 'plan';
@@ -1849,6 +1857,8 @@ export interface ModelMessage {
   /** Immutable sources; Kernel resolves bytes at the Provider transport boundary. */
   toolImages?: readonly { callId: string; artifactId: string }[];
   images?: readonly { workspaceId: string; logicalPath: string; mediaType: string }[];
+  /** Native task attachments remain with their user message while it is in context. */
+  files?: readonly { workspaceId: string; logicalPath: string; mediaType: string; displayName: string }[];
   reasoningContent?: string;
   reasoningSignature?: string;
   toolCallId?: string;
@@ -1875,6 +1885,7 @@ export interface ProviderToolDefinition {
 export interface ProviderRuntimeSnapshot {
   providerRuntimeRef: string;
   profileId: string;
+  fileInputMediaTypes?: string[];
   reasoningEffort?: LlmReasoningEffort;
   reasoningEffortOverride?: LlmReasoningEffort;
   thinking?: LlmThinkingMode;
@@ -2043,6 +2054,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  /** Execution selection from the Kernel; not model-facing framework metadata. */
+  toolSelection?: AgentRecipe['tools'];
   contextManagement: ContextManagementSettings;
   agentCapabilities: AgentCapabilities;
   agentToolsEnabled?: boolean;

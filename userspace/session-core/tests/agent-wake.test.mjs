@@ -15,7 +15,7 @@ const call = (request, callId, name, input) => providerEvent(request.requestId, 
 const done = request => providerEvent(request.requestId, 'completed', {});
 const answer = (request, text) => providerEvent(request.requestId, 'text.delta', { text });
 const subagentSettingsCommand = (sessionId, commandId, settings) => ({
-  schemaVersion: 'deepcode.command.v3', type: 'session.subagent-settings.set', sessionId, commandId, settings,
+  schemaVersion: 'achbit.command.v3', type: 'session.subagent-settings.set', sessionId, commandId, settings,
 });
 
 async function serviceFixture(t, ownerId, stream, options = {}) {
@@ -549,7 +549,7 @@ test('cancelling a parent awaiting a child Plan drains child runtime before pare
     && (await readEvents(fixture.journal, ownerId)).some(event => event.type === 'message.committed' && event.payload.role === 'assistant'), 'parent answer and pending child Plan');
   const before = await fixture.service.snapshot(ownerId), childId = before.agentTasks[0].agentSessionId;
   assert.equal(terminal.has(before.run.status), false, 'an answer does not fabricate final settlement while a child owns work');
-  const cancellation = fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+  const cancellation = fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
     sessionId: ownerId, commandId: 'command:stop-cleanup', runId: before.run.runId });
   await waitUntil(() => childReleasing, 'child runtime release begins');
   assert.equal((await fixture.service.snapshot(childId)).pendingPlan, null);
@@ -591,7 +591,7 @@ test('parent decisions expose light child identities and route Plan, question an
   }, {
     preparation: { tools: [tool] },
     kernel: () => emptyKernel({ async execute(request) {
-      if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution',
+      if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution',
         requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'approval:child-source',
         preview: { summary: 'Read the station source.', effects: ['external'], logicalTargets: ['https://station.example.test/north'] } };
       return completedExecutionReply(request, { content: 'Confirmed station source.' });
@@ -643,21 +643,21 @@ test('parent decisions expose light child identities and route Plan, question an
   const childId = plan.agentSessionId;
   const childRunId = plan.runId;
   assert.equal((await fixture.service.snapshot(ownerId)).pendingPlan, null, 'a child decision is not copied into the parent Plan');
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: childId, commandId: 'command:child-plan', runId: childRunId,
     ...plan.plan, response: { kind: 'confirm' } })).status, 'accepted');
   const question = await pending('question');
   assert.equal(question.agentSessionId, childId);
   assert.equal(question.runId, childRunId);
   assert.equal(question.plan, undefined);
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'interaction.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'interaction.respond',
     sessionId: childId, commandId: 'command:child-question', runId: childRunId,
     interactionId: question.interactionIds[0], response: 'Use the north station.' })).status, 'accepted');
   const approval = await pending('approval');
   assert.equal(approval.agentSessionId, childId);
   assert.equal(approval.runId, childRunId);
   assert.deepEqual(approval.interactionIds, []);
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond',
     sessionId: childId, commandId: 'command:child-approval', runId: childRunId,
     ...approval.approval, decision: 'allow' })).status, 'accepted');
   const finished = await completed(fixture.service, ownerId);
@@ -714,7 +714,7 @@ test('an ancestor continuing a descendant routes its Plan by the current task wi
   assert.equal(route.runId, task.childRunId);
   assert.equal((await fixture.service.snapshot(descendantId)).agentContext.parentSessionId, memberId);
   assert.equal((await fixture.service.snapshot(memberId)).run.status, 'completed');
-  const reply = await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  const reply = await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: route.agentSessionId, commandId: 'command:descendant-plan', runId: route.runId,
     ...route.plan, response: { kind: 'confirm' } });
   assert.equal(reply.status, 'accepted');
@@ -763,7 +763,7 @@ test('a child Plan retains the original parent authority reference without inven
   await fixture.service.submit(messageCommand(ownerId, 'command:parent-plan', 'Write report.txt through a child.'));
   await waitUntil(async () => (await fixture.service.snapshot(ownerId)).pendingPlan !== null, 'root Plan confirmation');
   const plan = (await fixture.service.snapshot(ownerId)).pendingPlan;
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: ownerId, commandId: 'command:confirm-parent', runId: plan.runId,
     planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } })).status, 'accepted');
   const finished = await completed(fixture.service, ownerId);
@@ -813,7 +813,7 @@ test('a visible Plan confirmation waits for the previous Loop resource lease bef
   const plan = waiting.pendingPlan;
   assert.ok(plan);
   let replied = false;
-  const response = fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  const response = fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: ownerId, commandId: 'command:confirm-during-release', runId: plan.runId,
     planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } }).then(reply => {
     replied = true;
@@ -832,7 +832,7 @@ test('a visible Plan confirmation waits for the previous Loop resource lease bef
 test('a cancel acknowledgement cannot consume an undelivered child result', () => {
   const sessionId = 'session:cancel-result', runId = 'run:cancel-result', taskId = 'task:cancel-result';
   const events = [];
-  const add = (type, payload, callId) => events.push({ schemaVersion: 'deepcode.session-event.v5', sessionId, runId,
+  const add = (type, payload, callId) => events.push({ schemaVersion: 'achbit.session-event.v5', sessionId, runId,
     eventId: `event:cancel:${events.length + 1}`, sequence: events.length + 1, occurredAt: '2026-10-13T00:00:00.000Z',
     type, payload, ...(callId ? { callId } : {}) });
   const spawn = { action: 'spawn', preset: 'collaboration', name: 'Inspector', task: 'Inspect the source.', delivery: 'async' };
@@ -1284,7 +1284,7 @@ test('parent cancellation drains both a peer-message wait and a pending child Pl
   const before = await fixture.service.snapshot(ownerId);
   const waitingPeer = before.agentChildren.find(child => child.displayName === 'Waiting peer').agentSessionId;
   await waitUntil(async () => (await readEvents(fixture.journal, waitingPeer)).some(event => event.type === 'session.control.completed'), 'peer waiting for a message');
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId: ownerId,
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId: ownerId,
     commandId: 'command:cancel-both', runId: before.run.runId })).status, 'accepted');
   const after = await fixture.service.snapshot(ownerId);
   assert.equal(after.run.status, 'cancelled');
@@ -1457,12 +1457,12 @@ test('unknown drivers and child policy escalation are rejected before child crea
   assert.deepEqual((await completed(fixture.service, ownerId)).agentTasks ?? [], []);
 });
 
-test('Session delegation settings append ordered facts without changing tools or accepting disabled tasks', async t => {
+test('Session delegation settings change declared tools without injecting state or accepting disabled tasks', async t => {
   const ownerId = 'session:delegation-toggle';
   let fixture;
   fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
     assert.equal(sessionId, ownerId, 'disabled delegation must not start a child');
-    assert.ok(request.tools.some(tool => tool.name === 'agent'), 'the installed handler remains discoverable when off');
+    assert.equal(request.tools.some(tool => tool.name === 'agent'), false, 'unstarted delegation has no model tool');
     if (turn === 1) {
       for (const enabled of [true, false, true, true, false]) {
         await service.submit(subagentSettingsCommand(ownerId, `command:toggle:${(await service.snapshot(ownerId)).revision}`, { ...fixture.settings, enabled }));
@@ -1472,12 +1472,12 @@ test('Session delegation settings append ordered facts without changing tools or
       const first = fixture.requests.get(ownerId)[0];
       assert.deepEqual(request.tools, first.tools);
       assert.deepEqual(request.messages.slice(0, first.messages.length), first.messages);
-      assert.equal(occurrences(textOf(request), 'stop delegating new tasks'), 3);
-      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 3);
+      assert.equal(occurrences(textOf(request), 'stop delegating new tasks'), 0);
+      assert.equal(occurrences(textOf(request), 'new agent delegation is enabled'), 0);
       yield call(request, 'toggle:rejected', 'agent', { action: 'spawn', name: 'Disabled', task: 'Must not start', delivery: 'async' });
     } else {
       assert.equal(turn, 3);
-      assert.match(textOf(request), /agent_disabled/u);
+      assert.match(textOf(request), /provider_tool_alias_unknown/u);
       yield answer(request, 'Continued without delegating.');
     }
     yield done(request);
@@ -1495,8 +1495,7 @@ test('Session delegation settings append ordered facts without changing tools or
       summary: 'The task inspected available agent operations.' } }];
   const retained = messagesFromJournal(compacted, state.run.runId, [workspaceBinding]);
   const policies = retained.filter(item => item.contributionId.startsWith('agent-delegation:'));
-  assert.equal(policies.length, 1, 'compaction retains the latest exact policy independently of summary wording');
-  assert.match(policies[0].message.content, /stop delegating new tasks/u);
+  assert.equal(policies.length, 0, 'settings remain journal facts and do not become model text');
   const before = fixture.requests.get(ownerId).length;
   await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:toggle:after', { ...fixture.settings, enabled: true }));
   assert.equal(fixture.requests.get(ownerId).length, before, 'a setting change does not start a model request');
@@ -1518,9 +1517,8 @@ test('delegation changes during execution preserve the provider call and result 
       assert.equal(result.role, 'tool', 'runtime notices must not split the call/result group');
       assert.equal(result.providerCallId, 'toggle:read');
       const notices = request.messages.slice(callIndex + 2).filter(message => message.role === 'user' && message.content.startsWith('Runtime setting changed:'));
-      assert.equal(notices.length, 2);
-      assert.match(notices[0].content, /stop delegating new tasks/u);
-      assert.match(notices[1].content, /new agent delegation is enabled/u);
+      assert.equal(notices.length, 0);
+      assert.ok(request.tools.some(tool => tool.name === 'agent'), 'latest active selection is declared');
       yield answer(request, 'Read complete.');
     }
     yield done(request);
@@ -1538,7 +1536,8 @@ test('Session settings isolate peers, update future defaults, survive reopen and
   const ownerId = 'session:settings-b';
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
     if (sessionId === ownerId && turn === 1) {
-      assert.match(textOf(request), /Proactively delegate independent work; use collaboration/u);
+      assert.match(request.tools.find(tool => tool.name === 'agent').description, /Proactively delegate useful independent work/u);
+      assert.doesNotMatch(textOf(request), /new agent delegation is enabled|stop delegating new tasks/u);
       yield call(request, 'settings:spawn', 'agent', { action: 'spawn', name: 'Inspector', task: 'Inspect independently.', delivery: 'wait' });
     } else yield answer(request, 'Independent evidence.');
     yield done(request);

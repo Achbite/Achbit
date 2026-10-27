@@ -1,3 +1,4 @@
+import { EventSourceParserStream } from 'eventsource-parser/stream';
 import { pastedImageBytes, type PastedImageInput } from './pastedImage';
 import { isLlmReasoningEffort } from '@achbit/protocol';
 import { isProcessActivity } from '@achbit/protocol';
@@ -91,6 +92,27 @@ export async function getConversationCatalog(
     `${API_BASE}/conversation/catalog`,
     { signal },
   ));
+}
+
+/** Host catalog commits invalidate the view; status polling does not discover conversations. */
+export async function watchConversationCatalog(signal: AbortSignal, changed: () => void): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversation/catalog/events`, { signal,
+    headers: { ...getHostConnectionHeaders(), Accept: 'text/event-stream' } });
+  if (!response.ok || !response.headers.get('content-type')?.startsWith('text/event-stream') || !response.body) {
+    const detail = await response.text();
+    let message = detail;
+    try { const error = JSON.parse(detail) as ApiEnvelope<unknown>; message = error.message ?? error.error ?? detail; }
+    catch { /* Keep the original transport error. */ }
+    throw new Error(message || `conversation_catalog_watch_failed:HTTP ${response.status}`);
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream()).getReader();
+  try {
+    while (!signal.aborted) {
+      const result = await reader.read();
+      if (result.done) throw new Error('conversation_catalog_watch_closed');
+      if (result.value.event === 'ready' || result.value.event === 'change') changed();
+    }
+  } finally { await reader.cancel(); reader.releaseLock(); }
 }
 
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
@@ -1362,10 +1384,12 @@ function isRun(value: unknown): boolean {
   return isExactRecord(
     value,
     ['runId', 'profileId', 'workspaceBindings', 'status'],
-    ['waitingReason', 'reasoningEffort', 'thinking', 'hostBinding'],
+    ['waitingReason', 'reasoningEffort', 'thinking', 'hostBinding', 'fileInputMediaTypes'],
   )
     && isIdentifier(value.runId)
     && isIdentifier(value.profileId)
+    && (value.fileInputMediaTypes === undefined || (isArrayOf(value.fileInputMediaTypes, item => item === 'application/pdf')
+      && new Set(value.fileInputMediaTypes).size === value.fileInputMediaTypes.length))
     && (value.hostBinding === undefined || (isExactRecord(value.hostBinding, ['hostInstanceId', 'windowLabel'])
       && isIdentifier(value.hostBinding.hostInstanceId) && isIdentifier(value.hostBinding.windowLabel)))
     && (value.reasoningEffort === undefined || isReasoningEffort(value.reasoningEffort))

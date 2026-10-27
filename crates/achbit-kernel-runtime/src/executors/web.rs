@@ -331,7 +331,7 @@ fn http_get_complete_with_headers(
     cancellation: &KernelCancellationToken,
 ) -> KernelResult<HttpGetComplete> {
     std::thread::scope(|scope| {
-        std::thread::Builder::new().name("deepcode-http".to_string())
+        std::thread::Builder::new().name("achbit-http".to_string())
             .spawn_scoped(scope, move || {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
                     .map_err(|error| KernelError::Other(error.to_string()))?;
@@ -360,7 +360,7 @@ async fn http_get_complete_async(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent("DeepCode-Kernel/0.1")
+        .user_agent("Achbit-Kernel/0.1")
         .build()
         .map_err(|error| KernelError::Other(format!("create HTTP client: {error}")))?;
     let mut request = client.get(url);
@@ -620,7 +620,7 @@ mod tests {
     fn archived_test_context(label: &str) -> KernelToolExecutionContext {
         KernelToolExecutionContext {
             output_directory: Some(std::env::temp_dir().join(format!(
-                    "deepcode-web-{label}-{}-{}",
+                    "achbit-web-{label}-{}-{}",
                     std::process::id(),
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)

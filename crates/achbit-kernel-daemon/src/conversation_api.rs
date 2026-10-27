@@ -7,10 +7,11 @@ use crate::prelude::*;
 use crate::HostState;
 use crate::ReadyState;
 use crate::{ApiResponse, AppState, GuiState, SessionServiceError, SessionServiceProcess};
-use axum::response::{IntoResponse, Response};
+use axum::response::{sse::Event, IntoResponse, Response, Sse};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::io::Read;
 use std::path::Path as StdPath;
 
@@ -193,6 +194,34 @@ pub(crate) async fn conversation_catalog_get(State(state): State<HostState>) -> 
         .expect("catalog sessions")
         .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
     ApiResponse::ok(value)
+}
+
+pub(crate) async fn conversation_catalog_events(State(state): State<HostState>) -> Response {
+    let mut changes = {
+        let gui = state.gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error).into_response();
+        }
+        gui.conversation_catalog.changes.subscribe()
+    };
+    let stream = async_stream::stream! {
+        let shutdown = crate::wait_for_host_shutdown();
+        tokio::pin!(shutdown);
+        // Subscribe before ready so the client can read a baseline without a gap.
+        yield Ok::<_, Infallible>(Event::default().event("ready").data("{}"));
+        loop {
+            let changed = tokio::select! {
+                biased;
+                _ = &mut shutdown => break,
+                changed = changes.changed() => changed,
+            };
+            if changed.is_err() { break; }
+            yield Ok(Event::default().event("change").data("{}"));
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
@@ -621,6 +650,68 @@ pub(crate) fn resolve_provider_images(
     Ok(())
 }
 
+pub(crate) fn resolve_provider_files(
+    state: &AppState,
+    session_id: &str,
+    messages: &mut [crate::local_agent_api::LocalProviderMessage],
+    file_input_media_types: &[String],
+) -> Result<(), String> {
+    for message in messages {
+        for file in &message.files {
+            if !file_input_media_types.contains(&file.media_type) {
+                return Err("当前模型未声明该原生文件输入类型。".into());
+            }
+            let workspace = {
+                let gui = state.gui.lock().expect("gui state lock");
+                if let Some(error) = &gui.conversation_catalog_error {
+                    return Err(error.clone());
+                }
+                gui.conversation_catalog
+                    .workspace(&file.workspace_id)
+                    .ok_or("文件附件目录不存在。")?
+                    .clone()
+            };
+            message
+                .file_data
+                .push(read_provider_file(&workspace, session_id, file)?);
+        }
+    }
+    Ok(())
+}
+
+fn read_provider_file(
+    workspace: &ConversationWorkspaceRecord,
+    session_id: &str,
+    file: &crate::local_agent_api::LocalProviderFileReference,
+) -> Result<crate::local_agent_api::LocalProviderFile, String> {
+    use base64::Engine;
+    if workspace.workspace_id != file.workspace_id
+        || workspace
+            .owner_session_id
+            .as_deref()
+            .is_some_and(|owner| owner != session_id)
+    {
+        return Err("文件引用不属于当前会话。".into());
+    }
+    if file.media_type != "application/pdf" {
+        return Err("当前原生文件输入仅支持 PDF。".into());
+    }
+    let path = crate::host_inspection::resolve_workspace_read_path(
+        StdPath::new(&workspace.canonical_root),
+        &file.logical_path,
+    )
+    .map_err(|error| error.message)?;
+    let (media, bytes) = read_document_resource(&path)?;
+    if media != file.media_type {
+        return Err("文件内容与附件格式不一致。".into());
+    }
+    Ok(crate::local_agent_api::LocalProviderFile {
+        filename: file.display_name.clone(),
+        media_type: media.into(),
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ReadFileChangeRequest {
@@ -806,7 +897,7 @@ pub(crate) async fn conversation_directory_index_attach(
         "submit",
         json!({
             "command": {
-                "schemaVersion": "deepcode.command.v3",
+                "schemaVersion": "achbit.command.v3",
                 "type": "session.directory-index.attach",
                 "commandId": command_id,
                 "sessionId": session_id,
@@ -889,7 +980,7 @@ pub(crate) async fn conversation_directory_index_detach(
         "submit",
         json!({
             "command": {
-                "schemaVersion": "deepcode.command.v3",
+                "schemaVersion": "achbit.command.v3",
                 "type": "session.directory-index.detach",
                 "commandId": command_id,
                 "sessionId": session_id,
@@ -1113,7 +1204,7 @@ async fn sync_project_workspaces(
     };
     for session_id in sessions {
         let reply = request_service(state.session_service.clone(), "submit", json!({"command":{
-            "schemaVersion":"deepcode.command.v3", "type":"session.workspaces.set",
+            "schemaVersion":"achbit.command.v3", "type":"session.workspaces.set",
             "sessionId":session_id, "commandId":random_id("workspace-sync")?, "workspaceBindings":bindings,
         }})).await?;
         require_workspace_command(&reply)?;
@@ -1489,12 +1580,17 @@ pub(crate) async fn create_agent_session(
     {
         Ok(Some(recipe)) => recipe,
         Ok(None) => crate::local_agent_recipe::AgentRecipe {
+            tools: parent_recipe.tools.clone(),
             permission_policy: parent_recipe.permission_policy.clone(),
             workspace_sandbox: parent_recipe.workspace_sandbox.clone(),
             ..Default::default()
         },
         Err(error) => return ApiResponse::error("agent_recipe_invalid", error),
     };
+    recipe.tools.inherit_missing(
+        &parent_recipe.tools,
+        body.recipe.as_ref().and_then(|value| value.get("tools")),
+    );
     if let Err(error) = parent_recipe.validate_child(&recipe) {
         return ApiResponse::error("agent_policy_not_grantable", error);
     }
@@ -2062,6 +2158,34 @@ pub(crate) async fn conversation_command_submit(
         command.get("type").and_then(Value::as_str),
         Some("message.submit" | "context.focus")
     ) {
+        let file_input_media_types =
+            if command["filesystemReferences"]
+                .as_array()
+                .is_some_and(|references| {
+                    references.iter().any(|reference| {
+                        reference["kind"] == "file" && reference["mediaType"] == "application/pdf"
+                    })
+                })
+            {
+                let projection = match request_service(
+                    state.session_service.clone(),
+                    "snapshot",
+                    json!({"sessionId":session_id}),
+                )
+                .await
+                {
+                    Ok(projection) => projection,
+                    Err(error) => return session_service_error(error),
+                };
+                match command_file_input_media_types(&state, &session_id, &command, &projection) {
+                    Ok(media_types) => media_types,
+                    Err(message) => {
+                        return ApiResponse::error("provider_file_capability_unavailable", message)
+                    }
+                }
+            } else {
+                Vec::new()
+            };
         let gui = state.gui.lock().expect("gui state lock");
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
@@ -2071,9 +2195,11 @@ pub(crate) async fn conversation_command_submit(
         {
             return ApiResponse::error(code, message);
         }
-        if let Err((code, message)) =
-            validate_required_filesystem_plugins(&gui.user_settings, &command)
-        {
+        if let Err((code, message)) = validate_required_filesystem_plugins(
+            &gui.user_settings,
+            &command,
+            &file_input_media_types,
+        ) {
             return ApiResponse::error(code, message);
         }
     }
@@ -2236,7 +2362,7 @@ async fn confirm_plan_workspaces(
     else {
         return Ok(());
     };
-    if command["schemaVersion"] != "deepcode.command.v3"
+    if command["schemaVersion"] != "achbit.command.v3"
         || !command["commandId"].as_str().is_some_and(valid_id)
     {
         return Err(SessionServiceError::new(
@@ -2348,7 +2474,7 @@ async fn confirm_plan_workspaces(
                 continue;
             }
             let reply = request_service(state.session_service.clone(), "submit", json!({"command":{
-                "schemaVersion":"deepcode.command.v3", "type":"session.directory-index.attach", "sessionId":session_id,
+                "schemaVersion":"achbit.command.v3", "type":"session.directory-index.attach", "sessionId":session_id,
                 "commandId":random_id("workspace-confirm")?, "workspaceBinding":binding,
             }})).await?;
             require_workspace_command(&reply)?;
@@ -2560,7 +2686,7 @@ async fn ensure_session_workdir(
         state.session_service.clone(),
         "submit",
         json!({"command":{
-            "schemaVersion":"deepcode.command.v3", "type":"session.directory-index.attach",
+            "schemaVersion":"achbit.command.v3", "type":"session.directory-index.attach",
             "commandId": random_id("command")?, "sessionId":session_id, "workspaceBinding":binding
         }}),
     )
@@ -2616,7 +2742,7 @@ fn prepare_session_workdir(
         .map_err(|error| SessionServiceError::new("session_workdir_create_failed", error))?;
     let binding = WorkspaceBindingDisplayRecord {
         workspace_id: random_id("workspace")?,
-        display_name: "会话工作目录（DeepCode 管理，跨轮保留）".into(),
+        display_name: "会话工作目录（Achbit 管理，跨轮保留）".into(),
     };
     let workspace = ConversationWorkspaceRecord {
         workspace_id: binding.workspace_id.clone(),
@@ -3185,9 +3311,40 @@ fn resolve_catalog_reference_path(
     Ok(canonical)
 }
 
+fn command_file_input_media_types(
+    state: &AppState,
+    session_id: &str,
+    command: &Value,
+    projection: &Value,
+) -> Result<Vec<String>, String> {
+    if command["type"] == "message.submit"
+        && matches!(
+            projection["run"]["status"].as_str(),
+            Some("running" | "waiting")
+        )
+    {
+        let run_id = projection["run"]["runId"]
+            .as_str()
+            .ok_or("活动运行缺少 runId。")?;
+        return state
+            .local_agent
+            .journal
+            .run_provider_runtime(session_id, run_id, "agent")
+            .map(|runtime| runtime.file_input_media_types)
+            .map_err(|error| error.message);
+    }
+    let profile_id = command["profileId"]
+        .as_str()
+        .or_else(|| projection["modelSettings"]["profileId"].as_str());
+    let gui = state.gui.lock().expect("gui state lock");
+    crate::llm_transport::resolve_llm_profile(&gui, profile_id)
+        .map(|profile| profile.file_input_media_types)
+}
+
 fn validate_required_filesystem_plugins(
     settings: &Value,
     command: &Value,
+    file_input_media_types: &[String],
 ) -> Result<(), (&'static str, String)> {
     let selected_uris = command
         .get("pluginSelections")
@@ -3207,6 +3364,12 @@ fn validate_required_filesystem_plugins(
             .then(|| reference.get("mediaType").and_then(Value::as_str))
             .flatten()
     }) {
+        if file_input_media_types
+            .iter()
+            .any(|accepted| accepted == media_type)
+        {
+            continue;
+        }
         let required_uri =
             crate::local_agent_plugins::plugin_uri_for_activation_media_type(settings, media_type)
                 .map_err(|message| ("plugin_catalog_unavailable", message))?;
@@ -3593,6 +3756,7 @@ mod tests {
                 session_workdir: false,
                 created_at: "1".to_string(),
             }],
+            changes: tokio::sync::watch::channel(()).0,
             projects: Vec::new(),
             sessions: vec![ConversationSessionRecord {
                 id: "session:test".to_string(),
@@ -3648,7 +3812,7 @@ mod tests {
     #[test]
     fn message_filesystem_references_must_match_host_catalog() {
         let root = std::env::temp_dir().join(
-            random_id("deepcode-filesystem-reference-test")
+            random_id("achbit-filesystem-reference-test")
                 .expect("temporary reference identity")
                 .replace(':', "-"),
         );
@@ -3707,7 +3871,7 @@ mod tests {
 
     #[test]
     fn file_reference_retains_original_target_and_catalog_identity() {
-        let source_tree = TemporaryTree::new("deepcode-reference-source");
+        let source_tree = TemporaryTree::new("achbit-reference-source");
         let source = source_tree.0.join("fixture.pdf");
         std::fs::write(&source, b"%PDF fixture bytes").expect("write source fixture");
         let mut catalog = catalog_fixture();
@@ -3782,7 +3946,7 @@ mod tests {
         });
 
         assert_eq!(
-            validate_required_filesystem_plugins(&settings, &command)
+            validate_required_filesystem_plugins(&settings, &command, &[])
                 .expect_err("missing PDF plugin selection")
                 .0,
             "plugin_selection_required"
@@ -3792,6 +3956,50 @@ mod tests {
             "uri": required_uri,
             "label": "PDF reader",
         }]);
-        assert!(validate_required_filesystem_plugins(&settings, &command).is_ok());
+        assert!(validate_required_filesystem_plugins(&settings, &command, &[]).is_ok());
+    }
+
+    #[test]
+    fn native_pdf_reads_original_bytes_and_keeps_workspace_authority() {
+        use base64::Engine;
+        let tree = TemporaryTree::new("native-pdf");
+        let bytes = b"%PDF-1.7\n\0\xffbinary";
+        fs::write(tree.0.join("source.pdf"), bytes).unwrap();
+        let mut workspace = catalog_fixture().workspaces.remove(0);
+        workspace.canonical_root = tree.0.to_string_lossy().to_string();
+        workspace.owner_session_id = Some("session:pdf".into());
+        let mut reference = crate::local_agent_api::LocalProviderFileReference {
+            workspace_id: workspace.workspace_id.clone(),
+            logical_path: "source.pdf".into(),
+            media_type: "application/pdf".into(),
+            display_name: "source.pdf".into(),
+        };
+        let file = read_provider_file(&workspace, "session:pdf", &reference).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&file.base64)
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(file.filename, "source.pdf");
+        assert!(read_provider_file(&workspace, "session:other", &reference).is_err());
+        reference.logical_path = "../outside.pdf".into();
+        assert!(read_provider_file(&workspace, "session:pdf", &reference).is_err());
+        reference.logical_path = "source.pdf".into();
+        fs::write(tree.0.join("source.pdf"), b"not a PDF").unwrap();
+        assert!(read_provider_file(&workspace, "session:pdf", &reference).is_err());
+    }
+
+    #[test]
+    fn native_pdf_declaration_removes_only_the_redundant_reader_plugin_gate() {
+        let command =
+            json!({"filesystemReferences":[{"kind":"file", "mediaType":"application/pdf"}]});
+        assert!(validate_required_filesystem_plugins(&json!({}), &command, &[]).is_err());
+        assert!(validate_required_filesystem_plugins(
+            &json!({}),
+            &command,
+            &["application/pdf".into()]
+        )
+        .is_ok());
     }
 }

@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-pub const HOST_LIFETIME_ENV: &str = "DEEPCODE_HOST_LIFETIME";
+pub const HOST_LIFETIME_ENV: &str = "ACHBIT_HOST_LIFETIME";
 
 pub struct HostClientLease {
     stream: TcpStream,

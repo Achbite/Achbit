@@ -200,7 +200,6 @@ const SETTING_DEFINITION_SCHEMAS: SettingDefinitionSchema[] = [
     group: 'skills',
     control: 'text',
   },
-  { key: 'agent.documents.pythonPath', group: 'agent', control: 'text' },
   {
     key: 'mcp.servers',
     group: 'mcp',

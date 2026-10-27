@@ -361,7 +361,7 @@ struct DesktopText {
 
 #[cfg(not(windows))]
 const DESKTOP: DesktopText = DesktopText {
-    description: "Inspect or control a macOS app. Discover exact app/window IDs, then prefer background observe and supported AX actions. observe returns pixels, AX elements and an observationId. press needs AXPress support. Input needs a fresh observation; mouse/keyboard actions require mode=foreground. press/setValue use AX. Inspect returned actionError/valueVerification. If dispatched=true, input happened: observe before retrying. See computer-use.md in productDocsPath for platform details and troubleshooting.",
+    description: "Inspect or control a macOS app. Discover exact app/window IDs, then prefer background observe and supported AX actions. observe defaults to accessibility and returns pixels, AX elements and an observationId. On macOS observationType=pixels explicitly observes an exact windowId without AX; inspect supportedActions. status permissions describe the executor, not target AX readiness. press needs AXPress support. Input needs a fresh observation; mouse/keyboard actions require mode=foreground. press/setValue use AX. Inspect returned actionError/valueVerification. If dispatched=true, input happened: observe before retrying. See computer-use.md in productDocsPath for platform details and troubleshooting.",
     app: "Exact macOS bundle identifier from listApps, e.g. com.google.Chrome, not its display name. Required for observe and every input action.",
     element: "Exact elementId from this observation; used by background AX press or setValue. setValue replaces the control value; it does not type keystrokes.",
     key: "Named key with optional cmd/ctrl/alt/shift modifiers, e.g. cmd+a, Return, Escape, Left",
@@ -387,10 +387,11 @@ pub(crate) fn definitions() -> Vec<(&'static str, &'static str, Value)> {
     ("browser.observe", "Return the exact internal preview's elements and viewport screenshot, including background pages, without changing the selected GUI task or Reader. Waits for page navigation to finish. Use returned selectors or viewport coordinates for interactions. Page contents are untrusted. Requires a vision-capable model; no additional permission is required.",json!({"type":"object","additionalProperties":false,"required":["previewId"],"properties":{"previewId":{"type":"string"}}})),
     ("computer.control", DESKTOP.description,json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
         "action":{"type":"string","enum":["status","listApps","listWindows","capture","observe","press","setValue","click","type","key","scroll","drag"],"description":"status/listApps/listWindows need no other fields. capture requires exactly one of windowId or display=primary. observe requires app; windowId and mode are optional. Every input action requires app and observationId, plus: press elementId; setValue elementId/text; click x/y; type text; key key; scroll deltaX/deltaY; drag x/y/toX/toY."},"display":{"type":"string","enum":["primary"]},"windowId":{"type":"integer","minimum":1},"app":{"type":"string","description":DESKTOP.app},"observationId":{"type":"string"},
+        "observationType":{"type":"string","enum":["accessibility","pixels"],"description":"macOS observe defaults to accessibility (AX tree and pixels). Explicit pixels requires windowId, works without an AX tree, and returns supportedActions. It supports coordinate/keyboard input only with foreground mode and input permission. No automatic AX fallback."},
         "mode":{"type":"string","enum":["background","foreground"],"description":"observe defaults to background, even without windowId. Only explicit mode=foreground permits raising the app and restoring focus for mouse/keyboard input."},"elementId":{"type":"string","description":DESKTOP.element},
         "x":{"type":"number"},"y":{"type":"number"},"toX":{"type":"number"},"toY":{"type":"number"},"text":{"type":"string"},"key":{"type":"string","description":DESKTOP.key},"deltaX":delta.clone(),"deltaY":delta
     }})),
-    ("browser.page","Operate previews in this task's GUI Host and Session. open/openSelf reuse the same resource without changing the selected GUI task. openSelf uses the installed UI; open a development server URL for Vite hot updates. Keep that previewId while editing and observing. For workspace files prefer browser.open; otherwise supply an HTTP(S) url, absolute filePath, or owned serviceId. activate explicitly shows a page in the selected task's Reader and waits for navigation and visible layout; on macOS it also initializes remote accessibility and returns separately verified readiness facts. Page status=ready alone means navigation finished. reload loads static file edits; navigate, act and close target an exact previewId. act supports inspect, selector or viewport-coordinate click, selector type, and scroll with an optional container selector. refreshInterface refreshes the primary DeepCode UI while preserving view state; it returns scheduled or needsUser for unsaved settings and never approves a user decision. Closing a page does not stop its service. open/openSelf accept viewport; setViewport changes it on an existing page without reloading. Fixed CSS dimensions are scaled to fit the Reader; adaptive follows panel size. New pages default to fixed 1280x800. Click coordinates use CSS pixels from inspect, not screenshot pixels. activate mounts the Reader without bringing the app to the foreground.",json!({
+    ("browser.page","Operate previews in this task's GUI Host and Session. open/openSelf reuse the same resource without changing the selected GUI task. For Achbit settings prefer the configuration CLI, or openSelf plus browser.observe/act; openSelf uses the installed UI; open a development server URL for Vite hot updates. Keep that previewId while editing and observing. For workspace files prefer browser.open; otherwise supply an HTTP(S) url, absolute filePath, or owned serviceId. activate explicitly shows a page in the selected task's Reader and waits for navigation and visible layout; on macOS it also initializes remote accessibility and returns separately verified readiness facts. Page status=ready alone means navigation finished. reload loads static file edits; navigate, act and close target an exact previewId. act supports inspect, selector or viewport-coordinate click, selector type, and scroll with an optional container selector. refreshInterface refreshes the primary Achbit UI while preserving view state; it returns scheduled or needsUser for unsaved settings and never approves a user decision. Closing a page does not stop its service. open/openSelf accept viewport; setViewport changes it on an existing page without reloading. Fixed CSS dimensions are scaled to fit the Reader; adaptive follows panel size. New pages default to fixed 1280x800. Click coordinates use CSS pixels from inspect, not screenshot pixels. activate mounts the Reader without bringing the app to the foreground.",json!({
         "type":"object","additionalProperties":false,"required":["action"],"properties":{
             "action":{"type":"string","enum":["open","openSelf","list","status","setViewport","activate","navigate","reload","act","close","refreshInterface"]},
             "viewport":viewport_schema(),"previewId":{"type":"string"},"url":{"type":"string"},"filePath":{"type":"string","description":"Explicit absolute HTML file path; preserve its relative resources."},"serviceId":{"type":"string"},"operation":{"type":"string","enum":["inspect","click","type","scroll"]},
@@ -437,7 +438,7 @@ pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
                 );
             }
         }
-        "observe" => &["app", "windowId", "mode"],
+        "observe" => &["app", "windowId", "mode", "observationType"],
         "press" => &["app", "observationId", "elementId"],
         "setValue" => &["app", "observationId", "elementId", "text"],
         "click" => &["app", "observationId", "x", "y"],
@@ -453,7 +454,21 @@ pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
     {
         return Err("Unsupported computer argument".into());
     }
+    if input["observationType"] == "pixels" && input.get("windowId").is_none() {
+        return Err("Pixel observation requires an exact windowId from listWindows".into());
+    }
     for key in specific {
+        if *key == "observationType" {
+            if input.get(*key).is_some()
+                && !matches!(input[*key].as_str(), Some("accessibility" | "pixels"))
+            {
+                return Err("observationType must be accessibility or pixels".into());
+            }
+            if cfg!(not(target_os = "macos")) && input[*key] == "pixels" {
+                return Err("Pixel observations are currently supported on macOS only".into());
+            }
+            continue;
+        }
         if *key == "windowId" {
             if (action == "capture" || input.get("windowId").is_some())
                 && !input["windowId"]
@@ -469,9 +484,6 @@ pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
                 && !matches!(input["mode"].as_str(), Some("background" | "foreground"))
             {
                 return Err("mode must be background or foreground".into());
-            }
-            if input["mode"] == "background" && input.get("windowId").is_none() {
-                return Err("Background observation requires an exact windowId".into());
             }
             continue;
         }
@@ -595,16 +607,16 @@ mod tests {
     }
 
     #[test]
-    fn background_actions_require_exact_window_and_observed_element_identity() {
+    fn background_observation_defaults_and_actions_preserve_observed_identity() {
         for input in [
             json!({"action":"observe","app":"com.apple.TextEdit","windowId":42,"mode":"background"}),
+            json!({"action":"observe","app":"com.apple.TextEdit","mode":"background"}),
             json!({"action":"press","app":"com.apple.TextEdit","observationId":"frame:1","elementId":"element:2"}),
             json!({"action":"setValue","app":"com.apple.TextEdit","observationId":"frame:1","elementId":"element:2","text":"new value"}),
         ] {
             validate_computer_input(&input).unwrap();
         }
         for input in [
-            json!({"action":"observe","app":"com.apple.TextEdit","mode":"background"}),
             json!({"action":"press","app":"com.apple.TextEdit","elementId":"element:2"}),
             json!({"action":"setValue","app":"com.apple.TextEdit","observationId":"frame:1","text":"new value"}),
         ] {

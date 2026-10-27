@@ -36,7 +36,7 @@ pub async fn apply(
     _client: &achbit_kernel_client::HttpKernelClient,
 ) -> Result<(), String> {
     validate_choice(choice, language)?;
-    let owned = cfg!(target_os = "macos") && std::env::var_os("DEEPCODE_TUI_WINDOW_TTY").is_some();
+    let owned = cfg!(target_os = "macos") && std::env::var_os("ACHBIT_TUI_WINDOW_TTY").is_some();
     #[cfg(windows)]
     let owned = owned || crate::windows_terminal::is_owned();
     if !owned {
@@ -136,7 +136,7 @@ mod tests {
         if !cfg!(any(target_os = "macos", windows)) {
             let client = achbit_kernel_client::HttpKernelClient::new(
                 achbit_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
-                    .with_host_shell_token(format!("dchost_{}", "00".repeat(32))),
+                    .with_host_shell_token(format!("achost_{}", "00".repeat(32))),
             )
             .unwrap();
             assert_eq!(

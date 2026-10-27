@@ -365,7 +365,7 @@ impl AclLock {
             CreateMutexW(
                 null(),
                 0,
-                wide(r"Local\DeepCode.WorkspaceSandbox.Acl").as_ptr(),
+                wide(r"Local\Achbit.WorkspaceSandbox.Acl").as_ptr(),
             )
         };
         if handle.is_null() {
@@ -425,12 +425,12 @@ pub(super) mod tests {
 
     #[test]
     fn revoking_one_capability_keeps_other_grants() {
-        let root = std::env::temp_dir().join(format!("deepcode-acl-{}", random_text()));
+        let root = std::env::temp_dir().join(format!("achbit-acl-{}", random_text()));
         std::fs::create_dir(&root).unwrap();
         let path = root.canonicalize().unwrap();
         let capabilities = super::super::profile::Capabilities::derive(&[
-            format!("DeepCode.test.Write.{}", random_text()),
-            format!("DeepCode.test.Read.{}", random_text()),
+            format!("Achbit.test.Write.{}", random_text()),
+            format!("Achbit.test.Read.{}", random_text()),
         ])
         .unwrap();
         let (first, second) = (

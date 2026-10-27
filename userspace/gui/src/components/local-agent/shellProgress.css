@@ -36,18 +36,18 @@
   padding: 0;
   border: 0;
   border-radius: 5px;
-  color: var(--dc-muted);
+  color: var(--ac-muted);
   background: transparent;
 }
 .local-agent__tool-stop > svg { width: 20px; height: 20px; }
 .local-agent__tool-stop > .local-agent__run-status-spinner { width: 13px; height: 13px; }
 .local-agent .local-agent__tool-stop:hover:not(:disabled),
 .local-agent .local-agent__tool-stop:focus-visible {
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground);
+  background: var(--ac-surface-hover);
+  color: var(--ac-foreground);
 }
 .local-agent .local-agent__tool-stop:focus-visible {
-  outline: 1px solid var(--dc-muted);
+  outline: 1px solid var(--ac-muted);
   outline-offset: 1px;
 }
 .local-agent .local-agent__tool-stop:disabled { opacity: 1; }
@@ -59,11 +59,11 @@
   width: max-content;
   padding: 5px 8px;
   border-radius: 8px;
-  background: var(--dc-surface-raised);
-  color: var(--dc-foreground);
-  border: 1px solid var(--dc-border);
-  box-shadow: var(--dc-shadow-panel);
-  font-size: var(--dc-font-caption);
+  background: var(--ac-surface-raised);
+  color: var(--ac-foreground);
+  border: 1px solid var(--ac-border);
+  box-shadow: var(--ac-shadow-panel);
+  font-size: var(--ac-font-caption);
   font-weight: 400;
   line-height: 1.6;
   white-space: nowrap;

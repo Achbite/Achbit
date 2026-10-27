@@ -1,14 +1,14 @@
 .computer-activity__body { display: grid; gap: 6px; margin: 2px 0 14px 28px; min-width: 0; }
-.computer-activity__target, .computer-activity__dispatch { color: var(--dc-muted); font-size: 12px; overflow-wrap: anywhere; }
+.computer-activity__target, .computer-activity__dispatch { color: var(--ac-muted); font-size: 12px; overflow-wrap: anywhere; }
 .computer-activity__body .local-agent__tool-error { margin: 0; }
 .computer-activity__images { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
 .local-agent .computer-activity__image { display: grid; gap: 4px; width: 160px; max-width: 100%; padding: 0; border: 0; background: transparent; text-align: left; cursor: zoom-in; }
 .computer-activity__image:disabled { cursor: default; }
-.computer-activity__image .document-artifacts__thumbnail { display: flex; align-items: center; justify-content: center; width: 100%; height: 100px; overflow: hidden; border: 1px solid var(--dc-border); border-radius: 8px; background: var(--dc-surface); }
+.computer-activity__image .document-artifacts__thumbnail { display: flex; align-items: center; justify-content: center; width: 100%; height: 100px; overflow: hidden; border: 1px solid var(--ac-border); border-radius: 8px; background: var(--ac-surface); }
 .computer-activity__image .document-artifact-image { display: block; width: 100%; height: 100%; object-fit: contain; }
-.computer-activity__image strong { color: var(--dc-muted); font-size: 11px; font-weight: 400; }
+.computer-activity__image strong { color: var(--ac-muted); font-size: 11px; font-weight: 400; }
 .computer-activity__interface, .computer-activity__details { display: grid; gap: 6px; font-size: 12px; }
-.computer-activity__parameters { color: var(--dc-muted); font-size: 12px; }
+.computer-activity__parameters { color: var(--ac-muted); font-size: 12px; }
 .computer-activity__parameters > summary { cursor: pointer; }
 .computer-activity__parameters > :not(summary) { margin-top: 6px; }
-.computer-activity pre { margin: 0; padding: 10px; max-height: 320px; overflow: auto; border-radius: 8px; background: var(--dc-surface); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.computer-activity pre { margin: 0; padding: 10px; max-height: 320px; overflow: auto; border-radius: 8px; background: var(--ac-surface); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }

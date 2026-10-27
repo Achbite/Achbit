@@ -275,9 +275,9 @@ fn dispatch_script(request: &Value) -> String {
     if request["name"] == "readiness" {
         // Native registration precedes page-script initialization. Report the
         // actual lifecycle state without invoking an unavailable action bridge.
-        "return JSON.stringify({ok:true,value:{readyState:document.readyState,bridgeLoaded:!!window.__DEEPCODE_DEBUG_DOM__,hostStatus:document.querySelector('[data-host-status]')?.getAttribute('data-host-status')??null,components:window.__DEEPCODE_DEBUG_UI__?.list().map(({slot})=>({slot}))??[]}});".to_string()
+        "return JSON.stringify({ok:true,value:{readyState:document.readyState,bridgeLoaded:!!window.__ACHBIT_DEBUG_DOM__,hostStatus:document.querySelector('[data-host-status]')?.getAttribute('data-host-status')??null,components:window.__ACHBIT_DEBUG_UI__?.list().map(({slot})=>({slot}))??[]}});".to_string()
     } else {
-        format!("try {{ if (!window.__DEEPCODE_DEBUG_DOM__) throw Error('debug_bridge_not_loaded'); return JSON.stringify({{ok:true,value:await window.__DEEPCODE_DEBUG_DOM__.dispatch({request})}}); }} catch(error) {{ return JSON.stringify({{ok:false,error:String(error)}}); }}")
+        format!("try {{ if (!window.__ACHBIT_DEBUG_DOM__) throw Error('debug_bridge_not_loaded'); return JSON.stringify({{ok:true,value:await window.__ACHBIT_DEBUG_DOM__.dispatch({request})}}); }} catch(error) {{ return JSON.stringify({{ok:false,error:String(error)}}); }}")
     }
 }
 

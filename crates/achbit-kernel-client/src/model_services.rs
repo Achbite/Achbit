@@ -104,6 +104,38 @@ impl HttpKernelClient {
         }
         decode_api_data(request.send().await?.error_for_status()?.json().await?)
     }
+    pub async fn host_instance(&self) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::GET, "/api/host/instance", None)
+            .await
+    }
+    pub async fn plugin_services(&self) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::GET, "/api/plugin-services", None)
+            .await
+    }
+    pub async fn model_connections_document(&self) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::GET, "/api/llm/connections", None)
+            .await
+    }
+    pub async fn update_model_connection(&self, edit: &Value) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::PATCH, "/api/llm/connections", Some(edit))
+            .await
+    }
+    pub async fn model_profiles_document(&self) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::GET, "/api/llm/profiles", None)
+            .await
+    }
+    pub async fn update_model_profile(&self, edit: &Value) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::PATCH, "/api/llm/profiles", Some(edit))
+            .await
+    }
+    pub async fn probe_model_profile(&self, id: &str) -> KernelClientResult<Value> {
+        self.model_service(
+            reqwest::Method::POST,
+            "/api/llm/probe",
+            Some(&json!({"profileId":id})),
+        )
+        .await
+    }
     pub async fn model_connections(&self) -> KernelClientResult<ModelConnections> {
         self.model_service(reqwest::Method::GET, "/api/llm/connections", None)
             .await

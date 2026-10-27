@@ -18,7 +18,7 @@ export default function AchbitNavigationBox({
       <div className="achbit-gui-navigation-box__titlebar" data-tauri-drag-region="deep">
         <div className="achbit-gui-navigation-controls">{toolbar}</div>
       </div>
-      <div id="deepcode-navigation-content" className="achbit-gui-navigation-body" hidden={collapsed} inert={collapsed}>
+      <div id="achbit-navigation-content" className="achbit-gui-navigation-body" hidden={collapsed} inert={collapsed}>
         <div className="achbit-gui-navigation-box__content" hidden={settingsOpen} inert={settingsOpen}>
           {children}
         </div>

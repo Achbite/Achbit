@@ -55,7 +55,7 @@ pub(crate) fn configure_host_lifetime() -> Result<(), String> {
     let persistent = match mode.as_str() {
         "automatic" => false,
         "persistent" => true,
-        _ => return Err("DEEPCODE_HOST_LIFETIME must be automatic or persistent".into()),
+        _ => return Err("ACHBIT_HOST_LIFETIME must be automatic or persistent".into()),
     };
     LIFETIME
         .set(Mutex::new(Lifetime {
@@ -184,13 +184,16 @@ async fn observe_host_lifetime(state: &HostState) -> Result<(), String> {
         } else {
             false
         };
-        if LIFETIME
+        let stopping = LIFETIME
             .get()
             .expect("Host lifetime configured")
             .lock()
             .expect("Host lifetime lock")
-            .stop_if_idle(revision, active)
-        {
+            .stop_if_idle(revision, active);
+        if stopping {
+            // Passive HTTP observers do not own Host lifetime. Release owned
+            // processes before graceful HTTP draining can wait on those observers.
+            shutdown_owned_host_resources(state).await;
             request_host_shutdown();
             return Ok(());
         }
@@ -218,7 +221,7 @@ mod tests {
             tokio::task::spawn_blocking(move || {
                 achbit_host_connection::HostClientLease::connect(
                     &url,
-                    &format!("dchost_{}", "a".repeat(64)),
+                    &format!("achost_{}", "a".repeat(64)),
                     false,
                 )
                 .unwrap()

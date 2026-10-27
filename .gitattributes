@@ -1,4 +1,4 @@
-# DeepCode builds and tests in Docker/WSL. Keep repository text files LF-only.
+# Achbit builds and tests in Docker/WSL. Keep repository text files LF-only.
 * text=auto eol=lf
 
 # Binary artifacts.

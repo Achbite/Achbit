@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://deepcode.local/contracts/agent-runtime/schema.json",
-  "title": "DeepCode local agent runtime",
+  "$id": "https://achbit.local/contracts/agent-runtime/schema.json",
+  "title": "Achbit local agent runtime",
   "oneOf": [
     { "$ref": "#/$defs/ConversationCommand" },
     { "$ref": "#/$defs/SessionEvent" },
@@ -68,6 +68,7 @@
             "runner": {"$ref": "#/$defs/AgentContributionSelection"},
             "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
             "workspaceSandbox": {"$ref": "#/$defs/AgentRecipe/properties/workspaceSandbox"},
+            "tools": {"$ref": "#/$defs/AgentToolSelection"},
             "loop": {"type": "object", "additionalProperties": false, "properties": {
               "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
               "controls": {"$ref": "#/$defs/AgentContributionSelection"}
@@ -133,9 +134,18 @@
         "controls": {"$ref": "#/$defs/AgentContributionSelection"}
       }
     },
+    "AgentToolSelection": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "kernel": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
+        "controls": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
+        "plugins": {"type":"boolean"}
+      }
+    },
     "AgentRecipe": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "tools": {"$ref": "#/$defs/AgentToolSelection"},
         "profileId": {"$ref": "#/$defs/Id"},
         "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
         "configuration": {"$ref": "#/$defs/AgentConfiguration"},
@@ -162,7 +172,10 @@
               "required":["adapterId","kind","providerFlavor","contextWindowTokens","maxOutputTokens","imageInput","temperature","hostedWebSearch"],
               "properties":{"adapterId":{"type":"string","minLength":1},"kind":{"enum":["responses","openaiCompatible","anthropic","ollama"]},"providerFlavor":{"type":["string","null"]},
                 "contextWindowTokens":{"type":"integer","minimum":1},"maxOutputTokens":{"type":"integer","minimum":1},"imageInput":{"type":"boolean"},
-                "temperature":{"type":["number","null"]},"hostedWebSearch":{"enum":[null,"web_search"]}}}
+                "fileInputMediaTypes":{"type":"array","uniqueItems":true,"items":{"const":"application/pdf"}},
+                "temperature":{"type":["number","null"]},"hostedWebSearch":{"enum":[null,"web_search"]}},
+              "if":{"required":["fileInputMediaTypes"],"properties":{"fileInputMediaTypes":{"minItems":1}}},
+              "then":{"properties":{"kind":{"const":"openaiCompatible"}}}}
           }},
         "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "ownerSessionId": {"$ref": "#/$defs/Id"},
@@ -489,6 +502,19 @@
                 }
               }
             },
+            "files": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["workspaceId", "logicalPath", "mediaType", "displayName"],
+                "properties": {
+                  "workspaceId": {"$ref": "#/$defs/Id"},
+                  "logicalPath": {"$ref": "#/$defs/Id"},
+                  "mediaType": {"const": "application/pdf"},
+                  "displayName": {"$ref": "#/$defs/Id"}
+                }
+              }
+            },
             "images": {
               "type": "array",
               "items": {
@@ -505,10 +531,11 @@
           },
           "anyOf": [
             {"properties": {"content": {"minLength": 1}}},
+            {"required": ["files"], "properties": {"files": {"minItems": 1}}},
             {"required": ["images"], "properties": {"images": {"minItems": 1}}},
             {"required": ["toolImages"], "properties": {"toolImages": {"minItems": 1}}}
           ],
-          "if": {"required": ["toolImages"]},
+          "if": {"anyOf": [{"required": ["toolImages"]}, {"required": ["files"]}]},
           "then": {"properties": {"role": {"const": "user"}}}
         },
         {
@@ -571,6 +598,7 @@
       "properties": {
         "providerRuntimeRef": {"$ref": "#/$defs/Id"},
         "profileId": {"$ref": "#/$defs/Id"},
+        "fileInputMediaTypes": {"type": "array", "uniqueItems": true, "items": {"const": "application/pdf"}},
         "contextWindowTokens": {"type": "integer", "minimum": 1},
         "maxOutputTokens": {"type": "integer", "minimum": 1},
         "apiSurface": {"enum": ["chatCompletions", "responses", "anthropicMessages", "ollamaChat"]},
@@ -578,7 +606,9 @@
         "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
         "reasoningEffortOverride": {"enum": ["low", "medium", "high", "xhigh", "max"]},
         "thinking": {"enum": ["enabled", "disabled"]}
-      }
+      },
+      "if": {"required": ["fileInputMediaTypes"], "properties": {"fileInputMediaTypes": {"minItems": 1}}},
+      "then": {"properties": {"apiSurface": {"const": "chatCompletions"}}}
     },
     "ToolUnavailabilityReason": {
       "type": "object",
@@ -745,6 +775,7 @@
         "contextManagement"
       ],
       "properties": {
+        "toolSelection": {"$ref": "#/$defs/AgentToolSelection"},
         "runRuntimeSnapshotRef": {"$ref": "#/$defs/Id"},
         "extensionGenerationRef": {"$ref": "#/$defs/Id"},
         "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"},
@@ -803,7 +834,7 @@
         "hostedTools"
       ],
       "properties": {
-        "protocolVersion": {"const": "deepcode.local-agent"},
+        "protocolVersion": {"const": "achbit.local-agent"},
         "requestId": {"$ref": "#/$defs/Id"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "runId": {"$ref": "#/$defs/Id"},
@@ -861,7 +892,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "tool.call.delta"},
             "data": {
@@ -884,7 +915,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "text.delta"},
             "data": {
@@ -901,7 +932,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "reasoning.delta"},
             "data": {
@@ -922,7 +953,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "output.item.completed"},
             "data": {
@@ -939,7 +970,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "assistant.message"},
             "data": {
@@ -963,7 +994,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "tool.call"},
             "data": {
@@ -985,7 +1016,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "hosted.web-search.completed"},
             "data": {
@@ -1002,7 +1033,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "completed"},
             "data": {
@@ -1019,7 +1050,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "requestId", "type", "data"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.provider-event"},
+            "schemaVersion": {"const": "achbit.provider-event"},
             "requestId": {"$ref": "#/$defs/Id"},
             "type": {"const": "failed"},
             "data": {"$ref": "#/$defs/LocalAgentError"},
@@ -1912,7 +1943,7 @@
       "type": "object",
       "required": ["schemaVersion", "type", "commandId", "sessionId"],
       "properties": {
-        "schemaVersion": { "const": "deepcode.command.v3" },
+        "schemaVersion": { "const": "achbit.command.v3" },
         "type": { "type": "string" },
         "commandId": { "$ref": "#/$defs/Id" },
         "sessionId": { "$ref": "#/$defs/Id" }
@@ -1923,7 +1954,7 @@
         {"type": "object", "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "expectedHostBinding", "hostBinding"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"}, "type": {"const": "run.host.rebind"},
+            "schemaVersion": {"const": "achbit.command.v3"}, "type": {"const": "run.host.rebind"},
             "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"}, "runId": {"$ref": "#/$defs/Id"},
             "expectedHostBinding": {"$ref": "#/$defs/HostWindowBinding"}, "hostBinding": {"$ref": "#/$defs/HostWindowBinding"}
           }
@@ -1933,7 +1964,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "workspaceBindings"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "session.workspaces.set"},
             "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"},
             "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}}
@@ -1943,7 +1974,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "workspaceBinding"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "session.directory-index.attach"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -1955,7 +1986,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "workspaceId"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "session.directory-index.detach"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -1970,7 +2001,7 @@
               "additionalProperties": false,
               "required": ["schemaVersion", "type", "commandId", "sessionId", "text"],
               "properties": {
-                "schemaVersion": {"const": "deepcode.command.v3"},
+                "schemaVersion": {"const": "achbit.command.v3"},
                 "type": {"const": "message.submit"},
                 "commandId": {"$ref": "#/$defs/Id"},
                 "sessionId": {"$ref": "#/$defs/Id"},
@@ -2004,7 +2035,7 @@
               "additionalProperties": false,
               "required": ["schemaVersion", "type", "commandId", "sessionId", "task"],
               "properties": {
-                "schemaVersion": {"const": "deepcode.command.v3"},
+                "schemaVersion": {"const": "achbit.command.v3"},
                 "type": {"const": "context.focus"},
                 "commandId": {"$ref": "#/$defs/Id"},
                 "sessionId": {"$ref": "#/$defs/Id"},
@@ -2030,7 +2061,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "messageId", "feedback"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "message.feedback.set"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2043,7 +2074,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "run.cancel"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2055,7 +2086,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "callId"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"}, "type": {"const": "tool.cancel"},
+            "schemaVersion": {"const": "achbit.command.v3"}, "type": {"const": "tool.cancel"},
             "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"},
             "runId": {"$ref": "#/$defs/Id"}, "callId": {"$ref": "#/$defs/Id"}
           }
@@ -2064,7 +2095,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "interactionId", "response"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "interaction.respond"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2078,7 +2109,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "callId", "approvalId", "decision"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "approval.respond"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2107,7 +2138,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "planId", "revision", "response"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "plan.respond"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2143,7 +2174,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "patches"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "session.permissions.set"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2155,7 +2186,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "authorityId"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "approval.revoke"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2168,7 +2199,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "settings"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "session.model-settings.set"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2179,7 +2210,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "settings"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "session.subagent-settings.set"},
             "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"},
             "settings": {"$ref": "#/$defs/AgentSettings"}
@@ -2190,7 +2221,7 @@
           "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "messageId", "expectedRevision", "text"],
           "properties": {
-            "schemaVersion": {"const": "deepcode.command.v3"},
+            "schemaVersion": {"const": "achbit.command.v3"},
             "type": {"const": "message.edit"},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
@@ -2212,7 +2243,7 @@
       "additionalProperties": false,
       "required": ["schemaVersion", "eventId", "sessionId", "sequence", "occurredAt", "type", "payload"],
       "properties": {
-        "schemaVersion": {"const": "deepcode.session-event.v5"},
+        "schemaVersion": {"const": "achbit.session-event.v5"},
         "eventId": {"$ref": "#/$defs/Id"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "sequence": {"type": "integer", "minimum": 1},
@@ -3450,7 +3481,7 @@
         "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},
         "pendingAgentDecisions": {"type": "array", "items": {"$ref": "#/$defs/PendingAgentDecision"}},
         "runTimings": {"type": "array", "items": {"$ref": "#/$defs/RunTimingProjection"}},
-        "schemaVersion": {"const": "deepcode.session-projection.v6"},
+        "schemaVersion": {"const": "achbit.session-projection.v6"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 0},
         "display": {"$ref": "#/$defs/SessionDisplayProjection"},
@@ -3552,6 +3583,7 @@
         "hostBinding": {"$ref": "#/$defs/HostWindowBinding"},
         "runId": {"$ref": "#/$defs/Id"},
         "profileId": {"$ref": "#/$defs/Id"},
+        "fileInputMediaTypes": {"type": "array", "uniqueItems": true, "items": {"const": "application/pdf"}},
         "waitingReason": {"enum": ["approval", "userInput", "plan"]},
         "workspaceBindings": {"type": "array", "items": {"$ref": "#/$defs/WorkspaceBinding"}},
         "status": {
@@ -3570,7 +3602,7 @@
         "workspaceBindings"
       ],
       "properties": {
-        "schemaVersion": { "const": "deepcode.kernel-request" },
+        "schemaVersion": { "const": "achbit.kernel-request" },
         "type": { "const": "tool.execute" },
         "requestId": { "$ref": "#/$defs/Id" },
         "sessionId": { "$ref": "#/$defs/Id" },

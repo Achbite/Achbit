@@ -752,8 +752,8 @@ fn agent_shell_environment(
     set("SHELL", bash_program.into());
     set("NO_COLOR", "1".into());
     set("CLICOLOR", "0".into());
-    set("DEEPCODE_AGENT_SHELL", "1".into());
-    set("DEEPCODE_WORKSPACE_ROOT", visible(workspace_root).into());
+    set("ACHBIT_AGENT_SHELL", "1".into());
+    set("ACHBIT_WORKSPACE_ROOT", visible(workspace_root).into());
     for key in ["TMPDIR", "TMP", "TEMP"] {
         set(key, visible(temporary).into());
     }
@@ -954,7 +954,7 @@ fn new_process_scope_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!(
-        "com.deepcode.process-scope.{}.{unix_nanos}.{sequence}",
+        "com.achbit.process-scope.{}.{unix_nanos}.{sequence}",
         std::process::id()
     )
 }
@@ -975,7 +975,7 @@ impl AgentShellTempDir {
                 root.display()
             ))
         })?;
-        let path = root.join(format!("deepcode-agent-shell-{process_scope_id}"));
+        let path = root.join(format!("achbit-agent-shell-{process_scope_id}"));
         fs::create_dir(&path).map_err(|error| {
             KernelError::Other(format!(
                 "create bash temporary directory {}: {error}",
@@ -1398,7 +1398,7 @@ mod plan_scope_tests {
                 .find(|(name, _)| name == key)
                 .map(|(_, value)| value.to_string_lossy().into_owned())
         };
-        for key in ["TEMP", "DEEPCODE_WORKSPACE_ROOT", "HOME"] {
+        for key in ["TEMP", "ACHBIT_WORKSPACE_ROOT", "HOME"] {
             let path = value(key).unwrap();
             assert!(!path.starts_with(r"\\?\"), "{key}={path}");
         }
@@ -2184,9 +2184,9 @@ fn macos_processes_in_scope(scope: &CStr, control: &CStr) -> KernelResult<Vec<i3
 #[cfg(target_os = "macos")]
 fn macos_process_has_scope(pid: i32, scope: &CStr, control: &CStr) -> KernelResult<bool> {
     let filter_type = SANDBOX_FILTER_GLOBAL_NAME
-        | unsafe { u32::try_from(DEEPCODE_SANDBOX_CHECK_NO_REPORT).unwrap_or(0) };
+        | unsafe { u32::try_from(ACHBIT_SANDBOX_CHECK_NO_REPORT).unwrap_or(0) };
     let scope_denied = unsafe {
-        deepcode_sandbox_check(
+        achbit_sandbox_check(
             pid,
             SANDBOX_MACH_LOOKUP_OPERATION.as_ptr().cast(),
             filter_type,
@@ -2203,7 +2203,7 @@ fn macos_process_has_scope(pid: i32, scope: &CStr, control: &CStr) -> KernelResu
         return Ok(false);
     }
     let control_allowed = unsafe {
-        deepcode_sandbox_check(
+        achbit_sandbox_check(
             pid,
             SANDBOX_MACH_LOOKUP_OPERATION.as_ptr().cast(),
             filter_type,
@@ -2243,7 +2243,7 @@ fn signal_scoped_processes(
         if !macos_process_has_scope(*pid, scope, control)? {
             continue;
         }
-        if unsafe { deepcode_process_kill(*pid, signal) } < 0 {
+        if unsafe { achbit_process_kill(*pid, signal) } < 0 {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() != Some(libc::ESRCH) {
                 return Err(KernelError::Other(format!(
@@ -2259,7 +2259,7 @@ fn signal_scoped_processes(
 fn signal_process_group(process_id: u32, signal: i32) -> KernelResult<()> {
     let process_group_id = i32::try_from(process_id)
         .map_err(|_| KernelError::Other(format!("bash process id exceeds i32: {process_id}")))?;
-    if unsafe { deepcode_process_kill(-process_group_id, signal) } < 0 {
+    if unsafe { achbit_process_kill(-process_group_id, signal) } < 0 {
         let error = std::io::Error::last_os_error();
         // Darwin killpg can report EPERM when only zombies remain. Confirm
         // there is no live member; real denial or an unreadable group stays an error.
@@ -2347,15 +2347,15 @@ const SANDBOX_MACH_LOOKUP_OPERATION: &[u8] = b"mach-lookup\0";
 #[cfg(unix)]
 unsafe extern "C" {
     #[link_name = "kill"]
-    fn deepcode_process_kill(process_id: i32, signal: i32) -> i32;
+    fn achbit_process_kill(process_id: i32, signal: i32) -> i32;
 }
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     #[link_name = "SANDBOX_CHECK_NO_REPORT"]
-    static DEEPCODE_SANDBOX_CHECK_NO_REPORT: i32;
+    static ACHBIT_SANDBOX_CHECK_NO_REPORT: i32;
     #[link_name = "sandbox_check"]
-    fn deepcode_sandbox_check(
+    fn achbit_sandbox_check(
         process_id: i32,
         operation: *const libc::c_char,
         filter_type: u32,

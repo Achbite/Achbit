@@ -12,7 +12,7 @@ import { closeFinishedWindow, launchWindow, native, runInCurrentWindow, withFont
 const font = { name: 'AchbitQuietTerminalMonoSC-Regular', size: 12 };
 const owner = { windowId: 42, tty: '/dev/ttys-test' };
 async function fixture(t) {
-  const temporary = await mkdtemp(join(tmpdir(), 'deepcode-window-test-'));
+  const temporary = await mkdtemp(join(tmpdir(), 'achbit-window-test-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   return { font, args: [], binary: '/unused/tui', cwd: temporary, environment: {}, temporary };
 }
@@ -158,8 +158,8 @@ test('the command window runs in its current tty until TUI exit and restores its
     assert.equal(binary, config.binary);
     assert.deepEqual(args, config.args);
     assert.equal(options.stdio, 'inherit');
-    assert.equal(options.env.DEEPCODE_TUI_WINDOW_TTY, owner.tty);
-    assert.equal(options.env.DEEPCODE_API_URL, 'http://127.0.0.1:8123');
+    assert.equal(options.env.ACHBIT_TUI_WINDOW_TTY, owner.tty);
+    assert.equal(options.env.ACHBIT_API_URL, 'http://127.0.0.1:8123');
     markStarted();
     return child;
   }).then(code => { finished = true; return code; });
@@ -281,7 +281,7 @@ test('font settings helper keeps its lease until startup completes and releases 
     const start = (binary, args, options) => {
       assert.equal(binary, '/owned/achbit-tui');
       assert.deepEqual(args, ['-C', '/workspace', '--font-settings']);
-      assert.equal(options.env.DEEPCODE_TUI_FONT_SETTINGS_LEASE, '1');
+      assert.equal(options.env.ACHBIT_TUI_FONT_SETTINGS_LEASE, '1');
       child = spawn(process.execPath, ['-e', "console.log(JSON.stringify({font:'warm'}));process.stdin.resume();"], options);
       return child;
     };

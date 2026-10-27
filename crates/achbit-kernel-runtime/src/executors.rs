@@ -550,7 +550,7 @@ fn atomic_write_text(target: &Path, content: &str) -> KernelResult<()> {
         .file_name()
         .and_then(OsStr::to_str)
         .unwrap_or("patch-target");
-    let temp_path = parent.join(format!(".{file_name}.deepcode-patch-{stamp}.tmp"));
+    let temp_path = parent.join(format!(".{file_name}.achbit-patch-{stamp}.tmp"));
     let mut cleanup = TemporaryPathGuard::new(temp_path.clone());
     let original_permissions = fs::metadata(target)
         .map_err(|error| KernelError::Other(format!("inspect target permissions: {error}")))?
@@ -589,7 +589,7 @@ fn atomic_create_text(target: &Path, content: &str, executable: bool) -> KernelR
         .file_name()
         .and_then(OsStr::to_str)
         .unwrap_or("write-target");
-    let temp_path = parent.join(format!(".{file_name}.deepcode-write-{stamp}.tmp"));
+    let temp_path = parent.join(format!(".{file_name}.achbit-write-{stamp}.tmp"));
     let mut cleanup = TemporaryPathGuard::new(temp_path.clone());
     fs::write(&temp_path, content)
         .map_err(|error| KernelError::Other(format!("write fs.write temp: {error}")))?;

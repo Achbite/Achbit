@@ -1,14 +1,14 @@
 /* Neutral action tokens and native scrollbars; each component owns its surface. */
-:root[data-product='deepcode-gui'] {
-  --dc-control-background: transparent;
-  --dc-control-foreground: var(--dc-foreground);
-  --dc-control-border: var(--dc-border-strong);
-  --dc-scroll-size: 6px;
-  --dc-scroll-thumb: color-mix(in srgb, var(--dc-muted) 27%, transparent);
-  --dc-scroll-hover: color-mix(in srgb, var(--dc-muted) 45%, transparent);
+:root[data-product='achbit-gui'] {
+  --ac-control-background: transparent;
+  --ac-control-foreground: var(--ac-foreground);
+  --ac-control-border: var(--ac-border-strong);
+  --ac-scroll-size: 6px;
+  --ac-scroll-thumb: color-mix(in srgb, var(--ac-muted) 27%, transparent);
+  --ac-scroll-hover: color-mix(in srgb, var(--ac-muted) 45%, transparent);
 }
-:root[data-product='deepcode-gui'] * { scrollbar-width: thin; scrollbar-color: var(--dc-scroll-thumb) transparent; }
-:root[data-product='deepcode-gui'] ::-webkit-scrollbar { width: var(--dc-scroll-size); height: var(--dc-scroll-size); }
-:root[data-product='deepcode-gui'] ::-webkit-scrollbar-track, :root[data-product='deepcode-gui'] ::-webkit-scrollbar-corner { background: transparent; }
-:root[data-product='deepcode-gui'] ::-webkit-scrollbar-thumb { border-radius: 9px; background: var(--dc-scroll-thumb); }
-:root[data-product='deepcode-gui'] ::-webkit-scrollbar-thumb:hover { background: var(--dc-scroll-hover); }
+:root[data-product='achbit-gui'] * { scrollbar-width: thin; scrollbar-color: var(--ac-scroll-thumb) transparent; }
+:root[data-product='achbit-gui'] ::-webkit-scrollbar { width: var(--ac-scroll-size); height: var(--ac-scroll-size); }
+:root[data-product='achbit-gui'] ::-webkit-scrollbar-track, :root[data-product='achbit-gui'] ::-webkit-scrollbar-corner { background: transparent; }
+:root[data-product='achbit-gui'] ::-webkit-scrollbar-thumb { border-radius: 9px; background: var(--ac-scroll-thumb); }
+:root[data-product='achbit-gui'] ::-webkit-scrollbar-thumb:hover { background: var(--ac-scroll-hover); }

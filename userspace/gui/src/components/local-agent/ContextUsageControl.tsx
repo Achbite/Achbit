@@ -161,7 +161,7 @@ export function ContextUsageControl({
       <button
         type="button"
         className={`achbit-session-model__context${contextPercent === null ? ' achbit-session-model__context--unknown' : ''}`}
-        style={{ '--deepcode-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
+        style={{ '--achbit-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
         aria-label={contextLabel}
         aria-expanded={contextOpen}
         disabled={!hasContextFacts}

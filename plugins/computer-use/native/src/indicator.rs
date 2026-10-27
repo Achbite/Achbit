@@ -9,7 +9,7 @@ use std::{
 
 const POINTER_CANVAS_SIZE: f64 = 160.0;
 const POINTER_GLYPH_SIZE: f64 = 26.0;
-// DCPointerView centers its unchanged arrow path, whose tip is at (3, 3).
+// ACPointerView centers its unchanged arrow path, whose tip is at (3, 3).
 const POINTER_TIP_INSET: f64 = (POINTER_CANVAS_SIZE - POINTER_GLYPH_SIZE) / 2.0 + 3.0;
 
 struct Feedback {
@@ -23,7 +23,7 @@ struct Feedback {
 thread_local! { static ACTIVE: RefCell<Option<Feedback>> = const { RefCell::new(None) }; }
 
 extern "C" {
-    fn dc_computer_install_pointer_content(window: *const AnyObject);
+    fn ac_computer_install_pointer_content(window: *const AnyObject);
 }
 
 unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObject>, String> {
@@ -47,9 +47,9 @@ unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObjec
     };
     let _: () = msg_send![&*panel, setSharingType:sharing_type];
     if symbol == "cursorarrow" {
-        let title = NSString::from_str("DeepCode Agent Pointer");
+        let title = NSString::from_str("Achbit Agent Pointer");
         let _: () = msg_send![&*panel, setTitle:&*title];
-        dc_computer_install_pointer_content(&*panel);
+        ac_computer_install_pointer_content(&*panel);
         return Ok(panel);
     }
     let view: *mut AnyObject = msg_send![class!(NSImageView), alloc];

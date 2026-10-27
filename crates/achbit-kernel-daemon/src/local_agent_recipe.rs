@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 pub(crate) struct AgentRecipe {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+    #[serde(default)]
+    pub tools: ToolSelection,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -19,6 +21,88 @@ pub(crate) struct AgentRecipe {
     pub permission_policy: PermissionPolicySelection,
     #[serde(default)]
     pub workspace_sandbox: WorkspaceSandboxSelection,
+}
+
+/// This selection owns both declaration and dispatch membership for a task.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ToolSelection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controls: Option<Vec<String>>,
+    #[serde(default = "permitted")]
+    pub plugins: bool,
+}
+
+impl Default for ToolSelection {
+    fn default() -> Self {
+        Self {
+            kernel: None,
+            controls: None,
+            plugins: true,
+        }
+    }
+}
+
+impl ToolSelection {
+    pub fn inherit_missing(&mut self, parent: &Self, requested: Option<&Value>) {
+        if requested.and_then(|value| value.get("kernel")).is_none() {
+            self.kernel = parent.kernel.clone();
+        }
+        if requested.and_then(|value| value.get("controls")).is_none() {
+            self.controls = parent.controls.clone();
+        }
+        if requested.and_then(|value| value.get("plugins")).is_none() {
+            self.plugins = parent.plugins;
+        }
+    }
+
+    pub fn allows_kernel(&self, name: &str) -> bool {
+        (self.plugins || name != "plugin.search")
+            && self
+                .kernel
+                .as_ref()
+                .is_none_or(|names| names.iter().any(|item| item == name))
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for names in [&self.kernel, &self.controls].into_iter().flatten() {
+            let mut seen = std::collections::BTreeSet::new();
+            for name in names {
+                if name.is_empty()
+                    || !name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+                    || !name.as_bytes()[0].is_ascii_alphanumeric()
+                    || !seen.insert(name)
+                {
+                    return Err("agent_tools_invalid".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_child(&self, child: &Self) -> Result<(), String> {
+        for (parent, selected) in [
+            (&self.kernel, &child.kernel),
+            (&self.controls, &child.controls),
+        ] {
+            if let Some(parent) = parent {
+                if selected
+                    .as_ref()
+                    .is_none_or(|names| names.iter().any(|name| !parent.contains(name)))
+                {
+                    return Err("agent_tools_not_grantable".into());
+                }
+            }
+        }
+        if !self.plugins && child.plugins {
+            return Err("agent_tools_not_grantable".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -138,6 +222,7 @@ impl AgentRecipe {
             crate::local_agent_store::validate_permission_patches(permissions)
                 .map_err(|error| error.message)?;
         }
+        self.tools.validate()?;
         self.permission_policy.resolve()?;
         achbit_kernel_runtime::workspace_sandbox::validate_backend_id(
             &self.workspace_sandbox.backend_id,
@@ -155,6 +240,7 @@ impl AgentRecipe {
     }
 
     pub fn validate_child(&self, child: &Self) -> Result<(), String> {
+        self.tools.validate_child(&child.tools)?;
         let parent = self.constraints()?;
         let requested = child.constraints()?;
         if !parent.allow_host_execution && requested.allow_host_execution
@@ -256,6 +342,42 @@ pub(crate) fn inherit_permissions(parent: &Value, patch: Option<&Value>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_tools_can_only_narrow_child_admission() {
+        let parent = AgentRecipe::decode(
+            &json!({"tools":{"kernel":["fs.read"],"controls":[],"plugins":false}}),
+        )
+        .unwrap();
+        let empty =
+            AgentRecipe::decode(&json!({"tools":{"kernel":[],"controls":[],"plugins":false}}))
+                .unwrap();
+        let mut inherited = AgentRecipe::decode(&json!({"tools":{"kernel":[]}})).unwrap();
+        inherited
+            .tools
+            .inherit_missing(&parent.tools, Some(&json!({"kernel":[]})));
+        parent.validate_child(&inherited).unwrap();
+        assert_eq!(inherited.tools.controls, Some(vec![]));
+        assert!(!inherited.tools.plugins);
+        parent.validate_child(&parent).unwrap();
+        parent.validate_child(&empty).unwrap();
+        assert!(parent.validate_child(&AgentRecipe::default()).is_err());
+        for tools in [
+            json!({"kernel":["fs.read","bash"],"controls":[],"plugins":false}),
+            json!({"kernel":["fs.read"],"controls":["agent"],"plugins":false}),
+            json!({"kernel":["fs.read"],"controls":[],"plugins":true}),
+        ] {
+            let child = AgentRecipe::decode(&json!({"tools":tools})).unwrap();
+            assert!(parent.validate_child(&child).is_err());
+        }
+        for tools in [
+            json!({"kernel":["fs.read","fs.read"]}),
+            json!({"plugins":"false"}),
+            json!({"unknown":[]}),
+        ] {
+            assert!(AgentRecipe::decode(&json!({"tools":tools})).is_err());
+        }
+    }
 
     #[test]
     fn child_recipes_cannot_widen_policy_or_permission_settings() {

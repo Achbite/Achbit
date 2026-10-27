@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ConversationSessionStatus, SessionProjection } from '@achbit/protocol';
 
-const STORAGE_KEY = 'deepcode.gui.read-run-markers';
+const STORAGE_KEY = 'achbit.gui.read-run-markers';
 
 export function runReadMarker(run: ConversationSessionStatus['run']): string | null {
   return run && ['completed', 'cancelled', 'failed', 'releaseFailed', 'indeterminate'].includes(run.status)

@@ -38,7 +38,7 @@ const defaultHost: ConversationHost = {
     }
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error('Local file reading requires the desktop Host.');
-    const bytes = await invoke<ArrayBuffer>('deepcode_read_local_file', { path });
+    const bytes = await invoke<ArrayBuffer>('achbit_read_local_file', { path });
     return new Blob([bytes]);
   },
   readArtifact: readConversationArtifact,
@@ -46,12 +46,12 @@ const defaultHost: ConversationHost = {
   openFile: isRemoteHost() ? undefined : async (path, position) => {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error('Open in VS Code requires the desktop Host.');
-    await invoke('deepcode_open_file', { path, line: position?.line, column: position?.column });
+    await invoke('achbit_open_file', { path, line: position?.line, column: position?.column });
   },
   locatePath: isRemoteHost() ? undefined : async (path) => {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error('Manual file location requires the desktop Host.');
-    await invoke('deepcode_locate_path', { path });
+    await invoke('achbit_locate_path', { path });
   },
   readChange: readFileChange,
   readConversation,

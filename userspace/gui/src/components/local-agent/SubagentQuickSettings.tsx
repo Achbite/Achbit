@@ -31,16 +31,16 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
       if (!saved) setError(useLocalAgentStore.getState().error ?? t(language, 'settings.common.saveFailed'));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
-  return <div className="deepcode-subagent-config">
+  return <div className="achbit-subagent-config">
     {settings ? <fieldset disabled={saving || loading || (!sessionId && defaultsLoading)}>
-      <label className="deepcode-subagent-config__toggle"><span title={t(language, 'settings.subagents.activation')}>{t(language, 'settings.subagents.enabled')}</span>
+      <label className="achbit-subagent-config__toggle"><span title={t(language, 'settings.subagents.activation')}>{t(language, 'settings.subagents.enabled')}</span>
         <ToggleSwitch checked={settings.enabled}
           onChange={event => void save({ ...settings, enabled: event.target.checked })} />
       </label>
       <SubagentModelFields profiles={profiles} connections={connections} mainProfileId={mainProfileId} language={language}
         profileId={settings.profileId} reasoningEffort={settings.reasoningEffort}
         onChange={patches => void save({ ...settings, ...patches })} />
-      <label className="deepcode-subagent-config__toggle"><span title={t(language, 'settings.subagents.fullConfigurationHelp')}>{t(language, 'settings.subagents.allowFullConfiguration')}</span>
+      <label className="achbit-subagent-config__toggle"><span title={t(language, 'settings.subagents.fullConfigurationHelp')}>{t(language, 'settings.subagents.allowFullConfiguration')}</span>
         <ToggleSwitch checked={settings.allowFullConfiguration}
           onChange={event => void save({ ...settings, allowFullConfiguration: event.target.checked })} />
       </label>

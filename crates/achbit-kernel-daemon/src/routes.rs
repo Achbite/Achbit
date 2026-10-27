@@ -11,6 +11,7 @@ pub(crate) fn build_app(state: HostState) -> Router {
         .route("/api/host/client", get(host_client))
         .route("/api/health", get(health))
         .route("/api/host/readiness", get(crate::host_runtime::readiness))
+        .route("/api/host/instance", get(crate::host_runtime::instance))
         .route("/api/host/shutdown", post(host_shutdown))
         .route(
             "/api/host/computer-preview",
@@ -44,6 +45,15 @@ pub(crate) fn build_app(state: HostState) -> Router {
             get(llm_profiles_get).patch(llm_profiles_patch),
         )
         .route("/api/llm/probe", post(llm_probe))
+        .route(
+            "/api/host/plugins/install",
+            post(crate::plugin_installation::install),
+        )
+        .route("/api/plugin-services", get(crate::service_plugins::list))
+        .route(
+            "/api/plugin-services/events",
+            get(crate::service_plugins::events),
+        )
         .route(
             "/api/llm/connections",
             get(model_connections::get).patch(model_connections::patch),
@@ -158,7 +168,15 @@ pub(crate) fn build_app(state: HostState) -> Router {
             "/api/conversation/sessions",
             post(conversation_session_create),
         )
+        .route(
+            "/api/conversation/events",
+            get(crate::session_events::conversation_events),
+        )
         .route("/api/conversation/catalog", get(conversation_catalog_get))
+        .route(
+            "/api/conversation/catalog/events",
+            get(conversation_catalog_events),
+        )
         .route("/api/conversation/statuses", get(conversation_statuses_get))
         .route(
             "/api/conversation/plugins",

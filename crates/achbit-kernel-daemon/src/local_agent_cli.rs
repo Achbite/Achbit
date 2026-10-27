@@ -37,7 +37,7 @@ impl CliClient {
         if let Some(directory) = &context.output_directory {
             std::fs::create_dir_all(directory)
                 .map_err(|error| fail("cli_archive_failed", error.to_string()))?;
-            metadata["deepcode"]["outputDirectory"] = json!(directory);
+            metadata["achbit"]["outputDirectory"] = json!(directory);
         }
         let mut command = Command::new(&self.command);
         if let Some((filename, bytes)) = &self.entry {

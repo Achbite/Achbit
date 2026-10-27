@@ -195,14 +195,14 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
     .with_plugin_settings(settings.clone(), false)
     .with_documents(plugins.document_instance())
     .with_containers(plugins.container_instance())
-    .with_computer_use(plugins.computer_use_instance())
-    .with_document_python(settings["agent.documents.pythonPath"].as_str());
+    .with_computer_use(plugins.computer_use_instance());
     let prepared = LocalAgentKernel::prepare_generation(
         &crate::utils::new_runtime_ref("extension-generation")?,
         config,
         Arc::new(secrets),
         mcp,
         LocalAgentPermissionPolicy::from_settings(&settings).map_err(error)?,
+        &Default::default(),
         enable_web,
         Arc::new(product),
     )

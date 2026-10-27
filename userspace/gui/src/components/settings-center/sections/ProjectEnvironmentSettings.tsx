@@ -52,7 +52,7 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
         <label className="settings-field settings-field--compact"><span>{chinese ? '运行位置' : 'Run tools in'}</span>
           <NativeSelect className="settings-field__select" value={target.kind} disabled={saving}
             onChange={event => {
-              if (event.target.value === 'wsl') setTarget({ kind: 'wsl', distribution: '', worker: 'achbit-kernel-daemon' });
+              if (event.target.value === 'wsl') setTarget({ kind: 'wsl', distribution: '', worker: 'achbit-kernel' });
               else void save({ kind: 'native' });
             }}>
             <option value="native">{chinese ? '本机' : 'Native'}</option>
@@ -62,8 +62,8 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
           <label className="settings-field settings-field--compact"><span>Shell</span>
             <NativeSelect className="settings-field__select" disabled={saving} value={target.shell ?? ''} onChange={event => void save({ ...(savedTarget.kind === 'native' ? savedTarget : { kind: 'native' }), shell: (event.target.value || undefined) as Extract<ProjectEnvironment, {kind: 'native'}>['shell'] }, false)}>
               <option value="">{chinese ? '使用全局默认' : 'Global default'}</option>
-              <option value="auto">{chinese ? '自动检测' : 'Auto detect'}</option>
-              <option value="powershell7">PowerShell 7</option><option value="windowsPowerShell">Windows PowerShell</option><option value="gitBash">Git Bash</option>
+              <option value="auto">{chinese ? 'PowerShell 7 优先，未安装时使用 5.1' : 'Prefer PowerShell 7, fall back to 5.1'}</option>
+              <option value="powershell7">PowerShell 7</option><option value="windowsPowerShell">Windows PowerShell 5.1</option><option value="gitBash">Git Bash</option>
             </NativeSelect></label>
           {target.shell === 'gitBash' && <label className="settings-field settings-field--compact"><span>{chinese ? 'Git Bash 路径' : 'Git Bash path'}</span>
             <input className="settings-field__input" disabled={saving} value={target.gitBashPath ?? ''} placeholder={chinese ? '留空自动检测' : 'Auto detect when empty'} onChange={event => setTarget({ ...target, gitBashPath: event.target.value })} /></label>}
@@ -72,7 +72,8 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
           <label className="settings-field settings-field--compact"><span>{chinese ? 'WSL 发行版' : 'WSL distribution'}</span>
             <input className="settings-field__input" value={target.distribution} disabled={saving} placeholder="Ubuntu" onChange={(event) => setTarget({ ...target, distribution: event.target.value })} /></label>
           <label className="settings-field settings-field--compact"><span>{chinese ? 'Linux Kernel 可执行文件' : 'Linux Kernel executable'}</span>
-            <input className="settings-field__input" value={target.worker} disabled={saving} placeholder="/opt/deepcode/achbit-kernel-daemon" onChange={(event) => setTarget({ ...target, worker: event.target.value })} /></label>
+            <input className="settings-field__input" value={target.worker} disabled={saving} placeholder="/opt/achbit/achbit-kernel" onChange={(event) => setTarget({ ...target, worker: event.target.value })} /></label>
+          <p className="settings-field__description">{chinese ? 'Bash 和文件操作在所选 WSL 发行版中执行；请填写该发行版内已安装的 Linux Achbit 可执行文件路径。' : 'Bash and file operations run in the selected WSL distribution. Enter the path to its installed Linux Achbit executable.'}</p>
         </>}
         {textDirty && <div className="settings-actions"><button className="settings-button" disabled={saving || !!configurationError || (target.kind === 'wsl' && (!target.distribution.trim() || !target.worker.trim()))} onClick={() => void save()}>{chinese ? '保存环境' : 'Save environment'}</button></div>}
       </>}

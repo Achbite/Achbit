@@ -86,7 +86,7 @@ for (const withOutput of [false, true]) test(`cancelled Shell preserves its term
         ...record, error: { code: 'unexpected_error', message: 'Cancelled must not carry an error.' },
       }));
       finishExecution(reply);
-      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:shell',
+      return { schemaVersion: 'achbit.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:shell',
         callId, attemptId, status: 'cancelled', record };
     },
     async readRecord() { return record ?? null; },
@@ -95,7 +95,7 @@ for (const withOutput of [false, true]) test(`cancelled Shell preserves its term
   await actor.submit(messageCommand(sessionId, 'command:shell-start', 'Run the long Shell command.'));
   await waitUntil(() => execution !== undefined, 'Shell execution');
   const runId = (await actor.snapshot()).run.runId;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:shell-stop' });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:shell-stop' });
   const projection = await waitForProjection(actor, state => state.run?.status === 'cancelled');
   assert.equal(projection.terminalError, null);
   const activity = projection.activities.find(item => item.callId === execution.callId);
@@ -235,7 +235,7 @@ test('permissions stay in their continuous activity group before and after the t
     else yield providerEvent(request.requestId, 'text.delta', { text: 'Finished.' });
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
-    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution',
+    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution',
       requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'approval:history',
       preview: { summary: 'Allow access to https://example.test?', effects: ['external'], logicalTargets: ['https://example.test'] } };
     const reply = completedExecutionReply(request, { content: 'Result' });
@@ -252,7 +252,7 @@ test('permissions stay in their continuous activity group before and after the t
   assert.equal(record.status, 'waiting');
   assert.equal(pendingRows.at(-1).type, 'toolGroup');
   const { approvalId, callId, runId } = waiting.pendingApproval;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', commandId: 'command:allow',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', commandId: 'command:allow',
     sessionId, approvalId, callId, runId, decision: 'allow' });
   const completed = await waitForProjection(actor, (state) => state.run?.status === 'completed');
   const rows = projectionItems(await decodeGuiProjection(completed));
@@ -448,7 +448,7 @@ test('reader text decoding preserves Unicode BOM documents and rejects unsupport
 test('local links preserve locations, workspace roots and unambiguous readable labels', async (t) => {
   const { parseLocalTarget, bindLocalTarget, readableResourceLinks } = await loadGuiModule(t, '/src/components/local-agent/resourceLinks.ts');
   const roots = [{ workspaceId: 'workspace:main', root: '/project/测试 项目' }];
-  const root = parseLocalTarget('deepcode-gui://localhost/project/%E6%B5%8B%E8%AF%95%20%E9%A1%B9%E7%9B%AE');
+  const root = parseLocalTarget('achbit-gui://localhost/project/%E6%B5%8B%E8%AF%95%20%E9%A1%B9%E7%9B%AE');
   assert.equal(bindLocalTarget(root, roots).logicalPath, '.');
   assert.deepEqual(parseLocalTarget('file:///project/测试%20项目/src/main.rs#L12C3'), { path: '/project/测试 项目/src/main.rs', absolute: true, line: 12, column: 3 });
   assert.equal(bindLocalTarget(parseLocalTarget('README.md:12'), roots).logicalPath, 'README.md');
@@ -492,7 +492,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
     } else if (calls === 2) {
       const renderer = request.tools.find((entry) => entry.inputSchema.properties?.format?.enum?.includes('pdf'));
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:document-render', name: renderer.name,
-        input: { workspace: 'primary', path: '报告.pdf', format: 'pdf', content: '<h1>Report</h1>' } });
+        input: { workspace: 'primary', path: '报告.pdf', format: 'pdf', content: '= Report' } });
     } else if (calls === 3) {
       const current = await actor.snapshot();
       assert.equal(current.todoList, null, 'confirmation and file execution do not manufacture progress');
@@ -507,6 +507,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
   const kernel = emptyKernel({ async execute(request) {
     assert.equal(request.toolName, 'document.render');
     assert.equal(request.input.workspaceId, workspaceBinding.workspaceId);
+    assert.equal(request.input.content, '= Report');
     assert.deepEqual(request.planAuthorities[0].coveredOperations, [{ workspaceId: workspaceBinding.workspaceId, operation: 'document.render', target: '报告.pdf' }]);
     const reply = completedExecutionReply(request, { artifacts: [artifact] });
     documentRecordId = reply.record.recordId;
@@ -521,7 +522,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
   const { planOperationDetail } = await loadGuiModule(t, '/src/components/local-agent/planReview.ts');
   assert.equal(planOperationDetail(waiting.pendingPlan.mutationManifest[0], 'zh-CN'), '生成文档 · 报告.pdf');
   assert.equal(planOperationDetail(waiting.pendingPlan.mutationManifest[0], 'en-US'), 'Render document · 报告.pdf');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: 'command:document-confirm', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', commandId: 'command:document-confirm', sessionId,
     runId: waiting.run.runId, planId: waiting.pendingPlan.planId, revision: waiting.pendingPlan.revision, response: { kind: 'confirm' } });
   const completed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.deepEqual((await decodeGuiProjection(completed)).artifacts, [{ ...artifact,
@@ -693,10 +694,10 @@ test('native path selection preserves OS paths, cancellation and dialog errors',
 test('Windows sandbox initialization uses the injected Host origin and preserves setup failures', async (t) => {
   const previousWindow = globalThis.window;
   t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
-  const uiToken = `dcui_${'12'.repeat(32)}`;
+  const uiToken = `acui_${'12'.repeat(32)}`;
   globalThis.window = {
-    location: { protocol: 'http:', hostname: 'deepcode-gui.localhost', origin: 'http://deepcode-gui.localhost' },
-    __DEEPCODE_HOST_BOOT__: { schemaVersion: 'deepcode.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken, windowChrome: 'custom' },
+    location: { protocol: 'http:', hostname: 'achbit-gui.localhost', origin: 'http://achbit-gui.localhost' },
+    __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken, windowChrome: 'custom' },
   };
   const [{ initializeWorkspaceSandbox }] = await loadGuiModules(t, ['/src/services/apiClient.ts']);
   let calls = 0;
@@ -704,7 +705,7 @@ test('Windows sandbox initialization uses the injected Host origin and preserves
     calls += 1;
     assert.equal(url.href, 'http://127.0.0.1:49123/api/user-settings/workspace-sandbox');
     assert.equal(init.method, 'POST');
-    assert.equal(init.headers['x-deepcode-host-ui-token'], uiToken);
+    assert.equal(init.headers['x-achbit-host-ui-token'], uiToken);
     assert.deepEqual(JSON.parse(init.body), {});
     return Response.json({ ok: false, error: 'workspace_sandbox_setup_failed', message: 'administrator request declined' });
   });
@@ -723,12 +724,12 @@ test('Host workspace initialization preserves the current workspace or opens the
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
   });
   const { initializeHostWorkspace } = await loadGuiModule(t, '/src/services/workspaceInitialization.ts');
-  globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
-  let defaultPath = '/Users/developer/DeepCode workspace';
+  globalThis.document = { documentElement: { dataset: { product: 'achbit-gui' } } };
+  let defaultPath = '/Users/developer/Achbit workspace';
   const calls = [];
   globalThis.window = { __TAURI__: { core: { invoke: async (command) => {
     calls.push(command);
-    assert.equal(command, 'deepcode_default_workspace_path');
+    assert.equal(command, 'achbit_default_workspace_path');
     return defaultPath;
   } } } };
   const workspace = { id: 'workspace:current', name: 'Existing', source: 'directory', sourcePath: null,
@@ -747,10 +748,10 @@ test('Host workspace initialization preserves the current workspace or opens the
   assert.deepEqual(calls.splice(0), ['/api/workspaces/current']);
   current = null;
   await initializeHostWorkspace();
-  assert.deepEqual(calls.splice(0), ['/api/workspaces/current', 'deepcode_default_workspace_path', '/api/workspaces/open']);
+  assert.deepEqual(calls.splice(0), ['/api/workspaces/current', 'achbit_default_workspace_path', '/api/workspaces/open']);
   defaultPath = null;
   await initializeHostWorkspace();
-  assert.deepEqual(calls, ['/api/workspaces/current', 'deepcode_default_workspace_path']);
+  assert.deepEqual(calls, ['/api/workspaces/current', 'achbit_default_workspace_path']);
 });
 
 test('Host workspace initialization propagates the failing request without opening or retrying', async (t) => {
@@ -796,7 +797,7 @@ test('one native reference request returns the actual file or folder kind', asyn
   let calls = 0;
   globalThis.window = { __TAURI__: { core: { invoke: async (command, args) => {
     calls += 1;
-    assert.equal(command, 'deepcode_pick_path');
+    assert.equal(command, 'achbit_pick_path');
     assert.equal(args.options.title, options.title);
     assert.equal(args.options.selectLabel, 'Attach');
     assert.equal(args.options.cancelLabel, 'Cancel');
@@ -1067,7 +1068,7 @@ test('compaction preserves Agent usage and an unreported Agent call clears it wi
   await actor.submit(messageCommand(sessionId, 'command:cache-latest-seed', 'Establish the facts.'));
   await waitForProjection(actor, (value) => value.run?.status === 'completed');
   await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'context.focus',
     commandId: 'command:cache-latest-focus',
     sessionId,
@@ -1144,7 +1145,7 @@ test('GUI consumes complete phase plans and Todo beyond the former item count', 
   assert.equal(waiting.pendingPlan.steps.length, 13);
   assert.equal(waiting.pendingPlan.mutationManifest.length, 129);
   assert.equal(waiting.todoList, null, 'a proposal cannot seed the active Todo');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: 'command:phase-confirm', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', commandId: 'command:phase-confirm', sessionId,
     runId: waiting.run.runId, planId: waiting.pendingPlan.planId, revision: 1, response: { kind: 'confirm' } });
   const confirmed = await waitForProjection(actor, (value) => value.todoList?.items.length === 13);
   assert.deepEqual(await decodeGuiProjection(confirmed), confirmed);
@@ -1694,7 +1695,7 @@ test('cached navigation displays immediately and another session read cannot blo
   await openingTwo;
   assert.equal(store.getState().sessionId, 'session:one');
   assert.equal(store.getState().projection.sessionId, 'session:one');
-  const changed = await actors[0].submit({ schemaVersion: 'deepcode.command.v3', type: 'session.model-settings.set', commandId: 'command:cache-profile', sessionId: 'session:one', settings: { profileId: 'profile:test', reasoningEffortOverride: 'low' } });
+  const changed = await actors[0].submit({ schemaVersion: 'achbit.command.v3', type: 'session.model-settings.set', commandId: 'command:cache-profile', sessionId: 'session:one', settings: { profileId: 'profile:test', reasoningEffortOverride: 'low' } });
   assert.equal(changed.status, 'accepted');
   projections['session:one'] = await actors[0].snapshot();
   await store.getState().refresh();
@@ -1967,9 +1968,9 @@ test('large GUI input uploads the complete text and submits only the resulting r
     assert.equal(command.text, '', 'transport guidance must not replace the displayed user message');
     assert.deepEqual(command.filesystemReferences, [reference]);
     assert.ok(Buffer.byteLength(init.body) < 2000);
-    return Response.json({ ok: true, data: { schemaVersion: 'deepcode.command-reply.v3', commandId: command.commandId, sessionId: command.sessionId, status: 'accepted', revision: 1 } });
+    return Response.json({ ok: true, data: { schemaVersion: 'achbit.command-reply.v3', commandId: command.commandId, sessionId: command.sessionId, status: 'accepted', revision: 1 } });
   });
-  await api.submitLocalAgentCommand({ schemaVersion: 'deepcode.command.v3', type: 'message.submit', commandId: 'command:upload', sessionId: 'session:upload', text: content });
+  await api.submitLocalAgentCommand({ schemaVersion: 'achbit.command.v3', type: 'message.submit', commandId: 'command:upload', sessionId: 'session:upload', text: content });
   assert.equal(seen.length, 2);
 });
 
@@ -2005,6 +2006,69 @@ test('GUI submits an image-only message and keeps its bound attachment', async t
   assert.deepEqual(completed.messages[0].filesystemReferences, [image]);
   assert.equal(requests[0].messages.find(message => message.images)?.images[0].workspaceId, image.workspaceId);
   await assert.rejects(store.getState().sendMessage(''), /message_empty/);
+});
+
+test('GUI composer submits slash text through the real store and Session with its original text and references', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:slash-input';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const reference = { referenceId: 'reference:directory', workspaceId: 'workspace:directory', logicalPath: '.',
+    displayName: 'workspace', kind: 'directory' };
+  const commands = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    yield providerEvent(request.requestId, 'text.delta', { text: 'Received.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'slash-input');
+  t.after(() => actor.dispose());
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname.endsWith('/filesystem-references/resolve')) return Response.json({ ok: true, data: [reference] });
+    if (url.pathname.endsWith('/commands')) {
+      const command = JSON.parse(init.body); commands.push(command);
+      return Response.json({ ok: true, data: await actor.submit(command) });
+    }
+    if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: await actor.snapshot() });
+    if (url.pathname.endsWith('/catalog')) return Response.json({ ok: true, data: { projects: [], sessions: [] } });
+    if (url.pathname.endsWith('/plugins')) return Response.json({ ok: true, data: { revision: 'plugins:slash', plugins: [] } });
+    throw new Error(`unexpected_gui_request:${url.pathname}`);
+  });
+  const [{ useLocalAgentStore: store }, { useAgentComposer }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/components/local-agent/useAgentComposer.ts',
+  ]);
+  const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
+  let draft, composer;
+  globalThis.document = { activeElement: null };
+  globalThis.sessionStorage = {
+    getItem: () => JSON.stringify({ draft, pastedTexts: [], pastedImages: [],
+      filesystemPaths: [{ path: '/remote/workspace', kind: 'directory' }], pluginSelections: [] }),
+    setItem() {},
+  };
+  t.after(() => {
+    if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+  });
+  function Probe() { composer = useAgentComposer('zh-CN', () => {}); return null; }
+  for (const text of ['/Users/example/file.txt 请检查\n保留正文  ', '/tmp', '/unknown 请解释这个名字',
+    '/model 是什么意思？', ' /new', '\t/focus 讨论命令', ' /reply 1']) {
+    draft = text;
+    store.setState({ sessionId, projection: await actor.snapshot(), selectedProfileId: 'profile:test',
+      profiles: [{ id: 'profile:test', enabled: true, thinking: 'disabled' }] });
+    Object.assign(store.getInitialState(), store.getState());
+    renderToStaticMarkup(createElement(Probe));
+    assert.equal(composer.canSend, true, text);
+    await composer.submitDraft();
+    assert.equal(store.getState().error, null, text);
+    const command = commands.at(-1);
+    assert.equal(command.type, 'message.submit', text);
+    assert.equal(command.text, text);
+    assert.deepEqual(command.filesystemReferences, [reference]);
+    const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
+    const message = completed.messages.filter(message => message.role === 'user').at(-1);
+    assert.equal(message.content, text);
+    assert.deepEqual(message.filesystemReferences, [reference]);
+    assert.equal(store.getState().sessionId, sessionId, 'escaped /new keeps the conversation');
+  }
+  assert.equal(commands.length, 7);
 });
 
 test('GUI submission keeps the ordinary message separate from pasted text references', async (t) => {
@@ -2407,49 +2471,31 @@ test('streamed text keeps Unicode pairs intact and settled history displays imme
   assert.equal(history.complete, true);
 });
 
-test('projection polling stays serial through visibility changes and stops after unmount', async (t) => {
-  const { startProjectionPolling } = await loadGuiModule(t, '/src/components/local-agent/useProjectionPolling.ts');
-  const previousWindow = globalThis.window;
-  const previousDocument = globalThis.document;
-  const timers = new Map();
-  const listeners = new Set();
-  let nextId = 0;
-  globalThis.window = { setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id) { timers.delete(id); } };
-  globalThis.document = { visibilityState: 'visible', addEventListener(_event, callback) { listeners.add(callback); }, removeEventListener(_event, callback) { listeners.delete(callback); } };
-  let stop = () => {};
-  let stopIdle = () => {};
-  t.after(() => { stop(); stopIdle(); globalThis.window = previousWindow; globalThis.document = previousDocument; });
-  const fire = () => { assert.equal(timers.size, 1); const [id, timer] = timers.entries().next().value; timers.delete(id); timer.callback(); };
-  const visibility = (state) => { document.visibilityState = state; for (const listener of listeners) listener(); };
-  let calls = 0;
-  let release;
-  const stopDisconnected = startProjectionPolling(true, async () => { calls += 1; }, false);
-  visibility('hidden'); visibility('visible');
-  assert.equal(calls, 0, 'authentication and disconnected Hosts must not read session status');
-  assert.equal(timers.size, 0);
-  assert.equal(listeners.size, 0);
-  stopDisconnected();
-  stop = startProjectionPolling(true, () => { calls += 1; return new Promise((resolve) => { release = resolve; }); }, true);
-  const activeDelay = timers.values().next().value.delay;
-  assert.ok(Number.isFinite(activeDelay) && activeDelay > 0, 'connected active sessions schedule a finite positive delay');
-  fire();
-  visibility('hidden'); visibility('visible');
-  assert.equal(calls, 1);
-  assert.equal(timers.size, 0, 'a slow refresh must not accumulate polling timers');
-  release(); await Promise.resolve();
-  assert.equal(timers.size, 1);
-  visibility('hidden');
-  const hiddenDelay = timers.values().next().value.delay;
-  assert.ok(Number.isFinite(hiddenDelay) && hiddenDelay > activeDelay, 'hidden sessions poll less frequently');
-  visibility('visible');
-  assert.equal(calls, 2);
-  stop(); release(); await Promise.resolve();
-  assert.equal(timers.size, 0);
-  assert.equal(listeners.size, 0);
-  stopIdle = startProjectionPolling(false, async () => {}, true);
-  const idleDelay = timers.values().next().value.delay;
-  assert.ok(Number.isFinite(idleDelay) && idleDelay > activeDelay, 'idle sessions poll less frequently');
-  stopIdle();
+test('the main conversation observes changes only after Host readiness and releases observation on unmount', async (t) => {
+  const { startConversationUpdates } = await loadGuiModule(t, '/src/components/local-agent/useConversationUpdates.ts');
+  let subscriptions = 0, signal, reject, refreshes = 0;
+  const errors = [];
+  const refresh = async () => { refreshes++; };
+  const watch = (sessionId, receivedSignal, read) => {
+    assert.equal(sessionId, null, 'sidebar and child changes can affect the current projection');
+    subscriptions++; signal = receivedSignal;
+    assert.equal(read, refresh);
+    return new Promise((_resolve, fail) => { reject = fail; });
+  };
+  startConversationUpdates(refresh, false, error => errors.push(error), watch)();
+  assert.equal(subscriptions, 0, 'disconnected Hosts do not subscribe or read');
+  let stop = startConversationUpdates(refresh, true, error => errors.push(error), watch);
+  assert.equal(subscriptions, 1);
+  assert.equal(refreshes, 0, 'the event observer owns the initial read boundary');
+  reject(new Error('original observation failure'));
+  await Promise.resolve();
+  assert.deepEqual(errors, ['original observation failure']);
+  assert.equal(subscriptions, 1, 'a failure does not start automatic polling or reconnect');
+  stop(); assert.equal(signal.aborted, true);
+  stop = startConversationUpdates(refresh, true, error => errors.push(error), watch);
+  assert.equal(subscriptions, 2, 'an explicit retry can create a fresh subscription');
+  stop(); reject(new Error('aborted read')); await Promise.resolve();
+  assert.deepEqual(errors, ['original observation failure']);
 });
 
 test('unchanged status snapshots do not publish redundant GUI state updates', async (t) => {
@@ -2670,7 +2716,7 @@ test('polling and command reconciliation read draft snapshots in order at the sa
       assert.equal(init.signal, undefined, 'view navigation does not own command cancellation');
       commands += 1;
       if (commands === 2) await commandHeld;
-      return Response.json({ ok: true, data: { schemaVersion: 'deepcode.command-reply.v3', sessionId, commandId: 'command:setting', status: 'accepted', revision: base.revision } });
+      return Response.json({ ok: true, data: { schemaVersion: 'achbit.command-reply.v3', sessionId, commandId: 'command:setting', status: 'accepted', revision: base.revision } });
     }
     assert.ok(url.pathname.endsWith('/projection'));
     reads += 1;
@@ -3570,14 +3616,14 @@ test('settings drafts survive refreshes and failed saves without converting an e
 
 test('settings search matches words across field and model metadata without order dependence', async (t) => {
   const { matchesSettingsQuery } = await loadGuiModule(t, '/src/components/settings-center/settingsSearch.tsx');
-  assert.equal(matchesSettingsQuery('PDF Python', 'PDF 生成环境', 'WeasyPrint Python'), true);
+  assert.equal(matchesSettingsQuery('项目 Shell', '项目执行环境', 'Shell 配置'), true);
   assert.equal(matchesSettingsQuery('flash deepseek', 'DeepSeek Flash', 'deepseek-v4-flash'), true);
   assert.equal(matchesSettingsQuery('shell windows', 'Windows Shell'), true);
   assert.equal(matchesSettingsQuery('github python', 'GitHub', 'Read repositories'), false);
 });
 
-test('environment settings use the Host platform for Windows controls without changing persisted values', async (t) => {
-  const [{ AgentSettingsSection }, { useSettingsStore }] = await loadGuiModules(t, [
+test('environment settings keep Windows controls platform-specific and need no document interpreter', async (t) => {
+  const [{ AgentSettingsSection, settingsSearchDefinitions }, { useSettingsStore, agentSettingDefinitions }] = await loadGuiModules(t, [
     '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
     '/src/state/settingsStore.ts',
   ]);
@@ -3593,7 +3639,12 @@ test('environment settings use the Host platform for Windows controls without ch
   const mac = renderToStaticMarkup(React.createElement(AgentSettingsSection, { category: 'environment' }));
   assert.doesNotMatch(mac, /aria-label="Windows Shell"/);
   assert.doesNotMatch(mac, /aria-label="Git Bash (路径|path)"/);
-  assert.match(mac, /WeasyPrint/);
+  assert.doesNotMatch(mac, /PDF generation environment|PDF 生成环境|WeasyPrint/);
+  assert.equal(Object.hasOwn(settings, 'agent.documents.pythonPath'), false);
+  assert.equal(agentSettingDefinitions().some(({ key }) => key === 'agent.documents.pythonPath'), false);
+  for (const os of ['macos', 'windows']) {
+    assert.equal(settingsSearchDefinitions('en-US', os).some(({ id }) => id === 'agent.documents.pythonPath'), false);
+  }
   initialSnapshot.environment = { os: 'windows' };
   useSettingsStore.setState({ environment: initialSnapshot.environment });
   const windows = renderToStaticMarkup(React.createElement(AgentSettingsSection, { category: 'environment' }));
@@ -3658,10 +3709,23 @@ test('interface refresh preserves view state and leaves unsaved settings for the
   assert.equal(scheduled.length, 0);
   releaseGuard();
   assert.deepEqual(refreshInterface(), { status: 'scheduled', guards: [] });
-  assert.deepEqual(JSON.parse(saved.get('deepcode:interface-reload')), { reader: { previewId: 'preview-7', scroll: 42 } });
+  assert.deepEqual(JSON.parse(saved.get('achbit:interface-reload')), { reader: { previewId: 'preview-7', scroll: 42 } });
   assert.equal(reloads, 0);
   scheduled.shift()();
   assert.equal(reloads, 1);
+});
+
+test('palette output preserves current namespace colors and validation errors', async t => {
+  const [palette] = await loadGuiModules(t, ['/src/theme/palette.ts']);
+  const colors = { '--ac-theme-light-background': '#f5f1ea', '--ac-theme-dark-background': '#202124', '--ac-custom-dark-accent': '#aaccee' };
+  const encoded = JSON.stringify(colors);
+  assert.deepEqual(palette.decodePaletteOverrides(encoded), colors);
+  const css = palette.paletteOverrideCss(encoded);
+  assert.match(css, /--ac-theme-light-background:#f5f1ea;/);
+  assert.match(css, /--ac-theme-dark-background:#202124;/);
+  assert.match(css, /--ac-custom-dark-accent:#aaccee;/);
+  assert.throws(() => palette.decodePaletteOverrides('{"--ac-theme-dark-unknown":"#112233"}'), /Unknown palette token: --ac-theme-dark-unknown/);
+  assert.throws(() => palette.decodePaletteOverrides('{"--ac-theme-dark-background":"#12"}'), /Invalid color for --ac-theme-dark-background: #12/);
 });
 
 test('custom light and dark palettes persist through the shared settings owner and reset independently', async (t) => {
@@ -3681,14 +3745,14 @@ test('custom light and dark palettes persist through the shared settings owner a
     return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/test/user-settings.json' } });
   });
   await useSettingsStore.getState().loadUserSettings();
-  const custom = { '--dc-theme-light-background': '#f5f1ea', '--dc-theme-dark-background': '#202124', '--dc-custom-dark-accent': '#aaccee' };
+  const custom = { '--ac-theme-light-background': '#f5f1ea', '--ac-theme-dark-background': '#202124', '--ac-custom-dark-accent': '#aaccee' };
   assert.equal(await useSettingsStore.getState().patchUserSetting(palette.PALETTE_SETTING, JSON.stringify(custom)), 'immediate');
   const [{ useSettingsStore: reloaded }] = await loadGuiModules(t, ['/src/state/settingsStore.ts']);
   await reloaded.getState().loadUserSettings();
   const read = () => palette.decodePaletteOverrides(reloaded.getState().effectiveSettings[palette.PALETTE_SETTING]);
   assert.deepEqual(read(), custom);
   assert.equal(palette.paletteColor(read(), 'dark', 'accent', 'purple'), '#aaccee');
-  assert.equal(palette.paletteColor(read(), 'light', 'accent', 'purple'), palette.UI_PALETTE.tokens['--dc-accent-purple-light']);
+  assert.equal(palette.paletteColor(read(), 'light', 'accent', 'purple'), palette.UI_PALETTE.tokens['--ac-accent-purple-light']);
   fail = true;
   assert.equal(await reloaded.getState().patchUserSetting(palette.PALETTE_SETTING, '{}'), null);
   assert.match(reloaded.getState().errorMessage, /palette write failed/);
@@ -3697,7 +3761,7 @@ test('custom light and dark palettes persist through the shared settings owner a
   const lightOnly = palette.resetPaletteTheme(read(), 'dark');
   assert.equal(await reloaded.getState().patchUserSetting(palette.PALETTE_SETTING, JSON.stringify(lightOnly)), 'immediate');
   await reloaded.getState().loadUserSettings();
-  assert.deepEqual(read(), { '--dc-theme-light-background': '#f5f1ea' });
+  assert.deepEqual(read(), { '--ac-theme-light-background': '#f5f1ea' });
   assert.equal(reloaded.getState().effectiveSettings['gui.colorTheme'], 'system');
   assert.equal(reloaded.getState().effectiveSettings['gui.accentColor'], 'purple');
   assert.equal(await reloaded.getState().resetUserSetting(palette.PALETTE_SETTING), 'immediate');
@@ -3707,16 +3771,16 @@ test('custom light and dark palettes persist through the shared settings owner a
 
 test('palette rejects incomplete input and reset removes custom colors and derived contrast', async (t) => {
   const { decodePaletteOverrides, paletteOverrideCss, resetPaletteTheme } = await loadGuiModule(t, '/src/theme/palette.ts');
-  for (const encoded of ['{broken', '[]', 'null', '{"unknown":"#112233"}', '{"--dc-theme-dark-background":"#12"}', '{"--dc-theme-dark-background":null}']) {
+  for (const encoded of ['{broken', '[]', 'null', '{"unknown":"#112233"}', '{"--ac-theme-dark-background":"#12"}', '{"--ac-theme-dark-background":null}']) {
     assert.throws(() => decodePaletteOverrides(encoded));
     assert.throws(() => paletteOverrideCss(encoded));
   }
-  const custom = { '--dc-custom-dark-accent': '#aabbcc', '--dc-theme-light-border': '#11223322' };
+  const custom = { '--ac-custom-dark-accent': '#aabbcc', '--ac-theme-light-border': '#11223322' };
   const css = paletteOverrideCss(JSON.stringify(custom));
-  assert.match(css, /--dc-custom-dark-accent-contrast:var\(--dc-shadow-color\)/);
+  assert.match(css, /--ac-custom-dark-accent-contrast:var\(--ac-shadow-color\)/);
   const reset = paletteOverrideCss(JSON.stringify(resetPaletteTheme(custom, 'dark')));
   assert.doesNotMatch(reset, /custom-dark/);
-  assert.match(reset, /--dc-theme-light-border:#11223322/);
+  assert.match(reset, /--ac-theme-light-border:#11223322/);
   assert.equal(paletteOverrideCss('{}'), ':root{}');
 });
 
@@ -3730,11 +3794,11 @@ test('named themes validate before import and select light and dark palettes ind
   assert.equal(library.selectedThemeId(themes, applied, 'light'), 'review');
   assert.equal(library.selectedThemeId(themes, applied, 'dark'), 'default');
   applied = library.applyThemePalette(applied, themes[0], 'dark');
-  assert.equal(applied['--dc-theme-light-background'], '#f4f2ed');
+  assert.equal(applied['--ac-theme-light-background'], '#f4f2ed');
   assert.equal(library.selectedThemeId(themes, applied, 'dark'), themes[0].id);
-  const edited = { ...applied, '--dc-custom-dark-accent': '#abcdef' };
+  const edited = { ...applied, '--ac-custom-dark-accent': '#abcdef' };
   assert.equal(library.selectedThemeId(themes, edited, 'dark'), 'custom');
-  assert.deepEqual(library.applyThemePalette(applied, null, 'dark'), { '--dc-theme-light-background': '#f4f2ed' });
+  assert.deepEqual(library.applyThemePalette(applied, null, 'dark'), { '--ac-theme-light-background': '#f4f2ed' });
   for (const theme of themes) palette.decodePaletteOverrides(JSON.stringify(library.themeOverrides(theme)));
   for (const document of [null, [], { name: 'Empty' }, { name: 'Bad', dark: { unknown: '#112233' } }, { name: 'Bad', dark: { accent: '#12' } }]) {
     assert.throws(() => library.importTheme(JSON.stringify(document)));
@@ -3744,7 +3808,7 @@ test('named themes validate before import and select light and dark palettes ind
 
 test('theme library and UI fonts persist without changing active colors or appearance mode', async (t) => {
   const [{ useSettingsStore }, library, fonts, i18n] = await loadGuiModules(t, ['/src/state/settingsStore.ts', '/src/theme/themeLibrary.ts', '/src/theme/typography.ts', '/src/i18n.ts']);
-  let persisted = { 'gui.colorTheme': 'system', 'workbench.styleTokenOverrides': '{"--dc-custom-dark-accent":"#ccbbaa"}' };
+  let persisted = { 'gui.colorTheme': 'system', 'workbench.styleTokenOverrides': '{"--ac-custom-dark-accent":"#ccbbaa"}' };
   installGuiFetch(t, (url, init) => {
     assert.equal(url.pathname, '/api/user-settings');
     if (init.method === 'PATCH') {
@@ -3762,7 +3826,7 @@ test('theme library and UI fonts persist without changing active colors or appea
   const settings = reloaded.getState().effectiveSettings;
   assert.deepEqual(library.decodeThemeLibrary(settings[library.THEME_LIBRARY_SETTING]), saved);
   assert.equal(settings['gui.colorTheme'], 'system');
-  assert.equal(settings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
+  assert.equal(settings['workbench.styleTokenOverrides'], '{"--ac-custom-dark-accent":"#ccbbaa"}');
   assert.match(fonts.uiFontFamily(settings[fonts.UI_FONT_FAMILY_SETTING]), /^"PingFang SC",/);
   assert.equal(fonts.uiFontSize(settings[fonts.UI_FONT_SIZE_SETTING]), 16);
   assert.equal(fonts.codeFontSize(settings[fonts.CODE_FONT_SIZE_SETTING]), 11);
@@ -3775,24 +3839,24 @@ test('theme library and UI fonts persist without changing active colors or appea
   });
   await reloaded.getState().loadUserSettings();
   const mixed = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.match(mixed['--dc-font-ui'], /Achbit Quiet Reading SC/);
-  assert.equal(mixed['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
-  assert.match(mixed['--dc-font-code'], /Achbit Quiet Mono SC/);
-  assert.equal(mixed['--dc-font-reading-size'], '14px');
-  assert.equal(mixed['--dc-font-code-size'], '11px');
-  assert.equal(mixed['--dc-ui-font-scale'], String(16 / 14));
+  assert.match(mixed['--ac-font-ui'], /Achbit Quiet Reading SC/);
+  assert.equal(mixed['--ac-font-reading'], fonts.UI_FONT_PRESETS.system);
+  assert.match(mixed['--ac-font-code'], /Achbit Quiet Mono SC/);
+  assert.equal(mixed['--ac-font-reading-size'], '14px');
+  assert.equal(mixed['--ac-font-code-size'], '11px');
+  assert.equal(mixed['--ac-ui-font-scale'], String(16 / 14));
   await reloaded.getState().patchUserSettingsBatch({
     [fonts.CONTENT_FONT_FAMILY_SETTING]: 'warm-sans',
     [fonts.TERMINAL_FONT_FAMILY_SETTING]: 'compact-kai',
   });
   await reloaded.getState().loadUserSettings();
   const variants = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.equal(variants['--dc-font-ui'], mixed['--dc-font-ui']);
-  assert.match(variants['--dc-font-reading'], /^"Achbit Quiet Reading Sans SC",/);
-  assert.match(variants['--dc-font-code'], /^"Achbit Quiet Mono Kai SC",/);
-  assert.equal(variants['--dc-font-reading-size'], '14px');
-  assert.equal(variants['--dc-font-code-size'], '11px');
-  assert.equal(reloaded.getState().effectiveSettings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
+  assert.equal(variants['--ac-font-ui'], mixed['--ac-font-ui']);
+  assert.match(variants['--ac-font-reading'], /^"Achbit Quiet Reading Sans SC",/);
+  assert.match(variants['--ac-font-code'], /^"Achbit Quiet Mono Kai SC",/);
+  assert.equal(variants['--ac-font-reading-size'], '14px');
+  assert.equal(variants['--ac-font-code-size'], '11px');
+  assert.equal(reloaded.getState().effectiveSettings['workbench.styleTokenOverrides'], '{"--ac-custom-dark-accent":"#ccbbaa"}');
   for (const [choice, chinese, english] of [
     ['warm', '温和阅读 · 文楷', 'Gentle reading · Kai'],
     ['warm-sans', '温和阅读 · 无衬线', 'Gentle reading · Sans'],
@@ -3810,9 +3874,9 @@ test('theme library and UI fonts persist without changing active colors or appea
     [fonts.CONTENT_FONT_SIZE_SETTING]: null,
   });
   const unified = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.equal(unified['--dc-font-ui'], fonts.UI_FONT_PRESETS.system);
-  assert.equal(unified['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
-  assert.match(unified['--dc-font-code'], /^ui-monospace/);
+  assert.equal(unified['--ac-font-ui'], fonts.UI_FONT_PRESETS.system);
+  assert.equal(unified['--ac-font-reading'], fonts.UI_FONT_PRESETS.system);
+  assert.match(unified['--ac-font-code'], /^ui-monospace/);
   assert.equal(fonts.codeFontSize(undefined), 12);
   assert.throws(() => fonts.codeFontSize(9));
   assert.throws(() => fonts.codeFontSize(19));
@@ -3824,7 +3888,7 @@ test('theme library and UI fonts persist without changing active colors or appea
   await reloaded.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: null, [fonts.UI_FONT_SIZE_SETTING]: null, [fonts.CODE_FONT_SIZE_SETTING]: null });
   assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_FAMILY_SETTING], 'warm-sans');
   const defaultFonts = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  for (const key of ['--dc-font-ui', '--dc-font-reading', '--dc-font-code']) {
+  for (const key of ['--ac-font-ui', '--ac-font-reading', '--ac-font-code']) {
     assert.equal(defaultFonts[key], fonts.UI_FONT_PRESETS['warm-sans']);
   }
   assert.equal(fonts.uiFontFamily(undefined), fonts.UI_FONT_PRESETS['warm-sans']);
@@ -3925,7 +3989,7 @@ async function createUsageWidgetHarness(t, savedPositions = new Map()) {
       return this.children.flatMap(child => [...(classes.includes(child.className) ? [child] : []), ...child.querySelectorAll(selector)]);
     }
     getBoundingClientRect() {
-      const collapsed = this.children.some(child => child.className === 'dc-usage__handle');
+      const collapsed = this.children.some(child => child.className === 'ac-usage__handle');
       return { left: parseFloat(this.style.left) || 0, top: parseFloat(this.style.top) || 0, width: collapsed ? 18 : 200, height: collapsed ? 28 : 80 };
     }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
@@ -3977,42 +4041,42 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   const root = container.children[0];
   const pointer = target => listeners.get('pointerdown').listener({ target });
   assert.equal(listeners.get('pointerdown').capture, true, 'dismissal also observes outside controls that stop bubbling');
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 1);
-  let detail = root.querySelectorAll('.dc-usage__details')[0];
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 1);
+  let detail = root.querySelectorAll('.ac-usage__details')[0];
   pointer(detail);
   assert.deepEqual(changes, [], 'inside details are not an outside click');
   assert.equal(detail.children.some(child => child.textContent === '刷新'), false, 'the details no longer offer a manual refresh');
   input = { ...input, locale: 'en-US', labels: usageWidgetLabels('en-US') }; view.update(input);
-  assert.ok(root.querySelectorAll('.dc-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('en-US').remaining));
-  assert.equal(root.querySelectorAll('.dc-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('zh-CN').remaining), false);
+  assert.ok(root.querySelectorAll('.ac-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('en-US').remaining));
+  assert.equal(root.querySelectorAll('.ac-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('zh-CN').remaining), false);
   assert.equal(reads, 1, 'language changes redraw without another quota request');
   input = { ...input, revision: 1 }; view.update(input);
   assert.equal(reads, 2, 'every provider response refreshes usage without a manual action');
   await Promise.resolve();
   pointer(new Element());
   assert.deepEqual(changes, [false]);
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 0);
-  assert.equal(root.querySelectorAll('.dc-usage__summary').length, 1, 'outside click restores the summary card');
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 0);
+  assert.equal(root.querySelectorAll('.ac-usage__summary').length, 1, 'outside click restores the summary card');
   pointer(new Element());
   assert.deepEqual(changes, [false], 'collapsed details do not emit repeated updates');
-  root.querySelectorAll('.dc-usage__body')[0].onclick();
+  root.querySelectorAll('.ac-usage__body')[0].onclick();
   assert.equal(reads, 3, 'reopening the details fetches current usage');
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 1, 'the card can be reopened');
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 1, 'the card can be reopened');
   root.oncontextmenu({ preventDefault() {} });
-  assert.equal(root.querySelectorAll('.dc-usage__menu').length, 1);
+  assert.equal(root.querySelectorAll('.ac-usage__menu').length, 1);
   pointer(new Element());
-  assert.equal(root.querySelectorAll('.dc-usage__menu').length, 0);
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 0, 'closing an outside menu does not expose stale expanded details');
-  root.querySelectorAll('.dc-usage__body')[0].onclick();
+  assert.equal(root.querySelectorAll('.ac-usage__menu').length, 0);
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 0, 'closing an outside menu does not expose stale expanded details');
+  root.querySelectorAll('.ac-usage__body')[0].onclick();
   listeners.get('keydown').listener({ key: 'Escape' });
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 0);
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 0);
 
   const visibilityChanges = [];
   actions.setUsageVisibility = visibility => {
     visibilityChanges.push(visibility); input = { ...input, visibility }; view.update(input);
   };
   input = { ...input, visibility: 'collapsed' }; view.update(input);
-  let handle = root.querySelectorAll('.dc-usage__handle')[0];
+  let handle = root.querySelectorAll('.ac-usage__handle')[0];
   const before = root.getBoundingClientRect();
   const down = (x, y) => root.listeners.get('pointerdown')({ target: handle, button: 0, isPrimary: true, pointerId: 1, clientX: x, clientY: y });
   down(before.left + 9, before.top + 14);
@@ -4037,7 +4101,7 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   assert.deepEqual(visibilityChanges, ['summary'], 'a subsequent ordinary click still expands');
   assert.equal(parseFloat(root.style.left), 8, 'left-docked form expands inside the panel');
   input = { ...input, visibility: 'collapsed' }; view.update(input);
-  handle = root.querySelectorAll('.dc-usage__handle')[0];
+  handle = root.querySelectorAll('.ac-usage__handle')[0];
   assert.equal(parseFloat(root.style.left), 0, 'collapsing keeps the chosen edge');
   root.listeners.get('keydown')({ target: handle, key: 'ArrowRight', preventDefault() {} });
   assert.equal(parseFloat(root.style.left), 782, 'keyboard movement can select the right edge');
@@ -4074,28 +4138,28 @@ test('usage updates preserve controls, coalesce in-flight reads, and keep the la
   const result = value => ({ totals: { estimatedCost: value, calls: 1, pricedCalls: 1, inputTokens: 10, outputTokens: 2, cacheReadTokens: 0 },
     coverageFrom: 0, query: { from: 0 }, buckets: [] });
   requests[0].resolve(result(1)); await Promise.resolve();
-  const root = container.children[0], body = root.querySelectorAll('.dc-usage__body')[0];
+  const root = container.children[0], body = root.querySelectorAll('.ac-usage__body')[0];
   const contents = element => [element.textContent ?? '', ...element.children.map(contents)].join(' ');
   root.listeners.get('pointerdown')({ target: body, button: 0, isPrimary: true, pointerId: 1, clientX: 610, clientY: 520 });
   view.update({ ...input });
-  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body, 'unrelated stream renders cannot detach the click target');
+  assert.equal(root.querySelectorAll('.ac-usage__body')[0], body, 'unrelated stream renders cannot detach the click target');
   input = { ...input, revision: 1 }; view.update(input);
   input = { ...input, revision: 2 }; view.update(input);
-  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body, 'starting a usage read also preserves the button');
+  assert.equal(root.querySelectorAll('.ac-usage__body')[0], body, 'starting a usage read also preserves the button');
   body.onclick();
   assert.equal(input.expanded, true);
   assert.equal(requests.length, 2, 'opening and repeated responses share the in-flight read');
   assert.equal(requests[1].signal.aborted, false);
   assert.ok(contents(root).includes('$1.00'), 'the last confirmed amount remains visible during the read');
-  const detail = root.querySelectorAll('.dc-usage__details')[0];
+  const detail = root.querySelectorAll('.ac-usage__details')[0];
   detail.scrollTop = 17;
   requests[1].resolve(result(2)); await Promise.resolve();
   assert.equal(requests.length, 3, 'one follow-up read covers the newest response revision');
-  assert.equal(root.querySelectorAll('.dc-usage__details')[0], detail);
+  assert.equal(root.querySelectorAll('.ac-usage__details')[0], detail);
   assert.equal(detail.scrollTop, 17);
   requests[2].resolve(result(3)); await Promise.resolve();
   assert.ok(contents(root).includes('$3.00'));
-  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body);
+  assert.equal(root.querySelectorAll('.ac-usage__body')[0], body);
   body.onclick(); assert.equal(input.expanded, false, 'the same button remains interactive after completion');
 });
 
@@ -4108,7 +4172,7 @@ test('usage widget remembers a moved position across remounts without saving tem
   const scope = { signal: new AbortController().signal, quota: { async read() { return { windows: [] }; } }, actions: {} };
   const view = mount(input, scope); await Promise.resolve();
   const root = container.children[0];
-  root.listeners.get('keydown')({ target: root.querySelectorAll('.dc-usage__body')[0], key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
+  root.listeners.get('keydown')({ target: root.querySelectorAll('.ac-usage__body')[0], key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
   const moved = root.getBoundingClientRect();
   assert.equal(saved.size, 1);
   const stored = [...saved.values()][0];
@@ -4165,7 +4229,7 @@ test('usage widget restores the summary position after temporary Reader docking'
   assert.equal(parseFloat(root.style.left), original.left, 'default summary returns to the right edge');
   assert.equal(parseFloat(root.style.top), original.top, 'temporary docking preserves its height');
 
-  root.listeners.get('keydown')({ target: root.querySelectorAll('.dc-usage__body')[0],
+  root.listeners.get('keydown')({ target: root.querySelectorAll('.ac-usage__body')[0],
     key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
   const moved = root.getBoundingClientRect();
   assert.equal(moved.left, original.left - 40);
@@ -4246,19 +4310,19 @@ for (const billingMode of ['subscription', 'metered']) {
     assert.equal(requests.length, 2);
     requests[1].reject(new Error('original_usage_read_failure'));
     await Promise.resolve();
-    assert.equal(root.querySelectorAll('.dc-usage__error')[0]?.textContent, 'original_usage_read_failure');
+    assert.equal(root.querySelectorAll('.ac-usage__error')[0]?.textContent, 'original_usage_read_failure');
     assert.equal(text(root).includes(oldValue), false);
 
     update({ expanded: false });
     update({ expanded: true });
     assert.equal(requests.length, 3);
-    assert.equal(root.querySelectorAll('.dc-usage__error')[0]?.textContent, 'original_usage_read_failure',
+    assert.equal(root.querySelectorAll('.ac-usage__error')[0]?.textContent, 'original_usage_read_failure',
       'reopening must not erase the failure while the new request is pending');
     assert.equal(text(root).includes(oldValue), false, 'a pending request cannot reinstate the old successful value');
     if (billingMode === 'metered') assert.ok(text(root).includes(input.labels.unavailable));
     requests[2].resolve(response(42));
     await Promise.resolve();
-    assert.equal(root.querySelectorAll('.dc-usage__error').length, 0, 'only a successful result clears the failure');
+    assert.equal(root.querySelectorAll('.ac-usage__error').length, 0, 'only a successful result clears the failure');
     assert.ok(text(root).includes(newValue));
 
     update({ expanded: false });
@@ -4267,7 +4331,7 @@ for (const billingMode of ['subscription', 'metered']) {
     requests[3].reject(new Error('previous_connection_failure'));
     await Promise.resolve();
     update({ connection: { ...input.connection, id: 'connection:other' } });
-    assert.equal(root.querySelectorAll('.dc-usage__error').length, 0, 'a different query must not inherit the previous connection failure');
+    assert.equal(root.querySelectorAll('.ac-usage__error').length, 0, 'a different query must not inherit the previous connection failure');
     assert.equal(text(root).includes(newValue), false);
     dispose();
     assert.equal(requests.at(-1).signal.aborted, true);
@@ -4774,8 +4838,8 @@ test('browser page subscription retains updates during the initial snapshot and 
   t.after(() => { globalThis.window = previousWindow; globalThis.document = previousDocument; });
   let receive, resolveList, unsubscribed = 0;
   const snapshots = [], commands = [];
-  globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
-  globalThis.window = { location: { protocol: 'deepcode-gui:', hostname: 'localhost' }, __TAURI__: {
+  globalThis.document = { documentElement: { dataset: { product: 'achbit-gui' } } };
+  globalThis.window = { location: { protocol: 'achbit-gui:', hostname: 'localhost' }, __TAURI__: {
     core: { invoke: async (command, input) => {
       commands.push({ command, input });
       assert.ok(receive, 'events must be subscribed before requesting the snapshot');
@@ -4805,7 +4869,7 @@ test('browser page subscription retains updates during the initial snapshot and 
   assert.equal(snapshots.at(-1).find(page => page.previewId === 'new').status, 'ready');
   receive({ payload: page('original', 'closed') });
   assert.deepEqual(snapshots.at(-1).map(page => page.previewId), ['new']);
-  assert.deepEqual(commands[0], { command: 'deepcode_browser_command', input: { binding, input: { action: 'list' } } });
+  assert.deepEqual(commands[0], { command: 'achbit_browser_command', input: { binding, input: { action: 'list' } } });
   dispose();
   assert.equal(unsubscribed, 1);
   assert.equal(receive, null);
@@ -5057,9 +5121,9 @@ test('approval operation details include file access while automated review is p
   const html = renderToStaticMarkup(createElement(ApprovalOperationDetails, { language: 'en-US', preview: {
     summary: 'Inspect container availability', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'],
     operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps' } },
-    fileAccess: { read: ['/Applications/DeepCode.app'], write: [] },
+    fileAccess: { read: ['/Applications/Achbit.app'], write: [] },
   } }));
-  for (const fact of ['docker ps', '/workspace', 'host', '/Applications/DeepCode.app']) assert.ok(html.includes(fact));
+  for (const fact of ['docker ps', '/workspace', 'host', '/Applications/Achbit.app']) assert.ok(html.includes(fact));
   assert.equal(html.includes('<button'), false, 'facts alone cannot approve an operation');
 });
 
@@ -5099,7 +5163,7 @@ test('subagent quick settings save the active Session, retain other Sessions and
     await createSession(journal, sessionId);
     const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('settings must not call Provider'); } }, emptyKernel(), fakeRunPreparation().port, sessionId);
     actors.set(sessionId, actor);
-    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.subagent-settings.set', sessionId,
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.subagent-settings.set', sessionId,
       commandId: `${sessionId}:initial-settings`, settings: initial });
   }
   t.after(() => Promise.all([...actors.values()].map(actor => actor.dispose())));

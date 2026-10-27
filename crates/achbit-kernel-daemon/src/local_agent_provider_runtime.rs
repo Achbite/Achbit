@@ -20,6 +20,7 @@ pub(crate) struct ProviderRuntimeSnapshot {
     pub(crate) max_output_tokens: u32,
     pub(crate) api_surface: &'static str,
     pub(crate) hosted_web_search: &'static str,
+    pub(crate) file_input_media_types: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -227,6 +228,7 @@ fn capture_binding(
         thinking: profile.thinking.clone(),
         context_window_tokens,
         max_output_tokens,
+        file_input_media_types: profile.file_input_media_types.clone(),
         api_surface: match profile.kind.as_str() {
             "openaiCompatible" => "chatCompletions",
             "responses" => "responses",
@@ -276,6 +278,8 @@ struct InstanceModelParameters {
     context_window_tokens: u64,
     max_output_tokens: u32,
     image_input: bool,
+    #[serde(default)]
+    file_input_media_types: Vec<String>,
     temperature: Option<f64>,
     hosted_web_search: Option<String>,
 }
@@ -297,6 +301,10 @@ pub(crate) fn validate_instance_parameters(value: &Value) -> Result<(), String> 
     {
         return Err("子代理实例模型参数无效。".into());
     }
+    crate::llm_profiles::validate_file_input_media_types(
+        &parameters.kind,
+        &parameters.file_input_media_types,
+    )?;
     Ok(())
 }
 
@@ -316,6 +324,7 @@ fn apply_instance_parameters(
     profile.context_window_tokens = Some(parameters.context_window_tokens);
     profile.max_output_tokens = Some(parameters.max_output_tokens);
     profile.image_input = parameters.image_input;
+    profile.file_input_media_types = parameters.file_input_media_types;
     profile.temperature = parameters.temperature;
     profile.hosted_web_search = parameters.hosted_web_search;
     Ok(())
@@ -341,6 +350,24 @@ fn with_reasoning_override(
 mod tests {
     use super::*;
 
+    #[test]
+    fn dormant_instance_preserves_its_native_pdf_capability() {
+        let mut profile = configured_profile();
+        let mut parameters = json!({"adapterId":"openai", "kind":"openaiCompatible", "providerFlavor":"deepseek",
+            "contextWindowTokens":4096, "maxOutputTokens":512, "imageInput":false, "fileInputMediaTypes":["application/pdf"]});
+        apply_instance_parameters(&mut profile, &parameters).unwrap();
+        assert_eq!(profile.file_input_media_types, vec!["application/pdf"]);
+        parameters
+            .as_object_mut()
+            .unwrap()
+            .remove("fileInputMediaTypes");
+        apply_instance_parameters(&mut profile, &parameters).unwrap();
+        assert!(profile.file_input_media_types.is_empty());
+        parameters["kind"] = json!("responses");
+        parameters["fileInputMediaTypes"] = json!(["application/pdf"]);
+        assert!(validate_instance_parameters(&parameters).is_err());
+    }
+
     fn configured_profile() -> ResolvedLlmProfile {
         ResolvedLlmProfile {
             connection: crate::model_connections::ModelConnection {
@@ -354,6 +381,7 @@ mod tests {
             },
             account_id: None,
             image_input: false,
+            file_input_media_types: vec![],
             kind: "openaiCompatible".into(),
             provider_flavor: Some("deepseek".into()),
             base_url: None,
@@ -403,6 +431,7 @@ mod tests {
                 max_output_tokens: 2048,
                 api_surface: "responses",
                 hosted_web_search: "web_search",
+                file_input_media_types: vec![],
             },
             profile,
             codex_turn_state: Default::default(),

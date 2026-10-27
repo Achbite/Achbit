@@ -35,7 +35,6 @@
     "agent.computer.parameters": "操作参数",
     "agent.computer.result": "返回结果",
     "agent.commands.title": "命令",
-    "agent.commands.invalid": "命令不可识别或参数不支持。输入 / 查看可用命令。",
     "agent.commands.new": "新对话",
     "agent.commands.newDescription": "在当前项目中开始新对话",
     "agent.commands.model": "选择模型",
@@ -327,9 +326,6 @@
     "workspace.openedAt": "打开时间",
     "workspace.folders": "文件夹",
     "workspace.relativePrefix": "相对路径：",
-    "workspace.deepcodeSettings": "Achbit 工作区设置",
-    "workspace.deepcodeSettingsBody": "这些设置保存在当前工作区上下文中；保存为 .code-workspace 后会写入 workspace 文件的 settings 字段。",
-    "workspace.rawSettings": "原始 deepcode.* 设置",
     "workspace.unsupportedFields": "不支持的工作区字段",
     "workspace.unsupportedBody": "Achbit 当前不解析 VSCode 专用字段，例如 extensions、tasks、launch、remoteAuthority。",
     "achbitGui.notification.completed": "任务已完成",
@@ -913,7 +909,7 @@
     "settings.search.terms.general": "语言 文件 默认打开 阅读 导航密度 上下文栏 用量浮窗 货币 推理详情",
     "settings.search.terms.gui": "主题 强调色 字体 字号 配色 外观",
     "settings.search.terms.agent": "系统提示 回复语言 自动上下文管理 压缩 阈值 token",
-    "settings.search.terms.environment": "项目执行环境 运行位置 PDF 生成环境 Python WeasyPrint 工作区 Shell 环境上下文 开发命令 刷新",
+    "settings.search.terms.environment": "项目执行环境 运行位置 工作区 Shell 环境上下文 开发命令 刷新",
     "settings.search.terms.permissions": "读写 权限 工程决策 网络 外部操作 命令黑名单 command denylist blacklist",
     "settings.search.terms.llm": "模型 服务 供应商 模型名 API 密钥 用量 缓存 token",
     "settings.search.terms.plugins": "工具 界面 扩展 添加 本地 位置 连接",
@@ -1037,7 +1033,6 @@
     "tui.reasoningEnabled": "推理详情已开启；使用 /reasoning <request-id> [offset] 展开，/reasoning-history 查阅历史。",
     "tui.reasoningDisabled": "推理详情已关闭，仅显示状态。",
     "tui.viewClosed": "已关闭辅助视图。",
-    "tui.unknownCommand": "未知命令：{0}",
     "tui.sessionNotInitialized": "Session 尚未初始化。",
     "tui.messageSubmitFailed": "消息提交失败",
     "tui.noPendingPlan": "当前没有待处理 Plan。",
@@ -1257,9 +1252,7 @@
     "tui.replyReferencesUnsupported": "插件和文件系统引用不能用于已有 run 的决策回应。",
     "tui.runAuthorizationUnavailable": "当前操作未提供该本轮授权范围。",
     "tui.noPendingReply": "当前没有等待答复的 Plan、交互或 effect 审批。",
-    "tui.focusSeparator": "未知命令；/focus 后必须以空格分隔任务正文。",
     "tui.focusRequired": "/focus 需要非空任务正文。",
-    "tui.unknownInputCommand": "未知命令：{0}",
     "tui.approvalReplyRequired": "当前等待 effect 裁决：输入 /reply 1（允许）或 /reply 2（拒绝）。",
     "tui.languageMissing": "用户设置缺少合法的 workbench.language。",
     "tui.languageInvalid": "不支持的显示语言：{0}；请选择 zh-CN 或 en-US。",
@@ -1470,7 +1463,7 @@
       "label": "Windows Shell",
       "description": "应用于后续运行。默认优先 PowerShell 7，未安装时使用系统 PowerShell；运行中不切换。",
       "options": {
-        "auto": "自动 · 优先 PowerShell 7",
+        "auto": "PowerShell 7 优先，未安装时使用 5.1",
         "powershell7": "PowerShell 7",
         "windowsPowerShell": "Windows PowerShell 5.1",
         "gitBash": "Git Bash"
@@ -1543,10 +1536,6 @@
     "agent.web.search.authHeaderName": {
       "label": "Web 搜索认证头",
       "description": "自定义搜索端点使用的认证头；Brave 使用 X-Subscription-Token。"
-    },
-    "agent.documents.pythonPath": {
-      "label": "PDF 渲染 Python",
-      "description": "已安装 WeasyPrint 的 Python 解释器。留空使用文档运行环境或系统 Python；HTML 和 Markdown 导出无需额外运行环境。"
     },
     "agent.web.search.authSecretRef": {
       "label": "Web 搜索认证 Secret",

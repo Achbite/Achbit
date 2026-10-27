@@ -25,9 +25,12 @@ Activate relevant enabled results with `plugin.activate` alone, using their exac
 | Source | Registration |
 | --- | --- |
 | Local CLI tools | `plugins.sources`, `achbit-tool.json` |
+| Hosted services | `plugins.services`, `achbit-service.json`; enabled processes are owned and stopped by Host |
 | External MCP | `mcp.servers`; include a useful capability `description` |
 | Custom Skills | `skills.mounts`; folder or `SKILL.md` |
 | Display plugins | `workbench.uiPlugins`, `achbit-ui.json`; see [UI plugins](ui-plugins.md) |
+
+For importable artifacts, manifest fields, invocation and cleanup rules, see [Plugin development](../plugins/README.md) ([简体中文](../plugins/README.zh-CN.md)).
 
 Settings switches/selections save immediately; numeric fields commit with Enter. Text edits and new connections retain Save/Create. Saved runtime configuration generally applies to the next run; selected Skill/CLI-plugin content is refreshed before the next request. In-flight calls keep their captured bindings. Relevant permission revocation is checked before execution.
 
@@ -55,7 +58,7 @@ Use `interaction.request` alone to ask a necessary question. `mode: continue` pe
 
 Call `agent` with `action: models` for the current operation schemas. When enabled, delegate useful independent work with enough context, scope and expected evidence; keep short or coupled work local. Use collaboration for communicating teammates and assign one writer per shared file.
 
-The fixed templates are `analysis` (contact the task owner) and `collaboration` (contact teammates). Permissions and runtime configuration inherit from the parent. The main conversation can configure templates and customize a child within its authority; ordinary members select those templates and cannot override permissions or Loop configuration.
+The fixed templates are `analysis` (read exact file references and return findings; no messaging controls) and `collaboration` (communicate with teammates). Permissions and runtime configuration inherit from the parent within each template's tool selection. The main conversation can configure templates and customize a child within its authority; ordinary members select those templates and cannot override permissions or Loop configuration.
 
 Await final results and verify them. Completed tasks release execution automatically; `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message, not authorization or a new assignment.
 
@@ -112,7 +115,7 @@ File-tool arrows open the preview in one step. Edits show changed lines with nea
 
 ## Document output
 
-For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` (activate `plugin://documents@builtin` first) with the requested format and workspace destination. PDF needs the configured WeasyPrint environment; missing dependencies are a failure, not a different-format delivery.
+For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` (activate `plugin://documents@builtin` first) with the requested format and workspace destination. PDF content is self-contained Typst source rendered by the bundled Rust renderer; HTML content remains complete HTML, and Markdown content remains Markdown. No Python environment is needed. Renderer errors remain errors, not a different-format delivery.
 
 Archive an existing file with `artifact.prepare`, or register a live URL with `artifact.preview`. Deliver selected results using `artifact.present`, then cite its returned URI. Preparing/registering alone does not deliver; registering a URL does not verify it. Re-prepare edited files and reuse the `deliveryId` for an update. Keep scripts, logs and observation screenshots intermediate unless requested.
 
@@ -131,7 +134,7 @@ Archive an existing file with `artifact.prepare`, or register a live URL with `a
 
 ## macOS signing
 
-Authorized macOS builds use a persistent signer, defaulting to `DeepCode Local Development`; `DEEPCODE_MACOS_SIGN_IDENTITY` selects another. Initial setup is `bash scripts/setup-macos-signing.sh` on the Mac. The private key stays in that user's keychain; system password/trust prompts require human handling.
+Authorized macOS builds use a persistent signer, defaulting to `Achbit Local Development`; `ACHBIT_MACOS_SIGN_IDENTITY` selects another. Initial setup is `bash scripts/setup-macos-signing.sh` on the Mac. The private key stays in that user's keychain; system password/trust prompts require human handling.
 
 Keep signer and bundle identity stable across updates. The Computer Use helper has its own Accessibility/Screen Recording grants. Use its `status` to inspect the actual running helper and permission error; do not reset OS permissions or replace unrelated apps as a generic fix. From a source checkout, `bash ./build.sh` updates the local runnable product; `bash ./build.sh --stage package-macos` explicitly builds the macOS distribution package. For isolated Debug builds, use [Debug control](debug-control.md).
 

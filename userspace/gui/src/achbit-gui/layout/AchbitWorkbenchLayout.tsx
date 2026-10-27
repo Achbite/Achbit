@@ -80,6 +80,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   const draftProjectId = useLocalAgentStore((state) => state.draftProjectId);
   const catalog = useLocalAgentStore((state) => state.catalog);
   const catalogStatus = useLocalAgentStore((state) => state.catalogStatus);
+  const catalogWatchError = useLocalAgentStore(state => state.catalogWatchError);
   const sidebarOrder = useSidebarOrder(catalog.projects, catalog.sessions);
   const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const statusError = useLocalAgentStore((state) => state.statusError);
@@ -94,7 +95,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       },
     };
   }, [projection, sessionStatuses]);
-  const completionNotification = useCompletionNotifications(sidebarStatuses, catalog.sessions, language);
+  const completionNotification = useCompletionNotifications(catalog.sessions, language);
   const loading = useLocalAgentStore((state) => state.loading);
   const submitting = useLocalAgentStore((state) => state.submitting);
   const catalogBusy = useLocalAgentStore((state) => state.catalogBusy);
@@ -370,14 +371,14 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
 
   return (
     <div className={`achbit-gui-workbench${settingsOpen ? ' achbit-gui-workbench--settings' : ''}${navigationCollapsed ? ' achbit-gui-workbench--navigation-collapsed' : ''}`}
-      ref={workbench} data-host-status={apiStatus} style={{ '--dc-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
+      ref={workbench} data-host-status={apiStatus} style={{ '--ac-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
       onKeyDown={(event) => {
         if (settingsOpen && event.key !== 'Escape') event.stopPropagation();
       }}>
       <UiRegion slot="workbench.layout" regions={{
         titlebar: <><AchbitTitlebar sessionHeaderRef={setSessionHeader} language={language} settings={settingsOpen ? <>
         <strong>{t(language, 'settings.title')}</strong>
-        <button type="button" ref={settingsClose} className="deepcode-local-agent-settings__close" onClick={() => setSettingsOpen(false)}>
+        <button type="button" ref={settingsClose} className="achbit-local-agent-settings__close" onClick={() => setSettingsOpen(false)}>
           {t(language, 'achbitGui.settings.close')} <kbd>esc</kbd>
         </button>
       </> : undefined} /></>,
@@ -395,8 +396,11 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
             direction={1} onResize={navigationWidth.setWidth} />} toolbar={<>
             <button type="button" aria-label={t(language, 'achbitGui.navigation.back')} title={t(language, 'achbitGui.navigation.back')} disabled={busy || history.cursor <= 0} onClick={() => void navigate(-1)}><AchbitShellIcon name="chevronLeft" /></button>
             <button type="button" aria-label={t(language, 'achbitGui.navigation.forward')} title={t(language, 'achbitGui.navigation.forward')} disabled={busy || history.cursor >= history.entries.length - 1} onClick={() => void navigate(1)}><AchbitShellIcon name="chevronRight" /></button>
-            <button type="button" className="achbit-gui-navigation-toggle" aria-label={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} title={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} aria-expanded={!navigationCollapsed} aria-controls="deepcode-navigation-content" onClick={() => setNavigationCollapsed(value => !value)}><AchbitShellIcon name="sidebar" /></button>
+            <button type="button" className="achbit-gui-navigation-toggle" aria-label={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} title={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} aria-expanded={!navigationCollapsed} aria-controls="achbit-navigation-content" onClick={() => setNavigationCollapsed(value => !value)}><AchbitShellIcon name="sidebar" /></button>
             {navigationError && <p className="achbit-gui-navigation-error" role="alert">{navigationError}</p>}
+            {catalogWatchError && <p className="achbit-gui-navigation-error" role="alert">{catalogWatchError}
+              <button type="button" onClick={() => useLocalAgentStore.getState().retryCatalogWatch()}>{t(language, 'achbitGui.statusAction.retry')}</button>
+            </p>}
           </>}>
         <AchbitSidebar
           language={language}
@@ -432,7 +436,9 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
         />
       </AchbitNavigationBox></UiRegion>,
         main: <>{completionNotification.error && <div className="achbit-gui-notification-error">
-          <DismissibleError language={language} onDismiss={completionNotification.dismiss}>{completionNotification.error}</DismissibleError>
+          <DismissibleError language={language} onDismiss={completionNotification.dismiss}>{completionNotification.error}
+            {completionNotification.canRetry && <button type="button" onClick={completionNotification.retry}>{t(language, 'achbitGui.statusAction.retry')}</button>}
+          </DismissibleError>
         </div>}<div
         className={`achbit-gui-shell${showContextRail ? '' : ' achbit-gui-shell--no-context'}`}
         data-navigation-density={navigationDensity}
@@ -455,7 +461,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
 
       {projectCreateMenu && (
         <SidebarMenu
-          id="deepcode-project-create-menu"
+          id="achbit-project-create-menu"
           className="achbit-gui-project-create-menu"
           x={projectCreateMenu.x} y={projectCreateMenu.y}
         >
@@ -649,10 +655,10 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       )}
 
       {deleteSessionCandidate && (
-        <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-labelledby="deepcode-delete-session-title" busy={catalogBusy} onClose={() => setDeleteSessionCandidate(null)}>
+        <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-labelledby="achbit-delete-session-title" busy={catalogBusy} onClose={() => setDeleteSessionCandidate(null)}>
           <div className="achbit-gui-text-dialog" onMouseDown={(event) => event.stopPropagation()}>
             <header>
-              <h2 id="deepcode-delete-session-title">{t(language, 'agent.session.delete')}</h2>
+              <h2 id="achbit-delete-session-title">{t(language, 'agent.session.delete')}</h2>
               <button
                 type="button"
                 aria-label={t(language, 'agent.session.cancel')}
@@ -764,8 +770,8 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       )}
 
       {settingsOpen && (
-        <section className="deepcode-local-agent-overlay" aria-label={t(language, 'settings.title')}>
-          <div className="deepcode-local-agent-settings" onMouseDown={(event) => event.stopPropagation()}>
+        <section className="achbit-local-agent-overlay" aria-label={t(language, 'settings.title')}>
+          <div className="achbit-local-agent-settings" onMouseDown={(event) => event.stopPropagation()}>
             <InterfaceLoadBoundary><Suspense fallback={null}>
               <SettingsCenter
                 apiStatus={apiStatus}

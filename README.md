@@ -14,6 +14,8 @@ Achbit is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and 
 
 Connect your preferred model service, then extend the agent with Skills, CLI tools, MCP, and plugins. The **AC** mark recalls “Accepted” in programming contests.
 
+[Quick start](#quick-start) · [Computer Use](#computer-use) · [Terminal](#terminal) · [Plugins](#plugins) · [Architecture](#how-it-fits-together) · [Build](#build-from-source) · [Documentation](#documentation)
+
 ## Quick start
 
 Download a package from [Releases](https://github.com/Achbite/Achbit/releases).
@@ -33,6 +35,8 @@ Download a package from [Releases](https://github.com/Achbite/Achbit/releases).
 The navigation holds your projects and conversations. Tool results stay with the conversation; files and browser previews open beside it.
 
 Packages include their runtime. See [platform requirements and installation](docs/distribution.md) for WebView2, Linux desktop dependencies, and the packages available for each release.
+
+Starting with 0.6.61, application data directories, environment variables and integration identifiers use Achbit names. A default first launch uses a new data directory; previous data and credentials are left untouched and are not automatically imported. See the [data directory guide](docs/distribution.md#产品标识与数据目录) when configuring launchers or integrations.
 
 ## Computer Use
 
@@ -57,6 +61,14 @@ achbit-tui -C /path/to/project
 ```
 
 Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a model and `/sessions` to continue a conversation. GUI, TUI, and CLI share connections and Session state. Portable launchers are listed in the [distribution guide](docs/distribution.md).
+
+## Plugins
+
+Import an external plugin from **Settings → Plugins → Add**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
+
+Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
+
+See the **[complete plugin development rules](docs/plugins/README.md)** for artifact layout, manifest fields, stdin/stdout contracts, lifecycle, file transport and validation; [中文文档](docs/plugins/README.zh-CN.md) is also available. This describes generic extension contracts and does not add experimental plugins to the built-in catalog.
 
 ## How it fits together
 
@@ -83,6 +95,8 @@ bash scripts/setup-macos-signing.sh
 make shell
 ```
 
+`make shell` automatically checks and updates the development image before entering. Docker reuses unchanged layers and rebuilds affected layers when the Dockerfile, entrypoint or image build arguments change. No separate image-update command is needed.
+
 Skip the signing command on Windows and Linux. Inside the container:
 
 ```sh
@@ -96,6 +110,7 @@ Return to the host and open the program in `bin/macos-arm64`, `bin/win64`, or th
 
 - [Models, subscriptions, and usage](docs/product/model-services.md)
 - [Conversations, settings, and extensions](docs/product/operations.md)
+- [Plugin development and protocols](docs/plugins/README.md)
 - [Workspace environments and permissions](docs/product/execution-environments.md)
 - [Installation, updates, and local data](docs/distribution.md)
 - [Examples](examples/README.md)

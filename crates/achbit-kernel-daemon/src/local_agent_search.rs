@@ -78,6 +78,7 @@ mod tests {
             },
             account_id: None,
             image_input: false,
+            file_input_media_types: vec![],
             kind: "openaiCompatible".into(),
             provider_flavor: Some(flavor.into()),
             base_url: Some(base.into()),

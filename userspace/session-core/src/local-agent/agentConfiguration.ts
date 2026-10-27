@@ -13,7 +13,8 @@ export interface AgentPreset extends AgentRecipe {
 
 export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const builtins: AgentPreset[] = [
-    { id: 'analysis', name: 'Analysis', capabilities: { messaging: 'parent', continuation: true, delegation: false } },
+    { id: 'analysis', name: 'Read files and analyze', tools: { kernel: ['fs.read'], controls: [], plugins: false },
+      capabilities: { messaging: 'parent', continuation: true, delegation: false } },
     { id: 'collaboration', name: 'Collaboration', capabilities: { messaging: true, continuation: true, delegation: false } },
   ];
   const stored: unknown = JSON.parse(settings.presets ?? '[]');
@@ -21,7 +22,7 @@ export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const ids = new Set(builtins.map(preset => preset.id));
   for (const item of stored) {
     if (!item || typeof item !== 'object' || Array.isArray(item)
-      || Object.keys(item).some(key => !['id', 'name', 'capabilities', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
+      || Object.keys(item).some(key => !['id', 'name', 'capabilities', 'tools', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
       || typeof item.id !== 'string' || !item.id.trim() || ids.has(item.id)
       || typeof item.name !== 'string' || !item.name.trim()
       || item.profileId !== undefined && (typeof item.profileId !== 'string' || !item.profileId.trim())

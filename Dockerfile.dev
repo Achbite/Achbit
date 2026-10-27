@@ -1,17 +1,15 @@
 # syntax=docker/dockerfile:1.7
 # ====================================================================
-# DeepCode 开发容器（Dockerfile.dev）
+# Achbit 开发容器（Dockerfile.dev）
 # 用途：作为 `make shell` 的开发壳子；常驻运行，反复 exec 进入。
 # 包含统一 Kernel 开发工具链：Rust + Node 22 + pnpm + Linux/Windows 交叉编译基础工具。
 # ====================================================================
 
-ARG DEEPCODE_RUST_VERSION=1.88
-FROM rust:${DEEPCODE_RUST_VERSION}-bookworm
+ARG ACHBIT_RUST_VERSION=1.88
+FROM rust:${ACHBIT_RUST_VERSION}-bookworm
 
-ARG DEEPCODE_APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
-ARG DEEPCODE_APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
-ARG DEEPCODE_NODE_VERSION=22.22.3
-ARG DEEPCODE_NODE_DIST_BASE=https://npmmirror.com/mirrors/node
+ARG ACHBIT_APT_MIRROR=https://deb.debian.org/debian
+ARG ACHBIT_APT_SECURITY_MIRROR=https://deb.debian.org/debian-security
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -27,14 +25,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - Windows 交叉编译基础：gcc-mingw-w64-x86-64 + binutils-mingw-w64
 # - 健康检查辅助：iputils-ping / netcat-openbsd / jq
 # - Tauri thin shell 静态检查/打包准备：WebKitGTK、AppIndicator、SVG、patchelf
-# - sccache：由 build.sh 按需启用，DEEPCODE_DISABLE_SCCACHE=1 可关闭
+# - sccache：由 build.sh 按需启用，ACHBIT_DISABLE_SCCACHE=1 可关闭
+# 保留 BuildKit cache mount 中的 deb，避免基础镜像的 apt hook 在更新索引时删除下载缓存。
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    sed -i \
-        -e "s#http://deb.debian.org/debian-security#${DEEPCODE_APT_SECURITY_MIRROR}#g" \
-        -e "s#http://deb.debian.org/debian#${DEEPCODE_APT_MIRROR}#g" \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && sed -i \
+        -e "s#http://deb.debian.org/debian-security#${ACHBIT_APT_SECURITY_MIRROR}#g" \
+        -e "s#http://deb.debian.org/debian#${ACHBIT_APT_MIRROR}#g" \
         /etc/apt/sources.list.d/debian.sources \
- && printf 'Acquire::Retries "2";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99deepcode-timeouts \
+ && printf 'Acquire::Retries "2";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99achbit-timeouts \
  && apt-get update && apt-get install -y --no-install-recommends \
         curl wget ca-certificates git \
         build-essential pkg-config make file bubblewrap \
@@ -44,6 +44,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         iputils-ping netcat-openbsd jq xz-utils unzip sccache
 
 # ---- 2. Node.js 22 LTS ----
+ARG ACHBIT_NODE_VERSION=22.22.3
+ARG ACHBIT_NODE_DIST_BASE=https://npmmirror.com/mirrors/node
 # Use the official binary tarball instead of NodeSource apt, so the build is
 # not blocked by a single external Debian repository path.
 RUN set -eux; \
@@ -53,39 +55,39 @@ RUN set -eux; \
         arm64) node_arch="arm64" ;; \
         *) echo "unsupported Node.js architecture: $arch" >&2; exit 1 ;; \
     esac; \
-    node_pkg="node-v${DEEPCODE_NODE_VERSION}-linux-${node_arch}.tar.xz"; \
-    curl -fsSL "${DEEPCODE_NODE_DIST_BASE}/v${DEEPCODE_NODE_VERSION}/${node_pkg}" -o "/tmp/${node_pkg}"; \
+    node_pkg="node-v${ACHBIT_NODE_VERSION}-linux-${node_arch}.tar.xz"; \
+    curl -fsSL "${ACHBIT_NODE_DIST_BASE}/v${ACHBIT_NODE_VERSION}/${node_pkg}" -o "/tmp/${node_pkg}"; \
     tar -xJf "/tmp/${node_pkg}" -C /usr/local --strip-components=1; \
     rm -f "/tmp/${node_pkg}"; \
-    win_node_pkg="node-v${DEEPCODE_NODE_VERSION}-win-x64.zip"; \
-    curl -fsSL "${DEEPCODE_NODE_DIST_BASE}/v${DEEPCODE_NODE_VERSION}/${win_node_pkg}" -o "/tmp/${win_node_pkg}"; \
-    rm -rf /tmp/deepcode-node-win64 /opt/deepcode-node-win64; \
-    mkdir -p /tmp/deepcode-node-win64 /opt/deepcode-node-win64; \
-    unzip -q "/tmp/${win_node_pkg}" -d /tmp/deepcode-node-win64; \
-    install -m 644 "/tmp/deepcode-node-win64/node-v${DEEPCODE_NODE_VERSION}-win-x64/node.exe" /opt/deepcode-node-win64/node.exe; \
-    rm -rf "/tmp/${win_node_pkg}" /tmp/deepcode-node-win64; \
+    win_node_pkg="node-v${ACHBIT_NODE_VERSION}-win-x64.zip"; \
+    curl -fsSL "${ACHBIT_NODE_DIST_BASE}/v${ACHBIT_NODE_VERSION}/${win_node_pkg}" -o "/tmp/${win_node_pkg}"; \
+    rm -rf /tmp/achbit-node-win64 /opt/achbit-node-win64; \
+    mkdir -p /tmp/achbit-node-win64 /opt/achbit-node-win64; \
+    unzip -q "/tmp/${win_node_pkg}" -d /tmp/achbit-node-win64; \
+    install -m 644 "/tmp/achbit-node-win64/node-v${ACHBIT_NODE_VERSION}-win-x64/node.exe" /opt/achbit-node-win64/node.exe; \
+    rm -rf "/tmp/${win_node_pkg}" /tmp/achbit-node-win64; \
     node --version; \
     npm --version; \
-    test -f /opt/deepcode-node-win64/node.exe
+    test -f /opt/achbit-node-win64/node.exe
 
 # ---- 3. pnpm ----
 # 通过 corepack 启用，避免全局 npm install 污染；registry 可覆盖以适配不同网络。
-ARG DEEPCODE_NPM_REGISTRY=https://registry.npmmirror.com
-RUN npm config set registry "${DEEPCODE_NPM_REGISTRY}" \
+ARG ACHBIT_NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm config set registry "${ACHBIT_NPM_REGISTRY}" \
  && env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
-        COREPACK_NPM_REGISTRY="${DEEPCODE_NPM_REGISTRY}" \
+        COREPACK_NPM_REGISTRY="${ACHBIT_NPM_REGISTRY}" \
         corepack enable \
  && env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
-        COREPACK_NPM_REGISTRY="${DEEPCODE_NPM_REGISTRY}" \
+        COREPACK_NPM_REGISTRY="${ACHBIT_NPM_REGISTRY}" \
         corepack prepare pnpm@9.12.0 --activate \
  && mkdir -p $PNPM_HOME && pnpm --version
 
 # ---- 4. Rust Windows 交叉目标 ----
 # 让 Rust 支持 x86_64-pc-windows-gnu，配合 mingw-w64 工具链产出 Windows 二进制
-ARG DEEPCODE_RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
-ARG DEEPCODE_RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
-ENV RUSTUP_DIST_SERVER=${DEEPCODE_RUSTUP_DIST_SERVER} \
-    RUSTUP_UPDATE_ROOT=${DEEPCODE_RUSTUP_UPDATE_ROOT}
+ARG ACHBIT_RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
+ARG ACHBIT_RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
+ENV RUSTUP_DIST_SERVER=${ACHBIT_RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${ACHBIT_RUSTUP_UPDATE_ROOT}
 RUN --mount=type=cache,target=/usr/local/rustup/downloads,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
@@ -95,16 +97,12 @@ RUN --mount=type=cache,target=/usr/local/rustup/downloads,sharing=locked \
         rustup component add rustfmt clippy
 
 # ---- 5. 入口脚本 ----
-COPY skills/achbit-documents/scripts/requirements.txt /opt/achbit-documents-requirements.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends python3-venv fonts-noto-cjk \
- && python3 -m venv /opt/achbit-documents \
- && /opt/achbit-documents/bin/pip install --no-cache-dir -r /opt/achbit-documents-requirements.txt
-ENV DEEPCODE_DOCUMENT_PYTHON=/opt/achbit-documents/bin/python \
-    PNPM_STORE_DIR=/root/.local/share/pnpm/store \
-    DEEPCODE_WINDOWS_NODE_BIN=/opt/deepcode-node-win64/node.exe \
-    DEEPCODE_NODE_LICENSE=/usr/local/LICENSE
+    apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk
+ENV PNPM_STORE_DIR=/root/.local/share/pnpm/store \
+    ACHBIT_WINDOWS_NODE_BIN=/opt/achbit-node-win64/node.exe \
+    ACHBIT_NODE_LICENSE=/usr/local/LICENSE
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

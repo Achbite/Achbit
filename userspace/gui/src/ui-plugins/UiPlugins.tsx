@@ -34,7 +34,7 @@ function result<T>(response: ApiResponse<T>): T {
 
 function insertStyle(css: string): () => void {
   const style = document.createElement('style');
-  style.dataset.deepcodeUiPlugin = '';
+  style.dataset.achbitUiPlugin = '';
   style.textContent = css;
   document.head.append(style);
   return () => style.remove();
@@ -177,8 +177,8 @@ export function UiPluginSlotView({
   const retiredView = useRef<Promise<void>>(Promise.resolve());
   const debugId = useId();
   useLayoutEffect(() => {
-    if (typeof __DEEPCODE_DEBUG__ === 'undefined' || !__DEEPCODE_DEBUG__) return;
-    return window.__DEEPCODE_DEBUG_UI__?.register(debugId, {
+    if (typeof __ACHBIT_DEBUG__ === 'undefined' || !__ACHBIT_DEBUG__) return;
+    return window.__ACHBIT_DEBUG_UI__?.register(debugId, {
       slot, pluginId: entry?.manifest?.id ?? null,
       read: () => latestInput.current,
       actions: () => (liveActions.current ?? {}) as Record<string, (...args: never[]) => unknown>,
@@ -250,14 +250,14 @@ export function UiPluginSlotView({
           } : {}),
         };
         scope.onDispose(() => { Object.values(regionHosts).forEach(host => host.remove()); });
-        const debugStartedAt = typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__ ? performance.now() : 0;
+        const debugStartedAt = typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__ ? performance.now() : 0;
         let view: UiPluginView;
         try { view = renderer(root, value, viewScope); }
         catch (error) {
-          if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'failed');
+          if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'failed');
           throw error;
         }
-        if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'completed');
+        if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'completed');
         if (!view || typeof view.update !== 'function' || typeof view.dispose !== 'function')
           throw new Error('UI renderer must return update and dispose functions.');
         mounted.current = view;
@@ -293,12 +293,12 @@ export function UiPluginSlotView({
 
   useLayoutEffect(() => {
     if (!mounted.current || !entry || !context) return;
-    const debugStartedAt = typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__ ? performance.now() : 0;
+    const debugStartedAt = typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__ ? performance.now() : 0;
     try {
       mounted.current.update(input);
-      if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'completed');
+      if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'completed');
     } catch (error) {
-      if (typeof __DEEPCODE_DEBUG__ !== 'undefined' && __DEEPCODE_DEBUG__) window.__DEEPCODE_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'failed');
+      if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'failed');
       context.runtime.report(entry, error);
     }
   }, [input, entry, context?.runtime]);

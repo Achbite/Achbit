@@ -4,15 +4,15 @@
 .conversation-image-review__open[data-frameless] { min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: zoom-in; }
 .conversation-image-review__open:disabled { cursor: default; }
 .conversation-image-review__open img { display: block; max-width: 100%; height: auto; }
-.conversation-image-review__dialog { position: fixed; inset: 0; box-sizing: border-box; color: var(--dc-foreground); width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 12px; border: 0; border-radius: 0; overflow: hidden; background: var(--dc-surface); }
+.conversation-image-review__dialog { position: fixed; inset: 0; box-sizing: border-box; color: var(--ac-foreground); width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 12px; border: 0; border-radius: 0; overflow: hidden; background: var(--ac-surface); }
 .conversation-image-review__dialog[open] { display: flex; flex-direction: column; gap: 12px; }
-.conversation-image-review__dialog::backdrop { background: color-mix(in srgb, var(--dc-shadow-color) 40%, transparent); }
-.conversation-image-review__toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; font: var(--dc-font-body)/1.4 var(--dc-font-ui); }
+.conversation-image-review__dialog::backdrop { background: color-mix(in srgb, var(--ac-shadow-color) 40%, transparent); }
+.conversation-image-review__toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; font: var(--ac-font-body)/1.4 var(--ac-font-ui); }
 .conversation-image-review__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-image-review__zoom { display: flex; align-items: center; gap: 6px; }
 .conversation-image-review__zoom output { min-width: 5ch; text-align: center; font-variant-numeric: tabular-nums; }
-.conversation-image-review__toolbar button { flex-shrink: 0; min-width: 32px; padding: 6px 10px; border: 1px solid var(--dc-border); border-radius: 7px; color: var(--dc-foreground); background: var(--dc-surface-raised); font: inherit; cursor: pointer; }
-.conversation-image-review__toolbar button:hover:enabled { background: var(--dc-surface-hover); }
+.conversation-image-review__toolbar button { flex-shrink: 0; min-width: 32px; padding: 6px 10px; border: 1px solid var(--ac-border); border-radius: 7px; color: var(--ac-foreground); background: var(--ac-surface-raised); font: inherit; cursor: pointer; }
+.conversation-image-review__toolbar button:hover:enabled { background: var(--ac-surface-hover); }
 .conversation-image-review__toolbar button:disabled { opacity: 0.45; cursor: default; }
 .conversation-image-review__scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .conversation-image-review__canvas { display: flex; align-items: center; justify-content: center; width: max-content; height: max-content; min-width: 100%; min-height: 100%; }

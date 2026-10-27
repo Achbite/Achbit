@@ -27,6 +27,7 @@ import {
   SESSION_CONTROL_SESSION,
 } from '@achbit/protocol';
 import { LoopFailure } from './loopFailure.js';
+import { environmentInstruction } from './sessionEnvironment.js';
 import { journalModelViews } from './modelView.js';
 import type {
   ContextMessageContribution,
@@ -48,12 +49,6 @@ import { renderActiveToolGuidance } from './toolPromptContributions.js';
 import { visualContextInstruction, visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
 
-function toolAvailability(tools: readonly PreparedToolDescriptor[]): JsonObject[] {
-  return tools.map(tool => ({ name: tool.name, availability: tool.availability,
-    ...(tool.availabilityReason ? { reason: tool.availabilityReason } : {}),
-    ...(tool.runtimeStatus ? { runtimeStatus: tool.runtimeStatus } : {}),
-  }));
-}
 
 export interface PreparedProviderRequest {
   request: ProviderRequest;
@@ -103,8 +98,19 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
   const planEnabled = input.runtime.permissions['agent.permissions.workspaceMutation'] !== 'allow';
   const hasPluginDiscovery = input.runtime.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable');
+  const settingsEvent = input.events.findLast(event => event.type === 'session.subagent-settings.updated'
+    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
+  const settings = settingsEvent?.type === 'session.subagent-settings.updated' ? settingsEvent.payload.settings
+    : settingsEvent?.type === 'session.created' ? settingsEvent.payload.subagentSettings : undefined;
+  const isChild = input.events.some(event => event.type === 'session.created' && event.payload.agentContext !== undefined);
+  const children = new Set<string>();
+  for (const event of input.events) {
+    if (event.type === 'agent.task.created' && event.payload.createsAgent) children.add(event.payload.agentSessionId);
+    if (event.type === 'agent.closed') children.delete(event.payload.agentSessionId);
+  }
+  const canDelegate = settings?.enabled === true && input.runtime.agentCapabilities.delegation;
   const hasAgentTools = input.runtime.agentToolsEnabled === true
-    && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation);
+    && (canDelegate || (isChild || children.size > 0) && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation));
   const modelViewEvents = input.modelViewEvents ?? input.events;
   const firstRun = input.events.find((event) => event.type === 'run.started');
   const prefixBindings = firstRun?.type === 'run.started'
@@ -117,17 +123,14 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     pluginActivate: providerWireName(input.runtime, SESSION_CONTROL_PLUGIN_ACTIVATE),
     artifactPresent: providerWireName(input.runtime, SESSION_CONTROL_ARTIFACT_PRESENT),
   };
-  const runtimeTools = hasWorkspaceBindings
-    ? input.runtime.tools
-    : input.runtime.tools.filter((tool) => !tool.possibleEffects.some((effect) => (
-      effect === 'workspaceRead'
-      || effect === 'workspaceMutation'
-      || effect === 'process'
-    )));
+  const runtimeTools = input.runtime.tools.filter(tool => tool.availability === 'callable'
+    && (hasWorkspaceBindings || !tool.possibleEffects.some(effect =>
+      effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')));
   const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities)
+  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities, canDelegate)
+    .filter(tool => input.runtime.toolSelection?.controls === undefined || input.runtime.toolSelection.controls.includes(tool.name))
     .filter(tool => planEnabled || tool.name !== SESSION_CONTROL_PLAN_PUBLISH).filter(tool => tool.name === SESSION_CONTROL_AGENT
     ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
       ? hasPluginDiscovery : (hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
@@ -141,7 +144,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   );
   const fixedViews = journalModelViews(modelViewEvents).contributions;
   const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
-  const instructions = [...input.runtime.instructions]
+  const canMutate = runtimeTools.some(tool => tool.possibleEffects.some(effect => effect === 'workspaceMutation' || effect === 'process' || effect === 'external'));
+  const instructions = input.runtime.instructions
+    .filter(instruction => instruction.id !== 'achbit.workspace-autonomy' || canMutate)
+    .map(instruction => instruction.id === 'achbit.session-environment'
+      ? environmentInstruction(input.runtime.environment, runtimeTools.map(tool => tool.name)) : instruction)
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
@@ -157,7 +164,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   );
   if (toolGuidance) {
     const stableCoreIndex = instructions.findIndex((instruction) => (
-      instruction.contributionId === 'instruction:deepcode.coding-agent'
+      instruction.contributionId === 'instruction:achbit.coding-agent'
     ));
     if (stableCoreIndex < 0) {
       throw new LoopFailure(
@@ -166,9 +173,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       );
     }
     instructions.splice(stableCoreIndex + 1, 0, {
-      contributionId: 'instruction:deepcode.tool-guidance',
+      contributionId: 'instruction:achbit.tool-guidance',
       contributionKind: 'instructions',
-      label: 'deepcode.tool-guidance',
+      label: 'achbit.tool-guidance',
       message: { role: 'system', content: toolGuidance },
     });
   }
@@ -178,7 +185,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled),
+      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled, controlTools.map(tool => tool.name)),
     },
   });
   if (hasWorkspaceBindings) instructions.push({
@@ -195,12 +202,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const imageReader = toolCodec.wireByCanonical.get('session.read');
   if (imageReader) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
     label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
-  const pluginAvailability = runtimeTools.filter(tool => tool.origin === 'extension');
-  if (pluginAvailability.length) instructions.push({
-    contributionId: `tool-availability:${input.runtime.kernelCatalogSnapshotRef}`,
-    contributionKind: 'sessionControls', label: 'Execution capabilities',
-    message: { role: 'system', content: `Execution-layer tool status for this request: ${JSON.stringify(toolAvailability(pluginAvailability))}\nBlocked tools are unavailable for the stated reason. Capability status grants no execution permission. runtimeStatus is a preparation observation; action results provide later facts.` },
-  });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
   if (input.purpose === 'contextCompaction') selected.push({
@@ -216,6 +217,14 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       ? cloneModelMessage(fixedViews.get(contribution.contributionId)!.message)
       : encodeProviderMessage(contribution.message, toolCodec, journalCodecsByCallId),
   }));
+  // Files belong to the original user input. Reattach only messages still selected by
+  // normal context/compaction, using this run's frozen Provider capabilities.
+  const fileTypes = new Set(input.runtime.provider.fileInputMediaTypes ?? []);
+  const filesByMessage = new Map<string, NonNullable<ModelMessage['files']>>(input.events.flatMap(event => event.type === 'message.committed' && event.payload.role === 'user'
+    ? [[`message:${event.payload.messageId}`, (event.payload.filesystemReferences ?? []).flatMap(reference =>
+      reference.kind === 'file' && fileTypes.has(reference.mediaType)
+        ? [{ workspaceId: reference.workspaceId, logicalPath: reference.logicalPath,
+          mediaType: reference.mediaType, displayName: reference.displayName }] : [])] as const] : []));
   const request: ProviderRequest = {
     protocolVersion: LOCAL_AGENT_PROTOCOL_VERSION,
     requestId: input.providerRequestId,
@@ -227,7 +236,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     responseConstraint: input.responseConstraint,
     maxOutputTokens: input.runtime.provider.maxOutputTokens,
     workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
-    messages: providerSelected.map((item) => cloneModelMessage(item.message)),
+    messages: providerSelected.map(item => {
+      const message = cloneModelMessage(item.message);
+      const files = filesByMessage.get(item.contributionId);
+      return files?.length ? { ...message, files: files.map(file => ({ ...file })) } : message;
+    }),
     tools: toolCodec.definitions,
     hostedTools,
   };
@@ -288,8 +301,12 @@ export function messagesFromJournal(
   const pendingHostRebinds: ContextMessageContribution[] = [];
   const pendingAgentEvidence: ContextMessageContribution[] = [];
   const pendingProcessUpdates = new Map<string, ContextMessageContribution>();
+  const observedProcesses = new Map<string, string>();
   const flushProcessUpdates = () => {
-    messages.push(...pendingProcessUpdates.values());
+    for (const [jobId, contribution] of pendingProcessUpdates) {
+      messages.push(contribution);
+      observedProcesses.set(jobId, contribution.message.content);
+    }
     pendingProcessUpdates.clear();
   };
   const completionResults = new Map<string, ContextMessageContribution>();
@@ -340,9 +357,6 @@ export function messagesFromJournal(
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
-  const retainedDelegation = events.findLast(event => event.type === 'session.subagent-settings.updated'
-    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
-  const retainedDelegationId = retainedDelegation ? `agent-delegation:${retainedDelegation.sequence}` : undefined;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
   const bindingsByRun = new Map(runs.map(event => [event.runId,
@@ -363,13 +377,17 @@ export function messagesFromJournal(
     });
   }
   for (const contribution of fixed.contributions.values()) {
+    if (contribution.contributionId.startsWith('agent-delegation:')) continue;
     if (contribution.contributionId.startsWith('context-checkpoint:')
       || contribution.sourceSequence > throughSequence) continue;
     if (checkpoint && contribution.sourceSequence <= checkpoint.payload.coveredThroughSequence
       && contribution.contributionId !== `message:${retainedRunInputId}`
-      && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`
-      && contribution.contributionId !== retainedDelegationId) continue;
+      && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`) continue;
     retained.push({ ...contribution, message: cloneModelMessage(contribution.message) });
+    if (contribution.contributionId.startsWith('process-update:')) {
+      const previous = JSON.parse(contribution.message.content) as { process: { jobId: string } };
+      observedProcesses.set(previous.process.jobId, contribution.message.content);
+    }
   }
   let todoList: TodoListProjection | null = null;
   for (const event of events) {
@@ -392,7 +410,6 @@ export function messagesFromJournal(
       checkpoint
       && event.sequence <= checkpoint.payload.coveredThroughSequence
       && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId)
-      && event !== retainedDelegation
     ) continue;
     if (event.sequence <= fixed.throughSequence
       && !(event.type === 'message.committed' && event.payload.messageId === retainedRunInputId
@@ -625,7 +642,7 @@ export function messagesFromJournal(
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ activated: event.payload.pluginUris, tools: toolAvailability(activatedTools) }) },
+          content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })) }) },
       });
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;
@@ -648,36 +665,9 @@ export function messagesFromJournal(
         message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
           agentId: task.agentSessionId, result: event.payload.result }) },
       });
-    } else if (event.type === 'process.wait.changed' && event.payload.phase === 'review') {
-      const latest = new Map<string, import('@achbit/protocol').ManagedProcessSnapshot>();
-      for (const fact of events) {
-        if (fact.sequence > event.sequence) break;
-        if (fact.type === 'process.updated') latest.set(fact.payload.job.jobId, fact.payload.job);
-        if (fact.type === 'tool.completed' && 'output' in fact.payload.record && isRecord(fact.payload.record.output)) {
-          const job = fact.payload.record.output.job;
-          if (isRecord(job) && typeof job.jobId === 'string' && !latest.has(job.jobId)) latest.set(job.jobId, job as unknown as import('@achbit/protocol').ManagedProcessSnapshot);
-        }
-      }
-      pendingAgentEvidence.push({ contributionId: `process-review:${event.eventId}`, contributionKind: 'journalMessages',
-        label: 'Dependency wait review', sourceSequence: event.sequence, message: {role: 'user', content: JSON.stringify({
-          type: 'process.wait.review', waitId: event.payload.waitId, waitingSince: event.payload.startedAt,
-          instruction: 'The Loop has waited on these commands for 120 seconds. Check the evidence; elapsed time alone is not a failure. You may repair or restart within the existing task authorization, or ask for missing information. If normal, call process with action=wait and the jobId; this logical wait will not automatically request another review.',
-          jobs: event.payload.jobIds.map(id => latest.get(id)).filter(job => job !== undefined).map(processContext),
-        })} });
     } else if (event.type === 'wake.triggered') {
       pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
-    } else if (event.type === 'session.subagent-settings.updated'
-      || event.type === 'session.created' && event.payload.subagentSettings !== undefined) {
-      // Settings can change while tools run. Deliver the ordered notice at the
-      // next request boundary without splitting a provider call/result group.
-      pendingAgentEvidence.push({
-        contributionId: `agent-delegation:${event.sequence}`, contributionKind: 'journalMessages',
-        label: 'Delegation status', sourceSequence: event.sequence,
-        message: { role: 'user', content: (event.type === 'session.created' ? event.payload.subagentSettings!.enabled : event.payload.settings.enabled)
-          ? 'Runtime setting changed: new agent delegation is enabled for this Session. Proactively delegate independent work; use collaboration for communicating teammates. Supply context and scope, assign shared-file ownership, resolve disagreements and verify results. Follow the agent tool operations.'
-          : 'Runtime setting changed: stop delegating new tasks. Existing tasks may continue; you may message running agents, wait for results, cancel or close them. New spawns and new tasks for idle agents are rejected locally.' },
-      });
     } else if (event.type === 'agent.message.received') {
       pendingAgentEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
         sourceSequence: event.sequence,
@@ -763,11 +753,13 @@ export function messagesFromJournal(
     } else if (event.type === 'process.updated') {
       // Coalesce the feed only until the next request. Once observed, its
       // snapshot stays in history; a later status must not rewrite a tool result.
-      pendingProcessUpdates.set(event.payload.job.jobId, {
+      const content = JSON.stringify({ type: 'process.updated', process: processContext(event.payload.job) });
+      // Heartbeat revisions belong to the journal, not repeated model messages.
+      if (observedProcesses.get(event.payload.job.jobId) === content) pendingProcessUpdates.delete(event.payload.job.jobId);
+      else pendingProcessUpdates.set(event.payload.job.jobId, {
         contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
         sourceSequence: event.sequence,
-        label: 'Managed process update', message: { role: 'user',
-          content: JSON.stringify({ type: 'process.updated', process: processContext(event.payload.job) }) },
+        label: 'Managed process update', message: { role: 'user', content },
       });
     } else if (event.type === 'run.host.rebound') {
       // Rebinding happens while a tool is waiting. Its notice belongs to the next
@@ -966,7 +958,7 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     responseConstraint,
     dynamicInstructionBytes: selected.reduce((total, contribution) => (
       contribution.message.role === 'system'
-      && contribution.contributionId !== 'instruction:deepcode.coding-agent'
+      && contribution.contributionId !== 'instruction:achbit.coding-agent'
         ? total + new TextEncoder().encode(contribution.message.content).byteLength
         : total
     ), 0),
@@ -1014,6 +1006,7 @@ export function assertContextContributions(
 export function cloneModelMessage(message: ModelMessage): ModelMessage {
   return {
     ...message,
+    ...(message.files ? { files: message.files.map(file => ({ ...file })) } : {}),
     ...(message.toolCalls
       ? {
           toolCalls: message.toolCalls.map((call) => ({

@@ -45,7 +45,7 @@ test('completion sound controls and their search entry are available only in the
   assert.match(desktop.html, /type="file"/);
   assert.doesNotMatch(desktop.html, /<h3|<hr/, 'audio controls preserve the flat General page');
   assert.equal(settingsSearchDefinitions('zh-CN', 'macos').filter(x => x.id === 'gui.completionSound').length, 1);
-  window.__DEEPCODE_BROWSER_PREVIEW__ = true;
+  window.__ACHBIT_BROWSER_PREVIEW__ = true;
   assert.equal(capture(CompletionSoundSettings, { language: 'zh-CN' }).html, '');
   assert.equal(settingsSearchDefinitions('zh-CN', 'macos').some(x => x.id === 'gui.completionSound'), false);
 });
@@ -92,7 +92,7 @@ for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pag
 
 test('interface reload restores the current settings page once, then subsequent openings return to General', async t => {
   const previous = globalThis.sessionStorage;
-  const values = new Map([['deepcode:interface-reload', JSON.stringify({ settingsPage: 'agent', settingsScroll: 120 })]]);
+  const values = new Map([['achbit:interface-reload', JSON.stringify({ settingsPage: 'agent', settingsScroll: 120 })]]);
   globalThis.sessionStorage = { getItem: key => values.get(key) ?? null, removeItem: key => values.delete(key) };
   t.after(() => { if (previous === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previous; });
   const [{ useSettingsStore }, { default: SettingsCenter }] = await loadGuiModules(t, [
@@ -104,5 +104,31 @@ test('interface reload restores the current settings page once, then subsequent 
   assert.equal(page(), 'agent');
   assert.equal(page(), 'general');
   assert.equal(page(), 'general');
-  assert.equal(values.has('deepcode:interface-reload'), false);
+  assert.equal(values.has('achbit:interface-reload'), false);
+});
+
+for (const language of ['zh-CN', 'en-US']) test(`Windows automatic fallback offers PowerShell 7 installation from observed state (${language})`, async t => {
+  const [{ useSettingsStore }, { AgentSettingsSection }] = await loadGuiModules(t, [
+    '/src/state/settingsStore.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  ]);
+  const initial = fixture(t, useSettingsStore, language);
+  const fallback = { os: 'windows', shellAvailable: true, configuration: { windowsShell: 'auto' },
+    shell: { dialect: 'windowsPowerShell', executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' } };
+  const render = environment => {
+    initial.environment = environment;
+    return capture(AgentSettingsSection, { category: 'environment' }).html;
+  };
+  const html = render(fallback);
+  assert.match(html, /role="status"/);
+  assert.match(html, /winget install --id Microsoft.PowerShell --source winget/);
+  assert.match(html, language === 'zh-CN' ? /已自动使用 Windows PowerShell 5.1/ : /Windows PowerShell 5.1 is being used automatically/);
+  // A pending preference change must not rewrite the captured discovery result.
+  initial.effectiveSettings['agent.windows.shell'] = 'powershell7';
+  assert.match(render(fallback), /role="status"/);
+  for (const other of [
+    { ...fallback, configuration: { windowsShell: 'windowsPowerShell' } },
+    { ...fallback, shell: { dialect: 'powershell7', executable: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' } },
+    { ...fallback, shellAvailable: false },
+    { ...fallback, os: 'linux' },
+  ]) assert.doesNotMatch(render(other), /winget install --id Microsoft.PowerShell/, 'only an observed automatic fallback should prompt installation');
 });

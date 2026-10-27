@@ -72,13 +72,9 @@ export function runtimeInstructions(
   const instructions: InstructionContribution[] = [
     ...stableCore.map((instruction) => ({ ...instruction })),
     {
-      id: 'deepcode.workspace-autonomy',
+      id: 'achbit.workspace-autonomy',
       text: permissionInstructionText(config.permissions, controlNames.interactionRequest, controlNames.planPublish),
     },
-    ...config.selectedPlugins.map((plugin) => ({
-      id: `plugin.${instructionId(plugin.uri)}`,
-      text: `Loaded plugin: ${plugin.displayName}. ${plugin.capabilitySummary}`,
-    })),
   ];
   const seen = new Set<string>();
   for (const instruction of instructions) {
@@ -90,10 +86,6 @@ export function runtimeInstructions(
   return Object.freeze(instructions
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map((instruction) => Object.freeze({ ...instruction })));
-}
-
-function instructionId(uri: string): string {
-  return uri.replace(/^plugin:\/\//u, '').replace('@', '.');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,12 +106,12 @@ function isIdentifier(value: unknown): value is string {
 
 export function permissionInstructionText(settings: UserSettings, interactionRequest = 'interaction_request', planPublish = 'plan_publish'): string {
   const workspaceAutonomyInstruction = settings['agent.permissions.workspaceMutation'] === 'allow'
-    ? 'Work directly within the bound workspaces. Separate execution permissions still apply.'
+    ? "Work directly within the bound workspaces and the user's authorized scope; no additional Plan approval is required. Still clarify missing facts or material decisions. Separate execution permissions still apply."
     : settings['agent.permissions.workspaceMutation'] === 'review'
-      ? `For project changes outside confirmed scope, call ${planPublish}. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope for related work. Shell execution approval is separate.`
-    : `For project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Proceed directly with related work inside confirmed scope, including delegated parent scope. Project reads need no Plan.`;
+      ? `Submit a Plan with ${planPublish} for project changes outside confirmed scope. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope and submit again only when new or expanded authorization is needed. Project reads need no Plan.`
+    : `Investigate as needed and propose a clearly scoped change. Before making project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Then carry out related work within that scope autonomously, including delegated parent scope, without seeking approval again for ordinary implementation details. Request additional scope only when needed. Project reads need no Plan.`;
   const engineeringDecisionInstruction = settings['agent.permissions.engineeringDecisions'] === 'delegate'
     ? `Engineering decisions are delegated. Choose the smallest sound approach; use ${interactionRequest} for missing facts or decisions outside the task.`
     : `Choose local implementation details within the agreed approach. Use ${interactionRequest} before materially changing requirements, public contracts, fact ownership or that approach.`;
-  return `${workspaceAutonomyInstruction}\nSession working directories hold editable drafts and previews; changes there need no Plan.\n${engineeringDecisionInstruction}`;
+  return `${workspaceAutonomyInstruction}\nUse the workspace bindings to select the task's project. File and shell tools resolve relative paths from the selected workspace, so use those paths for project work. Product documentation and runtime paths locate Achbit's own resources. The Session working directory holds task drafts and previews, which need no Plan; tool execution permissions still apply.\n${engineeringDecisionInstruction}`;
 }

@@ -79,6 +79,7 @@ pub(crate) struct GuiState {
     _config_root_lease: ConfigRootLease,
     pub(crate) paths: HostPaths,
     pub(crate) user_settings: Value,
+    pub(crate) service_plugins: crate::service_plugins::ServicePlugins,
     pub(crate) llm_profiles: LlmProfileStore,
     pub(crate) conversation_catalog: crate::conversation_catalog::ConversationCatalog,
     pub(crate) conversation_catalog_error: Option<String>,
@@ -102,7 +103,7 @@ impl GuiState {
         let preparation = crate::config_setup::prepare_locked(&paths)?;
         if let Some(backup) = preparation.backup_directory {
             eprintln!(
-                "DeepCode 已清理冲突配置；原始文件及错误备份：{}",
+                "Achbit 已清理冲突配置；原始文件及错误备份：{}",
                 backup.display()
             );
         }
@@ -134,6 +135,7 @@ impl GuiState {
             _config_root_lease: config_root_lease,
             paths,
             user_settings,
+            service_plugins: crate::service_plugins::ServicePlugins::default(),
             llm_profiles,
             conversation_catalog,
             conversation_catalog_error,

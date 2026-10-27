@@ -13,7 +13,7 @@ async function until(predicate) {
   assert.fail('Expected lifecycle boundary was not reached');
 }
 
-for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'batch-yield', 'batch-start']) test(`dependency wait: ${scenario}`, async t => {
+for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'batch-yield', 'batch-start', 'explicit-timeout']) test(`dependency wait: ${scenario}`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = `session:wait-${scenario}`;
   await createSession(journal, sessionId, [workspaceBinding]);
   const jobs = new Map(); let wake = () => {}, requests = [], commands = [];
@@ -35,7 +35,7 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
       if (request.toolName === 'process') {
         if (request.input.action === 'cancel') update(request.input.jobId, 'cancelled');
         const job = jobs.get(request.input.jobId);
-        return completedExecutionReply(request, {job, ...(request.input.action === 'wait' ? {wait: {jobId: job.jobId}} : {})});
+        return completedExecutionReply(request, {job, ...(request.input.action === 'wait' ? {wait: {jobId: job.jobId, ...(request.input.timeoutSeconds === undefined ? {} : {timeoutSeconds: request.input.timeoutSeconds})}} : {})});
       }
       return completedExecutionReply(request, {content: 'independent information'});
     },
@@ -59,11 +59,11 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
       if (scenario.startsWith('batch-')) yield providerEvent(request.requestId, 'tool.call', {callId: 'native:peer', name: 'fs_read', input: {path: 'independent.md'}});
     }
     else if (n === 2) { await independent; yield call('fs_read', {path: 'independent.md'}); }
-    else if (n === 3) yield call('process', {action: 'wait', jobId: 'job:1'});
+    else if (n === 3) yield call('process', {action: 'wait', jobId: 'job:1', ...(scenario === 'explicit-timeout' ? {timeoutSeconds: 5} : {})});
     else if (scenario === 'repair' && n === 4) yield call('process', {action: 'cancel', jobId: 'job:1'});
     else if (scenario === 'repair' && n === 5) yield call('process', {action: 'start', tool: 'bash', input: {command: 'retry'}});
     else if (scenario === 'repair' && n === 6) yield call('process', {action: 'wait', jobId: 'job:2'});
-    else if (scenario !== 'repair' && n === 4 && scenario !== 'user-cancel' && scenario !== 'completion-race') yield call('process', {action: 'wait', jobId: 'job:1'});
+    else if (scenario === 'explicit-timeout' && n === 4) yield call('process', {action: 'cancel', jobId: 'job:1'});
     else yield providerEvent(request.requestId, 'text.delta', {text: 'Received the actual terminal result.'});
     yield providerEvent(request.requestId, 'completed', {});
   }};
@@ -82,32 +82,42 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
   const first = (await waits())[0].payload;
   assert.equal(first.reviewAt - first.startedAt, 120_000);
   assert.equal(first.reviewed, false);
-  t.mock.timers.tick(119_999); update('job:1', 'active'); await setImmediate();
-  assert.equal(requests.length, 3, 'output or revisions do not request the model');
-  if (scenario === 'user-cancel') {
-    const job = jobs.get('job:1');
-    const reply = await actor.submit({schemaVersion: 'deepcode.command.v3', type: 'tool.cancel',
-      sessionId, runId: job.runId, callId: job.callId, commandId: 'command:stop-tool'});
-    assert.equal(reply.status, 'accepted');
-  } else if (scenario === 'completion-race') {
-    update('job:1', 'completed'); t.mock.timers.tick(1);
-  } else {
+  if (scenario === 'explicit-timeout') {
+    t.mock.timers.tick(4_999); update('job:1', 'active'); await setImmediate();
+    assert.equal(requests.length, 3, 'an explicit wait remains pending until its chosen deadline');
     t.mock.timers.tick(1);
-    const expected = scenario === 'repair' ? 6 : 4;
-    await until(async () => requests.length === expected && (await waits()).at(-1)?.payload.phase === 'waiting');
-    const reviewed = (await waits()).filter(e => e.payload.phase === 'review');
-    assert.equal(reviewed.length, 1);
-    assert.equal((await waits()).at(-1).payload.waitId, first.waitId, 'a repair retains the logical wait identity');
-    assert.equal((await waits()).at(-1).payload.reviewed, true);
-    const notice = requests[3].messages.find(m => m.role === 'user' && m.content.includes('process.wait.review'));
-    assert.ok(notice); assert.match(notice.content, /120 seconds/); assert.match(notice.content, /startedAt/);
-    t.mock.timers.tick(600_000); await setImmediate();
-    assert.equal(requests.length, expected, 'the reviewed wait has no repeated model wakeup');
-    update(scenario === 'repair' ? 'job:2' : 'job:1', 'completed');
+  } else {
+    t.mock.timers.tick(119_999); update('job:1', 'active'); await setImmediate();
+    assert.equal(requests.length, 3, 'output or revisions do not request the model');
+    if (scenario === 'user-cancel') {
+      const job = jobs.get('job:1');
+      const reply = await actor.submit({schemaVersion: 'achbit.command.v3', type: 'tool.cancel',
+        sessionId, runId: job.runId, callId: job.callId, commandId: 'command:stop-tool'});
+      assert.equal(reply.status, 'accepted');
+    } else if (scenario === 'completion-race') {
+      update('job:1', 'completed'); t.mock.timers.tick(1);
+    } else {
+      t.mock.timers.tick(1);
+      await until(async () => (await waits()).at(-1)?.payload.reviewed === true);
+      assert.equal((await waits()).at(-1).payload.phase, 'waiting');
+      assert.equal(requests.length, 3, 'a healthy Host check does not wake the model');
+      t.mock.timers.tick(600_000); update('job:1', 'active'); await setImmediate();
+      assert.equal(requests.length, 3, 'healthy work continues without timed model reviews');
+      if (scenario === 'repair') {
+        const reply = await actor.submit(messageCommand(sessionId, 'command:repair', 'Cancel the current build and restart it, then wait for its result.'));
+        assert.equal(reply.status, 'accepted');
+        await until(async () => requests.length === 6 && (await waits()).at(-1)?.payload.phase === 'waiting');
+        assert.equal((await waits()).at(-1).payload.waitId, first.waitId, 'a user-requested repair retains the logical wait identity');
+      }
+      update(scenario === 'repair' ? 'job:2' : 'job:1', 'completed');
+    }
   }
   await until(async () => (await actor.snapshot()).run?.status === 'completed');
-  assert.equal((await waits()).filter(e => e.payload.phase === 'review').length,
-    ['user-cancel', 'completion-race'].includes(scenario) ? 0 : 1);
+  assert.equal((await waits()).filter(e => e.payload.phase === 'review').length, 0);
+  assert.ok(requests.every(request => request.messages.every(message => !message.content.includes('process.wait.review'))),
+    'Host health checks never enter model context');
+  assert.equal(requests.length, scenario === 'repair' ? 7 : scenario === 'explicit-timeout' ? 5 : 4);
+  if (scenario === 'explicit-timeout') assert.equal(jobs.get('job:1').status, 'cancelled', 'an explicit timeout still resumes model decisions');
   if (scenario === 'user-cancel') assert.equal(jobs.get('job:1').status, 'cancelled');
   assert.equal(commands.filter(c => c.toolName === 'fs.read').length, scenario === 'batch-start' ? 2 : 1);
   if (scenario === 'batch-yield') {

@@ -74,7 +74,7 @@ test('separate approvals coexist and respond during independent execution; denia
   ], emptyKernel({ async execute(request) {
     const { path, content } = request.input;
     if ((content === 'a1' || content === 'b1') && !request.nonWorkspaceAuthority) return {
-      schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
       status: 'approvalRequired', approvalId: `kernel:${path}`, preview: { summary: path, effects: ['workspaceMutation'], logicalTargets: [path] },
     };
     const reply = completedExecutionReply(request, { saved: content });
@@ -90,7 +90,7 @@ test('separate approvals coexist and respond during independent execution; denia
   const pending = await waitForProjection(actor, value => value.pendingApprovals?.length === 2);
   assert.equal(pending.run.status, 'running');
   for (const [index, approval] of pending.pendingApprovals.entries()) {
-    const result = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', sessionId,
+    const result = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', sessionId,
       commandId: `command:decide:${index}`, runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId,
       decision: approval.preview.summary === 'a' ? 'allow' : 'deny' });
     assert.equal(result.status, 'accepted');
@@ -115,16 +115,16 @@ test('an input rejection on permission recheck closes the outstanding approval',
   let executions = 0;
   const { actor, journal, sessionId } = await setup(t, 'approval-input-rejection', [{ path: 'a', content: 'first' }],
     emptyKernel({ async execute(request) {
-      if (++executions === 1) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution',
+      if (++executions === 1) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution',
         requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'kernel:approval',
         preview: { summary: 'Write a', effects: ['workspaceMutation'], logicalTargets: ['a'] } };
       const rejection = Object.fromEntries(['sessionId', 'runId', 'extensionGenerationRef', 'kernelCatalogSnapshotRef', 'toolBindingRef', 'callId', 'attemptId', 'toolName', 'input'].map(key => [key, request[key]]));
-      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
         callId: request.callId, status: 'inputRejected', rejection: { ...rejection, rejectedAt: '2026-10-13T00:00:00Z',
           error: { code: 'target_changed', message: 'Target no longer accepts the write.', issues: [{ path: '$.path', rule: 'path', message: 'Target changed.' }] } } };
     } }));
   await waitForProjection(actor, value => value.pendingApproval !== null);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.permissions.set', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
     commandId: 'command:change-permission', patches: { 'agent.permissions.shell': 'allow' } });
   await waitForProjection(actor, value => value.run?.status === 'completed');
   const events = await readEvents(journal, sessionId);
@@ -164,7 +164,7 @@ for (const outcome of ['cancelled', 'indeterminate']) test(`cancel drains every 
         reply.status = reply.record.outcome = outcome; delete reply.record.output;
         if (outcome === 'indeterminate') reply.record.error = { code: 'tool_effect_outcome_unknown', message: 'Cancellation crossed the effect boundary.' };
         records.set(callId, reply.record); wait.resolve(reply);
-        return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:fixture',
+        return { schemaVersion: 'achbit.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:fixture',
           callId, attemptId, status: outcome, record: reply.record };
       },
       async readRecord(callId) { return records.get(callId) ?? null; },
@@ -174,7 +174,7 @@ for (const outcome of ['cancelled', 'indeterminate']) test(`cancel drains every 
   assert.deepEqual([...executions.values()].map(({ request }) => request.input.content).sort(),
     independent.map(call => call.content).sort());
   const runId = (await actor.snapshot()).run.runId;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, commandId: 'command:cancel-files', runId });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId, commandId: 'command:cancel-files', runId });
   const final = await waitForProjection(actor, value => value.run?.status === outcome);
   if (outcome === 'indeterminate') assert.equal(final.terminalError.code, 'tool_effect_outcome_unknown');
   assert.deepEqual([...executions.keys()].sort(), admitted, 'cancellation cannot start a queued call');

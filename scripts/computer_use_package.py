@@ -51,7 +51,7 @@ def update_windows(native, destination, strip='x86_64-w64-mingw32-strip'):
 
 
 def assemble(root, native, destination, identity):
-    debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
+    debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
     app = destination / ('Achbit Debug Computer Use.app' if debug else APP_NAME)
     binaries = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
@@ -59,17 +59,17 @@ def assemble(root, native, destination, identity):
     resources.mkdir()
     shutil.copy2(native / 'Achbit-Computer-Use', binaries / 'Achbit-Computer-Use')
     version = json.loads((root / 'package.json').read_text())['version']
-    info = dict(CFBundleIdentifier='com.achbite.deepcode.computer-use', CFBundleExecutable='Achbit-Computer-Use',
+    info = dict(CFBundleIdentifier='com.achbite.achbit.computer-use', CFBundleExecutable='Achbit-Computer-Use',
         CFBundleName='Achbit Computer Use', CFBundleDisplayName='Achbit Computer Use', CFBundlePackageType='APPL',
         CFBundleInfoDictionaryVersion='6.0', CFBundleVersion=version, CFBundleShortVersionString=version,
         LSMinimumSystemVersion='15.2', LSUIElement=True, NSHighResolutionCapable=True, NSPrincipalClass='NSApplication')
     if debug:
-        info.update(CFBundleIdentifier='com.achbite.deepcode.debug.computer-use',
+        info.update(CFBundleIdentifier='com.achbite.achbit.debug.computer-use',
                     CFBundleName='Achbit Debug Computer Use', CFBundleDisplayName='Achbit Debug Computer Use')
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     shutil.copytree(root / 'plugins/computer-use/native/resources', resources, dirs_exist_ok=True)
     (resources / 'BUILDINFO.json').write_text(json.dumps(dict(version=version,
-        sourceCommit=os.environ.get('DEEPCODE_BUILD_COMMIT'), builtAt=os.environ.get('DEEPCODE_BUILD_TIME')), indent=2)+'\n')
+        sourceCommit=os.environ.get('ACHBIT_BUILD_COMMIT'), builtAt=os.environ.get('ACHBIT_BUILD_TIME')), indent=2)+'\n')
     sign_app(app, identity)
     return app
 

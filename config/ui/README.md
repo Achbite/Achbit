@@ -1,8 +1,10 @@
-# DeepCode 界面样式入口
+# Achbit 界面样式入口
 
 `palette.json` 是内置界面颜色的唯一色号表：`tokens` 保存 GUI 和 Editor 的语义色，`themes` 保存具名主题的浅色与深色配色，`terminal`、`diff` 保存终端和差异视图的颜色。组件引用语义变量；不要把新色号写回组件 CSS 或 TSX。
 
-默认 DeepCode 主题保持现有浅色风格，暗色通过背景、侧栏、内容面和浮层的明度区分层次。额外的 Catppuccin、Gruvbox、Nord 是适配 DeepCode 界面角色的配色，不是这些项目的官方移植版本。参考：[Catppuccin palette](https://github.com/catppuccin/catppuccin#-palette)、[Gruvbox palette](https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim)、[Nord palette](https://www.nordtheme.com/docs/colors-and-palettes/)。
+界面变量和保存的配色键统一使用 `--ac-*` 前缀；读取与保存按同一键名验证，未知键和非法颜色保留错误。
+
+默认 Achbit 主题保持现有浅色风格，暗色通过背景、侧栏、内容面和浮层的明度区分层次。额外的 Catppuccin、Gruvbox、Nord 是适配 Achbit 界面角色的配色，不是这些项目的官方移植版本。参考：[Catppuccin palette](https://github.com/catppuccin/catppuccin#-palette)、[Gruvbox palette](https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim)、[Nord palette](https://www.nordtheme.com/docs/colors-and-palettes/)。
 
 界面中的选择与编辑写入既有用户设置存储，不修改应用安装目录中的默认 JSON。`workbench.styleTokenOverrides` 是当前实际应用的配色；主题选中名称从实际配色推导。`gui.themeLibrary` 只保存导入的主题文档，添加主题不会改变已应用的颜色。浅色/深色独立选择，`gui.colorTheme` 仍只决定当前使用哪种模式；自定义强调色优先，选择强调色预设会清除两种模式的强调色覆盖。
 
@@ -18,7 +20,7 @@
 }
 ```
 
-允许只提供一种模式；每种模式允许部分字段，缺省字段使用内置 DeepCode 语义色。支持 `#RRGGBB` 和 `#RRGGBBAA`，不接受任意 CSS。未知字段、非法色号和空主题保留错误，不能提交。同名主题不会静默替换。
+允许只提供一种模式；每种模式允许部分字段，缺省字段使用内置 Achbit 语义色。支持 `#RRGGBB` 和 `#RRGGBBAA`，不接受任意 CSS。未知字段、非法色号和空主题保留错误，不能提交。同名主题不会静默替换。
 
 支持字段由 `userspace/gui/src/theme/palette.ts` 的 `PALETTE_FIELDS` 唯一登记：背景、侧栏、内容面、浮层、正文、次要文字、强调色、分隔线、次级内容面、悬停、按下、重点文字、辅助文字、控件边框、代码背景、成功、提示、错误。主题文件使用该登记表中的英文名称。
 

@@ -1,5 +1,5 @@
-.pane-resize { position:relative; z-index:25; width:var(--dc-resize-hit-width,15px); flex:none; cursor:col-resize; touch-action:none; user-select:none; -webkit-user-select:none; background:transparent; outline:none; -webkit-app-region:no-drag; app-region:no-drag; }
+.pane-resize { position:relative; z-index:25; width:var(--ac-resize-hit-width,15px); flex:none; cursor:col-resize; touch-action:none; user-select:none; -webkit-user-select:none; background:transparent; outline:none; -webkit-app-region:no-drag; app-region:no-drag; }
 .pane-resize::before { content:''; position:absolute; inset-block:0; left:50%; width:1px; transform:translateX(-50%); background:transparent; pointer-events:none; transition:background-color 140ms ease; }
-.pane-resize:is(:hover,:focus-visible,:active)::before { background:var(--dc-border-strong,var(--line-strong)); }
+.pane-resize:is(:hover,:focus-visible,:active)::before { background:var(--ac-border-strong,var(--line-strong)); }
 body.pane-resizing, body.pane-resizing * { user-select:none !important; -webkit-user-select:none !important; cursor:col-resize !important; }
 body.pane-resizing iframe { pointer-events:none; }

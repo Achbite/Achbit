@@ -33,7 +33,7 @@ pub(crate) async fn trusted_local_origin_gate(request: Request, next: Next) -> R
         StatusCode::FORBIDDEN,
         ApiResponse::error(
             "host_origin_forbidden",
-            "DeepCode Host APIs accept only non-browser local clients, the same loopback application origin, or deepcode-gui://localhost",
+            "Achbit Host APIs accept only non-browser local clients, the same loopback application origin, or achbit-gui://localhost",
         ),
     )
         .into_response()
@@ -46,7 +46,7 @@ fn trusted_local_origin(headers: &axum::http::HeaderMap) -> bool {
     else {
         return true;
     };
-    if origin == "deepcode-gui://localhost" {
+    if origin == "achbit-gui://localhost" {
         return true;
     }
     let Some(origin_token) = origin.strip_prefix("http://") else {
@@ -87,7 +87,7 @@ fn trusted_cors_origin(origin: &HeaderValue) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
-    if origin == "deepcode-gui://localhost" {
+    if origin == "achbit-gui://localhost" {
         return true;
     }
     origin
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn optional_json_distinguishes_absence_from_invalid_content() {
         let root = std::env::temp_dir().join(format!(
-            "deepcode-json-read-{}-{}",
+            "achbit-json-read-{}-{}",
             std::process::id(),
             now_millis()
         ));

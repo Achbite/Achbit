@@ -40,6 +40,7 @@ import type {
   ToolExecutionProgress,
 } from '@achbit/protocol';
 import {
+  decodeAgentToolSelection,
   KERNEL_REPLY_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
   SESSION_CONTROL_INTERACTION_REQUEST,
@@ -499,7 +500,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'environment',
       'agentCapabilities',
       'contextManagement',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -515,6 +516,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
     };
     try {
       const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
+      const toolSelection = value.toolSelection === undefined ? undefined : decodeAgentToolSelection(value.toolSelection);
       if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
       const provider = decodeProviderRuntime(value.provider);
       const approvalReviewer = value.approvalReviewer === undefined
@@ -564,6 +566,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         runtimeSnapshot: Object.freeze({
           contextManagement: decodeContextManagementSettings(value.contextManagement),
           agentCapabilities,
+          ...(toolSelection ? { toolSelection } : {}),
           ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true } : {}),
           runRuntimeSnapshotRef: `run-runtime:${request.sessionId}:${request.runId}`,
           extensionGenerationRef: value.extensionGenerationRef,
@@ -576,7 +579,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
             ...this.#stableCoreInstructions,
-            environmentInstruction(value.environment),
+            environmentInstruction(value.environment, tools.filter(tool => tool.availability === 'callable').map(tool => tool.name)),
           ], pluginConfig, {
             interactionRequest: wireName(SESSION_CONTROL_INTERACTION_REQUEST),
             planPublish: wireName(SESSION_CONTROL_PLAN_PUBLISH),
@@ -632,7 +635,7 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
       'maxOutputTokens',
       'apiSurface',
       'hostedWebSearch',
-    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking'])
+    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes'])
     || !isNonEmptyText(value.providerRuntimeRef)
     || !isNonEmptyText(value.profileId)
     || !isPositiveSafeInteger(value.contextWindowTokens)
@@ -642,6 +645,10 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
       .includes(String(value.apiSurface))
     || value.hostedWebSearch !== 'none' && value.hostedWebSearch !== 'web_search'
     || value.hostedWebSearch === 'web_search' && value.apiSurface !== 'responses'
+    || value.fileInputMediaTypes !== undefined && (!Array.isArray(value.fileInputMediaTypes)
+      || value.fileInputMediaTypes.some(type => type !== 'application/pdf')
+      || new Set(value.fileInputMediaTypes).size !== value.fileInputMediaTypes.length
+      || value.fileInputMediaTypes.length > 0 && value.apiSurface !== 'chatCompletions')
     || [value.reasoningEffort, value.reasoningEffortOverride].some((effort) => effort !== undefined && !isLlmReasoningEffort(effort))
     || value.thinking !== undefined && !['enabled', 'disabled'].includes(String(value.thinking))
     || value.reasoningEffortOverride !== undefined && (value.reasoningEffort !== value.reasoningEffortOverride || value.thinking === 'disabled')
@@ -649,6 +656,7 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
   return Object.freeze({
     providerRuntimeRef: value.providerRuntimeRef,
     profileId: value.profileId,
+    fileInputMediaTypes: [...((value.fileInputMediaTypes ?? []) as string[])],
     contextWindowTokens: value.contextWindowTokens,
     maxOutputTokens: value.maxOutputTokens,
     apiSurface: value.apiSurface as ProviderRuntimeSnapshot['apiSurface'],
@@ -828,7 +836,7 @@ function decodeProviderFrame(frame: string): ProviderEvent {
     throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');
   }
   if (
-    value.schemaVersion !== 'deepcode.provider-event'
+    value.schemaVersion !== 'achbit.provider-event'
     || !isNonEmptyText(value.requestId)
     || !isRecord(value.data)
   ) throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');

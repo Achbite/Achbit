@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn large_utf8_line_is_read_completely_in_bounded_windows() {
         let path = std::env::temp_dir().join(format!(
-            "deepcode-range-{}-{}.txt",
+            "achbit-range-{}-{}.txt",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

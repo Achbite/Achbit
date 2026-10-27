@@ -69,25 +69,25 @@ impl ApiResponse {
 
 #[tokio::main]
 async fn main() {
-    let host = std::env::var("DEEPCODE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("DEEPCODE_PORT")
+    let host = std::env::var("ACHBIT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = std::env::var("ACHBIT_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(31245);
     let daemon_host =
-        std::env::var("DEEPCODE_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let daemon_port = std::env::var("DEEPCODE_DAEMON_PORT")
+        std::env::var("ACHBIT_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let daemon_port = std::env::var("ACHBIT_DAEMON_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or_else(|| port.saturating_add(1));
     assert!(
         is_loopback_host(&host) && is_loopback_host(&daemon_host),
-        "DeepCode Host proxy and daemon targets must both be loopback"
+        "Achbit Host proxy and daemon targets must both be loopback"
     );
     let daemon_base_url = format!("http://{daemon_host}:{daemon_port}");
     assert!(
-        std::env::var("DEEPCODE_HOST_WEB_SPAWN_DAEMON").as_deref() == Ok("0"),
-        "DeepCode Host proxy must be launched by the owning Host process with DEEPCODE_HOST_WEB_SPAWN_DAEMON=0"
+        std::env::var("ACHBIT_HOST_WEB_SPAWN_DAEMON").as_deref() == Ok("0"),
+        "Achbit Host proxy must be launched by the owning Host process with ACHBIT_HOST_WEB_SPAWN_DAEMON=0"
     );
     let host_ui_token = required_local_token(HOST_UI_TOKEN_ENV, is_valid_host_ui_token);
     let daemon_host_token = required_local_token(HOST_SHELL_TOKEN_ENV, is_valid_host_shell_token);
@@ -99,7 +99,7 @@ async fn main() {
     let addr: SocketAddr = format!("{host}:{port}").parse().expect("valid host/port");
     assert!(
         addr.ip().is_loopback(),
-        "DeepCode Host private API requires a loopback listener"
+        "Achbit Host private API requires a loopback listener"
     );
 
     let state = AppState {
@@ -136,7 +136,7 @@ async fn main() {
             ServeDir::new(client_dist.clone()).not_found_service(ServeFile::new(index_path)),
         );
         println!(
-            "DeepCode dev Host GUI assets served from {}",
+            "Achbit dev Host GUI assets served from {}",
             client_dist.display()
         );
     }
@@ -147,10 +147,10 @@ async fn main() {
         .layer(axum::middleware::from_fn(trusted_local_origin_gate));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .expect("bind deepcode dev host");
-    println!("DeepCode dev Host listening on http://{addr}");
+        .expect("bind achbit dev host");
+    println!("Achbit dev Host listening on http://{addr}");
     println!(
-        "DeepCode dev Host proxies /api/* to Kernel daemon at http://{daemon_host}:{daemon_port}"
+        "Achbit dev Host proxies /api/* to Kernel daemon at http://{daemon_host}:{daemon_port}"
     );
     // The owning GUI retains the pipe writer in Child.stdin. EOF also covers
     // owner termination, when its normal shutdown callbacks cannot run.
@@ -171,7 +171,7 @@ async fn main() {
             let _ = closed.await;
         })
         .await
-        .expect("serve deepcode dev host");
+        .expect("serve achbit dev host");
 }
 
 fn localhost_cors_layer() -> CorsLayer {
@@ -201,7 +201,7 @@ async fn trusted_local_origin_gate(request: Request, next: Next) -> Response {
         StatusCode::FORBIDDEN,
         ApiResponse::error(
             "host_origin_forbidden",
-            "DeepCode Host APIs accept only non-browser local clients, the same loopback application origin, or a trusted DeepCode desktop origin",
+            "Achbit Host APIs accept only non-browser local clients, the same loopback application origin, or a trusted Achbit desktop origin",
         ),
     )
         .into_response()
@@ -243,7 +243,7 @@ fn trusted_cors_origin(origin: &HeaderValue) -> bool {
 }
 
 fn trusted_desktop_origin(origin: &str) -> bool {
-    if matches!(origin, "deepcode-gui://localhost") {
+    if matches!(origin, "achbit-gui://localhost") {
         return true;
     }
     let Some(authority) = origin.strip_prefix("http://") else {
@@ -252,7 +252,7 @@ fn trusted_desktop_origin(origin: &str) -> bool {
     let (host, port) = authority
         .split_once(':')
         .map_or((authority, None), |(host, port)| (host, Some(port)));
-    if !matches!(host, "deepcode-gui.localhost") {
+    if !matches!(host, "achbit-gui.localhost") {
         return false;
     }
     port.is_none_or(|port| port.parse::<u16>().is_ok_and(|port| port > 0))
@@ -268,12 +268,12 @@ fn is_loopback_token(token: &str) -> bool {
 }
 
 fn client_dist_dir() -> Option<PathBuf> {
-    let path = std::env::var_os("DEEPCODE_CLIENT_DIST").map(PathBuf::from)?;
+    let path = std::env::var_os("ACHBIT_CLIENT_DIST").map(PathBuf::from)?;
     if path.join("index.html").is_file() {
         Some(path)
     } else {
         eprintln!(
-            "DEEPCODE_CLIENT_DIST={} does not contain index.html; static GUI disabled",
+            "ACHBIT_CLIENT_DIST={} does not contain index.html; static GUI disabled",
             path.display()
         );
         None
@@ -282,11 +282,8 @@ fn client_dist_dir() -> Option<PathBuf> {
 
 async fn gui_index() -> Response {
     let Some(client_dist) = client_dist_dir() else {
-        return ApiResponse::error(
-            "gui_not_configured",
-            "DEEPCODE_CLIENT_DIST is not configured",
-        )
-        .into_response();
+        return ApiResponse::error("gui_not_configured", "ACHBIT_CLIENT_DIST is not configured")
+            .into_response();
     };
     let index_path = client_dist.join("index.html");
     match tokio::fs::read(index_path).await {
@@ -306,11 +303,8 @@ async fn gui_index() -> Response {
 
 async fn gui_asset(State(_state): State<AppState>, uri: Uri) -> Response {
     let Some(client_dist) = client_dist_dir() else {
-        return ApiResponse::error(
-            "gui_not_configured",
-            "DEEPCODE_CLIENT_DIST is not configured",
-        )
-        .into_response();
+        return ApiResponse::error("gui_not_configured", "ACHBIT_CLIENT_DIST is not configured")
+            .into_response();
     };
     let relative = uri.path().trim_start_matches('/');
     let relative_path = Path::new(relative);
@@ -475,8 +469,11 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("GET", ["api", "fs", "browse"])
         | ("POST", ["api", "fs", "read"])
         | ("POST", ["api", "host", "inspect"])
+        | ("POST", ["api", "host", "plugins", "install"])
         | ("POST", ["api", "host", "computer-preview"])
         | ("POST", ["api", "host", "computer-preview", "activate"])
+        | ("GET", ["api", "plugin-services"])
+        | ("GET", ["api", "plugin-services", "events"])
         | ("GET", ["api", "user-settings"])
         | ("PATCH", ["api", "user-settings"])
         | ("POST", ["api", "user-settings", "workspace-sandbox"])
@@ -488,7 +485,9 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "llm", "usage"])
         | ("GET", ["api", "llm", "prices"])
         | ("POST", ["api", "llm", "auth"])
+        | ("GET", ["api", "conversation", "events"])
         | ("GET", ["api", "conversation", "catalog"])
+        | ("GET", ["api", "conversation", "catalog", "events"])
         | ("GET", ["api", "conversation", "statuses"])
         | ("GET", ["api", "conversation", "plugins"])
         | ("GET", ["api", "conversation", "plugins", "skills"])
@@ -537,6 +536,16 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_installation_has_one_explicit_host_proxy_route() {
+        assert!(host_proxy_path_allowed("POST", "/api/host/plugins/install"));
+        assert!(!host_proxy_path_allowed("GET", "/api/host/plugins/install"));
+        assert!(!host_proxy_path_allowed(
+            "POST",
+            "/api/host/plugins/install/extra"
+        ));
+    }
 
     #[tokio::test]
     async fn proxy_transport_error_preserves_the_underlying_failure() {
@@ -598,6 +607,25 @@ mod tests {
             "GET",
             "/api/conversation/plugins/extra"
         ));
+    }
+
+    #[test]
+    fn host_proxy_exposes_service_status_to_the_plugins_page() {
+        assert!(host_proxy_path_allowed("GET", "/api/plugin-services"));
+        assert!(!host_proxy_path_allowed("POST", "/api/plugin-services"));
+        assert!(!host_proxy_path_allowed(
+            "GET",
+            "/api/plugin-services/extra"
+        ));
+    }
+
+    #[test]
+    fn host_proxy_exposes_live_notifications_only_as_get() {
+        for path in ["/api/conversation/events", "/api/plugin-services/events"] {
+            assert!(host_proxy_path_allowed("GET", path), "{path}");
+            assert!(!host_proxy_path_allowed("POST", path), "{path}");
+            assert!(!host_proxy_path_allowed("GET", &format!("{path}/extra")));
+        }
     }
 
     #[test]

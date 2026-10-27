@@ -21,10 +21,10 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[2]
 
 
-HOST_TOKEN_HEADER = "x-deepcode-host-shell-token"
+HOST_TOKEN_HEADER = "x-achbit-host-shell-token"
 
 
-COMMAND_VERSION = "deepcode.command.v3"
+COMMAND_VERSION = "achbit.command.v3"
 
 
 URL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -37,16 +37,16 @@ def runtime_path(environment_name: str) -> Path:
     return Path(configured).resolve()
 
 
-DAEMON_BINARY = runtime_path("DEEPCODE_E2E_DAEMON")
+DAEMON_BINARY = runtime_path("ACHBIT_E2E_DAEMON")
 
 
-CLI_BINARY = runtime_path("DEEPCODE_E2E_CLI")
+CLI_BINARY = runtime_path("ACHBIT_E2E_CLI")
 
 
-TUI_BINARY = runtime_path("DEEPCODE_E2E_TUI")
+TUI_BINARY = runtime_path("ACHBIT_E2E_TUI")
 
 
-SESSION_BRIDGE = runtime_path("DEEPCODE_E2E_SESSION_BRIDGE")
+SESSION_BRIDGE = runtime_path("ACHBIT_E2E_SESSION_BRIDGE")
 
 
 def require(condition: bool, message: str) -> None:
@@ -73,8 +73,8 @@ def message_text(value: Any) -> str:
 class OwnedDaemon:
     def __init__(self, config_root: Path) -> None:
         self.config_root = config_root
-        self.token = f"dchost_{secrets.token_hex(32)}"
-        self.instance_id = f"dcinstance_{secrets.token_hex(32)}"
+        self.token = f"achost_{secrets.token_hex(32)}"
+        self.instance_id = f"acinstance_{secrets.token_hex(32)}"
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.log_file = tempfile.TemporaryFile(mode="w+b")
@@ -91,14 +91,14 @@ class OwnedDaemon:
             if name.lower() in {"http_proxy", "https_proxy", "all_proxy"}:
                 environment.pop(name, None)
         environment.update({
-            "DEEPCODE_HOST": "127.0.0.1",
-            "DEEPCODE_PORT": str(self.port),
-            "DEEPCODE_USER_ROOT": str(self.config_root),
-            "DEEPCODE_HOST_SHELL_TOKEN": self.token,
-            "DEEPCODE_HOST_INSTANCE_ID": self.instance_id,
-            "DEEPCODE_SESSION_BRIDGE": str(SESSION_BRIDGE),
-            "DEEPCODE_NODE": node,
-            "DEEPCODE_LLM_API_KEY": "e2e-key",
+            "ACHBIT_HOST": "127.0.0.1",
+            "ACHBIT_PORT": str(self.port),
+            "ACHBIT_USER_ROOT": str(self.config_root),
+            "ACHBIT_HOST_SHELL_TOKEN": self.token,
+            "ACHBIT_HOST_INSTANCE_ID": self.instance_id,
+            "ACHBIT_SESSION_BRIDGE": str(SESSION_BRIDGE),
+            "ACHBIT_NODE": node,
+            "ACHBIT_LLM_API_KEY": "e2e-key",
             "NO_PROXY": "127.0.0.1,localhost",
             "no_proxy": "127.0.0.1,localhost",
             "RUST_BACKTRACE": "1",
@@ -125,8 +125,13 @@ class OwnedDaemon:
             except (OSError, ValueError, urllib.error.URLError):
                 return None
 
-        self.identity = wait_until(ready, 12, "Daemon 未进入 ready")
+        self.identity = wait_until(ready, 12, "Daemon 未提供 identity")
         require(self.identity.get("instanceId") == self.instance_id, "Daemon identity 不匹配")
+        # Identity/catalog can be available while execution is still starting.
+        # Health waits on the Host's initialization notification and checks Session.
+        health = api_json(self.base_url, "/api/health", token=self.token, timeout=12)
+        require(isinstance(health, dict) and health.get("kernel") == "ready" and health.get("session") == "ready",
+            f"Daemon execution services 未就绪：{health}")
 
     def shutdown(self) -> None:
         require(self.process is not None, "Daemon 尚未启动")
@@ -292,7 +297,7 @@ def projection(daemon: OwnedDaemon, session_id: str) -> dict[str, Any]:
         token=daemon.token,
     )
     require(isinstance(value, dict), "SessionProjection 不是对象")
-    require(value.get("schemaVersion") == "deepcode.session-projection.v6", "投影协议不是当前值")
+    require(value.get("schemaVersion") == "achbit.session-projection.v6", "投影协议不是当前值")
     require(value.get("sessionId") == session_id, "SessionProjection identity 漂移")
     return value
 
@@ -371,8 +376,8 @@ def sqlite_read_only(path: Path) -> sqlite3.Connection:
 
 def shell_environment(daemon: OwnedDaemon) -> dict[str, str]:
     environment = os.environ.copy()
-    environment["DEEPCODE_HOST_SHELL_TOKEN"] = daemon.token
-    environment["DEEPCODE_CLI_RUN_TIMEOUT_MS"] = "15000"
+    environment["ACHBIT_HOST_SHELL_TOKEN"] = daemon.token
+    environment["ACHBIT_CLI_RUN_TIMEOUT_MS"] = "15000"
     return environment
 
 
@@ -449,7 +454,7 @@ class ProviderState:
 
 def cli(daemon: Any, session_id: str, text: str, expected: int = 0, *, run_timeout_seconds: int = 15) -> subprocess.CompletedProcess[str]:
     environment = shell_environment(daemon)
-    environment["DEEPCODE_CLI_RUN_TIMEOUT_MS"] = str(run_timeout_seconds * 1000)
+    environment["ACHBIT_CLI_RUN_TIMEOUT_MS"] = str(run_timeout_seconds * 1000)
     result = subprocess.run([
         str(CLI_BINARY), "--api", daemon.base_url, "--no-auto-start-kernel",
         "--session", session_id, "--plain", "ask", text,

@@ -4,8 +4,8 @@ Unicode true
 !include "LogicLib.nsh"
 Name "Achbit"
 OutFile "${OUTPUT}"
-InstallDir "$LOCALAPPDATA\Programs\DeepCode"
-InstallDirRegKey HKCU "Software\DeepCode" "InstallDir"
+InstallDir "$LOCALAPPDATA\Programs\Achbit"
+InstallDirRegKey HKCU "Software\Achbit" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 !define MUI_ABORTWARNING
@@ -39,13 +39,13 @@ Section "Achbit" Main
   CreateShortcut "$SMPROGRAMS\Achbit\Achbit.lnk" "$INSTDIR\Achbit.exe"
   CreateShortcut "$SMPROGRAMS\Achbit\Achbit TUI.lnk" "$INSTDIR\achbit-tui.bat"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKCU "Software\DeepCode" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode" "DisplayName" "Achbit"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode" "InstallLocation" "$INSTDIR"
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode" "NoRepair" 1
+  WriteRegStr HKCU "Software\Achbit" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit" "DisplayName" "Achbit"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit" "InstallLocation" "$INSTDIR"
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
@@ -67,6 +67,6 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Achbit\Achbit.lnk"
   Delete "$SMPROGRAMS\Achbit\Achbit TUI.lnk"
   RMDir "$SMPROGRAMS\Achbit"
-  DeleteRegKey HKCU "Software\DeepCode"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeepCode"
+  DeleteRegKey HKCU "Software\Achbit"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit"
 SectionEnd

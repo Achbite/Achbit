@@ -88,10 +88,13 @@ test('run duration accompanies the existing process toggle without adding a foot
   ]);
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const messages = ['user', 'assistant', 'assistant'].map((role, index) => ({ type: 'message', sequence: index === 0 ? 0 : index + 1, streamId: `stream:${index}`,
+  const messages = ['user', 'assistant', 'assistant'].map((role, index) => ({ type: 'message', sequence: index === 0 ? 0 : index + 2, streamId: `stream:${index}`,
     value: { messageId: `message:${index}`, runId: 'run:timing', role, content: `Content ${index}`, filesystemReferences: [] } }));
-  const narrative = { type: 'narrative', sequence: 1, streamId: 'stream:process', value: { narrativeId: 'narrative:process', runId: 'run:timing', content: 'Working', filesystemReferences: [] } };
-  const items = [messages[0], narrative, ...messages.slice(1)];
+  const narrative = { type: 'narrative', sequence: 2, streamId: 'stream:process', value: { narrativeId: 'narrative:process', runId: 'run:timing', content: 'Working', filesystemReferences: [] } };
+  const activity = { activityId: 'activity:timing', runId: 'run:timing', sequence: 1, kind: 'tool',
+    status: 'completed', label: 'fs.read', callId: 'call:timing', tool: { operation: 'fs.read', resources: [] } };
+  const tools = { type: 'toolGroup', sequence: 1, groupId: 'group:timing', values: [activity] };
+  const items = [messages[0], tools, narrative, ...messages.slice(1)];
   const html = renderToStaticMarkup(createElement(ConversationTranscript, {
     layoutCache: new ConversationLayoutCache(), language: 'zh-CN', loading: false, displaySettledRunIds: new Set(['run:timing']), onDisplayed() {},
     projection: { sessionId: 'session:timing', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts: [],
@@ -106,7 +109,7 @@ test('run duration accompanies the existing process toggle without adding a foot
   assert.match(html, /class="conversation-process-toggle"/);
   assert.match(html, /<\/button><span class="conversation-run-timing">用时 11m 29s<\/span>/);
   assert.ok(html.indexOf('conversation-run-timing') < html.indexOf('local-agent__message--assistant'));
-  assert.deepEqual([...html.matchAll(/data-conversation-anchor="([^"]+)"/g)].map(match => match[1]), ['stream:0', 'run:timing:disclosure', 'stream:process', 'stream:1', 'stream:2']);
+  assert.deepEqual([...html.matchAll(/data-conversation-anchor="([^"]+)"/g)].map(match => match[1]), ['stream:0', 'run:timing:disclosure', 'group:timing', 'stream:process', 'stream:1', 'stream:2']);
   assert.doesNotMatch(html, /:file-changes/);
   assert.doesNotMatch(html, /<details/);
 });

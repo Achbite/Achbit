@@ -20,7 +20,7 @@ macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕�
 
 ## Windows
 
-运行 `Achbit-<version>-win64-setup.exe`。默认程序目录为 `%LOCALAPPDATA%\Programs\DeepCode`。安装器创建开始菜单入口并添加用户 PATH，重新打开终端后可使用 `achbit`、`achbit-cli` 和 `achbit-tui`。
+运行 `Achbit-<version>-win64-setup.exe`。默认程序目录为 `%LOCALAPPDATA%\Programs\Achbit`。安装器创建开始菜单入口并添加用户 PATH，重新打开终端后可使用 `achbit`、`achbit-cli` 和 `achbit-tui`。
 
 GUI 需要 WebView2 Evergreen Runtime。Setup 检测到缺失时会下载并运行微软安装器；无法完成时会显示错误。解压版使用同一套用户目录，GUI 入口为 `Achbit.exe`，命令入口为 `achbit-cli.bat` 和 `achbit-tui.bat`。卸载移除程序和本安装添加的 PATH 项，保留用户文件。
 
@@ -36,17 +36,17 @@ Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 �
 
 | 用途 | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| 配置 | `~/Library/Application Support/DeepCode/config` | `%APPDATA%\DeepCode\config` | `${XDG_CONFIG_HOME:-~/.config}/DeepCode` |
-| 持久数据 | `~/Library/Application Support/DeepCode/data` | `%LOCALAPPDATA%\DeepCode\Data` | `${XDG_DATA_HOME:-~/.local/share}/DeepCode` |
-| 缓存 | `~/Library/Caches/DeepCode` | `%LOCALAPPDATA%\DeepCode\Cache` | `${XDG_CACHE_HOME:-~/.cache}/DeepCode` |
-| 临时文件 | 系统用户临时目录下的 `DeepCode` | `%TEMP%\DeepCode` | 系统临时目录下的 `DeepCode` |
-| 日志 | `~/Library/Logs/DeepCode` | `%LOCALAPPDATA%\DeepCode\Logs` | `${XDG_STATE_HOME:-~/.local/state}/DeepCode/log` |
+| 配置 | `~/Library/Application Support/Achbit/config` | `%APPDATA%\Achbit\config` | `${XDG_CONFIG_HOME:-~/.config}/Achbit` |
+| 持久数据 | `~/Library/Application Support/Achbit/data` | `%LOCALAPPDATA%\Achbit\Data` | `${XDG_DATA_HOME:-~/.local/share}/Achbit` |
+| 缓存 | `~/Library/Caches/Achbit` | `%LOCALAPPDATA%\Achbit\Cache` | `${XDG_CACHE_HOME:-~/.cache}/Achbit` |
+| 临时文件 | 系统用户临时目录下的 `Achbit` | `%TEMP%\Achbit` | 系统临时目录下的 `Achbit` |
+| 日志 | `~/Library/Logs/Achbit` | `%LOCALAPPDATA%\Achbit\Logs` | `${XDG_STATE_HOME:-~/.local/state}/Achbit/log` |
 
 配置目录中的 `user/local/settings` 保存设置和模型配置，`user/local/secrets` 保存本地凭据。持久数据目录中的 `agent-runtime` 保存会话数据库、附件、工具记录和会话工作目录。会话引用的预览、截图和生成文件随会话保留，不属于可清理缓存。macOS 和 Windows 的 Chrome 文件工具使用当前会话已有的私有工作目录作为根和进程工作目录，相对截图路径也落在这里；不把项目或附件目录自动加入根，上游系统临时目录仍保留。
 
 缓存用于可重新生成的内容。macOS WebKit 的网站存储由系统管理，使用其标准 Library 目录。每次 Shell 调用拥有独立临时目录，调用及其子进程结束后清理；需要后续使用的文件应保存到会话工作目录或已授权项目目录。GUI 启动诊断位于日志目录的 `host-startup`，CLI 启动的后台服务日志为 `achbit-kernel.log`。
 
-可通过 `DEEPCODE_USER_ROOT` 显式指定独立用户根。该模式将 Achbit 管理的配置、持久数据、缓存、临时文件和日志分别放入所选根下的 `config`、`data`、`cache`、`tmp`、`logs`，同一次使用的各入口应设置相同值。未设置时使用上表的平台默认目录。程序资源位置由应用和启动器自动设置，不需要全局配置内部环境变量。
+可通过 `ACHBIT_USER_ROOT` 显式指定独立用户根。该模式将 Achbit 管理的配置、持久数据、缓存、临时文件和日志分别放入所选根下的 `config`、`data`、`cache`、`tmp`、`logs`，同一次使用的各入口应设置相同值。未设置时使用上表的平台默认目录。程序资源位置由应用和启动器自动设置，不需要全局配置内部环境变量。
 
 ## 配置准备与备份
 
@@ -73,10 +73,10 @@ Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 �
 
 Skill、CLI 插件及运行设置的生效边界适用于 GUI、CLI 和 TUI；UI 插件仅影响图形界面。完整程序更新后重新打开 Achbit。详见[插件说明](product/ui-plugins.md)和[模型服务](product/model-services.md)。
 
-PDF 阅读使用包内 Web 阅读器，不需要安装 Python。PDF 导出需要可用的 WeasyPrint Python 环境，可在设置中指定 Python 路径。
+PDF 阅读使用包内 Web 阅读器和本地 Rust PDF 插件。Documents 插件的 PDF 导出使用包内 Rust Typst 渲染器，输入为自包含 Typst 源码；HTML 和 Markdown 导出保持原格式。用户无需安装或配置 Python。
 
-## 品牌与保留标识
+## 产品标识与数据目录
 
 当前产品名称为 Achbit，主程序为 `Achbit.app` / `Achbit.exe` / `Achbit`，图标为 AC。新构建的命令为 `achbit`、`achbit-cli`、`achbit-tui`。macOS 解压包提供 `Achbit-CLI.command` 和 `Achbit-TUI.command`，Debug 控制使用 `achbit-debug`。Computer Use 辅助程序为 `Achbit Computer Use.app` / `Achbit-Computer-Use.exe`。
 
-源码目录、组件文件、构建入口、内置 Skill 和制品文件名已统一为 Achbit。DeepCode 用户目录、Debug 数据目录、环境变量、通信协议标识、系统应用标识和签名身份保留原值，现有会话和凭据不移动。远端仓库与已有 Release 下载链接仍为原地址，新命名构建并不代表已经发布。
+从 0.6.61 起，用户目录、Debug 数据目录、环境变量、通信协议、系统应用标识和默认本地签名名称统一使用 Achbit。默认首次启动使用上表中的新目录，不查找、导入或迁移旧产品数据；已有磁盘数据和凭据不删除。自定义启动脚本、远端 Host 与外部集成应使用当前的 `ACHBIT_*` 变量和 `achbit.*` 接口。macOS 签名可用 `ACHBIT_MACOS_SIGN_IDENTITY` 显式选择已有证书指纹。下载与发布状态以仓库 Releases 为准。

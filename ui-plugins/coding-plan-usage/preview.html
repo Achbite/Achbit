@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DeepCode · 用量与 Coding Plan 额度面板（设计预览）</title>
+<title>Achbit · 用量与 Coding Plan 额度面板（设计预览）</title>
 <style>
-  /* 颜色、圆角、字号、字重、阴影均取自已安装的 DeepCode 深色主题令牌
-     （shells/achbit-gui/dist/assets/index-*.css 中 --dc-theme-dark-* 与 --dc-font-*）。 */
+  /* 颜色、圆角、字号、字重、阴影均取自已安装的 Achbit 深色主题令牌
+     （shells/achbit-gui/dist/assets/index-*.css 中 --ac-theme-dark-* 与 --ac-font-*）。 */
   :root{
     --bg:#09090b; --sidebar:#111114; --surface:#18181b; --surface-subtle:#202024;
     --surface-raised:#242429; --surface-hover:#2a2a30; --surface-active:#303036;
@@ -170,7 +170,7 @@
   <section id="p1" class="tabpanel">
     <div class="mock">
       <div class="titlebar">
-        <span class="brand"><span class="brand__mark">D</span>DeepCode</span>
+        <span class="brand"><span class="brand__mark">D</span>Achbit</span>
         <span class="titlebar__spacer"></span>
         <div class="titlebar__right">
           <span class="pill pill--ready">已连接</span>
@@ -201,7 +201,7 @@
             <div class="msg__bubble">先按方案 A 实现，再补一个额度面板的预览。</div>
           </div>
           <div class="msg">
-            <div class="msg__role">DeepCode</div>
+            <div class="msg__role">Achbit</div>
             <div class="msg__bubble">
               已按方案 A 落地 <code>session_service.rs</code> 的握手与失败保留，并跑过 <code>test.sh required</code>。
               <div class="ghost" style="margin-top:8px">12 次模型请求 · 3 次工具执行 · 2 次文件写入</div>
@@ -391,7 +391,7 @@
     <div class="notes">
       <div class="card">
         <h2>这个面板不能作为现有 UI 插件实现</h2>
-        <p>DeepCode 的显示插件是 <b>display-only</b> 合同，槽位与输入都是封闭的。</p>
+        <p>Achbit 的显示插件是 <b>display-only</b> 合同，槽位与输入都是封闭的。</p>
         <dl class="kv">
           <dt>types.ts:1</dt><dd>"Display-only API. Plugins receive no Session, Provider, tool or permission ports."</dd>
           <dt>槽位</dt><dd><code>message.plain</code> · <code>message.markdown</code> · <code>document.html</code> · <code>document.markdown</code> · <code>document.pdf</code> · <code>theme</code></dd>
@@ -454,7 +454,7 @@
         <h2>本预览的边界</h2>
         <ul>
           <li>所有数字为示例值，但按真实字段口径构造，且总额与各明细自洽（$0.40 + $0.28 + $0.47 = $1.15；12 轮柱状图合计 $1.15）</li>
-          <li>颜色、圆角、字号、字重、阴影取自当前安装的 DeepCode 深色主题令牌；真实接入时会继承用户选择的主题与强调色</li>
+          <li>颜色、圆角、字号、字重、阴影取自当前安装的 Achbit 深色主题令牌；真实接入时会继承用户选择的主题与强调色</li>
           <li>单文件、无外部依赖、无网络请求；未修改任何产品代码、合同或配置</li>
         </ul>
       </div>

@@ -72,7 +72,7 @@ const question: InteractionProjection = { interactionId: 'question:preview', cal
   prompt: '“左上角的电脑控制图标”具体指哪个位置？这会决定它属于现有窗口内的显示插件，还是需要一个不抢焦点的原生桌面浮层。\n\n我会继续核查与位置无关的接口、插件更新和调用边界。',
   options: [
     { id: 'desktop', label: '系统桌面左上角', description: '切换到其他应用后仍可见，点击展开电脑控制预览。' },
-    { id: 'window', label: 'DeepCode 窗口左上角', description: '放在应用标题栏或导航区域内，作为预览与状态入口。' },
+    { id: 'window', label: 'Achbit 窗口左上角', description: '放在应用标题栏或导航区域内，作为预览与状态入口。' },
   ], allowFreeform: previewParams.get('freeform') !== 'false',
 };
 const questionProjection = (long: boolean): SessionProjection => ({ ...initial, revision: 5,
@@ -155,7 +155,7 @@ function Preview() {
     } as SessionProjection });
   };
   return <>
-    <style>{`*{box-sizing:border-box}html,body,#root{height:100%;margin:0;font-family:var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}#root{display:grid;grid-template-rows:auto minmax(0,1fr) auto}.fixture-toolbar{display:flex;gap:12px;flex-wrap:wrap;padding:12px 24px;font-size:14px}.fixture-toolbar select{font:inherit}.fixture-main{width:min(100%,${previewParams.get('width') === 'narrow' ? '420px' : '1000px'});margin:auto;grid-template-rows:minmax(0,1fr) auto}.fixture-main .local-agent__transcript{padding:22px 0}.fixture-result{font-size:12px;margin:0;padding:8px 24px;white-space:pre-wrap}`}</style>
+    <style>{`*{box-sizing:border-box}html,body,#root{height:100%;margin:0;font-family:var(--ac-font-ui);color:var(--ac-foreground);background:var(--ac-surface)}#root{display:grid;grid-template-rows:auto minmax(0,1fr) auto}.fixture-toolbar{display:flex;gap:12px;flex-wrap:wrap;padding:12px 24px;font-size:14px}.fixture-toolbar select{font:inherit}.fixture-main{width:min(100%,${previewParams.get('width') === 'narrow' ? '420px' : '1000px'});margin:auto;grid-template-rows:minmax(0,1fr) auto}.fixture-main .local-agent__transcript{padding:22px 0}.fixture-result{font-size:12px;margin:0;padding:8px 24px;white-space:pre-wrap}`}</style>
     {layoutCheck && <style>{`.fixture-workbench{display:grid;grid-template-columns:minmax(0,1fr) 260px;min-height:0}.fixture-workbench>.fixture-main{width:100%}@media(max-width:900px){.fixture-workbench{grid-template-columns:minmax(0,1fr)}.fixture-workbench>aside{display:none}}`}</style>}
     <nav className="fixture-toolbar"><select aria-label="检查模式" value={mode} onChange={(event) => changeMode(event.target.value)}>
       <option value="message">消息操作</option><option value="approval">宿主权限</option><option value="question">回答卡片</option><option value="question-long">长问题</option></select>

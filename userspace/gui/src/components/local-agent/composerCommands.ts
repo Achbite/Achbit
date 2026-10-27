@@ -22,7 +22,12 @@ export function suggestComposerCommands(draft: string) {
   return composerCommands.filter(command => `/${command.id}`.startsWith(draft));
 }
 
-export function parseComposerCommand(draft: string): { name: string; argument: string } | null {
-  const match = draft.trim().match(/^\/([a-z-]+)(?:\s+([\s\S]*))?$/u);
-  return match ? { name: match[1]!, argument: match[2]?.trim() ?? '' } : null;
+export function parseComposerCommand(draft: string): { name: ComposerCommand; argument: string } | null {
+  // Leading whitespace explicitly sends ordinary text, before any normalization.
+  const match = draft.trimEnd().match(/^\/([a-z-]+)(?:\s+([\s\S]*))?$/u);
+  if (!match) return null;
+  const command = composerCommands.find(item => item.id === match[1]);
+  const argument = match[2]?.trim() ?? '';
+  if (!command || (argument && command.id !== 'focus')) return null;
+  return { name: command.id, argument };
 }

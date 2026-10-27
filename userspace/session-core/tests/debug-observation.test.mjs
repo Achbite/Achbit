@@ -10,7 +10,7 @@ const draft = (attempt, content, request = 'request:one') => ({ kind: 'draft', s
     streamId: providerTextStreamId(sessionId, runId, request) }],
 } });
 const event = (sequence, type, payload, extra = {}) => ({ kind: 'event', sessionId, event: {
-  schemaVersion: 'deepcode.session-event', eventId: `event:${sequence}`, sessionId, runId,
+  schemaVersion: 'achbit.session-event', eventId: `event:${sequence}`, sessionId, runId,
   sequence, type, payload, occurredAt: new Date().toISOString(), ...extra,
 } });
 

@@ -218,7 +218,7 @@ struct TempWorkspace(PathBuf);
 impl TempWorkspace {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "deepcode-{label}-{}-{}",
+            "achbit-{label}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -262,7 +262,7 @@ fn context_with_target(root: &Path, relative_path: &str) -> KernelToolExecutionC
 #[test]
 fn builtin_registry_executes_a_prepared_file_read() {
     let workspace = TempWorkspace::new("registry-read");
-    fs::write(workspace.0.join("README.md"), "DeepCode\n").unwrap();
+    fs::write(workspace.0.join("README.md"), "Achbit\n").unwrap();
     let tool_registry = KernelToolRegistry::default();
     let registry = KernelExecutorRegistry::from_executors(builtin_executors(
         &tool_registry,
@@ -283,13 +283,13 @@ fn builtin_registry_executes_a_prepared_file_read() {
 
     assert_eq!(result.output["workspaceId"], "workspace:test");
     assert_eq!(result.output["path"], "README.md");
-    assert_eq!(result.output["content"], "DeepCode\n");
+    assert_eq!(result.output["content"], "Achbit\n");
 }
 
 #[test]
 fn builtin_registry_rejects_a_cancelled_attempt_before_execution() {
     let workspace = TempWorkspace::new("registry-cancelled");
-    fs::write(workspace.0.join("README.md"), "DeepCode\n").unwrap();
+    fs::write(workspace.0.join("README.md"), "Achbit\n").unwrap();
     let tool_registry = KernelToolRegistry::default();
     let registry = KernelExecutorRegistry::from_executors(builtin_executors(
         &tool_registry,
@@ -543,7 +543,7 @@ fn bash_cleans_its_owned_temporary_directory() {
     let temporary = result.output["stdout"]
         .as_str()
         .expect("temporary directory is reported");
-    assert!(temporary.contains("deepcode-agent-shell-"));
+    assert!(temporary.contains("achbit-agent-shell-"));
     assert!(!Path::new(temporary).exists());
 }
 
@@ -608,7 +608,7 @@ fn bash_timeout_is_a_known_failure_and_releases_its_temporary_directory() {
     let temporary = result.output["stdout"]
         .as_str()
         .expect("temporary directory is reported before timeout");
-    assert!(temporary.contains("deepcode-agent-shell-"));
+    assert!(temporary.contains("achbit-agent-shell-"));
     assert!(!Path::new(temporary).exists());
 }
 
@@ -665,7 +665,7 @@ fn host_shell_pipe_and_pty_share_owned_temp_lifetime() {
         assert_eq!(result.output["exitCode"], exit_code);
         assert_eq!(result.output["terminal"], terminal);
         let temporary = result.output["stdout"].as_str().unwrap();
-        assert!(temporary.contains("deepcode-agent-shell-"), "{temporary}");
+        assert!(temporary.contains("achbit-agent-shell-"), "{temporary}");
         assert!(!Path::new(temporary).exists());
         if exit_code != 0 {
             assert_eq!(result.error.unwrap().code, "bash_exit_nonzero");
@@ -687,7 +687,7 @@ fn host_shell_cancellation_releases_pipe_and_pty_temporary_directories() {
                 let mut captured = output.lock().unwrap();
                 captured.extend(bytes);
                 if captured.last() == Some(&b'\n')
-                    && String::from_utf8_lossy(&captured).contains("deepcode-agent-shell-")
+                    && String::from_utf8_lossy(&captured).contains("achbit-agent-shell-")
                 {
                     cancellation.cancel();
                 }
@@ -711,11 +711,11 @@ fn host_shell_cancellation_releases_pipe_and_pty_temporary_directories() {
             .unwrap();
         assert!(fs::read_to_string(archive)
             .unwrap()
-            .contains("deepcode-agent-shell-"));
+            .contains("achbit-agent-shell-"));
         let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
         let temporary = output
             .lines()
-            .find(|line| line.contains("deepcode-agent-shell-"))
+            .find(|line| line.contains("achbit-agent-shell-"))
             .expect("owned directory emitted before cancellation");
         assert!(!Path::new(temporary).exists());
     }

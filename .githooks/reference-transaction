@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# managed-by: deepcode-branch-flow
+# managed-by: achbit-branch-flow
 # Prevent deletion of the permanent local integration and release refs.
 set -euo pipefail
 
@@ -10,7 +10,7 @@ while read -r old_oid new_oid ref_name; do
   case "$ref_name" in
     refs/heads/main|refs/heads/dev-main)
       if [[ "$new_oid" =~ ^0+$ ]]; then
-        printf 'DeepCode protected branch cannot be deleted locally: %s\n' "$ref_name" >&2
+        printf 'Achbit protected branch cannot be deleted locally: %s\n' "$ref_name" >&2
         exit 1
       fi
       ;;

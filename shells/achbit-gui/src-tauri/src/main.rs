@@ -43,7 +43,7 @@ use achbit_host_connection::shell_lifecycle::OwnedHostChildren;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 31246;
-const APP_ASSET_SCHEME: &str = "deepcode-gui";
+const APP_ASSET_SCHEME: &str = "achbit-gui";
 const APP_ASSET_DIR: &str = "web-achbit-gui";
 
 struct RuntimeLocations {
@@ -58,7 +58,7 @@ fn initialize_runtime_locations() -> std::io::Result<()> {
     let executable_dir = current_exe_dir()
         .ok_or_else(|| std::io::Error::other("executable directory is unavailable"))?;
     let resources = achbit_host_connection::runtime_root(&executable_dir)?;
-    let client_dist = achbit_host_connection::configured_path("DEEPCODE_CLIENT_DIST")?;
+    let client_dist = achbit_host_connection::configured_path("ACHBIT_CLIENT_DIST")?;
     let user = achbit_host_connection::UserDirectories::resolve()?;
     user.create()?;
     RUNTIME_LOCATIONS
@@ -317,34 +317,34 @@ impl Drop for HostProcessGroup {
 fn main() {
     achbit_host_connection::startup::timing("gui.entry");
     let completion_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        notifications::deepcode_dismiss_completion,
-        notifications::deepcode_open_completion
+        notifications::achbit_dismiss_completion,
+        notifications::achbit_open_completion
     ];
     let auth_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        ssh_auth::deepcode_ssh_auth_context,
-        ssh_auth::deepcode_ssh_auth_respond
+        ssh_auth::achbit_ssh_auth_context,
+        ssh_auth::achbit_ssh_auth_respond
     ];
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        native_path_dialog::deepcode_pick_path,
-        open_file::deepcode_open_file,
-        file_reader::deepcode_read_local_file,
-        open_file::deepcode_locate_path,
-        deepcode_boot_target,
-        deepcode_default_workspace_path,
-        deepcode_host_startup_status,
-        deepcode_start_kernel_after_permission,
-        deepcode_window_minimize,
-        deepcode_window_toggle_maximize,
-        deepcode_window_close,
-        deepcode_open_external_url,
-        notifications::deepcode_notify_completed,
-        completion_sound::deepcode_completion_sound,
-        completion_sound::deepcode_set_completion_sound,
-        completion_sound::deepcode_preview_completion_sound,
-        ssh_gui::deepcode_connect_ssh,
-        ssh_gui::deepcode_open_local,
-        native_browser::deepcode_browser_host,
-        native_browser::deepcode_browser_command
+        native_path_dialog::achbit_pick_path,
+        open_file::achbit_open_file,
+        file_reader::achbit_read_local_file,
+        open_file::achbit_locate_path,
+        achbit_boot_target,
+        achbit_default_workspace_path,
+        achbit_host_startup_status,
+        achbit_start_kernel_after_permission,
+        achbit_window_minimize,
+        achbit_window_toggle_maximize,
+        achbit_window_close,
+        achbit_open_external_url,
+        notifications::achbit_notify_completed,
+        completion_sound::achbit_completion_sound,
+        completion_sound::achbit_set_completion_sound,
+        completion_sound::achbit_preview_completion_sound,
+        ssh_gui::achbit_connect_ssh,
+        ssh_gui::achbit_open_local,
+        native_browser::achbit_browser_host,
+        native_browser::achbit_browser_command
     ];
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -517,7 +517,7 @@ fn main() {
                 let _ = tauri::Emitter::emit_to(
                     &app_handle,
                     "main",
-                    "deepcode:host-startup-complete",
+                    "achbit:host-startup-complete",
                     (),
                 );
             });
@@ -731,17 +731,17 @@ struct KernelStartResult {
 }
 
 #[tauri::command]
-fn deepcode_boot_target(target: State<'_, LaunchTarget>) -> LaunchTarget {
+fn achbit_boot_target(target: State<'_, LaunchTarget>) -> LaunchTarget {
     target.inner().clone()
 }
 
 #[tauri::command]
-fn deepcode_default_workspace_path() -> Option<String> {
+fn achbit_default_workspace_path() -> Option<String> {
     default_workspace_path().map(|path| path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn deepcode_host_startup_status(
+fn achbit_host_startup_status(
     status: State<'_, HostStartupStatusStore>,
     processes: State<'_, HostProcessGroup>,
 ) -> HostStartupStatusV1 {
@@ -772,7 +772,7 @@ fn deepcode_host_startup_status(
 }
 
 #[tauri::command(async)]
-fn deepcode_start_kernel_after_permission(
+fn achbit_start_kernel_after_permission(
     app: tauri::AppHandle,
     target: State<'_, LaunchTarget>,
     host_tokens: State<'_, HostConnectionTokens>,
@@ -780,7 +780,7 @@ fn deepcode_start_kernel_after_permission(
     status: State<'_, HostStartupStatusStore>,
 ) -> KernelStartResult {
     let current = start_host_processes(&app, &target, &host_tokens, &processes, &status);
-    let _ = tauri::Emitter::emit_to(&app, "main", "deepcode:host-startup-complete", ());
+    let _ = tauri::Emitter::emit_to(&app, "main", "achbit:host-startup-complete", ());
     let started = current.phase == "ready";
     KernelStartResult {
         started,
@@ -791,12 +791,12 @@ fn deepcode_start_kernel_after_permission(
 }
 
 #[tauri::command]
-fn deepcode_window_minimize(window: Window) -> Result<(), String> {
+fn achbit_window_minimize(window: Window) -> Result<(), String> {
     window.minimize().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn deepcode_window_toggle_maximize(window: Window) -> Result<(), String> {
+fn achbit_window_toggle_maximize(window: Window) -> Result<(), String> {
     if window.is_maximized().map_err(|err| err.to_string())? {
         window.unmaximize().map_err(|err| err.to_string())
     } else {
@@ -805,12 +805,12 @@ fn deepcode_window_toggle_maximize(window: Window) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn deepcode_window_close(window: Window) -> Result<(), String> {
+fn achbit_window_close(window: Window) -> Result<(), String> {
     window.close().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-async fn deepcode_open_external_url(url: String) -> Result<(), String> {
+async fn achbit_open_external_url(url: String) -> Result<(), String> {
     let url = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err("Only HTTP and HTTPS links can open in the system browser.".to_string());
@@ -845,8 +845,8 @@ async fn deepcode_open_external_url(url: String) -> Result<(), String> {
 }
 
 fn resolve_launch_target() -> std::io::Result<LaunchTarget> {
-    let host = std::env::var("DEEPCODE_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
-    let explicit_port = match std::env::var("DEEPCODE_PORT") {
+    let host = std::env::var("ACHBIT_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
+    let explicit_port = match std::env::var("ACHBIT_PORT") {
         Ok(value) => Some(parse_port(&value)?),
         Err(std::env::VarError::NotPresent) => None,
         Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
@@ -939,7 +939,7 @@ fn initialize_main_window(
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id().as_ref() == "reload-interface" {
-            let _ = tauri::Emitter::emit_to(app, "main", "deepcode:reload-interface", ());
+            let _ = tauri::Emitter::emit_to(app, "main", "achbit:reload-interface", ());
         }
     });
     Ok(())
@@ -994,16 +994,16 @@ fn host_bootstrap_script(
     preview: bool,
 ) -> String {
     let bootstrap = serde_json::json!({
-        "schemaVersion":"deepcode.host-ui-bootstrap", "host":target.host, "port":target.port.to_string(),
+        "schemaVersion":"achbit.host-ui-bootstrap", "host":target.host, "port":target.port.to_string(),
         "uiToken":host_tokens.ui_token(), "windowChrome":if cfg!(target_os="macos") && !preview {"nativeOverlay"} else {"custom"},
         "remote": target.ssh.is_some(), "remoteLabel": target.ssh_endpoint
     });
-    format!("Object.defineProperty(window,'__DEEPCODE_HOST_BOOT__',{{value:Object.freeze({bootstrap}),writable:false,configurable:true}});")
+    format!("Object.defineProperty(window,'__ACHBIT_HOST_BOOT__',{{value:Object.freeze({bootstrap}),writable:false,configurable:true}});")
 }
 
 fn trusted_app_navigation(url: &tauri::Url) -> bool {
     (url.scheme() == APP_ASSET_SCHEME && url.host_str() == Some("localhost"))
-        || (url.scheme() == "http" && url.host_str() == Some(concat!("deepcode-gui", ".localhost")))
+        || (url.scheme() == "http" && url.host_str() == Some(concat!("achbit-gui", ".localhost")))
         // WKWebView also reports navigation inside the sandboxed document iframe.
         || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
 }
@@ -1125,7 +1125,7 @@ fn start_host_processes(
             &attempt_id,
         );
     }
-    if env_truthy("DEEPCODE_SHELL_CONNECT_ONLY") {
+    if env_truthy("ACHBIT_SHELL_CONNECT_ONLY") {
         let result = achbit_host_connection::HostClientLease::connect_until(
             &format!("http://{}:{}", target.host, target.daemon_port),
             host_tokens.daemon_token(),
@@ -1328,7 +1328,7 @@ fn spawn_host_processes_if_available(
         )
     })?;
     let daemon_path =
-        configured_or_bundled_file("DEEPCODE_KERNEL_DAEMON_BIN", &exe_dir, kernel_binary_name())
+        configured_or_bundled_file("ACHBIT_KERNEL_DAEMON_BIN", &exe_dir, kernel_binary_name())
             .map_err(|error| {
                 startup_failure(
                     "binaryResolution",
@@ -1339,7 +1339,7 @@ fn spawn_host_processes_if_available(
                 )
             })?;
     let proxy_path =
-        configured_or_bundled_file("DEEPCODE_HOST_WEB_BIN", &exe_dir, host_web_binary_name())
+        configured_or_bundled_file("ACHBIT_HOST_WEB_BIN", &exe_dir, host_web_binary_name())
             .map_err(|error| {
                 startup_failure(
                     "binaryResolution",
@@ -1459,8 +1459,8 @@ fn spawn_host_processes_if_available(
         })?;
         daemon_command
             .current_dir(&daemon_dir)
-            .env("DEEPCODE_HOST", &target.host)
-            .env("DEEPCODE_PORT", &target.daemon_port)
+            .env("ACHBIT_HOST", &target.host)
+            .env("ACHBIT_PORT", &target.daemon_port)
             .env_remove(HOST_UI_TOKEN_ENV)
             .env(HOST_SHELL_TOKEN_ENV, host_tokens.daemon_token())
             .env(achbit_host_connection::HOST_LIFETIME_ENV, "automatic")
@@ -1538,12 +1538,12 @@ fn spawn_host_processes_if_available(
     let mut proxy_command = Command::new(proxy_path);
     proxy_command
         .current_dir(&proxy_dir)
-        .env("DEEPCODE_HOST", &proxy_host)
-        .env("DEEPCODE_PORT", &target.port)
-        .env("DEEPCODE_DAEMON_HOST", &target.host)
-        .env("DEEPCODE_DAEMON_PORT", &target.daemon_port)
-        .env("DEEPCODE_HOST_WEB_SPAWN_DAEMON", "0")
-        .env("DEEPCODE_CLIENT_DIST", web_dir)
+        .env("ACHBIT_HOST", &proxy_host)
+        .env("ACHBIT_PORT", &target.port)
+        .env("ACHBIT_DAEMON_HOST", &target.host)
+        .env("ACHBIT_DAEMON_PORT", &target.daemon_port)
+        .env("ACHBIT_HOST_WEB_SPAWN_DAEMON", "0")
+        .env("ACHBIT_CLIENT_DIST", web_dir)
         .env(HOST_UI_TOKEN_ENV, host_tokens.ui_token())
         .env(HOST_SHELL_TOKEN_ENV, host_tokens.daemon_token())
         .env(achbit_host_connection::HOST_LIFETIME_ENV, "automatic")
@@ -1635,7 +1635,7 @@ fn configured_or_bundled_file(
 }
 
 fn startup_mode() -> &'static str {
-    if env_truthy("DEEPCODE_SHELL_CONNECT_ONLY") {
+    if env_truthy("ACHBIT_SHELL_CONNECT_ONLY") {
         "connectOnly"
     } else {
         "managed"
@@ -2115,7 +2115,7 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 fn default_workspace_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("DEEPCODE_DEFAULT_WORKSPACE").map(PathBuf::from) {
+    if let Some(path) = std::env::var_os("ACHBIT_DEFAULT_WORKSPACE").map(PathBuf::from) {
         if path.is_dir() {
             return Some(path);
         }
@@ -2199,7 +2199,7 @@ mod tests {
     #[test]
     fn identity_wait_preserves_process_exit_and_original_startup_error() {
         let directory = std::env::temp_dir().join(format!(
-            "deepcode-startup-diagnostic-{}-{}",
+            "achbit-startup-diagnostic-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

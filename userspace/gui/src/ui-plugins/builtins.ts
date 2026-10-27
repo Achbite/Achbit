@@ -9,10 +9,10 @@ export function withBuiltinRegions(files: UiPluginFile[], usageEnabled = true): 
   const selected = new Set(files.filter(file => file.enabled).flatMap(file => file.manifest?.slots ?? []));
   const slots = regionSlots.filter(slot => !selected.has(slot));
   const usage: UiPluginFile[] = usageEnabled && !selected.has('usage.widget') ? [{ path: 'builtin:usage', enabled: true,
-    manifest: { id: 'deepcode.usage', name: 'Usage', entry: 'builtinUsage.mjs', slots: ['usage.widget'], capabilities: ['usage.read', 'quota.read'] },
+    manifest: { id: 'achbit.usage', name: 'Usage', entry: 'builtinUsage.mjs', slots: ['usage.widget'], capabilities: ['usage.read', 'quota.read'] },
     source: usageSource, error: null }] : [];
   // The selected built-in layout/navigation must not wait for usage or extension imports.
   return [...(slots.length ? [{ path: 'builtin:regions', enabled: true,
-    manifest: { id: 'deepcode.regions', name: 'Achbit', entry: 'builtinRegions.mjs', slots },
+    manifest: { id: 'achbit.regions', name: 'Achbit', entry: 'builtinRegions.mjs', slots },
     source: regionSource, error: null }] : []), ...files, ...usage];
 }

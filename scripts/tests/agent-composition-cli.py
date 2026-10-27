@@ -163,7 +163,7 @@ class Provider(fixture.MockProviderHandler):
 
 
 def run():
-    with tempfile.TemporaryDirectory(prefix='deepcode-agent-composition-') as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-agent-composition-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()
@@ -206,8 +206,8 @@ def run():
             + 'async run(...args){appendFileSync(' + json.dumps(str(trace))
             + ',JSON.stringify({label,sessionId:args[0].state.sessionId})+"\\n");return runAgentLoop(...args);}};}\n}]) });'
             + 'return service;};\n', encoding='utf-8')
-        previous_module = os.environ.get('DEEPCODE_SESSION_SERVICE_MODULE')
-        os.environ['DEEPCODE_SESSION_SERVICE_MODULE'] = str(module)
+        previous_module = os.environ.get('ACHBIT_SESSION_SERVICE_MODULE')
+        os.environ['ACHBIT_SESSION_SERVICE_MODULE'] = str(module)
         recipe = dict(profileId='e2e-main', runner=dict(id='fixture-driver', parameters=dict(label='root')),
                       configuration=dict(context=dict(id='journal'), compaction=dict(id='summary'),
                                          controls=dict(id='standard', parameters=dict(optionalTools=[]))),
@@ -391,9 +391,9 @@ def run():
             server.server_close()
             thread.join(timeout=5)
             if previous_module is None:
-                os.environ.pop('DEEPCODE_SESSION_SERVICE_MODULE', None)
+                os.environ.pop('ACHBIT_SESSION_SERVICE_MODULE', None)
             else:
-                os.environ['DEEPCODE_SESSION_SERVICE_MODULE'] = previous_module
+                os.environ['ACHBIT_SESSION_SERVICE_MODULE'] = previous_module
 
 
 if __name__ == '__main__':

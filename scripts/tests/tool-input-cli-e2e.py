@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
@@ -284,7 +284,7 @@ def verify_queued_attachments(daemon, state, root, workspace) -> None:
     endpoint = f"/api/conversation/sessions/{session_id}"
     def submit(command_id, text, **extra):
         return fixture.api_json(daemon.base_url, endpoint + "/commands", token=daemon.token, method="POST", body={
-            "schemaVersion": "deepcode.command.v3", "type": "message.submit", "commandId": command_id,
+            "schemaVersion": "achbit.command.v3", "type": "message.submit", "commandId": command_id,
             "sessionId": session_id, "text": text, **extra,
         })
     try:
@@ -313,7 +313,7 @@ def verify_queued_attachments(daemon, state, root, workspace) -> None:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="deepcode-tool-input-cli-") as directory:
+    with tempfile.TemporaryDirectory(prefix="achbit-tool-input-cli-") as directory:
         root = Path(directory)
         workspace = root / "workspace"
         workspace.mkdir()
@@ -396,7 +396,7 @@ def main() -> None:
             require(len(completed["todoList"]["items"]) == 13 and all(item["status"] == "completed" for item in completed["todoList"]["items"]), "阶段进度没有完整更新")
             native_session_id = fixture.create_session(daemon, workspace)["sessionId"]
             reply = fixture.api_json(daemon.base_url, f"/api/conversation/sessions/{native_session_id}/commands", token=daemon.token, method="POST", body={
-                "schemaVersion": "deepcode.command.v3", "type": "session.model-settings.set", "commandId": "command:responses-profile",
+                "schemaVersion": "achbit.command.v3", "type": "session.model-settings.set", "commandId": "command:responses-profile",
                 "sessionId": native_session_id, "settings": {"profileId": "e2e-responses", "reasoningEffortOverride": None},
             })
             require(reply["status"] == "accepted", "Responses profile 未接受")

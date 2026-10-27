@@ -33,16 +33,16 @@ pub(crate) async fn health(State(host): State<HostState>) -> Json<ApiResponse> {
         "session": "ready",
         "buildCommit": build_commit(),
         "buildInfo": build_info,
-        "protocolVersion": "deepcode.local-agent",
+        "protocolVersion": "achbit.local-agent",
         "workspace": workspace
     }))
 }
 
 pub(crate) fn build_commit() -> String {
-    std::env::var("DEEPCODE_BUILD_COMMIT")
+    std::env::var("ACHBIT_BUILD_COMMIT")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| option_env!("DEEPCODE_BUILD_COMMIT").map(str::to_string))
+        .or_else(|| option_env!("ACHBIT_BUILD_COMMIT").map(str::to_string))
         .or_else(read_packaged_build_commit)
         .unwrap_or_else(|| "unknown".to_string())
 }

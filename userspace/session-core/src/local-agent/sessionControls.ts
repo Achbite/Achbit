@@ -43,14 +43,17 @@ export function sessionControlInstructions(
   hasPluginDiscovery = false,
   optionalTools?: readonly string[],
   planEnabled = true,
+  availableControls?: readonly string[],
 ): string {
-  const controls = [names.interactionRequest, ...(hasWorkspaceBindings && planEnabled ? [names.planPublish] : [])];
+  const available = (name: string) => availableControls === undefined || availableControls.includes(name);
+  const controls = [...(available(SESSION_CONTROL_INTERACTION_REQUEST) ? [names.interactionRequest] : []),
+    ...(hasWorkspaceBindings && planEnabled && available(SESSION_CONTROL_PLAN_PUBLISH) ? [names.planPublish] : [])];
   const routes = [
-    ...(hasPluginDiscovery ? [`Discover optional capabilities with plugin.search, then ${names.pluginActivate}.`] : []),
-    ...(!optionalTools || optionalTools.includes(SESSION_CONTROL_TODO_UPDATE) ? [`Track useful progress with ${names.todoUpdate}.`] : []),
-    ...(!optionalTools || optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT) ? [`Deliver requested resources with ${names.artifactPresent}.`] : []),
+    ...(hasPluginDiscovery && available(SESSION_CONTROL_PLUGIN_ACTIVATE) ? [`Discover optional capabilities with plugin.search, then ${names.pluginActivate}.`] : []),
+    ...(available(SESSION_CONTROL_TODO_UPDATE) && (!optionalTools || optionalTools.includes(SESSION_CONTROL_TODO_UPDATE)) ? [`Track useful progress with ${names.todoUpdate}.`] : []),
+    ...(available(SESSION_CONTROL_ARTIFACT_PRESENT) && (!optionalTools || optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT)) ? [`Deliver requested resources with ${names.artifactPresent}.`] : []),
   ];
-  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${controls.join(' and ')} must each be the only call in their turn.${hasWorkspaceBindings ? ' Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.' : ''} ${routes.join(' ')}`;
+  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${controls.length ? `${controls.join(' and ')} must each be the only call in their turn.` : ''}${hasWorkspaceBindings ? ' Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.' : ''} ${routes.join(' ')}`;
 }
 
 const INTERACTION_SCHEMA: JsonObject = {
@@ -259,6 +262,11 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         controls: { type: 'object', description: 'A returned controls contribution id and its supported parameters.' },
         compaction: { type: 'object', description: 'Optional compaction override. summary.parameters supports enabled, thresholdTokens and pressureRatio; omitted values inherit.' },
       } },
+      tools: { type: 'object', additionalProperties: false, properties: {
+        kernel: { type: 'array', uniqueItems: true, items: { type: 'string' } },
+        controls: { type: 'array', uniqueItems: true, items: { type: 'string' } },
+        plugins: { type: 'boolean' },
+      }, description: 'Select task tools by canonical name; omitted groups inherit. Empty lists install none. Selection may only narrow the parent.' },
       permissions: { type: 'object', description: 'Optional restrictions of inherited agent.permissions settings. Cannot grant new authority or approve a Plan.' },
       runner: { type: 'object', description: 'Select an installed Loop driver from runners by id and parameters. Presets are defaults, not fixed agent types.' },
       permissionPolicy: { type: 'object', description: 'Select a returned policy by id and parameters; only narrow parent authority.' },
@@ -284,7 +292,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
   ];
 }
 
-export function sessionControlToolDefinitions(capabilities?: AgentCapabilities): readonly ProviderToolDefinition[] {
+export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, canDelegate = true): readonly ProviderToolDefinition[] {
   return [
     {
       name: SESSION_CONTROL_SESSION,
@@ -295,10 +303,10 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities):
     },
     {
       name: SESSION_CONTROL_AGENT,
-      description: (capabilities && !capabilities.delegation
+      description: (capabilities && (!capabilities.delegation || !canDelegate)
         ? capabilities.messaging === 'parent' ? 'Contact your current task owner. Call action=models for contacts and operations. Send findings, questions or scope needs; messages do not grant permissions or start tasks. Use session wait for a needed reply; return a final answer when done. Retaining the Session needs no active wait.'
           : 'Coordinate directly with teammates. Agree on shared interfaces and one writer per shared file; send unresolved disagreements or scope needs to the coordinator. Messages are not agreement or permission. Use session wait for needed replies; finish with a final answer and evidence, not an indefinite wait. Call action=models for contacts and operations. Multiple messages may share a turn.'
-        : 'Delegate useful independent work when enabled; keep coupled work local. Supply context, scope and expected evidence; coordinate shared edits and verify final results. Completed tasks release execution without close. Disabling blocks new tasks. Call action=models for operations and configuration; operations.md in productDocsPath explains coordination.') + agentTurnInstruction,
+        : 'Proactively delegate useful independent work; keep coupled work local. Supply context, scope and expected evidence; coordinate shared edits and verify final results. Use analysis for reading specified files and reporting findings; use collaboration for edits or ongoing communication. Completed tasks release execution without close. Call action=models for operations and configuration; operations.md in productDocsPath explains coordination.') + agentTurnInstruction,
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
@@ -444,8 +452,8 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       assertExactKeys(input, ['action']);
       return { action: 'models' };
     case 'spawn': {
-      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox'],
-        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox']);
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools'],
+        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools']);
       if (input.preset !== undefined) requiredText(input.preset, 'preset');
       if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
         || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key)
@@ -466,7 +474,7 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
         loop = Object.fromEntries(Object.entries(input.loop).map(([key, value]) => [key, decodeAgentContribution(value)]));
       }
       if (input.permissions !== undefined) validatePermissionPatches(input.permissions);
-      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox']
+      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools']
         .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
         ...components,

@@ -1,5 +1,5 @@
 {
-  "id": "deepcode.workbench-controls-example",
+  "id": "achbit.workbench-controls-example",
   "name": "Workbench Controls Example",
   "entry": "index.mjs",
   "slots": ["conversation.header", "settings.navigation", "reader.tree"]

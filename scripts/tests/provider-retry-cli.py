@@ -68,7 +68,7 @@ def events(daemon, session):
 
 
 def run():
-    with tempfile.TemporaryDirectory(prefix='deepcode-provider-retry-') as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-provider-retry-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()

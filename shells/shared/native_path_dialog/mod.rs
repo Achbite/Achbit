@@ -71,7 +71,7 @@ fn describe_selection(path: PathBuf) -> Result<PathSelection, String> {
 }
 
 #[tauri::command]
-pub async fn deepcode_pick_path(
+pub async fn achbit_pick_path(
     window: tauri::Window,
     options: PathOptions,
 ) -> Result<Option<Vec<PathSelection>>, String> {

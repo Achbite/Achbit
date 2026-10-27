@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-const storageKey = 'deepcode:interface-reload';
+const storageKey = 'achbit:interface-reload';
 const views = new Map<string, () => unknown>();
 const guards = new Map<symbol, () => { label: string; busy: boolean } | null>();
 let restored: Record<string, unknown> = {};
@@ -39,7 +39,7 @@ export function registerInterfaceReloadGuard(read: () => { label: string; busy: 
   return () => { guards.delete(id); };
 }
 export function interfaceReloadGuards() { return [...guards.values()].flatMap(read => read() ?? []); }
-export function requestInterfaceReload() { window.dispatchEvent(new Event('deepcode:request-interface-reload')); }
+export function requestInterfaceReload() { window.dispatchEvent(new Event('achbit:request-interface-reload')); }
 function saveInterfaceViews() {
   sessionStorage.setItem(storageKey, JSON.stringify(Object.fromEntries([...views].map(([key, read]) => [key, read()]))));
 }
@@ -60,9 +60,9 @@ export function refreshInterface(): { status: 'needsUser' | 'scheduled'; guards:
   return { status: 'scheduled', guards: [] };
 }
 export function installInterfaceReloadShortcut() {
-  const hostWindow = window as Window & { __DEEPCODE_INTERFACE__?: { refresh: typeof refreshInterface } };
+  const hostWindow = window as Window & { __ACHBIT_INTERFACE__?: { refresh: typeof refreshInterface } };
   const control = { refresh: refreshInterface };
-  hostWindow.__DEEPCODE_INTERFACE__ = control;
+  hostWindow.__ACHBIT_INTERFACE__ = control;
   const keydown = (event: KeyboardEvent) => {
     if (!event.isComposing && !event.repeat && (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'r') {
       event.preventDefault(); event.stopImmediatePropagation(); requestInterfaceReload();
@@ -71,9 +71,9 @@ export function installInterfaceReloadShortcut() {
   window.addEventListener('keydown', keydown, true);
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  void window.__TAURI__?.event?.listen('deepcode:reload-interface', requestInterfaceReload).then(stop => { if (disposed) stop(); else unlisten = stop; });
+  void window.__TAURI__?.event?.listen('achbit:reload-interface', requestInterfaceReload).then(stop => { if (disposed) stop(); else unlisten = stop; });
   return () => {
     disposed = true; unlisten?.(); window.removeEventListener('keydown', keydown, true);
-    if (hostWindow.__DEEPCODE_INTERFACE__ === control) delete hostWindow.__DEEPCODE_INTERFACE__;
+    if (hostWindow.__ACHBIT_INTERFACE__ === control) delete hostWindow.__ACHBIT_INTERFACE__;
   };
 }

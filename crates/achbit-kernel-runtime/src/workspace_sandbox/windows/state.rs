@@ -1,4 +1,4 @@
-//! Persistent sandbox identity of one DeepCode data root.
+//! Persistent sandbox identity of one Achbit data root.
 //!
 //! Every grant is an ACE for a capability SID derived from (owner, access, path).
 //! A Shell's token carries only the capabilities of its own admitted scope, so an
@@ -27,7 +27,7 @@ pub(super) struct Entry {
 
 static STATE: OnceLock<State> = OnceLock::new();
 
-/// Bind the sandbox to a DeepCode data root before its first Shell. Without it,
+/// Bind the sandbox to a Achbit data root before its first Shell. Without it,
 /// tools and tests use one fixed per-user default root.
 pub fn configure(root: &Path) -> Result<(), String> {
     let state = State::open(root)?;
@@ -45,7 +45,7 @@ pub(super) fn state() -> Result<&'static State, String> {
     if let Some(state) = STATE.get() {
         return Ok(state);
     }
-    let state = State::open(&std::env::temp_dir().join("DeepCode-windows-sandbox"))?;
+    let state = State::open(&std::env::temp_dir().join("Achbit-windows-sandbox"))?;
     Ok(STATE.get_or_init(|| state))
 }
 
@@ -111,7 +111,7 @@ impl State {
     /// Profiles are per data root and network setting; paths use capabilities.
     pub(super) fn profile_name(&self, network: bool) -> String {
         let network = if network { "online" } else { "offline" };
-        format!("DeepCode.Shell.{}.{network}", self.owner)
+        format!("Achbit.Shell.{}.{network}", self.owner)
     }
 
     fn profiles_path(&self) -> PathBuf {
@@ -154,11 +154,11 @@ impl State {
     pub(super) fn capability_name(&self, kind: &str, path: Option<&Path>) -> String {
         match path {
             Some(path) => format!(
-                "DeepCode.{}.{kind}.{}",
+                "Achbit.{}.{kind}.{}",
                 self.owner,
                 stable_hash(&path.to_string_lossy())
             ),
-            None => format!("DeepCode.{}.{kind}", self.owner),
+            None => format!("Achbit.{}.{kind}", self.owner),
         }
     }
 
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(stable_hash("C:\\Work"), stable_hash("c:\\work"));
         assert_ne!(stable_hash("C:\\Work"), stable_hash("C:\\Work2"));
         let root =
-            std::env::temp_dir().join(format!("deepcode-sandbox-state-{}", std::process::id()));
+            std::env::temp_dir().join(format!("achbit-sandbox-state-{}", std::process::id()));
         let state = State::open(&root).unwrap();
         let other = State::open(&root.join("other")).unwrap();
         assert_ne!(state.profile_name(false), other.profile_name(false));
@@ -221,9 +221,9 @@ mod tests {
             state.profile_name(true).len() <= 64,
             "AppContainer names are limited to 64 characters"
         );
-        state.record_profile("DeepCode.Shell.test.a").unwrap();
-        state.record_profile("DeepCode.Shell.test.a").unwrap();
-        assert_eq!(state.profiles(), vec!["DeepCode.Shell.test.a".to_string()]);
+        state.record_profile("Achbit.Shell.test.a").unwrap();
+        state.record_profile("Achbit.Shell.test.a").unwrap();
+        assert_eq!(state.profiles(), vec!["Achbit.Shell.test.a".to_string()]);
         state.forget_profiles(&[]).unwrap();
         assert!(state.profiles().is_empty());
         let path = Path::new(r"C:\project");

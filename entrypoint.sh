@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ====================================================================
-# DeepCode 开发容器入口脚本
+# Achbit 开发容器入口脚本
 # 职责：
 #   1. 打印环境概要（rustc / cargo / node / pnpm）
 #   2. 校准 PATH 与可写权限（首次启动时确保 named volume 子目录存在）
@@ -10,7 +10,7 @@
 # ====================================================================
 set -euo pipefail
 
-echo "[entrypoint] DeepCode 开发容器启动"
+echo "[entrypoint] Achbit 开发容器启动"
 echo "[entrypoint] uname:   $(uname -a)"
 echo "[entrypoint] workdir: $(pwd)"
 

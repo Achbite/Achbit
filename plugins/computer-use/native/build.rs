@@ -31,13 +31,13 @@ fn main() {
     );
     assert!(Command::new("ar")
         .arg("crs")
-        .arg(out.join("libdeepcode_sharing.a"))
+        .arg(out.join("libachbit_sharing.a"))
         .arg(object)
         .status()
         .expect("Apple ar")
         .success());
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=deepcode_sharing");
+    println!("cargo:rustc-link-lib=static=achbit_sharing");
     for framework in [
         "ScreenCaptureKit",
         "AppKit",

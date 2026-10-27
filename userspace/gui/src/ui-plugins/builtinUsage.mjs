@@ -1,23 +1,23 @@
 const css = `
-.dc-usage {position:absolute;pointer-events:auto;width:max-content;font:12px var(--dc-font-ui,system-ui);color:var(--dc-foreground);max-width:min(320px,calc(100% - 32px))}
-.dc-usage [hidden] {display:none!important}
-.dc-usage button {font:inherit;color:inherit;cursor:pointer;border:0;background:transparent;border-radius:8px;padding:9px;text-align:left}
-.dc-usage button:hover {background:var(--dc-surface-hover)}
-.dc-usage__summary {display:flex;align-items:center;min-width:182px;max-width:100%;background:var(--dc-surface-raised);border:1px solid var(--dc-border);border-radius:12px;box-shadow:0 3px 14px #0000000c}
-.dc-usage__summary[data-subscription] {min-width:0;border-radius:10px}
-.dc-usage__summary[data-subscription]>.dc-usage__body {display:flex;align-items:center;min-height:38px;padding:9px 9px 9px 13px}
-.dc-usage__body {flex:1;min-width:0;display:grid;gap:4px}.dc-usage strong{font-weight:600}.dc-usage small{color:var(--dc-muted);font-size:11px}
-.dc-usage__body small {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dc-usage [data-usage-drag] {cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
-.dc-usage[data-dragging] [data-usage-drag] {cursor:grabbing}
-.dc-usage__details,.dc-usage__menu {position:absolute;box-sizing:border-box;overflow:auto;background:var(--dc-surface-raised);border:1px solid var(--dc-border);box-shadow:0 6px 24px #00000010;border-radius:12px;padding:14px;width:260px;max-width:calc(var(--dc-usage-boundary-width) - 32px)}
-.dc-usage__line {display:flex;justify-content:space-between;gap:12px;margin:10px 0}.dc-usage__menu {width:180px;padding:5px}.dc-usage__menu button {display:block;width:100%}
-.dc-usage__chart {height:28px;display:flex;gap:3px;align-items:end;margin-top:14px}.dc-usage__chart i{flex:1;background:var(--dc-accent);opacity:.6;min-height:1px;border-radius:2px}
-.dc-usage__error {color:var(--dc-danger);overflow-wrap:anywhere}.dc-usage__handle{display:flex;align-items:center;justify-content:center;width:var(--dc-usage-handle-width,18px);height:var(--dc-usage-handle-height,28px);padding:0!important;background:var(--dc-surface-raised)!important;border:1px solid var(--dc-border)!important;border-radius:var(--dc-radius-control) 0 0 var(--dc-radius-control)!important}
-.dc-usage[data-dock='left'] .dc-usage__handle {border-radius:0 var(--dc-radius-control) var(--dc-radius-control) 0!important}
-.dc-usage[data-dragging] .dc-usage__handle {border-radius:var(--dc-radius-control)!important}
+.ac-usage {position:absolute;pointer-events:auto;width:max-content;font:12px var(--ac-font-ui,system-ui);color:var(--ac-foreground);max-width:min(320px,calc(100% - 32px))}
+.ac-usage [hidden] {display:none!important}
+.ac-usage button {font:inherit;color:inherit;cursor:pointer;border:0;background:transparent;border-radius:8px;padding:9px;text-align:left}
+.ac-usage button:hover {background:var(--ac-surface-hover)}
+.ac-usage__summary {display:flex;align-items:center;min-width:182px;max-width:100%;background:var(--ac-surface-raised);border:1px solid var(--ac-border);border-radius:12px;box-shadow:0 3px 14px #0000000c}
+.ac-usage__summary[data-subscription] {min-width:0;border-radius:10px}
+.ac-usage__summary[data-subscription]>.ac-usage__body {display:flex;align-items:center;min-height:38px;padding:9px 9px 9px 13px}
+.ac-usage__body {flex:1;min-width:0;display:grid;gap:4px}.ac-usage strong{font-weight:600}.ac-usage small{color:var(--ac-muted);font-size:11px}
+.ac-usage__body small {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-usage [data-usage-drag] {cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+.ac-usage[data-dragging] [data-usage-drag] {cursor:grabbing}
+.ac-usage__details,.ac-usage__menu {position:absolute;box-sizing:border-box;overflow:auto;background:var(--ac-surface-raised);border:1px solid var(--ac-border);box-shadow:0 6px 24px #00000010;border-radius:12px;padding:14px;width:260px;max-width:calc(var(--ac-usage-boundary-width) - 32px)}
+.ac-usage__line {display:flex;justify-content:space-between;gap:12px;margin:10px 0}.ac-usage__menu {width:180px;padding:5px}.ac-usage__menu button {display:block;width:100%}
+.ac-usage__chart {height:28px;display:flex;gap:3px;align-items:end;margin-top:14px}.ac-usage__chart i{flex:1;background:var(--ac-accent);opacity:.6;min-height:1px;border-radius:2px}
+.ac-usage__error {color:var(--ac-danger);overflow-wrap:anywhere}.ac-usage__handle{display:flex;align-items:center;justify-content:center;width:var(--ac-usage-handle-width,18px);height:var(--ac-usage-handle-height,28px);padding:0!important;background:var(--ac-surface-raised)!important;border:1px solid var(--ac-border)!important;border-radius:var(--ac-radius-control) 0 0 var(--ac-radius-control)!important}
+.ac-usage[data-dock='left'] .ac-usage__handle {border-radius:0 var(--ac-radius-control) var(--ac-radius-control) 0!important}
+.ac-usage[data-dragging] .ac-usage__handle {border-radius:var(--ac-radius-control)!important}
 `;
-const positionKey = 'deepcode:usage-widget:position';
+const positionKey = 'achbit:usage-widget:position';
 export default { apply(context) {
   context.addStyle(css);
   context.register('usage.widget', (container, initial, scope) => {
@@ -34,25 +34,25 @@ export default { apply(context) {
       try { window.localStorage.setItem(positionKey, JSON.stringify({ ...position, dock })); }
       catch (reason) { console.error('Cannot save usage widget position', reason); }
     };
-    const root = document.createElement('section'); root.className = 'dc-usage'; container.append(root);
+    const root = document.createElement('section'); root.className = 'ac-usage'; container.append(root);
     const text = key => input.labels[key];
     const node = (tag, content, cls) => { const el = document.createElement(tag); if (content != null) el.textContent = content; if(cls) el.className = cls; return el; };
     const button = (label, action, cls) => { const el = node('button', label, cls); el.type='button'; el.onclick=action; return el; };
     const money = value => new Intl.NumberFormat(input.locale,{style:'currency',currency:input.costDisplay.currency,maximumFractionDigits:4}).format(value * input.costDisplay.usdRate);
     const remaining = window => `${Math.max(0, Math.min(100, 100-window.usedPercent)).toFixed(0)}%`;
-    const line = (parent,label,value) => { const row=node('div',null,'dc-usage__line'); row.append(node('span',label),node('strong',value));parent.append(row); };
+    const line = (parent,label,value) => { const row=node('div',null,'ac-usage__line'); row.append(node('span',label),node('strong',value));parent.append(row); };
     const clamp = (value, min, max) => Math.min(Math.max(value, min), Math.max(min, max));
     // Keep the controls mounted while usage changes so a response cannot swallow a pointer click.
-    const summary = node('div', null, 'dc-usage__summary');
-    const body = button('', () => scope.actions.setExpanded(!input.expanded), 'dc-usage__body');
+    const summary = node('div', null, 'ac-usage__summary');
+    const body = button('', () => scope.actions.setExpanded(!input.expanded), 'ac-usage__body');
     body.dataset.usageDrag = '';
     const caption = node('small'), amountLabel = node('strong'); body.append(caption, amountLabel);
     const collapse = button('›', () => scope.actions.setUsageVisibility('collapsed'));
     summary.append(body, collapse);
-    const handle = button('‹', () => scope.actions.setUsageVisibility('summary'), 'dc-usage__handle');
+    const handle = button('‹', () => scope.actions.setUsageVisibility('summary'), 'ac-usage__handle');
     handle.dataset.usageDrag = '';
-    const detail = node('div', null, 'dc-usage__details'); detail.dataset.nativeOverlay = '';
-    const menuBox = node('div', null, 'dc-usage__menu'); menuBox.setAttribute('role', 'menu'); menuBox.dataset.nativeOverlay = '';
+    const detail = node('div', null, 'ac-usage__details'); detail.dataset.nativeOverlay = '';
+    const menuBox = node('div', null, 'ac-usage__menu'); menuBox.setAttribute('role', 'menu'); menuBox.dataset.nativeOverlay = '';
     const settings = button('', () => { menu = false; render(); scope.actions.openUsageSettings(); });
     const hide = button('', () => { menu = false; scope.actions.setUsageVisibility('hidden'); });
     menuBox.append(settings, hide);
@@ -65,7 +65,7 @@ export default { apply(context) {
     function place() {
       if (root.hidden || !container.clientWidth || !container.clientHeight) return;
       const width = container.clientWidth, height = container.clientHeight;
-      root.style.setProperty('--dc-usage-boundary-width', `${width}px`);
+      root.style.setProperty('--ac-usage-boundary-width', `${width}px`);
       const box = root.getBoundingClientRect();
       // The compact handle docks at an edge; the summary opens into the panel.
       // Layout changes constrain rendering, not the user's remembered position.
@@ -76,10 +76,10 @@ export default { apply(context) {
         : clamp(position.x ?? width - box.width - 16, 8, width - box.width - 8);
       const y = clamp(position.centerY - box.height / 2, 8, height - box.height - 8);
       root.dataset.dock = dock;
-      const handle = root.querySelectorAll('.dc-usage__handle')[0];
+      const handle = root.querySelectorAll('.ac-usage__handle')[0];
       if (handle) handle.textContent = dock === 'left' ? '›' : '‹';
       root.style.left = `${x}px`; root.style.top = `${y}px`;
-      for (const panel of root.querySelectorAll('.dc-usage__details,.dc-usage__menu')) {
+      for (const panel of root.querySelectorAll('.ac-usage__details,.ac-usage__menu')) {
         panel.style.maxHeight = `${Math.max(0, height - 16)}px`;
         const size = panel.getBoundingClientRect();
         const panelX = clamp(x + box.width - size.width, 8, width - size.width - 8);
@@ -166,13 +166,13 @@ export default { apply(context) {
         const scrollTop = detail.scrollTop;
         detail.replaceChildren();
         detail.append(node('strong',quota ? text('remaining') : text('today')));
-        if(error) detail.append(node('p',error,'dc-usage__error'));
+        if(error) detail.append(node('p',error,'ac-usage__error'));
         else if(loading && !data) detail.append(node('small','…'));
         else if(quota) { for(const window of windows) { line(detail,window.label,remaining(window)); if(window.resetsAt) detail.append(node('small',text('resets')+new Date(window.resetsAt).toLocaleString(input.locale))); } }
         else if(totals) { if (!plan) line(detail,text('estimate'),amount);line(detail,text('tokens'),`${totals.inputTokens.toLocaleString()} / ${totals.outputTokens.toLocaleString()}`);line(detail,text('cached'),totals.cacheReadTokens.toLocaleString());line(detail,text('calls'),String(totals.calls));
           if(!plan && totals.pricedCalls < totals.calls) detail.append(node('small',text('priced')+`${totals.pricedCalls}/${totals.calls}`));
           if(data.coverageFrom > data.query.from) detail.append(node('small',text('coverage')+new Date(data.coverageFrom).toLocaleString(input.locale)));
-          const chart=node('div',null,'dc-usage__chart'), max=Math.max(1,...data.buckets.map(bucket=>bucket.inputTokens+bucket.outputTokens));chart.setAttribute('aria-label',text('hourly'));
+          const chart=node('div',null,'ac-usage__chart'), max=Math.max(1,...data.buckets.map(bucket=>bucket.inputTokens+bucket.outputTokens));chart.setAttribute('aria-label',text('hourly'));
           for(const bucket of data.buckets) { const bar=node('i');bar.style.height=`${(bucket.inputTokens+bucket.outputTokens)/max*100}%`;bar.title=`${bucket.label}: ${bucket.inputTokens+bucket.outputTokens}`;chart.append(bar); }detail.append(chart);
         }
         detail.scrollTop = scrollTop;

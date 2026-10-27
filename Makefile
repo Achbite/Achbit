@@ -8,48 +8,45 @@ IMAGE_TAG        ?= latest
 IMAGE            := $(IMAGE_NAME):$(IMAGE_TAG)
 DOCKERFILE       ?= Dockerfile.dev
 WORKDIR_IN_CTNR  ?= /workspace
-DEEPCODE_PROJECT_ROOT := $(realpath $(CURDIR))
-DEEPCODE_BUILD_HOST_OS := $(shell uname -s)
+ACHBIT_PROJECT_ROOT := $(realpath $(CURDIR))
 UI_PLUGIN ?= ui-plugins/template
 UI_PACKAGE ?=
 CONTAINER_NAME ?= achbit-dev
 CONTAINER_HOSTNAME ?= achbit-dev
-DEEPCODE_HOST_PORT ?= 31246
-DEEPCODE_CONTAINER_PORT ?= 31246
-DEEPCODE_RUST_TOOLCHAIN ?= $(shell awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $$2; exit }' rust-toolchain.toml)
-DEEPCODE_RUST_VERSION ?= $(patsubst %.0,%,$(DEEPCODE_RUST_TOOLCHAIN))
-DEEPCODE_APT_MIRROR ?= https://mirrors.tuna.tsinghua.edu.cn/debian
-DEEPCODE_APT_SECURITY_MIRROR ?= https://mirrors.tuna.tsinghua.edu.cn/debian-security
-DEEPCODE_NODE_VERSION ?= 22.22.3
-DEEPCODE_NODE_DIST_BASE ?= https://npmmirror.com/mirrors/node
-DEEPCODE_NPM_REGISTRY ?= https://registry.npmmirror.com
-DEEPCODE_RUSTUP_DIST_SERVER ?= https://mirrors.ustc.edu.cn/rust-static
-DEEPCODE_RUSTUP_UPDATE_ROOT ?= https://mirrors.ustc.edu.cn/rust-static/rustup
+ACHBIT_HOST_PORT ?= 31246
+ACHBIT_CONTAINER_PORT ?= 31246
+ACHBIT_RUST_TOOLCHAIN ?= $(shell awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $$2; exit }' rust-toolchain.toml)
+ACHBIT_RUST_VERSION ?= $(patsubst %.0,%,$(ACHBIT_RUST_TOOLCHAIN))
+ACHBIT_APT_MIRROR ?= https://deb.debian.org/debian
+ACHBIT_APT_SECURITY_MIRROR ?= https://deb.debian.org/debian-security
+ACHBIT_NODE_VERSION ?= 22.22.3
+ACHBIT_NODE_DIST_BASE ?= https://npmmirror.com/mirrors/node
+ACHBIT_NPM_REGISTRY ?= https://registry.npmmirror.com
+ACHBIT_RUSTUP_DIST_SERVER ?= https://mirrors.ustc.edu.cn/rust-static
+ACHBIT_RUSTUP_UPDATE_ROOT ?= https://mirrors.ustc.edu.cn/rust-static/rustup
 UNAME_R := $(shell uname -r 2>/dev/null)
 IS_WSL := $(findstring Microsoft,$(UNAME_R))$(findstring microsoft,$(UNAME_R))
-ifneq ($(IS_WSL),)
-DEEPCODE_BUILD_HOST_OS := Windows_NT
-endif
-DEEPCODE_DOCKER_NET_ENV_PASSTHROUGH ?= auto
-DEEPCODE_CONTAINER_CARGO_TARGET_DIR ?= $(WORKDIR_IN_CTNR)/target
-DEEPCODE_CONTAINER_TMPDIR ?= /tmp/deepcode-build
-DEEPCODE_CONTAINER_SCCACHE_DIR ?= $(WORKDIR_IN_CTNR)/target/.sccache
+ACHBIT_BUILD_HOST_OS ?= $(if $(IS_WSL),Windows_NT,$(shell uname -s))
+ACHBIT_DOCKER_NET_ENV_PASSTHROUGH ?= auto
+ACHBIT_CONTAINER_CARGO_TARGET_DIR ?= $(WORKDIR_IN_CTNR)/target
+ACHBIT_CONTAINER_TMPDIR ?= /tmp/achbit-build
+ACHBIT_CONTAINER_SCCACHE_DIR ?= $(WORKDIR_IN_CTNR)/target/.sccache
 BUILD_ARGS := \
-	--build-arg DEEPCODE_RUST_VERSION=$(DEEPCODE_RUST_VERSION) \
-	--build-arg DEEPCODE_APT_MIRROR=$(DEEPCODE_APT_MIRROR) \
-	--build-arg DEEPCODE_APT_SECURITY_MIRROR=$(DEEPCODE_APT_SECURITY_MIRROR) \
-	--build-arg DEEPCODE_NODE_VERSION=$(DEEPCODE_NODE_VERSION) \
-	--build-arg DEEPCODE_NODE_DIST_BASE=$(DEEPCODE_NODE_DIST_BASE) \
-	--build-arg DEEPCODE_NPM_REGISTRY=$(DEEPCODE_NPM_REGISTRY) \
-	--build-arg DEEPCODE_RUSTUP_DIST_SERVER=$(DEEPCODE_RUSTUP_DIST_SERVER) \
-	--build-arg DEEPCODE_RUSTUP_UPDATE_ROOT=$(DEEPCODE_RUSTUP_UPDATE_ROOT)
+	--build-arg ACHBIT_RUST_VERSION=$(ACHBIT_RUST_VERSION) \
+	--build-arg ACHBIT_APT_MIRROR=$(ACHBIT_APT_MIRROR) \
+	--build-arg ACHBIT_APT_SECURITY_MIRROR=$(ACHBIT_APT_SECURITY_MIRROR) \
+	--build-arg ACHBIT_NODE_VERSION=$(ACHBIT_NODE_VERSION) \
+	--build-arg ACHBIT_NODE_DIST_BASE=$(ACHBIT_NODE_DIST_BASE) \
+	--build-arg ACHBIT_NPM_REGISTRY=$(ACHBIT_NPM_REGISTRY) \
+	--build-arg ACHBIT_RUSTUP_DIST_SERVER=$(ACHBIT_RUSTUP_DIST_SERVER) \
+	--build-arg ACHBIT_RUSTUP_UPDATE_ROOT=$(ACHBIT_RUSTUP_UPDATE_ROOT)
 
 # ---- 持久化卷（只有 make clean 才会清空，避免每次 shell 重装依赖）----
-VOL_PNPM_STORE        ?= deepcode-pnpm-store
-VOL_CARGO_REGISTRY    ?= deepcode-cargo-registry
-DEEPCODE_CACHE_SCOPE  ?= $(notdir $(DEEPCODE_PROJECT_ROOT))
-VOL_CARGO_TARGET      ?= deepcode-$(DEEPCODE_CACHE_SCOPE)-cargo-target
-VOL_NODE_MODULES      ?= deepcode-$(DEEPCODE_CACHE_SCOPE)-node-modules
+VOL_PNPM_STORE        ?= achbit-pnpm-store
+VOL_CARGO_REGISTRY    ?= achbit-cargo-registry
+ACHBIT_CACHE_SCOPE  ?= $(notdir $(ACHBIT_PROJECT_ROOT))
+VOL_CARGO_TARGET      ?= achbit-$(ACHBIT_CACHE_SCOPE)-cargo-target
+VOL_NODE_MODULES      ?= achbit-$(ACHBIT_CACHE_SCOPE)-node-modules
 VOLUMES_ALL := $(VOL_PNPM_STORE) $(VOL_CARGO_REGISTRY) $(VOL_CARGO_TARGET) $(VOL_NODE_MODULES)
 
 # ---- WSL / Docker 网络变量透传 ----
@@ -69,9 +66,9 @@ NETWORK_ENV_ARGS_BASE := \
 	-e CARGO_HTTP_CAINFO \
 	-e CARGO_HTTP_PROXY_CAINFO
 
-ifeq ($(DEEPCODE_DOCKER_NET_ENV_PASSTHROUGH),1)
+ifeq ($(ACHBIT_DOCKER_NET_ENV_PASSTHROUGH),1)
 NETWORK_ENV_ARGS := $(NETWORK_ENV_ARGS_BASE)
-else ifeq ($(DEEPCODE_DOCKER_NET_ENV_PASSTHROUGH),0)
+else ifeq ($(ACHBIT_DOCKER_NET_ENV_PASSTHROUGH),0)
 NETWORK_ENV_ARGS :=
 else ifneq ($(IS_WSL),)
 NETWORK_ENV_ARGS := $(NETWORK_ENV_ARGS_BASE)
@@ -91,10 +88,10 @@ RUN_ARGS := \
 	--security-opt=apparmor=unconfined \
 	--security-opt=seccomp=unconfined \
 	--security-opt=systempaths=unconfined \
-	--label "com.deepcode.project.root=$(DEEPCODE_PROJECT_ROOT)" \
+	--label "com.achbit.project.root=$(ACHBIT_PROJECT_ROOT)" \
 	-w "$(WORKDIR_IN_CTNR)" \
-	-p 127.0.0.1:$(DEEPCODE_HOST_PORT):$(DEEPCODE_CONTAINER_PORT) \
-	-v "$(DEEPCODE_PROJECT_ROOT):$(WORKDIR_IN_CTNR)" \
+	-p 127.0.0.1:$(ACHBIT_HOST_PORT):$(ACHBIT_CONTAINER_PORT) \
+	-v "$(ACHBIT_PROJECT_ROOT):$(WORKDIR_IN_CTNR)" \
 	-v $(VOL_PNPM_STORE):/root/.local/share/pnpm/store \
 	-v $(VOL_CARGO_REGISTRY):/usr/local/cargo/registry \
 	-v $(VOL_CARGO_TARGET):$(WORKDIR_IN_CTNR)/target \
@@ -103,12 +100,13 @@ RUN_ARGS := \
 	-e RUSTUP_HOME=/usr/local/rustup \
 	-e PNPM_HOME=/root/.local/share/pnpm \
 	-e PNPM_STORE_DIR=/root/.local/share/pnpm/store \
-	-e DEEPCODE_WINDOWS_NODE_BIN=/opt/deepcode-node-win64/node.exe \
-	-e DEEPCODE_NODE_LICENSE=/usr/local/LICENSE \
-	-e CARGO_TARGET_DIR=$(DEEPCODE_CONTAINER_CARGO_TARGET_DIR) \
-	-e DEEPCODE_TMPDIR=$(DEEPCODE_CONTAINER_TMPDIR) \
-	-e SCCACHE_DIR=$(DEEPCODE_CONTAINER_SCCACHE_DIR) \
-	-e DEEPCODE_BUILD_HOST_OS=$(DEEPCODE_BUILD_HOST_OS) \
+	-e ACHBIT_WINDOWS_NODE_BIN=/opt/achbit-node-win64/node.exe \
+	-e ACHBIT_NODE_LICENSE=/usr/local/LICENSE \
+	-e CARGO_TARGET_DIR=$(ACHBIT_CONTAINER_CARGO_TARGET_DIR) \
+	-e ACHBIT_TMPDIR=$(ACHBIT_CONTAINER_TMPDIR) \
+	-e SCCACHE_DIR=$(ACHBIT_CONTAINER_SCCACHE_DIR) \
+	-e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) \
+	-e ACHBIT_MACOS_SIGN_IDENTITY \
 	-e PATH=/root/.local/share/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	$(NETWORK_ENV_ARGS)
 
@@ -119,6 +117,7 @@ export CONTAINER_NAME WORKDIR_IN_CTNR
 
 help:
 	@echo "make shell / docker-info / reset-dev: 当前 worktree 的 Docker 环境；Mac 自动准备宿主打包通道"
+	@echo "make shell: 自动检查镜像输入；有改动时更新，未变化层直接复用 Docker 缓存"
 	@echo "make build: 编译并更新本机可运行目录；macOS 更新 bin/macos-arm64，不生成安装器或压缩包"
 	@echo "make package: 编译并打包全部可用平台，生成运行目录、压缩包及安装器"
 	@echo "make package-macos: Docker 共享构建 + 宿主 Darwin 编译/组装，支持容器内 build.sh 发起"
@@ -129,15 +128,15 @@ help:
 	@echo "make clean: 删除当前配置的容器、镜像和缓存 volumes"
 
 docker-info:
-	@echo "projectRoot=$(DEEPCODE_PROJECT_ROOT)"
-	@echo "macosOutputRoot=$(DEEPCODE_PROJECT_ROOT)/bin/macos-arm64"
-	@echo "rustToolchain=$(DEEPCODE_RUST_TOOLCHAIN)"
-	@echo "rustVersion=$(DEEPCODE_RUST_VERSION)"
+	@echo "projectRoot=$(ACHBIT_PROJECT_ROOT)"
+	@echo "macosOutputRoot=$(ACHBIT_PROJECT_ROOT)/bin/macos-arm64"
+	@echo "rustToolchain=$(ACHBIT_RUST_TOOLCHAIN)"
+	@echo "rustVersion=$(ACHBIT_RUST_VERSION)"
 	@echo "image=$(IMAGE)"
 	@echo "container=$(CONTAINER_NAME)"
 	@echo "hostname=$(CONTAINER_HOSTNAME)"
-	@echo "hostPort=$(DEEPCODE_HOST_PORT)"
-	@echo "containerPort=$(DEEPCODE_CONTAINER_PORT)"
+	@echo "hostPort=$(ACHBIT_HOST_PORT)"
+	@echo "containerPort=$(ACHBIT_CONTAINER_PORT)"
 	@echo "cargoTargetVolume=$(VOL_CARGO_TARGET)"
 	@echo "nodeModulesVolume=$(VOL_NODE_MODULES)"
 
@@ -148,50 +147,52 @@ branch-hooks:
 	@bash ./scripts/branch-flow.sh install-hooks
 
 _validate_config:
-	@if [ ! -d "$(DEEPCODE_PROJECT_ROOT)" ]; then \
-		echo "[make][error] 项目根目录不可用: $(DEEPCODE_PROJECT_ROOT)" >&2; \
+	@if [ ! -d "$(ACHBIT_PROJECT_ROOT)" ]; then \
+		echo "[make][error] 项目根目录不可用: $(ACHBIT_PROJECT_ROOT)" >&2; \
 		exit 1; \
 	fi
-	@if [ -z "$(DEEPCODE_RUST_TOOLCHAIN)" ] || [ -z "$(DEEPCODE_RUST_VERSION)" ]; then \
+	@if [ -z "$(ACHBIT_RUST_TOOLCHAIN)" ] || [ -z "$(ACHBIT_RUST_VERSION)" ]; then \
 		echo "[make][error] rust-toolchain.toml 缺少有效 channel" >&2; \
 		exit 1; \
 	fi
-	@case "$(DEEPCODE_HOST_PORT)" in ''|*[!0-9]*) echo "[make][error] DEEPCODE_HOST_PORT 必须是 1-65535 的整数" >&2; exit 1;; esac
-	@if [ "$(DEEPCODE_HOST_PORT)" -lt 1 ] || [ "$(DEEPCODE_HOST_PORT)" -gt 65535 ]; then \
-		echo "[make][error] DEEPCODE_HOST_PORT 必须是 1-65535 的整数" >&2; \
+	@case "$(ACHBIT_HOST_PORT)" in ''|*[!0-9]*) echo "[make][error] ACHBIT_HOST_PORT 必须是 1-65535 的整数" >&2; exit 1;; esac
+	@if [ "$(ACHBIT_HOST_PORT)" -lt 1 ] || [ "$(ACHBIT_HOST_PORT)" -gt 65535 ]; then \
+		echo "[make][error] ACHBIT_HOST_PORT 必须是 1-65535 的整数" >&2; \
 		exit 1; \
 	fi
 
 package-macos:
 	@bash ./build.sh --stage package-macos
 
-# ---- _ensure_image：每次求值 Dockerfile，未变化时直接命中 Docker 缓存 ----
+# ---- 进入前交由 Docker 按实际构建输入增量更新；失败则停止进入 ----
 _print_image:
 	@printf '%s\n' '$(IMAGE)'
 
 _ensure_image: _validate_config
-	@echo "[make] 更新开发镜像 $(IMAGE)（未变化层使用 Docker 缓存）..."
+	@echo "[make] 检查开发镜像 $(IMAGE)（变更自动更新，未变化层使用 Docker 缓存）..."
 	@docker build --provenance=false $(BUILD_ARGS) -f $(DOCKERFILE) -t $(IMAGE) .
 
 # ---- _ensure_container：容器懒创建 / 刷新启动 ----
 # 状态机：
 #   not exists  -> docker run -d
-#   stale       -> 精确移除该容器后重建（源码挂载、镜像、端口或嵌套沙箱配置变化）
+#   stale       -> 精确移除该容器后重建（源码挂载、镜像、宿主平台、端口或嵌套沙箱配置变化）
 #   running     -> reuse
 #   exited      -> docker start
 _ensure_container: _ensure_image
 	@if docker container inspect $(CONTAINER_NAME) >/dev/null 2>&1; then \
 		mounted_root=$$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "$(WORKDIR_IN_CTNR)"}}{{.Source}}{{end}}{{end}}' $(CONTAINER_NAME)); \
+		container_host_os=$$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(CONTAINER_NAME) | sed -n 's/^ACHBIT_BUILD_HOST_OS=//p'); \
 		container_image=$$(docker container inspect -f '{{.Image}}' $(CONTAINER_NAME)); \
 		current_image=$$(docker image inspect -f '{{.Id}}' $(IMAGE)); \
-		actual_host_port=$$(docker container port $(CONTAINER_NAME) $(DEEPCODE_CONTAINER_PORT)/tcp 2>/dev/null | awk -F: 'NR == 1 { print $$NF }'); \
+		actual_host_port=$$(docker container port $(CONTAINER_NAME) $(ACHBIT_CONTAINER_PORT)/tcp 2>/dev/null | awk -F: 'NR == 1 { print $$NF }'); \
 		container_caps=$$(docker container inspect -f '{{range .HostConfig.CapAdd}}{{println .}}{{end}}' $(CONTAINER_NAME)); \
 		container_security=$$(docker container inspect -f '{{range .HostConfig.SecurityOpt}}{{println .}}{{end}}' $(CONTAINER_NAME)); \
 		container_system_paths=$$(docker container inspect -f '{{len .HostConfig.MaskedPaths}} {{len .HostConfig.ReadonlyPaths}}' $(CONTAINER_NAME)); \
 		reason=""; \
-		if [ "$$mounted_root" != "$(DEEPCODE_PROJECT_ROOT)" ]; then reason="源码挂载已变化"; \
+		if [ "$$mounted_root" != "$(ACHBIT_PROJECT_ROOT)" ]; then reason="源码挂载已变化"; \
 		elif [ "$$container_image" != "$$current_image" ]; then reason="开发镜像已更新"; \
-		elif [ "$$actual_host_port" != "$(DEEPCODE_HOST_PORT)" ]; then reason="端口配置已变化"; \
+		elif [ "$$container_host_os" != "$(ACHBIT_BUILD_HOST_OS)" ]; then reason="构建宿主平台已变化或缺失"; \
+		elif [ "$$actual_host_port" != "$(ACHBIT_HOST_PORT)" ]; then reason="端口配置已变化"; \
 		elif ! printf '%s\n' "$$container_caps" | grep -Eq '^(CAP_)?SYS_ADMIN$$' \
 			|| ! printf '%s\n' "$$container_security" | grep -Fxq 'apparmor=unconfined' \
 			|| ! printf '%s\n' "$$container_security" | grep -Fxq 'seccomp=unconfined' \
@@ -230,12 +231,12 @@ _ensure_container: _ensure_image
 				;; \
 		esac; \
 	fi
-	@if [ "$(DEEPCODE_BUILD_HOST_OS)" = Darwin ]; then python3 scripts/macos-build-bridge.py ensure; fi
+	@if [ "$(ACHBIT_BUILD_HOST_OS)" = Darwin ]; then python3 scripts/macos-build-bridge.py ensure; fi
 
 # ---- shell：唯一交互入口 ----
 shell: _ensure_container
 	@echo "[make] exec 进入容器 $(CONTAINER_NAME) ..."
-	@docker exec -it $(NETWORK_ENV_ARGS) -e DEEPCODE_BUILD_HOST_OS=$(DEEPCODE_BUILD_HOST_OS) $(CONTAINER_NAME) bash
+	@docker exec -it $(NETWORK_ENV_ARGS) -e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) -e ACHBIT_MACOS_SIGN_IDENTITY $(CONTAINER_NAME) bash
 
 build:
 	@bash ./build.sh
@@ -255,17 +256,17 @@ native-gui:
 	@bash ./build.sh --stage native-gui
 
 dev-achbit-gui: _ensure_container
-	@bash scripts/dev-achbit-gui-host.sh "$(CONTAINER_NAME)" "$(WORKDIR_IN_CTNR)" "$(DEEPCODE_CONTAINER_PORT)" $(NETWORK_ENV_ARGS)
+	@bash scripts/dev-achbit-gui-host.sh "$(CONTAINER_NAME)" "$(WORKDIR_IN_CTNR)" "$(ACHBIT_CONTAINER_PORT)" $(NETWORK_ENV_ARGS)
 
 # ---- reset-dev / clean：只操作固定命名的单仓开发资源 ----
 reset-dev:
-	@if [ "$(DEEPCODE_BUILD_HOST_OS)" = Darwin ]; then python3 scripts/macos-build-bridge.py stop; fi
+	@if [ "$(ACHBIT_BUILD_HOST_OS)" = Darwin ]; then python3 scripts/macos-build-bridge.py stop; fi
 	@echo "[make] 移除唯一开发容器 $(CONTAINER_NAME)，保留依赖与编译缓存 ..."
 	-@docker rm -f $(CONTAINER_NAME) >/dev/null 2>&1 || true
 	@echo "[make] 重置完成；下次 make shell/build 会按当前源码与镜像重建容器。"
 
 clean:
-	@if [ "$(DEEPCODE_BUILD_HOST_OS)" = Darwin ]; then python3 scripts/macos-build-bridge.py stop; fi
+	@if [ "$(ACHBIT_BUILD_HOST_OS)" = Darwin ]; then python3 scripts/macos-build-bridge.py stop; fi
 	@echo "[make] 强制移除容器 $(CONTAINER_NAME) ..."
 	-@docker rm -f $(CONTAINER_NAME) >/dev/null 2>&1 || true
 	@echo "[make] 强制移除镜像 $(IMAGE) ..."
@@ -279,6 +280,6 @@ clean:
 
 .PHONY: ui-plugin ui-plugin-watch
 ui-plugin: _ensure_container
-	@docker exec -e DEEPCODE_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @achbit/client exec vite build --config vite.ui-plugin.config.ts
+	@docker exec -e ACHBIT_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @achbit/client exec vite build --config vite.ui-plugin.config.ts
 ui-plugin-watch: _ensure_container
-	@docker exec -e DEEPCODE_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @achbit/client exec vite build --config vite.ui-plugin.config.ts --watch
+	@docker exec -e ACHBIT_UI_PLUGIN_ROOT="$(WORKDIR_IN_CTNR)/$(UI_PLUGIN)" $(CONTAINER_NAME) pnpm --filter @achbit/client exec vite build --config vite.ui-plugin.config.ts --watch

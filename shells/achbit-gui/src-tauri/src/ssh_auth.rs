@@ -7,8 +7,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 
-const SERVICE: &str = "com.achbite.deepcode.ssh";
-pub(super) const SCHEME: &str = "deepcode-ssh-auth";
+const SERVICE: &str = "com.achbite.achbit.ssh";
+pub(super) const SCHEME: &str = "achbit-ssh-auth";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +64,7 @@ pub(super) fn page() -> Response<Vec<u8>> {
 }
 
 #[tauri::command]
-pub(super) fn deepcode_ssh_auth_context(
+pub(super) fn achbit_ssh_auth_context(
     state: State<'_, AuthUi>,
 ) -> Result<serde_json::Value, String> {
     let pending = state.pending.lock().unwrap();
@@ -88,7 +88,7 @@ pub(super) fn deepcode_ssh_auth_context(
 }
 
 #[tauri::command]
-pub(super) fn deepcode_ssh_auth_respond(
+pub(super) fn achbit_ssh_auth_respond(
     app: tauri::AppHandle,
     state: State<'_, AuthUi>,
     id: String,

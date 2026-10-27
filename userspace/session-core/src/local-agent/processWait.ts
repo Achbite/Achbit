@@ -1,6 +1,6 @@
 import type { ProcessWaitState, SessionEvent } from '@achbit/protocol';
 
-// Runtime policy seam; the model does not schedule repeated reviews.
+// One Host-side health check; a healthy result never schedules a model request.
 export const PROCESS_WAIT_REVIEW_MS = 120_000;
 
 export function activeProcessWait(events: readonly SessionEvent[], runId: string): ProcessWaitState | undefined {

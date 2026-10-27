@@ -120,7 +120,7 @@ impl McpTool {
                     )
                 })?;
                 Some(json!({
-                    "deepcode": {
+                    "achbit": {
                         "workspaceId": workspace_id,
                         "resolvedWorkspaceTargets": context.private_resolved_targets,
                     }
@@ -137,7 +137,7 @@ impl McpTool {
             if let Some(content) = result.output["content"].as_array_mut() {
                 for block in content {
                     if block["type"] == "image" {
-                        block["_meta"]["deepcode"]["purpose"] = json!("observation");
+                        block["_meta"]["achbit"]["purpose"] = json!("observation");
                     }
                 }
             }
@@ -649,7 +649,7 @@ fn chrome_devtools_source_at(
             .replace('"', "\\\"")
     );
     let mut source = external_server_source(McpServerSetting {
-        id: "deepcode-chrome".into(), name: "Chrome".into(),
+        id: "achbit-chrome".into(), name: "Chrome".into(),
         description: "Control existing Chrome browser pages and tabs by pageId: inspect, click, fill, navigate and capture screenshots. 浏览器 Chrome 页面和标签页控制。".into(),
         transport: "stdio".into(), command: node.to_string_lossy().into(),
         args: format!("{quoted_entry} --autoConnect --experimental-structured-content --no-usage-statistics --no-performance-crux"),
@@ -862,17 +862,6 @@ struct LocalPluginSource {
     #[serde(default = "enabled_by_default")]
     enabled: bool,
 }
-#[derive(Deserialize)]
-struct LocalCliManifest {
-    id: String,
-    name: String,
-    description: String,
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    entry: String,
-    tools: Vec<RemoteToolDefinition>,
-}
 fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
     let mut result = McpServerSource {
         setting: McpServerSetting {
@@ -910,47 +899,13 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
         if !root.is_absolute() {
             return Err("插件目录必须是绝对路径".into());
         }
-        let encoded = std::fs::read(root.join("achbit-tool.json"))
-            .map_err(|error| format!("{}: {error}", root.display()))?;
-        let manifest: LocalCliManifest =
-            serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-        if manifest.id != source.id
-            || manifest.id.is_empty()
-            || normalized_name(&manifest.id) != manifest.id
-            || manifest.name.trim().is_empty()
-            || manifest.description.trim().is_empty()
-            || manifest.tools.is_empty()
-            || manifest.command.trim().is_empty()
-        {
-            return Err("插件需要有效的 id、name、description、command 和 tools".into());
+        let artifact = achbit_kernel_abi::ToolPluginManifest::read(root)?;
+        let manifest = artifact.manifest;
+        if manifest.id != source.id {
+            return Err("Tool plugin id changed; remove it and import again".into());
         }
-        let entry = std::path::Path::new(&manifest.entry);
-        if entry.components().count() != 1
-            || !matches!(
-                entry.components().next(),
-                Some(std::path::Component::Normal(_))
-            )
-        {
-            return Err("CLI entry 必须是插件目录中的单文件构建产物".into());
-        }
-        let bytes = std::fs::read(root.join(entry)).map_err(|error| error.to_string())?;
-        if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
-            return Err("CLI entry 必须是非空且不超过 4 MiB 的文件".into());
-        }
-        let mut names = BTreeSet::new();
-        for tool in &manifest.tools {
-            if tool.name.is_empty()
-                || normalized_name(&tool.name) != tool.name
-                || !names.insert(&tool.name)
-                || !tool.input_schema.is_object()
-                || tool.description.as_deref().is_none_or(str::is_empty)
-            {
-                return Err("工具需要唯一名称、用途和 inputSchema".into());
-            }
-        }
-        result.descriptor.implementation =
-            serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-        result.descriptor.content = Arc::from(bytes.as_slice());
+        result.descriptor.implementation = artifact.implementation;
+        result.descriptor.content = Arc::from(artifact.entry_bytes.as_slice());
         result.descriptor.name = manifest.name.clone();
         result.descriptor.short_description = manifest.description.clone();
         result.descriptor.capability_summary = format!(
@@ -959,13 +914,7 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
             manifest
                 .tools
                 .iter()
-                .map(|tool| format!(
-                    "- {}: {}",
-                    tool.name,
-                    tool.description
-                        .as_deref()
-                        .expect("validated tool description")
-                ))
+                .map(|tool| format!("- {}: {}", tool.name, tool.description))
                 .collect::<Vec<_>>()
                 .join("\n")
         );
@@ -977,9 +926,17 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
         result.setting.name = manifest.name;
         result.setting.description = manifest.description;
         result.setting.command = manifest.command;
-        result.cli_entry = Some((manifest.entry, bytes));
+        result.cli_entry = Some((manifest.entry, artifact.entry_bytes));
         result.contract = McpServerContract::LocalCli {
-            tools: manifest.tools,
+            tools: manifest
+                .tools
+                .into_iter()
+                .map(|tool| RemoteToolDefinition {
+                    name: tool.name,
+                    description: Some(tool.description),
+                    input_schema: tool.input_schema,
+                })
+                .collect(),
             args: manifest.args,
         };
         Ok(())
@@ -1105,7 +1062,7 @@ impl McpClient {
             json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": { "name": "DeepCode", "version": env!("CARGO_PKG_VERSION") },
+                "clientInfo": { "name": "Achbit", "version": env!("CARGO_PKG_VERSION") },
             }),
             None,
         )?;
@@ -1727,7 +1684,7 @@ mod tests {
     #[test]
     fn chrome_platform_runtime_preserves_paths_and_disabled_settings() {
         let directory = TestDirectory::new();
-        let root = directory.0.join("DeepCode runtime with spaces");
+        let root = directory.0.join("Achbit runtime with spaces");
         let entry = root.join("chrome-devtools/build/src/bin/chrome-devtools-mcp.js");
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         std::fs::write(&entry, "// runtime fixture").unwrap();
@@ -2119,7 +2076,7 @@ for line in sys.stdin:
         let pid_path = directory.0.join("pid");
         let cli = CliClient {
             command: "python3".into(),
-            args: vec!["-c".into(), "import json,os,sys,subprocess; from pathlib import Path; json.load(sys.stdin); Path(sys.argv[1]).write_text(str(os.getpid())); child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(json.dumps({'childPid':child.pid}),flush=True)".into(), pid_path.to_string_lossy().into()],
+            args: vec!["-c".into(), "import json,os,sys,subprocess; from pathlib import Path; json.load(sys.stdin); Path(sys.argv[1]+'.tmp').write_text(str(os.getpid())); os.replace(sys.argv[1]+'.tmp',sys.argv[1]); child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(json.dumps({'childPid':child.pid}),flush=True)".into(), pid_path.to_string_lossy().into()],
             entry: None,
         };
         let (send, receive) = mpsc::channel();
@@ -2159,7 +2116,7 @@ for line in sys.stdin:
             .unwrap()
             .as_nanos();
         let root = Directory(
-            std::env::temp_dir().join(format!("deepcode-mcp-views-{}-{stamp}", std::process::id())),
+            std::env::temp_dir().join(format!("achbit-mcp-views-{}-{stamp}", std::process::id())),
         );
         std::fs::create_dir(&root.0).unwrap();
         let script = root.0.join("server.py");
@@ -2378,7 +2335,7 @@ for line in sys.stdin:
         };
 
         let error = tool
-            .call(json!({ "text": "DeepCode" }), &context)
+            .call(json!({ "text": "Achbit" }), &context)
             .expect_err("cancelled MCP call must fail after process cleanup");
         assert_eq!(error.code, "mcp_tool_cancelled");
         runtime

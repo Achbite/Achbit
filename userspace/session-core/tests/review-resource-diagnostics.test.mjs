@@ -61,7 +61,7 @@ for (const ordered of [false, true]) test(`provider-turn sibling rejections and 
       ? { orderedOutputBlocks: calls.map((call, outputIndex) => ({ outputIndex, kind: 'toolCallRejected', callId: call.callId, providerCallId: call.providerCallId, toolName: call.toolName, error: call.error,
         item: { type: 'function_call', call_id: call.providerCallId, name: call.toolName, arguments: call.arguments } })) }
       : { toolCallInputs: calls }) } },
-  ].map((event, index) => ({ ...event, schemaVersion: 'deepcode.session-event.v5', sessionId, sequence: index + 1, eventId: `event:${index + 1}`, occurredAt: '2026-10-20T00:00:00Z' }));
+  ].map((event, index) => ({ ...event, schemaVersion: 'achbit.session-event.v5', sessionId, sequence: index + 1, eventId: `event:${index + 1}`, occurredAt: '2026-10-20T00:00:00Z' }));
   const journal = { async *read() { yield* events; } };
   const page = await readConversation(journal, { sessionId, view: 'tools', limit: 1 });
   assert.equal(page.items[0].providerOutcome, 'completed', 'Provider completion is not changed into an execution failure');
@@ -85,7 +85,7 @@ test('tool reads and context reads include rejected input and pre-provider appro
     } } },
     { type: 'approval.reviewed', runId, callId: 'call:review', payload: { approvalId: 'approval:read', providerRequestId: 'request:not-sent', decision: 'ask', reason: error.message, error } },
     { type: 'approval.resolved', runId, callId: 'call:review', payload: { approvalId: 'approval:read', authorityId: 'authority:once', commandId: 'command:allow', decision: 'allow', source: 'user' } },
-  ].map((event, index) => ({ ...event, schemaVersion: 'deepcode.session-event.v5', sessionId, sequence: index + 1, eventId: `event:${index + 1}`, occurredAt: '2026-10-20T00:00:00Z' }));
+  ].map((event, index) => ({ ...event, schemaVersion: 'achbit.session-event.v5', sessionId, sequence: index + 1, eventId: `event:${index + 1}`, occurredAt: '2026-10-20T00:00:00Z' }));
   const journal = { async *read() { yield* events; } };
   const latest = await readConversation(journal, { sessionId, view: 'tools', limit: 1 });
   assert.equal(latest.items[0].type, 'approval.reviewed');
