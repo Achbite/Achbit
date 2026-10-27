@@ -44,7 +44,10 @@ pub(crate) fn build_app(state: HostState) -> Router {
             get(llm_profiles_get).patch(llm_profiles_patch),
         )
         .route("/api/llm/probe", post(llm_probe))
-        .route("/api/host/plugins/install", post(crate::plugin_installation::install))
+        .route(
+            "/api/host/plugins/install",
+            post(crate::plugin_installation::install),
+        )
         .route("/api/plugin-services", get(crate::service_plugins::list))
         .route(
             "/api/plugin-services/events",

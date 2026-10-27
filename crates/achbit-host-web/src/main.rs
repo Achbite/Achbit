@@ -547,7 +547,10 @@ mod tests {
     fn plugin_installation_has_one_explicit_host_proxy_route() {
         assert!(host_proxy_path_allowed("POST", "/api/host/plugins/install"));
         assert!(!host_proxy_path_allowed("GET", "/api/host/plugins/install"));
-        assert!(!host_proxy_path_allowed("POST", "/api/host/plugins/install/extra"));
+        assert!(!host_proxy_path_allowed(
+            "POST",
+            "/api/host/plugins/install/extra"
+        ));
     }
 
     #[tokio::test]

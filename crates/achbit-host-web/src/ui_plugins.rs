@@ -1,6 +1,8 @@
 //! Local display modules belong to the Host, independently of Agent/tool activation.
-use achbit_host_connection::plugin_artifact::{inspect_plugin as inspect_path, read_ui_module as read_module, UiPluginManifest as Manifest};
 use crate::{host_connection_rejected, ApiResponse, AppState};
+use achbit_host_connection::plugin_artifact::{
+    inspect_plugin as inspect_path, read_ui_module as read_module, UiPluginManifest as Manifest,
+};
 use axum::{
     body::Body,
     extract::State,
@@ -9,10 +11,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    path::Path,
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct Source {
