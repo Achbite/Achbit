@@ -63,4 +63,4 @@ node source/achbit-ui-icon-resources/scripts/generate-assets.mjs
 
 PNG 导出使用容器中的 `rsvg-convert`（Debian 包 `librsvg2-bin`）。预览图说明文字使用 `DejaVu Sans`；产品字标本身不需要字体。仅更新 SVG 与索引时可传 `--svg-only`，交付前仍须执行完整导出使 PNG 同步。不要逐个修改导出副本。
 
-主品牌使用纯字标，DC 图案在需要简写的场景独立使用。资源的产品接入由调用方选择对应外观与尺寸。
+主品牌使用纯字标，AC 图案在需要简写的场景独立使用。资源的产品接入由调用方选择对应外观与尺寸。

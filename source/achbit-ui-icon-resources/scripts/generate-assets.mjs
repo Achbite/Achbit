@@ -72,26 +72,26 @@ for (const icon of icons) {
   write(`svg/24/icon-${icon.name}-24.svg`, iconSvg(icon, 24));
 }
 const symbols = icons.map(icon =>
-  `<symbol id="dc-icon-${icon.name}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${icon.body}</symbol>`
-  + (icon.compact_body ? `\n<symbol id="dc-icon-${icon.name}-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.compact_body}</symbol>` : '')
+  `<symbol id="ac-icon-${icon.name}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${icon.body}</symbol>`
+  + (icon.compact_body ? `\n<symbol id="ac-icon-${icon.name}-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.compact_body}</symbol>` : '')
 ).join('\n');
 write('sprite/achbit-icons.svg', `<svg xmlns="http://www.w3.org/2000/svg">\n${symbols}\n</svg>\n`);
 
 function paletteCss(theme) {
-  const selector = theme === 'dark' ? ':root, [data-dc-theme="dark"]' : '[data-dc-theme="light"]';
-  return `${selector} {\n  color-scheme: ${theme};\n${Object.entries(palettes[theme]).map(([key, value]) => `  --dc-icon-${tokenNames[key]}: ${value};`).join('\n')}\n}`;
+  const selector = theme === 'dark' ? ':root, [data-ac-theme="dark"]' : '[data-ac-theme="light"]';
+  return `${selector} {\n  color-scheme: ${theme};\n${Object.entries(palettes[theme]).map(([key, value]) => `  --ac-icon-${tokenNames[key]}: ${value};`).join('\n')}\n}`;
 }
 write('tokens/achbit-icon-tokens.css', `${paletteCss('dark')}\n${paletteCss('light')}\n
-.dc-icon { width: 20px; height: 20px; color: var(--dc-icon-neutral); display: inline-block; vertical-align: -0.125em; flex: 0 0 auto; }
-.dc-icon--sm { width: 16px; height: 16px; }
-.dc-icon--md { width: 20px; height: 20px; }
-.dc-icon--lg { width: 24px; height: 24px; }
-.dc-icon--xl { width: 32px; height: 32px; }
-.dc-icon--active { color: var(--dc-icon-accent); }
-.dc-icon--muted { color: var(--dc-icon-muted); }
-.dc-icon--success { color: var(--dc-icon-success); }
-.dc-icon--warning { color: var(--dc-icon-warning); }
-.dc-icon--error { color: var(--dc-icon-error); }
+.ac-icon { width: 20px; height: 20px; color: var(--ac-icon-neutral); display: inline-block; vertical-align: -0.125em; flex: 0 0 auto; }
+.ac-icon--sm { width: 16px; height: 16px; }
+.ac-icon--md { width: 20px; height: 20px; }
+.ac-icon--lg { width: 24px; height: 24px; }
+.ac-icon--xl { width: 32px; height: 32px; }
+.ac-icon--active { color: var(--ac-icon-accent); }
+.ac-icon--muted { color: var(--ac-icon-muted); }
+.ac-icon--success { color: var(--ac-icon-success); }
+.ac-icon--warning { color: var(--ac-icon-warning); }
+.ac-icon--error { color: var(--ac-icon-error); }
 `);
 
 const brandFiles = { mark: {}, wordmark: {} };
@@ -189,8 +189,8 @@ write('manifest.json', JSON.stringify({
   brand: { name: 'Achbit', primary: 'wordmark', secondary: 'mark', lettering: 'Original outlined glyphs, not an installable font', files: brandFiles },
   previews: { interactive: 'preview/index.html', brand: 'preview/achbit-brand-sheet.png', icons: 'preview/achbit-icon-sheet.png', sizes: 'preview/achbit-size-sheet.png' },
   icons: icons.map(({ body, compact_body, ...icon }) => ({ ...icon,
-    files: { svg_currentColor_24: `svg/currentColor/24/icon-${icon.name}-24.svg`, svg_themed_24: `svg/themed/24/icon-${icon.name}-24.svg`, svg_themed_light_24: `svg/themed-light/24/icon-${icon.name}-24.svg`, png_24: `png/24/icon-${icon.name}-24.png`, png_light_24: `png/light/24/icon-${icon.name}-24.png`, sprite_id: `dc-icon-${icon.name}` },
-    ...(compact_body ? { compact_sprite_id: `dc-icon-${icon.name}-16` } : {}),
+    files: { svg_currentColor_24: `svg/currentColor/24/icon-${icon.name}-24.svg`, svg_themed_24: `svg/themed/24/icon-${icon.name}-24.svg`, svg_themed_light_24: `svg/themed-light/24/icon-${icon.name}-24.svg`, png_24: `png/24/icon-${icon.name}-24.png`, png_light_24: `png/light/24/icon-${icon.name}-24.png`, sprite_id: `ac-icon-${icon.name}` },
+    ...(compact_body ? { compact_sprite_id: `ac-icon-${icon.name}-16` } : {}),
   })),
   references: ['https://developer.apple.com/design/human-interface-guidelines/icons', 'https://developer.apple.com/design/human-interface-guidelines/typography'],
 }, null, 2) + '\n');

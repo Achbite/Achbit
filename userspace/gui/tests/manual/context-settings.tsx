@@ -63,7 +63,7 @@ useLocalAgentStore.setState({ selectedProfileId: 'model:fixture' });
 function Fixture() {
   return <>
     <GuiTypography /><PaletteOverrides />
-    <style>{`*{box-sizing:border-box}body{margin:0;font:14px var(--dc-font-ui);color:var(--dc-foreground);background:var(--dc-surface)}#root{height:100vh;padding:24px}.settings-center{height:100%;max-width:1080px;margin:auto}`}</style>
+    <style>{`*{box-sizing:border-box}body{margin:0;font:14px var(--ac-font-ui);color:var(--ac-foreground);background:var(--ac-surface)}#root{height:100vh;padding:24px}.settings-center{height:100%;max-width:1080px;margin:auto}`}</style>
     <SettingsCenter apiStatus="connected" serverVersion="preview" />
   </>;
 }

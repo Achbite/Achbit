@@ -31,7 +31,7 @@ function Preview() {
   const [index, setIndex] = useState(0);
   const sample = samples[index];
   return <>
-    <style>{`body{margin:0;color:var(--dc-foreground);background:var(--dc-surface);font:var(--dc-font-body)/1.5 var(--dc-font-ui)}main.fixture{display:block;max-width:800px;height:auto;margin:40px auto;padding:24px}.fixture select{font:inherit}.fixture>p{margin:24px 0}.fixture>.conversation-image-review__open{max-width:360px;max-height:480px}`}</style>
+    <style>{`body{margin:0;color:var(--ac-foreground);background:var(--ac-surface);font:var(--ac-font-body)/1.5 var(--ac-font-ui)}main.fixture{display:block;max-width:800px;height:auto;margin:40px auto;padding:24px}.fixture select{font:inherit}.fixture>p{margin:24px 0}.fixture>.conversation-image-review__open{max-width:360px;max-height:480px}`}</style>
     <main className="local-agent fixture">
       <label>图片样例 <select value={index} onChange={event => setIndex(Number(event.target.value))}>{samples.map((item, i) => <option key={item.name} value={i}>{item.name}</option>)}</select></label>
       <p>点击图片检查全窗口适配。放大、缩小和恢复适配只修改本地查看比例，四角文字用于确认图片是否完整可见。</p>

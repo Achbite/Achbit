@@ -1560,7 +1560,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = HttpKernelClient::new(
             KernelClientConfig::new(format!("http://{}", listener.local_addr().unwrap()))
-                .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
+                .with_host_shell_token(format!("achost_{}", "01".repeat(32))),
         )
         .unwrap();
         let task = "完整保留中文任务🙂\n".repeat(2000);

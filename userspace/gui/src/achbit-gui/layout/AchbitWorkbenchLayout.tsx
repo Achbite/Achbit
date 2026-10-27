@@ -371,7 +371,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
 
   return (
     <div className={`achbit-gui-workbench${settingsOpen ? ' achbit-gui-workbench--settings' : ''}${navigationCollapsed ? ' achbit-gui-workbench--navigation-collapsed' : ''}`}
-      ref={workbench} data-host-status={apiStatus} style={{ '--dc-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
+      ref={workbench} data-host-status={apiStatus} style={{ '--ac-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
       onKeyDown={(event) => {
         if (settingsOpen && event.key !== 'Escape') event.stopPropagation();
       }}>

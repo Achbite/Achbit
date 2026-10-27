@@ -14,7 +14,7 @@ export type PaletteField = typeof PALETTE_FIELDS[number];
 export type PaletteOverrides = Record<string, string>;
 
 export function paletteToken(theme: GuiResolvedTheme, field: PaletteField): string {
-  return field === 'accent' ? `--dc-custom-${theme}-accent` : `--dc-theme-${theme}-${field}`;
+  return field === 'accent' ? `--ac-custom-${theme}-accent` : `--ac-theme-${theme}-${field}`;
 }
 
 const editableTokens = new Set(['light', 'dark'].flatMap((theme) =>
@@ -41,7 +41,7 @@ export function decodePaletteOverrides(encoded: string): PaletteOverrides {
 
 export function paletteColor(overrides: PaletteOverrides, theme: GuiResolvedTheme, field: PaletteField, accent: GuiAccentColor): string {
   const token = paletteToken(theme, field);
-  const defaultToken = field === 'accent' ? `--dc-accent-${accent}-${theme}` : token;
+  const defaultToken = field === 'accent' ? `--ac-accent-${accent}-${theme}` : token;
   return overrides[token] ?? palette.tokens[defaultToken as keyof typeof palette.tokens];
 }
 
@@ -62,7 +62,7 @@ export function paletteOverrideCss(encoded: string): string {
       return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
     });
     const luminance = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
-    rules.push(`--dc-custom-${theme}-accent-contrast:var(${luminance > 0.179 ? '--dc-shadow-color' : '--dc-fixed-white'});`);
+    rules.push(`--ac-custom-${theme}-accent-contrast:var(${luminance > 0.179 ? '--ac-shadow-color' : '--ac-fixed-white'});`);
   }
   return `:root{${rules.join('')}}`;
 }

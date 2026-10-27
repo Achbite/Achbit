@@ -1857,8 +1857,8 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let address = listener.local_addr().unwrap();
-            let host_id = format!("dcinstance_{case:064x}");
-            let token = format!("dchost_{case:064x}");
+            let host_id = format!("acinstance_{case:064x}");
+            let token = format!("achost_{case:064x}");
             let registration = json!({
                 "hostInstanceId": host_id, "endpoint": address.to_string(),
                 "callbackToken": token, "remove": false,

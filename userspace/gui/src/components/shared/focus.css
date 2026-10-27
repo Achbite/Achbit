@@ -9,13 +9,13 @@
 }
 
 :root[data-product='achbit-gui'] :is(input[type='checkbox'], input[type='radio'], input[type='range']) {
-  accent-color: var(--dc-foreground);
+  accent-color: var(--ac-foreground);
 }
 
 :root[data-product='achbit-gui'] body :is(button, [role='button'], [role='tab'], summary):focus-visible {
   box-shadow: none;
-  background-color: var(--dc-surface-hover);
-  color: var(--dc-foreground);
+  background-color: var(--ac-surface-hover);
+  color: var(--ac-foreground);
 }
 
 :root[data-product='achbit-gui'] .settings-switch > input:focus-visible + span {

@@ -10,7 +10,7 @@ test('SSH GUI uses the remote Host for browsing, defaults and selected-file prev
   globalThis.window = {
     location: { protocol: 'achbit-gui:', hostname: 'localhost' },
     __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '32123',
-      uiToken: 'dcui_' + 'a'.repeat(64), windowChrome: 'custom', remote: true, remoteLabel: 'remote-test' },
+      uiToken: 'acui_' + 'a'.repeat(64), windowChrome: 'custom', remote: true, remoteLabel: 'remote-test' },
     __TAURI__: { core: { invoke: async (...args) => { nativeCalls.push(args); } } },
   };
   t.after(() => { globalThis.window = originalWindow; globalThis.document = originalDocument; });
@@ -25,7 +25,7 @@ test('SSH GUI uses the remote Host for browsing, defaults and selected-file prev
   installGuiFetch(t, (url, init) => {
     calls.push(url.pathname);
     assert.equal(url.origin, 'http://127.0.0.1:32123');
-    assert.equal(init.headers['x-achbit-host-ui-token'], 'dcui_' + 'a'.repeat(64));
+    assert.equal(init.headers['x-achbit-host-ui-token'], 'acui_' + 'a'.repeat(64));
     if (url.pathname === '/api/workspaces/default-path') return Response.json({ ok: true, data: { path: '/remote/workspace' } });
     if (url.pathname === '/api/fs/browse') return Response.json({ ok: true, data: { entries: [{ name: 'remote.txt' }] } });
     assert.equal(url.pathname, '/api/fs/read');

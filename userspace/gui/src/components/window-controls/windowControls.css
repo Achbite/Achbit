@@ -22,13 +22,13 @@
 }
 
 .window-control:hover {
-  background: color-mix(in srgb, var(--dc-foreground) 8%, transparent);
+  background: color-mix(in srgb, var(--ac-foreground) 8%, transparent);
   color: var(--text-strong);
 }
 
 .window-control--close:hover {
   background: var(--danger);
-  color: var(--dc-foreground-strong);
+  color: var(--ac-foreground-strong);
 }
 
 .window-control { display: inline-flex; align-items: center; justify-content: center; }

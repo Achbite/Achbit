@@ -73,8 +73,8 @@ def message_text(value: Any) -> str:
 class OwnedDaemon:
     def __init__(self, config_root: Path) -> None:
         self.config_root = config_root
-        self.token = f"dchost_{secrets.token_hex(32)}"
-        self.instance_id = f"dcinstance_{secrets.token_hex(32)}"
+        self.token = f"achost_{secrets.token_hex(32)}"
+        self.instance_id = f"acinstance_{secrets.token_hex(32)}"
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.log_file = tempfile.TemporaryFile(mode="w+b")

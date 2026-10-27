@@ -62,7 +62,7 @@ function consumeTrustedBootstrap(): KernelHostTarget | null {
     !/^[0-9]{1,5}$/.test(port) ||
     Number(port) < 1 ||
     Number(port) > 65_535 ||
-    !/^dcui_[0-9a-f]{64}$/.test(uiToken) ||
+    !/^acui_[0-9a-f]{64}$/.test(uiToken) ||
     !['custom', 'nativeOverlay'].includes(windowChrome)
   ) {
     return null;

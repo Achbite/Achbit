@@ -2076,7 +2076,7 @@ mod input_tests {
     fn test_app() -> TuiApp {
         let client = HttpKernelClient::new(
             achbit_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
-                .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
+                .with_host_shell_token(format!("achost_{}", "01".repeat(32))),
         )
         .unwrap();
         TuiApp::new(
@@ -2141,7 +2141,7 @@ mod input_tests {
                     "http://{}",
                     listener.local_addr().unwrap()
                 ))
-                .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
+                .with_host_shell_token(format!("achost_{}", "01".repeat(32))),
             )
             .unwrap();
             app.submit_line("/help").await;

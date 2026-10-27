@@ -12,7 +12,7 @@ export default {
       .example-navigation [aria-current], .example-tree [aria-current] { font-weight:700; }
       .example-tree__items { overflow:auto; min-height:0; }
       .example-tree__items button { display:block; width:100%; }
-      .example-tree__error { color:var(--dc-danger); white-space:pre-wrap; }
+      .example-tree__error { color:var(--ac-danger); white-space:pre-wrap; }
     `);
     const element = (tag, className) => {
       const value = document.createElement(tag);

@@ -76,13 +76,13 @@ test('preset fonts and sizes save immediately through the shared settings owner 
   await flush();
   assert.deepEqual(fixture.writes[0], { 'gui.fontFamily': 'compact', 'gui.interfaceFontFamily': 'inherit',
     'gui.contentFontFamily': 'inherit', 'gui.terminalFontFamily': 'inherit' });
-  assert.match(typography.typographyStyles(useSettingsStore.getState().effectiveSettings)['--dc-font-ui'], /Achbit Quiet Mono SC/);
+  assert.match(typography.typographyStyles(useSettingsStore.getState().effectiveSettings)['--ac-font-ui'], /Achbit Quiet Mono SC/);
   const size = elements(tree, node => node.props.value === 12 && typeof node.props.onChange === 'function')[0];
   size.props.onChange({ target: { value: '11' } });
   await flush();
   assert.deepEqual(fixture.writes.at(-1), { 'gui.codeFontSize': 11 });
   assert.equal(useSettingsStore.getState().effectiveSettings['gui.fontSize'], 16);
-  assert.equal(typography.typographyStyles(useSettingsStore.getState().effectiveSettings)['--dc-font-code-size'], '11px');
+  assert.equal(typography.typographyStyles(useSettingsStore.getState().effectiveSettings)['--ac-font-code-size'], '11px');
 });
 
 test('numbers commit on Enter, not typing, and retain native validity, IME and optional-empty semantics', async t => {
@@ -114,7 +114,9 @@ test('usage widget choices and palette pickers save immediately while text draft
     '/src/state/settingsStore.ts', '/src/ui-plugins/UsageWidgetSettings.tsx',
     '/src/components/settings-center/GuiPaletteSettings.tsx', '/src/theme/palette.ts',
   ]);
-  const fixture = settingsFixture(t, useSettingsStore);
+  const fixture = settingsFixture(t, useSettingsStore, { [palette.PALETTE_SETTING]: JSON.stringify({
+    '--ac-theme-light-background': '#abcdef', '--ac-theme-dark-background': '#202124',
+  }) });
   let closed = 0;
   // The native portal needs a browser; inspect the actual control handlers without mounting that portal in SSR.
   const widget = capture(UsageWidgetSettings, { onClose() { closed++; } }, false);
@@ -128,10 +130,15 @@ test('usage widget choices and palette pickers save immediately while text draft
   assert.deepEqual(fixture.writes.at(-1), { 'gui.usageWidget.enabled': false });
   const colors = capture(Palette, { language: 'en-US' });
   assert.doesNotMatch(colors.html, />(Save|Reset this palette|Restore default colors)<\/button>/);
-  elements(colors.tree, node => node.props.type === 'color')[0].props.onChange({ target: { value: '#123456' } });
+  const background = elements(colors.tree, node => node.props.type === 'color')[0];
+  assert.equal(background.props.value, '#abcdef', 'the saved color is shown before any write');
+  background.props.onChange({ target: { value: '#123456' } });
   await flush();
   const stored = palette.decodePaletteOverrides(useSettingsStore.getState().effectiveSettings[palette.PALETTE_SETTING]);
   assert.equal(stored[palette.paletteToken('light', palette.PALETTE_FIELDS[0])], '#123456');
+  assert.deepEqual(JSON.parse(fixture.writes.at(-1)[palette.PALETTE_SETTING]), {
+    '--ac-theme-light-background': '#123456', '--ac-theme-dark-background': '#202124',
+  }, 'the next save retains other saved colors');
 });
 
 test('existing model choices persist independently and reuse confirmed state; new model creation stays explicit', async t => {

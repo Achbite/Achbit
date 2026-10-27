@@ -375,7 +375,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                         id={sessionsId}
                         className="achbit-gui-project-session-list"
                         data-expanded={expanded || undefined}
-                        style={{ '--dc-project-session-limit': PROJECT_SESSION_PREVIEW_LIMIT } as React.CSSProperties}
+                        style={{ '--ac-project-session-limit': PROJECT_SESSION_PREVIEW_LIMIT } as React.CSSProperties}
                       >
                         {projectSessions.length === 0 ? (
                           <div className="achbit-gui-sidebar-empty achbit-gui-sidebar-empty--nested">

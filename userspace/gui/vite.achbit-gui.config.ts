@@ -32,7 +32,7 @@ export default defineConfig(({ command }) => {
     if (!Number.isSafeInteger(devPort) || devPort < 1 || devPort > 65_535) {
       throw new Error('ACHBIT_GUI_DEV_PORT must be an integer from 1 to 65535.');
     }
-    if (!/^dcui_[0-9a-f]{64}$/.test(uiToken)) {
+    if (!/^acui_[0-9a-f]{64}$/.test(uiToken)) {
       throw new Error('ACHBIT_HOST_UI_TOKEN is required for Web development mode.');
     }
   }

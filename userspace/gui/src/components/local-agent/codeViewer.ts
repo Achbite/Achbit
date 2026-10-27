@@ -23,14 +23,14 @@ export function codeViewerExtensions(language: Language | null, dark: boolean, f
     syntaxHighlighting(classHighlighter),
     language ?? [],
     EditorView.theme({
-      '&': { height: '100%', color: 'var(--dc-foreground)', backgroundColor: 'var(--dc-code-background)' },
-      '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--dc-font-code, ui-monospace, monospace)', fontSize: 'var(--dc-font-code-size, 12px)', lineHeight: 'var(--dc-line-code, 1.6)' },
-      '.cm-content': { padding: '8px 0', caretColor: 'var(--dc-foreground)' },
-      '.cm-gutters': { backgroundColor: 'var(--dc-code-background)', color: 'var(--dc-muted)', border: 'none' },
-      '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--dc-surface-active)' },
-      '.cm-panels': { color: 'var(--dc-foreground)', backgroundColor: 'var(--dc-surface)' },
-      '.cm-searchMatch': { backgroundColor: 'var(--dc-surface-active)', outline: '1px solid var(--dc-border-strong)' },
-      '.cm-searchMatch-selected': { outline: '2px solid var(--dc-focus-ring, var(--dc-border-strong))' },
+      '&': { height: '100%', color: 'var(--ac-foreground)', backgroundColor: 'var(--ac-code-background)' },
+      '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--ac-font-code, ui-monospace, monospace)', fontSize: 'var(--ac-font-code-size, 12px)', lineHeight: 'var(--ac-line-code, 1.6)' },
+      '.cm-content': { padding: '8px 0', caretColor: 'var(--ac-foreground)' },
+      '.cm-gutters': { backgroundColor: 'var(--ac-code-background)', color: 'var(--ac-muted)', border: 'none' },
+      '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--ac-surface-active)' },
+      '.cm-panels': { color: 'var(--ac-foreground)', backgroundColor: 'var(--ac-surface)' },
+      '.cm-searchMatch': { backgroundColor: 'var(--ac-surface-active)', outline: '1px solid var(--ac-border-strong)' },
+      '.cm-searchMatch-selected': { outline: '2px solid var(--ac-focus-ring, var(--ac-border-strong))' },
     }, { dark }),
   ];
 }

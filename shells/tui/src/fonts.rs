@@ -136,7 +136,7 @@ mod tests {
         if !cfg!(any(target_os = "macos", windows)) {
             let client = achbit_kernel_client::HttpKernelClient::new(
                 achbit_kernel_client::KernelClientConfig::new("http://127.0.0.1:1")
-                    .with_host_shell_token(format!("dchost_{}", "00".repeat(32))),
+                    .with_host_shell_token(format!("achost_{}", "00".repeat(32))),
             )
             .unwrap();
             assert_eq!(

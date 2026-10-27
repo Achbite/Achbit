@@ -5603,8 +5603,8 @@ mod attempt_control_tests {
             }
         });
         let host = BrowserHost {
-            registration: json!({"hostInstanceId":format!("dcinstance_{}", "b".repeat(64)),
-            "endpoint":endpoint,"callbackToken":format!("dchost_{}", "b".repeat(64)),"remove":false}),
+            registration: json!({"hostInstanceId":format!("acinstance_{}", "b".repeat(64)),
+            "endpoint":endpoint,"callbackToken":format!("achost_{}", "b".repeat(64)),"remove":false}),
             stop,
             thread: Some(thread),
         };

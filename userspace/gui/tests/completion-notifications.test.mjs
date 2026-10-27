@@ -35,7 +35,7 @@ test('desktop completion uses the local native bridge even for a remote host and
   const calls = [];
   globalThis.window = {
     location: new URL('achbit-gui://localhost/index.html'),
-    __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken: `dcui_${'a'.repeat(64)}`, windowChrome: 'custom', remote: true },
+    __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken: `acui_${'a'.repeat(64)}`, windowChrome: 'custom', remote: true },
     __TAURI__: { core: { invoke: async (...args) => calls.push(args) } },
   };
   t.after(() => { globalThis.window = previousWindow; });

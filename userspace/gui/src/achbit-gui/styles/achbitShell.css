@@ -14,17 +14,17 @@
 .achbit-gui-sidebar-settings {
   display: flex;
   width: 100%;
-  min-height: var(--dc-navigation-row);
+  min-height: var(--ac-navigation-row);
   min-width: 0;
   align-items: center;
   gap: 9px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--dc-radius-control);
+  border-radius: var(--ac-radius-control);
   background: transparent;
-  color: var(--dc-muted);
+  color: var(--ac-muted);
   cursor: pointer;
-  font-size: var(--dc-font-body);
+  font-size: var(--ac-font-body);
   text-align: left;
   transition: background-color 140ms ease, color 140ms ease;
 }
@@ -50,8 +50,8 @@
 .achbit-gui-sidebar-action:hover:not(:disabled),
 .achbit-gui-session-entry:hover,
 .achbit-gui-sidebar-settings:hover {
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground);
+  background: var(--ac-surface-hover);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-sidebar-action:disabled {
@@ -61,8 +61,8 @@
 
 .achbit-gui-sidebar-action--primary {
   margin-bottom: 5px;
-  color: var(--dc-foreground-strong);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-foreground-strong);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-sidebar-section {
@@ -79,21 +79,21 @@
 
 .achbit-gui-sidebar-section__label {
   padding: 0 10px 5px;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-session-entry--active {
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground-strong);
+  background: var(--ac-surface-hover);
+  color: var(--ac-foreground-strong);
 }
 
 .achbit-gui-sidebar-empty {
   padding: 7px 10px;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-caption);
-  line-height: var(--dc-line-compact);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-caption);
+  line-height: var(--ac-line-compact);
 }
 
 .achbit-gui-sidebar-settings {
@@ -106,8 +106,8 @@
   min-height: 0;
   overflow: auto;
   padding: 16px 12px;
-  border-left: 1px solid var(--dc-border);
-  background: var(--dc-background);
+  border-left: 1px solid var(--ac-border);
+  background: var(--ac-background);
 }
 
 .achbit-gui-context-card {
@@ -125,9 +125,9 @@
   justify-content: space-between;
   gap: 10px;
   padding: 0 13px;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-label);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-label);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-context-card > header > span {
@@ -142,9 +142,9 @@
 }
 
 .achbit-gui-context-card > header small {
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
-  font-weight: var(--dc-weight-regular);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-micro);
+  font-weight: var(--ac-weight-regular);
 }
 
 .achbit-gui-context-row {
@@ -152,7 +152,7 @@
   min-width: 0;
   gap: 3px;
   padding: 8px 0;
-  border-bottom: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--ac-border);
 }
 
 .achbit-gui-context-row:last-child {
@@ -172,30 +172,30 @@
 }
 
 .achbit-gui-context-row > span {
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-foreground);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-context-row small {
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-micro);
 }
 
 .achbit-gui-context-row small[data-status='failed'],
 .achbit-gui-context-row small[data-status='indeterminate'] {
-  color: var(--dc-danger);
+  color: var(--ac-danger);
 }
 
 .achbit-gui-context-row small[data-status='completed'] {
-  color: var(--dc-success);
+  color: var(--ac-success);
 }
 
 .achbit-gui-context-empty {
   padding: 6px 0;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-caption);
-  line-height: var(--dc-line-compact);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-caption);
+  line-height: var(--ac-line-compact);
 }
 
 .achbit-gui-session-facts {
@@ -208,33 +208,33 @@
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);
   gap: 8px;
-  font-size: var(--dc-font-caption);
+  font-size: var(--ac-font-caption);
 }
 
 .achbit-gui-session-facts dt {
-  color: var(--dc-faint);
+  color: var(--ac-faint);
 }
 
 .achbit-gui-session-facts dd {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  color: var(--dc-muted);
-  font-family: var(--dc-font-mono);
+  color: var(--ac-muted);
+  font-family: var(--ac-font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .achbit-local-agent-settings {
-  position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:var(--dc-surface);
+  position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:var(--ac-surface);
 }
 .achbit-local-agent-settings__close {
-  min-height: 29px; padding: 0 10px; border: 1px solid var(--dc-border); border-radius: var(--dc-radius-control);
-  background: var(--dc-control-background); color: var(--dc-control-foreground); cursor: pointer;
+  min-height: 29px; padding: 0 10px; border: 1px solid var(--ac-border); border-radius: var(--ac-radius-control);
+  background: var(--ac-control-background); color: var(--ac-control-foreground); cursor: pointer;
   display: inline-flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; app-region: no-drag;
 }
-.achbit-local-agent-settings__close:hover { background: var(--dc-surface-hover); }
-.achbit-local-agent-settings__close kbd { font: 10px var(--dc-font-ui); color: var(--dc-faint); border: 1px solid var(--dc-border); border-radius: 4px; padding: 0 3px; }
+.achbit-local-agent-settings__close:hover { background: var(--ac-surface-hover); }
+.achbit-local-agent-settings__close kbd { font: 10px var(--ac-font-ui); color: var(--ac-faint); border: 1px solid var(--ac-border); border-radius: 4px; padding: 0 3px; }
 
 .achbit-gui-sidebar-actions,
 .achbit-gui-session-list,
@@ -263,9 +263,9 @@
 
 .achbit-gui-sidebar-section__label {
   padding: 0;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-sidebar-text-action,
@@ -279,7 +279,7 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--dc-muted);
+  color: var(--ac-muted);
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
 }
@@ -328,8 +328,8 @@
 .achbit-gui-project-archive-group__compose:hover,
 .achbit-gui-project-archive-group__menu:hover,
 .achbit-gui-session-row__menu:hover {
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground);
+  background: var(--ac-surface-hover);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-project-archive-list {
@@ -361,7 +361,7 @@
   left: 4px;
   height: 2px;
   border-radius: 2px;
-  background: var(--dc-accent);
+  background: var(--ac-accent);
   content: '';
   pointer-events: none;
 }
@@ -376,8 +376,8 @@
 
 .achbit-gui-sidebar-error {
   padding: 6px 8px;
-  color: var(--dc-danger);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-danger);
+  font-size: var(--ac-font-caption);
   overflow-wrap: anywhere;
 }
 
@@ -388,15 +388,15 @@
   align-items: center;
   gap: 4px;
   padding: 0 3px 0 6px;
-  border-radius: var(--dc-radius-control);
+  border-radius: var(--ac-radius-control);
 }
 
 .achbit-gui-project-archive-group__title:hover {
-  background: var(--dc-surface-hover);
+  background: var(--ac-surface-hover);
 }
 
 .achbit-gui-project-archive-group--current > .achbit-gui-project-archive-group__title {
-  color: var(--dc-foreground-strong);
+  color: var(--ac-foreground-strong);
 }
 
 .achbit-gui-project-archive-group__select {
@@ -409,10 +409,10 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--dc-foreground);
+  color: var(--ac-foreground);
   cursor: pointer;
-  font-size: var(--dc-font-body);
-  font-weight: var(--dc-weight-medium);
+  font-size: var(--ac-font-body);
+  font-weight: var(--ac-weight-medium);
   text-align: left;
 }
 
@@ -422,7 +422,7 @@
   height: 18px;
   flex: 0 0 14px;
   place-items: center;
-  color: var(--dc-faint);
+  color: var(--ac-faint);
   transition: transform 120ms ease;
 }
 
@@ -449,7 +449,7 @@
   flex: 0 0 auto;
   align-items: center;
   padding-left: 7px;
-  background: linear-gradient(to right, transparent, var(--dc-surface-hover) 7px);
+  background: linear-gradient(to right, transparent, var(--ac-surface-hover) 7px);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -462,7 +462,7 @@
 }
 
 .achbit-gui-project-archive-group__menu {
-  color: var(--dc-faint);
+  color: var(--ac-faint);
 }
 
 .achbit-gui-project-archive-group__sessions {
@@ -471,7 +471,7 @@
 }
 
 .achbit-gui-project-session-list {
-  max-height: calc(var(--dc-project-session-limit) * 31px);
+  max-height: calc(var(--ac-project-session-limit) * 31px);
   overflow: hidden;
 }
 
@@ -485,18 +485,18 @@
   min-height: 28px;
   padding: 0 8px;
   border: 0;
-  border-radius: var(--dc-radius-control);
+  border-radius: var(--ac-radius-control);
   background: transparent;
-  color: var(--dc-faint);
+  color: var(--ac-faint);
   font: inherit;
-  font-size: var(--dc-font-caption);
+  font-size: var(--ac-font-caption);
   text-align: left;
   cursor: pointer;
 }
 
 .achbit-gui-project-sessions-toggle:hover {
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground);
+  background: var(--ac-surface-hover);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-session-row {
@@ -505,19 +505,19 @@
   min-width: 0;
   grid-template-columns: minmax(0, 1fr) 27px;
   align-items: center;
-  border-radius: var(--dc-radius-control);
+  border-radius: var(--ac-radius-control);
   transition: background-color 120ms ease;
   -webkit-user-select: none;
   user-select: none;
 }
 
 .achbit-gui-session-row:hover {
-  background: var(--dc-surface-hover);
+  background: var(--ac-surface-hover);
 }
 
 .achbit-gui-session-row--active,
 .achbit-gui-session-row--active:hover {
-  background: var(--dc-selection, var(--dc-surface-active));
+  background: var(--ac-selection, var(--ac-surface-active));
 }
 
 .achbit-gui-session-row > button:first-child {
@@ -529,11 +529,11 @@
   gap: 8px;
   padding: 0 3px 0 8px;
   border: 0;
-  border-radius: var(--dc-radius-control);
+  border-radius: var(--ac-radius-control);
   background: transparent;
-  color: var(--dc-muted);
+  color: var(--ac-muted);
   cursor: pointer;
-  font-size: var(--dc-font-body);
+  font-size: var(--ac-font-body);
   text-align: left;
 }
 
@@ -544,11 +544,11 @@
 .achbit-gui-session-row > button:first-child:hover,
 .achbit-gui-session-row > button:first-child.active {
   background: transparent;
-  color: var(--dc-foreground);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-session-row > button:first-child.active {
-  font-weight: var(--dc-weight-medium);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-session-row__title {
@@ -567,15 +567,15 @@
   flex: 0 0 auto;
   border: 0;
   background: transparent;
-  color: var(--dc-faint);
-  font: calc(10px * var(--dc-ui-font-scale, 1)) var(--dc-font-ui);
+  color: var(--ac-faint);
+  font: calc(10px * var(--ac-ui-font-scale, 1)) var(--ac-font-ui);
   animation: achbit-shortcut-appear 100ms ease-out;
 }
 
 .achbit-gui-session-row__menu {
   opacity: 0;
   pointer-events: none;
-  color: var(--dc-faint);
+  color: var(--ac-faint);
 }
 
 .achbit-gui-session-row:hover .achbit-gui-session-row__menu,
@@ -608,7 +608,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--dc-surface);
+  background: var(--ac-surface);
 }
 
 .achbit-gui-session-header {
@@ -625,16 +625,16 @@
   overflow: auto;
   padding: 20px 16px;
   border-left: 0;
-  background: var(--dc-surface);
+  background: var(--ac-surface);
 }
 
 .achbit-gui-task-list-card {
   display: grid;
   gap: 0;
   padding: 14px 16px;
-  border: 1px solid var(--dc-border);
-  border-radius: var(--dc-radius-inner);
-  background: var(--dc-surface);
+  border: 1px solid var(--ac-border);
+  border-radius: var(--ac-radius-inner);
+  background: var(--ac-surface);
 }
 
 .achbit-gui-task-list-card__title {
@@ -643,35 +643,35 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-label);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-label);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-task-list-card__empty {
   min-height: 36px;
   display: grid;
   align-items: center;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-caption);
   text-align: left;
 }
 
 .achbit-gui-task-list-card__note {
   display: block;
   margin-top: 10px;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-caption);
 }
 
-.achbit-gui-agent-summary, .achbit-gui-agent-member { display:flex; align-items:center; gap:8px; width:100%; border:0; border-radius:4px; background:transparent; color:var(--dc-muted); padding:6px 0; font:inherit; font-size:var(--dc-font-caption); text-align:left; cursor:pointer; }
+.achbit-gui-agent-summary, .achbit-gui-agent-member { display:flex; align-items:center; gap:8px; width:100%; border:0; border-radius:4px; background:transparent; color:var(--ac-muted); padding:6px 0; font:inherit; font-size:var(--ac-font-caption); text-align:left; cursor:pointer; }
 .achbit-gui-agent-summary svg, .achbit-gui-agent-member svg { width:16px; height:16px; flex:none; }
 .achbit-gui-agent-summary__active { display:flex; flex-wrap:wrap; gap:4px 8px; flex:1; }
-.achbit-gui-agent-summary:hover, .achbit-gui-agent-member:hover, .achbit-gui-agent-member:focus-visible { color:var(--dc-foreground); background:var(--dc-surface-hover); }
+.achbit-gui-agent-summary:hover, .achbit-gui-agent-member:hover, .achbit-gui-agent-member:focus-visible { color:var(--ac-foreground); background:var(--ac-surface-hover); }
 .achbit-gui-agent-members { margin-top:6px; }
 .achbit-gui-agent-member > span:first-of-type { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.achbit-gui-agent-member--completed svg { color:var(--dc-success); }
-.achbit-gui-agent-member--running svg, .achbit-gui-agent-member--needsInput svg { color:var(--dc-accent); }
+.achbit-gui-agent-member--completed svg { color:var(--ac-success); }
+.achbit-gui-agent-member--running svg, .achbit-gui-agent-member--needsInput svg { color:var(--ac-accent); }
 
 .achbit-gui-task-list {
   display: grid;
@@ -695,50 +695,50 @@
   height: 7px;
   margin-top: 5px;
   border-radius: 999px;
-  background: var(--dc-faint);
+  background: var(--ac-faint);
 }
 
 .achbit-gui-task-item--active .achbit-gui-task-item__dot,
 .achbit-gui-task-item--requested .achbit-gui-task-item__dot {
-  background: var(--dc-accent);
+  background: var(--ac-accent);
 }
 
 .achbit-gui-task-item--waiting .achbit-gui-task-item__dot,
 .achbit-gui-task-item--blocked .achbit-gui-task-item__dot {
-  background: var(--dc-warning);
+  background: var(--ac-warning);
 }
 
 .achbit-gui-task-item--completed .achbit-gui-task-item__dot {
-  background: var(--dc-success);
+  background: var(--ac-success);
 }
 
 .achbit-gui-task-item--failed .achbit-gui-task-item__dot,
 .achbit-gui-task-item--indeterminate .achbit-gui-task-item__dot {
-  background: var(--dc-danger);
+  background: var(--ac-danger);
 }
 
 .achbit-gui-task-item__title {
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-label);
-  font-weight: var(--dc-weight-regular);
-  line-height: var(--dc-line-body);
+  color: var(--ac-foreground);
+  font-size: var(--ac-font-label);
+  font-weight: var(--ac-weight-regular);
+  line-height: var(--ac-line-body);
 }
 
 .achbit-gui-task-item__summary {
   min-width: 0;
   margin-top: 3px;
   overflow: hidden;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-caption);
-  line-height: var(--dc-line-compact);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-caption);
+  line-height: var(--ac-line-compact);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .achbit-gui-task-item strong {
-  color: var(--dc-muted);
-  font-size: var(--dc-font-micro);
-  font-weight: var(--dc-weight-regular);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-micro);
+  font-weight: var(--ac-weight-regular);
 }
 
 .achbit-gui-output-item {
@@ -762,9 +762,9 @@
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--dc-muted);
+  color: var(--ac-muted);
   font: inherit;
-  font-size: var(--dc-font-caption);
+  font-size: var(--ac-font-caption);
   text-align: left;
   cursor: pointer;
 }
@@ -775,12 +775,12 @@
 .achbit-gui-output-page > .achbit-gui-task-list-card__title { align-items: center; flex: none; }
 .achbit-gui-output-page > .achbit-gui-task-list-card__title > span { flex: 1; }
 .achbit-gui-output-page > .achbit-gui-output-list { max-height: none; flex: 1; min-height: 0; }
-.achbit-gui-output-back { display: grid; place-items: center; border: 0; border-radius: 6px; padding: 5px; margin-left: -5px; background: transparent; color: var(--dc-muted); cursor: pointer; }
-.achbit-gui-output-back:hover { background: var(--dc-surface-hover); color: var(--dc-foreground); }
+.achbit-gui-output-back { display: grid; place-items: center; border: 0; border-radius: 6px; padding: 5px; margin-left: -5px; background: transparent; color: var(--ac-muted); cursor: pointer; }
+.achbit-gui-output-back:hover { background: var(--ac-surface-hover); color: var(--ac-foreground); }
 
 .achbit-gui-output-more:hover {
-  background: var(--dc-surface-hover);
-  color: var(--dc-foreground);
+  background: var(--ac-surface-hover);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-output-item:last-child {
@@ -796,14 +796,14 @@
 }
 
 .achbit-gui-output-item strong {
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-foreground);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-gui-output-item span {
-  color: var(--dc-faint);
-  font: var(--dc-font-micro) var(--dc-font-mono);
+  color: var(--ac-faint);
+  font: var(--ac-font-micro) var(--ac-font-mono);
 }
 
 .achbit-gui-project-create-menu,
@@ -817,10 +817,10 @@
   overflow: auto;
   overscroll-behavior: contain;
   padding: 6px;
-  border: 1px solid var(--dc-border);
+  border: 1px solid var(--ac-border);
   border-radius: 12px;
-  background: var(--dc-surface-raised);
-  box-shadow: var(--dc-shadow-panel);
+  background: var(--ac-surface-raised);
+  box-shadow: var(--ac-shadow-panel);
   -webkit-user-select: none;
   user-select: none;
 }
@@ -834,18 +834,18 @@
   gap: 8px;
   padding: 7px 10px;
   border: 0;
-  border-radius: var(--dc-radius-control);
+  border-radius: var(--ac-radius-control);
   background: transparent;
-  color: var(--dc-foreground);
+  color: var(--ac-foreground);
   cursor: pointer;
-  font-size: var(--dc-font-label);
-  line-height: var(--dc-line-compact);
+  font-size: var(--ac-font-label);
+  line-height: var(--ac-line-compact);
   text-align: left;
 }
 
 .achbit-gui-project-create-menu button:hover,
 .achbit-gui-session-context-menu button:hover:not(:disabled) {
-  background: var(--dc-surface-hover);
+  background: var(--ac-surface-hover);
 }
 
 .achbit-gui-project-create-menu button:disabled,
@@ -865,15 +865,15 @@
 .achbit-gui-session-context-menu__section-title {
   min-width: 0;
   overflow: hidden;
-  color: var(--dc-faint);
+  color: var(--ac-faint);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .achbit-gui-session-context-menu__title {
   padding: 5px 9px 7px;
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-semibold);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-semibold);
 }
 
 .achbit-gui-session-context-menu__section {
@@ -883,11 +883,11 @@
 
 .achbit-gui-session-context-menu__section-title {
   padding: 2px 9px 5px;
-  font-size: var(--dc-font-micro);
+  font-size: var(--ac-font-micro);
 }
 
 .achbit-gui-session-context-menu__danger {
-  color: var(--dc-danger) !important;
+  color: var(--ac-danger) !important;
 }
 
 .achbit-gui-text-dialog-backdrop {
@@ -897,17 +897,17 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: color-mix(in srgb, var(--dc-shadow-color) 30%, transparent);
+  background: color-mix(in srgb, var(--ac-shadow-color) 30%, transparent);
   backdrop-filter: blur(3px);
 }
 
 .achbit-gui-text-dialog {
   width: min(420px, calc(100vw - 40px));
   overflow: hidden;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--ac-border-strong);
   border-radius: 14px;
-  background: var(--dc-surface-raised);
-  box-shadow: var(--dc-shadow-panel);
+  background: var(--ac-surface-raised);
+  box-shadow: var(--ac-shadow-panel);
 }
 
 .achbit-gui-text-dialog header,
@@ -920,82 +920,82 @@
 }
 
 .achbit-gui-text-dialog header {
-  border-bottom: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--ac-border);
 }
 
 .achbit-gui-text-dialog footer {
   justify-content: flex-end;
-  border-top: 1px solid var(--dc-border);
+  border-top: 1px solid var(--ac-border);
 }
 
 .achbit-gui-text-dialog h2 {
   margin: 0;
-  font-size: var(--dc-font-body-large);
+  font-size: var(--ac-font-body-large);
 }
 
 .achbit-gui-text-dialog header button,
 .achbit-gui-text-dialog footer button {
   min-height: 30px;
   padding: 0 11px;
-  border: 1px solid var(--dc-border);
+  border: 1px solid var(--ac-border);
   border-radius: 8px;
-  background: var(--dc-surface);
-  color: var(--dc-foreground);
+  background: var(--ac-surface);
+  color: var(--ac-foreground);
   cursor: pointer;
 }
 
 .achbit-gui-text-dialog footer button[type='submit'] {
-  border-color: var(--dc-border-strong);
+  border-color: var(--ac-border-strong);
   background: transparent;
-  color: var(--dc-foreground);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-text-dialog :is(header, footer) button:hover:not(:disabled) {
-  background: var(--dc-surface-hover);
+  background: var(--ac-surface-hover);
 }
 
 .achbit-gui-text-dialog__message,
 .achbit-gui-text-dialog__error {
   margin: 0;
   padding: 16px 14px;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-caption);
   line-height: 1.55;
 }
 
 .achbit-gui-text-dialog__error {
   padding-top: 0;
-  color: var(--dc-danger);
+  color: var(--ac-danger);
   overflow-wrap: anywhere;
 }
 
 .achbit-gui-text-dialog footer .achbit-gui-text-dialog__danger {
-  border-color: color-mix(in srgb, var(--dc-danger) 30%, var(--dc-border));
-  background: var(--dc-danger-soft);
-  color: var(--dc-danger);
+  border-color: color-mix(in srgb, var(--ac-danger) 30%, var(--ac-border));
+  background: var(--ac-danger-soft);
+  color: var(--ac-danger);
 }
 
 .achbit-gui-text-dialog label {
   display: grid;
   gap: 7px;
   padding: 16px 14px;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-caption);
 }
 
 .achbit-gui-text-dialog input {
   width: 100%;
   min-height: 38px;
   padding: 0 10px;
-  border: 1px solid var(--dc-border-strong);
+  border: 1px solid var(--ac-border-strong);
   border-radius: 9px;
   outline: 0;
-  background: var(--dc-surface);
-  color: var(--dc-foreground);
+  background: var(--ac-surface);
+  color: var(--ac-foreground);
 }
 
 .achbit-gui-text-dialog input:focus {
-  border-color: var(--dc-border-strong, var(--line));
+  border-color: var(--ac-border-strong, var(--line));
   box-shadow: none;
 }
 
@@ -1012,7 +1012,7 @@
   overflow: auto;
   margin: 0 14px;
   padding: 0;
-  border: 1px solid var(--dc-border);
+  border: 1px solid var(--ac-border);
   border-radius: 12px;
 }
 
@@ -1024,8 +1024,8 @@
   gap: 12px;
   padding: 14px;
   border: 0;
-  border-bottom: 1px solid var(--dc-border);
-  background: var(--dc-surface);
+  border-bottom: 1px solid var(--ac-border);
+  background: var(--ac-surface);
 }
 
 .achbit-gui-workspace-manager__row > span {
@@ -1043,8 +1043,8 @@
 }
 
 .achbit-gui-workspace-manager__row small {
-  color: var(--dc-faint);
-  font: var(--dc-font-micro) var(--dc-font-mono);
+  color: var(--ac-faint);
+  font: var(--ac-font-micro) var(--ac-font-mono);
 }
 
 .achbit-gui-workspace-manager__row button {
@@ -1052,14 +1052,14 @@
   flex: 0 0 auto;
   border: 0;
   background: transparent;
-  color: var(--dc-danger);
+  color: var(--ac-danger);
   cursor: pointer;
 }
 
 .achbit-gui-workspace-manager__empty {
   padding: 20px;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-caption);
   text-align: center;
 }
 
@@ -1090,14 +1090,14 @@
   border-radius: 50%;
   background: conic-gradient(
     from -90deg,
-    var(--dc-accent) 0 var(--achbit-context-percent),
-    color-mix(in srgb, var(--dc-muted) 34%, var(--dc-surface-raised))
+    var(--ac-accent) 0 var(--achbit-context-percent),
+    color-mix(in srgb, var(--ac-muted) 34%, var(--ac-surface-raised))
       var(--achbit-context-percent) 100%
   );
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dc-border-strong) 78%, transparent);
-  color: var(--dc-muted);
-  font-size: calc(10px * var(--dc-ui-font-scale, 1));
-  font-weight: var(--dc-weight-semibold);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ac-border-strong) 78%, transparent);
+  color: var(--ac-muted);
+  font-size: calc(10px * var(--ac-ui-font-scale, 1));
+  font-weight: var(--ac-weight-semibold);
   font-variant-numeric: tabular-nums;
   isolation: isolate;
   cursor: pointer;
@@ -1109,18 +1109,18 @@
 }
 
 .achbit-session-model .achbit-session-model__context--unknown {
-  background: color-mix(in srgb, var(--dc-muted) 30%, var(--dc-surface-raised));
-  color: var(--dc-faint);
+  background: color-mix(in srgb, var(--ac-muted) 30%, var(--ac-surface-raised));
+  color: var(--ac-faint);
 }
 
 .achbit-session-model .achbit-session-model__context::before {
   position: absolute;
   z-index: 0;
   inset: 2px;
-  border: 1px solid color-mix(in srgb, var(--dc-border) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ac-border) 72%, transparent);
   border-radius: 50%;
-  background: var(--dc-surface-raised);
-  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--dc-foreground-strong) 6%, transparent);
+  background: var(--ac-surface-raised);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--ac-foreground-strong) 6%, transparent);
   content: '';
 }
 
@@ -1130,14 +1130,14 @@
 }
 
 .achbit-session-model__context-popover {
-  --achbit-context-instructions: var(--dc-context-instructions);
-  --achbit-context-session: var(--dc-context-session);
-  --achbit-context-tools: var(--dc-context-tools);
-  --achbit-context-index: var(--dc-context-index);
-  --achbit-context-provider: var(--dc-context-provider);
-  --achbit-context-messages: var(--dc-context-messages);
-  --achbit-context-attachments: var(--dc-context-attachments);
-  --achbit-context-output: var(--dc-context-output);
+  --achbit-context-instructions: var(--ac-context-instructions);
+  --achbit-context-session: var(--ac-context-session);
+  --achbit-context-tools: var(--ac-context-tools);
+  --achbit-context-index: var(--ac-context-index);
+  --achbit-context-provider: var(--ac-context-provider);
+  --achbit-context-messages: var(--ac-context-messages);
+  --achbit-context-attachments: var(--ac-context-attachments);
+  --achbit-context-output: var(--ac-context-output);
   position: absolute;
   right: 0;
   bottom: 38px;
@@ -1146,23 +1146,23 @@
   width: min(410px, calc(100vw - 36px));
   max-height: min(560px, calc(100vh - 140px));
   overflow: hidden;
-  border: 1px solid var(--dc-border);
+  border: 1px solid var(--ac-border);
   border-radius: 13px;
-  background: var(--dc-surface-raised);
-  box-shadow: var(--dc-shadow-panel);
-  color: var(--dc-foreground);
+  background: var(--ac-surface-raised);
+  box-shadow: var(--ac-shadow-panel);
+  color: var(--ac-foreground);
 }
 
 .achbit-session-model__context-popover > header {
   display: flex;
   align-items: center;
   padding: 11px 13px;
-  border-bottom: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--ac-border);
 }
 
 .achbit-session-model__context-popover > header strong {
-  color: var(--dc-foreground-strong);
-  font-size: var(--dc-font-label);
+  color: var(--ac-foreground-strong);
+  font-size: var(--ac-font-label);
 }
 
 .achbit-session-model__context-body {
@@ -1176,14 +1176,14 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
-  color: var(--dc-muted);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-muted);
+  font-size: var(--ac-font-caption);
 }
 
 .achbit-session-model__context-total strong {
   overflow: hidden;
-  color: var(--dc-foreground-strong);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-foreground-strong);
+  font-size: var(--ac-font-caption);
   font-variant-numeric: tabular-nums;
   text-align: right;
   text-overflow: ellipsis;
@@ -1191,7 +1191,7 @@
 }
 
 .achbit-session-model__context-total > span:last-child {
-  color: var(--dc-success);
+  color: var(--ac-success);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1200,14 +1200,14 @@
   margin-top: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--dc-border);
+  background: var(--ac-border);
 }
 
 .achbit-session-model__usage-track > span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--dc-success);
+  background: var(--ac-success);
   transition: width 600ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -1246,8 +1246,8 @@
   align-items: center;
   justify-content: center;
   cursor: default;
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-micro);
 }
 
 :root[data-product='achbit-gui'] .achbit-session-model__composition-bar:focus-visible {
@@ -1282,7 +1282,7 @@
 }
 
 .achbit-session-model__composition-segment + .achbit-session-model__composition-segment {
-  box-shadow: -1px 0 0 color-mix(in srgb, var(--dc-surface-raised) 68%, transparent);
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--ac-surface-raised) 68%, transparent);
 }
 
 .achbit-session-model__composition-bar.is-focused .achbit-session-model__composition-segment {
@@ -1303,13 +1303,13 @@
   transform: scaleY(1.29);
   clip-path: inset(0 2px round 3px);
   box-shadow:
-    0 3px 8px light-dark(color-mix(in srgb, var(--dc-warning) 24%, transparent), color-mix(in srgb, var(--dc-shadow-color) 42%, transparent)),
-    inset 0 -2px 0 color-mix(in srgb, var(--dc-foreground-strong) 17%, transparent);
+    0 3px 8px light-dark(color-mix(in srgb, var(--ac-warning) 24%, transparent), color-mix(in srgb, var(--ac-shadow-color) 42%, transparent)),
+    inset 0 -2px 0 color-mix(in srgb, var(--ac-foreground-strong) 17%, transparent);
 }
 
 .achbit-session-model__composition-segment[data-context-key='input'],
 .achbit-session-model__context-detail > span[data-context-key='input'] {
-  background: var(--dc-success);
+  background: var(--ac-success);
 }
 
 .achbit-session-model__composition-segment[data-context-key='output'],
@@ -1323,8 +1323,8 @@
     135deg,
     transparent 0,
     transparent 5px,
-    var(--dc-border-strong) 5px,
-    var(--dc-border-strong) 6px
+    var(--ac-border-strong) 5px,
+    var(--ac-border-strong) 6px
   );
 }
 
@@ -1333,7 +1333,7 @@
 }
 
 .achbit-session-model__context-detail > span[data-context-key='free'] {
-  background-color: var(--dc-surface-subtle);
+  background-color: var(--ac-surface-subtle);
 }
 
 .achbit-session-model__context-detail {
@@ -1342,7 +1342,7 @@
   align-items: center;
   gap: 8px;
   min-height: 48px;
-  border-bottom: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--ac-border);
 }
 
 .achbit-session-model__context-detail > span:first-child,
@@ -1362,15 +1362,15 @@
 }
 
 .achbit-session-model__context-detail strong {
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-foreground);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-session-model__context-detail small,
 .achbit-session-model__context-detail > span:last-child {
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-micro);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1380,7 +1380,7 @@
 
 .achbit-session-model__cache {
   padding: 10px 0;
-  border-bottom: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--ac-border);
 }
 
 .achbit-session-model__cache-head,
@@ -1392,16 +1392,16 @@
 }
 
 .achbit-session-model__cache-head strong {
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  color: var(--ac-foreground);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
 }
 
 .achbit-session-model__cache-head span,
 .achbit-session-model__cache-legend,
 .achbit-session-model__cache-empty {
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-micro);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1412,12 +1412,12 @@
   margin-top: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--dc-border);
+  background: var(--ac-border);
 }
 
 .achbit-session-model__cache-track > span:first-child {
   flex: 0 0 auto;
-  background: var(--dc-success);
+  background: var(--ac-success);
 }
 
 .achbit-session-model__cache-track > span:last-child {
@@ -1446,10 +1446,10 @@
   min-height: 38px;
   padding: 6px 4px;
   border: 0;
-  border-bottom: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--ac-border);
   border-radius: 0;
   background: transparent;
-  color: var(--dc-foreground);
+  color: var(--ac-foreground);
   text-align: left;
   cursor: pointer;
 }
@@ -1472,8 +1472,8 @@
 
 .achbit-session-model__context-sections > button strong {
   overflow: hidden;
-  font-size: var(--dc-font-caption);
-  font-weight: var(--dc-weight-medium);
+  font-size: var(--ac-font-caption);
+  font-weight: var(--ac-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1481,8 +1481,8 @@
 .achbit-session-model__context-sections > button small,
 .achbit-session-model__context-sections > button > span:last-child,
 .achbit-session-model__context-sections-empty {
-  color: var(--dc-faint);
-  font-size: var(--dc-font-micro);
+  color: var(--ac-faint);
+  font-size: var(--ac-font-micro);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1587,8 +1587,8 @@
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--dc-foreground);
-  font-size: var(--dc-font-caption);
+  color: var(--ac-foreground);
+  font-size: var(--ac-font-caption);
   cursor: pointer;
 }
 
@@ -1601,7 +1601,7 @@
 
 .achbit-session-model__selector-effort {
   flex-shrink: 0;
-  color: var(--dc-muted);
+  color: var(--ac-muted);
   white-space: nowrap;
 }
 
@@ -1611,47 +1611,47 @@
 
 .achbit-session-model__selector:hover,
 .achbit-session-model__selector[aria-expanded="true"] {
-  background: var(--dc-surface-subtle);
+  background: var(--ac-surface-subtle);
 }
 
 .achbit-session-model__selector:disabled {
-  color: var(--dc-faint);
+  color: var(--ac-faint);
   opacity: 0.78;
 }
 
 .achbit-session-model__menu {
   position: absolute; z-index: 30; right: 0; bottom: 38px;
   width: min(320px, calc(100vw - 40px)); padding: 6px;
-  border: 1px solid var(--dc-border); border-radius: 12px;
-  background: var(--dc-surface-raised); box-shadow: var(--dc-shadow-panel);
+  border: 1px solid var(--ac-border); border-radius: 12px;
+  background: var(--ac-surface-raised); box-shadow: var(--ac-shadow-panel);
 }
-.achbit-session-model__menu-title { padding: 6px 8px 9px; color: var(--dc-muted); font-size: calc(11px * var(--dc-ui-font-scale, 1)); }
+.achbit-session-model__menu-title { padding: 6px 8px 9px; color: var(--ac-muted); font-size: calc(11px * var(--ac-ui-font-scale, 1)); }
 .achbit-session-model__model-list { max-height: min(300px, 40vh); overflow-y: auto; }
 .achbit-session-model__menu button {
   display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px;
-  padding: 7px 10px; border: 0; border-radius: var(--dc-radius-control); background: transparent;
-  color: var(--dc-foreground); text-align: left; font-size: var(--dc-font-label); line-height: var(--dc-line-compact); cursor: pointer;
+  padding: 7px 10px; border: 0; border-radius: var(--ac-radius-control); background: transparent;
+  color: var(--ac-foreground); text-align: left; font-size: var(--ac-font-label); line-height: var(--ac-line-compact); cursor: pointer;
 }
 .achbit-session-model__menu button:hover,
-.achbit-session-model__menu button:focus-visible { background: var(--dc-surface-hover); }
-.achbit-session-model__menu button[aria-checked="true"] { background: var(--dc-surface-active); }
+.achbit-session-model__menu button:focus-visible { background: var(--ac-surface-hover); }
+.achbit-session-model__menu button[aria-checked="true"] { background: var(--ac-surface-active); }
 .achbit-session-model__menu button:disabled,
 .achbit-session-model__menu button[aria-disabled="true"] { opacity: .48; cursor: default; }
 .achbit-session-model__menu button > span:first-child { overflow-wrap: anywhere; }
 .achbit-session-model__model-list button > svg { margin-left: auto; width: 16px; height: 16px; flex-shrink: 0; }
-.achbit-session-model__menu .achbit-session-model__menu-back { color: var(--dc-muted); margin-bottom: 4px; }
+.achbit-session-model__menu .achbit-session-model__menu-back { color: var(--ac-muted); margin-bottom: 4px; }
 .achbit-session-model__heading { display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: start; gap: 4px; }
-.achbit-session-model__menu .achbit-session-model__subagents { justify-content: center; width: 32px; min-height: 32px; padding: 6px; color: var(--dc-muted); }
-.achbit-session-model__menu .achbit-session-model__subagents[aria-pressed="true"] { color: var(--dc-accent); background: var(--dc-accent-soft); }
+.achbit-session-model__menu .achbit-session-model__subagents { justify-content: center; width: 32px; min-height: 32px; padding: 6px; color: var(--ac-muted); }
+.achbit-session-model__menu .achbit-session-model__subagents[aria-pressed="true"] { color: var(--ac-accent); background: var(--ac-accent-soft); }
 .achbit-session-model__menu .achbit-session-model__current { display: grid; justify-items: center; gap: 5px; padding: 7px 2px 10px; text-align: center; min-width: 0; }
-.achbit-session-model__current strong { font-size: var(--dc-font-body); font-weight: 600; }
-.achbit-session-model__current span { display: flex; align-items: center; justify-content: center; gap: 3px; min-width: 0; color: var(--dc-muted); }
+.achbit-session-model__current strong { font-size: var(--ac-font-body); font-weight: 600; }
+.achbit-session-model__current span { display: flex; align-items: center; justify-content: center; gap: 3px; min-width: 0; color: var(--ac-muted); }
 .achbit-session-model__current span > svg { flex-shrink: 0; }
 /* Own the full inset here so lazy conversation CSS cannot change this surface. */
 .achbit-session-model__efforts { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; padding: 8px 6px 6px; }
 .achbit-session-model__menu .achbit-session-model__efforts button { flex: 1 0 auto; width: auto; justify-content: center; min-height: 32px; padding: 7px 9px; }
-.achbit-session-model__efforts button[aria-checked="true"] { color: var(--dc-foreground-strong); font-weight: 600; }
-.achbit-session-model__error { margin: 10px 6px 4px; color: var(--dc-danger); font-size: var(--dc-font-caption); overflow-wrap: anywhere; }
+.achbit-session-model__efforts button[aria-checked="true"] { color: var(--ac-foreground-strong); font-weight: 600; }
+.achbit-session-model__error { margin: 10px 6px 4px; color: var(--ac-danger); font-size: var(--ac-font-caption); overflow-wrap: anywhere; }
 @media (pointer: coarse) {
   .achbit-session-model__menu button { min-height: 44px; }
 }
@@ -1659,16 +1659,16 @@
 .achbit-gui-workspace-manager .settings-group { margin: 20px 0; }
 .achbit-gui-workspace-manager .settings-card { border: 0; background: transparent; box-shadow: none; }
 
-.achbit-gui-workspace-manager__heading { margin: 18px 14px 10px; font-size: var(--dc-font-body); }
-.achbit-gui-workspace-manager__row > svg { flex: none; color: var(--dc-muted); }
-.achbit-gui-workspace-manager__add { display: flex; align-items: center; gap: 10px; width: 100%; padding: 14px; border: 0; border-radius: 0; background: var(--dc-surface-subtle); color: var(--dc-foreground); text-align: left; cursor: pointer; }
-.achbit-gui-workspace-manager__add:hover { background: var(--dc-surface-hover); }
+.achbit-gui-workspace-manager__heading { margin: 18px 14px 10px; font-size: var(--ac-font-body); }
+.achbit-gui-workspace-manager__row > svg { flex: none; color: var(--ac-muted); }
+.achbit-gui-workspace-manager__add { display: flex; align-items: center; gap: 10px; width: 100%; padding: 14px; border: 0; border-radius: 0; background: var(--ac-surface-subtle); color: var(--ac-foreground); text-align: left; cursor: pointer; }
+.achbit-gui-workspace-manager__add:hover { background: var(--ac-surface-hover); }
 .achbit-gui-workspace-manager .settings-group > h3 { margin-inline: 14px; }
 
 .achbit-subagent-config { padding:2px 6px 6px; }
 .achbit-subagent-config fieldset { margin:0; padding:0; border:0; min-width:0; }
-.achbit-subagent-config label { display:grid; grid-template-columns:80px minmax(0,1fr); align-items:center; gap:8px; min-height:42px; font-size:var(--dc-font-caption); color:var(--dc-muted); }
-.achbit-subagent-config .achbit-subagent-config__toggle { display:flex; justify-content:space-between; color:var(--dc-foreground); }
-.achbit-subagent-config select { width:100%; min-width:0; border:1px solid transparent; border-radius:6px; background-color:transparent; color:var(--dc-foreground); font:inherit; padding:6px 20px 6px 6px; -webkit-appearance:none; appearance:none; cursor:pointer;
-  background-image:linear-gradient(45deg,transparent 50%,var(--dc-muted) 50%),linear-gradient(135deg,var(--dc-muted) 50%,transparent 50%); background-position:right 10px center,right 6px center; background-size:4px 4px; background-repeat:no-repeat; }
-.achbit-subagent-config select:hover:not(:disabled) { background-color:var(--dc-surface-hover); }
+.achbit-subagent-config label { display:grid; grid-template-columns:80px minmax(0,1fr); align-items:center; gap:8px; min-height:42px; font-size:var(--ac-font-caption); color:var(--ac-muted); }
+.achbit-subagent-config .achbit-subagent-config__toggle { display:flex; justify-content:space-between; color:var(--ac-foreground); }
+.achbit-subagent-config select { width:100%; min-width:0; border:1px solid transparent; border-radius:6px; background-color:transparent; color:var(--ac-foreground); font:inherit; padding:6px 20px 6px 6px; -webkit-appearance:none; appearance:none; cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,var(--ac-muted) 50%),linear-gradient(135deg,var(--ac-muted) 50%,transparent 50%); background-position:right 10px center,right 6px center; background-size:4px 4px; background-repeat:no-repeat; }
+.achbit-subagent-config select:hover:not(:disabled) { background-color:var(--ac-surface-hover); }

@@ -2,7 +2,7 @@
 
 ## 品牌标识
 
-产品名称保持 **Achbit**，主品牌使用完整纯字标。独立的 **DC** 简写图案将 A 与 C 左右并列，通过相接的曲线形成整体，保留清晰的字腔与开放轮廓。两者均使用原创几何路径，分别用于完整品牌展示和需要简写的场景。品牌母版不包含 `<text>`，也不嵌入或分发字体文件。
+产品名称保持 **Achbit**，主品牌使用完整纯字标。独立的 **AC** 简写图案将 A 与 C 左右并列，通过相接的曲线形成整体，保留清晰的字腔与开放轮廓。两者均使用原创几何路径，分别用于完整品牌展示和需要简写的场景。品牌母版不包含 `<text>`，也不嵌入或分发字体文件。
 
 | 场景 | 资源 | 建议最小尺寸 |
 | --- | --- | --- |
@@ -12,9 +12,9 @@
 - `light` 表示用于浅色背景，`dark` 表示用于深色背景。
 - `mono` 使用 `currentColor`，适合内联到单色界面或印刷场景。
 - 保持等比缩放。符号周围至少保留可见符号高度 1/4 的净空；字标周围至少保留大写字高 1/4 的净空。
-- 完整字标和 DC 图案分别使用，主品牌区域保持纯字标。
-- DC 图案使用透明背景与单一颜色，保持原有轮廓和开放空间。
-- PNG 字标导出为 1016 × 224 px，DC 图案导出为 512 × 512 px，均提供明暗两套透明资源。
+- 完整字标和 AC 图案分别使用，主品牌区域保持纯字标。
+- AC 图案使用透明背景与单一颜色，保持原有轮廓和开放空间。
+- PNG 字标导出为 1016 × 224 px，AC 图案导出为 512 × 512 px，均提供明暗两套透明资源。
 
 ## 界面图标
 
@@ -38,30 +38,30 @@
 
 | 语义 | CSS token | 浅色背景 | 深色背景 |
 | --- | --- | --- | --- |
-| 中性 | `--dc-icon-neutral` | `#424854` | `#D9DEE7` |
-| 弱提示 | `--dc-icon-muted` | `#737C89` | `#929BAA` |
-| 蓝色 / 选中 | `--dc-icon-accent` | `#0868CE` | `#459CFF` |
-| 成功 | `--dc-icon-success` | `#187D4B` | `#40D98B` |
-| 警告 | `--dc-icon-warning` | `#996000` | `#FFBD59` |
-| 错误 | `--dc-icon-error` | `#CE3541` | `#FF746C` |
+| 中性 | `--ac-icon-neutral` | `#424854` | `#D9DEE7` |
+| 弱提示 | `--ac-icon-muted` | `#737C89` | `#929BAA` |
+| 蓝色 / 选中 | `--ac-icon-accent` | `#0868CE` | `#459CFF` |
+| 成功 | `--ac-icon-success` | `#187D4B` | `#40D98B` |
+| 警告 | `--ac-icon-warning` | `#996000` | `#FFBD59` |
+| 错误 | `--ac-icon-error` | `#CE3541` | `#FF746C` |
 
-`tokens/achbit-icon-tokens.css` 默认仍为深色主题。由宿主明确设置 `data-dc-theme="light"` 或 `data-dc-theme="dark"`；资源包不自行创建主题持久化或应用偏好。
+`tokens/achbit-icon-tokens.css` 默认仍为深色主题。由宿主明确设置 `data-ac-theme="light"` 或 `data-ac-theme="dark"`；资源包不自行创建主题持久化或应用偏好。
 
 ### 内联 SVG
 
 将目标 SVG 作为内联元素或组件使用，并在外层设置颜色。React / Vite 的 `?react` 导入方式仅适用于宿主已经配置 SVGR 的场景；本资源包不要求新增转换插件。
 
 ```html
-<div data-dc-theme="light">
+<div data-ac-theme="light">
   <button type="button" aria-label="打开终端">
-    <svg class="dc-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <use href="/icons/sprite/achbit-icons.svg#dc-icon-terminal"></use>
+    <svg class="ac-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <use href="/icons/sprite/achbit-icons.svg#ac-icon-terminal"></use>
     </svg>
   </button>
 </div>
 ```
 
-Sprite 的已有 `dc-icon-*` ID 对应 24 px 轮廓，保留原有命名。`dc-icon-ai-agent-16` 与 `dc-icon-kernel-16` 提供精简轮廓。需要精确的 16 / 20 / 32 / 64 px 光学线宽时使用对应目录的独立 SVG。
+Sprite 的 `ac-icon-*` ID 对应 24 px 轮廓。`ac-icon-ai-agent-16` 与 `ac-icon-kernel-16` 提供精简轮廓。需要精确的 16 / 20 / 32 / 64 px 光学线宽时使用对应目录的独立 SVG。
 
 ### 作为图片使用
 

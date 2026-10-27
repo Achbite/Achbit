@@ -1,4 +1,4 @@
-.resource-tree-menu { position: fixed; z-index: 1000; min-width: 180px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; border: 1px solid var(--dc-border); border-radius: 8px; background: var(--dc-surface); color: var(--dc-text); box-shadow: 0 6px 24px #0003; }
+.resource-tree-menu { position: fixed; z-index: 1000; min-width: 180px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; border: 1px solid var(--ac-border); border-radius: 8px; background: var(--ac-surface); color: var(--ac-text); box-shadow: 0 6px 24px #0003; }
 .resource-tree-menu button { display: block; width: 100%; border: 0; border-radius: 4px; padding: 7px 10px; background: transparent; color: inherit; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
-.resource-tree-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--dc-surface-hover); outline: 1px solid var(--dc-accent); }
-.resource-tree-menu button:disabled { color: var(--dc-text-muted); cursor: default; }
+.resource-tree-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--ac-surface-hover); outline: 1px solid var(--ac-accent); }
+.resource-tree-menu button:disabled { color: var(--ac-text-muted); cursor: default; }

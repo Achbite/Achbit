@@ -792,7 +792,7 @@ mod layout_tests {
     fn single_column_layout_keeps_long_input_cursor_inside_editor() {
         let client = HttpKernelClient::new(
             KernelClientConfig::new("http://127.0.0.1:1")
-                .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
+                .with_host_shell_token(format!("achost_{}", "01".repeat(32))),
         )
         .unwrap();
         let mut app = TuiApp::new(

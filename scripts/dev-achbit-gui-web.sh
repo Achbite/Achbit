@@ -159,9 +159,9 @@ random_hex() {
   node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))"
 }
 
-SHELL_TOKEN="dchost_$(random_hex)"
-UI_TOKEN="dcui_$(random_hex)"
-INSTANCE_ID="dcinstance_$(random_hex)"
+SHELL_TOKEN="achost_$(random_hex)"
+UI_TOKEN="acui_$(random_hex)"
+INSTANCE_ID="acinstance_$(random_hex)"
 
 env -u ACHBIT_HOST_UI_TOKEN \
   ACHBIT_HOST="$HOST" \

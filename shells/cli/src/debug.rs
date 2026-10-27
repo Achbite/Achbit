@@ -727,7 +727,7 @@ mod tests {
     fn identity(suffix: char) -> HostProcessIdentity {
         HostProcessIdentity {
             service: achbit_kernel_abi::KERNEL_DAEMON_SERVICE.into(),
-            instance_id: format!("dcinstance_{}", suffix.to_string().repeat(64)),
+            instance_id: format!("acinstance_{}", suffix.to_string().repeat(64)),
             pid: 123,
             address: "http://127.0.0.1:12345".into(),
         }

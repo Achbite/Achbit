@@ -1,159 +1,159 @@
 :root[data-product='achbit-gui'] {
   /* Color values are registered in config/ui/palette.json. */
   color-scheme: light;
-  --dc-background: var(--dc-theme-light-background);
-  --dc-sidebar: var(--dc-theme-light-sidebar);
-  --dc-surface: var(--dc-theme-light-surface);
-  --dc-surface-subtle: var(--dc-theme-light-surface-subtle);
-  --dc-surface-raised: var(--dc-theme-light-surface-raised);
-  --dc-surface-hover: var(--dc-theme-light-surface-hover);
-  --dc-surface-active: var(--dc-theme-light-surface-active);
-  --dc-border: var(--dc-theme-light-border);
-  --dc-border-strong: var(--dc-theme-light-border-strong);
-  --dc-foreground: var(--dc-theme-light-foreground);
-  --dc-foreground-strong: var(--dc-theme-light-foreground-strong);
-  --dc-muted: var(--dc-theme-light-muted);
-  --dc-faint: var(--dc-theme-light-faint);
-  --dc-success: var(--dc-theme-light-success);
-  --dc-success-soft: var(--dc-theme-light-success-soft);
-  --dc-warning: var(--dc-theme-light-warning);
-  --dc-warning-soft: var(--dc-theme-light-warning-soft);
-  --dc-danger: var(--dc-theme-light-danger);
-  --dc-danger-soft: var(--dc-theme-light-danger-soft);
-  --dc-code-background: var(--dc-theme-light-code-background);
-  --dc-shadow-small: var(--dc-theme-light-shadow-small);
-  --dc-shadow-panel: var(--dc-theme-light-shadow-panel);
-  --dc-shadow-inset: var(--dc-theme-light-shadow-inset);
-  --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-blue-light));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-blue-light-contrast));
+  --ac-background: var(--ac-theme-light-background);
+  --ac-sidebar: var(--ac-theme-light-sidebar);
+  --ac-surface: var(--ac-theme-light-surface);
+  --ac-surface-subtle: var(--ac-theme-light-surface-subtle);
+  --ac-surface-raised: var(--ac-theme-light-surface-raised);
+  --ac-surface-hover: var(--ac-theme-light-surface-hover);
+  --ac-surface-active: var(--ac-theme-light-surface-active);
+  --ac-border: var(--ac-theme-light-border);
+  --ac-border-strong: var(--ac-theme-light-border-strong);
+  --ac-foreground: var(--ac-theme-light-foreground);
+  --ac-foreground-strong: var(--ac-theme-light-foreground-strong);
+  --ac-muted: var(--ac-theme-light-muted);
+  --ac-faint: var(--ac-theme-light-faint);
+  --ac-success: var(--ac-theme-light-success);
+  --ac-success-soft: var(--ac-theme-light-success-soft);
+  --ac-warning: var(--ac-theme-light-warning);
+  --ac-warning-soft: var(--ac-theme-light-warning-soft);
+  --ac-danger: var(--ac-theme-light-danger);
+  --ac-danger-soft: var(--ac-theme-light-danger-soft);
+  --ac-code-background: var(--ac-theme-light-code-background);
+  --ac-shadow-small: var(--ac-theme-light-shadow-small);
+  --ac-shadow-panel: var(--ac-theme-light-shadow-panel);
+  --ac-shadow-inset: var(--ac-theme-light-shadow-inset);
+  --ac-accent: var(--ac-custom-light-accent, var(--ac-accent-blue-light));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-light-accent-contrast, var(--ac-accent-blue-light-contrast));
   /* Used by the active code-search match, not by control focus chrome. */
-  --dc-focus-ring: color-mix(in srgb, var(--dc-foreground) 45%, transparent);
+  --ac-focus-ring: color-mix(in srgb, var(--ac-foreground) 45%, transparent);
 
-  --dc-font-ui: "Achbit Quiet Reading Sans SC", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
-  --dc-font-reading: var(--dc-font-ui);
-  --dc-font-code: var(--dc-font-reading);
-  --dc-font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  --dc-font-micro: calc(11px * var(--dc-ui-font-scale, 1));
-  --dc-font-caption: calc(12px * var(--dc-ui-font-scale, 1));
-  --dc-font-label: calc(13px * var(--dc-ui-font-scale, 1));
-  --dc-font-body: calc(14px * var(--dc-ui-font-scale, 1));
-  --dc-font-body-large: calc(15px * var(--dc-ui-font-scale, 1));
-  --dc-font-reading-size: var(--dc-font-body);
-  --dc-font-code-size: 12px;
-  --dc-font-title: calc(16px * var(--dc-ui-font-scale, 1));
-  --dc-line-tight: 1.35;
-  --dc-line-compact: 1.45;
-  --dc-line-body: 1.6;
-  --dc-line-reading: 1.72;
-  --dc-line-code: 1.6;
-  --dc-weight-regular: 400;
-  --dc-weight-medium: 500;
-  --dc-weight-semibold: 600;
-  --dc-weight-bold: 700;
-  --dc-motion-feedback: 140ms;
-  --dc-motion-reveal: 200ms;
-  --dc-ease-out: cubic-bezier(.2, .8, .2, 1);
-  --dc-titlebar-height: 52px;
-  --dc-navigation-inset: 14px;
-  --dc-navigation-controls-height: var(--dc-titlebar-height);
-  --dc-navigation-control-gap: 2px;
-  --dc-navigation-title-gap: 8px;
-  --dc-control-size: 30px;
-  --dc-resize-hit-width: 15px;
-  --dc-settings-row-height: 52px;
-  --dc-usage-handle-width: 18px;
-  --dc-usage-handle-height: 28px;
-  --dc-radius-outer: 16px;
-  --dc-radius-inner: 12px;
-  --dc-radius-control: 8px;
+  --ac-font-ui: "Achbit Quiet Reading Sans SC", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --ac-font-reading: var(--ac-font-ui);
+  --ac-font-code: var(--ac-font-reading);
+  --ac-font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --ac-font-micro: calc(11px * var(--ac-ui-font-scale, 1));
+  --ac-font-caption: calc(12px * var(--ac-ui-font-scale, 1));
+  --ac-font-label: calc(13px * var(--ac-ui-font-scale, 1));
+  --ac-font-body: calc(14px * var(--ac-ui-font-scale, 1));
+  --ac-font-body-large: calc(15px * var(--ac-ui-font-scale, 1));
+  --ac-font-reading-size: var(--ac-font-body);
+  --ac-font-code-size: 12px;
+  --ac-font-title: calc(16px * var(--ac-ui-font-scale, 1));
+  --ac-line-tight: 1.35;
+  --ac-line-compact: 1.45;
+  --ac-line-body: 1.6;
+  --ac-line-reading: 1.72;
+  --ac-line-code: 1.6;
+  --ac-weight-regular: 400;
+  --ac-weight-medium: 500;
+  --ac-weight-semibold: 600;
+  --ac-weight-bold: 700;
+  --ac-motion-feedback: 140ms;
+  --ac-motion-reveal: 200ms;
+  --ac-ease-out: cubic-bezier(.2, .8, .2, 1);
+  --ac-titlebar-height: 52px;
+  --ac-navigation-inset: 14px;
+  --ac-navigation-controls-height: var(--ac-titlebar-height);
+  --ac-navigation-control-gap: 2px;
+  --ac-navigation-title-gap: 8px;
+  --ac-control-size: 30px;
+  --ac-resize-hit-width: 15px;
+  --ac-settings-row-height: 52px;
+  --ac-usage-handle-width: 18px;
+  --ac-usage-handle-height: 28px;
+  --ac-radius-outer: 16px;
+  --ac-radius-inner: 12px;
+  --ac-radius-control: 8px;
 }
 
 /* The native macOS caption occupies the first 32px; custom chrome has no leading window buttons. */
 :root[data-product='achbit-gui'][data-achbit-window-chrome='nativeOverlay'] {
-  --dc-navigation-inset: 84px;
-  --dc-navigation-controls-height: 32px;
+  --ac-navigation-inset: 84px;
+  --ac-navigation-controls-height: 32px;
 }
 
 :root[data-product='achbit-gui'][data-theme='dark'],
 :root[data-product='achbit-gui'][data-theme='achbit-gui-dark'] {
   color-scheme: dark;
-  --dc-background: var(--dc-theme-dark-background);
-  --dc-sidebar: var(--dc-theme-dark-sidebar);
-  --dc-surface: var(--dc-theme-dark-surface);
-  --dc-surface-subtle: var(--dc-theme-dark-surface-subtle);
-  --dc-surface-raised: var(--dc-theme-dark-surface-raised);
-  --dc-surface-hover: var(--dc-theme-dark-surface-hover);
-  --dc-surface-active: var(--dc-theme-dark-surface-active);
-  --dc-border: var(--dc-theme-dark-border);
-  --dc-border-strong: var(--dc-theme-dark-border-strong);
-  --dc-foreground: var(--dc-theme-dark-foreground);
-  --dc-foreground-strong: var(--dc-theme-dark-foreground-strong);
-  --dc-muted: var(--dc-theme-dark-muted);
-  --dc-faint: var(--dc-theme-dark-faint);
-  --dc-success: var(--dc-theme-dark-success);
-  --dc-success-soft: var(--dc-theme-dark-success-soft);
-  --dc-warning: var(--dc-theme-dark-warning);
-  --dc-warning-soft: var(--dc-theme-dark-warning-soft);
-  --dc-danger: var(--dc-theme-dark-danger);
-  --dc-danger-soft: var(--dc-theme-dark-danger-soft);
-  --dc-code-background: var(--dc-theme-dark-code-background);
-  --dc-shadow-small: var(--dc-theme-dark-shadow-small);
-  --dc-shadow-panel: var(--dc-theme-dark-shadow-panel);
-  --dc-shadow-inset: var(--dc-theme-dark-shadow-inset);
+  --ac-background: var(--ac-theme-dark-background);
+  --ac-sidebar: var(--ac-theme-dark-sidebar);
+  --ac-surface: var(--ac-theme-dark-surface);
+  --ac-surface-subtle: var(--ac-theme-dark-surface-subtle);
+  --ac-surface-raised: var(--ac-theme-dark-surface-raised);
+  --ac-surface-hover: var(--ac-theme-dark-surface-hover);
+  --ac-surface-active: var(--ac-theme-dark-surface-active);
+  --ac-border: var(--ac-theme-dark-border);
+  --ac-border-strong: var(--ac-theme-dark-border-strong);
+  --ac-foreground: var(--ac-theme-dark-foreground);
+  --ac-foreground-strong: var(--ac-theme-dark-foreground-strong);
+  --ac-muted: var(--ac-theme-dark-muted);
+  --ac-faint: var(--ac-theme-dark-faint);
+  --ac-success: var(--ac-theme-dark-success);
+  --ac-success-soft: var(--ac-theme-dark-success-soft);
+  --ac-warning: var(--ac-theme-dark-warning);
+  --ac-warning-soft: var(--ac-theme-dark-warning-soft);
+  --ac-danger: var(--ac-theme-dark-danger);
+  --ac-danger-soft: var(--ac-theme-dark-danger-soft);
+  --ac-code-background: var(--ac-theme-dark-code-background);
+  --ac-shadow-small: var(--ac-theme-dark-shadow-small);
+  --ac-shadow-panel: var(--ac-theme-dark-shadow-panel);
+  --ac-shadow-inset: var(--ac-theme-dark-shadow-inset);
 }
 
 :root[data-product='achbit-gui'][data-accent='blue'] {
-  --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-blue-light));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-blue-light-contrast));
+  --ac-accent: var(--ac-custom-light-accent, var(--ac-accent-blue-light));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-light-accent-contrast, var(--ac-accent-blue-light-contrast));
 }
 
 :root[data-product='achbit-gui'][data-theme='dark'][data-accent='blue'],
 :root[data-product='achbit-gui'][data-theme='achbit-gui-dark'][data-accent='blue'] {
-  --dc-accent: var(--dc-custom-dark-accent, var(--dc-accent-blue-dark));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-dark-accent-contrast, var(--dc-accent-blue-dark-contrast));
+  --ac-accent: var(--ac-custom-dark-accent, var(--ac-accent-blue-dark));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-dark-accent-contrast, var(--ac-accent-blue-dark-contrast));
 }
 
 :root[data-product='achbit-gui'][data-accent='purple'] {
-  --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-purple-light));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-purple-light-contrast));
+  --ac-accent: var(--ac-custom-light-accent, var(--ac-accent-purple-light));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-light-accent-contrast, var(--ac-accent-purple-light-contrast));
 }
 
 :root[data-product='achbit-gui'][data-theme='dark'][data-accent='purple'],
 :root[data-product='achbit-gui'][data-theme='achbit-gui-dark'][data-accent='purple'] {
-  --dc-accent: var(--dc-custom-dark-accent, var(--dc-accent-purple-dark));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-dark-accent-contrast, var(--dc-accent-purple-dark-contrast));
+  --ac-accent: var(--ac-custom-dark-accent, var(--ac-accent-purple-dark));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-dark-accent-contrast, var(--ac-accent-purple-dark-contrast));
 }
 
 :root[data-product='achbit-gui'][data-accent='green'] {
-  --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-green-light));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-green-light-contrast));
+  --ac-accent: var(--ac-custom-light-accent, var(--ac-accent-green-light));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-light-accent-contrast, var(--ac-accent-green-light-contrast));
 }
 
 :root[data-product='achbit-gui'][data-theme='dark'][data-accent='green'],
 :root[data-product='achbit-gui'][data-theme='achbit-gui-dark'][data-accent='green'] {
-  --dc-accent: var(--dc-custom-dark-accent, var(--dc-accent-green-dark));
-  --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
-  --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
-  --dc-accent-contrast: var(--dc-custom-dark-accent-contrast, var(--dc-accent-green-dark-contrast));
+  --ac-accent: var(--ac-custom-dark-accent, var(--ac-accent-green-dark));
+  --ac-accent-soft: color-mix(in srgb, var(--ac-accent) 12%, transparent);
+  --ac-accent-border: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  --ac-accent-contrast: var(--ac-custom-dark-accent-contrast, var(--ac-accent-green-dark-contrast));
 }
 
 :root[data-product='achbit-gui'] body {
-  background: var(--dc-background);
-  color: var(--dc-foreground);
-  font-family: var(--dc-font-ui);
-  font-size: var(--dc-font-body);
+  background: var(--ac-background);
+  color: var(--ac-foreground);
+  font-family: var(--ac-font-ui);
+  font-size: var(--ac-font-body);
   letter-spacing: 0;
 }
 

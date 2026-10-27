@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn host_shell_token_debug_output_is_redacted() {
-        let token = format!("dchost_{}", "a".repeat(64));
+        let token = format!("achost_{}", "a".repeat(64));
         let config =
             KernelClientConfig::new("http://127.0.0.1:31245").with_host_shell_token(token.clone());
         let debug = format!("{config:?}");

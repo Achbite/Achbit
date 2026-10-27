@@ -116,7 +116,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-workspace-24.svg",
         "png_24": "png/24/icon-workspace-24.png",
         "png_light_24": "png/light/24/icon-workspace-24.png",
-        "sprite_id": "dc-icon-workspace"
+        "sprite_id": "ac-icon-workspace"
       }
     },
     {
@@ -130,7 +130,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-folder-24.svg",
         "png_24": "png/24/icon-folder-24.png",
         "png_light_24": "png/light/24/icon-folder-24.png",
-        "sprite_id": "dc-icon-folder"
+        "sprite_id": "ac-icon-folder"
       }
     },
     {
@@ -144,7 +144,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-folder-tree-24.svg",
         "png_24": "png/24/icon-folder-tree-24.png",
         "png_light_24": "png/light/24/icon-folder-tree-24.png",
-        "sprite_id": "dc-icon-folder-tree"
+        "sprite_id": "ac-icon-folder-tree"
       }
     },
     {
@@ -158,7 +158,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-file-24.svg",
         "png_24": "png/24/icon-file-24.png",
         "png_light_24": "png/light/24/icon-file-24.png",
-        "sprite_id": "dc-icon-file"
+        "sprite_id": "ac-icon-file"
       }
     },
     {
@@ -172,7 +172,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-tabs-24.svg",
         "png_24": "png/24/icon-tabs-24.png",
         "png_light_24": "png/light/24/icon-tabs-24.png",
-        "sprite_id": "dc-icon-tabs"
+        "sprite_id": "ac-icon-tabs"
       }
     },
     {
@@ -186,7 +186,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-code-editor-24.svg",
         "png_24": "png/24/icon-code-editor-24.png",
         "png_light_24": "png/light/24/icon-code-editor-24.png",
-        "sprite_id": "dc-icon-code-editor"
+        "sprite_id": "ac-icon-code-editor"
       }
     },
     {
@@ -200,7 +200,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-terminal-24.svg",
         "png_24": "png/24/icon-terminal-24.png",
         "png_light_24": "png/light/24/icon-terminal-24.png",
-        "sprite_id": "dc-icon-terminal"
+        "sprite_id": "ac-icon-terminal"
       }
     },
     {
@@ -214,9 +214,9 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-ai-agent-24.svg",
         "png_24": "png/24/icon-ai-agent-24.png",
         "png_light_24": "png/light/24/icon-ai-agent-24.png",
-        "sprite_id": "dc-icon-ai-agent"
+        "sprite_id": "ac-icon-ai-agent"
       },
-      "compact_sprite_id": "dc-icon-ai-agent-16"
+      "compact_sprite_id": "ac-icon-ai-agent-16"
     },
     {
       "name": "browser",
@@ -229,7 +229,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-browser-24.svg",
         "png_24": "png/24/icon-browser-24.png",
         "png_light_24": "png/light/24/icon-browser-24.png",
-        "sprite_id": "dc-icon-browser"
+        "sprite_id": "ac-icon-browser"
       }
     },
     {
@@ -243,7 +243,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-settings-24.svg",
         "png_24": "png/24/icon-settings-24.png",
         "png_light_24": "png/light/24/icon-settings-24.png",
-        "sprite_id": "dc-icon-settings"
+        "sprite_id": "ac-icon-settings"
       }
     },
     {
@@ -257,7 +257,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-search-24.svg",
         "png_24": "png/24/icon-search-24.png",
         "png_light_24": "png/light/24/icon-search-24.png",
-        "sprite_id": "dc-icon-search"
+        "sprite_id": "ac-icon-search"
       }
     },
     {
@@ -271,9 +271,9 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-kernel-24.svg",
         "png_24": "png/24/icon-kernel-24.png",
         "png_light_24": "png/light/24/icon-kernel-24.png",
-        "sprite_id": "dc-icon-kernel"
+        "sprite_id": "ac-icon-kernel"
       },
-      "compact_sprite_id": "dc-icon-kernel-16"
+      "compact_sprite_id": "ac-icon-kernel-16"
     },
     {
       "name": "workflow-task",
@@ -286,7 +286,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-workflow-task-24.svg",
         "png_24": "png/24/icon-workflow-task-24.png",
         "png_light_24": "png/light/24/icon-workflow-task-24.png",
-        "sprite_id": "dc-icon-workflow-task"
+        "sprite_id": "ac-icon-workflow-task"
       }
     },
     {
@@ -300,7 +300,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-run-24.svg",
         "png_24": "png/24/icon-run-24.png",
         "png_light_24": "png/light/24/icon-run-24.png",
-        "sprite_id": "dc-icon-run"
+        "sprite_id": "ac-icon-run"
       }
     },
     {
@@ -314,7 +314,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-stop-24.svg",
         "png_24": "png/24/icon-stop-24.png",
         "png_light_24": "png/light/24/icon-stop-24.png",
-        "sprite_id": "dc-icon-stop"
+        "sprite_id": "ac-icon-stop"
       }
     },
     {
@@ -328,7 +328,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-refresh-24.svg",
         "png_24": "png/24/icon-refresh-24.png",
         "png_light_24": "png/light/24/icon-refresh-24.png",
-        "sprite_id": "dc-icon-refresh"
+        "sprite_id": "ac-icon-refresh"
       }
     },
     {
@@ -342,7 +342,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-external-link-24.svg",
         "png_24": "png/24/icon-external-link-24.png",
         "png_light_24": "png/light/24/icon-external-link-24.png",
-        "sprite_id": "dc-icon-external-link"
+        "sprite_id": "ac-icon-external-link"
       }
     },
     {
@@ -356,7 +356,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-more-horizontal-24.svg",
         "png_24": "png/24/icon-more-horizontal-24.png",
         "png_light_24": "png/light/24/icon-more-horizontal-24.png",
-        "sprite_id": "dc-icon-more-horizontal"
+        "sprite_id": "ac-icon-more-horizontal"
       }
     },
     {
@@ -370,7 +370,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-close-24.svg",
         "png_24": "png/24/icon-close-24.png",
         "png_light_24": "png/light/24/icon-close-24.png",
-        "sprite_id": "dc-icon-close"
+        "sprite_id": "ac-icon-close"
       }
     },
     {
@@ -384,7 +384,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-chevron-right-24.svg",
         "png_24": "png/24/icon-chevron-right-24.png",
         "png_light_24": "png/light/24/icon-chevron-right-24.png",
-        "sprite_id": "dc-icon-chevron-right"
+        "sprite_id": "ac-icon-chevron-right"
       }
     },
     {
@@ -398,7 +398,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-success-24.svg",
         "png_24": "png/24/icon-success-24.png",
         "png_light_24": "png/light/24/icon-success-24.png",
-        "sprite_id": "dc-icon-success"
+        "sprite_id": "ac-icon-success"
       }
     },
     {
@@ -412,7 +412,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-warning-24.svg",
         "png_24": "png/24/icon-warning-24.png",
         "png_light_24": "png/light/24/icon-warning-24.png",
-        "sprite_id": "dc-icon-warning"
+        "sprite_id": "ac-icon-warning"
       }
     },
     {
@@ -426,7 +426,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-error-24.svg",
         "png_24": "png/24/icon-error-24.png",
         "png_light_24": "png/light/24/icon-error-24.png",
-        "sprite_id": "dc-icon-error"
+        "sprite_id": "ac-icon-error"
       }
     },
     {
@@ -440,7 +440,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-info-24.svg",
         "png_24": "png/24/icon-info-24.png",
         "png_light_24": "png/light/24/icon-info-24.png",
-        "sprite_id": "dc-icon-info"
+        "sprite_id": "ac-icon-info"
       }
     },
     {
@@ -454,7 +454,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-in-progress-24.svg",
         "png_24": "png/24/icon-in-progress-24.png",
         "png_light_24": "png/light/24/icon-in-progress-24.png",
-        "sprite_id": "dc-icon-in-progress"
+        "sprite_id": "ac-icon-in-progress"
       }
     },
     {
@@ -468,7 +468,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-blocked-24.svg",
         "png_24": "png/24/icon-blocked-24.png",
         "png_light_24": "png/light/24/icon-blocked-24.png",
-        "sprite_id": "dc-icon-blocked"
+        "sprite_id": "ac-icon-blocked"
       }
     },
     {
@@ -482,7 +482,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-chart-line-24.svg",
         "png_24": "png/24/icon-chart-line-24.png",
         "png_light_24": "png/light/24/icon-chart-line-24.png",
-        "sprite_id": "dc-icon-chart-line"
+        "sprite_id": "ac-icon-chart-line"
       }
     },
     {
@@ -496,7 +496,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-chart-bar-24.svg",
         "png_24": "png/24/icon-chart-bar-24.png",
         "png_light_24": "png/light/24/icon-chart-bar-24.png",
-        "sprite_id": "dc-icon-chart-bar"
+        "sprite_id": "ac-icon-chart-bar"
       }
     },
     {
@@ -510,7 +510,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-chart-donut-24.svg",
         "png_24": "png/24/icon-chart-donut-24.png",
         "png_light_24": "png/light/24/icon-chart-donut-24.png",
-        "sprite_id": "dc-icon-chart-donut"
+        "sprite_id": "ac-icon-chart-donut"
       }
     },
     {
@@ -524,7 +524,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-activity-grid-24.svg",
         "png_24": "png/24/icon-activity-grid-24.png",
         "png_light_24": "png/light/24/icon-activity-grid-24.png",
-        "sprite_id": "dc-icon-activity-grid"
+        "sprite_id": "ac-icon-activity-grid"
       }
     },
     {
@@ -538,7 +538,7 @@
         "svg_themed_light_24": "svg/themed-light/24/icon-kpi-card-24.svg",
         "png_24": "png/24/icon-kpi-card-24.png",
         "png_light_24": "png/light/24/icon-kpi-card-24.png",
-        "sprite_id": "dc-icon-kpi-card"
+        "sprite_id": "ac-icon-kpi-card"
       }
     }
   ],

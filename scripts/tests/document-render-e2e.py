@@ -110,7 +110,7 @@ def verify_resources(daemon, projection, workspace):
 def preview(daemon, port):
     """Keep this owned fixture alive for focused browser interaction checks."""
     host_port = fixture.free_port()
-    token = f"dcui_{secrets.token_hex(32)}"
+    token = f"acui_{secrets.token_hex(32)}"
     env = {**os.environ, "ACHBIT_HOST": "127.0.0.1", "ACHBIT_PORT": str(host_port),
         "ACHBIT_DAEMON_HOST": "127.0.0.1", "ACHBIT_DAEMON_PORT": str(daemon.port),
         "ACHBIT_HOST_WEB_SPAWN_DAEMON": "0", "ACHBIT_HOST_UI_TOKEN": token,

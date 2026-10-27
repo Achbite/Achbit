@@ -694,7 +694,7 @@ test('native path selection preserves OS paths, cancellation and dialog errors',
 test('Windows sandbox initialization uses the injected Host origin and preserves setup failures', async (t) => {
   const previousWindow = globalThis.window;
   t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
-  const uiToken = `dcui_${'12'.repeat(32)}`;
+  const uiToken = `acui_${'12'.repeat(32)}`;
   globalThis.window = {
     location: { protocol: 'http:', hostname: 'achbit-gui.localhost', origin: 'http://achbit-gui.localhost' },
     __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken, windowChrome: 'custom' },
@@ -3652,6 +3652,19 @@ test('interface refresh preserves view state and leaves unsaved settings for the
   assert.equal(reloads, 1);
 });
 
+test('palette output preserves current namespace colors and validation errors', async t => {
+  const [palette] = await loadGuiModules(t, ['/src/theme/palette.ts']);
+  const colors = { '--ac-theme-light-background': '#f5f1ea', '--ac-theme-dark-background': '#202124', '--ac-custom-dark-accent': '#aaccee' };
+  const encoded = JSON.stringify(colors);
+  assert.deepEqual(palette.decodePaletteOverrides(encoded), colors);
+  const css = palette.paletteOverrideCss(encoded);
+  assert.match(css, /--ac-theme-light-background:#f5f1ea;/);
+  assert.match(css, /--ac-theme-dark-background:#202124;/);
+  assert.match(css, /--ac-custom-dark-accent:#aaccee;/);
+  assert.throws(() => palette.decodePaletteOverrides('{"--ac-theme-dark-unknown":"#112233"}'), /Unknown palette token: --ac-theme-dark-unknown/);
+  assert.throws(() => palette.decodePaletteOverrides('{"--ac-theme-dark-background":"#12"}'), /Invalid color for --ac-theme-dark-background: #12/);
+});
+
 test('custom light and dark palettes persist through the shared settings owner and reset independently', async (t) => {
   const [{ useSettingsStore }, palette] = await loadGuiModules(t, ['/src/state/settingsStore.ts', '/src/theme/palette.ts']);
   let persisted = { 'gui.colorTheme': 'system', 'gui.accentColor': 'purple' };
@@ -3669,14 +3682,14 @@ test('custom light and dark palettes persist through the shared settings owner a
     return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/test/user-settings.json' } });
   });
   await useSettingsStore.getState().loadUserSettings();
-  const custom = { '--dc-theme-light-background': '#f5f1ea', '--dc-theme-dark-background': '#202124', '--dc-custom-dark-accent': '#aaccee' };
+  const custom = { '--ac-theme-light-background': '#f5f1ea', '--ac-theme-dark-background': '#202124', '--ac-custom-dark-accent': '#aaccee' };
   assert.equal(await useSettingsStore.getState().patchUserSetting(palette.PALETTE_SETTING, JSON.stringify(custom)), 'immediate');
   const [{ useSettingsStore: reloaded }] = await loadGuiModules(t, ['/src/state/settingsStore.ts']);
   await reloaded.getState().loadUserSettings();
   const read = () => palette.decodePaletteOverrides(reloaded.getState().effectiveSettings[palette.PALETTE_SETTING]);
   assert.deepEqual(read(), custom);
   assert.equal(palette.paletteColor(read(), 'dark', 'accent', 'purple'), '#aaccee');
-  assert.equal(palette.paletteColor(read(), 'light', 'accent', 'purple'), palette.UI_PALETTE.tokens['--dc-accent-purple-light']);
+  assert.equal(palette.paletteColor(read(), 'light', 'accent', 'purple'), palette.UI_PALETTE.tokens['--ac-accent-purple-light']);
   fail = true;
   assert.equal(await reloaded.getState().patchUserSetting(palette.PALETTE_SETTING, '{}'), null);
   assert.match(reloaded.getState().errorMessage, /palette write failed/);
@@ -3685,7 +3698,7 @@ test('custom light and dark palettes persist through the shared settings owner a
   const lightOnly = palette.resetPaletteTheme(read(), 'dark');
   assert.equal(await reloaded.getState().patchUserSetting(palette.PALETTE_SETTING, JSON.stringify(lightOnly)), 'immediate');
   await reloaded.getState().loadUserSettings();
-  assert.deepEqual(read(), { '--dc-theme-light-background': '#f5f1ea' });
+  assert.deepEqual(read(), { '--ac-theme-light-background': '#f5f1ea' });
   assert.equal(reloaded.getState().effectiveSettings['gui.colorTheme'], 'system');
   assert.equal(reloaded.getState().effectiveSettings['gui.accentColor'], 'purple');
   assert.equal(await reloaded.getState().resetUserSetting(palette.PALETTE_SETTING), 'immediate');
@@ -3695,16 +3708,16 @@ test('custom light and dark palettes persist through the shared settings owner a
 
 test('palette rejects incomplete input and reset removes custom colors and derived contrast', async (t) => {
   const { decodePaletteOverrides, paletteOverrideCss, resetPaletteTheme } = await loadGuiModule(t, '/src/theme/palette.ts');
-  for (const encoded of ['{broken', '[]', 'null', '{"unknown":"#112233"}', '{"--dc-theme-dark-background":"#12"}', '{"--dc-theme-dark-background":null}']) {
+  for (const encoded of ['{broken', '[]', 'null', '{"unknown":"#112233"}', '{"--ac-theme-dark-background":"#12"}', '{"--ac-theme-dark-background":null}']) {
     assert.throws(() => decodePaletteOverrides(encoded));
     assert.throws(() => paletteOverrideCss(encoded));
   }
-  const custom = { '--dc-custom-dark-accent': '#aabbcc', '--dc-theme-light-border': '#11223322' };
+  const custom = { '--ac-custom-dark-accent': '#aabbcc', '--ac-theme-light-border': '#11223322' };
   const css = paletteOverrideCss(JSON.stringify(custom));
-  assert.match(css, /--dc-custom-dark-accent-contrast:var\(--dc-shadow-color\)/);
+  assert.match(css, /--ac-custom-dark-accent-contrast:var\(--ac-shadow-color\)/);
   const reset = paletteOverrideCss(JSON.stringify(resetPaletteTheme(custom, 'dark')));
   assert.doesNotMatch(reset, /custom-dark/);
-  assert.match(reset, /--dc-theme-light-border:#11223322/);
+  assert.match(reset, /--ac-theme-light-border:#11223322/);
   assert.equal(paletteOverrideCss('{}'), ':root{}');
 });
 
@@ -3718,11 +3731,11 @@ test('named themes validate before import and select light and dark palettes ind
   assert.equal(library.selectedThemeId(themes, applied, 'light'), 'review');
   assert.equal(library.selectedThemeId(themes, applied, 'dark'), 'default');
   applied = library.applyThemePalette(applied, themes[0], 'dark');
-  assert.equal(applied['--dc-theme-light-background'], '#f4f2ed');
+  assert.equal(applied['--ac-theme-light-background'], '#f4f2ed');
   assert.equal(library.selectedThemeId(themes, applied, 'dark'), themes[0].id);
-  const edited = { ...applied, '--dc-custom-dark-accent': '#abcdef' };
+  const edited = { ...applied, '--ac-custom-dark-accent': '#abcdef' };
   assert.equal(library.selectedThemeId(themes, edited, 'dark'), 'custom');
-  assert.deepEqual(library.applyThemePalette(applied, null, 'dark'), { '--dc-theme-light-background': '#f4f2ed' });
+  assert.deepEqual(library.applyThemePalette(applied, null, 'dark'), { '--ac-theme-light-background': '#f4f2ed' });
   for (const theme of themes) palette.decodePaletteOverrides(JSON.stringify(library.themeOverrides(theme)));
   for (const document of [null, [], { name: 'Empty' }, { name: 'Bad', dark: { unknown: '#112233' } }, { name: 'Bad', dark: { accent: '#12' } }]) {
     assert.throws(() => library.importTheme(JSON.stringify(document)));
@@ -3732,7 +3745,7 @@ test('named themes validate before import and select light and dark palettes ind
 
 test('theme library and UI fonts persist without changing active colors or appearance mode', async (t) => {
   const [{ useSettingsStore }, library, fonts, i18n] = await loadGuiModules(t, ['/src/state/settingsStore.ts', '/src/theme/themeLibrary.ts', '/src/theme/typography.ts', '/src/i18n.ts']);
-  let persisted = { 'gui.colorTheme': 'system', 'workbench.styleTokenOverrides': '{"--dc-custom-dark-accent":"#ccbbaa"}' };
+  let persisted = { 'gui.colorTheme': 'system', 'workbench.styleTokenOverrides': '{"--ac-custom-dark-accent":"#ccbbaa"}' };
   installGuiFetch(t, (url, init) => {
     assert.equal(url.pathname, '/api/user-settings');
     if (init.method === 'PATCH') {
@@ -3750,7 +3763,7 @@ test('theme library and UI fonts persist without changing active colors or appea
   const settings = reloaded.getState().effectiveSettings;
   assert.deepEqual(library.decodeThemeLibrary(settings[library.THEME_LIBRARY_SETTING]), saved);
   assert.equal(settings['gui.colorTheme'], 'system');
-  assert.equal(settings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
+  assert.equal(settings['workbench.styleTokenOverrides'], '{"--ac-custom-dark-accent":"#ccbbaa"}');
   assert.match(fonts.uiFontFamily(settings[fonts.UI_FONT_FAMILY_SETTING]), /^"PingFang SC",/);
   assert.equal(fonts.uiFontSize(settings[fonts.UI_FONT_SIZE_SETTING]), 16);
   assert.equal(fonts.codeFontSize(settings[fonts.CODE_FONT_SIZE_SETTING]), 11);
@@ -3763,24 +3776,24 @@ test('theme library and UI fonts persist without changing active colors or appea
   });
   await reloaded.getState().loadUserSettings();
   const mixed = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.match(mixed['--dc-font-ui'], /Achbit Quiet Reading SC/);
-  assert.equal(mixed['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
-  assert.match(mixed['--dc-font-code'], /Achbit Quiet Mono SC/);
-  assert.equal(mixed['--dc-font-reading-size'], '14px');
-  assert.equal(mixed['--dc-font-code-size'], '11px');
-  assert.equal(mixed['--dc-ui-font-scale'], String(16 / 14));
+  assert.match(mixed['--ac-font-ui'], /Achbit Quiet Reading SC/);
+  assert.equal(mixed['--ac-font-reading'], fonts.UI_FONT_PRESETS.system);
+  assert.match(mixed['--ac-font-code'], /Achbit Quiet Mono SC/);
+  assert.equal(mixed['--ac-font-reading-size'], '14px');
+  assert.equal(mixed['--ac-font-code-size'], '11px');
+  assert.equal(mixed['--ac-ui-font-scale'], String(16 / 14));
   await reloaded.getState().patchUserSettingsBatch({
     [fonts.CONTENT_FONT_FAMILY_SETTING]: 'warm-sans',
     [fonts.TERMINAL_FONT_FAMILY_SETTING]: 'compact-kai',
   });
   await reloaded.getState().loadUserSettings();
   const variants = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.equal(variants['--dc-font-ui'], mixed['--dc-font-ui']);
-  assert.match(variants['--dc-font-reading'], /^"Achbit Quiet Reading Sans SC",/);
-  assert.match(variants['--dc-font-code'], /^"Achbit Quiet Mono Kai SC",/);
-  assert.equal(variants['--dc-font-reading-size'], '14px');
-  assert.equal(variants['--dc-font-code-size'], '11px');
-  assert.equal(reloaded.getState().effectiveSettings['workbench.styleTokenOverrides'], '{"--dc-custom-dark-accent":"#ccbbaa"}');
+  assert.equal(variants['--ac-font-ui'], mixed['--ac-font-ui']);
+  assert.match(variants['--ac-font-reading'], /^"Achbit Quiet Reading Sans SC",/);
+  assert.match(variants['--ac-font-code'], /^"Achbit Quiet Mono Kai SC",/);
+  assert.equal(variants['--ac-font-reading-size'], '14px');
+  assert.equal(variants['--ac-font-code-size'], '11px');
+  assert.equal(reloaded.getState().effectiveSettings['workbench.styleTokenOverrides'], '{"--ac-custom-dark-accent":"#ccbbaa"}');
   for (const [choice, chinese, english] of [
     ['warm', '温和阅读 · 文楷', 'Gentle reading · Kai'],
     ['warm-sans', '温和阅读 · 无衬线', 'Gentle reading · Sans'],
@@ -3798,9 +3811,9 @@ test('theme library and UI fonts persist without changing active colors or appea
     [fonts.CONTENT_FONT_SIZE_SETTING]: null,
   });
   const unified = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  assert.equal(unified['--dc-font-ui'], fonts.UI_FONT_PRESETS.system);
-  assert.equal(unified['--dc-font-reading'], fonts.UI_FONT_PRESETS.system);
-  assert.match(unified['--dc-font-code'], /^ui-monospace/);
+  assert.equal(unified['--ac-font-ui'], fonts.UI_FONT_PRESETS.system);
+  assert.equal(unified['--ac-font-reading'], fonts.UI_FONT_PRESETS.system);
+  assert.match(unified['--ac-font-code'], /^ui-monospace/);
   assert.equal(fonts.codeFontSize(undefined), 12);
   assert.throws(() => fonts.codeFontSize(9));
   assert.throws(() => fonts.codeFontSize(19));
@@ -3812,7 +3825,7 @@ test('theme library and UI fonts persist without changing active colors or appea
   await reloaded.getState().patchUserSettingsBatch({ [fonts.UI_FONT_FAMILY_SETTING]: null, [fonts.UI_FONT_SIZE_SETTING]: null, [fonts.CODE_FONT_SIZE_SETTING]: null });
   assert.equal(reloaded.getState().effectiveSettings[fonts.UI_FONT_FAMILY_SETTING], 'warm-sans');
   const defaultFonts = fonts.typographyStyles(reloaded.getState().effectiveSettings);
-  for (const key of ['--dc-font-ui', '--dc-font-reading', '--dc-font-code']) {
+  for (const key of ['--ac-font-ui', '--ac-font-reading', '--ac-font-code']) {
     assert.equal(defaultFonts[key], fonts.UI_FONT_PRESETS['warm-sans']);
   }
   assert.equal(fonts.uiFontFamily(undefined), fonts.UI_FONT_PRESETS['warm-sans']);
@@ -3913,7 +3926,7 @@ async function createUsageWidgetHarness(t, savedPositions = new Map()) {
       return this.children.flatMap(child => [...(classes.includes(child.className) ? [child] : []), ...child.querySelectorAll(selector)]);
     }
     getBoundingClientRect() {
-      const collapsed = this.children.some(child => child.className === 'dc-usage__handle');
+      const collapsed = this.children.some(child => child.className === 'ac-usage__handle');
       return { left: parseFloat(this.style.left) || 0, top: parseFloat(this.style.top) || 0, width: collapsed ? 18 : 200, height: collapsed ? 28 : 80 };
     }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
@@ -3965,42 +3978,42 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   const root = container.children[0];
   const pointer = target => listeners.get('pointerdown').listener({ target });
   assert.equal(listeners.get('pointerdown').capture, true, 'dismissal also observes outside controls that stop bubbling');
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 1);
-  let detail = root.querySelectorAll('.dc-usage__details')[0];
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 1);
+  let detail = root.querySelectorAll('.ac-usage__details')[0];
   pointer(detail);
   assert.deepEqual(changes, [], 'inside details are not an outside click');
   assert.equal(detail.children.some(child => child.textContent === '刷新'), false, 'the details no longer offer a manual refresh');
   input = { ...input, locale: 'en-US', labels: usageWidgetLabels('en-US') }; view.update(input);
-  assert.ok(root.querySelectorAll('.dc-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('en-US').remaining));
-  assert.equal(root.querySelectorAll('.dc-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('zh-CN').remaining), false);
+  assert.ok(root.querySelectorAll('.ac-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('en-US').remaining));
+  assert.equal(root.querySelectorAll('.ac-usage__details')[0].children.some(child => child.textContent === usageWidgetLabels('zh-CN').remaining), false);
   assert.equal(reads, 1, 'language changes redraw without another quota request');
   input = { ...input, revision: 1 }; view.update(input);
   assert.equal(reads, 2, 'every provider response refreshes usage without a manual action');
   await Promise.resolve();
   pointer(new Element());
   assert.deepEqual(changes, [false]);
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 0);
-  assert.equal(root.querySelectorAll('.dc-usage__summary').length, 1, 'outside click restores the summary card');
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 0);
+  assert.equal(root.querySelectorAll('.ac-usage__summary').length, 1, 'outside click restores the summary card');
   pointer(new Element());
   assert.deepEqual(changes, [false], 'collapsed details do not emit repeated updates');
-  root.querySelectorAll('.dc-usage__body')[0].onclick();
+  root.querySelectorAll('.ac-usage__body')[0].onclick();
   assert.equal(reads, 3, 'reopening the details fetches current usage');
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 1, 'the card can be reopened');
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 1, 'the card can be reopened');
   root.oncontextmenu({ preventDefault() {} });
-  assert.equal(root.querySelectorAll('.dc-usage__menu').length, 1);
+  assert.equal(root.querySelectorAll('.ac-usage__menu').length, 1);
   pointer(new Element());
-  assert.equal(root.querySelectorAll('.dc-usage__menu').length, 0);
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 0, 'closing an outside menu does not expose stale expanded details');
-  root.querySelectorAll('.dc-usage__body')[0].onclick();
+  assert.equal(root.querySelectorAll('.ac-usage__menu').length, 0);
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 0, 'closing an outside menu does not expose stale expanded details');
+  root.querySelectorAll('.ac-usage__body')[0].onclick();
   listeners.get('keydown').listener({ key: 'Escape' });
-  assert.equal(root.querySelectorAll('.dc-usage__details').length, 0);
+  assert.equal(root.querySelectorAll('.ac-usage__details').length, 0);
 
   const visibilityChanges = [];
   actions.setUsageVisibility = visibility => {
     visibilityChanges.push(visibility); input = { ...input, visibility }; view.update(input);
   };
   input = { ...input, visibility: 'collapsed' }; view.update(input);
-  let handle = root.querySelectorAll('.dc-usage__handle')[0];
+  let handle = root.querySelectorAll('.ac-usage__handle')[0];
   const before = root.getBoundingClientRect();
   const down = (x, y) => root.listeners.get('pointerdown')({ target: handle, button: 0, isPrimary: true, pointerId: 1, clientX: x, clientY: y });
   down(before.left + 9, before.top + 14);
@@ -4025,7 +4038,7 @@ test('usage widget preserves outside dismissal and docks collapsed dragging to t
   assert.deepEqual(visibilityChanges, ['summary'], 'a subsequent ordinary click still expands');
   assert.equal(parseFloat(root.style.left), 8, 'left-docked form expands inside the panel');
   input = { ...input, visibility: 'collapsed' }; view.update(input);
-  handle = root.querySelectorAll('.dc-usage__handle')[0];
+  handle = root.querySelectorAll('.ac-usage__handle')[0];
   assert.equal(parseFloat(root.style.left), 0, 'collapsing keeps the chosen edge');
   root.listeners.get('keydown')({ target: handle, key: 'ArrowRight', preventDefault() {} });
   assert.equal(parseFloat(root.style.left), 782, 'keyboard movement can select the right edge');
@@ -4062,28 +4075,28 @@ test('usage updates preserve controls, coalesce in-flight reads, and keep the la
   const result = value => ({ totals: { estimatedCost: value, calls: 1, pricedCalls: 1, inputTokens: 10, outputTokens: 2, cacheReadTokens: 0 },
     coverageFrom: 0, query: { from: 0 }, buckets: [] });
   requests[0].resolve(result(1)); await Promise.resolve();
-  const root = container.children[0], body = root.querySelectorAll('.dc-usage__body')[0];
+  const root = container.children[0], body = root.querySelectorAll('.ac-usage__body')[0];
   const contents = element => [element.textContent ?? '', ...element.children.map(contents)].join(' ');
   root.listeners.get('pointerdown')({ target: body, button: 0, isPrimary: true, pointerId: 1, clientX: 610, clientY: 520 });
   view.update({ ...input });
-  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body, 'unrelated stream renders cannot detach the click target');
+  assert.equal(root.querySelectorAll('.ac-usage__body')[0], body, 'unrelated stream renders cannot detach the click target');
   input = { ...input, revision: 1 }; view.update(input);
   input = { ...input, revision: 2 }; view.update(input);
-  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body, 'starting a usage read also preserves the button');
+  assert.equal(root.querySelectorAll('.ac-usage__body')[0], body, 'starting a usage read also preserves the button');
   body.onclick();
   assert.equal(input.expanded, true);
   assert.equal(requests.length, 2, 'opening and repeated responses share the in-flight read');
   assert.equal(requests[1].signal.aborted, false);
   assert.ok(contents(root).includes('$1.00'), 'the last confirmed amount remains visible during the read');
-  const detail = root.querySelectorAll('.dc-usage__details')[0];
+  const detail = root.querySelectorAll('.ac-usage__details')[0];
   detail.scrollTop = 17;
   requests[1].resolve(result(2)); await Promise.resolve();
   assert.equal(requests.length, 3, 'one follow-up read covers the newest response revision');
-  assert.equal(root.querySelectorAll('.dc-usage__details')[0], detail);
+  assert.equal(root.querySelectorAll('.ac-usage__details')[0], detail);
   assert.equal(detail.scrollTop, 17);
   requests[2].resolve(result(3)); await Promise.resolve();
   assert.ok(contents(root).includes('$3.00'));
-  assert.equal(root.querySelectorAll('.dc-usage__body')[0], body);
+  assert.equal(root.querySelectorAll('.ac-usage__body')[0], body);
   body.onclick(); assert.equal(input.expanded, false, 'the same button remains interactive after completion');
 });
 
@@ -4096,7 +4109,7 @@ test('usage widget remembers a moved position across remounts without saving tem
   const scope = { signal: new AbortController().signal, quota: { async read() { return { windows: [] }; } }, actions: {} };
   const view = mount(input, scope); await Promise.resolve();
   const root = container.children[0];
-  root.listeners.get('keydown')({ target: root.querySelectorAll('.dc-usage__body')[0], key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
+  root.listeners.get('keydown')({ target: root.querySelectorAll('.ac-usage__body')[0], key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
   const moved = root.getBoundingClientRect();
   assert.equal(saved.size, 1);
   const stored = [...saved.values()][0];
@@ -4153,7 +4166,7 @@ test('usage widget restores the summary position after temporary Reader docking'
   assert.equal(parseFloat(root.style.left), original.left, 'default summary returns to the right edge');
   assert.equal(parseFloat(root.style.top), original.top, 'temporary docking preserves its height');
 
-  root.listeners.get('keydown')({ target: root.querySelectorAll('.dc-usage__body')[0],
+  root.listeners.get('keydown')({ target: root.querySelectorAll('.ac-usage__body')[0],
     key: 'ArrowLeft', shiftKey: true, preventDefault() {} });
   const moved = root.getBoundingClientRect();
   assert.equal(moved.left, original.left - 40);
@@ -4234,19 +4247,19 @@ for (const billingMode of ['subscription', 'metered']) {
     assert.equal(requests.length, 2);
     requests[1].reject(new Error('original_usage_read_failure'));
     await Promise.resolve();
-    assert.equal(root.querySelectorAll('.dc-usage__error')[0]?.textContent, 'original_usage_read_failure');
+    assert.equal(root.querySelectorAll('.ac-usage__error')[0]?.textContent, 'original_usage_read_failure');
     assert.equal(text(root).includes(oldValue), false);
 
     update({ expanded: false });
     update({ expanded: true });
     assert.equal(requests.length, 3);
-    assert.equal(root.querySelectorAll('.dc-usage__error')[0]?.textContent, 'original_usage_read_failure',
+    assert.equal(root.querySelectorAll('.ac-usage__error')[0]?.textContent, 'original_usage_read_failure',
       'reopening must not erase the failure while the new request is pending');
     assert.equal(text(root).includes(oldValue), false, 'a pending request cannot reinstate the old successful value');
     if (billingMode === 'metered') assert.ok(text(root).includes(input.labels.unavailable));
     requests[2].resolve(response(42));
     await Promise.resolve();
-    assert.equal(root.querySelectorAll('.dc-usage__error').length, 0, 'only a successful result clears the failure');
+    assert.equal(root.querySelectorAll('.ac-usage__error').length, 0, 'only a successful result clears the failure');
     assert.ok(text(root).includes(newValue));
 
     update({ expanded: false });
@@ -4255,7 +4268,7 @@ for (const billingMode of ['subscription', 'metered']) {
     requests[3].reject(new Error('previous_connection_failure'));
     await Promise.resolve();
     update({ connection: { ...input.connection, id: 'connection:other' } });
-    assert.equal(root.querySelectorAll('.dc-usage__error').length, 0, 'a different query must not inherit the previous connection failure');
+    assert.equal(root.querySelectorAll('.ac-usage__error').length, 0, 'a different query must not inherit the previous connection failure');
     assert.equal(text(root).includes(newValue), false);
     dispose();
     assert.equal(requests.at(-1).signal.aborted, true);

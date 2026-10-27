@@ -1,9 +1,9 @@
 .conversation-code, .reader-source-editor, .conversation-diff-editor {
-  .tok-keyword, .tok-operator, .tok-typeName { color: var(--dc-accent); }
-  .tok-string, .tok-regexp { color: var(--dc-success); }
-  .tok-number, .tok-bool, .tok-atom { color: var(--dc-warning); }
-  .tok-comment, .tok-meta { color: var(--dc-muted); }
-  .tok-invalid { color: var(--dc-danger); }
+  .tok-keyword, .tok-operator, .tok-typeName { color: var(--ac-accent); }
+  .tok-string, .tok-regexp { color: var(--ac-success); }
+  .tok-number, .tok-bool, .tok-atom { color: var(--ac-warning); }
+  .tok-comment, .tok-meta { color: var(--ac-muted); }
+  .tok-invalid { color: var(--ac-danger); }
   .tok-heading, .tok-strong { font-weight: 600; }
   .tok-emphasis { font-style: italic; }
   .tok-link, .tok-url { text-decoration: underline; }

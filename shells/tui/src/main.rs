@@ -688,7 +688,7 @@ mod tests {
         use achbit_kernel_client::{HttpKernelClient, KernelClientConfig};
         let client = HttpKernelClient::new(
             KernelClientConfig::new("http://127.0.0.1:0")
-                .with_host_shell_token(format!("dchost_{}", "01".repeat(32))),
+                .with_host_shell_token(format!("achost_{}", "01".repeat(32))),
         )
         .unwrap();
         assert_eq!(

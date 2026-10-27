@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn attach_preserves_the_window_credential_without_logging_it() {
-        let token = format!("dcui_{}", "12".repeat(32));
+        let token = format!("acui_{}", "12".repeat(32));
         let line = serde_json::to_vec(&GuiAttachRequest {
             schema_version: GUI_ATTACH_SCHEMA.into(),
             ui_token: token.clone(),

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-dc-theme="light">
+<html lang="zh-CN" data-ac-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,27 +10,27 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { margin: 0; color: var(--dc-icon-text-primary); background: var(--dc-icon-bg-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    body { margin: 0; color: var(--ac-icon-text-primary); background: var(--ac-icon-bg-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
     a { color: inherit; text-decoration: none; }
     button, input, select { font: inherit; }
     button, select { cursor: pointer; }
-    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--dc-icon-accent); outline-offset: 5px; }
+    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--ac-icon-accent); outline-offset: 5px; }
     .shell { width: min(1280px, calc(100% - 96px)); margin: 0 auto; }
-    header { border-bottom: 1px solid var(--dc-icon-border); }
+    header { border-bottom: 1px solid var(--ac-icon-border); }
     .nav { height: 86px; display: flex; align-items: center; gap: 32px; }
     .nav-brand { margin-right: auto; display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; letter-spacing: -.5px; }
     .nav-brand img { width: 120px; height: auto; }
-    .nav-link { font-size: 13px; color: var(--dc-icon-text-muted); }
-    .theme-toggle { padding: 10px 16px; border: 1px solid var(--dc-icon-border); border-radius: 99px; background: var(--dc-icon-surface-1); color: var(--dc-icon-text-primary); font-size: 13px; }
+    .nav-link { font-size: 13px; color: var(--ac-icon-text-muted); }
+    .theme-toggle { padding: 10px 16px; border: 1px solid var(--ac-icon-border); border-radius: 99px; background: var(--ac-icon-surface-1); color: var(--ac-icon-text-primary); font-size: 13px; }
     .hero { padding: 72px 0 64px; }
-    .eyebrow { margin: 0 0 38px; font-size: 11px; font-weight: 600; letter-spacing: 2.4px; color: var(--dc-icon-text-muted); }
+    .eyebrow { margin: 0 0 38px; font-size: 11px; font-weight: 600; letter-spacing: 2.4px; color: var(--ac-icon-text-muted); }
     h1 { margin: 0; line-height: 1; }
     .hero-wordmark { width: min(760px, 100%); height: auto; display: block; }
-    .hero-description { margin: 32px 0 0; color: var(--dc-icon-text-muted); font-size: 19px; font-weight: 400; letter-spacing: 1px; }
-    .hero-meta { display: flex; gap: 22px; margin-top: 40px; font-size: 11px; color: var(--dc-icon-text-muted); letter-spacing: 1px; }
+    .hero-description { margin: 32px 0 0; color: var(--ac-icon-text-muted); font-size: 19px; font-weight: 400; letter-spacing: 1px; }
+    .hero-meta { display: flex; gap: 22px; margin-top: 40px; font-size: 11px; color: var(--ac-icon-text-muted); letter-spacing: 1px; }
     .section-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; margin: 0 0 24px; }
     h2 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -.7px; }
-    .section-caption { font-size: 12px; color: var(--dc-icon-text-muted); }
+    .section-caption { font-size: 12px; color: var(--ac-icon-text-muted); }
     .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
     .signature { min-height: 214px; padding: 36px 32px 22px; border-radius: 26px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; }
     .signature-light { background: #fff; color: #616773; }
@@ -39,45 +39,45 @@
     .signature-meta { display: flex; justify-content: space-between; align-items: center; font-size: 10px; letter-spacing: 1.3px; }
     .signature a { padding: 8px 0 8px 12px; font-size: 11px; letter-spacing: 0; }
     .signature a:hover { text-decoration: underline; }
-    .monogram { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-top: 20px; padding: 32px 0; border-bottom: 1px solid var(--dc-icon-border); }
-    .monogram p { color: var(--dc-icon-text-muted); font-size: 13px; line-height: 1.8; max-width: 520px; }
+    .monogram { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-top: 20px; padding: 32px 0; border-bottom: 1px solid var(--ac-icon-border); }
+    .monogram p { color: var(--ac-icon-text-muted); font-size: 13px; line-height: 1.8; max-width: 520px; }
     .monogram-art { width: 144px; height: 144px; display: block; }
-    .monogram-downloads { display: flex; gap: 20px; font-size: 12px; color: var(--dc-icon-accent); }
+    .monogram-downloads { display: flex; gap: 20px; font-size: 12px; color: var(--ac-icon-accent); }
     .details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 32px 0 80px; }
     .details h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
-    .details p { font-size: 13px; line-height: 1.8; color: var(--dc-icon-text-muted); margin: 0; }
+    .details p { font-size: 13px; line-height: 1.8; color: var(--ac-icon-text-muted); margin: 0; }
     #icons, #brand, #usage { scroll-margin-top: 28px; }
     .toolbar { display: flex; gap: 18px; justify-content: space-between; align-items: center; margin: 26px 0 24px; flex-wrap: wrap; }
     .filters { display: flex; gap: 6px; flex-wrap: wrap; }
-    .filter { border: 0; padding: 9px 14px; border-radius: 99px; font-size: 12px; color: var(--dc-icon-text-muted); background: transparent; }
-    .filter[aria-pressed="true"] { background: var(--dc-icon-text-primary); color: var(--dc-icon-bg-primary); }
+    .filter { border: 0; padding: 9px 14px; border-radius: 99px; font-size: 12px; color: var(--ac-icon-text-muted); background: transparent; }
+    .filter[aria-pressed="true"] { background: var(--ac-icon-text-primary); color: var(--ac-icon-bg-primary); }
     .tools { display: flex; gap: 10px; }
-    .search, .size-select { border: 1px solid var(--dc-icon-border); background: var(--dc-icon-surface-1); color: var(--dc-icon-text-primary); border-radius: 10px; padding: 10px 12px; font-size: 12px; }
+    .search, .size-select { border: 1px solid var(--ac-icon-border); background: var(--ac-icon-surface-1); color: var(--ac-icon-text-primary); border-radius: 10px; padding: 10px 12px; font-size: 12px; }
     .search { width: 180px; }
-    .search::placeholder { color: var(--dc-icon-text-muted); }
+    .search::placeholder { color: var(--ac-icon-text-muted); }
     .grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
-    .icon-card { min-height: 174px; display: flex; flex-direction: column; align-items: center; border: 1px solid transparent; border-radius: 18px; background: var(--dc-icon-surface-1); padding: 12px 8px 22px; transition: border-color .18s, transform .18s; }
-    .icon-card:hover { transform: translateY(-3px); border-color: var(--dc-icon-border); }
+    .icon-card { min-height: 174px; display: flex; flex-direction: column; align-items: center; border: 1px solid transparent; border-radius: 18px; background: var(--ac-icon-surface-1); padding: 12px 8px 22px; transition: border-color .18s, transform .18s; }
+    .icon-card:hover { transform: translateY(-3px); border-color: var(--ac-icon-border); }
     .icon-stage { height: 86px; display: grid; place-items: center; }
     .icon-stage svg { display: block; }
-    .icon-name { color: var(--dc-icon-text-primary); font-size: 12px; line-height: 1.6; text-align: center; }
-    .icon-id { color: var(--dc-icon-text-muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; margin-top: 4px; }
-    .ink-icon_neutral { color: var(--dc-icon-neutral); }
-    .ink-icon_muted { color: var(--dc-icon-muted); }
-    .ink-accent_blue { color: var(--dc-icon-accent); }
-    .ink-success { color: var(--dc-icon-success); }
-    .ink-warning { color: var(--dc-icon-warning); }
-    .ink-error { color: var(--dc-icon-error); }
-    .empty { color: var(--dc-icon-text-muted); text-align: center; padding: 48px; }
-    .usage { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; margin: 80px 0 54px; padding-top: 36px; border-top: 1px solid var(--dc-icon-border); }
-    .usage p { color: var(--dc-icon-text-muted); font-size: 13px; line-height: 1.9; max-width: 440px; }
-    .usage a { color: var(--dc-icon-accent); }
+    .icon-name { color: var(--ac-icon-text-primary); font-size: 12px; line-height: 1.6; text-align: center; }
+    .icon-id { color: var(--ac-icon-text-muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; margin-top: 4px; }
+    .ink-icon_neutral { color: var(--ac-icon-neutral); }
+    .ink-icon_muted { color: var(--ac-icon-muted); }
+    .ink-accent_blue { color: var(--ac-icon-accent); }
+    .ink-success { color: var(--ac-icon-success); }
+    .ink-warning { color: var(--ac-icon-warning); }
+    .ink-error { color: var(--ac-icon-error); }
+    .empty { color: var(--ac-icon-text-muted); text-align: center; padding: 48px; }
+    .usage { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; margin: 80px 0 54px; padding-top: 36px; border-top: 1px solid var(--ac-icon-border); }
+    .usage p { color: var(--ac-icon-text-muted); font-size: 13px; line-height: 1.9; max-width: 440px; }
+    .usage a { color: var(--ac-icon-accent); }
     .swatches { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
-    .swatch { display: grid; gap: 12px; font-size: 10px; color: var(--dc-icon-text-muted); text-align: center; }
+    .swatch { display: grid; gap: 12px; font-size: 10px; color: var(--ac-icon-text-muted); text-align: center; }
     .swatch i { display: block; width: 46px; height: 46px; border-radius: 50%; background: var(--swatch); }
-    footer { border-top: 1px solid var(--dc-icon-border); padding: 24px 0 36px; font-size: 11px; color: var(--dc-icon-text-muted); display: flex; gap: 20px; flex-wrap: wrap; }
+    footer { border-top: 1px solid var(--ac-icon-border); padding: 24px 0 36px; font-size: 11px; color: var(--ac-icon-text-muted); display: flex; gap: 20px; flex-wrap: wrap; }
     footer span { margin-right: auto; }
-    [data-dc-theme="light"] .on-dark, [data-dc-theme="dark"] .on-light, [hidden] { display: none !important; }
+    [data-ac-theme="light"] .on-dark, [data-ac-theme="dark"] .on-light, [hidden] { display: none !important; }
     @media (max-width: 1000px) { .shell { width: calc(100% - 56px); } .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
     @media (max-width: 640px) { .shell { width: calc(100% - 36px); } .nav { gap: 16px; height: 72px; } .nav-link { display: none; } .hero { padding: 42px 0; } .eyebrow { margin-bottom: 24px; } .hero-description { margin-top: 22px; font-size: 16px; } .hero-meta { margin-top: 24px; } .signatures, .details, .usage { grid-template-columns: 1fr; } .signature { min-height: 180px; padding: 28px 24px 16px; } .monogram { gap: 20px; flex-direction: column; align-items: flex-start; } .details { gap: 22px; margin-bottom: 54px; } .section-heading { align-items: flex-start; flex-direction: column; gap: 8px; } .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; } .icon-card { min-height: 166px; padding-inline: 4px; } .icon-name { font-size: 11px; } .icon-id { font-size: 9px; } .toolbar { gap: 14px; } .filters { gap: 0; } .filter { padding: 9px 12px; } .tools, .search { flex: 1; min-width: 0; } .usage { gap: 24px; margin-top: 54px; } }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .icon-card { transition: none; } }
@@ -108,7 +108,7 @@
       <div><img class="monogram-art on-light" src="../brand/svg/achbit-mark-light.svg" alt="AC 并列连字图案"><img class="monogram-art on-dark" src="../brand/svg/achbit-mark-dark.svg" alt="AC 并列连字图案"></div>
     </section>
     <section class="details" aria-label="设计说明">
-      <div><h3>完整名称，直接识别</h3><p>主品牌使用完整 Achbit 字标，以字形、比例与字距建立识别度。DC 图案独立呈现，各自保有清晰的使用场景。</p></div>
+      <div><h3>完整名称，直接识别</h3><p>主品牌使用完整 Achbit 字标，以字形、比例与字距建立识别度。AC 图案独立呈现，各自保有清晰的使用场景。</p></div>
       <div><h3>几何，也有人情味</h3><p>定制字形采用开放字腔、柔和曲线和紧凑节奏。字标全部转为路径，跨平台显示保持一致。</p></div>
       <div><h3>每个尺寸，都被照顾</h3><p>16 至 64 像素分别调整视觉线宽。普通图标保持中性，蓝色标识选中，状态通过形状与颜色共同表达。</p></div>
     </section>
@@ -276,8 +276,8 @@
       <p class="empty" id="empty" hidden>没有匹配的图标，试试其他名称或分类。</p>
     </section>
     <section class="usage" id="usage" aria-label="资源使用规范">
-      <div><h2>让设计，自然融入界面。</h2><p>内联 SVG 可随主题变色；图片使用明暗主题版本。完整字标与 DC 图案分别使用，保持各自比例、透明背景与适当留白。</p><p><a href="../docs/USAGE.md">阅读接入与导出说明 ↗</a>　<a href="achbit-brand-sheet.png" download>下载品牌总览 ↗</a></p></div>
-      <div class="swatches" aria-label="主题色板"><div class="swatch"><i style="--swatch:var(--dc-icon-neutral)"></i><span>Neutral</span></div><div class="swatch"><i style="--swatch:var(--dc-icon-accent)"></i><span>Blue</span></div><div class="swatch"><i style="--swatch:var(--dc-icon-success)"></i><span>Success</span></div><div class="swatch"><i style="--swatch:var(--dc-icon-warning)"></i><span>Warning</span></div><div class="swatch"><i style="--swatch:var(--dc-icon-error)"></i><span>Error</span></div></div>
+      <div><h2>让设计，自然融入界面。</h2><p>内联 SVG 可随主题变色；图片使用明暗主题版本。完整字标与 AC 图案分别使用，保持各自比例、透明背景与适当留白。</p><p><a href="../docs/USAGE.md">阅读接入与导出说明 ↗</a>　<a href="achbit-brand-sheet.png" download>下载品牌总览 ↗</a></p></div>
+      <div class="swatches" aria-label="主题色板"><div class="swatch"><i style="--swatch:var(--ac-icon-neutral)"></i><span>Neutral</span></div><div class="swatch"><i style="--swatch:var(--ac-icon-accent)"></i><span>Blue</span></div><div class="swatch"><i style="--swatch:var(--ac-icon-success)"></i><span>Success</span></div><div class="swatch"><i style="--swatch:var(--ac-icon-warning)"></i><span>Warning</span></div><div class="swatch"><i style="--swatch:var(--ac-icon-error)"></i><span>Error</span></div></div>
     </section>
     <footer><span>Achbit · Original vector artwork · v2.0</span><a href="https://developer.apple.com/design/human-interface-guidelines/icons">Apple HIG / Icons ↗</a><a href="https://developer.apple.com/design/human-interface-guidelines/typography">Typography ↗</a></footer>
   </main>
@@ -290,8 +290,8 @@
     const cards = [...document.querySelectorAll('.icon-card')];
     let category = 'all';
     theme.addEventListener('click', () => {
-      const dark = document.documentElement.dataset.dcTheme !== 'dark';
-      document.documentElement.dataset.dcTheme = dark ? 'dark' : 'light';
+      const dark = document.documentElement.dataset.acTheme !== 'dark';
+      document.documentElement.dataset.acTheme = dark ? 'dark' : 'light';
       theme.setAttribute('aria-pressed', String(dark));
       theme.textContent = dark ? '切换浅色' : '切换深色';
     });

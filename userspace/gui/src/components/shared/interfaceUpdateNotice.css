@@ -1,6 +1,6 @@
-.interface-update-notice { position: fixed; right: 16px; top: 42px; z-index: 150; display: flex; align-items: start; gap: 16px; max-width: min(520px, calc(100vw - 32px)); padding: 12px 14px; background: var(--dc-surface-raised); color: var(--dc-foreground); border: 1px solid var(--dc-border); border-radius: 10px; box-shadow: var(--dc-shadow-panel); font-size: 12px; }
+.interface-update-notice { position: fixed; right: 16px; top: 42px; z-index: 150; display: flex; align-items: start; gap: 16px; max-width: min(520px, calc(100vw - 32px)); padding: 12px 14px; background: var(--ac-surface-raised); color: var(--ac-foreground); border: 1px solid var(--ac-border); border-radius: 10px; box-shadow: var(--ac-shadow-panel); font-size: 12px; }
 .interface-update-notice > div { display: grid; gap: 5px; min-width: 0; }
-.interface-update-notice span { color: var(--dc-muted); }
-.interface-update-notice button, .interface-load-error button { flex-shrink: 0; border: 1px solid var(--dc-border); border-radius: 6px; padding: 6px 10px; font: inherit; color: inherit; background: var(--dc-surface); cursor: pointer; }
+.interface-update-notice span { color: var(--ac-muted); }
+.interface-update-notice button, .interface-load-error button { flex-shrink: 0; border: 1px solid var(--ac-border); border-radius: 6px; padding: 6px 10px; font: inherit; color: inherit; background: var(--ac-surface); cursor: pointer; }
 .interface-update-notice pre, .interface-load-error pre { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .interface-load-error { padding: 24px; font-size: 13px; }

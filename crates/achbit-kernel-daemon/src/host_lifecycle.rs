@@ -221,7 +221,7 @@ mod tests {
             tokio::task::spawn_blocking(move || {
                 achbit_host_connection::HostClientLease::connect(
                     &url,
-                    &format!("dchost_{}", "a".repeat(64)),
+                    &format!("achost_{}", "a".repeat(64)),
                     false,
                 )
                 .unwrap()
