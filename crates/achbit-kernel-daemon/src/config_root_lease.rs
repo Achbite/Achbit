@@ -23,7 +23,7 @@ impl ConfigRootLease {
             .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;")
             .map_err(|error| match error.sqlite_error_code() {
                 Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => format!(
-                    "config_root_already_owned: another DeepCode daemon already owns {}",
+                    "config_root_already_owned: another Achbit daemon already owns {}",
                     path.display()
                 ),
                 _ => format!("acquire config-root lease {}: {error}", path.display()),
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn config_root_has_one_live_owner_and_releases_on_drop() {
         let root = std::env::temp_dir().join(format!(
-            "deepcode-config-root-lease-{}-{}",
+            "achbit-config-root-lease-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

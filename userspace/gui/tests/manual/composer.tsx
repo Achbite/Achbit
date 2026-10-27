@@ -24,7 +24,7 @@ const question = { interactionId: 'question:preview', prompt: '测试页使用�
   { id: 'compact', label: '紧凑布局', description: '按钮、开关和输入放在同一区域' },
   { id: 'grouped', label: '分组布局', description: '按交互类型分区排列' },
 ] };
-const review = { approvalId: 'approval:review', preview: { summary: 'docker ps --format json', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'], fileAccess: { read: ['/Applications/DeepCode.app'], write: [] }, operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps --format json' } } } };
+const review = { approvalId: 'approval:review', preview: { summary: 'docker ps --format json', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'], fileAccess: { read: ['/Applications/Achbit.app'], write: [] }, operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps --format json' } } } };
 const approval = { approvalId: 'approval:preview', preview: { summary: '点击测试页中的“点我 +1”按钮', effects: ['external'], logicalTargets: ['browser:preview-1'], authorizationScope: 'sessionBrowser' } };
 const scopeQuestion = { interactionId: 'question:debug-scope', kind: 'question', prompt: '工具与界面链路可以直接测试；若要覆盖完整的 Session → 模型 → 工具 → 回复链路，需要给独立 Debug 实例配置模型。你希望采用哪种范围？', allowFreeform: true, options: [
   { id: 'full', label: '完整链路，复用当前模型配置', description: '进行一次小型真实请求，核对模型、工具与回复。' },

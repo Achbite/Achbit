@@ -11,7 +11,7 @@ import tempfile
 import threading
 import urllib.parse
 
-spec = importlib.util.spec_from_file_location('deepcode_test_support', Path(__file__).with_name('support.py'))
+spec = importlib.util.spec_from_file_location('achbit_test_support', Path(__file__).with_name('support.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
@@ -436,11 +436,11 @@ def delete_family(daemon, session, snapshots, workspace, output):
 
 
 def check_mode(mode):
-    receipts_root = os.environ.get('DEEPCODE_SUBAGENT_RECEIPTS')
+    receipts_root = os.environ.get('ACHBIT_SUBAGENT_RECEIPTS')
     output = Path(receipts_root) / mode if receipts_root else None
     if output:
         output.mkdir(parents=True, exist_ok=False)
-    with tempfile.TemporaryDirectory(prefix=f'deepcode-subagent-{mode}-') as directory:
+    with tempfile.TemporaryDirectory(prefix=f'achbit-subagent-{mode}-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()
@@ -464,7 +464,7 @@ def check_mode(mode):
                 decision_thread = threading.Thread(target=confirm_requested_plans, args=(state, decision_stop), daemon=True)
                 decision_thread.start()
                 environment = fixture.shell_environment(daemon)
-                environment['DEEPCODE_CLI_RUN_TIMEOUT_MS'] = '45000'
+                environment['ACHBIT_CLI_RUN_TIMEOUT_MS'] = '45000'
                 result = subprocess.run([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
                     '--session', state.session, '--plain', 'ask', 'MAIN_BASIC'], cwd=fixture.ROOT, env=environment,
                     capture_output=True, text=True, encoding='utf-8', timeout=75)

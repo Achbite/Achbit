@@ -10,11 +10,11 @@ import subprocess
 import tempfile
 import threading
 
-spec = importlib.util.spec_from_file_location('deepcode_test_support', Path(__file__).with_name('support.py'))
+spec = importlib.util.spec_from_file_location('achbit_test_support', Path(__file__).with_name('support.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
-CONTAINER = os.environ.get('DEEPCODE_E2E_PROCESS_CONTAINER')
+CONTAINER = os.environ.get('ACHBIT_E2E_PROCESS_CONTAINER')
 SHELL = 'container' if CONTAINER else 'powershell' if os.name == 'nt' else 'bash'
 LONG_COMMAND = ('Write-Output "managed-pid:$PID"; Start-Sleep -Seconds 120' if os.name == 'nt'
                 else 'printf "managed-pid:%s\\n" "$$"; trap "" TERM; while :; do sleep 1; done')
@@ -154,7 +154,7 @@ class Provider(fixture.MockProviderHandler):
 
 
 def check(mode):
-    with tempfile.TemporaryDirectory(prefix='deepcode-managed-cli-') as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-managed-cli-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()

@@ -1,5 +1,5 @@
 //! Native Windows implementation of the shared workspace permission scope.
-//! Shells run as a Low Privilege AppContainer of this DeepCode data root. Each
+//! Shells run as a Low Privilege AppContainer of this Achbit data root. Each
 //! token carries one capability per admitted path, so persistent, capability-
 //! scoped ACEs grant nothing to a Shell that was not admitted to that path.
 //! No dedicated account, elevation, password or firewall change is required.
@@ -136,7 +136,7 @@ pub fn request_setup() -> Result<(), String> {
 }
 
 /// Remove every recorded grant and this data root's profiles. Shells started
-/// afterwards grant their access again; run it with DeepCode closed (uninstall).
+/// afterwards grant their access again; run it with Achbit closed (uninstall).
 pub fn reset() -> Result<(), String> {
     let state = state::state()?;
     let mut entries = state.entries()?;

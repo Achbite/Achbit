@@ -45,7 +45,7 @@ test('completion sound controls and their search entry are available only in the
   assert.match(desktop.html, /type="file"/);
   assert.doesNotMatch(desktop.html, /<h3|<hr/, 'audio controls preserve the flat General page');
   assert.equal(settingsSearchDefinitions('zh-CN', 'macos').filter(x => x.id === 'gui.completionSound').length, 1);
-  window.__DEEPCODE_BROWSER_PREVIEW__ = true;
+  window.__ACHBIT_BROWSER_PREVIEW__ = true;
   assert.equal(capture(CompletionSoundSettings, { language: 'zh-CN' }).html, '');
   assert.equal(settingsSearchDefinitions('zh-CN', 'macos').some(x => x.id === 'gui.completionSound'), false);
 });
@@ -92,7 +92,7 @@ for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pag
 
 test('interface reload restores the current settings page once, then subsequent openings return to General', async t => {
   const previous = globalThis.sessionStorage;
-  const values = new Map([['deepcode:interface-reload', JSON.stringify({ settingsPage: 'agent', settingsScroll: 120 })]]);
+  const values = new Map([['achbit:interface-reload', JSON.stringify({ settingsPage: 'agent', settingsScroll: 120 })]]);
   globalThis.sessionStorage = { getItem: key => values.get(key) ?? null, removeItem: key => values.delete(key) };
   t.after(() => { if (previous === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previous; });
   const [{ useSettingsStore }, { default: SettingsCenter }] = await loadGuiModules(t, [
@@ -104,5 +104,5 @@ test('interface reload restores the current settings page once, then subsequent 
   assert.equal(page(), 'agent');
   assert.equal(page(), 'general');
   assert.equal(page(), 'general');
-  assert.equal(values.has('deepcode:interface-reload'), false);
+  assert.equal(values.has('achbit:interface-reload'), false);
 });

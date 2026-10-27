@@ -13,7 +13,7 @@ import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 
 installPaletteDefaults();
-const key = 'deepcode-settings-autosave-preview';
+const key = 'achbit-settings-autosave-preview';
 let settings: UserSettings = JSON.parse(localStorage.getItem(key) ?? '{}');
 const connection: ModelConnection = { id: 'connection:fixture', name: '测试连接', adapterId: 'custom', billingMode: 'metered',
   baseUrl: 'https://example.invalid', credentialKind: 'apiKey' };

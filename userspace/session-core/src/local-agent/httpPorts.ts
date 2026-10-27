@@ -836,7 +836,7 @@ function decodeProviderFrame(frame: string): ProviderEvent {
     throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');
   }
   if (
-    value.schemaVersion !== 'deepcode.provider-event'
+    value.schemaVersion !== 'achbit.provider-event'
     || !isNonEmptyText(value.requestId)
     || !isRecord(value.data)
   ) throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');

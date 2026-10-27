@@ -90,7 +90,7 @@ pub fn contextual_input_command(
         let patches: serde_json::Value =
             serde_json::from_str(patches).map_err(|error| error.to_string())?;
         return Ok(
-            json!({"schemaVersion": "deepcode.command.v3", "type":"session.permissions.set", "commandId":command_id, "sessionId":projection.session_id, "patches":patches}),
+            json!({"schemaVersion": "achbit.command.v3", "type":"session.permissions.set", "commandId":command_id, "sessionId":projection.session_id, "patches":patches}),
         );
     }
     if let Some(authority) = text.strip_prefix("/revoke ") {
@@ -100,7 +100,7 @@ pub fn contextual_input_command(
             .find(|grant| grant.authority_id == authority.trim())
             .ok_or("No active grant with this authority ID")?;
         return Ok(
-            json!({"schemaVersion":"deepcode.command.v3", "type":"approval.revoke", "commandId":command_id, "sessionId":projection.session_id, "runId":grant.run_id, "authorityId":grant.authority_id}),
+            json!({"schemaVersion":"achbit.command.v3", "type":"approval.revoke", "commandId":command_id, "sessionId":projection.session_id, "runId":grant.run_id, "authorityId":grant.authority_id}),
         );
     }
     if text == "/reply" || text.starts_with("/reply ") {

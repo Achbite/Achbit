@@ -32,7 +32,7 @@ fn read(input: &Value, metadata: Option<&Value>) -> ToolResult<Value> {
         ));
     }
     let binding = metadata
-        .and_then(|value| value.get("deepcode"))
+        .and_then(|value| value.get("achbit"))
         .and_then(Value::as_object)
         .ok_or_else(|| {
             ToolError::new(

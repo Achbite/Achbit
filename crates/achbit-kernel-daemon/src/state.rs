@@ -103,7 +103,7 @@ impl GuiState {
         let preparation = crate::config_setup::prepare_locked(&paths)?;
         if let Some(backup) = preparation.backup_directory {
             eprintln!(
-                "DeepCode 已清理冲突配置；原始文件及错误备份：{}",
+                "Achbit 已清理冲突配置；原始文件及错误备份：{}",
                 backup.display()
             );
         }

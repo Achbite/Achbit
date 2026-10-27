@@ -291,7 +291,7 @@ mod tests {
         let root = std::env::temp_dir()
             .canonicalize()
             .unwrap()
-            .join("deepcode-scope-policy");
+            .join("achbit-scope-policy");
         let protected = root.join("workspace/.git");
         let workspace = root.join("workspace");
         let scratch = root.join("scratch");

@@ -10,15 +10,15 @@ Debug 用于独立、定向验证。工具和 UI 操作直接调用接口，不�
 
 ```sh
 ./achbit-debug launch --artifact . --workspace /absolute/test-workspace --state-root /absolute/debug-state
-export DEEPCODE_USER_ROOT=/absolute/debug-state
+export ACHBIT_USER_ROOT=/absolute/debug-state
 ./achbit-debug inspect
 ```
 
-Windows 使用 `.\achbit-debug.cmd`，PowerShell 中设置 `$env:DEEPCODE_USER_ROOT = 'E:\debug-state'`。每个连接命令都需要显式状态目录；不要复用标准版数据或默认复制其凭据。
+Windows 使用 `.\achbit-debug.cmd`，PowerShell 中设置 `$env:ACHBIT_USER_ROOT = 'E:\debug-state'`。每个连接命令都需要显式状态目录；不要复用标准版数据或默认复制其凭据。
 
 ## 启动分段诊断
 
-需要诊断启动延迟时，给目标进程设置 `DEEPCODE_STARTUP_TIMING=1`。GUI 和它启动的 Host 会在 stderr 输出 `[startup-timing]` 记录，只包含阶段、PID、墙钟微秒和进程内经过时间；默认关闭，不含连接令牌或用户内容。GUI 的记录在其 stderr，Host 的记录在该实例启动诊断目录中的 `daemon.stderr.log`。
+需要诊断启动延迟时，给目标进程设置 `ACHBIT_STARTUP_TIMING=1`。GUI 和它启动的 Host 会在 stderr 输出 `[startup-timing]` 记录，只包含阶段、PID、墙钟微秒和进程内经过时间；默认关闭，不含连接令牌或用户内容。GUI 的记录在其 stderr，Host 的记录在该实例启动诊断目录中的 `daemon.stderr.log`。
 
 `gui.window_begin` 到 `gui.index_begin` 覆盖原生 WebView 建立和首次导航；`gui.index_begin` 到 `gui.index_end` 只测入口 HTML 的路径解析与资源读取。之后需结合 WebView 内的模块、请求和可见控件观测，不能把资源读取完成等同于首屏可用。
 

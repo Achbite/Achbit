@@ -1,4 +1,4 @@
-"""Build the OFL-derived DeepCode fonts from the sources in sources.json."""
+"""Build the OFL-derived Achbit fonts from the sources in sources.json."""
 from pathlib import Path
 from functools import lru_cache
 import argparse

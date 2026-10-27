@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
@@ -28,7 +28,7 @@ GENERATION_ONE = "SKILL_GENERATION_ONE"
 GENERATION_TWO = "SKILL_GENERATION_TWO"
 ATTACHMENT_CONTENT = "LOCAL_ATTACHMENT_CONTENT_MUST_NOT_REACH_PROVIDER"
 LONG_INPUT = "  原始任务约束与资料🙂\n" * 4000
-PDF_CONTENT = "DEEPCODE_FIRST_PARTY_PDF_BINDING_OK"
+PDF_CONTENT = "ACHBIT_FIRST_PARTY_PDF_BINDING_OK"
 REQUIRED_CORE_TOOLS = {"fs.read", "web.search", "web.fetch"}
 FIRST_PARTY_TOOL_OWNERS = {
     "github.search": "plugin://github@first-party",
@@ -940,9 +940,9 @@ def assert_shells_read_projection(
     # Ordinary launchers supply the config root, not process-private credentials.
     # Both shells must discover and authenticate the exact existing Host.
     discovered_environment = os.environ.copy()
-    for key in ("DEEPCODE_API_URL", "DEEPCODE_PORT", "DEEPCODE_HOST_SHELL_TOKEN", "DEEPCODE_HOST_INSTANCE_ID"):
+    for key in ("ACHBIT_API_URL", "ACHBIT_PORT", "ACHBIT_HOST_SHELL_TOKEN", "ACHBIT_HOST_INSTANCE_ID"):
         discovered_environment.pop(key, None)
-    discovered_environment["DEEPCODE_USER_ROOT"] = str(daemon.config_root)
+    discovered_environment["ACHBIT_USER_ROOT"] = str(daemon.config_root)
     for binary, action in ((fixture.TUI_BINARY, "--smoke"), (fixture.CLI_BINARY, "show")):
         attached = subprocess.run(
             [str(binary), "--no-auto-start-kernel", "--session", session_id, action],
@@ -977,7 +977,7 @@ def main() -> None:
     cli_ask: subprocess.Popen[str] | None = None
     with ExitStack() as storage:
         try:
-            temporary = storage.enter_context(tempfile.TemporaryDirectory(prefix="deepcode-basic-loop-e2e-"))
+            temporary = storage.enter_context(tempfile.TemporaryDirectory(prefix="achbit-basic-loop-e2e-"))
             root = Path(temporary)
             config_root = root / "config-root"
             workspace_root = root / "workspace"

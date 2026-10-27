@@ -225,16 +225,16 @@
   white-space: nowrap;
 }
 
-.deepcode-local-agent-settings {
+.achbit-local-agent-settings {
   position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:var(--dc-surface);
 }
-.deepcode-local-agent-settings__close {
+.achbit-local-agent-settings__close {
   min-height: 29px; padding: 0 10px; border: 1px solid var(--dc-border); border-radius: var(--dc-radius-control);
   background: var(--dc-control-background); color: var(--dc-control-foreground); cursor: pointer;
   display: inline-flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; app-region: no-drag;
 }
-.deepcode-local-agent-settings__close:hover { background: var(--dc-surface-hover); }
-.deepcode-local-agent-settings__close kbd { font: 10px var(--dc-font-ui); color: var(--dc-faint); border: 1px solid var(--dc-border); border-radius: 4px; padding: 0 3px; }
+.achbit-local-agent-settings__close:hover { background: var(--dc-surface-hover); }
+.achbit-local-agent-settings__close kbd { font: 10px var(--dc-font-ui); color: var(--dc-faint); border: 1px solid var(--dc-border); border-radius: 4px; padding: 0 3px; }
 
 .achbit-gui-sidebar-actions,
 .achbit-gui-session-list,
@@ -569,7 +569,7 @@
   background: transparent;
   color: var(--dc-faint);
   font: calc(10px * var(--dc-ui-font-scale, 1)) var(--dc-font-ui);
-  animation: deepcode-shortcut-appear 100ms ease-out;
+  animation: achbit-shortcut-appear 100ms ease-out;
 }
 
 .achbit-gui-session-row__menu {
@@ -584,7 +584,7 @@
   pointer-events: auto;
 }
 
-@keyframes deepcode-shortcut-appear {
+@keyframes achbit-shortcut-appear {
   from { opacity: 0; transform: translateX(2px); }
   to { opacity: 1; transform: translateX(0); }
 }
@@ -1073,7 +1073,7 @@
 }
 
 .achbit-session-model .achbit-session-model__context {
-  --deepcode-context-percent: 0%;
+  --achbit-context-percent: 0%;
   position: relative;
   display: grid;
   width: 30px;
@@ -1090,9 +1090,9 @@
   border-radius: 50%;
   background: conic-gradient(
     from -90deg,
-    var(--dc-accent) 0 var(--deepcode-context-percent),
+    var(--dc-accent) 0 var(--achbit-context-percent),
     color-mix(in srgb, var(--dc-muted) 34%, var(--dc-surface-raised))
-      var(--deepcode-context-percent) 100%
+      var(--achbit-context-percent) 100%
   );
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--dc-border-strong) 78%, transparent);
   color: var(--dc-muted);
@@ -1130,14 +1130,14 @@
 }
 
 .achbit-session-model__context-popover {
-  --deepcode-context-instructions: var(--dc-context-instructions);
-  --deepcode-context-session: var(--dc-context-session);
-  --deepcode-context-tools: var(--dc-context-tools);
-  --deepcode-context-index: var(--dc-context-index);
-  --deepcode-context-provider: var(--dc-context-provider);
-  --deepcode-context-messages: var(--dc-context-messages);
-  --deepcode-context-attachments: var(--dc-context-attachments);
-  --deepcode-context-output: var(--dc-context-output);
+  --achbit-context-instructions: var(--dc-context-instructions);
+  --achbit-context-session: var(--dc-context-session);
+  --achbit-context-tools: var(--dc-context-tools);
+  --achbit-context-index: var(--dc-context-index);
+  --achbit-context-provider: var(--dc-context-provider);
+  --achbit-context-messages: var(--dc-context-messages);
+  --achbit-context-attachments: var(--dc-context-attachments);
+  --achbit-context-output: var(--dc-context-output);
   position: absolute;
   right: 0;
   bottom: 38px;
@@ -1217,7 +1217,7 @@
   margin-top: 6px;
 }
 
-:root[data-product='deepcode-gui'] .achbit-session-model__composition-bar {
+:root[data-product='achbit-gui'] .achbit-session-model__composition-bar {
   position: absolute;
   inset: 6px 0 auto;
   display: flex;
@@ -1250,7 +1250,7 @@
   font-size: var(--dc-font-micro);
 }
 
-:root[data-product='deepcode-gui'] .achbit-session-model__composition-bar:focus-visible {
+:root[data-product='achbit-gui'] .achbit-session-model__composition-bar:focus-visible {
   outline-offset: 0;
 }
 
@@ -1314,7 +1314,7 @@
 
 .achbit-session-model__composition-segment[data-context-key='output'],
 .achbit-session-model__context-detail > span[data-context-key='output'] {
-  background: var(--deepcode-context-output);
+  background: var(--achbit-context-output);
 }
 
 .achbit-session-model__composition-segment[data-context-key='free'],
@@ -1422,7 +1422,7 @@
 
 .achbit-session-model__cache-track > span:last-child {
   flex: 1;
-  background: var(--deepcode-context-output);
+  background: var(--achbit-context-output);
 }
 
 .achbit-session-model__cache-legend {
@@ -1459,14 +1459,14 @@
 }
 
 .achbit-session-model__context-sections > button.is-active {
-  background: color-mix(in srgb, var(--deepcode-context-color) 10%, transparent);
-  box-shadow: inset 3px 0 0 var(--deepcode-context-color);
+  background: color-mix(in srgb, var(--achbit-context-color) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--achbit-context-color);
 }
 
 .achbit-session-model__context-sections > button:hover,
 .achbit-session-model__context-sections > button:focus-visible {
-  background: color-mix(in srgb, var(--deepcode-context-color) 10%, transparent);
-  box-shadow: inset 3px 0 0 var(--deepcode-context-color);
+  background: color-mix(in srgb, var(--achbit-context-color) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--achbit-context-color);
   outline: none;
 }
 
@@ -1494,79 +1494,79 @@
 .achbit-session-model__context-detail > span[data-context-key='instructions'],
 .achbit-session-model__context-sections > button[data-context-key='instructions'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='instructions'] {
-  background: var(--deepcode-context-instructions);
+  background: var(--achbit-context-instructions);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='instructions'] {
-  --deepcode-context-color: var(--deepcode-context-instructions);
+  --achbit-context-color: var(--achbit-context-instructions);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='tools'],
 .achbit-session-model__context-sections > button[data-context-key='tools'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='tools'] {
-  background: var(--deepcode-context-tools);
+  background: var(--achbit-context-tools);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='tools'] {
-  --deepcode-context-color: var(--deepcode-context-tools);
+  --achbit-context-color: var(--achbit-context-tools);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='workspaceBindings'],
 .achbit-session-model__context-sections > button[data-context-key='workspaceBindings'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='workspaceBindings'] {
-  background: var(--deepcode-context-index);
+  background: var(--achbit-context-index);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='workspaceBindings'] {
-  --deepcode-context-color: var(--deepcode-context-index);
+  --achbit-context-color: var(--achbit-context-index);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='sessionControls'],
 .achbit-session-model__context-sections > button[data-context-key='sessionControls'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='sessionControls'] {
-  background: var(--deepcode-context-session);
+  background: var(--achbit-context-session);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='sessionControls'] {
-  --deepcode-context-color: var(--deepcode-context-session);
+  --achbit-context-color: var(--achbit-context-session);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='contextProviders'],
 .achbit-session-model__context-sections > button[data-context-key='contextProviders'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='contextProviders'] {
-  background: var(--deepcode-context-provider);
+  background: var(--achbit-context-provider);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='contextProviders'] {
-  --deepcode-context-color: var(--deepcode-context-provider);
+  --achbit-context-color: var(--achbit-context-provider);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='journalMessages'],
 .achbit-session-model__context-sections > button[data-context-key='journalMessages'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='journalMessages'] {
-  background: var(--deepcode-context-messages);
+  background: var(--achbit-context-messages);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='journalMessages'] {
-  --deepcode-context-color: var(--deepcode-context-messages);
+  --achbit-context-color: var(--achbit-context-messages);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='filesystemReferences'],
 .achbit-session-model__context-sections > button[data-context-key='filesystemReferences'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='filesystemReferences'] {
-  background: var(--deepcode-context-attachments);
+  background: var(--achbit-context-attachments);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='filesystemReferences'] {
-  --deepcode-context-color: var(--deepcode-context-attachments);
+  --achbit-context-color: var(--achbit-context-attachments);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='output'] {
-  --deepcode-context-color: var(--deepcode-context-output);
+  --achbit-context-color: var(--achbit-context-output);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='output'] > span:first-child {
-  background: var(--deepcode-context-output);
+  background: var(--achbit-context-output);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1665,10 +1665,10 @@
 .achbit-gui-workspace-manager__add:hover { background: var(--dc-surface-hover); }
 .achbit-gui-workspace-manager .settings-group > h3 { margin-inline: 14px; }
 
-.deepcode-subagent-config { padding:2px 6px 6px; }
-.deepcode-subagent-config fieldset { margin:0; padding:0; border:0; min-width:0; }
-.deepcode-subagent-config label { display:grid; grid-template-columns:80px minmax(0,1fr); align-items:center; gap:8px; min-height:42px; font-size:var(--dc-font-caption); color:var(--dc-muted); }
-.deepcode-subagent-config .deepcode-subagent-config__toggle { display:flex; justify-content:space-between; color:var(--dc-foreground); }
-.deepcode-subagent-config select { width:100%; min-width:0; border:1px solid transparent; border-radius:6px; background-color:transparent; color:var(--dc-foreground); font:inherit; padding:6px 20px 6px 6px; -webkit-appearance:none; appearance:none; cursor:pointer;
+.achbit-subagent-config { padding:2px 6px 6px; }
+.achbit-subagent-config fieldset { margin:0; padding:0; border:0; min-width:0; }
+.achbit-subagent-config label { display:grid; grid-template-columns:80px minmax(0,1fr); align-items:center; gap:8px; min-height:42px; font-size:var(--dc-font-caption); color:var(--dc-muted); }
+.achbit-subagent-config .achbit-subagent-config__toggle { display:flex; justify-content:space-between; color:var(--dc-foreground); }
+.achbit-subagent-config select { width:100%; min-width:0; border:1px solid transparent; border-radius:6px; background-color:transparent; color:var(--dc-foreground); font:inherit; padding:6px 20px 6px 6px; -webkit-appearance:none; appearance:none; cursor:pointer;
   background-image:linear-gradient(45deg,transparent 50%,var(--dc-muted) 50%),linear-gradient(135deg,var(--dc-muted) 50%,transparent 50%); background-position:right 10px center,right 6px center; background-size:4px 4px; background-repeat:no-repeat; }
-.deepcode-subagent-config select:hover:not(:disabled) { background-color:var(--dc-surface-hover); }
+.achbit-subagent-config select:hover:not(:disabled) { background-color:var(--dc-surface-hover); }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate DeepCode's original soft two-note completion chime (no external audio)."""
+"""Generate Achbit's original soft two-note completion chime (no external audio)."""
 import math
 import struct
 import wave

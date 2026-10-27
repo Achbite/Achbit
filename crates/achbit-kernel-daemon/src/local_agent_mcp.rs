@@ -120,7 +120,7 @@ impl McpTool {
                     )
                 })?;
                 Some(json!({
-                    "deepcode": {
+                    "achbit": {
                         "workspaceId": workspace_id,
                         "resolvedWorkspaceTargets": context.private_resolved_targets,
                     }
@@ -137,7 +137,7 @@ impl McpTool {
             if let Some(content) = result.output["content"].as_array_mut() {
                 for block in content {
                     if block["type"] == "image" {
-                        block["_meta"]["deepcode"]["purpose"] = json!("observation");
+                        block["_meta"]["achbit"]["purpose"] = json!("observation");
                     }
                 }
             }
@@ -649,7 +649,7 @@ fn chrome_devtools_source_at(
             .replace('"', "\\\"")
     );
     let mut source = external_server_source(McpServerSetting {
-        id: "deepcode-chrome".into(), name: "Chrome".into(),
+        id: "achbit-chrome".into(), name: "Chrome".into(),
         description: "Control existing Chrome browser pages and tabs by pageId: inspect, click, fill, navigate and capture screenshots. 浏览器 Chrome 页面和标签页控制。".into(),
         transport: "stdio".into(), command: node.to_string_lossy().into(),
         args: format!("{quoted_entry} --autoConnect --experimental-structured-content --no-usage-statistics --no-performance-crux"),
@@ -1062,7 +1062,7 @@ impl McpClient {
             json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": { "name": "DeepCode", "version": env!("CARGO_PKG_VERSION") },
+                "clientInfo": { "name": "Achbit", "version": env!("CARGO_PKG_VERSION") },
             }),
             None,
         )?;
@@ -1684,7 +1684,7 @@ mod tests {
     #[test]
     fn chrome_platform_runtime_preserves_paths_and_disabled_settings() {
         let directory = TestDirectory::new();
-        let root = directory.0.join("DeepCode runtime with spaces");
+        let root = directory.0.join("Achbit runtime with spaces");
         let entry = root.join("chrome-devtools/build/src/bin/chrome-devtools-mcp.js");
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         std::fs::write(&entry, "// runtime fixture").unwrap();
@@ -2116,7 +2116,7 @@ for line in sys.stdin:
             .unwrap()
             .as_nanos();
         let root = Directory(
-            std::env::temp_dir().join(format!("deepcode-mcp-views-{}-{stamp}", std::process::id())),
+            std::env::temp_dir().join(format!("achbit-mcp-views-{}-{stamp}", std::process::id())),
         );
         std::fs::create_dir(&root.0).unwrap();
         let script = root.0.join("server.py");
@@ -2335,7 +2335,7 @@ for line in sys.stdin:
         };
 
         let error = tool
-            .call(json!({ "text": "DeepCode" }), &context)
+            .call(json!({ "text": "Achbit" }), &context)
             .expect_err("cancelled MCP call must fail after process cleanup");
         assert_eq!(error.code, "mcp_tool_cancelled");
         runtime

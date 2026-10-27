@@ -112,7 +112,7 @@ pub(crate) fn command(
     let mut command: Vec<OsString> = [
         "-c",
         "exec 3<\"$1\"; shift; exec \"$@\"",
-        "deepcode-workspace",
+        "achbit-workspace",
     ]
     .into_iter()
     .map(Into::into)

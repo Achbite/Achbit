@@ -1,6 +1,6 @@
 (() => {
-  if (window.__DEEPCODE_DEBUG_DOM__) return;
-  const channel = 'deepcode.debug.frame.v1';
+  if (window.__ACHBIT_DEBUG_DOM__) return;
+  const channel = 'achbit.debug.frame.v1';
   const waiting = new Map();
   let sequence = 0;
   const selectorFor = element => {
@@ -44,7 +44,7 @@
           bounds: { x: r.x, y: r.y, width: r.width, height: r.height } };
       }), elementLimit: 512,
     frames: frames().map((frame, index) => ({ index, title: frame.title, src: frame.src, selector: selectorFor(frame), visible: visible(frame) })),
-    components: window.__DEEPCODE_DEBUG_UI__?.list() ?? [],
+    components: window.__ACHBIT_DEBUG_UI__?.list() ?? [],
     };
   };
   function requestFrame(frame, request) {
@@ -70,7 +70,7 @@
     const timeoutMs = Math.min(Math.max(Number(spec.timeoutMs ?? 5000), 1), 15000);
     const matches = () => {
       if (typeof spec.componentId === 'string') {
-        const component = window.__DEEPCODE_DEBUG_UI__?.list().find(item => item.id === spec.componentId);
+        const component = window.__ACHBIT_DEBUG_UI__?.list().find(item => item.id === spec.componentId);
         if (spec.absent) return !component;
         if (!component) return false;
         if (!('equals' in spec)) return true;
@@ -98,8 +98,8 @@
     if (!Array.isArray(path) || path.some(item => !Number.isSafeInteger(item) || item < 0) || path.length > 16) throw Error('debug_invalid_frame_path');
     if (path.length) return requestFrame(frames()[path[0]], { ...request, framePath: path.slice(1) });
     if (request.name === 'inspect') return inspect();
-    if (request.name === 'components') return window.__DEEPCODE_DEBUG_UI__?.list() ?? [];
-    if (request.name === 'metrics') return window.__DEEPCODE_DEBUG_UI__?.measurements() ?? { records: [], coverage: 'not-applicable' };
+    if (request.name === 'components') return window.__ACHBIT_DEBUG_UI__?.list() ?? [];
+    if (request.name === 'metrics') return window.__ACHBIT_DEBUG_UI__?.measurements() ?? { records: [], coverage: 'not-applicable' };
     if (request.name === 'surfaces') {
       const rows = [{ framePath: [], state: inspect() }];
       if ((request.depth ?? 0) >= 8) return rows;
@@ -120,8 +120,8 @@
     let result;
     switch (request.name) {
       case 'plugin.action':
-        if (!window.__DEEPCODE_DEBUG_UI__) throw Error('debug_ui_components_unavailable');
-        result = await window.__DEEPCODE_DEBUG_UI__.call(args.componentId, args.action, args.arguments ?? []); break;
+        if (!window.__ACHBIT_DEBUG_UI__) throw Error('debug_ui_components_unavailable');
+        result = await window.__ACHBIT_DEBUG_UI__.call(args.componentId, args.action, args.arguments ?? []); break;
       case 'click': {
         if (!element || typeof element.click !== 'function') throw Error('debug_click_selector_required');
         element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
@@ -190,5 +190,5 @@
       catch (error) { event.source.postMessage({ channel, id: message.id, reply: true, error: String(error) }, '*'); }
     }
   });
-  Object.defineProperty(window, '__DEEPCODE_DEBUG_DOM__', { value: { dispatch }, configurable: false });
+  Object.defineProperty(window, '__ACHBIT_DEBUG_DOM__', { value: { dispatch }, configurable: false });
 })();

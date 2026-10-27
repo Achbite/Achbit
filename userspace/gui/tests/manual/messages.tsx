@@ -72,7 +72,7 @@ const question: InteractionProjection = { interactionId: 'question:preview', cal
   prompt: '“左上角的电脑控制图标”具体指哪个位置？这会决定它属于现有窗口内的显示插件，还是需要一个不抢焦点的原生桌面浮层。\n\n我会继续核查与位置无关的接口、插件更新和调用边界。',
   options: [
     { id: 'desktop', label: '系统桌面左上角', description: '切换到其他应用后仍可见，点击展开电脑控制预览。' },
-    { id: 'window', label: 'DeepCode 窗口左上角', description: '放在应用标题栏或导航区域内，作为预览与状态入口。' },
+    { id: 'window', label: 'Achbit 窗口左上角', description: '放在应用标题栏或导航区域内，作为预览与状态入口。' },
   ], allowFreeform: previewParams.get('freeform') !== 'false',
 };
 const questionProjection = (long: boolean): SessionProjection => ({ ...initial, revision: 5,

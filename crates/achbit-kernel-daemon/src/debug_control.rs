@@ -151,7 +151,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
             .as_ref()
             .map(|c| json!({"controlId":c.id,"workspace":c.workspace}));
         return Ok(
-            json!({"schemaVersion":"deepcode.debug.v1", "buildKind":"debug", "identity":crate::host_process_identity(),
+            json!({"schemaVersion":"achbit.debug.v1", "buildKind":"debug", "identity":crate::host_process_identity(),
             "directories":dirs,"control":attached,"guiHosts":crate::browser_tools::debug_hosts()?,
             "capabilities":["tools", "operations", "surfaces", "tasks", "observations", "metrics"]}),
         );
@@ -297,7 +297,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(service_error)?;
-        let mut command = json!({"schemaVersion":"deepcode.command.v3","type":"message.submit","commandId":id("debug-input")?,"sessionId":session_id,"text":message});
+        let mut command = json!({"schemaVersion":"achbit.command.v3","type":"message.submit","commandId":id("debug-input")?,"sessionId":session_id,"text":message});
         for field in ["profileId", "pluginSelections", "guidanceReferences"] {
             if let Some(value) = params.get(field) {
                 command[field] = value.clone();
@@ -357,7 +357,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         if !command.is_object() {
             return Err("debug_command_must_be_object".into());
         }
-        command["schemaVersion"] = json!("deepcode.command.v3");
+        command["schemaVersion"] = json!("achbit.command.v3");
         command["commandId"] = json!(id("debug-input")?);
         command["sessionId"] = json!(session);
         return data(

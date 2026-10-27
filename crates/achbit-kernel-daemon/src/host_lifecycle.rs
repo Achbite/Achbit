@@ -55,7 +55,7 @@ pub(crate) fn configure_host_lifetime() -> Result<(), String> {
     let persistent = match mode.as_str() {
         "automatic" => false,
         "persistent" => true,
-        _ => return Err("DEEPCODE_HOST_LIFETIME must be automatic or persistent".into()),
+        _ => return Err("ACHBIT_HOST_LIFETIME must be automatic or persistent".into()),
     };
     LIFETIME
         .set(Mutex::new(Lifetime {

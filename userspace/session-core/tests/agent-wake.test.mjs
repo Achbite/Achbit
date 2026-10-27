@@ -15,7 +15,7 @@ const call = (request, callId, name, input) => providerEvent(request.requestId, 
 const done = request => providerEvent(request.requestId, 'completed', {});
 const answer = (request, text) => providerEvent(request.requestId, 'text.delta', { text });
 const subagentSettingsCommand = (sessionId, commandId, settings) => ({
-  schemaVersion: 'deepcode.command.v3', type: 'session.subagent-settings.set', sessionId, commandId, settings,
+  schemaVersion: 'achbit.command.v3', type: 'session.subagent-settings.set', sessionId, commandId, settings,
 });
 
 async function serviceFixture(t, ownerId, stream, options = {}) {
@@ -549,7 +549,7 @@ test('cancelling a parent awaiting a child Plan drains child runtime before pare
     && (await readEvents(fixture.journal, ownerId)).some(event => event.type === 'message.committed' && event.payload.role === 'assistant'), 'parent answer and pending child Plan');
   const before = await fixture.service.snapshot(ownerId), childId = before.agentTasks[0].agentSessionId;
   assert.equal(terminal.has(before.run.status), false, 'an answer does not fabricate final settlement while a child owns work');
-  const cancellation = fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+  const cancellation = fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
     sessionId: ownerId, commandId: 'command:stop-cleanup', runId: before.run.runId });
   await waitUntil(() => childReleasing, 'child runtime release begins');
   assert.equal((await fixture.service.snapshot(childId)).pendingPlan, null);
@@ -591,7 +591,7 @@ test('parent decisions expose light child identities and route Plan, question an
   }, {
     preparation: { tools: [tool] },
     kernel: () => emptyKernel({ async execute(request) {
-      if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution',
+      if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution',
         requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'approval:child-source',
         preview: { summary: 'Read the station source.', effects: ['external'], logicalTargets: ['https://station.example.test/north'] } };
       return completedExecutionReply(request, { content: 'Confirmed station source.' });
@@ -643,21 +643,21 @@ test('parent decisions expose light child identities and route Plan, question an
   const childId = plan.agentSessionId;
   const childRunId = plan.runId;
   assert.equal((await fixture.service.snapshot(ownerId)).pendingPlan, null, 'a child decision is not copied into the parent Plan');
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: childId, commandId: 'command:child-plan', runId: childRunId,
     ...plan.plan, response: { kind: 'confirm' } })).status, 'accepted');
   const question = await pending('question');
   assert.equal(question.agentSessionId, childId);
   assert.equal(question.runId, childRunId);
   assert.equal(question.plan, undefined);
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'interaction.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'interaction.respond',
     sessionId: childId, commandId: 'command:child-question', runId: childRunId,
     interactionId: question.interactionIds[0], response: 'Use the north station.' })).status, 'accepted');
   const approval = await pending('approval');
   assert.equal(approval.agentSessionId, childId);
   assert.equal(approval.runId, childRunId);
   assert.deepEqual(approval.interactionIds, []);
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond',
     sessionId: childId, commandId: 'command:child-approval', runId: childRunId,
     ...approval.approval, decision: 'allow' })).status, 'accepted');
   const finished = await completed(fixture.service, ownerId);
@@ -714,7 +714,7 @@ test('an ancestor continuing a descendant routes its Plan by the current task wi
   assert.equal(route.runId, task.childRunId);
   assert.equal((await fixture.service.snapshot(descendantId)).agentContext.parentSessionId, memberId);
   assert.equal((await fixture.service.snapshot(memberId)).run.status, 'completed');
-  const reply = await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  const reply = await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: route.agentSessionId, commandId: 'command:descendant-plan', runId: route.runId,
     ...route.plan, response: { kind: 'confirm' } });
   assert.equal(reply.status, 'accepted');
@@ -763,7 +763,7 @@ test('a child Plan retains the original parent authority reference without inven
   await fixture.service.submit(messageCommand(ownerId, 'command:parent-plan', 'Write report.txt through a child.'));
   await waitUntil(async () => (await fixture.service.snapshot(ownerId)).pendingPlan !== null, 'root Plan confirmation');
   const plan = (await fixture.service.snapshot(ownerId)).pendingPlan;
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: ownerId, commandId: 'command:confirm-parent', runId: plan.runId,
     planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } })).status, 'accepted');
   const finished = await completed(fixture.service, ownerId);
@@ -813,7 +813,7 @@ test('a visible Plan confirmation waits for the previous Loop resource lease bef
   const plan = waiting.pendingPlan;
   assert.ok(plan);
   let replied = false;
-  const response = fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond',
+  const response = fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond',
     sessionId: ownerId, commandId: 'command:confirm-during-release', runId: plan.runId,
     planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } }).then(reply => {
     replied = true;
@@ -832,7 +832,7 @@ test('a visible Plan confirmation waits for the previous Loop resource lease bef
 test('a cancel acknowledgement cannot consume an undelivered child result', () => {
   const sessionId = 'session:cancel-result', runId = 'run:cancel-result', taskId = 'task:cancel-result';
   const events = [];
-  const add = (type, payload, callId) => events.push({ schemaVersion: 'deepcode.session-event.v5', sessionId, runId,
+  const add = (type, payload, callId) => events.push({ schemaVersion: 'achbit.session-event.v5', sessionId, runId,
     eventId: `event:cancel:${events.length + 1}`, sequence: events.length + 1, occurredAt: '2026-10-13T00:00:00.000Z',
     type, payload, ...(callId ? { callId } : {}) });
   const spawn = { action: 'spawn', preset: 'collaboration', name: 'Inspector', task: 'Inspect the source.', delivery: 'async' };
@@ -1284,7 +1284,7 @@ test('parent cancellation drains both a peer-message wait and a pending child Pl
   const before = await fixture.service.snapshot(ownerId);
   const waitingPeer = before.agentChildren.find(child => child.displayName === 'Waiting peer').agentSessionId;
   await waitUntil(async () => (await readEvents(fixture.journal, waitingPeer)).some(event => event.type === 'session.control.completed'), 'peer waiting for a message');
-  assert.equal((await fixture.service.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId: ownerId,
+  assert.equal((await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId: ownerId,
     commandId: 'command:cancel-both', runId: before.run.runId })).status, 'accepted');
   const after = await fixture.service.snapshot(ownerId);
   assert.equal(after.run.status, 'cancelled');

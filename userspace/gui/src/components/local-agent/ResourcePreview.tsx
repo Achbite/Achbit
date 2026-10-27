@@ -214,7 +214,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
         return;
       }
       activationTarget.current({ kind: 'browser', previewId: page.previewId });
-      window.dispatchEvent(new CustomEvent('deepcode:browser-layout', { detail: page }));
+      window.dispatchEvent(new CustomEvent('achbit:browser-layout', { detail: page }));
     }).then(dispose => { if (ended) dispose(); else unlisten = dispose; })
       .catch(reason => { if (!ended) setError(String(reason)); });
     return () => { ended = true; unlisten?.(); };

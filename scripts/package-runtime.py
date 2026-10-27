@@ -34,7 +34,7 @@ def copy_js_package(source, target, debug=False):
 
 
 def shared(root, destination, dependency_list):
-    debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
+    debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
     copy_js_package(root / 'userspace/session-core', destination / 'session-core', debug)
     copy_js_package(root / 'userspace/protocol', destination / 'node_modules/@achbit/protocol')
     gui_dist = root / '.build-cache/gui-debug' if debug else root / 'userspace/gui/dist-achbit-gui'
@@ -103,7 +103,7 @@ def tui_fonts(root, target):
 
 def assemble(args):
     root, stage = args.root, args.stage
-    debug = os.environ.get('DEEPCODE_BUILD_KIND', 'normal') == 'debug'
+    debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
     version = json.loads((root / 'package.json').read_text())['version']
     macos = args.platform == 'macos-arm64'
     windows = args.platform == 'win64'
@@ -143,21 +143,21 @@ def assemble(args):
         shutil.copy2(args.webview_loader, binaries / 'WebView2Loader.dll')
         for shell in ('cli', 'tui'):
             launcher = stage / f'achbit-{shell}.bat'
-            launcher.write_text('@echo off\nsetlocal\nset "DEEPCODE_RUNTIME_DIR=%~dp0"\nset "DEEPCODE_KERNEL_BIN=%~dp0achbit-kernel.exe"\n"%~dp0achbit-' + shell + '.exe" %*\nexit /b %errorlevel%\n')
+            launcher.write_text('@echo off\nsetlocal\nset "ACHBIT_RUNTIME_DIR=%~dp0"\nset "ACHBIT_KERNEL_BIN=%~dp0achbit-kernel.exe"\n"%~dp0achbit-' + shell + '.exe" %*\nexit /b %errorlevel%\n')
         if debug:
-            (stage / 'achbit-debug.cmd').write_text('@echo off\nsetlocal\nset "DEEPCODE_RUNTIME_DIR=%~dp0"\nset "DEEPCODE_KERNEL_BIN=%~dp0achbit-kernel.exe"\n"%~dp0achbit-cli.exe" debug %*\nexit /b %errorlevel%\n')
+            (stage / 'achbit-debug.cmd').write_text('@echo off\nsetlocal\nset "ACHBIT_RUNTIME_DIR=%~dp0"\nset "ACHBIT_KERNEL_BIN=%~dp0achbit-kernel.exe"\n"%~dp0achbit-cli.exe" debug %*\nexit /b %errorlevel%\n')
     if windows:
         for alias, original in [('achbit-cli.cmd', 'achbit-cli.bat'), ('achbit-tui.cmd', 'achbit-tui.bat')]:
             (stage / alias).write_text('@echo off\ncall "%~dp0' + original + '" %*\nexit /b %errorlevel%\n')
     # Linux uses Achbit, achbit-cli and achbit-tui. An achbit alias would
     # collide with the GUI on case-insensitive host-mounted directories.
-    metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('DEEPCODE_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['DEEPCODE_BUILD_TIME'], 'buildKind': 'debug' if debug else 'normal', 'debugControl': debug}
+    metadata = {'version': version, 'platform': args.platform, 'sourceCommit': os.environ.get('ACHBIT_BUILD_COMMIT', 'unknown'), 'builtAt': os.environ['ACHBIT_BUILD_TIME'], 'buildKind': 'debug' if debug else 'normal', 'debugControl': debug}
     (resources / 'BUILDINFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
     if macos:
         macos_tui_resources(root, resources)
-        info = {'CFBundleDevelopmentRegion': 'en', 'CFBundleDisplayName': 'Achbit', 'CFBundleExecutable': 'Achbit', 'CFBundleIdentifier': 'com.achbite.deepcode.gui', 'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': 'Achbit', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version, 'LSMinimumSystemVersion': '12.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication'}
+        info = {'CFBundleDevelopmentRegion': 'en', 'CFBundleDisplayName': 'Achbit', 'CFBundleExecutable': 'Achbit', 'CFBundleIdentifier': 'com.achbite.achbit.gui', 'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': 'Achbit', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version, 'LSMinimumSystemVersion': '12.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication'}
         if debug:
-            info.update(CFBundleDisplayName='Achbit Debug', CFBundleName='Achbit Debug', CFBundleIdentifier='com.achbite.deepcode.debug')
+            info.update(CFBundleDisplayName='Achbit Debug', CFBundleName='Achbit Debug', CFBundleIdentifier='com.achbite.achbit.debug')
         info['CFBundleIconFile'] = 'icon.icns'
         shutil.copy2(root / 'shells/achbit-gui/src-tauri/icons/icon.icns', resources / 'icon.icns')
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
@@ -169,8 +169,8 @@ def assemble(args):
 set -euo pipefail
 PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 APP_DIR="$PACKAGE_DIR/''' + app_name + '''/Contents"
-export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"
-export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"
+export ACHBIT_RUNTIME_DIR="$APP_DIR/Resources"
+export ACHBIT_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"
 ''' + command + '\n')
             launcher.chmod(0o755)
         if debug:
@@ -178,8 +178,8 @@ export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"
             launcher.write_text('#!/usr/bin/env bash\nset -euo pipefail\n'
                 'PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"\n'
                 'APP_DIR="$PACKAGE_DIR/Achbit-Debug.app/Contents"\n'
-                'export DEEPCODE_RUNTIME_DIR="$APP_DIR/Resources"\n'
-                'export DEEPCODE_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"\n'
+                'export ACHBIT_RUNTIME_DIR="$APP_DIR/Resources"\n'
+                'export ACHBIT_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"\n'
                 'exec "$APP_DIR/MacOS/achbit-cli" debug "$@"\n')
             launcher.chmod(0o755)
         sign_app(app, identity, native_components=True)
@@ -195,21 +195,12 @@ PROGRAM_ENTRIES = {
     'Achbit-Debug.app', 'Achbit Debug Computer Use.app', 'achbit-debug', 'Achbit-Debug.exe', 'achbit-debug.cmd',
     COMPUTER_USE_APP, WINDOWS_COMPUTER_USE,
     'achbit', 'achbit-cli', 'achbit-tui', 'achbit.cmd', 'achbit-cli.cmd', 'achbit-tui.cmd',
-    'DeepCode-GUI.app', 'DeepCode-Debug.app', 'DeepCode-GUI', 'DeepCode-GUI.exe', 'DeepCode-Debug.exe',
-    'DeepCode-CLI.command', 'DeepCode-TUI.command',
-    'DeepCode.app', 'Achbit.app', 'DeepCode', 'DeepCode.exe', 'Achbit', 'Achbit.exe',
-    'Achbit-CLI.command', 'Achbit-TUI.command', 'deepcode', 'libexec',
-    'achbit-cli.bat', 'achbit-tui.bat', 'achbit.cmd',
+    'Achbit.app', 'Achbit', 'Achbit.exe', 'Achbit-CLI.command', 'Achbit-TUI.command', 'libexec',
+    'achbit-cli.bat', 'achbit-tui.bat',
     'achbit-kernel', 'achbit-kernel.exe', 'achbit-first-party-provider', 'achbit-first-party-provider.exe',
-    'achbit-host-web', 'achbit-host-web.exe', 'achbit-cli', 'achbit-cli.exe', 'achbit-tui', 'achbit-tui.exe',
+    'achbit-host-web', 'achbit-host-web.exe', 'achbit-cli.exe', 'achbit-tui.exe',
     'node', 'node_modules', 'session-core', 'web', 'web-achbit-gui', 'bwrap', 'WebView2Loader.dll',
     'BUILDINFO.json', 'build-info.json', 'build-info.txt', 'README.md', 'README.txt', 'LICENSE', 'licenses', 'THIRD-PARTY.json', 'docs',
-    # Retire previous program filenames when publishing into an existing build directory.
-    'DeepCode Computer Use.app', 'DeepCode Debug Computer Use.app', 'DeepCode-Computer-Use.exe',
-    'deepcode-debug', 'deepcode-debug.cmd', 'deepcode.cmd', 'deepcode-cli.bat', 'deepcode-tui.bat',
-    'deepcode-kernel', 'deepcode-kernel.exe', 'deepcode-first-party-provider', 'deepcode-first-party-provider.exe',
-    'deepcode-host-web', 'deepcode-host-web.exe', 'deepcode-cli', 'deepcode-cli.exe', 'deepcode-tui', 'deepcode-tui.exe',
-    'web-deepcode-gui',
 }
 
 

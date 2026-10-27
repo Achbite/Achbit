@@ -91,7 +91,7 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
     assert.equal(requests.length, 3, 'output or revisions do not request the model');
     if (scenario === 'user-cancel') {
       const job = jobs.get('job:1');
-      const reply = await actor.submit({schemaVersion: 'deepcode.command.v3', type: 'tool.cancel',
+      const reply = await actor.submit({schemaVersion: 'achbit.command.v3', type: 'tool.cancel',
         sessionId, runId: job.runId, callId: job.callId, commandId: 'command:stop-tool'});
       assert.equal(reply.status, 'accepted');
     } else if (scenario === 'completion-race') {

@@ -410,7 +410,7 @@ mod tests {
 
     fn temp_file(name: &str, content: &[u8]) -> TempFileFixture {
         let root = std::env::temp_dir().join(format!(
-            "deepcode-file-content-policy-{}-{}",
+            "achbit-file-content-policy-{}-{}",
             std::process::id(),
             TEMP_INDEX.fetch_add(1, Ordering::SeqCst)
         ));

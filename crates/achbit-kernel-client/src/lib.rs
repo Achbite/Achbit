@@ -105,11 +105,11 @@ impl fmt::Debug for KernelClientConfig {
 
 impl KernelClientConfig {
     pub fn from_env() -> Self {
-        if let Ok(base_url) = std::env::var("DEEPCODE_API_URL") {
+        if let Ok(base_url) = std::env::var("ACHBIT_API_URL") {
             return Self::new(base_url);
         }
-        let host = std::env::var("DEEPCODE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let port = std::env::var("DEEPCODE_PORT").unwrap_or_else(|_| "31245".to_string());
+        let host = std::env::var("ACHBIT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = std::env::var("ACHBIT_PORT").unwrap_or_else(|_| "31245".to_string());
         Self::new(format!("http://{host}:{port}"))
     }
 

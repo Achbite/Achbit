@@ -57,7 +57,7 @@ pub fn run() -> Result<(), String> {
         || arguments[3] != "--token"
         || arguments[5] != "--host"
     {
-        return Err("Launch this component through the DeepCode Host.".into());
+        return Err("Launch this component through the Achbit Host.".into());
     }
     let endpoint: std::net::SocketAddr =
         arguments[2].parse().map_err(|_| "Invalid Host endpoint")?;

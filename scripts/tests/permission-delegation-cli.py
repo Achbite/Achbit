@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import threading
 
-spec = importlib.util.spec_from_file_location('deepcode_test_support', Path(__file__).with_name('support.py'))
+spec = importlib.util.spec_from_file_location('achbit_test_support', Path(__file__).with_name('support.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
@@ -84,7 +84,7 @@ class Provider(fixture.MockProviderHandler):
 
 
 def check_mode(mode):
-    with tempfile.TemporaryDirectory(prefix=f'deepcode-permission-{mode}-') as directory:
+    with tempfile.TemporaryDirectory(prefix=f'achbit-permission-{mode}-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()
@@ -179,7 +179,7 @@ class ReviewFailureProvider(fixture.MockProviderHandler):
 
 
 def check_review_failure(mode, scenario):
-    with tempfile.TemporaryDirectory(prefix='deepcode-review-failure-') as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-review-failure-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()
@@ -320,7 +320,7 @@ def close_cli(process):
 
 
 def check_previous_run_guidance():
-    with tempfile.TemporaryDirectory(prefix='deepcode-review-guidance-') as directory, ExitStack() as cleanup:
+    with tempfile.TemporaryDirectory(prefix='achbit-review-guidance-') as directory, ExitStack() as cleanup:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()
@@ -346,7 +346,7 @@ def check_previous_run_guidance():
 
         def start_cli_input(session, text):
             environment = fixture.shell_environment(daemon)
-            environment['DEEPCODE_CLI_RUN_TIMEOUT_MS'] = '45000'
+            environment['ACHBIT_CLI_RUN_TIMEOUT_MS'] = '45000'
             process = subprocess.Popen([
                 str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
                 '--session', session, '--plain', 'ask', text,
@@ -518,7 +518,7 @@ class PlanProvider(fixture.MockProviderHandler):
 
 
 def check_plan_mode(mode, verdict='allow', *, delegate_pending=False):
-    with tempfile.TemporaryDirectory(prefix='deepcode-plan-review-') as directory:
+    with tempfile.TemporaryDirectory(prefix='achbit-plan-review-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         workspace.mkdir()

@@ -7,7 +7,7 @@ const encoder = new TextEncoder();
 
 function fixture(items) {
   const events = [{ type: 'session.created', payload: { displayTitle: 'Read pagination', workspaceBindings: [] } }, ...items]
-    .map((event, index) => ({ schemaVersion: 'deepcode.session-event.v5', eventId: `event:${index + 1}`, sessionId,
+    .map((event, index) => ({ schemaVersion: 'achbit.session-event.v5', eventId: `event:${index + 1}`, sessionId,
       sequence: index + 1, occurredAt: '2026-10-24T00:00:00.000Z', ...event }));
   return { events, journal: { async *read(id) { assert.equal(id, sessionId); yield* events; } } };
 }

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "deepcode.first-party-plugin.v1",
+  "schemaVersion": "achbit.first-party-plugin.v1",
   "id": "arxiv",
   "uri": "plugin://arxiv@first-party",
   "displayName": "arXiv",

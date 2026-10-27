@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "DeepCode Kernel ABI DTOs shared by future GUI, CLI, TUI, and dev hosts."
+description = "Achbit Kernel ABI DTOs shared by future GUI, CLI, TUI, and dev hosts."
 
 [dependencies]
 serde.workspace = true

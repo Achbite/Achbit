@@ -79,10 +79,10 @@ For local CLI tools, the catalog URI is `plugin://<id>@cli`. The manifest's tool
 One invocation reads one JSON value from stdin until EOF:
 
 ```json
-{"name":"operation","arguments":{},"context":{"deepcode":{"outputDirectory":"/absolute/attempt-output"}}}
+{"name":"operation","arguments":{},"context":{"achbit":{"outputDirectory":"/absolute/attempt-output"}}}
 ```
 
-`name` and `arguments` are the operation's input. `context` is Host-supplied execution metadata; `context.deepcode.outputDirectory`, when present, is the attempt's output location. `deepcode` is the existing wire key. It is not a system instruction or model message.
+`name` and `arguments` are the operation's input. `context` is Host-supplied execution metadata; `context.achbit.outputDirectory`, when present, is the attempt's output location. `achbit` is the existing wire key. It is not a system instruction or model message.
 
 Write exactly one JSON result to stdout and exit. Return structured failure as `{"error":{"code":"operation_failed","message":"Concrete cause"}}`; nonzero exit, invalid JSON, cancellation and timeout are also failures. Use stderr for diagnostics. Current limits are 60 seconds, 4 MiB stdout and 64 KiB stderr. The Host owns and terminates the process tree. Do not leave a background service behind a tool call; use a hosted service for that lifetime.
 

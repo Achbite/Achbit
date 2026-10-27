@@ -50,7 +50,7 @@ export function reconcileReaderPages(state: ReaderViewState, pages: NativePage[]
   const selected = state.activeId ?? (state.tabs.length === 0 && savedSelection ? readerTargetKey(savedSelection) : null);
   return { ...state, tabs, activeId: tabs.some(tab => tab.id === selected) ? selected : null };
 }
-export const READER_OPEN_EVENT = 'deepcode:reader-open';
+export const READER_OPEN_EVENT = 'achbit:reader-open';
 export function requestReader(sessionId: string, target: ReaderTarget): void {
   window.dispatchEvent(new CustomEvent(READER_OPEN_EVENT, {detail: {sessionId, target}}));
 }
@@ -59,11 +59,11 @@ export function requestWorkspacePreview(sessionId: string, workspaceId: string, 
   return Promise.resolve();
 }
 export function readViewState<T>(key: string, initial: T): T {
-  try { const saved = sessionStorage.getItem(`deepcode:reader:${key}`); return saved ? JSON.parse(saved) as T : initial; }
+  try { const saved = sessionStorage.getItem(`achbit:reader:${key}`); return saved ? JSON.parse(saved) as T : initial; }
   catch { return initial; }
 }
 export function saveViewState(key: string, value: unknown): void {
-  sessionStorage.setItem(`deepcode:reader:${key}`, JSON.stringify(value));
+  sessionStorage.setItem(`achbit:reader:${key}`, JSON.stringify(value));
 }
 
 export function readerTargetKey(target: ReaderTarget): string {

@@ -47,7 +47,7 @@ for (const surface of ['aggregate', 'responses']) test(`questions continue on th
   assert.equal(running.pendingInteraction.interactionId, running.interactions[0].interactionId, 'CLI/TUI can answer while the same Loop continues');
   assert.equal(running.interactions.length, 2);
   assert.equal(preparation.released.length, 0);
-  const answer = (interaction, response, commandId) => actor.submit({ schemaVersion: 'deepcode.command.v3',
+  const answer = (interaction, response, commandId) => actor.submit({ schemaVersion: 'achbit.command.v3',
     type: 'interaction.respond', sessionId, commandId, runId: running.run.runId, interactionId: interaction.interactionId, response });
   assert.equal((await answer(running.interactions[0], 'First answer', 'command:answer-a')).status, 'accepted');
   const queued = await actor.snapshot();
@@ -92,7 +92,7 @@ test('cancelling a run closes unresolved questions without inventing answers', a
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:start', 'Clarify and continue.'));
   const waiting = await waitForProjection(actor, state => state.run?.status === 'waiting');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', commandId: 'command:cancel', sessionId, runId: waiting.run.runId });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', commandId: 'command:cancel', sessionId, runId: waiting.run.runId });
   const done = await waitForProjection(actor, state => state.run?.status === 'cancelled');
   assert.equal(done.interactions[0].status, 'closed');
   assert.equal(done.interactions[0].response, undefined);

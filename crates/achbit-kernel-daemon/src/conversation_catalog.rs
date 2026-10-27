@@ -750,7 +750,7 @@ mod tests {
     impl Store {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
-                "deepcode-catalog-{}",
+                "achbit-catalog-{}",
                 format!(
                     "{}-{}-{}",
                     std::process::id(),

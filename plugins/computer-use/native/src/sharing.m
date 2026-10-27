@@ -326,7 +326,7 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, DCRe
     share.app = window.owningApplication.bundleIdentifier; share.title = window.title; share.filter = filter;
     share.generation = ++Generation; share.phase = @"starting";
     share.imageContext = [CIContext contextWithOptions:nil];
-    share.outputQueue = dispatch_queue_create("com.achbite.deepcode.control-preview", DISPATCH_QUEUE_SERIAL);
+    share.outputQueue = dispatch_queue_create("com.achbite.achbit.control-preview", DISPATCH_QUEUE_SERIAL);
     SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:Configuration(filter, YES) delegate:share];
     share.stream = stream; Shares[key] = share;
     @synchronized (DCShare.class) {
@@ -372,7 +372,7 @@ void dc_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
         pointer.key = owner.key; pointer.pointerSource = YES; pointer.owner = owner;
         pointer.window = pointerWindow; pointer.pid = NSProcessInfo.processInfo.processIdentifier;
         pointer.app = NSBundle.mainBundle.bundleIdentifier;
-        pointer.title = @"DeepCode Agent Pointer";
+        pointer.title = @"Achbit Agent Pointer";
         pointer.generation = ++Generation; pointer.phase = @"starting";
         pointer.pointerWindowDeadline = NSProcessInfo.processInfo.systemUptime + 2.0;
         owner.pointer = pointer;
@@ -427,7 +427,7 @@ void dc_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
             configuration.minimumFrameInterval = CMTimeMake(1, 8);
             SCStream *stream = [[SCStream alloc] initWithFilter:pointer.filter configuration:configuration delegate:pointer];
             pointer.stream = stream;
-            pointer.outputQueue = dispatch_queue_create("com.achbite.deepcode.pointer-share", DISPATCH_QUEUE_SERIAL);
+            pointer.outputQueue = dispatch_queue_create("com.achbite.achbit.pointer-share", DISPATCH_QUEUE_SERIAL);
             NSError *outputError = nil;
             if (![stream addStreamOutput:pointer type:SCStreamOutputTypeScreen sampleHandlerQueue:pointer.outputQueue error:&outputError]) {
                 [pointer ended:NativeError(outputError)]; pointer.phase = @"failed"; return;

@@ -2192,7 +2192,7 @@ class ToolDetailProjectionError extends Error {}
 export function projectResourceTool(record: ToolExecutionRecord) {
   const { tool, artifacts } = projectToolRecord(record, {});
   const job = record.outcome === 'completed' && isRecord(record.output) ? record.output.job : undefined;
-  const managed = record.preparedEffect.providerRef === 'deepcode:processes' && record.input.action === 'start'
+  const managed = record.preparedEffect.providerRef === 'achbit:processes' && record.input.action === 'start'
     && isManagedProcessSnapshot(job) && job.callId === record.callId && job.runId === record.runId && job.sessionId === record.sessionId;
   return { tool: { recordId: record.recordId, ...(!managed && tool.fileChanges ? { fileChanges: tool.fileChanges } : {}) }, artifacts };
 }

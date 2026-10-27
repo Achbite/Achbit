@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const REFRESH: u32 = WM_USER + 1;
 const TRANSPARENT_KEY: COLORREF = COLORREF(0x00FF00FF);
 const WHITE: COLORREF = COLORREF(0x00FFFFFF);
-const CONTROL_LABEL: &str = "DeepCode 正在调试此窗口";
+const CONTROL_LABEL: &str = "Achbit 正在调试此窗口";
 
 fn badge_size(icon_size: f64, scale: f64) -> (f64, f64) {
     (260.0 * scale, icon_size + 12.0 * scale)
@@ -232,13 +232,13 @@ unsafe fn create() -> Result<(), String> {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(procedure),
             hInstance: instance.into(),
-            lpszClassName: w!("DeepCodeComputerUseIndicator"),
+            lpszClassName: w!("AchbitComputerUseIndicator"),
             ..Default::default()
         };
         if RegisterClassExW(&class) == 0 {
             return Err("Cannot register the indicator window class".into());
         }
-        let timer = create_window(w!("DeepCode indicator timer"))?;
+        let timer = create_window(w!("Achbit indicator timer"))?;
         SetTimer(Some(timer), 1, 100, None);
         Ok(())
     }
@@ -249,7 +249,7 @@ unsafe fn create_window(name: PCWSTR) -> Result<HWND, String> {
         let instance = GetModuleHandleW(None).map_err(|error| error.to_string())?;
         let window = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-            w!("DeepCodeComputerUseIndicator"),
+            w!("AchbitComputerUseIndicator"),
             name,
             WS_POPUP,
             0,
@@ -334,8 +334,8 @@ fn refresh() {
             None => {
                 let created = unsafe {
                     (|| {
-                        let badge = create_window(w!("DeepCode Computer Use"))?;
-                        match create_window(w!("DeepCode Computer Use cursor")) {
+                        let badge = create_window(w!("Achbit Computer Use"))?;
+                        match create_window(w!("Achbit Computer Use cursor")) {
                             Ok(cursor) => Ok(Windows { badge, cursor }),
                             Err(error) => {
                                 let _ = DestroyWindow(badge);
@@ -576,7 +576,7 @@ mod tests {
             CreateWindowExW(
                 Default::default(),
                 w!("STATIC"),
-                w!("DeepCode indicator identity test"),
+                w!("Achbit indicator identity test"),
                 WS_POPUP,
                 0,
                 0,

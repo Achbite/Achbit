@@ -14,7 +14,7 @@ import threading
 import urllib.parse
 import urllib.request
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require

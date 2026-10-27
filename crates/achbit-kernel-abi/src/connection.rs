@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-pub const HOST_SHELL_TOKEN_ENV: &str = "DEEPCODE_HOST_SHELL_TOKEN";
-pub const HOST_UI_TOKEN_ENV: &str = "DEEPCODE_HOST_UI_TOKEN";
-pub const HOST_INSTANCE_ID_ENV: &str = "DEEPCODE_HOST_INSTANCE_ID";
-pub const HOST_SHELL_TOKEN_HEADER: &str = "x-deepcode-host-shell-token";
-pub const HOST_UI_TOKEN_HEADER: &str = "x-deepcode-host-ui-token";
+pub const HOST_SHELL_TOKEN_ENV: &str = "ACHBIT_HOST_SHELL_TOKEN";
+pub const HOST_UI_TOKEN_ENV: &str = "ACHBIT_HOST_UI_TOKEN";
+pub const HOST_INSTANCE_ID_ENV: &str = "ACHBIT_HOST_INSTANCE_ID";
+pub const HOST_SHELL_TOKEN_HEADER: &str = "x-achbit-host-shell-token";
+pub const HOST_UI_TOKEN_HEADER: &str = "x-achbit-host-ui-token";
 pub const HOST_SHELL_TOKEN_PREFIX: &str = "dchost_";
 pub const HOST_UI_TOKEN_PREFIX: &str = "dcui_";
 pub const HOST_INSTANCE_ID_PREFIX: &str = "dcinstance_";

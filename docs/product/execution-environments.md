@@ -29,7 +29,7 @@ For `*_workspace_sandbox_unavailable`, inspect `workspaceSandbox.reason` or use 
 
 ## Explicit WSL projects
 
-Project → Manage workspace → Runtime shell: select WSL, the distribution, and its installed Linux `achbit-kernel` executable, for example `/opt/deepcode/achbit-kernel`. The distribution, compatible Linux worker and files must already exist; a Windows `.exe` is not a Linux worker.
+Project → Manage workspace → Runtime shell: select WSL, the distribution, and its installed Linux `achbit-kernel` executable, for example `/opt/achbit/achbit-kernel`. The distribution, compatible Linux worker and files must already exist; a Windows `.exe` is not a Linux worker.
 
 Filesystem tools and Bash use that distribution. Windows paths are translated; WSL UNC paths must belong to it. Conversation and permissions remain with the original Host. Missing workers or paths are errors, not permission to install WSL, move files or use native execution instead.
 
@@ -46,7 +46,7 @@ Existing containers retain their actual mounts and permissions. The plugin does 
 In the GUI connection dialog, select POSIX for macOS/Linux or Windows (OpenSSH) for a Windows login shell. Supply the remote `achbit-cli` path and optional user-data root. Local and remote OS may differ.
 
 ```sh
-achbit-cli ssh configure --host user@host --remote-shell windows --remote-cli 'C:\Program Files\DeepCode\achbit-cli.exe' --output windows-host.json
+achbit-cli ssh configure --host user@host --remote-shell windows --remote-cli 'C:\Program Files\Achbit\achbit-cli.exe' --output windows-host.json
 achbit-cli ssh connect --profile windows-host.json
 ```
 

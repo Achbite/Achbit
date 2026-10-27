@@ -60,7 +60,7 @@ export function NativeBrowserPreview({
       const address = new URL(url);
       return address.protocol === 'file:'
         ? (decodeURIComponent(address.pathname).split('/').at(-1) ?? url)
-        : page?.kind === 'deepcode'
+        : page?.kind === 'achbit'
           ? 'Achbit'
           : url;
     } catch {
@@ -175,7 +175,7 @@ export function NativeBrowserPreview({
       owner.current.page.surface.activationId = next.surface.activationId;
       layout();
     };
-    window.addEventListener('deepcode:browser-layout', activate);
+    window.addEventListener('achbit:browser-layout', activate);
     window.addEventListener('resize', layout);
     window.addEventListener('scroll', layout, true);
     layout();
@@ -184,7 +184,7 @@ export function NativeBrowserPreview({
       cancelAnimationFrame(scheduled);
       resize.disconnect();
       mutations.disconnect();
-      window.removeEventListener('deepcode:browser-layout', activate);
+      window.removeEventListener('achbit:browser-layout', activate);
       window.removeEventListener('resize', layout);
       window.removeEventListener('scroll', layout, true);
     };
@@ -268,14 +268,14 @@ export function NativeBrowserPreview({
           value={editingAddress ? url : shortAddress()}
           onFocus={() => setEditingAddress(true)}
           onBlur={() => setEditingAddress(false)}
-          readOnly={page?.kind === 'deepcode'}
+          readOnly={page?.kind === 'achbit'}
           onChange={(event) => setUrl(event.target.value)}
           placeholder="https://…"
         />
         {page?.control && owner.current && <NativeBrowserControl key={page.previewId}
           binding={owner.current.binding} previewId={page.previewId} language={language} onError={setError} />}
         </div>
-        <button disabled={!page || busy || page.kind === 'deepcode'} type="submit">
+        <button disabled={!page || busy || page.kind === 'achbit'} type="submit">
           {t(language, 'reader.open')}
         </button>
         <button

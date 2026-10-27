@@ -172,7 +172,7 @@ impl LocalAgentKernel {
         let id = random_id("debug-operation")?;
         let call_id = random_id("call")?;
         let attempt_id = random_id("attempt")?;
-        let record = json!({"schemaVersion":"deepcode.debug-operation.v1", "source":"debugOperation",
+        let record = json!({"schemaVersion":"achbit.debug-operation.v1", "source":"debugOperation",
             "operationId":id,"controlId":control_id,"callId":call_id,"attemptId":attempt_id,
             "toolName":tool,"input":input,"workspaceId":owner.workspace_id,"workspace":owner.workspace,
             "extensionGenerationRef":owner.generation.catalog.extension_generation_ref(),

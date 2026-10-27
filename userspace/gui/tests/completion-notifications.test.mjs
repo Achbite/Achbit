@@ -34,8 +34,8 @@ test('desktop completion uses the local native bridge even for a remote host and
   const previousWindow = globalThis.window;
   const calls = [];
   globalThis.window = {
-    location: new URL('deepcode-gui://localhost/index.html'),
-    __DEEPCODE_HOST_BOOT__: { schemaVersion: 'deepcode.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken: `dcui_${'a'.repeat(64)}`, windowChrome: 'custom', remote: true },
+    location: new URL('achbit-gui://localhost/index.html'),
+    __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken: `dcui_${'a'.repeat(64)}`, windowChrome: 'custom', remote: true },
     __TAURI__: { core: { invoke: async (...args) => calls.push(args) } },
   };
   t.after(() => { globalThis.window = previousWindow; });
@@ -43,19 +43,19 @@ test('desktop completion uses the local native bridge even for a remote host and
   assert.equal(hasDesktopNotifications(), true);
   const reminder = { sessionId: 'session', title: '任务已完成', body: '会话标题', openLabel: '查看会话', dismissLabel: '关闭提醒' };
   await notifyTaskCompleted(reminder);
-  assert.deepEqual(calls, [['deepcode_notify_completed', { reminder }]]);
+  assert.deepEqual(calls, [['achbit_notify_completed', { reminder }]]);
   await getCompletionSound(); await setCompletionSound([82, 73]); await previewCompletionSound(); await setCompletionSound(null);
-  assert.deepEqual(calls.slice(1), [['deepcode_completion_sound'], ['deepcode_set_completion_sound', { data: [82, 73] }], ['deepcode_preview_completion_sound'], ['deepcode_set_completion_sound', { data: null }]]);
+  assert.deepEqual(calls.slice(1), [['achbit_completion_sound'], ['achbit_set_completion_sound', { data: [82, 73] }], ['achbit_preview_completion_sound'], ['achbit_set_completion_sound', { data: null }]]);
   let observed = null, unlistened = false;
   window.__TAURI__.event = { listen: async (name, callback) => {
-    assert.equal(name, 'deepcode:completion-open'); callback({ payload: 'session' });
+    assert.equal(name, 'achbit:completion-open'); callback({ payload: 'session' });
     return () => { unlistened = true; };
   } };
   const stop = await onCompletionOpen(id => { observed = id; });
   assert.equal(observed, 'session'); stop(); assert.equal(unlistened, true);
   window.__TAURI__.core.invoke = async () => { throw new Error('audio_device_unavailable'); };
   await assert.rejects(notifyTaskCompleted(reminder), /audio_device_unavailable/);
-  window.__DEEPCODE_BROWSER_PREVIEW__ = true;
+  window.__ACHBIT_BROWSER_PREVIEW__ = true;
   assert.equal(hasDesktopNotifications(), false);
   await assert.rejects(notifyTaskCompleted(reminder), /desktop_notifications_unavailable/);
 });

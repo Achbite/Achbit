@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-pub const CONVERSATION_COMMAND_VERSION: &str = "deepcode.command.v3";
-pub const SESSION_PROJECTION_VERSION: &str = "deepcode.session-projection.v6";
+pub const CONVERSATION_COMMAND_VERSION: &str = "achbit.command.v3";
+pub const SESSION_PROJECTION_VERSION: &str = "achbit.session-projection.v6";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3250,7 +3250,7 @@ mod tests {
                     "messageIndex": 0,
                     "contributionId": "instruction:agent",
                     "contributionKind": "instructions",
-                    "label": "deepcode.coding-agent",
+                    "label": "achbit.coding-agent",
                     "role": "system",
                     "blocks": [{ "blockIndex": 0, "kind": "text" }],
                     "filesystemReferences": []

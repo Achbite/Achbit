@@ -36,6 +36,8 @@ The navigation holds your projects and conversations. Tool results stay with the
 
 Packages include their runtime. See [platform requirements and installation](docs/distribution.md) for WebView2, Linux desktop dependencies, and the packages available for each release.
 
+Starting with 0.6.61, application data directories, environment variables and integration identifiers use Achbit names. A default first launch uses a new data directory; previous data and credentials are left untouched and are not automatically imported. See the [data directory guide](docs/distribution.md#产品标识与数据目录) when configuring launchers or integrations.
+
 ## Computer Use
 
 Move from code to its running interface. Achbit can open project pages in its built-in browser, inspect their contents, interact with controls, and capture the result. Chrome DevTools MCP and native macOS / Windows interaction provide additional ways to work with applications.
@@ -62,7 +64,7 @@ Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a m
 
 ## Plugins
 
-Import an external plugin from **Settings → Plugins → Add**, selecting its directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. Archives must be unpacked before import.
+Import an external plugin from **Settings → Plugins → Add**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
 
 Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
 

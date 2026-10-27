@@ -146,8 +146,8 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
   const canMutate = runtimeTools.some(tool => tool.possibleEffects.some(effect => effect === 'workspaceMutation' || effect === 'process' || effect === 'external'));
   const instructions = input.runtime.instructions
-    .filter(instruction => instruction.id !== 'deepcode.workspace-autonomy' || canMutate)
-    .map(instruction => instruction.id === 'deepcode.session-environment'
+    .filter(instruction => instruction.id !== 'achbit.workspace-autonomy' || canMutate)
+    .map(instruction => instruction.id === 'achbit.session-environment'
       ? environmentInstruction(input.runtime.environment, runtimeTools.map(tool => tool.name)) : instruction)
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
@@ -164,7 +164,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   );
   if (toolGuidance) {
     const stableCoreIndex = instructions.findIndex((instruction) => (
-      instruction.contributionId === 'instruction:deepcode.coding-agent'
+      instruction.contributionId === 'instruction:achbit.coding-agent'
     ));
     if (stableCoreIndex < 0) {
       throw new LoopFailure(
@@ -173,9 +173,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       );
     }
     instructions.splice(stableCoreIndex + 1, 0, {
-      contributionId: 'instruction:deepcode.tool-guidance',
+      contributionId: 'instruction:achbit.tool-guidance',
       contributionKind: 'instructions',
-      label: 'deepcode.tool-guidance',
+      label: 'achbit.tool-guidance',
       message: { role: 'system', content: toolGuidance },
     });
   }
@@ -958,7 +958,7 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     responseConstraint,
     dynamicInstructionBytes: selected.reduce((total, contribution) => (
       contribution.message.role === 'system'
-      && contribution.contributionId !== 'instruction:deepcode.coding-agent'
+      && contribution.contributionId !== 'instruction:achbit.coding-agent'
         ? total + new TextEncoder().encode(contribution.message.content).byteLength
         : total
     ), 0),

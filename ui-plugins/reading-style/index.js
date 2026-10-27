@@ -1,4 +1,4 @@
-// A standalone display module: no DeepCode React dependency or Agent/tool imports.
+// A standalone display module: no Achbit React dependency or Agent/tool imports.
 export default {
   apply(ctx) {
     ctx.addStyle(`

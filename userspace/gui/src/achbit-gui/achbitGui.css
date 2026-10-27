@@ -49,7 +49,7 @@ button, select, summary, [role='button'] {
 /* Native selection still owns copy and keyboard navigation; reading highlights
    paint text fragments without WebKit's block-wide selection bands. */
 html[data-reading-selection] ::selection { background: transparent; }
-::highlight(deepcode-reading-selection) {
+::highlight(achbit-reading-selection) {
   background: color-mix(in srgb, var(--dc-accent) 22%, transparent);
   color: inherit;
 }
@@ -62,7 +62,7 @@ textarea {
 }
 
 /* Shared, quiet feedback; component-specific disclosure and visibility transitions stay local. */
-:where(:root[data-product='deepcode-gui']) :where(button, [role='button'], [role='tab'], summary, select) {
+:where(:root[data-product='achbit-gui']) :where(button, [role='button'], [role='tab'], summary, select) {
   transition: background-color var(--dc-motion-feedback) ease, color var(--dc-motion-feedback) ease, border-color var(--dc-motion-feedback) ease;
 }
 
@@ -106,7 +106,7 @@ textarea {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-product='deepcode-gui'] :is(button, [role='button'], [role='tab'], summary, select) {
+  :root[data-product='achbit-gui'] :is(button, [role='button'], [role='tab'], summary, select) {
     transition: none;
   }
 }
@@ -167,7 +167,7 @@ textarea {
 }
 
 /* Native dialogs are portalled to body and share the same applied theme as the workbench. */
-:root[data-product='deepcode-gui'] {
+:root[data-product='achbit-gui'] {
   --bg-app: var(--dc-background);
   --bg-sidebar: var(--dc-sidebar);
   --bg-panel: var(--dc-surface);

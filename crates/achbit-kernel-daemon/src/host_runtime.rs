@@ -96,7 +96,7 @@ pub(crate) async fn readiness(State(host): State<HostState>) -> Json<ApiResponse
         "kernel": kernel, "session": session,
         "runtimeError": error.as_ref().map(|error| json!({"code": error.code, "message": error.message})),
         "buildCommit": crate::kernel_api::build_commit(),
-        "protocolVersion": "deepcode.local-agent",
+        "protocolVersion": "achbit.local-agent",
     });
     ApiResponse::ok(data)
 }

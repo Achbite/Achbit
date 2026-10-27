@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "DeepCode Kernel daemon that owns runtime, provider transport, and localhost API."
+description = "Achbit Kernel daemon that owns runtime, provider transport, and localhost API."
 
 [features]
 debug-control = ["achbit-host-connection/debug-control"]

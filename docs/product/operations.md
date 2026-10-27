@@ -134,7 +134,7 @@ Archive an existing file with `artifact.prepare`, or register a live URL with `a
 
 ## macOS signing
 
-Authorized macOS builds use a persistent signer, defaulting to `DeepCode Local Development`; `DEEPCODE_MACOS_SIGN_IDENTITY` selects another. Initial setup is `bash scripts/setup-macos-signing.sh` on the Mac. The private key stays in that user's keychain; system password/trust prompts require human handling.
+Authorized macOS builds use a persistent signer, defaulting to `Achbit Local Development`; `ACHBIT_MACOS_SIGN_IDENTITY` selects another. Initial setup is `bash scripts/setup-macos-signing.sh` on the Mac. The private key stays in that user's keychain; system password/trust prompts require human handling.
 
 Keep signer and bundle identity stable across updates. The Computer Use helper has its own Accessibility/Screen Recording grants. Use its `status` to inspect the actual running helper and permission error; do not reset OS permissions or replace unrelated apps as a generic fix. From a source checkout, `bash ./build.sh` updates the local runnable product; `bash ./build.sh --stage package-macos` explicitly builds the macOS distribution package. For isolated Debug builds, use [Debug control](debug-control.md).
 

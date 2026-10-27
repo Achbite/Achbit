@@ -167,7 +167,7 @@ pub(crate) fn resolve_llm_profile(
     } else {
         (
             secret.or_else(|| {
-                std::env::var("DEEPCODE_LLM_API_KEY")
+                std::env::var("ACHBIT_LLM_API_KEY")
                     .ok()
                     .filter(|s| !s.trim().is_empty())
             }),
@@ -905,11 +905,8 @@ fn build_provider_request(
                     .as_deref()
                     .ok_or_else(|| ProviderTransportError::new("provider_account_missing"))?,
             )
-            .header("originator", "deepcode")
-            .header(
-                "User-Agent",
-                concat!("DeepCode/", env!("CARGO_PKG_VERSION")),
-            )
+            .header("originator", "achbit")
+            .header("User-Agent", concat!("Achbit/", env!("CARGO_PKG_VERSION")))
             .header("OpenAI-Beta", "responses=experimental")
             .header("Accept", "text/event-stream");
     }
@@ -1943,7 +1940,7 @@ fn provider_event(
     data: Value,
 ) -> String {
     let mut event = json!({
-        "schemaVersion": "deepcode.provider-event",
+        "schemaVersion": "achbit.provider-event",
         "requestId": request_id,
         "type": event_type,
         "data": data,
@@ -2403,7 +2400,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
         let directory = std::env::temp_dir().join(format!(
-            "deepcode-codex-{}",
+            "achbit-codex-{}",
             crate::utils::new_runtime_ref("test")
                 .unwrap()
                 .replace(':', "-")
@@ -3251,7 +3248,7 @@ mod tests {
             (b"data: {invalid}\n\n".to_vec(), "failed"),
         ] {
             let directory = std::env::temp_dir().join(format!(
-                "deepcode-provider-archive-{}-{}",
+                "achbit-provider-archive-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)

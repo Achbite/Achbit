@@ -1,7 +1,7 @@
 import type { RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
 import { decodeAgentRecipe, permissionPolicyConstraints } from '@achbit/protocol';
 
-const ENVIRONMENT_ID = 'deepcode.session-environment';
+const ENVIRONMENT_ID = 'achbit.session-environment';
 
 export function environmentInstruction(value: unknown, toolNames: readonly string[] = []): RunRuntimeSnapshot['instructions'][number] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

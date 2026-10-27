@@ -5,8 +5,7 @@ node_modules/
 
 # ---- 构建产物 ----
 **/dist/
-**/dist-achbit-gui/
-**/dist-deepcode-gui/
+**/dist-*/
 **/build/
 target/
 **/target/
@@ -16,8 +15,8 @@ target/
 **/.vite/
 .build-cache/
 .pnpm-store/
-.deepcode/build-baselines/
-.deepcode-recovery.*/
+.achbit/build-baselines/
+.achbit-recovery.*/
 
 # ---- Python 字节码缓存 ----
 __pycache__/
@@ -40,7 +39,6 @@ lerna-debug.log*
 .env
 .env.*
 !.env.example
-.deepcode-worktree.mk
 .achbit-worktree.mk
 
 # ---- IDE / 系统 ----
@@ -55,7 +53,7 @@ Thumbs.db
 _check_output.txt
 _agent_tmp_*
 *.tsbuildinfo
-.deepcode-preview-config*/
+.achbit-preview-config*/
 # Product documentation excludes local engineering notes, task receipts and preview output.
 /docs/architecture/
 /docs/task-receipts/

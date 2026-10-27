@@ -9,7 +9,7 @@ impl TestRoot {
     fn new() -> Self {
         let root = std::env::temp_dir()
             .join(format!(
-                "deepcode-host-regression-{}-{}",
+                "achbit-host-regression-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -169,7 +169,7 @@ fn publication_replaces_old_records_without_removing_an_unowned_temporary_file()
 
 #[test]
 fn port_lock_releases_immediately_when_its_process_is_killed() {
-    const CHILD_ROOT: &str = "DEEPCODE_TEST_PORT_LOCK_ROOT";
+    const CHILD_ROOT: &str = "ACHBIT_TEST_PORT_LOCK_ROOT";
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         let root = PathBuf::from(root);
         let _guard = HostStartGuard::try_acquire_port(&root, "127.0.0.1", "12345")
@@ -225,17 +225,17 @@ fn port_lock_releases_immediately_when_its_process_is_killed() {
 
 #[test]
 fn runtime_paths_survive_a_real_child_working_directory_change() {
-    const MODE: &str = "DEEPCODE_TEST_RUNTIME_PATH_MODE";
-    const ROOT: &str = "DEEPCODE_TEST_RUNTIME_PATH_ROOT";
+    const MODE: &str = "ACHBIT_TEST_RUNTIME_PATH_MODE";
+    const ROOT: &str = "ACHBIT_TEST_RUNTIME_PATH_ROOT";
     let mode = std::env::var(MODE).unwrap_or_default();
     if mode == "check" {
         for name in [
-            "DEEPCODE_RUNTIME_DIR",
-            "DEEPCODE_CLIENT_DIST",
-            "DEEPCODE_NODE",
-            "DEEPCODE_SESSION_BRIDGE",
-            "DEEPCODE_USER_ROOT",
-            "DEEPCODE_LOG_DIR",
+            "ACHBIT_RUNTIME_DIR",
+            "ACHBIT_CLIENT_DIST",
+            "ACHBIT_NODE",
+            "ACHBIT_SESSION_BRIDGE",
+            "ACHBIT_USER_ROOT",
+            "ACHBIT_LOG_DIR",
         ] {
             assert!(
                 PathBuf::from(std::env::var_os(name).unwrap()).is_absolute(),
@@ -248,16 +248,16 @@ fn runtime_paths_survive_a_real_child_working_directory_change() {
             b"runtime"
         );
         assert_eq!(
-            std::fs::read(configured_path("DEEPCODE_NODE").unwrap().unwrap()).unwrap(),
+            std::fs::read(configured_path("ACHBIT_NODE").unwrap().unwrap()).unwrap(),
             b"node"
         );
         assert_eq!(
-            std::fs::read(configured_path("DEEPCODE_SESSION_BRIDGE").unwrap().unwrap()).unwrap(),
+            std::fs::read(configured_path("ACHBIT_SESSION_BRIDGE").unwrap().unwrap()).unwrap(),
             b"bridge"
         );
         assert_eq!(
             std::fs::read(
-                configured_path("DEEPCODE_CLIENT_DIST")
+                configured_path("ACHBIT_CLIENT_DIST")
                     .unwrap()
                     .unwrap()
                     .join("index.html")
@@ -284,8 +284,8 @@ fn runtime_paths_survive_a_real_child_working_directory_change() {
             .current_dir("child");
         configure_runtime_child(&mut command, &resources).unwrap();
         command.env(
-            "DEEPCODE_CLIENT_DIST",
-            configured_path("DEEPCODE_CLIENT_DIST").unwrap().unwrap(),
+            "ACHBIT_CLIENT_DIST",
+            configured_path("ACHBIT_CLIENT_DIST").unwrap().unwrap(),
         );
         UserDirectories::resolve()
             .unwrap()
@@ -313,17 +313,14 @@ fn runtime_paths_survive_a_real_child_working_directory_change() {
         .env(MODE, "resolve")
         .env(ROOT, &root.0)
         .current_dir(&root.0)
-        .env("DEEPCODE_RUNTIME_DIR", "运行 resources")
-        .env("DEEPCODE_CLIENT_DIST", "运行 resources")
+        .env("ACHBIT_RUNTIME_DIR", "运行 resources")
+        .env("ACHBIT_CLIENT_DIST", "运行 resources")
+        .env("ACHBIT_NODE", Path::new("运行 resources").join("node.exe"))
         .env(
-            "DEEPCODE_NODE",
-            Path::new("运行 resources").join("node.exe"),
-        )
-        .env(
-            "DEEPCODE_SESSION_BRIDGE",
+            "ACHBIT_SESSION_BRIDGE",
             Path::new("运行 resources").join("bridge.js"),
         )
-        .env("DEEPCODE_USER_ROOT", "用户 state")
+        .env("ACHBIT_USER_ROOT", "用户 state")
         .status()
         .unwrap();
     assert!(status.success());

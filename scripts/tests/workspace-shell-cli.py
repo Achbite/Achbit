@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
@@ -164,7 +164,7 @@ def check_active_shutdown():
         daemon.start()
         session = fixture.create_session(daemon, workspace)['sessionId']
         environment = fixture.shell_environment(daemon)
-        environment['DEEPCODE_CLI_RUN_TIMEOUT_MS'] = '180000'
+        environment['ACHBIT_CLI_RUN_TIMEOUT_MS'] = '180000'
         client = subprocess.Popen([str(fixture.CLI_BINARY), '--api', daemon.base_url, '--no-auto-start-kernel',
             '--session', session, '--plain', 'ask', 'Run the long workspace Shell to verify owned Host shutdown.'],
             cwd=fixture.ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

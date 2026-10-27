@@ -391,7 +391,7 @@ mod tests {
             let mut entropy = [0_u8; 8];
             getrandom::fill(&mut entropy).unwrap();
             let path = std::env::temp_dir().join(format!(
-                "deepcode-llm-config-{:016x}",
+                "achbit-llm-config-{:016x}",
                 u64::from_ne_bytes(entropy)
             ));
             fs::create_dir_all(path.join("config/user/local/settings")).unwrap();

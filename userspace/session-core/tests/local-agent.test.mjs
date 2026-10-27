@@ -216,7 +216,7 @@ test('editing a settled message replaces active history while retaining journal 
   const statusReader = new SessionService(journal, { async create() { throw new Error('status_read_must_not_open_an_actor'); } });
   t.after(() => statusReader.dispose());
   await statusReader.statuses([sessionId]);
-  const command = { schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+  const command = { schemaVersion: 'achbit.command.v3', type: 'message.edit', sessionId,
     commandId: 'command:edit', messageId: original.messages[2].messageId, expectedRevision: original.revision, text: 'Revised second question.' };
   const stale = await actor.submit({ ...command, commandId: 'command:stale', expectedRevision: original.revision - 1 });
   assert.equal(stale.error.code, 'message_edit_stale');
@@ -281,7 +281,7 @@ for (const control of ['session', 'plugin_activate']) test(`editing settled cont
   const original = await waitForProjection(actor, value => value.run?.status === 'completed');
   const saved = await readEvents(journal, sessionId);
   assert.equal(saved.filter(event => event.type === (control === 'session' ? 'session.control.completed' : 'session.plugins.activated')).length, 1);
-  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'message.edit', sessionId,
     commandId: 'command:edit-control', messageId: original.messages[0].messageId,
     expectedRevision: original.revision, text: 'Revised request.' });
   assert.equal(reply.status, 'accepted');
@@ -338,7 +338,7 @@ test('editing conversation history preserves member lineage without replaying su
   }
 
   assert.ok(JSON.stringify(requests[1].messages).includes('Superseded member evidence.'));
-  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'message.edit', sessionId,
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'message.edit', sessionId,
     commandId: 'command:member-edit', messageId: original.messages[0].messageId,
     expectedRevision: original.revision, text: 'Revised request.' });
   assert.equal(reply.status, 'accepted');
@@ -453,7 +453,7 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
       async recordAgentEvents(events) {
         for (const event of events) {
           const state = states.get(sessionId);
-          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'achbit.session-event.v5',
             sequence: state.revision + 1, eventId: `event:${sessionId}:${state.revision + 1}`, occurredAt: '2026-10-12T00:00:00.000Z' }));
         }
       } }]));
@@ -568,7 +568,7 @@ test('an idle member preparation failure cannot reuse its previous successful ru
     async recordAgentEvents(events) {
       for (const event of events) {
         facts.push(structuredClone(event));
-        state = reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+        state = reduceSession(state, { ...event, schemaVersion: 'achbit.session-event.v5',
           sequence: state.revision + 1, eventId: `event:${state.revision + 1}`, occurredAt: '2026-10-11T00:00:00.000Z' });
       }
     } };
@@ -629,7 +629,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
         for (const event of events) {
           facts.push(structuredClone(event));
           const state = states.get(sessionId);
-          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'deepcode.session-event.v5',
+          states.set(sessionId, reduceSession(state, { ...event, schemaVersion: 'achbit.session-event.v5',
             sequence: state.revision + 1, eventId: `event:${++sequence}`, occurredAt: '2026-10-12T00:00:00.000Z' }));
         }
       },
@@ -932,7 +932,7 @@ test('waiting input stays separate from the decision and explicit cancel retains
   assert.deepEqual(pending.pendingInteraction, waiting.pendingInteraction);
   assert.equal(pending.queuedInputs[0].status, 'queued');
   assert.equal(requests.length, 1);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'interaction.respond',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'interaction.respond',
     commandId: 'command:decision-response', sessionId, runId: waiting.run.runId,
     interactionId: waiting.pendingInteraction.interactionId, response: 'Option A.' });
   const nextWaiting = await waitForProjection(actor, (value) => value.pendingInteraction?.interactionId !== waiting.pendingInteraction.interactionId && value.pendingInteraction !== null);
@@ -941,7 +941,7 @@ test('waiting input stays separate from the decision and explicit cancel retains
   assert.ok(messages.findIndex((message) => message.role === 'tool') < messages.findIndex((message) => message.content === 'Additional context.'));
   assert.deepEqual(nextWaiting.queuedInputs, []);
   await actor.submit(messageCommand(sessionId, 'command:decision-cancelled-input', 'Do not lose this text.'));
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
     commandId: 'command:decision-cancel', sessionId, runId: nextWaiting.run.runId });
   const cancelled = await actor.snapshot();
   assert.equal(cancelled.run.status, 'cancelled');
@@ -962,7 +962,7 @@ test('waiting input stays separate from the decision and explicit cancel retains
   assert.equal(stale.status, 'rejected');
   assert.equal(stale.error.code, 'queued_input_run_unavailable');
   assert.equal((await actor.snapshot()).queuedInputs.length, 1);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
     commandId: 'command:decision-new-cancel', sessionId, runId: newRun.run.runId });
 });
 
@@ -1034,7 +1034,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
   assert.equal(control.inputSchema.properties.action.type, 'string');
   assert.equal(control.inputSchema.additionalProperties, true);
   assert.deepEqual(member.request.messages, disabled.request.messages);
-  const header = { schemaVersion: 'deepcode.session-event.v5', sessionId: input.sessionId,
+  const header = { schemaVersion: 'achbit.session-event.v5', sessionId: input.sessionId,
     runId: input.runId, occurredAt: '2026-10-12T00:00:00.000Z' };
   const preparedEvents = [
     ...input.events,
@@ -1042,7 +1042,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
       payload: { inputMessageId: 'message:models-input', workspaceBindings: [], runtimeSnapshot: memberRuntime } },
     { ...header, eventId: 'event:models-context', sequence: 2, type: 'context.composed', payload: member.receipt },
   ];
-  const event = { schemaVersion: 'deepcode.session-event.v5', eventId: 'event:models', sessionId: input.sessionId,
+  const event = { schemaVersion: 'achbit.session-event.v5', eventId: 'event:models', sessionId: input.sessionId,
     runId: input.runId, callId: 'call:models', sequence: 3, occurredAt: '2026-10-12T00:00:00.000Z' };
   const completed = { ...event, type: 'agent.control.completed', payload: { providerCallId: 'provider:models',
     operation: { action: 'models' }, result: { models: [] } } };
@@ -1085,7 +1085,7 @@ test('delegation evidence is delivered once, keeps call pairs intact and reuses 
   const events = [];
   const add = (type, payload, callId) => {
     const sequence = events.length + 1;
-    events.push({ schemaVersion: 'deepcode.session-event.v5', eventId: `event:${sequence}`, sessionId, runId,
+    events.push({ schemaVersion: 'achbit.session-event.v5', eventId: `event:${sequence}`, sessionId, runId,
       sequence, occurredAt: '2026-10-11T00:00:00.000Z', type, payload, ...(callId ? { callId } : {}) });
   };
   for (const delivery of ['async', 'wait']) {
@@ -1390,7 +1390,7 @@ test('inherited permission publications wake a Loop even when the journal revisi
 });
 
 test('transport: oversized Unicode replies preserve content within bounded frames', () => {
-  const value = { protocolVersion: 'deepcode.local-agent.v1', requestId: 'large', ok: true,
+  const value = { protocolVersion: 'achbit.local-agent.v1', requestId: 'large', ok: true,
     data: { text: '中文🙂\n\"\\'.repeat(180_000) } };
   const frames = [...responseFrames(value)];
   assert.ok(frames.length > 1);
@@ -1522,9 +1522,9 @@ test('new runs refresh execution facts while restart and compaction retain each 
   let observed = { ...runtimeSnapshot('environment:fixture').environment,
     os: 'linux', arch: 'aarch64', locale: 'zh-CN', responseLanguage: 'zh-CN', userShell: '/bin/bash',
     workspaceShellSupported: false,
-    productDocsPath: '/opt/deepcode/docs/product',
+    productDocsPath: '/opt/achbit/docs/product',
     workspaceSandbox: { available: false, reason: 'fixture sandbox probe diagnostic' },
-    runtimeExecutables: { kernel: '/opt/deepcode/achbit-kernel', cli: '/opt/deepcode/achbit-cli' } };
+    runtimeExecutables: { kernel: '/opt/achbit/achbit-kernel', cli: '/opt/achbit/achbit-cli' } };
   const saved = environmentInstruction(observed);
   assert.equal(saved.text, 'Use zh-CN for user-facing text unless the user requests another language.');
   const shellText = environmentInstruction(observed, ['bash']).text;
@@ -1538,7 +1538,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
   assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
   assert.deepEqual(observed.workspaceSandbox, { available: false, reason: 'fixture sandbox probe diagnostic' });
   assert.deepEqual(observed.runtimeExecutables,
-    { kernel: '/opt/deepcode/achbit-kernel', cli: '/opt/deepcode/achbit-cli' });
+    { kernel: '/opt/achbit/achbit-kernel', cli: '/opt/achbit/achbit-cli' });
   const preparation = fakeRunPreparation();
   const port = {
     ...preparation.port,
@@ -1576,7 +1576,7 @@ test('new runs refresh execution facts while restart and compaction retain each 
   await actor.recover();
   await submit('Continue after restart.');
   await actor.submit({
-    schemaVersion: 'deepcode.command.v3', type: 'context.focus',
+    schemaVersion: 'achbit.command.v3', type: 'context.focus',
     commandId: 'command:environment-focus', sessionId, task: 'Continue with the saved facts.',
   });
   await waitForProjection(actor, (value) => value.run?.status === 'completed'
@@ -1746,7 +1746,7 @@ test('run binding exposes hosted search once and replays its Provider item uncha
   )));
   assert.equal(compositions[0].payload.tools.filter((tool) => tool.canonicalName === 'web.search').length, 1);
   assert.equal(compositions[0].payload.messages.filter((message) => (
-    message.contributionId === 'instruction:deepcode.tool-guidance'
+    message.contributionId === 'instruction:achbit.tool-guidance'
   )).length, 1);
   assert.ok(compositions[1].payload.messages.some((message) => (
     message.blocks.some((block) => (
@@ -2707,7 +2707,7 @@ test('Session renders one run-scoped tool guidance message with Provider aliases
   const events = await readEvents(journal, sessionId);
   const composition = singleEvent(events, 'context.composed');
   const guidanceReceipts = composition.payload.messages.filter((message) => (
-    message.contributionId === 'instruction:deepcode.tool-guidance'
+    message.contributionId === 'instruction:achbit.tool-guidance'
   ));
   assert.equal(guidanceReceipts.length, 1);
   assert.equal(guidanceReceipts[0].contributionKind, 'instructions');
@@ -2736,14 +2736,14 @@ test('explicit run approvals are journaled and only accepted for a Kernel candid
       }
       yield providerEvent(request.requestId, 'completed', {});
     } }, emptyKernel({ async execute(request) {
-      if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'approval:run', preview };
+      if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'approval:run', preview };
       return completedExecutionReply(request, { content: 'Result' });
     } }), preparation.port, 'run-approval');
     t.after(() => actor.dispose());
     await actor.submit(messageCommand(sessionId, 'command:start', 'Exercise approval.'));
     const waiting = await waitForProjection(actor, (state) => state.pendingApproval !== null);
     const approval = waiting.pendingApproval;
-    const command = { schemaVersion: 'deepcode.command.v3', type: 'approval.respond', commandId: 'command:allow-run', sessionId,
+    const command = { schemaVersion: 'achbit.command.v3', type: 'approval.respond', commandId: 'command:allow-run', sessionId,
       runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'allow', authorizationScope: 'runHostShell' };
     const reply = await actor.submit(command);
     assert.equal(reply.status, candidate ? 'accepted' : 'rejected');
@@ -3165,7 +3165,7 @@ test('compaction rejects invalid output without executing tools or retrying and 
       yield providerEvent(request.requestId, 'completed', completion);
     } }, emptyKernel(), preparation.port, `completed-compaction-${name}`);
     t.after(() => actor.dispose());
-    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'context.focus',
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'context.focus',
       sessionId, commandId: 'command:focus', task: 'Summarize the known facts.' });
     const result = await waitForProjection(actor, value => ['failed', 'indeterminate'].includes(value.run?.status));
     assert.equal(result.run.status, outcome);
@@ -3206,7 +3206,7 @@ test('completed Provider cleanup failures preserve the original diagnostics and 
     t.after(() => actor.dispose());
     await actor.submit(purpose === 'agent'
       ? messageCommand(sessionId, 'command:start', 'Answer the question.')
-      : { schemaVersion: 'deepcode.command.v3', type: 'context.focus', sessionId,
+      : { schemaVersion: 'achbit.command.v3', type: 'context.focus', sessionId,
           commandId: 'command:focus', task: 'Summarize the known facts.' });
     const result = await waitForProjection(actor, value => ['failed', 'indeterminate'].includes(value.run?.status));
     assert.equal(result.run.status, 'failed');
@@ -3241,10 +3241,10 @@ test('completed Provider cancellation preserves pure cancellation and independen
     t.after(() => actor.dispose());
     await actor.submit(purpose === 'agent'
       ? messageCommand(sessionId, 'command:start', 'Answer the question.')
-      : { schemaVersion: 'deepcode.command.v3', type: 'context.focus', sessionId,
+      : { schemaVersion: 'achbit.command.v3', type: 'context.focus', sessionId,
           commandId: 'command:focus', task: 'Summarize the known facts.' });
     await waitUntil(() => completed, 'Provider completion observed before cancellation');
-    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel',
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
       commandId: 'command:cancel', sessionId, runId });
     const result = await waitForProjection(actor, value => ['failed', 'cancelled'].includes(value.run?.status));
     assert.equal(result.run.status, kind === 'cancel' ? 'cancelled' : 'failed');
@@ -3277,7 +3277,7 @@ test('stopping an active Provider cancels its turn and Run without executing inc
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:start', 'Begin inspection.'));
   const runId = await started.promise;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:stop' });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:stop' });
   const state = await actor.snapshot();
   assert.equal(state.run.status, 'cancelled');
   assert.equal(state.terminalError, null);
@@ -3363,7 +3363,7 @@ test('completed Provider persistence failures stay failed and never resend gener
     t.after(() => actor.dispose());
     await actor.submit(purpose === 'agent'
       ? messageCommand(sessionId, 'command:start', 'Answer the question.')
-      : { schemaVersion: 'deepcode.command.v3', type: 'context.focus', sessionId,
+      : { schemaVersion: 'achbit.command.v3', type: 'context.focus', sessionId,
           commandId: 'command:focus', task: 'Summarize the known facts.' });
     const result = await waitForProjection(actor, value => ['failed', 'indeterminate'].includes(value.run?.status));
     assert.equal(result.run.status, 'failed');
@@ -3806,7 +3806,7 @@ test('one Plan confirmation resumes the same run while progress remains an expli
   ));
   const plan = waiting.pendingPlan;
   const confirmationReply = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'plan.respond',
     commandId: 'command:plan-confirm',
     sessionId,
@@ -3817,7 +3817,7 @@ test('one Plan confirmation resumes the same run while progress remains an expli
   });
   assert.equal(confirmationReply.status, 'accepted');
   const stalePlanReply = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'plan.respond',
     commandId: 'command:plan-stale',
     sessionId,
@@ -4084,7 +4084,7 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
     value.run?.status === 'waiting' && value.pendingPlan !== null
   ));
   const confirmationReply = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'plan.respond',
     commandId: 'command:bash-plan-confirm',
     sessionId,
@@ -4235,7 +4235,7 @@ test('confirmed fs.delete reads targetKind from canonical arguments and complete
     value.run?.status === 'waiting' && value.pendingPlan !== null
   ));
   await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'plan.respond',
     commandId: 'command:delete-plan-confirm',
     sessionId,
@@ -4322,7 +4322,7 @@ test('unfinished Todo preserves final explanation and progress while the run end
   ));
   const plan = waiting.pendingPlan;
   const confirmationReply = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'plan.respond',
     commandId: 'command:plan-confirm',
     sessionId,
@@ -4489,7 +4489,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
         'Plan proposals preserve the independent Todo labels and observed progress until the user decides');
       assert.equal(executions.length, 1, 'new scope must wait for user confirmation');
     }
-    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: `command:revision-confirm-${revision}`, sessionId,
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', commandId: `command:revision-confirm-${revision}`, sessionId,
       runId: waiting.run.runId, planId: firstId, revision, response: { kind: 'confirm' } });
   }
   const completed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
@@ -4508,7 +4508,7 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
 });
 
 test('runtime instructions use configured aliases and plugin input while control schemas preserve permission boundaries', () => {
-  const stableCore = [{ id: 'deepcode.coding-agent', text: 'Stable core instruction.' }];
+  const stableCore = [{ id: 'achbit.coding-agent', text: 'Stable core instruction.' }];
   const baseConfig = {
     extensionGenerationRef: 'extension-generation:g1',
     selectedPlugins: [{
@@ -4530,12 +4530,12 @@ test('runtime instructions use configured aliases and plugin input while control
   });
 
   const planInstruction = planAsk.find((instruction) => (
-    instruction.id === 'deepcode.workspace-autonomy'
+    instruction.id === 'achbit.workspace-autonomy'
   ))?.text ?? '';
   assert.ok(planInstruction.includes('publish_plan_wire'));
   assert.ok(planInstruction.includes('ask_user_wire'));
   const allowInstruction = allowDelegate.find((instruction) => (
-    instruction.id === 'deepcode.workspace-autonomy'
+    instruction.id === 'achbit.workspace-autonomy'
   ))?.text ?? '';
   assert.ok(allowInstruction.includes('interaction_request'));
   assert.equal(allowInstruction.includes('plan_publish'), false);
@@ -4701,7 +4701,7 @@ test('current Todo state precedes later inserted user input without splitting it
   const runId = 'run:todo-user-boundary';
   const events = [
     {
-      schemaVersion: 'deepcode.session-event.v5',
+      schemaVersion: 'achbit.session-event.v5',
       eventId: 'event:1',
       sessionId,
       sequence: 1,
@@ -4715,7 +4715,7 @@ test('current Todo state precedes later inserted user input without splitting it
       },
     },
     {
-      schemaVersion: 'deepcode.session-event.v5',
+      schemaVersion: 'achbit.session-event.v5',
       eventId: 'event:2',
       sessionId,
       sequence: 2,
@@ -4731,7 +4731,7 @@ test('current Todo state precedes later inserted user input without splitting it
       },
     },
     {
-      schemaVersion: 'deepcode.session-event.v5',
+      schemaVersion: 'achbit.session-event.v5',
       eventId: 'event:3',
       sessionId,
       sequence: 3,
@@ -4748,7 +4748,7 @@ test('current Todo state precedes later inserted user input without splitting it
       },
     },
     {
-      schemaVersion: 'deepcode.session-event.v5',
+      schemaVersion: 'achbit.session-event.v5',
       eventId: 'event:4',
       sessionId,
       sequence: 4,
@@ -4764,7 +4764,7 @@ test('current Todo state precedes later inserted user input without splitting it
       },
     },
     {
-      schemaVersion: 'deepcode.session-event.v5',
+      schemaVersion: 'achbit.session-event.v5',
       eventId: 'event:5',
       sessionId,
       sequence: 5,
@@ -4778,7 +4778,7 @@ test('current Todo state precedes later inserted user input without splitting it
       },
     },
     {
-      schemaVersion: 'deepcode.session-event.v5',
+      schemaVersion: 'achbit.session-event.v5',
       eventId: 'event:6',
       sessionId,
       sequence: 6,
@@ -4875,7 +4875,7 @@ test('an interaction response is inserted after its tool result and a stale seco
   ));
   const interaction = waiting.pendingInteraction;
   const accepted = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'interaction.respond',
     commandId: 'command:interaction-accepted',
     sessionId,
@@ -4885,7 +4885,7 @@ test('an interaction response is inserted after its tool result and a stale seco
   });
   assert.equal(accepted.status, 'accepted');
   const stale = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'interaction.respond',
     commandId: 'command:interaction-stale',
     sessionId,
@@ -5012,7 +5012,7 @@ async function verifyExplicitFocusCompaction() {
   await waitForProjection(actor, (value) => value.run?.status === 'completed');
   await waitUntil(() => preparation.released.length === 1, 'focus seed release');
   await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'context.focus',
     commandId: 'command:focus',
     sessionId,
@@ -5158,7 +5158,7 @@ async function verifyWaitingCancelRelease() {
   assert.equal(preparation.released.length, 0);
   assert.equal(await actor.hasActiveWork(), true, 'waiting retains the Host that owns the run bindings');
   const cancelReply = await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'run.cancel',
     commandId: 'command:cancel',
     sessionId,
@@ -5288,7 +5288,7 @@ async function verifyExecutingToolDisposeCleanup() {
       physicalCleanupComplete = true;
       const record = indeterminateExecutionRecord(request);
       resolveExecution({
-        schemaVersion: 'deepcode.kernel-reply',
+        schemaVersion: 'achbit.kernel-reply',
         type: 'tool.execution',
         requestId: request.requestId,
         callId,
@@ -5296,7 +5296,7 @@ async function verifyExecutingToolDisposeCleanup() {
         record,
       });
       return {
-        schemaVersion: 'deepcode.kernel-reply',
+        schemaVersion: 'achbit.kernel-reply',
         type: 'tool.cancelled',
         requestId: 'kernel-cancel:dispose-read',
         callId,
@@ -5439,7 +5439,7 @@ test('the real Session bridge persists model commands and passes effort through 
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const child = spawn(process.execPath, [fileURLToPath(new URL('../dist/sessionServiceBridge.js', import.meta.url))], {
-    env: { ...process.env, DEEPCODE_LOCAL_AGENT_API_BASE: `http://127.0.0.1:${server.address().port}`, DEEPCODE_LOCAL_AGENT_TOKEN: 'fixture-token' },
+    env: { ...process.env, ACHBIT_LOCAL_AGENT_API_BASE: `http://127.0.0.1:${server.address().port}`, ACHBIT_LOCAL_AGENT_TOKEN: 'fixture-token' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stderr = '';
@@ -5453,7 +5453,7 @@ test('the real Session bridge persists model commands and passes effort through 
       assert.equal(frame.done, false, stderr);
       const value = JSON.parse(frame.value);
       if (value.type !== 'session.notification') return value;
-      assert.equal(value.protocolVersion, 'deepcode.local-agent');
+      assert.equal(value.protocolVersion, 'achbit.local-agent');
       notifications.push(value.notification);
     }
   };
@@ -5467,14 +5467,14 @@ test('the real Session bridge persists model commands and passes effort through 
   let next = 0;
   const send = async (operation, data) => {
     const requestId = `bridge-request:${++next}`;
-    child.stdin.write(`${JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId, operation, data })}\n`);
+    child.stdin.write(`${JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId, operation, data })}\n`);
     const reply = await nextReply();
     assert.equal(reply.requestId, requestId);
     return reply;
   };
   // A request at the frame limit and another valid request may share a pipe write.
   // The limit belongs to each JSON line, not to an OS read or to the trailing LF.
-  const fullRequest = { protocolVersion: 'deepcode.local-agent', requestId: 'bridge-limit', operation: 'health', data: { padding: '' } };
+  const fullRequest = { protocolVersion: 'achbit.local-agent', requestId: 'bridge-limit', operation: 'health', data: { padding: '' } };
   fullRequest.data.padding = 'x'.repeat(1024 * 1024 - Buffer.byteLength(JSON.stringify(fullRequest)));
   const encodedFull = JSON.stringify(fullRequest);
   assert.equal(Buffer.byteLength(encodedFull), 1024 * 1024);
@@ -5484,7 +5484,7 @@ test('the real Session bridge persists model commands and passes effort through 
   assert.ok(healthReplies.every((reply) => reply.ok && reply.data.state === 'ready'));
   const sessionId = 'session:bridge-settings';
   assert.equal((await send('createSession', { sessionId, displayTitle: 'Bridge fixture', workspaceBindings: [] })).ok, true);
-  const command = { schemaVersion: 'deepcode.command.v3', type: 'session.model-settings.set', commandId: 'command:wire-settings', sessionId, settings: { profileId: 'profile:wire', reasoningEffortOverride: 'medium' } };
+  const command = { schemaVersion: 'achbit.command.v3', type: 'session.model-settings.set', commandId: 'command:wire-settings', sessionId, settings: { profileId: 'profile:wire', reasoningEffortOverride: 'medium' } };
   const saved = await send('submit', { command });
   assert.equal(saved.ok, true, JSON.stringify(saved));
   const projection = (await send('snapshot', { sessionId })).data;
@@ -5495,14 +5495,14 @@ test('the real Session bridge persists model commands and passes effort through 
   assert.ok(notifications.every(value => !('content' in value) && !('messages' in value)));
   assert.equal(prepared.length, 0);
   for (const type of ['message.submit', 'context.focus']) {
-    const reply = await send('submit', { command: { schemaVersion: 'deepcode.command.v3', type, commandId: `command:${type}`, sessionId, [type === 'message.submit' ? 'text' : 'task']: 'Inspect source.', reasoningEffortOverride: 'low' } });
+    const reply = await send('submit', { command: { schemaVersion: 'achbit.command.v3', type, commandId: `command:${type}`, sessionId, [type === 'message.submit' ? 'text' : 'task']: 'Inspect source.', reasoningEffortOverride: 'low' } });
     assert.equal(reply.ok, false);
     assert.deepEqual(reply.error, { code: 'fixture_prepare_boundary', message: 'Preparation reached; no Provider is started.' });
   }
   assert.deepEqual(prepared.map((request) => [request.profileId, request.reasoningEffortOverride]), [['profile:wire', 'low'], ['profile:wire', 'low']]);
   const heldSessionId = 'session:bridge-held';
   assert.equal((await send('createSession', { sessionId: heldSessionId, displayTitle: 'Held preparation', workspaceBindings: [] })).ok, true);
-  child.stdin.write(`${JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: 'bridge-held', operation: 'submit',
+  child.stdin.write(`${JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: 'bridge-held', operation: 'submit',
     data: { command: messageCommand(heldSessionId, 'command:bridge-held', 'Prepare this run.') } })}\n`);
   await waitUntil(() => prepared.some((request) => request.sessionId === heldSessionId), 'one Session holds its prepare request');
   // Independent Session reads and commands must finish before that preparation.
@@ -5536,7 +5536,7 @@ test('reopening a run waiting for Plan confirmation restores its original effort
   await actor.submit({ ...messageCommand(sessionId, 'command:plan-effort', 'Plan the inspection.', 'profile:one'), reasoningEffortOverride: 'max' });
   const waiting = await waitForProjection(actor, (value) => value.run?.status === 'waiting');
   assert.equal(waiting.run.reasoningEffort, 'max');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.model-settings.set', sessionId, commandId: 'command:change-waiting', settings: { profileId: 'profile:one', reasoningEffortOverride: 'low' } });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.model-settings.set', sessionId, commandId: 'command:change-waiting', settings: { profileId: 'profile:one', reasoningEffortOverride: 'low' } });
   await actor.dispose();
   const reopened = actorWith(journal, sessionId, provider, emptyKernel(), preparation.port, 'plan-effort-reopened');
   await reopened.recover();
@@ -5777,7 +5777,7 @@ for (const outcome of ['failed', 'cancelled']) test(`an unfinished plan preview 
   t.after(() => actor.dispose());
   await actor.submit(messageCommand(sessionId, 'command:begin', 'Plan this inspection.'));
   const streaming = await waitForProjection(actor, (p) => p.assistantDraft?.planPreview?.title === 'Unfinished');
-  if (outcome === 'cancelled') await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId: streaming.run.runId, commandId: 'command:cancel-preview' });
+  if (outcome === 'cancelled') await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId, runId: streaming.run.runId, commandId: 'command:cancel-preview' });
   else release();
   // An intentional stop cancels the draft; unrelated Provider failures remain errors.
   const settled = await waitForProjection(actor, (p) => p.run?.status === outcome);
@@ -6069,7 +6069,7 @@ test('a Kernel input rejection can request confirmation and resume the same run'
   const kernel = emptyKernel({ async execute(request) {
     calls++;
     const rejection = Object.fromEntries(['sessionId', 'runId', 'extensionGenerationRef', 'kernelCatalogSnapshotRef', 'toolBindingRef', 'callId', 'attemptId', 'toolName', 'input'].map(key => [key, request[key]]));
-    return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
       callId: request.callId, status: 'inputRejected', rejection: { ...rejection, rejectedAt: '2026-09-18T00:00:00Z', error: originalError } };
   } });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
@@ -6096,7 +6096,7 @@ test('a Kernel input rejection can request confirmation and resume the same run'
   assert.equal(waiting.pendingInteraction.kind, 'confirmation');
   assert.equal(waiting.pendingApproval, null);
   assert.equal(turns, 2);
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'interaction.respond', commandId: 'command:confirm',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'interaction.respond', commandId: 'command:confirm',
     sessionId, runId: waiting.run.runId, interactionId: waiting.pendingInteraction.interactionId, response: 'Use a working copy' });
   const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
   assert.equal(completed.run.runId, waiting.run.runId);
@@ -6210,7 +6210,7 @@ test('explicit GUI rebind preserves waiting and uses the new catalog only for su
   t.after(() => actor.dispose());
   await actor.submit({ ...messageCommand(sessionId, 'command:start', 'Wait before using a new GUI.'), hostBinding: oldBinding });
   const waiting = await waitForProjection(actor, p => p.run?.status === 'waiting');
-  const command = { schemaVersion: 'deepcode.command.v3', type: 'run.host.rebind', commandId: 'command:rebind',
+  const command = { schemaVersion: 'achbit.command.v3', type: 'run.host.rebind', commandId: 'command:rebind',
     sessionId, runId: waiting.run.runId, expectedHostBinding: oldBinding, hostBinding: newBinding };
   const stale = await actor.submit({ ...command, commandId: 'command:stale', expectedHostBinding: newBinding });
   assert.equal(stale.error.code, 'host_rebind_target_changed');
@@ -6221,7 +6221,7 @@ test('explicit GUI rebind preserves waiting and uses the new catalog only for su
   assert.deepEqual(rebound.run.hostBinding, newBinding);
   assert.deepEqual(rebound.pendingInteraction, waiting.pendingInteraction);
   assert.equal(requests.length, 1, 'rebind does not answer, resume or replay');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'interaction.respond', commandId: 'command:answer',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'interaction.respond', commandId: 'command:answer',
     sessionId, runId: waiting.run.runId, interactionId: waiting.pendingInteraction.interactionId, response: 'Continue.' });
   await waitForProjection(actor, p => p.run?.status === 'completed');
   assert.equal(executions.length, 1);

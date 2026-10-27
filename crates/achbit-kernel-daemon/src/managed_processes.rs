@@ -219,7 +219,7 @@ impl Jobs {
         });
         let job_id = id.clone();
         let handle = std::thread::Builder::new()
-            .name("deepcode-process".into())
+            .name("achbit-process".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     execute(cancellation, progress)

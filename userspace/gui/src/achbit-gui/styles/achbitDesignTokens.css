@@ -1,4 +1,4 @@
-:root[data-product='deepcode-gui'] {
+:root[data-product='achbit-gui'] {
   /* Color values are registered in config/ui/palette.json. */
   color-scheme: light;
   --dc-background: var(--dc-theme-light-background);
@@ -71,13 +71,13 @@
 }
 
 /* The native macOS caption occupies the first 32px; custom chrome has no leading window buttons. */
-:root[data-product='deepcode-gui'][data-deepcode-window-chrome='nativeOverlay'] {
+:root[data-product='achbit-gui'][data-achbit-window-chrome='nativeOverlay'] {
   --dc-navigation-inset: 84px;
   --dc-navigation-controls-height: 32px;
 }
 
-:root[data-product='deepcode-gui'][data-theme='dark'],
-:root[data-product='deepcode-gui'][data-theme='achbit-gui-dark'] {
+:root[data-product='achbit-gui'][data-theme='dark'],
+:root[data-product='achbit-gui'][data-theme='achbit-gui-dark'] {
   color-scheme: dark;
   --dc-background: var(--dc-theme-dark-background);
   --dc-sidebar: var(--dc-theme-dark-sidebar);
@@ -104,52 +104,52 @@
   --dc-shadow-inset: var(--dc-theme-dark-shadow-inset);
 }
 
-:root[data-product='deepcode-gui'][data-accent='blue'] {
+:root[data-product='achbit-gui'][data-accent='blue'] {
   --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-blue-light));
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-blue-light-contrast));
 }
 
-:root[data-product='deepcode-gui'][data-theme='dark'][data-accent='blue'],
-:root[data-product='deepcode-gui'][data-theme='achbit-gui-dark'][data-accent='blue'] {
+:root[data-product='achbit-gui'][data-theme='dark'][data-accent='blue'],
+:root[data-product='achbit-gui'][data-theme='achbit-gui-dark'][data-accent='blue'] {
   --dc-accent: var(--dc-custom-dark-accent, var(--dc-accent-blue-dark));
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-dark-accent-contrast, var(--dc-accent-blue-dark-contrast));
 }
 
-:root[data-product='deepcode-gui'][data-accent='purple'] {
+:root[data-product='achbit-gui'][data-accent='purple'] {
   --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-purple-light));
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-purple-light-contrast));
 }
 
-:root[data-product='deepcode-gui'][data-theme='dark'][data-accent='purple'],
-:root[data-product='deepcode-gui'][data-theme='achbit-gui-dark'][data-accent='purple'] {
+:root[data-product='achbit-gui'][data-theme='dark'][data-accent='purple'],
+:root[data-product='achbit-gui'][data-theme='achbit-gui-dark'][data-accent='purple'] {
   --dc-accent: var(--dc-custom-dark-accent, var(--dc-accent-purple-dark));
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-dark-accent-contrast, var(--dc-accent-purple-dark-contrast));
 }
 
-:root[data-product='deepcode-gui'][data-accent='green'] {
+:root[data-product='achbit-gui'][data-accent='green'] {
   --dc-accent: var(--dc-custom-light-accent, var(--dc-accent-green-light));
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-light-accent-contrast, var(--dc-accent-green-light-contrast));
 }
 
-:root[data-product='deepcode-gui'][data-theme='dark'][data-accent='green'],
-:root[data-product='deepcode-gui'][data-theme='achbit-gui-dark'][data-accent='green'] {
+:root[data-product='achbit-gui'][data-theme='dark'][data-accent='green'],
+:root[data-product='achbit-gui'][data-theme='achbit-gui-dark'][data-accent='green'] {
   --dc-accent: var(--dc-custom-dark-accent, var(--dc-accent-green-dark));
   --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 12%, transparent);
   --dc-accent-border: color-mix(in srgb, var(--dc-accent) 30%, transparent);
   --dc-accent-contrast: var(--dc-custom-dark-accent-contrast, var(--dc-accent-green-dark-contrast));
 }
 
-:root[data-product='deepcode-gui'] body {
+:root[data-product='achbit-gui'] body {
   background: var(--dc-background);
   color: var(--dc-foreground);
   font-family: var(--dc-font-ui);
@@ -158,15 +158,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-product='deepcode-gui'] *,
-  :root[data-product='deepcode-gui'] *::before,
-  :root[data-product='deepcode-gui'] *::after {
+  :root[data-product='achbit-gui'] *,
+  :root[data-product='achbit-gui'] *::before,
+  :root[data-product='achbit-gui'] *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  :root[data-product='deepcode-gui'] .local-agent__composer::before {
+  :root[data-product='achbit-gui'] .local-agent__composer::before {
     transform: none !important;
     scale: none !important;
   }

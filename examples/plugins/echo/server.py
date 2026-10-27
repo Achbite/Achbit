@@ -20,7 +20,7 @@ for line in sys.stdin:
     response = {"jsonrpc": "2.0", "id": request["id"]}
     if method == "initialize":
         result = {"protocolVersion": params["protocolVersion"], "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "DeepCode Echo Example", "version": "1.0.0"}}
+                  "serverInfo": {"name": "Achbit Echo Example", "version": "1.0.0"}}
     elif method == "tools/list":
         result = {"tools": [TOOL]}
     elif method == "tools/call" and params.get("name") == "echo":

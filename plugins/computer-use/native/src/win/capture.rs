@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn primary_display_is_archived_within_the_edge_limit() {
-        let directory = std::env::temp_dir().join(format!("deepcode-cu-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("achbit-cu-{}", std::process::id()));
         let image = primary_display().unwrap();
         let (path, width, height) = save(&image, &directory, "capture-test").unwrap();
         assert!(width.max(height) <= protocol::IMAGE_EDGE_LIMIT);

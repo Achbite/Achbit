@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "DeepCode local Kernel tool catalog and argument normalization."
+description = "Achbit local Kernel tool catalog and argument normalization."
 publish = false
 
 [dependencies]

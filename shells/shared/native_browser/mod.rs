@@ -222,7 +222,7 @@ fn serve_connection(app: tauri::AppHandle, mut stream: TcpStream, token: &str) {
 }
 
 #[tauri::command]
-pub fn deepcode_browser_host(
+pub fn achbit_browser_host(
     app: tauri::AppHandle,
     webview: tauri::Webview,
 ) -> Result<HostBinding, String> {
@@ -231,7 +231,7 @@ pub fn deepcode_browser_host(
 }
 
 #[tauri::command]
-pub async fn deepcode_browser_command(
+pub async fn achbit_browser_command(
     app: tauri::AppHandle,
     webview: tauri::Webview,
     binding: Value,
@@ -292,7 +292,7 @@ fn page_state(app: &tauri::AppHandle, preview_id: &str) -> Result<Page, String> 
 }
 
 fn publish(app: &tauri::AppHandle, page: &Page) {
-    let _ = app.emit_to("main", "deepcode:browser-page", page);
+    let _ = app.emit_to("main", "achbit:browser-page", page);
 }
 
 /// Navigation belongs to the native page, independently of the selected Reader.
@@ -379,7 +379,7 @@ async fn activate(app: tauri::AppHandle, page: Page) -> Result<Value, String> {
         current.surface.reason = "mounting".into();
         page = current.clone();
     }
-    app.emit_to("main", "deepcode:browser-activate", &page)
+    app.emit_to("main", "achbit:browser-activate", &page)
         .map_err(|error| error.to_string())?;
     let app_for_wait = app.clone();
     let page = tauri::async_runtime::spawn_blocking(move || {
@@ -506,7 +506,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         let view = app
             .get_webview(&binding.window_label)
             .ok_or("native_browser_window_closed")?;
-        return eval(view, "(()=>{if(!window.__DEEPCODE_INTERFACE__)throw Error('Interface refresh is unavailable in this document');return window.__DEEPCODE_INTERFACE__.refresh()})()".into()).await;
+        return eval(view, "(()=>{if(!window.__ACHBIT_INTERFACE__)throw Error('Interface refresh is unavailable in this document');return window.__ACHBIT_INTERFACE__.refresh()})()".into()).await;
     }
     if action == "list" {
         let pages = app
@@ -529,7 +529,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         let opening = state.opening.lock().await;
         let service_id = input["serviceId"].as_str().map(str::to_string);
         let url = if action == "openSelf" {
-            tauri::Url::parse("deepcode-gui://localhost/index.html")
+            tauri::Url::parse("achbit-gui://localhost/index.html")
                 .map_err(|error| error.to_string())?
         } else if let Some(service_id) = service_id.as_deref() {
             let state = app.state::<NativeBrowser>();
@@ -550,7 +550,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             page_url(&input)?
         };
         let kind = if action == "openSelf" {
-            "deepcode"
+            "achbit"
         } else {
             "page"
         };
@@ -630,7 +630,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                 let mut builder =
                     tauri::webview::WebviewBuilder::new(&id_for_create, WebviewUrl::External(url))
                         .focused(false)
-                        .initialization_script("window.__DEEPCODE_BROWSER_PREVIEW__ = true;")
+                        .initialization_script("window.__ACHBIT_BROWSER_PREVIEW__ = true;")
                         .data_directory(
                             app_for_create
                                 .state::<NativeBrowser>()
@@ -656,7 +656,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                         });
                 if let Some(script) = self_bootstrap {
                     builder = builder.initialization_script(script).on_navigation(|url| {
-                        (url.scheme() == "deepcode-gui" && url.host_str() == Some("localhost"))
+                        (url.scheme() == "achbit-gui" && url.host_str() == Some("localhost"))
                             || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
                     });
                 }
@@ -761,16 +761,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             return eval(view, format!("{}({options})", include_str!("review.js"))).await;
         }
         "reviewRead" => {
-            return eval(view, "JSON.parse(JSON.stringify({active:Boolean(window.__deepcodeReview?.active),exitReason:window.__deepcodeReview?.exitReason??null,pending:window.__deepcodeReview?.pending??null}))".into()).await;
+            return eval(view, "JSON.parse(JSON.stringify({active:Boolean(window.__achbitReview?.active),exitReason:window.__achbitReview?.exitReason??null,pending:window.__achbitReview?.pending??null}))".into()).await;
         }
         "reviewAcknowledge" => {
             let id =
                 serde_json::to_string(string(&input, "id")?).map_err(|error| error.to_string())?;
             return eval(
                 view,
-                format!(
-                    "(()=>{{window.__deepcodeReview?.acknowledge({id});return {{ok:true}}}})()"
-                ),
+                format!("(()=>{{window.__achbitReview?.acknowledge({id});return {{ok:true}}}})()"),
             )
             .await;
         }
@@ -779,7 +777,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                 serde_json::to_string(&input["reviewId"]).map_err(|error| error.to_string())?;
             return eval(
                 view,
-                format!("(()=>{{const state=window.__deepcodeReview;if(state?.reviewId==={review_id})state.dispose();return {{active:Boolean(window.__deepcodeReview?.active)}}}})()"),
+                format!("(()=>{{const state=window.__achbitReview;if(state?.reviewId==={review_id})state.dispose();return {{active:Boolean(window.__achbitReview?.active)}}}})()"),
             )
             .await;
         }
@@ -826,8 +824,8 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             view.set_focus().map_err(|error| error.to_string())?;
         }
         "navigate" => {
-            if page.kind == "deepcode" {
-                return Err("The DeepCode preview remains connected to its original Host; open a separate page to navigate.".into());
+            if page.kind == "achbit" {
+                return Err("The Achbit preview remains connected to its original Host; open a separate page to navigate.".into());
             }
             let url = page_url(&input)?;
             {
@@ -1531,6 +1529,6 @@ mod tests {
             &Some("service:one".into()),
             "page"
         ));
-        assert!(!page.matches_target(&page.session_id, &page.url, &None, "deepcode"));
+        assert!(!page.matches_target(&page.session_id, &page.url, &None, "achbit"));
     }
 }

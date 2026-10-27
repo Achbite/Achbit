@@ -1,5 +1,5 @@
 {
-  "id": "deepcode.reading-style",
+  "id": "achbit.reading-style",
   "name": "Reading Style",
   "entry": "index.js",
   "slots": ["theme", "document.html"]

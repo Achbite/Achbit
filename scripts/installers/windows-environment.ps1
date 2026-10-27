@@ -13,7 +13,7 @@ function Test-WebView2 {
 
 if (-not $Remove) {
     if (-not (Test-WebView2)) {
-        $scratch = Join-Path ([IO.Path]::GetTempPath()) ('DeepCode-setup-' + [Guid]::NewGuid())
+        $scratch = Join-Path ([IO.Path]::GetTempPath()) ('Achbit-setup-' + [Guid]::NewGuid())
         [IO.Directory]::CreateDirectory($scratch) | Out-Null
         try {
             $bootstrap = Join-Path $scratch 'MicrosoftEdgeWebview2Setup.exe'
@@ -27,7 +27,7 @@ if (-not $Remove) {
     # The Host owns platform directory creation, configuration validation and backups.
     & (Join-Path $programRoot 'achbit-kernel.exe') --prepare-user-config
     if ($LASTEXITCODE -ne 0) {
-        throw "DeepCode user configuration preparation failed (exit $LASTEXITCODE)."
+        throw "Achbit user configuration preparation failed (exit $LASTEXITCODE)."
     }
 }
 

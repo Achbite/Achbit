@@ -47,7 +47,7 @@ unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObjec
     };
     let _: () = msg_send![&*panel, setSharingType:sharing_type];
     if symbol == "cursorarrow" {
-        let title = NSString::from_str("DeepCode Agent Pointer");
+        let title = NSString::from_str("Achbit Agent Pointer");
         let _: () = msg_send![&*panel, setTitle:&*title];
         dc_computer_install_pointer_content(&*panel);
         return Ok(panel);

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Clean DeepCode development caches and dependency artifacts.
+# Clean Achbit development caches and dependency artifacts.
 #
-# Default scope is project-local and DeepCode-specific:
-#   - DeepCode dev container/image/named volumes
+# Default scope is project-local and Achbit-specific:
+#   - Achbit dev container/image/named volumes
 #   - repo-local node_modules, pnpm store, Cargo target, build cache, dist outputs
 #   - Linux/Windows package build outputs while preserving package-local user data
 #   - macOS package build outputs while preserving package-local user data
@@ -32,7 +32,7 @@ Usage:
   scripts/clean-caches.sh [options]
 
 Default behavior:
-  Dry-run only. Shows the DeepCode project caches that would be removed.
+  Dry-run only. Shows the Achbit project caches that would be removed.
 
 Execute:
   scripts/clean-caches.sh --yes
@@ -40,7 +40,7 @@ Execute:
 Options:
   --yes                         Execute cleanup. Without this flag, the script is dry-run.
   -n, --dry-run                 Show cleanup actions without deleting anything.
-  --skip-docker                 Do not remove DeepCode dev container/image/named volumes.
+  --skip-docker                 Do not remove Achbit dev container/image/named volumes.
   --skip-local                  Do not remove repo-local dependency/build caches.
   --include-macos-package       Remove bin/macos-arm64 product build outputs (default; explicit alias).
   --skip-macos-package          Do not remove bin/macos-arm64 product build outputs.
@@ -135,15 +135,13 @@ command_exists() {
 
 process_matches_path() {
   local target="$1"
-  ps -axo pid=,command= | DEEPCODE_PROCESS_TARGET="$target" \
-    awk 'index($0, ENVIRON["DEEPCODE_PROCESS_TARGET"]) > 0 { print }'
+  ps -axo pid=,command= | ACHBIT_PROCESS_TARGET="$target" \
+    awk 'index($0, ENVIRON["ACHBIT_PROCESS_TARGET"]) > 0 { print }'
 }
 
 fail_if_macos_package_running() {
   local macos_dir="$ROOT_DIR/bin/macos-arm64"
   local targets=(
-    "$macos_dir/DeepCode.app/Contents/MacOS/DeepCode"
-    "$macos_dir/DeepCode.app/Contents/MacOS/achbit-kernel"
     "$macos_dir/Achbit.app/Contents/MacOS/Achbit"
     "$macos_dir/Achbit.app/Contents/MacOS/achbit-kernel"
   )
@@ -153,18 +151,18 @@ fail_if_macos_package_running() {
     matches="$(process_matches_path "$target" || true)"
     if [ -n "$matches" ]; then
       printf '%s\n' "$matches" >&2
-      fail "packaged DeepCode process is still running; quit the app before cleaning macOS package outputs."
+      fail "packaged Achbit process is still running; quit the app before cleaning macOS package outputs."
     fi
   done
 }
 
-clean_deepcode_docker() {
+clean_achbit_docker() {
   if [ "$include_docker" -ne 1 ]; then
-    log "skip DeepCode Docker resources"
+    log "skip Achbit Docker resources"
     return 0
   fi
   if ! command_exists docker; then
-    warn "docker is not available; skip DeepCode Docker resources"
+    warn "docker is not available; skip Achbit Docker resources"
     return 0
   fi
 
@@ -345,7 +343,7 @@ if [ "$include_docker_builder" -eq 1 ] || [ "$include_docker_system" -eq 1 ]; th
   warn "global Docker pruning can affect unrelated projects"
 fi
 
-clean_deepcode_docker
+clean_achbit_docker
 clean_repo_local
 clean_macos_package_outputs
 clean_host_global

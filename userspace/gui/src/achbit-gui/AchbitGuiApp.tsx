@@ -188,7 +188,7 @@ const AchbitGuiApp: React.FC = () => {
   }, [language, catalogStartup, recordRuntimeReady, setApiStatus, setErrorMessage, setServerVersion]);
 
   useEffect(() => {
-    document.documentElement.dataset.product = 'deepcode-gui';
+    document.documentElement.dataset.product = 'achbit-gui';
   }, []);
 
   useEffect(() => {
@@ -249,7 +249,7 @@ const AchbitGuiApp: React.FC = () => {
   useEffect(() => {
     setActiveUiLanguage(language);
     document.documentElement.lang = language;
-    window.localStorage.setItem('deepcode.ui.language', language);
+    window.localStorage.setItem('achbit.ui.language', language);
   }, [language]);
 
   useEffect(() => {

@@ -15,7 +15,7 @@ interface KernelHostTarget {
 }
 
 interface KernelHostBootstrap {
-  schemaVersion: 'deepcode.host-ui-bootstrap';
+  schemaVersion: 'achbit.host-ui-bootstrap';
   host: string;
   port: string;
   uiToken: string;
@@ -26,29 +26,29 @@ interface KernelHostBootstrap {
 
 declare global {
   interface Window {
-    __DEEPCODE_HOST_BOOT__?: KernelHostBootstrap;
+    __ACHBIT_HOST_BOOT__?: KernelHostBootstrap;
   }
 }
 
 function consumeTrustedBootstrap(): KernelHostTarget | null {
   if (typeof window === 'undefined') return null;
-  const boot = window.__DEEPCODE_HOST_BOOT__;
-  Reflect.deleteProperty(window, '__DEEPCODE_HOST_BOOT__');
+  const boot = window.__ACHBIT_HOST_BOOT__;
+  Reflect.deleteProperty(window, '__ACHBIT_HOST_BOOT__');
   const trustedDesktopOrigin = (
     (
-      window.location.protocol === 'deepcode-gui:'
+      window.location.protocol === 'achbit-gui:'
       && window.location.hostname === 'localhost'
     )
     || (
       window.location.protocol === 'http:'
       && [
-        'deepcode-gui.localhost',
+        'achbit-gui.localhost',
       ].includes(window.location.hostname)
     )
   );
   if (
     !boot ||
-    boot.schemaVersion !== 'deepcode.host-ui-bootstrap' ||
+    boot.schemaVersion !== 'achbit.host-ui-bootstrap' ||
     !trustedDesktopOrigin
   ) {
     return null;
@@ -72,7 +72,7 @@ function consumeTrustedBootstrap(): KernelHostTarget | null {
 
 const trustedTarget = consumeTrustedBootstrap();
 if (typeof document !== 'undefined') {
-  document.documentElement.dataset.deepcodeWindowChrome = trustedTarget?.windowChrome ?? 'custom';
+  document.documentElement.dataset.achbitWindowChrome = trustedTarget?.windowChrome ?? 'custom';
 }
 const UNAVAILABLE_LOOPBACK_ORIGIN = 'http://127.0.0.1:0';
 
@@ -99,7 +99,7 @@ export function getKernelApiBase(): string {
 
 export function getHostConnectionHeaders(): Record<string, string> {
   return trustedTarget
-    ? { 'x-deepcode-host-ui-token': trustedTarget.uiToken }
+    ? { 'x-achbit-host-ui-token': trustedTarget.uiToken }
     : {};
 }
 

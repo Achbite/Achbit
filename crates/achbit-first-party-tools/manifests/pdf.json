@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "deepcode.first-party-plugin.v1",
+  "schemaVersion": "achbit.first-party-plugin.v1",
   "id": "pdf",
   "uri": "plugin://pdf@first-party",
   "displayName": "PDF 阅读",

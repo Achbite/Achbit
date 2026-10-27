@@ -86,7 +86,7 @@ for (const withOutput of [false, true]) test(`cancelled Shell preserves its term
         ...record, error: { code: 'unexpected_error', message: 'Cancelled must not carry an error.' },
       }));
       finishExecution(reply);
-      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:shell',
+      return { schemaVersion: 'achbit.kernel-reply', type: 'tool.cancelled', requestId: 'cancel:shell',
         callId, attemptId, status: 'cancelled', record };
     },
     async readRecord() { return record ?? null; },
@@ -95,7 +95,7 @@ for (const withOutput of [false, true]) test(`cancelled Shell preserves its term
   await actor.submit(messageCommand(sessionId, 'command:shell-start', 'Run the long Shell command.'));
   await waitUntil(() => execution !== undefined, 'Shell execution');
   const runId = (await actor.snapshot()).run.runId;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:shell-stop' });
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId, runId, commandId: 'command:shell-stop' });
   const projection = await waitForProjection(actor, state => state.run?.status === 'cancelled');
   assert.equal(projection.terminalError, null);
   const activity = projection.activities.find(item => item.callId === execution.callId);
@@ -235,7 +235,7 @@ test('permissions stay in their continuous activity group before and after the t
     else yield providerEvent(request.requestId, 'text.delta', { text: 'Finished.' });
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
-    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution',
+    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution',
       requestId: request.requestId, callId: request.callId, status: 'approvalRequired', approvalId: 'approval:history',
       preview: { summary: 'Allow access to https://example.test?', effects: ['external'], logicalTargets: ['https://example.test'] } };
     const reply = completedExecutionReply(request, { content: 'Result' });
@@ -252,7 +252,7 @@ test('permissions stay in their continuous activity group before and after the t
   assert.equal(record.status, 'waiting');
   assert.equal(pendingRows.at(-1).type, 'toolGroup');
   const { approvalId, callId, runId } = waiting.pendingApproval;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', commandId: 'command:allow',
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', commandId: 'command:allow',
     sessionId, approvalId, callId, runId, decision: 'allow' });
   const completed = await waitForProjection(actor, (state) => state.run?.status === 'completed');
   const rows = projectionItems(await decodeGuiProjection(completed));
@@ -448,7 +448,7 @@ test('reader text decoding preserves Unicode BOM documents and rejects unsupport
 test('local links preserve locations, workspace roots and unambiguous readable labels', async (t) => {
   const { parseLocalTarget, bindLocalTarget, readableResourceLinks } = await loadGuiModule(t, '/src/components/local-agent/resourceLinks.ts');
   const roots = [{ workspaceId: 'workspace:main', root: '/project/测试 项目' }];
-  const root = parseLocalTarget('deepcode-gui://localhost/project/%E6%B5%8B%E8%AF%95%20%E9%A1%B9%E7%9B%AE');
+  const root = parseLocalTarget('achbit-gui://localhost/project/%E6%B5%8B%E8%AF%95%20%E9%A1%B9%E7%9B%AE');
   assert.equal(bindLocalTarget(root, roots).logicalPath, '.');
   assert.deepEqual(parseLocalTarget('file:///project/测试%20项目/src/main.rs#L12C3'), { path: '/project/测试 项目/src/main.rs', absolute: true, line: 12, column: 3 });
   assert.equal(bindLocalTarget(parseLocalTarget('README.md:12'), roots).logicalPath, 'README.md');
@@ -522,7 +522,7 @@ test('document Plan scope and completed artifacts pass through Session to the GU
   const { planOperationDetail } = await loadGuiModule(t, '/src/components/local-agent/planReview.ts');
   assert.equal(planOperationDetail(waiting.pendingPlan.mutationManifest[0], 'zh-CN'), '生成文档 · 报告.pdf');
   assert.equal(planOperationDetail(waiting.pendingPlan.mutationManifest[0], 'en-US'), 'Render document · 报告.pdf');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: 'command:document-confirm', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', commandId: 'command:document-confirm', sessionId,
     runId: waiting.run.runId, planId: waiting.pendingPlan.planId, revision: waiting.pendingPlan.revision, response: { kind: 'confirm' } });
   const completed = await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.deepEqual((await decodeGuiProjection(completed)).artifacts, [{ ...artifact,
@@ -696,8 +696,8 @@ test('Windows sandbox initialization uses the injected Host origin and preserves
   t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
   const uiToken = `dcui_${'12'.repeat(32)}`;
   globalThis.window = {
-    location: { protocol: 'http:', hostname: 'deepcode-gui.localhost', origin: 'http://deepcode-gui.localhost' },
-    __DEEPCODE_HOST_BOOT__: { schemaVersion: 'deepcode.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken, windowChrome: 'custom' },
+    location: { protocol: 'http:', hostname: 'achbit-gui.localhost', origin: 'http://achbit-gui.localhost' },
+    __ACHBIT_HOST_BOOT__: { schemaVersion: 'achbit.host-ui-bootstrap', host: '127.0.0.1', port: '49123', uiToken, windowChrome: 'custom' },
   };
   const [{ initializeWorkspaceSandbox }] = await loadGuiModules(t, ['/src/services/apiClient.ts']);
   let calls = 0;
@@ -705,7 +705,7 @@ test('Windows sandbox initialization uses the injected Host origin and preserves
     calls += 1;
     assert.equal(url.href, 'http://127.0.0.1:49123/api/user-settings/workspace-sandbox');
     assert.equal(init.method, 'POST');
-    assert.equal(init.headers['x-deepcode-host-ui-token'], uiToken);
+    assert.equal(init.headers['x-achbit-host-ui-token'], uiToken);
     assert.deepEqual(JSON.parse(init.body), {});
     return Response.json({ ok: false, error: 'workspace_sandbox_setup_failed', message: 'administrator request declined' });
   });
@@ -724,12 +724,12 @@ test('Host workspace initialization preserves the current workspace or opens the
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
   });
   const { initializeHostWorkspace } = await loadGuiModule(t, '/src/services/workspaceInitialization.ts');
-  globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
-  let defaultPath = '/Users/developer/DeepCode workspace';
+  globalThis.document = { documentElement: { dataset: { product: 'achbit-gui' } } };
+  let defaultPath = '/Users/developer/Achbit workspace';
   const calls = [];
   globalThis.window = { __TAURI__: { core: { invoke: async (command) => {
     calls.push(command);
-    assert.equal(command, 'deepcode_default_workspace_path');
+    assert.equal(command, 'achbit_default_workspace_path');
     return defaultPath;
   } } } };
   const workspace = { id: 'workspace:current', name: 'Existing', source: 'directory', sourcePath: null,
@@ -748,10 +748,10 @@ test('Host workspace initialization preserves the current workspace or opens the
   assert.deepEqual(calls.splice(0), ['/api/workspaces/current']);
   current = null;
   await initializeHostWorkspace();
-  assert.deepEqual(calls.splice(0), ['/api/workspaces/current', 'deepcode_default_workspace_path', '/api/workspaces/open']);
+  assert.deepEqual(calls.splice(0), ['/api/workspaces/current', 'achbit_default_workspace_path', '/api/workspaces/open']);
   defaultPath = null;
   await initializeHostWorkspace();
-  assert.deepEqual(calls, ['/api/workspaces/current', 'deepcode_default_workspace_path']);
+  assert.deepEqual(calls, ['/api/workspaces/current', 'achbit_default_workspace_path']);
 });
 
 test('Host workspace initialization propagates the failing request without opening or retrying', async (t) => {
@@ -797,7 +797,7 @@ test('one native reference request returns the actual file or folder kind', asyn
   let calls = 0;
   globalThis.window = { __TAURI__: { core: { invoke: async (command, args) => {
     calls += 1;
-    assert.equal(command, 'deepcode_pick_path');
+    assert.equal(command, 'achbit_pick_path');
     assert.equal(args.options.title, options.title);
     assert.equal(args.options.selectLabel, 'Attach');
     assert.equal(args.options.cancelLabel, 'Cancel');
@@ -1068,7 +1068,7 @@ test('compaction preserves Agent usage and an unreported Agent call clears it wi
   await actor.submit(messageCommand(sessionId, 'command:cache-latest-seed', 'Establish the facts.'));
   await waitForProjection(actor, (value) => value.run?.status === 'completed');
   await actor.submit({
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'context.focus',
     commandId: 'command:cache-latest-focus',
     sessionId,
@@ -1145,7 +1145,7 @@ test('GUI consumes complete phase plans and Todo beyond the former item count', 
   assert.equal(waiting.pendingPlan.steps.length, 13);
   assert.equal(waiting.pendingPlan.mutationManifest.length, 129);
   assert.equal(waiting.todoList, null, 'a proposal cannot seed the active Todo');
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', commandId: 'command:phase-confirm', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', commandId: 'command:phase-confirm', sessionId,
     runId: waiting.run.runId, planId: waiting.pendingPlan.planId, revision: 1, response: { kind: 'confirm' } });
   const confirmed = await waitForProjection(actor, (value) => value.todoList?.items.length === 13);
   assert.deepEqual(await decodeGuiProjection(confirmed), confirmed);
@@ -1695,7 +1695,7 @@ test('cached navigation displays immediately and another session read cannot blo
   await openingTwo;
   assert.equal(store.getState().sessionId, 'session:one');
   assert.equal(store.getState().projection.sessionId, 'session:one');
-  const changed = await actors[0].submit({ schemaVersion: 'deepcode.command.v3', type: 'session.model-settings.set', commandId: 'command:cache-profile', sessionId: 'session:one', settings: { profileId: 'profile:test', reasoningEffortOverride: 'low' } });
+  const changed = await actors[0].submit({ schemaVersion: 'achbit.command.v3', type: 'session.model-settings.set', commandId: 'command:cache-profile', sessionId: 'session:one', settings: { profileId: 'profile:test', reasoningEffortOverride: 'low' } });
   assert.equal(changed.status, 'accepted');
   projections['session:one'] = await actors[0].snapshot();
   await store.getState().refresh();
@@ -1968,9 +1968,9 @@ test('large GUI input uploads the complete text and submits only the resulting r
     assert.equal(command.text, '', 'transport guidance must not replace the displayed user message');
     assert.deepEqual(command.filesystemReferences, [reference]);
     assert.ok(Buffer.byteLength(init.body) < 2000);
-    return Response.json({ ok: true, data: { schemaVersion: 'deepcode.command-reply.v3', commandId: command.commandId, sessionId: command.sessionId, status: 'accepted', revision: 1 } });
+    return Response.json({ ok: true, data: { schemaVersion: 'achbit.command-reply.v3', commandId: command.commandId, sessionId: command.sessionId, status: 'accepted', revision: 1 } });
   });
-  await api.submitLocalAgentCommand({ schemaVersion: 'deepcode.command.v3', type: 'message.submit', commandId: 'command:upload', sessionId: 'session:upload', text: content });
+  await api.submitLocalAgentCommand({ schemaVersion: 'achbit.command.v3', type: 'message.submit', commandId: 'command:upload', sessionId: 'session:upload', text: content });
   assert.equal(seen.length, 2);
 });
 
@@ -2653,7 +2653,7 @@ test('polling and command reconciliation read draft snapshots in order at the sa
       assert.equal(init.signal, undefined, 'view navigation does not own command cancellation');
       commands += 1;
       if (commands === 2) await commandHeld;
-      return Response.json({ ok: true, data: { schemaVersion: 'deepcode.command-reply.v3', sessionId, commandId: 'command:setting', status: 'accepted', revision: base.revision } });
+      return Response.json({ ok: true, data: { schemaVersion: 'achbit.command-reply.v3', sessionId, commandId: 'command:setting', status: 'accepted', revision: base.revision } });
     }
     assert.ok(url.pathname.endsWith('/projection'));
     reads += 1;
@@ -3646,7 +3646,7 @@ test('interface refresh preserves view state and leaves unsaved settings for the
   assert.equal(scheduled.length, 0);
   releaseGuard();
   assert.deepEqual(refreshInterface(), { status: 'scheduled', guards: [] });
-  assert.deepEqual(JSON.parse(saved.get('deepcode:interface-reload')), { reader: { previewId: 'preview-7', scroll: 42 } });
+  assert.deepEqual(JSON.parse(saved.get('achbit:interface-reload')), { reader: { previewId: 'preview-7', scroll: 42 } });
   assert.equal(reloads, 0);
   scheduled.shift()();
   assert.equal(reloads, 1);
@@ -4762,8 +4762,8 @@ test('browser page subscription retains updates during the initial snapshot and 
   t.after(() => { globalThis.window = previousWindow; globalThis.document = previousDocument; });
   let receive, resolveList, unsubscribed = 0;
   const snapshots = [], commands = [];
-  globalThis.document = { documentElement: { dataset: { product: 'deepcode-gui' } } };
-  globalThis.window = { location: { protocol: 'deepcode-gui:', hostname: 'localhost' }, __TAURI__: {
+  globalThis.document = { documentElement: { dataset: { product: 'achbit-gui' } } };
+  globalThis.window = { location: { protocol: 'achbit-gui:', hostname: 'localhost' }, __TAURI__: {
     core: { invoke: async (command, input) => {
       commands.push({ command, input });
       assert.ok(receive, 'events must be subscribed before requesting the snapshot');
@@ -4793,7 +4793,7 @@ test('browser page subscription retains updates during the initial snapshot and 
   assert.equal(snapshots.at(-1).find(page => page.previewId === 'new').status, 'ready');
   receive({ payload: page('original', 'closed') });
   assert.deepEqual(snapshots.at(-1).map(page => page.previewId), ['new']);
-  assert.deepEqual(commands[0], { command: 'deepcode_browser_command', input: { binding, input: { action: 'list' } } });
+  assert.deepEqual(commands[0], { command: 'achbit_browser_command', input: { binding, input: { action: 'list' } } });
   dispose();
   assert.equal(unsubscribed, 1);
   assert.equal(receive, null);
@@ -5045,9 +5045,9 @@ test('approval operation details include file access while automated review is p
   const html = renderToStaticMarkup(createElement(ApprovalOperationDetails, { language: 'en-US', preview: {
     summary: 'Inspect container availability', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'],
     operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps' } },
-    fileAccess: { read: ['/Applications/DeepCode.app'], write: [] },
+    fileAccess: { read: ['/Applications/Achbit.app'], write: [] },
   } }));
-  for (const fact of ['docker ps', '/workspace', 'host', '/Applications/DeepCode.app']) assert.ok(html.includes(fact));
+  for (const fact of ['docker ps', '/workspace', 'host', '/Applications/Achbit.app']) assert.ok(html.includes(fact));
   assert.equal(html.includes('<button'), false, 'facts alone cannot approve an operation');
 });
 
@@ -5087,7 +5087,7 @@ test('subagent quick settings save the active Session, retain other Sessions and
     await createSession(journal, sessionId);
     const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('settings must not call Provider'); } }, emptyKernel(), fakeRunPreparation().port, sessionId);
     actors.set(sessionId, actor);
-    await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.subagent-settings.set', sessionId,
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.subagent-settings.set', sessionId,
       commandId: `${sessionId}:initial-settings`, settings: initial });
   }
   t.after(() => Promise.all([...actors.values()].map(actor => actor.dispose())));

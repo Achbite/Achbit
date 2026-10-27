@@ -111,17 +111,17 @@ test('initial directories bind before run start and Plan still waits for confirm
       assert.equal(waiting.activePlanRef, null);
       assert.deepEqual(waiting.run.workspaceBindings.map(x => x.workspaceId), [workspaceBinding.workspaceId, directory.workspaceId]);
       const plan = waiting.pendingPlan;
-      await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+      await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId,
         commandId: 'command:confirm', runId: plan.runId, planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } });
     } else {
       assert.deepEqual(waiting.pendingPlan.workspaceRequests, [{ workspaceId: reference.workspaceId, rootPath: '/fixture/file-parent' }]);
       assert.equal(waiting.workspaceBindings.some(binding => binding.workspaceId === reference.workspaceId), false);
       const plan = waiting.pendingPlan;
-      const refused = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+      const refused = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId,
         commandId: 'command:unbound-confirm', runId: plan.runId, planId: plan.planId, revision: plan.revision, response: { kind: 'confirm' } });
       assert.equal(refused.status, 'rejected');
       assert.equal(refused.error.code, 'plan_workspace_binding_required');
-      await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId,
+      await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId,
         commandId: 'command:cancel', runId: plan.runId, planId: plan.planId, revision: plan.revision, response: { kind: 'cancel' } });
     }
     const completed = await waitForProjection(actor, value => value.run?.status === (reference.kind === 'file' ? 'cancelled' : 'completed'));
@@ -154,7 +154,7 @@ test('explicit directory attachment updates the active run without changing the 
   t.after(async () => { release.resolve(); await actor.dispose(); });
   await actor.submit(messageCommand(sessionId, 'command:start', 'Read the project.'));
   await waitUntil(() => requests.length === 1, 'first request held');
-  const reply = await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.directory-index.attach', sessionId,
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.directory-index.attach', sessionId,
     commandId: 'command:attach', workspaceBinding: { workspaceId: directory.workspaceId, displayName: directory.displayName } });
   assert.equal(reply.status, 'accepted');
   assert.equal((await actor.snapshot()).run.workspaceBindings.length, 2);
@@ -162,7 +162,7 @@ test('explicit directory attachment updates the active run without changing the 
   await waitForProjection(actor, value => value.run?.status === 'completed');
   assert.deepEqual(executions[0].workspaceBindings, [workspaceBinding.workspaceId]);
   const ended = (await actor.snapshot()).run.workspaceBindings;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'session.directory-index.detach', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.directory-index.detach', sessionId,
     commandId: 'command:detach', workspaceId: directory.workspaceId });
   assert.deepEqual((await actor.snapshot()).workspaceBindings, [workspaceBinding]);
   assert.deepEqual((await actor.snapshot()).run.workspaceBindings, ended, 'later detach must not rewrite a completed run');

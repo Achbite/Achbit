@@ -522,8 +522,7 @@ $$\nabla \cdot \mathbf{F} = \frac{\partial P}{\partial x} + \frac{\partial Q}{\p
 
     #[test]
     fn table_wraps_chinese_and_preserves_all_cells_in_a_narrow_view() {
-        let markdown =
-            "| 名称 | 描述 |\n| --- | --- |\n| DeepCode | 中文开发环境 é |\n| Pi | 终端 |";
+        let markdown = "| 名称 | 描述 |\n| --- | --- |\n| Achbit | 中文开发环境 é |\n| Pi | 终端 |";
         for width in [24, 60] {
             let lines = render(markdown, width, Style::default());
             assert!(
@@ -538,12 +537,12 @@ $$\nabla \cdot \mathbf{F} = \frac{\partial P}{\partial x} + \frac{\partial Q}{\p
                 .chars()
                 .filter(|c| !c.is_whitespace() && !"│├┼┤─┌┬┐└┴┘".contains(*c))
                 .collect();
-            assert!(visible.contains("DeepCode"), "{visible}");
+            assert!(visible.contains("Achbit"), "{visible}");
             assert!(visible.contains("中文开发环境é"), "{visible}");
             assert!(visible.contains("Pi终端"), "{visible}");
         }
         let narrow = Text::from(render(markdown, 8, Style::default())).to_string();
-        assert!(narrow.contains("名称:\nDeepCode"));
+        assert!(narrow.contains("名称:\nAchbit"));
         assert!(narrow.contains("描述:\n中文开发环境 é"));
         let header_only = Text::from(render(
             "| 名称 | 描述 |\n| --- | --- |",

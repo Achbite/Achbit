@@ -94,7 +94,7 @@ async fn main() {
                 println!("{settings}");
                 // The macOS launcher owns this pipe until the real TUI has acquired
                 // its own client lease. EOF also releases it if the launcher dies.
-                if env::var_os("DEEPCODE_TUI_FONT_SETTINGS_LEASE").as_deref()
+                if env::var_os("ACHBIT_TUI_FONT_SETTINGS_LEASE").as_deref()
                     == Some(std::ffi::OsStr::new("1"))
                 {
                     if let Err(error) = io::stdout().flush().and_then(|_| {
@@ -319,7 +319,7 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
         return initialization.map(|_| ()).and(pump);
     }
     terminal.draw(|frame| app.renderer().draw(frame, &app))?;
-    if let Some(path) = env::var_os("DEEPCODE_TUI_READY_FILE") {
+    if let Some(path) = env::var_os("ACHBIT_TUI_READY_FILE") {
         // Acknowledge only a bootstrapped, drawn TUI, not merely a spawned process.
         let path = PathBuf::from(path);
         let temporary = path.with_extension("tmp");

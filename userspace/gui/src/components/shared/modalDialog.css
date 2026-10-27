@@ -1,4 +1,4 @@
 dialog.app-modal { position: fixed; inset: 0; box-sizing: border-box; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; padding: 0; color: inherit; }
 dialog.app-modal:not([open]) { display: none; }
 dialog.app-modal::backdrop { background: transparent; }
-dialog.app-modal.deepcode-local-agent-overlay { inset: 0; height: 100%; }
+dialog.app-modal.achbit-local-agent-overlay { inset: 0; height: 100%; }

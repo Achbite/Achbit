@@ -29,7 +29,7 @@ pub fn launch_arguments(arguments: &[String]) -> Result<Launch, String> {
         || arguments[3] != "--token"
         || arguments[5] != "--host"
     {
-        return Err("Launch this component through the DeepCode Host.".into());
+        return Err("Launch this component through the Achbit Host.".into());
     }
     let endpoint: SocketAddr = arguments[2].parse().map_err(|_| "Invalid Host endpoint")?;
     if !endpoint.ip().is_loopback() {

@@ -1,14 +1,14 @@
 # NOTICE
 
-DeepCode is an independent local-first AI coding workbench.
+Achbit is an independent local-first AI coding workbench.
 
 Copyright (c) 2026 DeepCode Team.
 
-DeepCode is licensed under the MIT License. See `LICENSE` for the license text.
+Achbit is licensed under the MIT License. See `LICENSE` for the license text.
 
 ## No Official Affiliation
 
-DeepCode is not affiliated with, endorsed by, sponsored by, authorized by, or officially connected to DeepSeek, OpenAI, Anthropic, Google, Microsoft, VS Code, Monaco, Tauri, Claude, ChatGPT, Gemini, or any other referenced vendor, project, agent, or trademark owner unless explicitly stated in a separate written agreement.
+Achbit is not affiliated with, endorsed by, sponsored by, authorized by, or officially connected to DeepSeek, OpenAI, Anthropic, Google, Microsoft, VS Code, Monaco, Tauri, Claude, ChatGPT, Gemini, or any other referenced vendor, project, agent, or trademark owner unless explicitly stated in a separate written agreement.
 
 References to DeepSeek, Claude, ChatGPT, Gemini, VS Code, Monaco, Tauri, React, Rust, or other names are descriptive references for compatibility, development assistance, dependency attribution, architecture / workflow / UX reference, or interoperability context.
 

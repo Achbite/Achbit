@@ -36,11 +36,11 @@ test('computer input rejection clears provisional tool details without blocking 
       rejectedCalls++;
       const rejection = Object.fromEntries(['sessionId', 'runId', 'extensionGenerationRef', 'kernelCatalogSnapshotRef',
         'toolBindingRef', 'callId', 'attemptId', 'toolName', 'input'].map(key => [key, request[key]]));
-      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
         callId: request.callId, status: 'inputRejected', rejection: { ...rejection, rejectedAt: '2026-10-17T00:00:00Z', error } };
     }
     if (!request.nonWorkspaceAuthority) return {
-      schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
       callId: request.callId, status: 'approvalRequired', approvalId: 'approval:computer',
       preview: { summary: 'Use the desktop', effects: ['external'], logicalTargets: ['computer:desktop'] },
     };
@@ -61,7 +61,7 @@ test('computer input rejection clears provisional tool details without blocking 
   await decodeGuiProjection(waiting);
   assert.ok(waiting.narratives.some(item => item.content.includes('parameters were rejected')));
   const approval = waiting.pendingApproval;
-  await actor.submit({ schemaVersion: 'deepcode.command.v3', type: 'approval.respond', commandId: 'command:allow', sessionId,
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', commandId: 'command:allow', sessionId,
     runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'allow' });
   const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
   await decodeGuiProjection(completed);

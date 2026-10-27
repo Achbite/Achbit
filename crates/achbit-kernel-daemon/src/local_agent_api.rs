@@ -641,7 +641,7 @@ impl LocalAgentRuntime {
             extension_generation_ref.as_str(),
         );
         let mut response = json!({
-            "schemaVersion": "deepcode.local-agent",
+            "schemaVersion": "achbit.local-agent",
             "type": "run.runtime.prepared",
             "sessionId": request.session_id,
             "runId": request.run_id,
@@ -1682,7 +1682,7 @@ pub(crate) async fn local_agent_provider_stream(
             )
         }
     };
-    if body.protocol_version != "deepcode.local-agent" {
+    if body.protocol_version != "achbit.local-agent" {
         return local_provider_error(
             &body.request_id,
             "provider_request_version_invalid",
@@ -2280,7 +2280,7 @@ fn kernel_error(error: LocalAgentKernelError) -> Json<ApiResponse> {
 
 fn local_provider_error(request_id: &str, code: &str, message: &str) -> Response {
     let event = json!({
-        "schemaVersion": "deepcode.provider-event",
+        "schemaVersion": "achbit.provider-event",
         "requestId": request_id,
         "type": "failed",
         "data": { "code": code, "message": message },
@@ -2317,7 +2317,7 @@ mod tests {
             "文".repeat(54)
         ));
         let mut request: LocalProviderRequest = serde_json::from_value(json!({
-            "protocolVersion": "deepcode.local-agent",
+            "protocolVersion": "achbit.local-agent",
             "requestId": "request:test",
             "sessionId": "session:test",
             "runId": "run:test",
@@ -2366,7 +2366,7 @@ mod tests {
 
     #[test]
     fn approval_review_requests_separate_evidence_reads_from_structured_decisions() {
-        let base = json!({"protocolVersion":"deepcode.local-agent", "requestId":"request:review",
+        let base = json!({"protocolVersion":"achbit.local-agent", "requestId":"request:review",
             "sessionId":"session:review", "runId":"run:review", "providerRuntimeRef":"provider-runtime:test",
             "profileId":"profile:test", "purpose":"approvalReview", "responseConstraint":"normal",
             "maxOutputTokens":512, "workspaceBindings":[], "messages":[{"role":"user","content":"Read the evidence."}],
@@ -2474,7 +2474,7 @@ mod tests {
 
     #[test]
     fn native_pdf_references_must_be_user_inputs_in_the_frozen_workspace_set() {
-        let mut request = json!({"protocolVersion":"deepcode.local-agent", "requestId":"request:pdf", "sessionId":"session:pdf",
+        let mut request = json!({"protocolVersion":"achbit.local-agent", "requestId":"request:pdf", "sessionId":"session:pdf",
             "runId":"run:pdf", "providerRuntimeRef":"provider-runtime:pdf", "profileId":"profile:pdf", "purpose":"agent",
             "responseConstraint":"normal", "maxOutputTokens":512, "workspaceBindings":[{"workspaceId":"workspace:pdf", "displayName":"PDF"}],
             "messages":[{"role":"user", "content":"Read this PDF", "files":[{"workspaceId":"workspace:pdf", "logicalPath":"source.pdf", "mediaType":"application/pdf", "displayName":"source.pdf"}]}],

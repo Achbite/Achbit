@@ -156,7 +156,7 @@ impl ToolProvider for DocumentToolProvider {
         Ok(InstalledToolProvider {
             tools: vec![PendingToolContribution {
                 origin: "extension",
-                provider_ref: "deepcode:documents".into(),
+                provider_ref: "achbit:documents".into(),
                 plugin_uri: Some("plugin://documents@builtin".into()),
                 plugin_instance_ref: Some(self.instance.clone()),
                 contribution_ref: format!("{}/document.render", self.instance),
@@ -181,10 +181,10 @@ impl ToolProvider for ProductToolProvider {
             .map(
                 |(name, description, input_schema)| PendingToolContribution {
                     origin: "coreBuiltin",
-                    provider_ref: "deepcode:product".into(),
+                    provider_ref: "achbit:product".into(),
                     plugin_uri: None,
                     plugin_instance_ref: None,
-                    contribution_ref: format!("deepcode:product/{name}"),
+                    contribution_ref: format!("achbit:product/{name}"),
                     name: name.into(),
                     description,
                     input_schema,
@@ -203,8 +203,8 @@ impl ToolProvider for ProductToolProvider {
             ("artifact.preview", "url", "Register an HTTP(S) live preview reference without fetching or verifying it. Call after updating the preview to record its latest presentation version.", CatalogEffectScope::LocalRead),
         ] {
             tools.push(PendingToolContribution {
-                origin: "coreBuiltin", provider_ref: "deepcode:resources".into(), plugin_uri: None, plugin_instance_ref: None,
-                contribution_ref: format!("deepcode:resources/{name}"), name: name.into(),
+                origin: "coreBuiltin", provider_ref: "achbit:resources".into(), plugin_uri: None, plugin_instance_ref: None,
+                contribution_ref: format!("achbit:resources/{name}"), name: name.into(),
                 description: format!("{description} This does not add it to user outputs. Use artifact.present for requested results or review materials. Temporary scripts, logs and observation images stay intermediate unless explicitly presented."),
                 input_schema: crate::artifact_resources::schema(field), effect_class: Some(ToolEffectClass::Read),
                 effect_scope: scope, availability: ToolAvailability::Callable, availability_reason: None, runtime_status: None, logical_target: None, binding: ToolExecutorBinding::Artifact,
@@ -258,10 +258,10 @@ impl ToolProvider for ProductToolProvider {
                 };
                 tools.push(PendingToolContribution {
                     origin: "extension",
-                    provider_ref: "deepcode:computer-use".into(),
+                    provider_ref: "achbit:computer-use".into(),
                     plugin_uri: Some("plugin://computer-use@builtin".into()),
                     plugin_instance_ref: Some(instance.clone()),
-                    contribution_ref: format!("deepcode:computer-use/{name}"),
+                    contribution_ref: format!("achbit:computer-use/{name}"),
                     name: name.into(), description: description.into(), input_schema,
                     effect_class: None,
                     effect_scope: match name {
@@ -299,10 +299,10 @@ impl ToolProvider for ManagedShellToolProvider {
         if self.process {
             installed.tools.push(PendingToolContribution {
                 origin: "coreBuiltin",
-                provider_ref: "deepcode:processes".into(),
+                provider_ref: "achbit:processes".into(),
                 plugin_uri: None,
                 plugin_instance_ref: None,
-                contribution_ref: "deepcode:processes/process".into(),
+                contribution_ref: "achbit:processes/process".into(),
                 name: "process".into(),
                 description: "Manage owned commands.".into(),
                 input_schema: crate::managed_processes::schema(&[]),
@@ -338,7 +338,7 @@ impl ToolProvider for ContainerToolProvider {
     fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
         let adapter = self.adapter.clone();
         Ok(InstalledToolProvider { tools:vec![PendingToolContribution {
-            origin:"extension" , provider_ref:"deepcode:containers".into(), plugin_uri:Some("plugin://containers@builtin".into()),
+            origin:"extension" , provider_ref:"achbit:containers".into(), plugin_uri:Some("plugin://containers@builtin".into()),
             plugin_instance_ref:Some(self.instance.clone()), contribution_ref:format!("{}/container",self.instance),
             name:"container".into(), description:"Run Shell commands in an approved Docker container, inspect it, or create an independent temporary test container. Creation mounts the selected project read-only at /project and writable session test files at /work. Approval can cover this task or conversation; temporary containers are cleaned at task end. Existing containers keep their mounts and network. Linux images need sh and setsid.".into(),
             input_schema:crate::container_tools::input_schema(), effect_class:None,effect_scope:CatalogEffectScope::Process,

@@ -70,7 +70,7 @@ export function paletteOverrideCss(encoded: string): string {
 /** Installed once by each frontend entry; no duplicate color table in component styles. */
 export function installPaletteDefaults(): () => void {
   const style = document.createElement('style');
-  style.dataset.deepcodePalette = 'defaults';
+  style.dataset.achbitPalette = 'defaults';
   style.textContent = `:root{${Object.entries(palette.tokens).map(([key, value]) => `${key}:${value};`).join('')}}`;
   document.head.append(style);
   return () => style.remove();

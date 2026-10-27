@@ -309,11 +309,10 @@ impl ComputerUseHost {
         #[cfg(target_os = "macos")]
         check_macos_desktop_version()?;
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-        let app =
-            match crate::configured_path("DEEPCODE_COMPUTER_APP").map_err(|e| e.to_string())? {
-                Some(path) => path,
-                None => packaged_location(&executable)?,
-            };
+        let app = match crate::configured_path("ACHBIT_COMPUTER_APP").map_err(|e| e.to_string())? {
+            Some(path) => path,
+            None => packaged_location(&executable)?,
+        };
         Ok(Self {
             app,
             host,
@@ -712,12 +711,12 @@ mod tests {
         assert!(host.connection.lock().unwrap().is_none());
     }
 
-    /// Runs against a built helper when DEEPCODE_TEST_COMPUTER_USE_HELPER names it.
+    /// Runs against a built helper when ACHBIT_TEST_COMPUTER_USE_HELPER names it.
     #[test]
-    #[ignore = "requires a built Windows helper; set DEEPCODE_TEST_COMPUTER_USE_HELPER and run with --include-ignored"]
+    #[ignore = "requires a built Windows helper; set ACHBIT_TEST_COMPUTER_USE_HELPER and run with --include-ignored"]
     fn host_owns_the_exact_helper_process_and_retires_it_on_stop() {
-        let helper = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER")
-            .expect("DEEPCODE_TEST_COMPUTER_USE_HELPER must name the built Windows helper");
+        let helper = std::env::var_os("ACHBIT_TEST_COMPUTER_USE_HELPER")
+            .expect("ACHBIT_TEST_COMPUTER_USE_HELPER must name the built Windows helper");
         let host = ComputerUseHost {
             app: PathBuf::from(helper),
             host: "host:test".into(),
@@ -817,12 +816,12 @@ mod tests {
 
     /// The Windows update replaces a mapped executable by renaming it aside.
     #[test]
-    #[ignore = "requires a built Windows helper; set DEEPCODE_TEST_COMPUTER_USE_HELPER and run with --include-ignored"]
+    #[ignore = "requires a built Windows helper; set ACHBIT_TEST_COMPUTER_USE_HELPER and run with --include-ignored"]
     fn replaced_helper_is_retired_between_calls_and_its_image_removed() {
-        let helper = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER")
-            .expect("DEEPCODE_TEST_COMPUTER_USE_HELPER must name the built Windows helper");
+        let helper = std::env::var_os("ACHBIT_TEST_COMPUTER_USE_HELPER")
+            .expect("ACHBIT_TEST_COMPUTER_USE_HELPER must name the built Windows helper");
         let directory =
-            std::env::temp_dir().join(format!("deepcode-cu-update-{}", std::process::id()));
+            std::env::temp_dir().join(format!("achbit-cu-update-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let installed = directory.join("Achbit-Computer-Use.exe");
         std::fs::copy(&helper, &installed).unwrap();

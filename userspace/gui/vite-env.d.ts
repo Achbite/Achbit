@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
-declare const __DEEPCODE_DEBUG__: boolean;
+declare const __ACHBIT_DEBUG__: boolean;
 interface Window {
-  __DEEPCODE_DEBUG_UI__?: {
+  __ACHBIT_DEBUG_UI__?: {
     register(id: string, source: import('./src/debug/registry').ComponentSource): () => void;
     measure(componentId: string, event: string, startedAt: number, outcome: 'completed' | 'failed'): void;
     list(): unknown;

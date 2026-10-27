@@ -79,10 +79,10 @@ JSON 清单可声明可选 `files` 数组，例如 `"files": ["entry.mjs", "publ
 每次调用从 stdin 读取一个 JSON 值直到 EOF：
 
 ```json
-{"name":"operation","arguments":{},"context":{"deepcode":{"outputDirectory":"/absolute/attempt-output"}}}
+{"name":"operation","arguments":{},"context":{"achbit":{"outputDirectory":"/absolute/attempt-output"}}}
 ```
 
-`name`、`arguments` 是操作输入。`context` 是 Host 提供的执行元数据，其中 `context.deepcode.outputDirectory` 在存在时表示本次调用的输出目录；`deepcode` 是现有协议键名。这些元数据不是系统提示词或模型消息。
+`name`、`arguments` 是操作输入。`context` 是 Host 提供的执行元数据，其中 `context.achbit.outputDirectory` 在存在时表示本次调用的输出目录；`achbit` 是现有协议键名。这些元数据不是系统提示词或模型消息。
 
 向 stdout 输出一个完整 JSON 结果后退出。结构化失败使用 `{"error":{"code":"operation_failed","message":"具体原因"}}`；非零退出、无效 JSON、取消和超时也属于失败。诊断写 stderr。当前上限为 60 秒、stdout 4 MiB、stderr 64 KiB。Host 持有并回收进程树。常驻服务应使用托管服务合同，不应由单次工具调用留下后台进程。
 

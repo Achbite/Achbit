@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const PROTOCOL_VERSION: &str = "deepcode.local-agent";
+const PROTOCOL_VERSION: &str = "achbit.local-agent";
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_RECEIPT_BYTES: usize = 16 * 1024;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -57,8 +57,8 @@ impl SessionServiceProcess {
         let mut command = Command::new(node);
         command
             .arg(bridge)
-            .env("DEEPCODE_LOCAL_AGENT_API_BASE", api_base)
-            .env("DEEPCODE_LOCAL_AGENT_TOKEN", service_token)
+            .env("ACHBIT_LOCAL_AGENT_API_BASE", api_base)
+            .env("ACHBIT_LOCAL_AGENT_TOKEN", service_token)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -870,7 +870,7 @@ fn decode_response(
 
 fn resolve_bridge() -> Result<PathBuf, SessionServiceError> {
     runtime_file(
-        "DEEPCODE_SESSION_BRIDGE",
+        "ACHBIT_SESSION_BRIDGE",
         if cfg!(feature = "debug-control") {
             "session-core/dist/debug/sessionServiceBridge.js"
         } else {
@@ -881,7 +881,7 @@ fn resolve_bridge() -> Result<PathBuf, SessionServiceError> {
 
 pub(crate) fn resolve_node() -> Result<PathBuf, SessionServiceError> {
     runtime_file(
-        "DEEPCODE_NODE",
+        "ACHBIT_NODE",
         if cfg!(windows) {
             "node/bin/node.exe"
         } else {
@@ -894,10 +894,10 @@ fn runtime_file(environment: &str, relative: &str) -> Result<PathBuf, SessionSer
     if let Some(path) = environment_file(environment)? {
         return Ok(path);
     }
-    let root = std::env::var_os("DEEPCODE_RUNTIME_DIR").ok_or_else(|| {
+    let root = std::env::var_os("ACHBIT_RUNTIME_DIR").ok_or_else(|| {
         SessionServiceError::new(
             "session_service_asset_root_unavailable",
-            "Host 未设置 DEEPCODE_RUNTIME_DIR。",
+            "Host 未设置 ACHBIT_RUNTIME_DIR。",
         )
     })?;
     let path = PathBuf::from(root).join(relative);
@@ -955,8 +955,8 @@ mod tests {
     fn ordinary_session_notifications_share_ipc_and_disconnect_independently() {
         let child = spawn_owned_host_process(Command::new("node").arg("-e").arg(r#"
 const input = require('node:readline').createInterface({ input: process.stdin });
-function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
-function notify(notification) { process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', type: 'session.notification', notification }) + '\n'); }
+function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
+function notify(notification) { process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', type: 'session.notification', notification }) + '\n'); }
 input.on('line', line => {
   const request = JSON.parse(line);
   if (request.operation === 'health') reply(request, { state: 'ready' });
@@ -1031,13 +1031,13 @@ input.on('line', line => {
     fn active_observations_share_ipc_without_becoming_request_replies() {
         let child = spawn_owned_host_process(Command::new("node").arg("-e").arg(r#"
 const input = require('node:readline').createInterface({ input: process.stdin });
-function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
+function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
 input.on('line', line => {
   const request = JSON.parse(line);
   if (request.operation === 'health') reply(request, { state: 'ready' });
   else if (request.operation === 'debug.subscribe') {
     reply(request, { status: 'active' });
-    setImmediate(() => process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', type: 'debug.observation', subscriptionId: request.data.subscriptionId, sequence: 1, status: 'active', items: [{kind:'text',text:'First response.'}] }) + '\n'));
+    setImmediate(() => process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', type: 'debug.observation', subscriptionId: request.data.subscriptionId, sequence: 1, status: 'active', items: [{kind:'text',text:'First response.'}] }) + '\n'));
   } else if (request.operation === 'debug.unsubscribe') reply(request, { status: 'closed' });
   else if (request.operation === 'shutdown') { reply(request, {}); input.close(); process.stdin.destroy(); }
 });
@@ -1111,7 +1111,7 @@ const input = require('node:readline').createInterface({ input: process.stdin })
 input.on('line', line => {
   const request = JSON.parse(line);
   if (request.operation === 'health') {
-    process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data: { state: 'ready' } }) + '\n');
+    process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: request.requestId, ok: true, data: { state: 'ready' } }) + '\n');
   } else {
     process.stderr.write('session-exit-diagnostic\n', () => process.exit(7));
   }
@@ -1147,7 +1147,7 @@ input.on('line', line => {
 const input = require('node:readline').createInterface({ input: process.stdin });
 let slow;
 function reply(request, data) {
-  process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data }) + '\n');
+  process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: request.requestId, ok: true, data }) + '\n');
 }
 input.on('line', line => {
   const request = JSON.parse(line);
@@ -1200,7 +1200,7 @@ input.once('line', line => {
   const request = JSON.parse(line);
   input.close();
   process.stdin.pause();
-  process.stdout.write(JSON.stringify({ protocolVersion: 'deepcode.local-agent', requestId: request.requestId, ok: true, data: { state: 'ready' } }) + '\n');
+  process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: request.requestId, ok: true, data: { state: 'ready' } }) + '\n');
   setInterval(() => {}, 1000);
 });
 "#)

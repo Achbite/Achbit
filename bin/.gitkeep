@@ -1,4 +1,4 @@
-# DeepCode 二进制产物输出目录
+# Achbit 二进制产物输出目录
 #
 # 该目录由 `pnpm tauri:build` 或 Dockerfile.tauri 写入；
 # 二进制产物不进入 Git（详见根 .gitignore），仅保留本说明文件用于占位。

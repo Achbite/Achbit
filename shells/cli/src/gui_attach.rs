@@ -37,7 +37,7 @@ pub async fn serve() -> Result<(), String> {
     let directory = executable
         .parent()
         .ok_or("CLI executable directory is unavailable")?;
-    let proxy_path = configured_path("DEEPCODE_HOST_WEB_BIN")
+    let proxy_path = configured_path("ACHBIT_HOST_WEB_BIN")
         .map_err(|error| error.to_string())?
         .unwrap_or_else(|| {
             directory.join(if cfg!(windows) {
@@ -76,11 +76,11 @@ pub async fn serve() -> Result<(), String> {
     directories.configure_child(&mut command);
     configure_runtime_child(&mut command, &resources).map_err(|error| error.to_string())?;
     command
-        .env("DEEPCODE_HOST", "127.0.0.1")
-        .env("DEEPCODE_PORT", port.to_string())
-        .env("DEEPCODE_DAEMON_HOST", daemon_address.ip().to_string())
-        .env("DEEPCODE_DAEMON_PORT", daemon_address.port().to_string())
-        .env("DEEPCODE_HOST_WEB_SPAWN_DAEMON", "0")
+        .env("ACHBIT_HOST", "127.0.0.1")
+        .env("ACHBIT_PORT", port.to_string())
+        .env("ACHBIT_DAEMON_HOST", daemon_address.ip().to_string())
+        .env("ACHBIT_DAEMON_PORT", daemon_address.port().to_string())
+        .env("ACHBIT_HOST_WEB_SPAWN_DAEMON", "0")
         .env(HOST_UI_TOKEN_ENV, &request.ui_token)
         .env(HOST_SHELL_TOKEN_ENV, connection.shell_token())
         .env(HOST_INSTANCE_ID_ENV, &instance)

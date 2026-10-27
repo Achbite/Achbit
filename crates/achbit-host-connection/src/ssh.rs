@@ -16,7 +16,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub const GUI_ATTACH_SCHEMA: &str = "deepcode.gui-attach.v1";
+pub const GUI_ATTACH_SCHEMA: &str = "achbit.gui-attach.v1";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -84,7 +84,7 @@ pub struct SshAskpassRequest {
 /// Invoked by OpenSSH through the CLI executable, without starting another GUI
 /// application instance or bootstrapping a local Host.
 pub fn run_askpass_helper() -> io::Result<()> {
-    let address: SocketAddr = std::env::var("DEEPCODE_SSH_ASKPASS_ADDRESS")
+    let address: SocketAddr = std::env::var("ACHBIT_SSH_ASKPASS_ADDRESS")
         .map_err(io::Error::other)?
         .parse()
         .map_err(io::Error::other)?;
@@ -97,8 +97,8 @@ pub fn run_askpass_helper() -> io::Result<()> {
     serde_json::to_writer(
         &mut stream,
         &SshAskpassRequest {
-            token: std::env::var("DEEPCODE_SSH_ASKPASS_TOKEN").map_err(io::Error::other)?,
-            phase: std::env::var("DEEPCODE_SSH_ASKPASS_PHASE").map_err(io::Error::other)?,
+            token: std::env::var("ACHBIT_SSH_ASKPASS_TOKEN").map_err(io::Error::other)?,
+            phase: std::env::var("ACHBIT_SSH_ASKPASS_PHASE").map_err(io::Error::other)?,
             prompt: std::env::args()
                 .nth(1)
                 .ok_or_else(|| io::Error::other("Missing SSH prompt"))?,
@@ -120,10 +120,10 @@ impl SshAuthentication {
         command
             .env("SSH_ASKPASS", &self.helper)
             .env("SSH_ASKPASS_REQUIRE", "force")
-            .env("DEEPCODE_SSH_ASKPASS", "1")
-            .env("DEEPCODE_SSH_ASKPASS_ADDRESS", self.address.to_string())
-            .env("DEEPCODE_SSH_ASKPASS_TOKEN", &self.token)
-            .env("DEEPCODE_SSH_ASKPASS_PHASE", phase);
+            .env("ACHBIT_SSH_ASKPASS", "1")
+            .env("ACHBIT_SSH_ASKPASS_ADDRESS", self.address.to_string())
+            .env("ACHBIT_SSH_ASKPASS_TOKEN", &self.token)
+            .env("ACHBIT_SSH_ASKPASS_PHASE", phase);
     }
 
     fn check(&self) -> io::Result<()> {
@@ -204,7 +204,7 @@ impl SshTarget {
             let root = self
                 .user_root
                 .as_ref()
-                .map(|root| format!("$env:DEEPCODE_USER_ROOT={};", literal(root)))
+                .map(|root| format!("$env:ACHBIT_USER_ROOT={};", literal(root)))
                 .unwrap_or_default();
             // Inherit the SSH pipes directly. A PowerShell native pipeline can
             // transcode the JSON handshake or consume the child's stdin.
@@ -226,7 +226,7 @@ impl SshTarget {
         let root = self
             .user_root
             .as_ref()
-            .map(|root| format!("env {} ", quote(&format!("DEEPCODE_USER_ROOT={root}"))))
+            .map(|root| format!("env {} ", quote(&format!("ACHBIT_USER_ROOT={root}"))))
             .unwrap_or_default();
         format!("exec {root}{} gui-attach", quote(&self.cli_path))
     }
@@ -560,7 +560,7 @@ mod tests {
             port: None,
             identity_file: None,
             config_file: None,
-            cli_path: "/opt/Deep Code/it's-cli".into(),
+            cli_path: "/opt/Achbit App/it's-cli".into(),
             user_root: Some("/home/dev/user $(touch wrong)".into()),
             remote_shell: SshRemoteShell::Posix,
         };
@@ -611,7 +611,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap();
-        assert!(script.contains("$env:DEEPCODE_USER_ROOT='D:\\数据\\it''s $(exit 1); %TEMP%';"));
+        assert!(script.contains("$env:ACHBIT_USER_ROOT='D:\\数据\\it''s $(exit 1); %TEMP%';"));
         assert!(script.contains("$p.StartInfo.FileName='C:\\应用 & data\\it''s %PATH% $cli.exe';"));
         assert!(script.contains("UseShellExecute=$false"));
         assert!(script.ends_with("$p.WaitForExit();exit $p.ExitCode"));
@@ -627,7 +627,7 @@ mod tests {
     fn windows_remote_command_keeps_native_stdin_and_utf8_stdout() {
         use std::os::windows::process::CommandExt;
         let directory = std::env::temp_dir().join(format!(
-            "deepcode ssh 中文 & it's %PATH% $cli-{}",
+            "achbit ssh 中文 & it's %PATH% $cli-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).unwrap();

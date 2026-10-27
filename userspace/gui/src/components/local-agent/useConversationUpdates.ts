@@ -25,7 +25,7 @@ export function startConversationUpdates(refresh: () => Promise<void>, hostReady
 export function useProfilesUpdated(refreshProfiles: () => Promise<void>) {
   useEffect(() => {
     const handleProfilesUpdated = () => { void refreshProfiles(); };
-    window.addEventListener('deepcode:llm-profiles-updated', handleProfilesUpdated);
-    return () => window.removeEventListener('deepcode:llm-profiles-updated', handleProfilesUpdated);
+    window.addEventListener('achbit:llm-profiles-updated', handleProfilesUpdated);
+    return () => window.removeEventListener('achbit:llm-profiles-updated', handleProfilesUpdated);
   }, [refreshProfiles]);
 }

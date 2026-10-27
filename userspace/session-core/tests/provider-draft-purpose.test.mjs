@@ -38,7 +38,7 @@ for (const ordered of [false, true]) test(`independent review streams status, no
     } },
     kernel: emptyKernel({ async execute(request) {
       if (request.nonWorkspaceAuthority) return completedExecutionReply(request, { output: 'test contents' });
-      return { schemaVersion: 'deepcode.kernel-reply', type: 'tool.execution', requestId: request.requestId,
+      return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId,
         callId: request.callId, status: 'approvalRequired', preview: { summary: 'Read sample', effects: ['process'], logicalTargets: ['.'],
           approvalReviewer: 'agent', authorizationContext: { command: 'cat sample.txt' },
           reviewPolicy: { subject: 'shell', mode: 'review', reviewGrant: 'thisCallOnly' } } };

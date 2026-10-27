@@ -2922,7 +2922,7 @@ function runRuntimeSnapshot(snapshot: LoopSnapshot, runId: string): RunRuntimeSn
     view.environment = { ...view.environment, hostBinding: { ...snapshot.state.run.hostBinding } };
   }
   const permissions = snapshot.state.publishedPermissions ?? permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
-  return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'deepcode.workspace-autonomy'
+  return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'achbit.workspace-autonomy'
     ? { ...instruction, text: permissionInstructionText(permissions,
       view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_INTERACTION_REQUEST)?.wireName,
       view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_PLAN_PUBLISH)?.wireName) } : instruction) };

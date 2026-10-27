@@ -17,13 +17,13 @@ import { supportsNativeFileInput } from '../../services/modelFileInput';
 import { cloneComposerState, composerStateIsEmpty, emptyComposerState, submitComposerState, type ComposerState } from './composerSubmission';
 
 function readComposerDraft(key:string):ComposerState {
-  const saved=sessionStorage.getItem(`deepcode:composer:${key}`);
+  const saved=sessionStorage.getItem(`achbit:composer:${key}`);
   if(!saved)return emptyComposerState();
   try{return cloneComposerState(JSON.parse(saved) as ComposerState);}
   catch(error){console.error('Cannot read the saved composer draft.',error);return emptyComposerState();}
 }
 function saveComposerDraft(key:string,state:ComposerState):void {
-  try{sessionStorage.setItem(`deepcode:composer:${key}`,JSON.stringify(state));}
+  try{sessionStorage.setItem(`achbit:composer:${key}`,JSON.stringify(state));}
   catch(error){console.error('Cannot preserve the composer draft across a window reload.',error);}
 }
 

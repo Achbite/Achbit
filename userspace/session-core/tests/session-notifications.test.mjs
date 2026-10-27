@@ -107,7 +107,7 @@ test('slow IPC coalesces invalidations but preserves each settlement and drains 
   await closed;
   assert.deepEqual(frames.filter(frame => frame.notification.kind === 'settled').map(frame => frame.notification.runId), ['run:first', 'run:second']);
   assert.equal(frames.filter(frame => frame.notification.kind === 'change' && frame.notification.sessionId === 'session:child').length, 2);
-  assert.ok(frames.every(frame => frame.protocolVersion === 'deepcode.local-agent' && frame.type === 'session.notification'));
+  assert.ok(frames.every(frame => frame.protocolVersion === 'achbit.local-agent' && frame.type === 'session.notification'));
   assert.doesNotMatch(JSON.stringify(frames), /private|session:late/);
 });
 

@@ -873,7 +873,7 @@ mod tests {
             }
         }
         let directory = Directory(std::env::temp_dir().join(format!(
-            "deepcode-discovery-{}-{}",
+            "achbit-discovery-{}-{}",
             std::process::id(),
             crate::now_millis()
         )));
@@ -1033,7 +1033,7 @@ mod tests {
             }
         }
         let root = std::env::temp_dir().join(format!(
-            "deepcode-plugin-test-{}-{}",
+            "achbit-plugin-test-{}-{}",
             std::process::id(),
             crate::now_millis()
         ));

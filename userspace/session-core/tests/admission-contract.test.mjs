@@ -73,7 +73,7 @@ const plan = event('plan.published', {
 
 test('Plan response admission requires its matching decision without manufacturing Todo; rejected commands are eventless', async () => {
   const { current } = await snapshot(started, composition, plan, settled(['call:plan']));
-  const input = { schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId, runId,
+  const input = { schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId, runId,
     commandId: 'command:confirm', planId: 'plan:one', revision: 1, response: { kind: 'confirm' } };
   const reply = { schemaVersion: COMMAND_REPLY_VERSION, commandId: input.commandId, sessionId, status: 'accepted' };
   const confirmed = event('plan.confirmed', { commandId: input.commandId, planId: 'plan:one', revision: 1,

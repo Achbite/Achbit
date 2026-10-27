@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn project_environment_requires_an_explicit_distribution_and_worker() {
-        assert!(project_environments(&json!({"agent.projectEnvironments":r#"{"p":{"kind":"wsl","distribution":"Ubuntu","worker":"/opt/deepcode/kernel"}}"#})).is_ok());
+        assert!(project_environments(&json!({"agent.projectEnvironments":r#"{"p":{"kind":"wsl","distribution":"Ubuntu","worker":"/opt/achbit/kernel"}}"#})).is_ok());
         assert!(project_environments(
             &json!({"agent.projectEnvironments":r#"{"p":{"kind":"wsl","distribution":""}}"#})
         )

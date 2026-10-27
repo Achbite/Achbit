@@ -26,7 +26,7 @@ const HELP: &str = r#"Achbit Debug CLI (debug-only)
   observe --subscription-id ID [--follow] [--wait-ms 180000]
   metrics query|export [--kind tool|component|session|provider|usage] [--params @JSON_FILE]
   result read --operation-id ID | --record-id ID | --session-id ID --event-sequence N
-Every connected command requires --state-root DIR (or explicit DEEPCODE_USER_ROOT).
+Every connected command requires --state-root DIR (or explicit ACHBIT_USER_ROOT).
 --control-id ID overrides the local attachment receipt. --params JSON or @FILE supplies
 structured method parameters. Results go to stdout; errors use JSON on stderr.
 Observation streams and metrics export use JSONL. Failed terminal operations exit nonzero.
@@ -138,8 +138,8 @@ fn root(args: &Args) -> Result<PathBuf, String> {
     let value = args
         .option("state-root")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("DEEPCODE_USER_ROOT").map(PathBuf::from))
-        .ok_or("--state-root or DEEPCODE_USER_ROOT is required")?;
+        .or_else(|| std::env::var_os("ACHBIT_USER_ROOT").map(PathBuf::from))
+        .ok_or("--state-root or ACHBIT_USER_ROOT is required")?;
     if value.as_os_str().is_empty() {
         return Err("Empty state root".into());
     }
@@ -328,16 +328,16 @@ async fn decode(response: reqwest::Response) -> Result<Value, String> {
 }
 fn configure(root: &Path, resources: &Path, kernel: &Path) {
     for key in [
-        "DEEPCODE_API_URL",
-        "DEEPCODE_PORT",
+        "ACHBIT_API_URL",
+        "ACHBIT_PORT",
         achbit_kernel_abi::HOST_SHELL_TOKEN_ENV,
         achbit_kernel_abi::HOST_INSTANCE_ID_ENV,
     ] {
         std::env::remove_var(key);
     }
-    std::env::set_var("DEEPCODE_USER_ROOT", root);
-    std::env::set_var("DEEPCODE_RUNTIME_DIR", resources);
-    std::env::set_var("DEEPCODE_KERNEL_BIN", kernel);
+    std::env::set_var("ACHBIT_USER_ROOT", root);
+    std::env::set_var("ACHBIT_RUNTIME_DIR", resources);
+    std::env::set_var("ACHBIT_KERNEL_BIN", kernel);
 }
 fn output(value: &Value) -> Result<(), String> {
     println!(

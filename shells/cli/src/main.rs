@@ -44,7 +44,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
 async fn main() {
-    if std::env::var("DEEPCODE_SSH_ASKPASS").as_deref() == Ok("1") {
+    if std::env::var("ACHBIT_SSH_ASKPASS").as_deref() == Ok("1") {
         if let Err(error) = achbit_host_connection::ssh::run_askpass_helper() {
             eprintln!("{error}");
             std::process::exit(1);
@@ -81,7 +81,7 @@ async fn main() {
         return;
     }
     if matches!(args.command, Command::GuiAttach) && args.api.is_some() {
-        eprintln!("gui-attach uses the shared Host of DEEPCODE_USER_ROOT; --api is not supported");
+        eprintln!("gui-attach uses the shared Host of ACHBIT_USER_ROOT; --api is not supported");
         std::process::exit(EXIT_BAD_ARGS);
     }
     let bootstrap = match KernelBootstrap::connect(
@@ -883,7 +883,7 @@ async fn wait_for_projection(
     before: &SessionProjection,
     plain: bool,
 ) -> Result<Outcome, String> {
-    let timeout = env::var("DEEPCODE_CLI_RUN_TIMEOUT_MS")
+    let timeout = env::var("ACHBIT_CLI_RUN_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_millis)
@@ -1033,7 +1033,7 @@ async fn run_chat(
     let mut prompt_needed = true;
     loop {
         if prompt_needed {
-            print!("deepcode> ");
+            print!("achbit> ");
             io::stdout().flush().map_err(|error| error.to_string())?;
             prompt_needed = false;
         }
@@ -1627,7 +1627,7 @@ mod tests {
                     assert_eq!(submitted["filesystemReferences"], json!([existing, uploaded]));
                     let accepted = submitted["task"].as_str().is_some_and(|task| !task.trim().is_empty());
                     json!({"ok":true, "data":{
-                        "schemaVersion":"deepcode.command-reply.v3", "commandId":"command:focus",
+                        "schemaVersion":"achbit.command-reply.v3", "commandId":"command:focus",
                         "sessionId":"session:focus", "revision":1,
                         "status":if accepted { "accepted" } else { "rejected" },
                         "error":if accepted { Value::Null } else {

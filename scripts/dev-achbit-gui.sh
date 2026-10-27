@@ -6,9 +6,9 @@ cd "$ROOT_DIR"
 bash build.sh --stage ui
 cargo build -p achbit-first-party-tools -p achbit-kernel-daemon -p achbit-host-web
 NATIVE="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/debug"
-export DEEPCODE_KERNEL_DAEMON_BIN="$NATIVE/achbit-kernel-daemon"
-export DEEPCODE_HOST_WEB_BIN="$NATIVE/achbit-host-web"
-export DEEPCODE_CLIENT_DIST="$ROOT_DIR/userspace/gui/dist-achbit-gui"
-export DEEPCODE_SESSION_BRIDGE="$ROOT_DIR/userspace/session-core/dist/sessionServiceBridge.js"
-export DEEPCODE_NODE="$(command -v node)"
+export ACHBIT_KERNEL_DAEMON_BIN="$NATIVE/achbit-kernel-daemon"
+export ACHBIT_HOST_WEB_BIN="$NATIVE/achbit-host-web"
+export ACHBIT_CLIENT_DIST="$ROOT_DIR/userspace/gui/dist-achbit-gui"
+export ACHBIT_SESSION_BRIDGE="$ROOT_DIR/userspace/session-core/dist/sessionServiceBridge.js"
+export ACHBIT_NODE="$(command -v node)"
 exec pnpm --filter @achbit/achbit-gui-shell tauri:dev

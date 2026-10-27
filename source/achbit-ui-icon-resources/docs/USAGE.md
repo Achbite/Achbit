@@ -6,8 +6,8 @@
 
 | 场景 | 资源 | 建议最小尺寸 |
 | --- | --- | --- |
-| 导航、标题、完整品牌展示 | `brand/svg/deepcode-wordmark-*.svg` | 120 px 宽 |
-| AC 独立简写图案 | `brand/svg/deepcode-mark-*.svg` | 24 × 24 px |
+| 导航、标题、完整品牌展示 | `brand/svg/achbit-wordmark-*.svg` | 120 px 宽 |
+| AC 独立简写图案 | `brand/svg/achbit-mark-*.svg` | 24 × 24 px |
 
 - `light` 表示用于浅色背景，`dark` 表示用于深色背景。
 - `mono` 使用 `currentColor`，适合内联到单色界面或印刷场景。

@@ -158,16 +158,16 @@
 }
 
 /* This viewport keeps keyboard scrolling and restored focus without a control outline. */
-:root[data-product='deepcode-gui'] .local-agent__body:focus {
+:root[data-product='achbit-gui'] .local-agent__body:focus {
   outline: none;
 }
 
 /* Keep wheel, touch and keyboard scrolling; the conversation rail provides navigation. */
-:root[data-product='deepcode-gui'] .local-agent__body {
+:root[data-product='achbit-gui'] .local-agent__body {
   scrollbar-width: none;
 }
 
-:root[data-product='deepcode-gui'] .local-agent__body::-webkit-scrollbar {
+:root[data-product='achbit-gui'] .local-agent__body::-webkit-scrollbar {
   display: none;
 }
 
@@ -1362,13 +1362,13 @@
   overflow-wrap: anywhere;
 }
 
-:root[data-product='deepcode-gui'] .local-agent
+:root[data-product='achbit-gui'] .local-agent
   :is(.local-agent__plan-card, .local-agent__interaction-panel, .local-agent__decision)
   :is(button, summary, textarea):focus-visible {
   outline: none;
 }
 
-:root[data-product='deepcode-gui'] .local-agent
+:root[data-product='achbit-gui'] .local-agent
   :is(.local-agent__plan-card, .local-agent__interaction-panel, .local-agent__decision)
   :is(button, summary):focus-visible {
   background: var(--dc-surface-hover);
@@ -1415,7 +1415,7 @@
 .local-agent .local-agent__decision-actions button { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 11px; border-radius: 999px; font: inherit; font-size: var(--dc-font-body); }
 .local-agent__decision-actions kbd { padding: 0 5px; border-radius: 5px; background: color-mix(in srgb, currentColor 9%, transparent); font: inherit; font-size: var(--dc-font-caption); line-height: 20px; }
 .local-agent .local-agent__decision-actions .local-agent__decision-allow { background: var(--dc-foreground-strong); border-color: var(--dc-foreground-strong); color: var(--dc-surface); }
-:root[data-product='deepcode-gui'] .local-agent .local-agent__decision-actions .local-agent__decision-allow:focus-visible {
+:root[data-product='achbit-gui'] .local-agent .local-agent__decision-actions .local-agent__decision-allow:focus-visible {
   background: var(--dc-foreground-strong);
   color: var(--dc-surface);
   box-shadow: none;

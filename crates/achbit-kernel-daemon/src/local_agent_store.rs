@@ -5,9 +5,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 const SESSION_STORE_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/session.sql");
-const EVENT_VERSION: &str = "deepcode.session-event.v5";
-const COMMAND_VERSION: &str = "deepcode.command.v3";
-const REPLY_VERSION: &str = "deepcode.command-reply.v3";
+const EVENT_VERSION: &str = "achbit.session-event.v5";
+const COMMAND_VERSION: &str = "achbit.command.v3";
+const REPLY_VERSION: &str = "achbit.command-reply.v3";
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalAgentStoreError {
@@ -3451,7 +3451,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
     if object.get("schemaVersion").and_then(Value::as_str) != Some(COMMAND_VERSION) {
         return Err(LocalAgentStoreError::new(
             "session_command_version_invalid",
-            "只接受 deepcode.command.v3。",
+            "只接受 achbit.command.v3。",
         ));
     }
     validate_id("sessionId", required_string(command, "sessionId")?)?;
@@ -4684,7 +4684,7 @@ fn validate_reply(reply: &Value) -> Result<(), LocalAgentStoreError> {
     if reply.get("schemaVersion").and_then(Value::as_str) != Some(REPLY_VERSION) {
         return Err(LocalAgentStoreError::new(
             "session_reply_version_invalid",
-            "只接受 deepcode.command-reply.v3。",
+            "只接受 achbit.command-reply.v3。",
         ));
     }
     let status = required_string(reply, "status")?;
@@ -6036,7 +6036,7 @@ mod tests {
     impl Store {
         fn new() -> Self {
             let root = std::env::temp_dir()
-                .join(random_id("deepcode-store-test").unwrap().replace(':', "-"));
+                .join(random_id("achbit-store-test").unwrap().replace(':', "-"));
             std::fs::create_dir(&root).unwrap();
             Self(root)
         }

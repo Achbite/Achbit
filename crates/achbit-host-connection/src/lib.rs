@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 // Presentation DTO for both desktop Host shells; contains no Session facts.
-pub const HOST_STARTUP_STATUS_SCHEMA: &str = "deepcode.host-shell.startup-status";
+pub const HOST_STARTUP_STATUS_SCHEMA: &str = "achbit.host-shell.startup-status";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

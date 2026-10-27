@@ -53,7 +53,7 @@ const CONTROLS = 'button, select, summary, [role="button"]';
  * reading selection in the surface where it started; editors own their selection. */
 export function installTextSelectionBoundary(document: Document): () => void {
   let surface: Element | null = null;
-  const highlightName = 'deepcode-reading-selection';
+  const highlightName = 'achbit-reading-selection';
   const clearPaint = () => {
     document.documentElement.removeAttribute('data-reading-selection');
     CSS.highlights?.delete(highlightName);

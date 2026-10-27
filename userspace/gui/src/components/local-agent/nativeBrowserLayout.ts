@@ -4,7 +4,7 @@ export function clippedBrowserBounds(rect: { x: number; y: number; width: number
 }
 export function measureBrowserSurface(surface: HTMLElement, active: boolean) {
   const bounds = clippedBrowserBounds(surface.getBoundingClientRect(), window.innerWidth, window.innerHeight);
-  const covered = [...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"][aria-modal="true"], .deepcode-local-agent-overlay, .settings-center-overlay, details[data-native-overlay][open], [data-native-overlay]:not(details)')].some(element => {
+  const covered = [...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"][aria-modal="true"], .achbit-local-agent-overlay, .settings-center-overlay, details[data-native-overlay][open], [data-native-overlay]:not(details)')].some(element => {
     const style = getComputedStyle(element), rect = element.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0'
       && rect.width > 0 && rect.height > 0 && rect.right > bounds.x && rect.left < bounds.x + bounds.width

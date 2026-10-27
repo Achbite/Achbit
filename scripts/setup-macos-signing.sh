@@ -3,11 +3,11 @@
 set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { printf 'Run this setup on the Mac development host.\n' >&2; exit 1; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-IDENTITY='DeepCode Local Development'
+IDENTITY='Achbit Local Development'
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 [ -f "$KEYCHAIN" ] || { printf 'The login keychain is missing: %s\n' "$KEYCHAIN" >&2; exit 1; }
 umask 077
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/deepcode-signing.XXXXXX")"
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/achbit-signing.XXXXXX")"
 trap 'rm -rf -- "$SCRATCH"' EXIT
 
 if security find-certificate -c "$IDENTITY" -p "$KEYCHAIN" > "$SCRATCH/certificate.pem" 2> "$SCRATCH/lookup-error"; then
@@ -29,7 +29,7 @@ prompt = no
 distinguished_name = subject
 x509_extensions = signing
 [subject]
-CN = DeepCode Local Development
+CN = Achbit Local Development
 [signing]
 basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature
@@ -51,7 +51,7 @@ if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -F "\"$IDENTITY
   printf 'macOS may ask you to confirm this one-time local code-signing identity.\n'
   security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$SCRATCH/certificate.pem"
 fi
-signer="$(DEEPCODE_MACOS_SIGN_IDENTITY="$IDENTITY" python3 "$ROOT_DIR/scripts/macos_signing.py")"
+signer="$(ACHBIT_MACOS_SIGN_IDENTITY="$IDENTITY" python3 "$ROOT_DIR/scripts/macos_signing.py")"
 # Exercise private-key access during setup, so the first build does not discover
 # a pending keychain authorization after compilation has already completed.
 cp /usr/bin/true "$SCRATCH/signing-probe"

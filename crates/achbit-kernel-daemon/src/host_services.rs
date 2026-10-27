@@ -299,7 +299,7 @@ fn atomic_write_workspace_json(path: &Path, value: &Value) -> Result<(), KernelE
         )
     })?;
     let temp_path = parent.join(format!(
-        ".deepcode-workspace-{}-{}.tmp",
+        ".achbit-workspace-{}-{}.tmp",
         std::process::id(),
         crate::now_millis()
     ));

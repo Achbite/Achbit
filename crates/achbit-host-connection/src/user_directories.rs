@@ -22,7 +22,7 @@ impl UserDirectories {
         // A directly launched Debug executable must not discover the stable Host.
         // Explicit roots still select a particular isolated test instance.
         #[cfg(feature = "debug-control")]
-        if std::env::var_os("DEEPCODE_USER_ROOT").is_none() {
+        if std::env::var_os("ACHBIT_USER_ROOT").is_none() {
             let root = debug_root_for(std::env::consts::OS, |key| std::env::var_os(key))?;
             return Ok(Self::isolated(&root));
         }
@@ -68,17 +68,17 @@ impl UserDirectories {
     /// Preserve an explicit relative override when the child changes its cwd.
     pub fn configure_child(&self, command: &mut Command) {
         if let Some(root) = &self.isolation_root {
-            command.env("DEEPCODE_USER_ROOT", root);
+            command.env("ACHBIT_USER_ROOT", root);
         }
-        command.env("DEEPCODE_LOG_DIR", &self.log_dir);
+        command.env("ACHBIT_LOG_DIR", &self.log_dir);
     }
 }
 
 #[cfg(feature = "debug-control")]
 fn debug_root_for(platform: &str, env: impl Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
     let (key, suffix) = match platform {
-        "windows" => ("LOCALAPPDATA", "DeepCode-Debug"),
-        "macos" => ("HOME", "Library/Application Support/DeepCode-Debug"),
+        "windows" => ("LOCALAPPDATA", "Achbit-Debug"),
+        "macos" => ("HOME", "Library/Application Support/Achbit-Debug"),
         _ => ("HOME", ".achbit-debug"),
     };
     let base = env(key).filter(|value| !value.is_empty()).ok_or_else(|| {
@@ -104,15 +104,15 @@ fn resolve_for(
         value(key).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("{key} is required to locate DeepCode user directories"),
+                format!("{key} is required to locate Achbit user directories"),
             )
         })
     };
-    if let Some(root) = environment("DEEPCODE_USER_ROOT") {
+    if let Some(root) = environment("ACHBIT_USER_ROOT") {
         if root.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "DEEPCODE_USER_ROOT must not be empty",
+                "ACHBIT_USER_ROOT must not be empty",
             ));
         }
         return Ok(UserDirectories::isolated(Path::new(&root)));
@@ -120,17 +120,17 @@ fn resolve_for(
     let (config_dir, data_dir, cache_dir, log_dir) = match platform {
         "macos" => {
             let library = required("HOME")?.join("Library");
-            let support = library.join("Application Support/DeepCode");
+            let support = library.join("Application Support/Achbit");
             (
                 support.join("config"),
                 support.join("data"),
-                library.join("Caches/DeepCode"),
-                library.join("Logs/DeepCode"),
+                library.join("Caches/Achbit"),
+                library.join("Logs/Achbit"),
             )
         }
         "windows" => {
-            let roaming = required("APPDATA")?.join("DeepCode");
-            let local = required("LOCALAPPDATA")?.join("DeepCode");
+            let roaming = required("APPDATA")?.join("Achbit");
+            let local = required("LOCALAPPDATA")?.join("Achbit");
             (
                 roaming.join("config"),
                 local.join("Data"),
@@ -146,10 +146,10 @@ fn resolve_for(
                 }
             };
             (
-                xdg("XDG_CONFIG_HOME", ".config")?.join("DeepCode"),
-                xdg("XDG_DATA_HOME", ".local/share")?.join("DeepCode"),
-                xdg("XDG_CACHE_HOME", ".cache")?.join("DeepCode"),
-                xdg("XDG_STATE_HOME", ".local/state")?.join("DeepCode/log"),
+                xdg("XDG_CONFIG_HOME", ".config")?.join("Achbit"),
+                xdg("XDG_DATA_HOME", ".local/share")?.join("Achbit"),
+                xdg("XDG_CACHE_HOME", ".cache")?.join("Achbit"),
+                xdg("XDG_STATE_HOME", ".local/state")?.join("Achbit/log"),
             )
         }
     };
@@ -157,8 +157,8 @@ fn resolve_for(
         config_dir,
         data_dir,
         cache_dir,
-        temp_dir: system_temporary.join("DeepCode"),
-        log_dir: value("DEEPCODE_LOG_DIR").unwrap_or(log_dir),
+        temp_dir: system_temporary.join("Achbit"),
+        log_dir: value("ACHBIT_LOG_DIR").unwrap_or(log_dir),
         isolation_root: None,
     })
 }
@@ -175,8 +175,8 @@ mod tests {
             (key == "LOCALAPPDATA").then(|| local.clone().into_os_string())
         })
         .unwrap();
-        assert_eq!(root, local.join("DeepCode-Debug"));
-        assert_ne!(root, local.join("DeepCode"));
+        assert_eq!(root, local.join("Achbit-Debug"));
+        assert_ne!(root, local.join("Achbit"));
         assert!(debug_root_for("windows", |_| None).is_err());
         assert!(debug_root_for("windows", |_| Some(OsString::new())).is_err());
     }
@@ -197,45 +197,42 @@ mod tests {
         let mac = resolve_for("macos", environment, temp).unwrap();
         assert_eq!(
             mac.config_dir,
-            Path::new("/Users/example/Library/Application Support/DeepCode/config")
+            Path::new("/Users/example/Library/Application Support/Achbit/config")
         );
         assert_eq!(
             mac.data_dir,
-            Path::new("/Users/example/Library/Application Support/DeepCode/data")
+            Path::new("/Users/example/Library/Application Support/Achbit/data")
         );
         assert_eq!(
             mac.cache_dir,
-            Path::new("/Users/example/Library/Caches/DeepCode")
+            Path::new("/Users/example/Library/Caches/Achbit")
         );
-        assert_eq!(
-            mac.log_dir,
-            Path::new("/Users/example/Library/Logs/DeepCode")
-        );
-        assert_eq!(mac.temp_dir, temp.join("DeepCode"));
+        assert_eq!(mac.log_dir, Path::new("/Users/example/Library/Logs/Achbit"));
+        assert_eq!(mac.temp_dir, temp.join("Achbit"));
         let win = resolve_for("windows", environment, temp).unwrap();
         assert_eq!(
             win.config_dir,
-            Path::new("C:/Users/example/AppData/Roaming/DeepCode/config")
+            Path::new("C:/Users/example/AppData/Roaming/Achbit/config")
         );
         assert_eq!(
             win.data_dir,
-            Path::new("C:/Users/example/AppData/Local/DeepCode/Data")
+            Path::new("C:/Users/example/AppData/Local/Achbit/Data")
         );
         assert_eq!(
             win.cache_dir,
-            Path::new("C:/Users/example/AppData/Local/DeepCode/Cache")
+            Path::new("C:/Users/example/AppData/Local/Achbit/Cache")
         );
         assert_eq!(
             win.log_dir,
-            Path::new("C:/Users/example/AppData/Local/DeepCode/Logs")
+            Path::new("C:/Users/example/AppData/Local/Achbit/Logs")
         );
-        assert_eq!(win.temp_dir, temp.join("DeepCode"));
+        assert_eq!(win.temp_dir, temp.join("Achbit"));
         let linux = resolve_for("linux", environment, temp).unwrap();
-        assert_eq!(linux.config_dir, Path::new("/xdg/config/DeepCode"));
-        assert_eq!(linux.data_dir, Path::new("/xdg/data/DeepCode"));
-        assert_eq!(linux.cache_dir, Path::new("/xdg/cache/DeepCode"));
-        assert_eq!(linux.log_dir, Path::new("/xdg/state/DeepCode/log"));
-        assert_eq!(linux.temp_dir, temp.join("DeepCode"));
+        assert_eq!(linux.config_dir, Path::new("/xdg/config/Achbit"));
+        assert_eq!(linux.data_dir, Path::new("/xdg/data/Achbit"));
+        assert_eq!(linux.cache_dir, Path::new("/xdg/cache/Achbit"));
+        assert_eq!(linux.log_dir, Path::new("/xdg/state/Achbit/log"));
+        assert_eq!(linux.temp_dir, temp.join("Achbit"));
         let default_linux = resolve_for(
             "linux",
             |key| (key == "HOME").then(|| "/home/user".into()),
@@ -244,42 +241,39 @@ mod tests {
         .unwrap();
         assert_eq!(
             default_linux.config_dir,
-            Path::new("/home/user/.config/DeepCode")
+            Path::new("/home/user/.config/Achbit")
         );
         assert_eq!(
             default_linux.data_dir,
-            Path::new("/home/user/.local/share/DeepCode")
+            Path::new("/home/user/.local/share/Achbit")
         );
         assert_eq!(
             default_linux.cache_dir,
-            Path::new("/home/user/.cache/DeepCode")
+            Path::new("/home/user/.cache/Achbit")
         );
         assert_eq!(
             default_linux.log_dir,
-            Path::new("/home/user/.local/state/DeepCode/log")
+            Path::new("/home/user/.local/state/Achbit/log")
         );
     }
 
     #[test]
     fn explicit_root_isolates_all_purposes_without_platform_environment() {
         let temp = Path::new("/system/temp");
-        let root = Path::new("/explicit/DeepCode");
+        let root = Path::new("/explicit/Achbit");
         for platform in ["macos", "windows", "linux"] {
             let directories = resolve_for(
                 platform,
-                |key| (key == "DEEPCODE_USER_ROOT").then(|| root.into()),
+                |key| (key == "ACHBIT_USER_ROOT").then(|| root.into()),
                 temp,
             )
             .unwrap();
             assert_eq!(directories, UserDirectories::isolated(root));
             let mut command = Command::new("unused-test-command");
             directories.configure_child(&mut command);
-            assert!(
-                command
-                    .get_envs()
-                    .any(|(key, value)| key == "DEEPCODE_USER_ROOT"
-                        && value == Some(root.as_os_str()))
-            );
+            assert!(command
+                .get_envs()
+                .any(|(key, value)| key == "ACHBIT_USER_ROOT" && value == Some(root.as_os_str())));
         }
         assert_eq!(
             resolve_for("windows", |_| None, temp).unwrap_err().kind(),
@@ -288,7 +282,7 @@ mod tests {
         assert_eq!(
             resolve_for(
                 "macos",
-                |key| (key == "DEEPCODE_USER_ROOT").then(Default::default),
+                |key| (key == "ACHBIT_USER_ROOT").then(Default::default),
                 temp
             )
             .unwrap_err()

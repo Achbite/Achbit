@@ -20,20 +20,20 @@ function achbitGuiDevelopmentEntry(): Plugin {
 }
 
 export default defineConfig(({ command }) => {
-  const debug = process.env.DEEPCODE_BUILD_KIND === 'debug';
-  const host = process.env.DEEPCODE_HOST ?? '127.0.0.1';
-  const hostPort = process.env.DEEPCODE_HOST_PORT ?? '31245';
-  const devPort = Number(process.env.DEEPCODE_GUI_DEV_PORT ?? '5174');
-  const uiToken = process.env.DEEPCODE_HOST_UI_TOKEN ?? '';
+  const debug = process.env.ACHBIT_BUILD_KIND === 'debug';
+  const host = process.env.ACHBIT_HOST ?? '127.0.0.1';
+  const hostPort = process.env.ACHBIT_HOST_PORT ?? '31245';
+  const devPort = Number(process.env.ACHBIT_GUI_DEV_PORT ?? '5174');
+  const uiToken = process.env.ACHBIT_HOST_UI_TOKEN ?? '';
   if (command === 'serve') {
     if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
       throw new Error('Achbit Web development Host must be loopback.');
     }
     if (!Number.isSafeInteger(devPort) || devPort < 1 || devPort > 65_535) {
-      throw new Error('DEEPCODE_GUI_DEV_PORT must be an integer from 1 to 65535.');
+      throw new Error('ACHBIT_GUI_DEV_PORT must be an integer from 1 to 65535.');
     }
     if (!/^dcui_[0-9a-f]{64}$/.test(uiToken)) {
-      throw new Error('DEEPCODE_HOST_UI_TOKEN is required for Web development mode.');
+      throw new Error('ACHBIT_HOST_UI_TOKEN is required for Web development mode.');
     }
   }
   const target = `http://${host}:${hostPort}`;
@@ -43,13 +43,13 @@ export default defineConfig(({ command }) => {
     configure(proxy: { on: (event: string, listener: (request: { setHeader: (name: string, value: string) => void }) => void) => void }) {
       proxy.on('proxyReq', (request) => {
         request.setHeader('origin', target);
-        request.setHeader('x-deepcode-host-ui-token', uiToken);
+        request.setHeader('x-achbit-host-ui-token', uiToken);
       });
     },
   };
   return {
     plugins: [achbitGuiDevelopmentEntry(), react(), pdfDocumentAssets(), {
-      name: 'deepcode-build-kind',
+      name: 'achbit-build-kind',
       transformIndexHtml: {
         order: 'pre',
         handler: () => debug ? [{ tag: 'script', attrs: { type: 'module', src: '/src/debug/install.ts' }, injectTo: 'head' }] : [],
@@ -59,7 +59,7 @@ export default defineConfig(({ command }) => {
         await rename(resolve(options.dir, 'achbit-gui.html'), resolve(options.dir, 'index.html'));
       },
     }],
-    define: { __DEEPCODE_DEBUG__: JSON.stringify(debug) },
+    define: { __ACHBIT_DEBUG__: JSON.stringify(debug) },
     base: './',
     build: {
       outDir: debug ? '../../.build-cache/gui-debug' : 'dist-achbit-gui',
@@ -90,7 +90,7 @@ export default defineConfig(({ command }) => {
       },
     },
     server: {
-      host: process.env.DEEPCODE_GUI_BIND_HOST ?? '127.0.0.1',
+      host: process.env.ACHBIT_GUI_BIND_HOST ?? '127.0.0.1',
       port: devPort,
       strictPort: true,
       // macOS container mounts do not reliably forward filesystem watch events.

@@ -1,5 +1,5 @@
 (function startReview({ labels, annotation, reviewId }) {
-  window.__deepcodeReview?.dispose();
+  window.__achbitReview?.dispose();
   const host = document.createElement('div');
   host.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none';
   const root = host.attachShadow({ mode: 'closed' });
@@ -32,7 +32,7 @@
   const events = new AbortController();
   let selected = null, origin = null, pending = null, pressTimer = null, dragging = false, editingId = null, pointerId = null;
   const state = { reviewId, active: true, pending: null, dispose, acknowledge };
-  window.__deepcodeReview = state;
+  window.__achbitReview = state;
   function clearPress() { clearTimeout(pressTimer); pressTimer = null; }
   function dispose(reason) {
     endGesture(); events.abort(); host.remove(); state.active = false;

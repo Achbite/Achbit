@@ -41,7 +41,7 @@ impl OwnedFixture {
         );
         assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
         let root = std::env::temp_dir().join(format!(
-            "deepcode-native-service-{}-{}",
+            "achbit-native-service-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

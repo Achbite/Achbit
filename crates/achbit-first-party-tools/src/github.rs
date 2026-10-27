@@ -210,13 +210,13 @@ fn read(input: &Value) -> ToolResult<Value> {
 }
 
 fn github_headers(authentication_required: bool) -> ToolResult<Vec<(HeaderName, HeaderValue)>> {
-    let token = std::env::var("DEEPCODE_GITHUB_TOKEN")
+    let token = std::env::var("ACHBIT_GITHUB_TOKEN")
         .ok()
         .filter(|value| !value.trim().is_empty());
     if authentication_required && token.is_none() {
         return Err(ToolError::new(
             "github_code_search_auth_required",
-            "GitHub code search requires DEEPCODE_GITHUB_TOKEN in the plugin process",
+            "GitHub code search requires ACHBIT_GITHUB_TOKEN in the plugin process",
         ));
     }
     let mut headers = vec![
@@ -383,7 +383,7 @@ mod tests {
     fn repository_search_result_requires_github_identity_fields() {
         let error = search_result(
             "repositories",
-            &json!({ "html_url": "https://github.com/deepcode/project" }),
+            &json!({ "html_url": "https://github.com/achbit/project" }),
         )
         .expect_err("missing full_name must remain an upstream response error");
         assert_eq!(error.code, "github_response_invalid");

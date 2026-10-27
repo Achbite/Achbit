@@ -81,7 +81,7 @@ test('the shared child review sends each user decision to the original child Pla
   const responses = [{ kind: 'confirm' }, { kind: 'requestRevision', text: 'Only write report.md.' }, { kind: 'cancel' }];
   for (const response of responses) await decide(response);
   assert.deepEqual(calls.map(({ commandId, ...command }) => command), responses.map(response => ({
-    schemaVersion: 'deepcode.command.v3', type: 'plan.respond', sessionId: 'session:child', runId: 'run:child',
+    schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId: 'session:child', runId: 'run:child',
     planId: 'plan:child', revision: 3, response,
   })));
   assert.equal(new Set(calls.map(command => command.commandId)).size, responses.length);

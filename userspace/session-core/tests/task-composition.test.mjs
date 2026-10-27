@@ -26,7 +26,7 @@ test('a read task declares only its read tool and omits framework configuration 
   runtime.toolSelection = selection;
   runtime.agentToolsEnabled = true;
   runtime.instructions.push(environmentInstruction(runtime.environment));
-  runtime.instructions.push({ id: 'deepcode.workspace-autonomy', text: 'Mutation permission policy.' });
+  runtime.instructions.push({ id: 'achbit.workspace-autonomy', text: 'Mutation permission policy.' });
   const result = await buildAgentProviderRequest({ sessionId: 'session:read-task', runId: 'run:read-task', runtime,
     events: [], workspaceBindings: [workspaceBinding], providerRequestId: 'request:read-task', responseConstraint: 'normal' });
   assert.deepEqual(result.request.tools.map(tool => tool.name), ['fs_read']);

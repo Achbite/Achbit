@@ -64,8 +64,8 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
       for (const observer of observers) { try { observer.failed(sessionId, error); } catch { /* Preserve producer isolation. */ } }
     },
   };
-  const apiBase = requiredEnvironment('DEEPCODE_LOCAL_AGENT_API_BASE');
-  const serviceToken = requiredEnvironment('DEEPCODE_LOCAL_AGENT_TOKEN');
+  const apiBase = requiredEnvironment('ACHBIT_LOCAL_AGENT_API_BASE');
+  const serviceToken = requiredEnvironment('ACHBIT_LOCAL_AGENT_TOKEN');
   const journal = new HttpCommandJournal({ apiBase, serviceToken });
   const kernel = new HttpKernelPort({ apiBase, serviceToken });
   const provider = new HttpProviderPort({ apiBase, serviceToken });
@@ -198,7 +198,7 @@ async function dispatch(
 }
 
 async function loadSessionServiceFactory(): Promise<SessionServiceFactory> {
-  const modulePath = process.env.DEEPCODE_SESSION_SERVICE_MODULE;
+  const modulePath = process.env.ACHBIT_SESSION_SERVICE_MODULE;
   if (modulePath === undefined) return createSessionService;
   if (!isAbsolute(modulePath)) throw new Error('session_service_module_path_invalid');
   const module: unknown = await import(pathToFileURL(modulePath).href);

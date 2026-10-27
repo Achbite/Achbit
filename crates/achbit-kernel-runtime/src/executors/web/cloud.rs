@@ -34,7 +34,7 @@ pub(super) fn invoke(
         .map_err(archive_error)?;
     // Own and join the transport worker; cancellation drops the active request.
     std::thread::scope(|scope| {
-        std::thread::Builder::new().name("deepcode-cloud-search".into()).spawn_scoped(scope, || {
+        std::thread::Builder::new().name("achbit-cloud-search".into()).spawn_scoped(scope, || {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
                 .map_err(|error| KernelError::Other(error.to_string()))?;
             let bytes = runtime.block_on(async {
@@ -86,7 +86,7 @@ async fn request(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("DeepCode-Kernel/0.1")
+        .user_agent("Achbit-Kernel/0.1")
         .build()
         .map_err(|error| KernelError::Other(error.to_string()))?;
     let mut response = client

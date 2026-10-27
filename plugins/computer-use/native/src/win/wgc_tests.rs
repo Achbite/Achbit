@@ -142,7 +142,7 @@ impl TestWindow {
         let thread = std::thread::spawn(move || unsafe {
             SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let instance = GetModuleHandleW(None).unwrap();
-            let class = w!("DeepCode.Wgc.Test.Window");
+            let class = w!("Achbit.Wgc.Test.Window");
             assert_ne!(
                 RegisterClassW(&WNDCLASSW {
                     hInstance: instance.into(),
@@ -156,7 +156,7 @@ impl TestWindow {
             let target = CreateWindowExW(
                 WS_EX_NOACTIVATE,
                 class,
-                w!("DeepCode WGC verification"),
+                w!("Achbit WGC verification"),
                 WS_OVERLAPPEDWINDOW,
                 100,
                 100,
@@ -277,13 +277,13 @@ fn helper_capture_and_release(window: &Window) {
             let _ = std::fs::remove_dir_all(&self.1);
         }
     }
-    let executable = std::env::var_os("DEEPCODE_TEST_COMPUTER_USE_HELPER")
-        .expect("set DEEPCODE_TEST_COMPUTER_USE_HELPER to the built Windows helper");
+    let executable = std::env::var_os("ACHBIT_TEST_COMPUTER_USE_HELPER")
+        .expect("set ACHBIT_TEST_COMPUTER_USE_HELPER to the built Windows helper");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let archive = std::env::temp_dir().join(format!(
-        "deepcode-wgc-{}-{}",
+        "achbit-wgc-{}-{}",
         std::process::id(),
         protocol::timestamp_millis().unwrap()
     ));

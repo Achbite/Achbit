@@ -45,7 +45,7 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
         output: {stdout: 'building\n', stderr: '', stdoutBytes: 9, stderrBytes: 0, truncated: false}};
       wake();
       const reply = completedExecutionReply(request, {job});
-      reply.record.preparedEffect.providerRef = 'deepcode:processes';
+      reply.record.preparedEffect.providerRef = 'achbit:processes';
       reply.record.preparedEffect.operation = 'bash';
       reply.record.preparedEffect.logicalTargets = ['.'];
       return reply;
@@ -76,7 +76,7 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
   assert.equal((await actor.snapshot()).messages.some(m => m.content === 'Premature answer.'), true, 'valid generated text persists while the process still prevents settlement');
   assert.equal((await actor.snapshot()).run.status, 'running');
   if (watchFailure) failWatch();
-  else if (stop) await actor.submit({schemaVersion:'deepcode.command.v3', type:'run.cancel', commandId:'command:stop', sessionId, runId:active.run.runId});
+  else if (stop) await actor.submit({schemaVersion:'achbit.command.v3', type:'run.cancel', commandId:'command:stop', sessionId, runId:active.run.runId});
   else finish('completed');
   const final = await waitForProjection(actor, p => ['completed','cancelled','failed'].includes(p.run?.status));
   assert.equal(final.run.status, watchFailure ? 'failed' : ending);
@@ -111,7 +111,7 @@ function activeJobReply(request) {
     toolName: 'bash', command: 'prepare', targets: ['.'], status: 'active', startedAt: String(Date.now()),
     output: { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, truncated: false } };
   const reply = completedExecutionReply(request, { job });
-  reply.record.preparedEffect.providerRef = 'deepcode:processes';
+  reply.record.preparedEffect.providerRef = 'achbit:processes';
   reply.record.preparedEffect.operation = 'bash';
   reply.record.preparedEffect.logicalTargets = ['.'];
   return { job, reply };

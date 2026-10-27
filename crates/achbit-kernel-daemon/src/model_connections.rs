@@ -487,7 +487,7 @@ pub(crate) fn summary(gui: &GuiState) -> Result<Value, String> {
                 value["authStatus"] = json!(if connection.credential_kind == "none"
                     || secret.is_some()
                     || (connection.credential_ref.is_none()
-                        && std::env::var("DEEPCODE_LLM_API_KEY")
+                        && std::env::var("ACHBIT_LLM_API_KEY")
                             .is_ok_and(|key| !key.trim().is_empty()))
                 {
                     "ready"

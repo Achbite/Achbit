@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-const KERNEL_REQUEST_VERSION: &str = "deepcode.kernel-request";
-const KERNEL_REPLY_VERSION: &str = "deepcode.kernel-reply";
+const KERNEL_REQUEST_VERSION: &str = "achbit.kernel-request";
+const KERNEL_REPLY_VERSION: &str = "achbit.kernel-reply";
 const TOOL_RECORD_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/tool-record.sql");
 const TOOL_RECORD_STORE_VERSION: u32 = 1;
 const ATTEMPT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2632,7 +2632,7 @@ fn prepare_effect_target(
             if resolved.access.read_only() && scope == PreparedEffectScope::WorkspaceMutation {
                 let mut error = LocalAgentKernelError::input(
                         "$.workspaceId", "readOnlyInput",
-                        "会话输入快照只读。可直接读取或在内部浏览器打开；编辑预览请使用已绑定的 DeepCode 会话工作目录中的副本。",
+                        "会话输入快照只读。可直接读取或在内部浏览器打开；编辑预览请使用已绑定的 Achbit 会话工作目录中的副本。",
                         None,
                     );
                 error.code = "input_resource_read_only";

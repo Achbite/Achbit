@@ -22,7 +22,7 @@ fn resolve_override(name: &str, value: OsString) -> io::Result<PathBuf> {
 
 /// Packaged resources are independent of the writable user data directory.
 pub fn runtime_root(executable_dir: &Path) -> io::Result<PathBuf> {
-    if let Some(path) = configured_path("DEEPCODE_RUNTIME_DIR")? {
+    if let Some(path) = configured_path("ACHBIT_RUNTIME_DIR")? {
         return Ok(path);
     }
     let root = if cfg!(target_os = "macos") && executable_dir.ends_with("Contents/MacOS") {
@@ -37,8 +37,8 @@ pub fn runtime_root(executable_dir: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn configure_runtime_child(command: &mut Command, resources: &Path) -> io::Result<()> {
-    command.env("DEEPCODE_RUNTIME_DIR", resources);
-    for name in ["DEEPCODE_NODE", "DEEPCODE_SESSION_BRIDGE"] {
+    command.env("ACHBIT_RUNTIME_DIR", resources);
+    for name in ["ACHBIT_NODE", "ACHBIT_SESSION_BRIDGE"] {
         if let Some(path) = configured_path(name)? {
             command.env(name, path);
         }
@@ -52,12 +52,12 @@ mod tests {
 
     #[test]
     fn relative_overrides_keep_the_parent_location_when_the_child_moves() {
-        let path = resolve_override("DEEPCODE_RUNTIME_DIR", "bin/中文 runtime".into()).unwrap();
+        let path = resolve_override("ACHBIT_RUNTIME_DIR", "bin/中文 runtime".into()).unwrap();
         let parent = std::env::current_dir().unwrap();
         assert_eq!(path, parent.join("bin/中文 runtime"));
         assert_eq!(parent.join("different-child-directory").join(&path), path);
         assert_eq!(
-            resolve_override("DEEPCODE_CLIENT_DIST", OsString::new())
+            resolve_override("ACHBIT_CLIENT_DIST", OsString::new())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidInput

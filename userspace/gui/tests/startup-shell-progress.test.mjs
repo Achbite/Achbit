@@ -148,10 +148,10 @@ test('a quiet Shell displays its command before completion, then a bounded live 
 test('native startup completion wakes the observer and its subscription is released', async t => {
   const previous = globalThis.window;
   let callback, removed = false, observed = 0;
-  globalThis.window = { location: new URL('deepcode-gui://localhost/index.html'), __TAURI__: {
+  globalThis.window = { location: new URL('achbit-gui://localhost/index.html'), __TAURI__: {
     core: { invoke: async () => {} },
     event: { listen: async (name, handler) => {
-      assert.equal(name, 'deepcode:host-startup-complete');
+      assert.equal(name, 'achbit:host-startup-complete');
       callback = handler;
       return () => { removed = true; };
     } },
@@ -164,7 +164,7 @@ test('native startup completion wakes the observer and its subscription is relea
   assert.equal(isRuntimeReady({ok:true,data:{ok:true,status:'ok',kernel:'ready',session:'starting'}}), false, 'a wakeup never replaces the actual health check');
   assert.equal(isRuntimeReady({ok:true,data:{ok:true,status:'ok',kernel:'ready',session:'ready'}}), true);
   stop(); assert.equal(removed, true);
-  globalThis.window.__DEEPCODE_BROWSER_PREVIEW__ = true;
+  globalThis.window.__ACHBIT_BROWSER_PREVIEW__ = true;
   const previewStop = await onHostStartupComplete(() => observed++);
   previewStop(); assert.equal(observed, 1);
 });

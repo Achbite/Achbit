@@ -27,7 +27,7 @@ def files(root):
 
 class UiUpdateTests(unittest.TestCase):
     def setUp(self):
-        scratch = tempfile.TemporaryDirectory(prefix="deepcode-ui-publish-")
+        scratch = tempfile.TemporaryDirectory(prefix="achbit-ui-publish-")
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         identity = patch.object(updater, 'signing_identity', return_value='A' * 40)

@@ -301,7 +301,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
             disabled={busy}
             aria-haspopup="menu"
             aria-expanded={projectCreateMenuOpen}
-            aria-controls="deepcode-project-create-menu"
+            aria-controls="achbit-project-create-menu"
             aria-label={t(language, 'achbitGui.project.new')}
             title={t(language, 'achbitGui.project.new')}
           >

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::Command};
 
 #[tauri::command]
-pub async fn deepcode_open_file(
+pub async fn achbit_open_file(
     webview: tauri::Webview,
     path: String,
     line: Option<u32>,
@@ -64,7 +64,7 @@ pub async fn deepcode_open_file(
 
 /// A user navigation action. This does not grant workspace access to the Agent.
 #[tauri::command]
-pub async fn deepcode_locate_path(webview: tauri::Webview, path: String) -> Result<(), String> {
+pub async fn achbit_locate_path(webview: tauri::Webview, path: String) -> Result<(), String> {
     if webview.label() != "main" {
         return Err("File navigation belongs to the primary application view.".into());
     }

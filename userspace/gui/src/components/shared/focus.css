@@ -1,23 +1,23 @@
 /* Shared focus appearance: keep the control's surface, never add an enclosing ring.
    Pointer/keyboard focus ownership stays in interactionFocus.ts. */
-:root[data-product='deepcode-gui'] :is(button, input, select, textarea, summary, a, [tabindex], [contenteditable]):is(:focus, :focus-visible) {
+:root[data-product='achbit-gui'] :is(button, input, select, textarea, summary, a, [tabindex], [contenteditable]):is(:focus, :focus-visible) {
   outline: none;
 }
 
-:root[data-product='deepcode-gui'] :is(input, select, textarea, [contenteditable]):is(:focus, :focus-visible) {
+:root[data-product='achbit-gui'] :is(input, select, textarea, [contenteditable]):is(:focus, :focus-visible) {
   box-shadow: none;
 }
 
-:root[data-product='deepcode-gui'] :is(input[type='checkbox'], input[type='radio'], input[type='range']) {
+:root[data-product='achbit-gui'] :is(input[type='checkbox'], input[type='radio'], input[type='range']) {
   accent-color: var(--dc-foreground);
 }
 
-:root[data-product='deepcode-gui'] body :is(button, [role='button'], [role='tab'], summary):focus-visible {
+:root[data-product='achbit-gui'] body :is(button, [role='button'], [role='tab'], summary):focus-visible {
   box-shadow: none;
   background-color: var(--dc-surface-hover);
   color: var(--dc-foreground);
 }
 
-:root[data-product='deepcode-gui'] .settings-switch > input:focus-visible + span {
+:root[data-product='achbit-gui'] .settings-switch > input:focus-visible + span {
   filter: brightness(.85);
 }

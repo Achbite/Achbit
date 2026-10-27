@@ -14,7 +14,7 @@ pub fn timing(stage: &'static str) {
     use std::time::{SystemTime, UNIX_EPOCH};
     static ENABLED: OnceLock<bool> = OnceLock::new();
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
-    if !*ENABLED.get_or_init(|| std::env::var("DEEPCODE_STARTUP_TIMING").as_deref() == Ok("1")) {
+    if !*ENABLED.get_or_init(|| std::env::var("ACHBIT_STARTUP_TIMING").as_deref() == Ok("1")) {
         return;
     }
     let elapsed = ORIGIN.get_or_init(Instant::now).elapsed().as_micros();

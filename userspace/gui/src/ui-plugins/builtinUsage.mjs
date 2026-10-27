@@ -17,7 +17,7 @@ const css = `
 .dc-usage[data-dock='left'] .dc-usage__handle {border-radius:0 var(--dc-radius-control) var(--dc-radius-control) 0!important}
 .dc-usage[data-dragging] .dc-usage__handle {border-radius:var(--dc-radius-control)!important}
 `;
-const positionKey = 'deepcode:usage-widget:position';
+const positionKey = 'achbit:usage-widget:position';
 export default { apply(context) {
   context.addStyle(css);
   context.register('usage.widget', (container, initial, scope) => {

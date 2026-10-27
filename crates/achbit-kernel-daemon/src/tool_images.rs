@@ -86,7 +86,7 @@ pub(crate) fn archive_content_images(
             "image/gif" => "gif",
             _ => return Err(format!("Unsupported tool image format: {media}")),
         };
-        let purpose = match block.pointer("/_meta/deepcode/purpose") {
+        let purpose = match block.pointer("/_meta/achbit/purpose") {
             None => None,
             Some(value) if value == "observation" => Some("observation"),
             Some(_) => return Err("Tool image purpose must be observation when specified".into()),
@@ -262,7 +262,7 @@ mod tests {
     fn mcp_image_bytes_are_archived_once_and_replaced_by_references() {
         let archive = Archive::new();
         let mut output = json!({"content":[{"type":"text","text":"Captured application"},
-            {"type":"image","data":PNG,"mimeType":"image/png","_meta":{"deepcode":{"purpose":"observation"}}}],
+            {"type":"image","data":PNG,"mimeType":"image/png","_meta":{"achbit":{"purpose":"observation"}}}],
             "structuredContent":{"app":"example"},"isError":false});
         archive_content_images(&mut output, "call:screen", &archive.context()).unwrap();
         assert_eq!(output["content"][0]["text"], "Captured application");
@@ -318,10 +318,10 @@ mod tests {
                     r#"
 import base64, json, pathlib, sys
 request = json.load(sys.stdin)
-directory = pathlib.Path(request['context']['deepcode']['outputDirectory'])
+directory = pathlib.Path(request['context']['achbit']['outputDirectory'])
 (directory / 'screen.png').write_bytes(base64.b64decode('{PNG}'))
 print(json.dumps({{'content':[{{'type':'image','path':'screen.png','mimeType':'image/png',
-  '_meta':{{'deepcode':{{'purpose':'observation'}}}}}}], 'metadata':request['context']['trace']}}))
+  '_meta':{{'achbit':{{'purpose':'observation'}}}}}}], 'metadata':request['context']['trace']}}))
 "#
                 ),
             ],

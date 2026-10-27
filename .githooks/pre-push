@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# managed-by: deepcode-branch-flow
+# managed-by: achbit-branch-flow
 # Protected refs are updated only by GitHub pull-request merges.
 set -euo pipefail
 
 while read -r local_ref local_oid remote_ref remote_oid; do
   case "$remote_ref" in
     refs/heads/main|refs/heads/dev-main)
-      printf 'DeepCode protected branch must be updated through a pull request: %s\n' "$remote_ref" >&2
+      printf 'Achbit protected branch must be updated through a pull request: %s\n' "$remote_ref" >&2
       exit 1
       ;;
   esac

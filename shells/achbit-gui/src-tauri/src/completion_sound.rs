@@ -56,7 +56,7 @@ pub fn play() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn deepcode_completion_sound() -> Result<SoundInfo, String> {
+pub fn achbit_completion_sound() -> Result<SoundInfo, String> {
     let path = path();
     let custom = path.try_exists().map_err(|error| error.to_string())?;
     Ok(SoundInfo {
@@ -86,13 +86,13 @@ fn replace_sound(path: &Path, data: Option<Vec<u8>>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn deepcode_set_completion_sound(data: Option<Vec<u8>>) -> Result<SoundInfo, String> {
+pub fn achbit_set_completion_sound(data: Option<Vec<u8>>) -> Result<SoundInfo, String> {
     replace_sound(&path(), data)?;
-    deepcode_completion_sound()
+    achbit_completion_sound()
 }
 
 #[tauri::command]
-pub async fn deepcode_preview_completion_sound() -> Result<(), String> {
+pub async fn achbit_preview_completion_sound() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(play)
         .await
         .map_err(|error| error.to_string())?

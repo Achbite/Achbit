@@ -7,12 +7,12 @@ const script = await readFile(new URL('../../../shells/shared/native_browser/deb
 function bridge({ text = '', list = () => [], call = async () => ({ dispatched: true }) } = {}) {
   const document = { body: { innerText: text }, readyState: 'complete', title: 'Debug fixture',
     querySelector: () => null, querySelectorAll: () => [] };
-  const window = { addEventListener() {}, __DEEPCODE_DEBUG_UI__: { list, call } };
+  const window = { addEventListener() {}, __ACHBIT_DEBUG_UI__: { list, call } };
   const context = vm.createContext({ document, window, location: { href: 'fixture:' },
     innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0, performance,
     setTimeout, clearTimeout, requestAnimationFrame: callback => setTimeout(callback, 1), cancelAnimationFrame: clearTimeout });
   vm.runInContext(script, context);
-  return window.__DEEPCODE_DEBUG_DOM__;
+  return window.__ACHBIT_DEBUG_DOM__;
 }
 
 test('a timed-out observation preserves the executed action and original condition error', async () => {

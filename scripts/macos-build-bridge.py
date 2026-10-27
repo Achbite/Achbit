@@ -46,18 +46,18 @@ def request_host(operation, shared=None, output=None, timeout=3600):
     worker = json.loads(WORKER.read_text())
     directory = Path(tempfile.mkdtemp(prefix='request-', dir=BRIDGE))
     request = {'workerId': worker['workerId'], 'operation': operation,
-               'buildKind': os.environ.get('DEEPCODE_BUILD_KIND', 'normal')}
+               'buildKind': os.environ.get('ACHBIT_BUILD_KIND', 'normal')}
     # Forward the public identity selector explicitly; credentials stay in the host keychain.
-    if 'DEEPCODE_MACOS_SIGN_IDENTITY' in os.environ:
-        request['signingIdentity'] = os.environ['DEEPCODE_MACOS_SIGN_IDENTITY']
+    if 'ACHBIT_MACOS_SIGN_IDENTITY' in os.environ:
+        request['signingIdentity'] = os.environ['ACHBIT_MACOS_SIGN_IDENTITY']
     if operation in ('runtime', 'package', 'computer-use'):
         shared = Path(shared).resolve()
         request.update(
             shared=str(shared.relative_to(ROOT)),
             output=str(Path(output).resolve().relative_to(ROOT)),
             transaction=str(shared.parent.relative_to(ROOT)),
-            commit=os.environ['DEEPCODE_BUILD_COMMIT'],
-            builtAt=os.environ['DEEPCODE_BUILD_TIME'],
+            commit=os.environ['ACHBIT_BUILD_COMMIT'],
+            builtAt=os.environ['ACHBIT_BUILD_TIME'],
         )
         (shared.parent / 'macos-request').write_text(directory.name)
     log_path = directory / 'output.log'
@@ -191,9 +191,9 @@ def serve(container_id):
                     else:
                         arguments = ['bash', str(PACKAGER)]
                         environment = os.environ.copy()
-                        environment['DEEPCODE_BUILD_KIND'] = request.get('buildKind', 'normal')
+                        environment['ACHBIT_BUILD_KIND'] = request.get('buildKind', 'normal')
                         if 'signingIdentity' in request:
-                            environment['DEEPCODE_MACOS_SIGN_IDENTITY'] = request['signingIdentity']
+                            environment['ACHBIT_MACOS_SIGN_IDENTITY'] = request['signingIdentity']
                         if operation in ('check', 'check-runtime'):
                             if operation == 'check-runtime':
                                 arguments.append('--runtime')
@@ -203,8 +203,8 @@ def serve(container_id):
                                 arguments.append('--runtime')
                             arguments.extend([str(workspace_path(request['shared'])) if operation != 'computer-use' else '--computer-use',
                                               str(workspace_path(request['output']))])
-                            environment.update(DEEPCODE_BUILD_COMMIT=request['commit'],
-                                               DEEPCODE_BUILD_TIME=request['builtAt'])
+                            environment.update(ACHBIT_BUILD_COMMIT=request['commit'],
+                                               ACHBIT_BUILD_TIME=request['builtAt'])
                         else:
                             finish(directory, request, 1, f'Unknown Mac build operation: {operation}')
                             continue
@@ -333,7 +333,7 @@ def main():
             parser.error('cancel requires --shared')
         return cancel_package(args.shared)
     elif args.operation in ('check', 'check-runtime'):
-        if not WORKER.exists() and os.environ.get('DEEPCODE_BUILD_HOST_OS') != 'Darwin':
+        if not WORKER.exists() and os.environ.get('ACHBIT_BUILD_HOST_OS') != 'Darwin':
             print('No macOS build host is registered for this worktree.')
             return 3
         return request_host(args.operation, timeout=15)

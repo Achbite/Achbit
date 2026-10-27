@@ -2,7 +2,7 @@ use super::*;
 use achbit_host_connection::ssh::{SshGuiConnection, SshTarget};
 use std::hash::{Hash, Hasher};
 
-const TARGET_ENV: &str = "DEEPCODE_GUI_SSH_TARGET";
+const TARGET_ENV: &str = "ACHBIT_GUI_SSH_TARGET";
 
 pub(super) fn launch_target() -> std::io::Result<Option<SshTarget>> {
     if std::env::args().any(|arg| arg == "--local") {
@@ -85,9 +85,9 @@ fn spawn_window(target: Option<&SshTarget>) -> Result<(), String> {
         command.env_remove(TARGET_ENV).arg("--local");
     }
     command
-        .env_remove("DEEPCODE_GUI_SSH_RECEIPT")
-        .env_remove("DEEPCODE_PORT")
-        .env_remove("DEEPCODE_SHELL_CONNECT_ONLY")
+        .env_remove("ACHBIT_GUI_SSH_RECEIPT")
+        .env_remove("ACHBIT_PORT")
+        .env_remove("ACHBIT_SHELL_CONNECT_ONLY")
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|error| error.to_string())?)
         .stderr(log);
@@ -97,7 +97,7 @@ fn spawn_window(target: Option<&SshTarget>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(super) fn deepcode_connect_ssh(app: tauri::AppHandle, target: SshTarget) -> Result<(), String> {
+pub(super) fn achbit_connect_ssh(app: tauri::AppHandle, target: SshTarget) -> Result<(), String> {
     // Replace the current shell with a clean process/renderer for this target.
     // Its bootstrap and API origin remain immutable through every GUI refresh.
     spawn_window(Some(&target))?;
@@ -106,7 +106,7 @@ pub(super) fn deepcode_connect_ssh(app: tauri::AppHandle, target: SshTarget) -> 
 }
 
 #[tauri::command]
-pub(super) fn deepcode_open_local() -> Result<(), String> {
+pub(super) fn achbit_open_local() -> Result<(), String> {
     spawn_window(None)
 }
 
@@ -190,7 +190,7 @@ pub(super) fn connect(
 }
 
 pub(super) fn write_startup_receipt(ok: bool, message: &str, endpoint: Option<&str>) {
-    let Some(path) = std::env::var_os("DEEPCODE_GUI_SSH_RECEIPT").map(PathBuf::from) else {
+    let Some(path) = std::env::var_os("ACHBIT_GUI_SSH_RECEIPT").map(PathBuf::from) else {
         return;
     };
     if !path.is_file() {

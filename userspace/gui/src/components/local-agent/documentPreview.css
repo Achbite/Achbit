@@ -22,7 +22,7 @@
 .conversation-artifact-shortcuts { display: none; margin: 12px 0; }
 .conversation-artifact-shortcuts summary { cursor: pointer; padding: 8px 0; }
 .achbit-gui-shell--no-context .conversation-artifact-shortcuts { display: block; }
-@media (max-width: 1120px) { [data-product="deepcode-gui"] .conversation-artifact-shortcuts { display: block; } }
+@media (max-width: 1120px) { [data-product="achbit-gui"] .conversation-artifact-shortcuts { display: block; } }
 .document-artifacts__item { display: grid; gap: 4px; width: 100%; padding: 10px 12px; text-align: left; border: 1px solid var(--dc-border, var(--line)); border-radius: 9px; background: var(--dc-surface-raised, var(--bg-panel)); color: var(--dc-foreground, var(--text-main)); font: inherit; cursor: pointer; }
 .document-artifacts__item:hover { background: var(--dc-surface-hover, var(--bg-hover, var(--dc-surface-hover))); }
 .document-artifacts__item span { color: var(--dc-muted, var(--text-muted)); overflow-wrap: anywhere; font-size: var(--dc-font-caption, 12px); }

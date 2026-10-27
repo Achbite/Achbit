@@ -36,6 +36,8 @@ Achbit 是一个本地优先的编程 Agent，提供桌面 GUI、TUI 和 CLI。�
 
 程序包包含运行时。WebView2、Linux 桌面依赖和各版本提供的平台包见[安装与平台要求](docs/distribution.md)。
 
+从 0.6.61 起，应用数据目录、环境变量和集成标识统一使用 Achbit 名称。默认首次启动使用新数据目录，旧数据和凭据保留原处，不自动导入。自定义启动器或集成请参阅[数据目录说明](docs/distribution.md#产品标识与数据目录)。
+
 ## Computer Use
 
 从代码继续走到实际界面。Achbit 可以在内置浏览器中打开项目页面、观察内容、操作控件并截取结果，也可以通过 Chrome DevTools MCP 或 macOS / Windows 原生桌面工具与应用交互。
@@ -62,7 +64,7 @@ achbit-tui -C /path/to/project
 
 ## 插件
 
-打开 **设置 → 插件 → 添加**，选择外部插件目录或清单文件。Achbit 能识别 CLI 工具（`achbit-tool.json`）、托管服务（`achbit-service.json`）、展示模块（`achbit-ui.json`）与 Skill（`SKILL.md`）；MCP 服务沿用已有 MCP 设置。压缩包需要先解压再导入。
+打开 **设置 → 插件 → 添加**，选择外部插件 ZIP、目录或清单文件。Achbit 能识别 CLI 工具（`achbit-tool.json`）、托管服务（`achbit-service.json`）、展示模块（`achbit-ui.json`）与 Skill（`SKILL.md`）；MCP 服务沿用已有 MCP 设置。ZIP 由 Host 自动解压、验证并安装，可直接用于导入或更新。
 
 插件遵循共享的发现、调用和资源释放协议。托管服务随启用启动，停用后释放进程和端口；兼容模型端点仍通过普通模型连接配置使用。任务工具与上下文在请求前装配，可选能力独立于主 Loop。
 

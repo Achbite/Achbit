@@ -13,7 +13,7 @@ import threading
 import urllib.parse
 import urllib.request
 
-spec = importlib.util.spec_from_file_location("deepcode_test_support", Path(__file__).with_name("support.py"))
+spec = importlib.util.spec_from_file_location("achbit_test_support", Path(__file__).with_name("support.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
@@ -111,11 +111,11 @@ def preview(daemon, port):
     """Keep this owned fixture alive for focused browser interaction checks."""
     host_port = fixture.free_port()
     token = f"dcui_{secrets.token_hex(32)}"
-    env = {**os.environ, "DEEPCODE_HOST": "127.0.0.1", "DEEPCODE_PORT": str(host_port),
-        "DEEPCODE_DAEMON_HOST": "127.0.0.1", "DEEPCODE_DAEMON_PORT": str(daemon.port),
-        "DEEPCODE_HOST_WEB_SPAWN_DAEMON": "0", "DEEPCODE_HOST_UI_TOKEN": token,
-        "DEEPCODE_HOST_SHELL_TOKEN": daemon.token, "DEEPCODE_HOST_INSTANCE_ID": daemon.instance_id,
-        "DEEPCODE_HOST_PORT": str(host_port), "DEEPCODE_GUI_DEV_PORT": str(port)}
+    env = {**os.environ, "ACHBIT_HOST": "127.0.0.1", "ACHBIT_PORT": str(host_port),
+        "ACHBIT_DAEMON_HOST": "127.0.0.1", "ACHBIT_DAEMON_PORT": str(daemon.port),
+        "ACHBIT_HOST_WEB_SPAWN_DAEMON": "0", "ACHBIT_HOST_UI_TOKEN": token,
+        "ACHBIT_HOST_SHELL_TOKEN": daemon.token, "ACHBIT_HOST_INSTANCE_ID": daemon.instance_id,
+        "ACHBIT_HOST_PORT": str(host_port), "ACHBIT_GUI_DEV_PORT": str(port)}
     processes = []
     try:
         processes.append(subprocess.Popen([str(fixture.ROOT / "target/debug/achbit-host-web")], env=env, stdout=subprocess.DEVNULL))

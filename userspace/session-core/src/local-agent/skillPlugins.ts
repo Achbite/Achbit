@@ -72,7 +72,7 @@ export function runtimeInstructions(
   const instructions: InstructionContribution[] = [
     ...stableCore.map((instruction) => ({ ...instruction })),
     {
-      id: 'deepcode.workspace-autonomy',
+      id: 'achbit.workspace-autonomy',
       text: permissionInstructionText(config.permissions, controlNames.interactionRequest, controlNames.planPublish),
     },
   ];

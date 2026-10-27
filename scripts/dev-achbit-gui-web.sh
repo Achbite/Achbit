@@ -3,12 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f /.dockerenv ] || { printf "Use make dev-achbit-gui from the host.\n" >&2; exit 1; }
-HOST="${DEEPCODE_HOST:-127.0.0.1}"
-GUI_PORT="${DEEPCODE_GUI_DEV_PORT:-5174}"
-HOST_PORT="${DEEPCODE_HOST_PORT:-31245}"
-DAEMON_PORT="${DEEPCODE_DAEMON_PORT:-31246}"
-CONFIG_SOURCE="${DEEPCODE_DEV_CONFIG_SOURCE:-}"
-RUNTIME_ROOT="${DEEPCODE_DEV_CONFIG_ROOT:-}"
+HOST="${ACHBIT_HOST:-127.0.0.1}"
+GUI_PORT="${ACHBIT_GUI_DEV_PORT:-5174}"
+HOST_PORT="${ACHBIT_HOST_PORT:-31245}"
+DAEMON_PORT="${ACHBIT_DAEMON_PORT:-31246}"
+CONFIG_SOURCE="${ACHBIT_DEV_CONFIG_SOURCE:-}"
+RUNTIME_ROOT="${ACHBIT_DEV_CONFIG_ROOT:-}"
 RUNTIME_ROOT_OWNED=0
 DAEMON_PID=""
 HOST_PID=""
@@ -56,8 +56,8 @@ cleanup() {
   stop_owned_process "$VITE_PID"
   stop_owned_process "$HOST_PID"
   stop_owned_process "$DAEMON_PID"
-  if [ -n "${DEEPCODE_DEV_CONTROL:-}" ] && [ -d "$DEEPCODE_DEV_CONTROL" ]; then
-    rm -f -- "$DEEPCODE_DEV_CONTROL/pid"
+  if [ -n "${ACHBIT_DEV_CONTROL:-}" ] && [ -d "$ACHBIT_DEV_CONTROL" ]; then
+    rm -f -- "$ACHBIT_DEV_CONTROL/pid"
   fi
   if [ "$RUNTIME_ROOT_OWNED" = "1" ] && [ -n "$RUNTIME_ROOT" ]; then
     case "$RUNTIME_ROOT" in
@@ -94,24 +94,24 @@ wait_for_health() {
 
 trap cleanup EXIT INT TERM
 
-if [ -n "${DEEPCODE_DEV_CONTROL:-}" ]; then
-  [ -d "$DEEPCODE_DEV_CONTROL" ] || fail "Development service owner is no longer active"
-  printf '%s\n' "$$" > "$DEEPCODE_DEV_CONTROL/pid"
-  [ ! -f "$DEEPCODE_DEV_CONTROL/cancel" ] || exit 0
+if [ -n "${ACHBIT_DEV_CONTROL:-}" ]; then
+  [ -d "$ACHBIT_DEV_CONTROL" ] || fail "Development service owner is no longer active"
+  printf '%s\n' "$$" > "$ACHBIT_DEV_CONTROL/pid"
+  [ ! -f "$ACHBIT_DEV_CONTROL/cancel" ] || exit 0
 fi
 
 [ "$HOST" = "127.0.0.1" ] || [ "$HOST" = "localhost" ] || [ "$HOST" = "::1" ] \
   || fail "Web 开发 Host 只能监听 loopback"
-valid_port "$GUI_PORT" || fail "DEEPCODE_GUI_DEV_PORT 必须是 1-65535 的整数"
-valid_port "$HOST_PORT" || fail "DEEPCODE_HOST_PORT 必须是 1-65535 的整数"
-valid_port "$DAEMON_PORT" || fail "DEEPCODE_DAEMON_PORT 必须是 1-65535 的整数"
+valid_port "$GUI_PORT" || fail "ACHBIT_GUI_DEV_PORT 必须是 1-65535 的整数"
+valid_port "$HOST_PORT" || fail "ACHBIT_HOST_PORT 必须是 1-65535 的整数"
+valid_port "$DAEMON_PORT" || fail "ACHBIT_DAEMON_PORT 必须是 1-65535 的整数"
 [ "$GUI_PORT" != "$HOST_PORT" ] && [ "$GUI_PORT" != "$DAEMON_PORT" ] \
   && [ "$HOST_PORT" != "$DAEMON_PORT" ] || fail "GUI、Host 和 daemon 端口必须互不相同"
 
 require_command node
 require_command curl
 
-if [ "${DEEPCODE_DEV_SKIP_BUILD:-0}" != "1" ]; then
+if [ "${ACHBIT_DEV_SKIP_BUILD:-0}" != "1" ]; then
   require_command pnpm
   require_command cargo
 fi
@@ -132,13 +132,13 @@ mkdir -p "$RUNTIME_ROOT/logs"
 
 if [ -n "$CONFIG_SOURCE" ]; then
   [ -d "$CONFIG_SOURCE/config/user/local" ] \
-    || fail "DEEPCODE_DEV_CONFIG_SOURCE 不包含 config/user/local：$CONFIG_SOURCE"
+    || fail "ACHBIT_DEV_CONFIG_SOURCE 不包含 config/user/local：$CONFIG_SOURCE"
   mkdir -p "$RUNTIME_ROOT/config/user/local"
   cp -R "$CONFIG_SOURCE/config/user/local/." "$RUNTIME_ROOT/config/user/local/"
 fi
 
 cd "$ROOT_DIR"
-if [ "${DEEPCODE_DEV_SKIP_BUILD:-0}" != "1" ]; then
+if [ "${ACHBIT_DEV_SKIP_BUILD:-0}" != "1" ]; then
   pnpm --filter @achbit/protocol build
   pnpm --filter @achbit/session-core build
   cargo build -p achbit-first-party-tools -p achbit-kernel-daemon -p achbit-host-web
@@ -163,39 +163,39 @@ SHELL_TOKEN="dchost_$(random_hex)"
 UI_TOKEN="dcui_$(random_hex)"
 INSTANCE_ID="dcinstance_$(random_hex)"
 
-env -u DEEPCODE_HOST_UI_TOKEN \
-  DEEPCODE_HOST="$HOST" \
-  DEEPCODE_PORT="$DAEMON_PORT" \
-  DEEPCODE_USER_ROOT="$RUNTIME_ROOT" \
-  DEEPCODE_SESSION_BRIDGE="$SESSION_BRIDGE" \
-  DEEPCODE_NODE="$NODE_BIN" \
-  DEEPCODE_HOST_SHELL_TOKEN="$SHELL_TOKEN" \
-  DEEPCODE_HOST_INSTANCE_ID="$INSTANCE_ID" \
+env -u ACHBIT_HOST_UI_TOKEN \
+  ACHBIT_HOST="$HOST" \
+  ACHBIT_PORT="$DAEMON_PORT" \
+  ACHBIT_USER_ROOT="$RUNTIME_ROOT" \
+  ACHBIT_SESSION_BRIDGE="$SESSION_BRIDGE" \
+  ACHBIT_NODE="$NODE_BIN" \
+  ACHBIT_HOST_SHELL_TOKEN="$SHELL_TOKEN" \
+  ACHBIT_HOST_INSTANCE_ID="$INSTANCE_ID" \
   "$DAEMON_BIN" >"$RUNTIME_ROOT/logs/daemon.log" 2>&1 &
 DAEMON_PID=$!
 wait_for_health \
   "$DAEMON_PID" \
   "http://$HOST:$DAEMON_PORT/api/health" \
-  "x-deepcode-host-shell-token" \
+  "x-achbit-host-shell-token" \
   "$SHELL_TOKEN" \
   "$RUNTIME_ROOT/logs/daemon.log" \
   || fail "Kernel daemon 启动失败"
 
 env \
-  DEEPCODE_HOST="$HOST" \
-  DEEPCODE_PORT="$HOST_PORT" \
-  DEEPCODE_DAEMON_HOST="$HOST" \
-  DEEPCODE_DAEMON_PORT="$DAEMON_PORT" \
-  DEEPCODE_HOST_WEB_SPAWN_DAEMON=0 \
-  DEEPCODE_HOST_UI_TOKEN="$UI_TOKEN" \
-  DEEPCODE_HOST_SHELL_TOKEN="$SHELL_TOKEN" \
-  DEEPCODE_HOST_INSTANCE_ID="$INSTANCE_ID" \
+  ACHBIT_HOST="$HOST" \
+  ACHBIT_PORT="$HOST_PORT" \
+  ACHBIT_DAEMON_HOST="$HOST" \
+  ACHBIT_DAEMON_PORT="$DAEMON_PORT" \
+  ACHBIT_HOST_WEB_SPAWN_DAEMON=0 \
+  ACHBIT_HOST_UI_TOKEN="$UI_TOKEN" \
+  ACHBIT_HOST_SHELL_TOKEN="$SHELL_TOKEN" \
+  ACHBIT_HOST_INSTANCE_ID="$INSTANCE_ID" \
   "$HOST_BIN" >"$RUNTIME_ROOT/logs/host-web.log" 2>&1 &
 HOST_PID=$!
 wait_for_health \
   "$HOST_PID" \
   "http://$HOST:$HOST_PORT/api/health" \
-  "x-deepcode-host-ui-token" \
+  "x-achbit-host-ui-token" \
   "$UI_TOKEN" \
   "$RUNTIME_ROOT/logs/host-web.log" \
   || fail "Host Web 启动失败"
@@ -203,10 +203,10 @@ wait_for_health \
 (
   cd "$ROOT_DIR/userspace/gui"
   exec env \
-    DEEPCODE_HOST="$HOST" \
-    DEEPCODE_HOST_PORT="$HOST_PORT" \
-    DEEPCODE_GUI_DEV_PORT="$GUI_PORT" \
-    DEEPCODE_HOST_UI_TOKEN="$UI_TOKEN" \
+    ACHBIT_HOST="$HOST" \
+    ACHBIT_HOST_PORT="$HOST_PORT" \
+    ACHBIT_GUI_DEV_PORT="$GUI_PORT" \
+    ACHBIT_HOST_UI_TOKEN="$UI_TOKEN" \
     "$NODE_BIN" "$VITE_BIN" --config vite.achbit-gui.config.ts
 ) >"$RUNTIME_ROOT/logs/vite.log" 2>&1 &
 VITE_PID=$!

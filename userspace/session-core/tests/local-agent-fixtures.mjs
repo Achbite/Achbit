@@ -125,7 +125,7 @@ export function runtimeSnapshot(runId, options = {}) {
       executionPath: 'fixture-bin', shellAvailable: true, workspaceShellSupported: true, developerCommands: [],
     }),
     webSearch,
-    instructions: [{ id: 'deepcode.coding-agent', text: 'Stable core instruction.' }],
+    instructions: [{ id: 'achbit.coding-agent', text: 'Stable core instruction.' }],
     tools,
     toolPromptContributions: (options.toolPromptContributions ?? [])
       .map((contribution) => structuredClone(contribution)),
@@ -157,7 +157,7 @@ export function emptyKernel(overrides = {}) {
 
 export function completedExecutionReply(request, output) {
   return {
-    schemaVersion: 'deepcode.kernel-reply',
+    schemaVersion: 'achbit.kernel-reply',
     type: 'tool.execution',
     requestId: request.requestId,
     callId: request.callId,
@@ -238,7 +238,7 @@ export function indeterminateExecutionRecord(request) {
 
 export function cancelNotFound(callId, attemptId) {
   return {
-    schemaVersion: 'deepcode.kernel-reply',
+    schemaVersion: 'achbit.kernel-reply',
     type: 'tool.cancelled',
     requestId: 'kernel-cancel:fixture',
     callId,
@@ -261,7 +261,7 @@ export function* todoUpdateEvents(request, items, status = 'completed', native =
 
 export function providerEvent(requestId, type, data) {
   return {
-    schemaVersion: 'deepcode.provider-event',
+    schemaVersion: 'achbit.provider-event',
     requestId,
     type,
     data,
@@ -270,7 +270,7 @@ export function providerEvent(requestId, type, data) {
 
 export function messageCommand(sessionId, commandId, text, profileId) {
   return {
-    schemaVersion: 'deepcode.command.v3',
+    schemaVersion: 'achbit.command.v3',
     type: 'message.submit',
     commandId,
     sessionId,

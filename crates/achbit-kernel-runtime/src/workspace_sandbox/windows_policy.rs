@@ -155,7 +155,7 @@ mod tests {
 
     fn fixture() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "deepcode-policy-{}-{}",
+            "achbit-policy-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn read_scope_does_not_grant_workspace_writes_or_read_ancestors() {
         let root = std::env::temp_dir().join(format!(
-            "deepcode-policy-{}-{}",
+            "achbit-policy-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

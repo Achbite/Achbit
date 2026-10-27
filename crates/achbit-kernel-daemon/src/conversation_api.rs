@@ -897,7 +897,7 @@ pub(crate) async fn conversation_directory_index_attach(
         "submit",
         json!({
             "command": {
-                "schemaVersion": "deepcode.command.v3",
+                "schemaVersion": "achbit.command.v3",
                 "type": "session.directory-index.attach",
                 "commandId": command_id,
                 "sessionId": session_id,
@@ -980,7 +980,7 @@ pub(crate) async fn conversation_directory_index_detach(
         "submit",
         json!({
             "command": {
-                "schemaVersion": "deepcode.command.v3",
+                "schemaVersion": "achbit.command.v3",
                 "type": "session.directory-index.detach",
                 "commandId": command_id,
                 "sessionId": session_id,
@@ -1204,7 +1204,7 @@ async fn sync_project_workspaces(
     };
     for session_id in sessions {
         let reply = request_service(state.session_service.clone(), "submit", json!({"command":{
-            "schemaVersion":"deepcode.command.v3", "type":"session.workspaces.set",
+            "schemaVersion":"achbit.command.v3", "type":"session.workspaces.set",
             "sessionId":session_id, "commandId":random_id("workspace-sync")?, "workspaceBindings":bindings,
         }})).await?;
         require_workspace_command(&reply)?;
@@ -2362,7 +2362,7 @@ async fn confirm_plan_workspaces(
     else {
         return Ok(());
     };
-    if command["schemaVersion"] != "deepcode.command.v3"
+    if command["schemaVersion"] != "achbit.command.v3"
         || !command["commandId"].as_str().is_some_and(valid_id)
     {
         return Err(SessionServiceError::new(
@@ -2474,7 +2474,7 @@ async fn confirm_plan_workspaces(
                 continue;
             }
             let reply = request_service(state.session_service.clone(), "submit", json!({"command":{
-                "schemaVersion":"deepcode.command.v3", "type":"session.directory-index.attach", "sessionId":session_id,
+                "schemaVersion":"achbit.command.v3", "type":"session.directory-index.attach", "sessionId":session_id,
                 "commandId":random_id("workspace-confirm")?, "workspaceBinding":binding,
             }})).await?;
             require_workspace_command(&reply)?;
@@ -2686,7 +2686,7 @@ async fn ensure_session_workdir(
         state.session_service.clone(),
         "submit",
         json!({"command":{
-            "schemaVersion":"deepcode.command.v3", "type":"session.directory-index.attach",
+            "schemaVersion":"achbit.command.v3", "type":"session.directory-index.attach",
             "commandId": random_id("command")?, "sessionId":session_id, "workspaceBinding":binding
         }}),
     )
@@ -2742,7 +2742,7 @@ fn prepare_session_workdir(
         .map_err(|error| SessionServiceError::new("session_workdir_create_failed", error))?;
     let binding = WorkspaceBindingDisplayRecord {
         workspace_id: random_id("workspace")?,
-        display_name: "会话工作目录（DeepCode 管理，跨轮保留）".into(),
+        display_name: "会话工作目录（Achbit 管理，跨轮保留）".into(),
     };
     let workspace = ConversationWorkspaceRecord {
         workspace_id: binding.workspace_id.clone(),
@@ -3812,7 +3812,7 @@ mod tests {
     #[test]
     fn message_filesystem_references_must_match_host_catalog() {
         let root = std::env::temp_dir().join(
-            random_id("deepcode-filesystem-reference-test")
+            random_id("achbit-filesystem-reference-test")
                 .expect("temporary reference identity")
                 .replace(':', "-"),
         );
@@ -3871,7 +3871,7 @@ mod tests {
 
     #[test]
     fn file_reference_retains_original_target_and_catalog_identity() {
-        let source_tree = TemporaryTree::new("deepcode-reference-source");
+        let source_tree = TemporaryTree::new("achbit-reference-source");
         let source = source_tree.0.join("fixture.pdf");
         std::fs::write(&source, b"%PDF fixture bytes").expect("write source fixture");
         let mut catalog = catalog_fixture();
