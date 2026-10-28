@@ -94,8 +94,12 @@ This schedules compaction at a safe boundary; it does not launch an idle task or
 ## Usage
 
 ```sh
-achbit-cli usage all 30
+achbit-cli usage          # all connections, last 30 days
+achbit-cli usage all 7    # all connections, last 7 days
+achbit-cli usage my-connection 7
 ```
+
+The syntax is `usage [connection-id|all] [days]`. Both arguments are positional: put the connection ID or `all` before the number of days. Days defaults to 30 and accepts integers from 1 to 366; `days=7` and `--days 7` are not supported forms.
 
 The GUI defaults to the last 30 local dates, not a calendar month. CLI date ranges use UTC. Usage records count physical Provider calls, including known retry usage; missing usage or unknown prices remain unavailable/partial, not zero.
 
