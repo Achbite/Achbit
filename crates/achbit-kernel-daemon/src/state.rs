@@ -3,6 +3,7 @@ use crate::*;
 
 #[derive(Clone)]
 pub(crate) struct HostState {
+    pub(crate) updates: Arc<crate::host_update::Updates>,
     pub(crate) host_connection: crate::host_connection::HostConnection,
     pub(crate) gui: Arc<Mutex<GuiState>>,
     pub(crate) catalog_reader: crate::local_agent_store::SessionCatalogReader,

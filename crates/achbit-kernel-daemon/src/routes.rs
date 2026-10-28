@@ -6,6 +6,7 @@ mod computer_preview;
 
 pub(crate) fn build_app(state: HostState) -> Router {
     let host_connection = state.host_connection.clone();
+    let updates = state.updates.clone();
     let app = Router::new()
         .route("/api/host/identity", get(host_identity))
         .route("/api/host/client", get(host_client))
@@ -13,6 +14,7 @@ pub(crate) fn build_app(state: HostState) -> Router {
         .route("/api/host/readiness", get(crate::host_runtime::readiness))
         .route("/api/host/instance", get(crate::host_runtime::instance))
         .route("/api/host/shutdown", post(host_shutdown))
+        .route("/api/host/update", post(crate::host_update::update))
         .route(
             "/api/host/computer-preview",
             post(computer_preview::preview),
@@ -288,6 +290,10 @@ pub(crate) fn build_app(state: HostState) -> Router {
         .route("/api/debug/command", post(crate::debug_control::command))
         .route("/api/debug/observe", post(crate::debug_control::observe));
     app.with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            updates,
+            crate::host_update::admission,
+        ))
         .layer(localhost_cors_layer())
         .layer(axum::middleware::from_fn_with_state(
             host_connection,

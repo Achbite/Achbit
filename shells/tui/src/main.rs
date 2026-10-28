@@ -35,6 +35,8 @@ const EXIT_ACTION_REQUIRED: i32 = 5;
 
 #[tokio::main]
 async fn main() {
+    let _installation = achbit_host_connection::installation::Installation::current()
+        .expect("The installed program is being updated or its directory is not writable");
     let values: Vec<String> = env::args().skip(1).collect();
     // Language used before connecting only affects startup diagnostics.
     let mut language = startup_language(&values);

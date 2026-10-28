@@ -67,6 +67,15 @@ pub(super) fn initialize_store(connection: &Connection) -> Result<(), LocalAgent
 }
 
 impl LocalAgentKernel {
+    pub(crate) fn has_active_debug_operations(&self) -> Result<bool, LocalAgentKernelError> {
+        Ok(!self
+            .debug
+            .active
+            .lock()
+            .map_err(|_| lock_error())?
+            .is_empty())
+    }
+
     pub(crate) fn debug_catalog_guard(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, ()>, LocalAgentKernelError> {

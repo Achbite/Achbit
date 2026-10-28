@@ -112,6 +112,16 @@ struct Registry {
 pub(crate) struct Jobs(Arc<Registry>);
 
 impl Jobs {
+    pub(crate) fn has_active_work(&self) -> Result<bool, String> {
+        Ok(self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| "Process registry lock failed")?
+            .values()
+            .any(|entry| entry.snapshot["status"] == "active"))
+    }
+
     pub fn start<F>(&self, snapshot: Value, execute: F) -> Result<Value, String>
     where
         F: FnOnce(
