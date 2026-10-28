@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { projectCommittedText } from '@achbit/presentation-core';
+import { projectCommittedText } from './projectCommittedText';
 import type { SessionProjection } from '@achbit/protocol';
 import { MarkdownContent } from '../components/local-agent/BufferedMarkdown';
 import { UiPluginSlotView, useDisplayTheme, useUiPlugins } from '../ui-plugins/UiPlugins';

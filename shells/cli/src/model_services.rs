@@ -147,6 +147,7 @@ pub async fn usage(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigCommand {
+    Plugins(crate::plugins::PluginCommand),
     Instance,
     Services,
     Connections,
@@ -172,6 +173,9 @@ impl ConfigCommand {
     ) -> Result<Option<Self>, String> {
         let words: Vec<_> = args.iter().map(String::as_str).collect();
         let command = match words.as_slice() {
+            ["plugins", rest @ ..] => {
+                Some(Self::Plugins(crate::plugins::PluginCommand::parse(rest)?))
+            }
             ["instance"] => Some(Self::Instance),
             ["services"] => Some(Self::Services),
             ["connections", "list"] => Some(Self::Connections),
@@ -240,6 +244,9 @@ pub async fn configure(
     client: &HttpKernelClient,
     command: ConfigCommand,
 ) -> Result<Outcome, String> {
+    if let ConfigCommand::Plugins(command) = command {
+        return crate::plugins::run(client, command).await;
+    }
     let probe = matches!(command, ConfigCommand::Probe(_));
     let edit = matches!(
         command,
@@ -250,6 +257,7 @@ pub async fn configure(
             | ConfigCommand::Default(_)
     );
     let result = match command {
+        ConfigCommand::Plugins(_) => unreachable!("handled above"),
         ConfigCommand::Instance => client.host_instance().await.map(|mut value| {
             value["apiUrl"] = json!(client.base_url());
             value

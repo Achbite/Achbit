@@ -84,7 +84,7 @@ class Provider(fixture.MockProviderHandler):
                          steps=[dict(stepId='write', title='Write', details='Write the approved report.')],
                          mutationManifest=[dict(workspace='primary', operation='fs.write', target='allowed.txt')]))
                 elif ordinal == 4:
-                    call('spawn', 'agent', dict(action='spawn', task='COMPOSE_CHILD', name='Report specialist', delivery='wait',
+                    call('spawn', 'agent', dict(action='spawn', preset='collaboration', task='COMPOSE_CHILD', name='Report specialist', delivery='wait',
                          profileId='e2e-child', runner=dict(id='fixture-driver', parameters=dict(label='child')),
                          capabilities=dict(messaging=False, continuation=False, delegation=False),
                          context=dict(id='journal'), loop=dict(compaction=dict(id='summary', parameters=dict(pressureRatio=0.8)),
@@ -110,7 +110,7 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('child-composition-complete')
             elif lane == 'PERMISSION_ROOT':
                 if ordinal == 1:
-                    call('permission-spawn', 'agent', dict(action='spawn', name='Continuing writer', task='PERMISSION_CHILD',
+                    call('permission-spawn', 'agent', dict(action='spawn', preset='collaboration', name='Continuing writer', task='PERMISSION_CHILD',
                          delivery='wait', profileId='e2e-child', capabilities=dict(messaging=True, continuation=True, delegation=True),
                          runner=dict(id='fixture-driver', parameters=dict(label='permission-child'))))
                 else:
@@ -205,7 +205,7 @@ def run():
             + 'validate(p){if(typeof p.label!=="string")throw Error("label_required");},create({label}){return {\n'
             + 'async run(...args){appendFileSync(' + json.dumps(str(trace))
             + ',JSON.stringify({label,sessionId:args[0].state.sessionId})+"\\n");return runAgentLoop(...args);}};}\n}]) });'
-            + 'return service;};\n', encoding='utf-8')
+            + 'service.replaceCapabilities=undefined;return service;};\n', encoding='utf-8')
         previous_module = os.environ.get('ACHBIT_SESSION_SERVICE_MODULE')
         os.environ['ACHBIT_SESSION_SERVICE_MODULE'] = str(module)
         recipe = dict(profileId='e2e-main', runner=dict(id='fixture-driver', parameters=dict(label='root')),

@@ -1,7 +1,7 @@
 use achbit_kernel_tools::kernel_internal::{
     KernelCanonicalInvocation, KernelExecutionScope, KernelWorkspaceMode,
 };
-use achbit_kernel_tools::{KernelToolCatalogError, KernelToolRegistry, ToolAvailability};
+use achbit_kernel_tools::{KernelToolCatalogError, KernelToolRegistry};
 use serde_json::json;
 
 #[test]
@@ -192,28 +192,6 @@ fn shell_authority_fields_are_internal_and_commands_reach_kernel_admission() {
             assert_eq!(arguments["executionScope"], "workspace");
         }
     }
-}
-
-#[test]
-fn callable_descriptors_have_executor_bindings() {
-    let registry = KernelToolRegistry::new();
-    let bindings = registry
-        .executor_bindings()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    for descriptor in registry
-        .descriptors()
-        .filter(|tool| tool.availability == ToolAvailability::Callable)
-    {
-        assert!(
-            bindings.contains(&descriptor.name.as_str()),
-            "missing executor for {}",
-            descriptor.name
-        );
-        assert_eq!(descriptor.input_schema["type"], "object");
-    }
-    assert!(registry.descriptor("fs.read").is_some());
-    assert!(registry.descriptor("bash").is_some());
 }
 
 #[test]

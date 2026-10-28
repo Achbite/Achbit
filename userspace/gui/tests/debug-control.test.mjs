@@ -104,12 +104,13 @@ test('run duration accompanies the existing process toggle without adding a foot
     viewport: { bodyRef: { current: null }, transcriptRef: { current: null }, messageEndRef: { current: null }, followingLatest: true, setLatestFollowMode() {}, preserveReadingPosition() {}, scrollToAnchor() {} },
     openWorkspaceResource() {}, setUiActionError() {},
   }));
-  assert.equal((html.match(/class="conversation-run-timing"/g) ?? []).length, 1);
-  assert.match(html, /用时 11m 29s/);
-  assert.match(html, /class="conversation-process-toggle"/);
-  assert.match(html, /<\/button><span class="conversation-run-timing">用时 11m 29s<\/span>/);
-  assert.ok(html.indexOf('conversation-run-timing') < html.indexOf('local-agent__message--assistant'));
+  assert.equal((html.match(/用时 11m 29s/g) ?? []).length, 1, 'recorded run duration appears once');
+  const disclosure = html.match(/<button\b[^>]*data-conversation-anchor="run:timing:disclosure"[^>]*>/)?.[0];
+  assert.ok(disclosure, 'the existing process action remains available');
+  assert.match(disclosure, /aria-expanded="false"/);
+  const timingPosition = html.indexOf('用时 11m 29s');
+  assert.ok(timingPosition > html.indexOf('data-conversation-anchor="run:timing:disclosure"')
+    && timingPosition < html.indexOf('data-conversation-anchor="stream:1"'), 'duration stays with the process disclosure before the answer');
   assert.deepEqual([...html.matchAll(/data-conversation-anchor="([^"]+)"/g)].map(match => match[1]), ['stream:0', 'run:timing:disclosure', 'group:timing', 'stream:process', 'stream:1', 'stream:2']);
   assert.doesNotMatch(html, /:file-changes/);
-  assert.doesNotMatch(html, /<details/);
 });

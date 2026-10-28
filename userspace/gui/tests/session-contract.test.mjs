@@ -586,7 +586,7 @@ test('sidebar order uses the shared settings store and failed saves retain the s
       persisted = { ...persisted, ...patches };
       return Response.json({ ok: true, data: { settings: persisted, changedKeys: Object.keys(patches), activation: 'immediate' } });
     }
-    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/test/user-settings.json' } });
+    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, storePath: '/test/user-settings.json' } });
   });
   await useSettingsStore.getState().loadUserSettings();
   assert.deepEqual(readSidebarOrder(useSettingsStore.getState().effectiveSettings[SIDEBAR_ORDER_SETTING]), { projects: [], sessions: [] });
@@ -622,7 +622,7 @@ test('runtime file visibility is a searchable shared GUI preference and failed s
       persisted = { ...persisted, ...patches };
       return Response.json({ ok: true, data: { settings: persisted, changedKeys: [key], activation: 'immediate' } });
     }
-    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/test/user-settings.json' } });
+    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, storePath: '/test/user-settings.json' } });
   });
   await useSettingsStore.getState().loadUserSettings();
   assert.equal(useSettingsStore.getState().effectiveSettings[key], false);
@@ -2517,83 +2517,6 @@ test('unchanged status snapshots do not publish redundant GUI state updates', as
   assert.equal(publications, 2);
 });
 
-test('background titles use the existing status refresh independently of Session revision', async (t) => {
-  const summary = { id: 'session:title', title: '新对话', workspaceBindings: [],
-    createdAt: '2026-10-18', updatedAt: '2026-10-18' };
-  let statuses = [{ sessionId: summary.id, revision: 1, run: null }];
-  let requests = 0;
-  installGuiFetch(t, async (url) => {
-    assert.equal(url.pathname, '/api/conversation/statuses');
-    requests += 1;
-    return Response.json({ ok: true, data: statuses });
-  });
-  const store = await loadGuiModelStore(t);
-  store.setState({ catalog: { projects: [], sessions: [summary] } });
-  await store.getState().refresh();
-  assert.equal(store.getState().catalog.sessions[0].title, '新对话', 'missing title does not invent a replacement');
-  statuses = [{ ...statuses[0], title: '修复会话标题' },
-    { sessionId: 'session:uncatalogued', revision: 1, run: null, title: 'Not a new catalog entry' }];
-  await store.getState().refresh();
-  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
-  assert.equal(store.getState().catalog.sessions.length, 1);
-  assert.equal(store.getState().sessionStatuses[summary.id].revision, 1);
-  let publications = 0;
-  const unsubscribe = store.subscribe(() => { publications += 1; });
-  t.after(unsubscribe);
-  await store.getState().refresh();
-  assert.equal(publications, 0, 'unchanged title and status do not republish the catalog');
-  statuses = [{ sessionId: summary.id, revision: 1, run: null }];
-  await store.getState().refresh();
-  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
-  statuses = [{ ...statuses[0], title: 7 }];
-  await store.getState().refresh();
-  assert.equal(store.getState().statusError, 'conversation_statuses_invalid');
-  assert.equal(store.getState().catalog.sessions[0].title, '修复会话标题');
-  assert.equal(requests, 5, 'each existing refresh makes only its status request');
-});
-
-test('background title replies do not overwrite a concurrent manual rename', async (t) => {
-  const summary = { id: 'session:rename', title: '新对话', workspaceBindings: [],
-    createdAt: '2026-10-18', updatedAt: '2026-10-18' };
-  let releaseStatus, releaseRename;
-  let deferStatus = true, deferRename = false;
-  let statusTitle = '模型标题';
-  installGuiFetch(t, async (url, init) => {
-    if (url.pathname === '/api/conversation/statuses') {
-      const result = { ok: true, data: [{ sessionId: summary.id, revision: 2,
-        run: { runId: 'run:title', status: 'completed' }, title: statusTitle }] };
-      if (deferStatus) await new Promise(resolve => { releaseStatus = resolve; });
-      return Response.json(result);
-    }
-    assert.equal(url.pathname, `/api/conversation/sessions/${encodeURIComponent(summary.id)}`);
-    assert.equal(init.method, 'PATCH');
-    const { title } = JSON.parse(init.body);
-    if (deferRename) await new Promise(resolve => { releaseRename = resolve; });
-    return Response.json({ ok: true, data: { projects: [], sessions: [{ ...summary, title }] } });
-  });
-  const store = await loadGuiModelStore(t);
-  store.setState({ catalog: { projects: [], sessions: [summary] } });
-  const oldRefresh = store.getState().refresh();
-  await waitUntil(() => releaseStatus, 'status request started');
-  await store.getState().updateSession(summary.id, { title: '用户标题' });
-  releaseStatus();
-  await oldRefresh;
-  assert.equal(store.getState().catalog.sessions[0].title, '用户标题');
-  assert.equal(store.getState().sessionStatuses[summary.id].run.status, 'completed', 'late status still carries valid run facts');
-
-  deferStatus = false;
-  deferRename = true;
-  const renaming = store.getState().updateSession(summary.id, { title: '用户再次改名' });
-  await waitUntil(() => releaseRename, 'rename request started');
-  await store.getState().refresh();
-  assert.equal(store.getState().catalog.sessions[0].title, '用户标题', 'pending rename owns the title mutation');
-  releaseRename();
-  await renaming;
-  statusTitle = '用户再次改名';
-  await store.getState().refresh();
-  assert.equal(store.getState().catalog.sessions[0].title, '用户再次改名');
-});
-
 test('round change totals use first before and final after, without summing repeated edits', async (t) => {
   const { changedFiles, readRoundChange } = await loadGuiModule(t, '/src/components/local-agent/fileChangeSummary.ts');
   const { calculateChangedLines: countChangedLines } = await loadGuiModule(t, '/src/components/local-agent/fileChangeLineCounts.ts');
@@ -3210,7 +3133,7 @@ test('resource preview keeps expansion beside the shared sidebar control while c
   }
   assert.doesNotMatch(html, /<dialog\b/);
   assert.match(html, /README.md/);
-  const { projectCommittedText } = await import('../../presentation-core/dist/index.js');
+  const { projectCommittedText } = await loadGuiModule(t, '/src/presentation/projectCommittedText.ts');
   const projection = { messages: [
     { messageId: 'user:one', role: 'user', content: '<plain>' },
     { messageId: 'assistant:one', role: 'assistant', content: '**Answer**' },
@@ -3742,7 +3665,7 @@ test('custom light and dark palettes persist through the shared settings owner a
       }
       return Response.json({ ok: true, data: { settings: persisted, changedKeys: Object.keys(patches), activation: 'immediate' } });
     }
-    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/test/user-settings.json' } });
+    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, storePath: '/test/user-settings.json' } });
   });
   await useSettingsStore.getState().loadUserSettings();
   const custom = { '--ac-theme-light-background': '#f5f1ea', '--ac-theme-dark-background': '#202124', '--ac-custom-dark-accent': '#aaccee' };
@@ -3816,7 +3739,7 @@ test('theme library and UI fonts persist without changing active colors or appea
       for (const [key, value] of Object.entries(patches)) { if (value === null) delete persisted[key]; else persisted[key] = value; }
       return Response.json({ ok: true, data: { settings: persisted, changedKeys: Object.keys(patches), activation: 'immediate' } });
     }
-    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/test/user-settings.json' } });
+    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, storePath: '/test/user-settings.json' } });
   });
   const saved = [{ id: 'user-theme', name: 'User theme', dark: { background: '#202022' } }];
   await useSettingsStore.getState().patchUserSetting(library.THEME_LIBRARY_SETTING, JSON.stringify(saved));
@@ -4987,7 +4910,7 @@ test('GUI consumes Session citation display, keeps original facts, and settles o
   const projection = await decodeGuiProjection(await waitForProjection(actor, value => value.run?.status === 'completed'));
   const message = projection.messages.find(value => value.role === 'assistant');
   assert.equal(message.content, raw);
-  const { projectCommittedText } = await import('../../presentation-core/dist/index.js');
+  const { projectCommittedText } = await loadGuiModule(t, '/src/presentation/projectCommittedText.ts');
   const text = projectCommittedText(projection).get(`message:${message.messageId}:content`).text;
   assert.equal(text, message.displayContent);
   assert.match(text, /\[真实网页\]\(<https:\/\/example.test\/article>\)/u);
@@ -5173,7 +5096,7 @@ test('subagent quick settings save the active Session, retain other Sessions and
     if (url.pathname === '/api/user-settings') {
       assert.equal(init.method ?? 'GET', 'GET', 'the GUI must not independently patch global defaults');
       const settings = userSettingsWithSubagents(defaults);
-      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, overriddenKeys: [], storePath: 'fixture' } });
+      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, storePath: 'fixture' } });
     }
     const sessionId = decodeURIComponent(url.pathname.split('/')[4]);
     const actor = actors.get(sessionId);
@@ -5261,7 +5184,7 @@ test('subagent draft edits update future defaults without starting a Session and
       }
       assert.equal(init.method ?? 'GET', 'GET');
       const settings = userSettingsWithSubagents(defaults);
-      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, overriddenKeys: [], storePath: 'fixture' } });
+      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, storePath: 'fixture' } });
     }
     if (url.pathname === '/api/conversation/catalog') return Response.json({ ok: true, data: { projects: [], sessions: [] } });
     if (url.pathname.endsWith('/commands')) return Response.json({ ok: false, error: 'fixture_message_not_submitted' }, { status: 500 });

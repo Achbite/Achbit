@@ -20,8 +20,6 @@ import {
 } from '../theme/achbitGuiTheme';
 import { activeT, settingText } from '../i18n';
 
-export type SettingSource = 'default' | 'user';
-
 export type SettingControlType = 'boolean' | 'number' | 'text' | 'textarea' | 'select';
 
 export interface SettingDefinition {
@@ -57,8 +55,6 @@ interface SettingsStateData {
   environment: Record<string, unknown> | null;
   userSettings: UserSettings;
   effectiveSettings: UserSettings;
-  sources: Record<string, SettingSource>;
-  overriddenKeys: string[];
   storePath: string | null;
   loading: boolean;
   pendingNextRunActivation: boolean;
@@ -290,29 +286,17 @@ function normalizeSettingValue(key: string, value: unknown): UserSettingValue {
   return isSupportedSettingValue(value) ? value : defaultValue;
 }
 
-function buildEffectiveSettings(
-  userSettings: UserSettings,
-  overriddenKeys: string[]
-): Pick<SettingsStateData, 'effectiveSettings' | 'sources'> {
+function buildEffectiveSettings(userSettings: UserSettings): UserSettings {
   const normalizedUserSettings = Object.fromEntries(
     Object.entries(userSettings).map(([key, value]) => [
       key,
       KNOWN_SETTING_KEYS.has(key) ? normalizeSettingValue(key, value) : value,
     ])
   ) as UserSettings;
-  const effectiveSettings: UserSettings = {
+  return {
     ...DEFAULT_USER_SETTINGS,
     ...normalizedUserSettings,
   };
-  const sources: Record<string, SettingSource> = {};
-  for (const key of Object.keys(effectiveSettings)) {
-    if (overriddenKeys.includes(key)) {
-      sources[key] = 'user';
-    } else {
-      sources[key] = 'default';
-    }
-  }
-  return { effectiveSettings, sources };
 }
 
 function hasPendingNextRunActivation(
@@ -331,24 +315,13 @@ function hasPendingNextRunActivation(
   return false;
 }
 
-export const useSettingsStore = create<SettingsStore>((set, get) => {
-  const initialEffective = buildEffectiveSettings(DEFAULT_USER_SETTINGS, []);
-
-  const applyCanonicalSettings = (
-    snapshot: GetUserSettingsResult,
-    overriddenKeys = snapshot.overriddenKeys,
-  ) => {
-    const next = buildEffectiveSettings(
-      snapshot.settings,
-      overriddenKeys,
-    );
+export const useSettingsStore = create<SettingsStore>((set) => {
+  const applyCanonicalSettings = (snapshot: GetUserSettingsResult) => {
     set({
       environment: snapshot.environment ?? null,
       userSettings: snapshot.settings,
-      overriddenKeys,
       storePath: snapshot.storePath,
-      effectiveSettings: next.effectiveSettings,
-      sources: next.sources,
+      effectiveSettings: buildEffectiveSettings(snapshot.settings),
       loading: false,
       pendingNextRunActivation: hasPendingNextRunActivation(
         snapshot.settings,
@@ -369,33 +342,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       });
       return null;
     }
-    if (result.data.activation !== 'immediate' && result.data.activation !== 'nextRun') {
+    if (result.data.activation !== 'immediate' && result.data.activation !== 'nextRun' && result.data.activation !== 'nextRequest') {
       set({ errorMessage: fallbackError });
       return null;
     }
 
-    const overridden = new Set(get().overriddenKeys);
-    for (const key of result.data.changedKeys) {
-      if (patches[key] === null) {
-        overridden.delete(key);
-      } else {
-        overridden.add(key);
-      }
-    }
-    const overriddenKeys = Array.from(overridden);
     const refreshed = await getUserSettings();
     if (refreshed.ok && refreshed.data) {
-      applyCanonicalSettings(refreshed.data, overriddenKeys);
+      applyCanonicalSettings(refreshed.data);
     } else {
-      const next = buildEffectiveSettings(
-        result.data.settings,
-        overriddenKeys,
-      );
       set({
         userSettings: result.data.settings,
-        overriddenKeys,
-        effectiveSettings: next.effectiveSettings,
-        sources: next.sources,
+        effectiveSettings: buildEffectiveSettings(result.data.settings),
         errorMessage: refreshed.message ?? activeT('settings.error.loadUser'),
       });
     }
@@ -414,30 +372,27 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
   return {
     environment: null,
     userSettings: DEFAULT_USER_SETTINGS,
-    effectiveSettings: initialEffective.effectiveSettings,
-    sources: initialEffective.sources,
-    overriddenKeys: [],
+    effectiveSettings: buildEffectiveSettings(DEFAULT_USER_SETTINGS),
     storePath: null,
     loading: false,
     pendingNextRunActivation: false,
     errorMessage: null,
 
-    loadUserSettings: async () => {
-      if (get().loading) return;
-      set({ loading: true, errorMessage: null });
-      const result = await getUserSettings();
-      if (!result.ok || !result.data) {
-        set({
-          loading: false,
-          errorMessage: result.message ?? activeT('settings.error.loadUser'),
-        });
-        return;
-      }
-      try {
-        applyCanonicalSettings(result.data);
-      } catch (reason) {
-        set({ loading: false, errorMessage: reason instanceof Error ? reason.message : String(reason) });
-      }
+    loadUserSettings: () => {
+      // Reads and writes share the queue. An external change arriving during a
+      // read must cause another read, and an older read cannot overwrite a write.
+      const result = pendingWrite.then(async () => {
+        set({ loading: true, errorMessage: null });
+        try {
+          const result = await getUserSettings();
+          if (!result.ok || !result.data) throw new Error(result.message ?? activeT('settings.error.loadUser'));
+          applyCanonicalSettings(result.data);
+        } catch (reason) {
+          set({ loading: false, errorMessage: reason instanceof Error ? reason.message : String(reason) });
+        }
+      });
+      pendingWrite = result.then(() => undefined, () => undefined);
+      return result;
     },
 
     patchUserSetting: async (key, value) => {

@@ -18,6 +18,8 @@ User images and GUI observations supply pixels for one successful request. Later
 
 ## Settings and extensions
 
+For self-development and installation, use the current Host CLI: `plugins capabilities`, then the needed `plugins guide` / `plugins template`; `plugins inspect`, `install`, `update`, `enable`, `disable`, `remove`, and `status` share the Settings operations. Target an existing instance with `--host-data-dir`. Read both registration and actual application state. New registrations enter discovery at the next model request in the same run; installation does not grant task activation or permission. The built-in `achbit-iteration` Skill includes the complete development/update workflow.
+
 Discover a missing capability with `plugin.search`, using a short product/capability query. All keywords must match. Zero matches means that query did not match; shorten it or browse without `query`. Follow `nextOffset` only when more results are needed.
 
 Activate relevant enabled results with `plugin.activate` alone, using their exact URIs. Tools and guidance enter the next request. Search does not start programs; activation neither installs/enables plugins nor grants permissions. User `@` mentions are optional. Read current schemas rather than guessing names or arguments.
@@ -109,7 +111,7 @@ Settings → Appearance controls fonts, sizes and colors. Preset changes apply i
 
 CLI chat/TUI use `/sessions`, `/resume <number|full-id>` and `/new`. Numbers refer to the last list in that process. TUI `/reply` answers a decision, `/decision` shows details, `/tool <activity-id>` opens full output and `/error` shows the original error.
 
-The execution disclosure opens intermediate text/tools and shows measured response-to-settlement duration when available, in both normal and Debug builds. Missing historical timing is not estimated. HTML/Markdown readers are read-only; HTML preview does not run scripts. Open in the native browser when active page behavior is required.
+The execution disclosure opens intermediate text/tools and shows measured response-to-settlement duration when available, in both normal and Debug builds. Missing historical timing is not estimated. HTML/Markdown document readers are read-only; ordinary HTML document preview does not run scripts. Explicit `achbit-preview` fences render archived HTML components interactively in the conversation, with source, reload and sidebar controls. Read `achbit-documents` → `references/interactive-previews.md` for the reference format. Complete applications and live sites use the native browser.
 
 File-tool arrows open the preview in one step. Edits show changed lines with nearby context; large changes use a bounded preview. Read tools preview the current file, labeled as such. Click the filename in the tool heading or preview header to open it in the right-hand Reader; deleted files open their recorded comparison. Expanding or collapsing keeps the clicked heading in place, and scrolling past a preview's top or bottom continues through the conversation.
 

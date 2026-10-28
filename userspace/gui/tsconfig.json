@@ -8,15 +8,12 @@
     "jsx": "react-jsx",
     "types": ["node", "vite/client"],
     "paths": {
-      "@achbit/presentation-core": ["../presentation-core/dist/index.d.ts"],
-      "@achbit/presentation-core/*": ["../presentation-core/dist/*"],
       "@achbit/protocol": ["../protocol/dist/index.d.ts"],
       "@achbit/protocol/*": ["../protocol/dist/*"]
     }
   },
   "references": [
-    { "path": "../protocol" },
-    { "path": "../presentation-core" }
+    { "path": "../protocol" }
   ],
   "include": ["src", "vite-env.d.ts"]
 }

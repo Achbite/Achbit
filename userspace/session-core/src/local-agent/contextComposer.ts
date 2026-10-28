@@ -9,6 +9,7 @@ import type {
   ModelMessage,
   ProviderRequest,
   PreparedToolDescriptor,
+  PreparedRequestToolView,
   ProviderToolDefinition,
   RunRuntimeSnapshot,
   SessionEvent,
@@ -156,11 +157,17 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       label: instruction.id,
       message: { role: 'system', content: instruction.text },
     }));
+  // The initial guidance is part of the conversation prefix. Later tool changes
+  // are rendered from run.tools.prepared at their original journal position.
+  const prefixRuntime = firstRun?.type === 'run.started' ? firstRun.payload.runtimeSnapshot : input.runtime;
+  const prefixHostedTools: ProviderRequest['hostedTools'] = prefixRuntime.webSearch.owner === 'providerHosted'
+    ? [{ type: 'webSearch', providerToolType: prefixRuntime.webSearch.providerToolType }] : [];
   const toolGuidance = renderActiveToolGuidance(
-    input.runtime.toolPromptContributions,
-    toolCodec.receiptTools,
-    runtimeTools,
-    hostedTools,
+    prefixRuntime.toolPromptContributions,
+    prefixRuntime.providerToolAliases,
+    prefixRuntime.tools.filter(tool => prefixBindings.length > 0
+      || !tool.possibleEffects.some(effect => effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')),
+    prefixHostedTools,
   );
   if (toolGuidance) {
     const stableCoreIndex = instructions.findIndex((instruction) => (
@@ -278,6 +285,41 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   };
 }
 
+/** Project only semantic tool changes at their journal position. Runtime IDs,
+ * install paths and catalog counters never enter the stable instruction prefix. */
+function toolViewChanges(events: readonly SessionEvent[]): Map<number, string> {
+  const changes = new Map<number, string>();
+  let previous: PreparedRequestToolView | undefined;
+  const publicTools = (view: PreparedRequestToolView) => new Map(view.tools
+    .filter(tool => tool.availability === 'callable').map(tool => {
+      const alias = view.providerToolAliases.find(item => item.canonicalName === tool.name);
+      const guidance = view.toolPromptContributions.filter(item => item.canonicalToolName === tool.name)
+        .map(item => ({ promptSnippet: item.promptSnippet, usageGuidelines: item.usageGuidelines }));
+      return [tool.name, JSON.stringify({ name: alias?.wireName, description: tool.description,
+        inputSchema: tool.inputSchema, guidance })] as const;
+    }));
+  for (const event of events) {
+    const view = event.type === 'run.started' ? event.payload.runtimeSnapshot
+      : event.type === 'run.tools.prepared' ? event.payload.toolView : undefined;
+    if (!view) continue;
+    if (previous) {
+      const before = publicTools(previous), after = publicTools(view);
+      const changed = new Set([...after].filter(([name, value]) => before.get(name) !== value).map(([name]) => name));
+      const removed = [...before.keys()].filter(name => !after.has(name))
+        .map(name => previous!.providerToolAliases.find(alias => alias.canonicalName === name)!.wireName);
+      if (changed.size || removed.length) {
+        const guidance = renderActiveToolGuidance(view.toolPromptContributions.filter(item => changed.has(item.canonicalToolName)),
+          view.providerToolAliases, view.tools, []);
+        changes.set(event.sequence, JSON.stringify({ type: 'plugins.tools.updated',
+          available: view.providerToolAliases.filter(alias => changed.has(alias.canonicalName)).map(alias => alias.wireName),
+          removed }) + (guidance ? `\n${guidance}` : ''));
+      }
+    }
+    previous = view;
+  }
+  return changes;
+}
+
 export function messagesFromJournal(
   events: readonly SessionEvent[],
   runId: string,
@@ -356,6 +398,7 @@ export function messagesFromJournal(
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
+  const toolChanges = toolViewChanges(events);
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
@@ -446,6 +489,10 @@ export function messagesFromJournal(
           ...reasoning,
         },
       });
+    } else if ((event.type === 'run.tools.prepared' || event.type === 'run.started') && toolChanges.has(event.sequence)) {
+      messages.push({ contributionId: `tool-view:${event.eventId}`, contributionKind: 'journalMessages',
+        label: 'Available tool changes', sourceSequence: event.sequence,
+        message: { role: 'user', content: toolChanges.get(event.sequence)! } });
     } else if (event.type === 'narrative.committed') {
       if (orderedProviderTurns.has(event.payload.providerRequestId)) continue;
       if (!mergeNarrativeIntoProviderCall(messages, completedTurns.get(event.payload.providerRequestId), event)) {

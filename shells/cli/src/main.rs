@@ -8,6 +8,7 @@ mod gui_attach;
 #[path = "../../shared/i18n.rs"]
 mod i18n;
 mod model_services;
+mod plugins;
 mod render;
 #[path = "../../shared/session_navigation.rs"]
 mod session_navigation;
@@ -332,8 +333,8 @@ impl Args {
             },
             Some("quota") if positional.len()==2 => Command::Quota { connection_id:positional[1].clone() },
             Some("usage") if positional.len()<=3 => {
-                let days:u64=positional.get(2).map(|v|v.parse()).transpose().map_err(|_|"统计天数无效。")?.unwrap_or(30);
-                if !(1..=366).contains(&days) { return Err("统计天数必须在 1 至 366 之间。".into()); }
+                let days:u64=positional.get(2).map(|v|v.parse()).transpose().map_err(|_|"统计天数应填写整数，例如：achbit-cli usage all 7。")?.unwrap_or(30);
+                if !(1..=366).contains(&days) { return Err("统计天数必须在 1 至 366 之间，例如：achbit-cli usage all 7。".into()); }
                 Command::Usage { connection_id:positional.get(1).filter(|v|v.as_str()!="all").cloned(),days }
             },
             Some("stop-host") if positional.len() == 1 => Command::StopHost,
@@ -455,7 +456,6 @@ enum Outcome {
 
 #[derive(Debug, Clone)]
 struct PluginBinding {
-    catalog_revision: String,
     selections: Vec<PluginSelectionInput>,
 }
 
@@ -555,10 +555,7 @@ fn plugin_binding_from_catalog(
             label: plugin.display_name.clone(),
         });
     }
-    Ok(PluginBinding {
-        catalog_revision: catalog.revision,
-        selections,
-    })
+    Ok(PluginBinding { selections })
 }
 
 async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
@@ -893,7 +890,6 @@ fn contextual_input_command(
         &new_id("command"),
         profile_id,
         filesystem_references,
-        plugin_binding.map_or("", |binding| binding.catalog_revision.as_str()),
         plugin_binding.map_or(&[], |binding| binding.selections.as_slice()),
     )
 }
@@ -1315,7 +1311,6 @@ async fn run_chat(
                     None
                 } else {
                     Some(PluginBinding {
-                        catalog_revision: plugin_catalog.revision.clone(),
                         selections: selected_plugins.clone(),
                     })
                 };
@@ -1525,7 +1520,7 @@ fn new_id(kind: &str) -> String {
 }
 
 fn print_help() {
-    println!("配置：instance | services | connections list/set/remove | models list/set/remove/default/probe\nset 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。\n模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days=30]\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
+    println!("插件：plugins list/status [id|installed-path] | capabilities | guide plugins/ui | template cli/service/ui/guidance | inspect/install <path> | update <id|installed-path> <path> | enable/disable/remove <id|installed-path>\n管理使用当前 Host；安装后通过 plugin.search 与 plugin.activate 在同一轮后续步骤使用工具。\n配置：instance | services | connections list/set/remove | models list/set/remove/default/probe\nset 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。\n模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days]\nusage 按位置填写连接和天数；省略时查询全部连接最近 30 天，天数范围为 1 至 366。\n示例：achbit-cli usage all 7（全部连接最近 7 天）。\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
     println!(
         r#"配置 JSON：models set 的 --input 是完整 profile 对象；connections set 是 {{"connection":{{...}},"profile":{{...}}}}（profile 可选）。先用 models list/connections list 读取当前字段，修改后通过 set 保存。
 密钥只通过 --api-key-file <文件|-> 提供。models probe <profile-id> 发起真实请求，失败返回非零退出码。help/-h/--help 无需连接 Host。"#
@@ -1621,7 +1616,6 @@ mod tests {
             &task,
             None,
             &[],
-            "",
             &[],
         );
         command["filesystemReferences"] = json!([existing.clone()]);

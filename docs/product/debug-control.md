@@ -85,7 +85,7 @@ Receipts retain before/after observations, errors, operation identity, timings a
 
 `task submit` subscribes before execution. One `--follow` connection delivers grouped text/tool facts, decisions and terminal state. Quiet timeouts do not cancel work; keep that connection instead of repeatedly polling or analyzing each stream fragment. An existing-task subscription covers future events, not history. Read the task's own terminal result; a closed stream is not success.
 
-To select plugins, read `components list` and supply its current `revision` as `pluginCatalogRevision` together with `pluginSelections` in `task submit --params @request.json --follow`. Each selection contains `selectionId`, `uri` and `label`. The revision is forwarded unchanged. A nonempty selection requires a valid revision identifier; the Host resolves plugins from its current catalog without requiring that identifier to match its current revision.
+To select plugins, read `components list` and supply `pluginSelections` in `task submit --params @request.json --follow`. Each selection contains `selectionId`, `uri` and `label`. The Host resolves selected URIs from its current catalog and reports unavailable or disabled plugins. The catalog revision remains part of the observed runtime snapshot; callers do not forward it with selections.
 
 | Need | Command |
 | --- | --- |

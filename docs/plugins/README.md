@@ -42,6 +42,20 @@ A logical plugin ID identifies the plugin, not an installation, process, tool at
 
 Package the manifest, compiled entry and required assets/dependencies. Keep login data, API keys, state directories, runtime logs and test conversations outside the distributable. For a service restricted to experiments, set `debugOnly: true`; normal builds will reject activation. Do not add experimental plugins to the built-in catalog or normal package.
 
+## Agent development and management
+
+The current Host CLI exposes `plugins list`, `plugins status [id|installed-path]`, `plugins inspect <path>`, `plugins install <path>`, `plugins update <id|installed-path> <path>`, and `plugins enable|disable|remove <id|installed-path>`. Paths may name a directory, manifest or ZIP. `--host-data-dir <data-directory>` targets an already running Host, including a separate Debug instance. GUI and CLI share installation and management operations; normal Agent Shell approval applies to CLI effects.
+
+`plugins capabilities` lists supported kinds, UI slots and development resources. `plugins guide plugins|ui` returns the selected current guide. `plugins template cli|service|ui|guidance` returns a map of workspace filenames and source text. These are read-only discovery operations; templates are not installed automatically and do not extend the built-in catalog.
+
+Management replies distinguish saved registration from `application`. Service status and startup errors come from its process owner. UI `scope: windowModule` reports modules from currently connected windows, not rendered pixels; disconnect removes that window's report. An absent/loading report is `client-pending`, not successful activation. `available` for a CLI plugin or Skill means it can be discovered, not that the task has selected or executed it.
+
+Tool/Skill/MCP registrations refresh between model requests in the same run. `plugin.search` sees the new directory, and `plugin.activate` selects a relevant capability. Updates or removals affect subsequent requests; already-dispatched calls keep their binding through settlement. Provider, execution environment and other run defaults remain frozen. Configuration writes to these registration keys report `activation: nextRequest`; other settings retain their documented activation scope.
+
+The initial tool guidance remains in the stable system prefix. Later semantic tool/guidance changes append at their journal position. Existing wire names and declaration order remain stable when a new plugin is added, and unchanged registrations reuse the prepared view. Removed tools are withdrawn instead of being kept merely for caching. Actual schema changes may affect Provider cache reuse; no fixed hit rate is promised.
+
+Compile plugin sources, update their managed installation in the intended Debug instance, observe the capability, then package the plugin files. The original source directory is not the installed watch target. Only changes to compiled Achbit interfaces require an application rebuild.
+
 ## Discovery
 
 `name` identifies an extension to the user; `description` briefly explains its reusable capability and appropriate use. A tool's description explains its operation, inputs and meaningful constraints. Keep descriptions task-independent: no benchmark questions, sample expected answers, enabled/disabled inventories, login state or framework startup instructions. Lifecycle status belongs to Host/UI state. Detailed methods belong in a Skill or documentation.

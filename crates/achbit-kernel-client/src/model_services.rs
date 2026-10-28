@@ -108,6 +108,41 @@ impl HttpKernelClient {
         self.model_service(reqwest::Method::GET, "/api/host/instance", None)
             .await
     }
+    pub async fn installed_plugins(&self) -> KernelClientResult<Value> {
+        self.model_service(reqwest::Method::GET, "/api/host/plugins", None)
+            .await
+    }
+    pub async fn inspect_plugin(&self, path: &str) -> KernelClientResult<Value> {
+        self.model_service(
+            reqwest::Method::POST,
+            "/api/host/plugins/inspect",
+            Some(&json!({"path":path})),
+        )
+        .await
+    }
+    pub async fn install_plugin(&self, path: &str) -> KernelClientResult<Value> {
+        self.model_service(
+            reqwest::Method::POST,
+            "/api/host/plugins/install",
+            Some(&json!({"path":path})),
+        )
+        .await
+    }
+    pub async fn manage_plugin(&self, request: &Value) -> KernelClientResult<Value> {
+        self.model_service(
+            reqwest::Method::POST,
+            "/api/host/plugins/manage",
+            Some(request),
+        )
+        .await
+    }
+    pub async fn plugin_development(&self, resource: Option<&str>) -> KernelClientResult<Value> {
+        let mut request = self.http.get(self.url("/api/host/plugins/capabilities"));
+        if let Some(resource) = resource {
+            request = request.query(&[("resource", resource)]);
+        }
+        decode_api_data(request.send().await?.error_for_status()?.json().await?)
+    }
     pub async fn plugin_services(&self) -> KernelClientResult<Value> {
         self.model_service(reqwest::Method::GET, "/api/plugin-services", None)
             .await

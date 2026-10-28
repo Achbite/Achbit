@@ -1,3 +1,4 @@
+import { useUiPlugins } from '../ui-plugins/UiPlugins';
 import { installTextSelectionBoundary } from '../components/shared/textSelection';
 import '../components/shared/focus.css';
 import { ConversationDisplayProvider } from '../components/local-agent/ConversationDisplayProvider';
@@ -114,7 +115,7 @@ const AchbitGuiApp: React.FC = () => {
     setServerVersion,
     setErrorMessage,
   } = useAppStatusStore();
-  const loadUserSettings = useSettingsStore((s) => s.loadUserSettings);
+  const { watchHost: watchPluginHost } = useUiPlugins();
   const effectiveSettings = useSettingsStore((s) => s.effectiveSettings);
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const loadedIncarnationRef = useRef<string | null>(null);
@@ -207,7 +208,6 @@ const AchbitGuiApp: React.FC = () => {
         setWorkspaceInitializationError(error instanceof Error ? error.message : String(error));
       }
     });
-    void loadUserSettings();
     const store = useLocalAgentStore.getState();
     if (reconnectingRemote) {
       // This window still targets the same remote Host. Refresh its facts while
@@ -219,13 +219,22 @@ const AchbitGuiApp: React.FC = () => {
     } else if (!catalogStartup.hostId()) {
       void store.initialize();
     }
-  }, [apiStatus, connectedIncarnation, loadUserSettings, catalogStartup]);
+  }, [apiStatus, connectedIncarnation, catalogStartup]);
 
 
   useEffect(() => {
     if (apiStatus !== 'connected' || !connectedIncarnation) return;
     return useLocalAgentStore.getState().watchCatalog();
   }, [apiStatus, connectedIncarnation]);
+
+  useEffect(() => {
+    if (apiStatus !== 'connected' || !connectedIncarnation || !watchPluginHost) return;
+    const controller = new AbortController();
+    void watchPluginHost(controller.signal).catch(error => {
+      if (!controller.signal.aborted) setErrorMessage(error instanceof Error ? error.message : String(error));
+    });
+    return () => controller.abort();
+  }, [apiStatus, connectedIncarnation, watchPluginHost, setErrorMessage]);
 
   useEffect(() => {
     const preference = normalizeGuiThemePreference(effectiveSettings['gui.colorTheme']);

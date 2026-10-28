@@ -48,7 +48,6 @@ def request(daemon, path: str, *, method: str = "GET", body=None):
 
 
 def submit(daemon, provider, session_id: str, ordinal: int, text: str, references=()):
-    catalog = request(daemon, "/api/conversation/plugins")
     reply = request(daemon, session_path(session_id) + "/commands", method="POST", body={
         "schemaVersion": fixture.COMMAND_VERSION,
         "type": "message.submit",
@@ -56,7 +55,6 @@ def submit(daemon, provider, session_id: str, ordinal: int, text: str, reference
         "sessionId": session_id,
         "text": text,
         "filesystemReferences": list(references),
-        "pluginCatalogRevision": catalog["revision"],
         "pluginSelections": [],
     })
     require(reply.get("status") == "accepted", "Message was not accepted")

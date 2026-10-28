@@ -369,8 +369,6 @@ export interface ConversationSessionSummary {
 /** Compact Session facts for navigation; reading these does not start a run. */
 export interface ConversationSessionStatus {
   sessionId: string;
-  /** Host catalog metadata, independent of Session revision. */
-  title?: string;
   revision: number;
   run: Pick<RunProjection, 'runId' | 'status' | 'waitingReason'> | null;
 }
@@ -558,7 +556,6 @@ export type ConversationCommand =
       filesystemReferences?: FilesystemReference[];
       profileId?: string;
       reasoningEffortOverride?: LlmReasoningEffort | null;
-      pluginCatalogRevision?: string;
       pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
       hostBinding?: { hostInstanceId: string; windowLabel: string };
@@ -572,7 +569,6 @@ export type ConversationCommand =
       filesystemReferences?: FilesystemReference[];
       profileId?: string;
       reasoningEffortOverride?: LlmReasoningEffort | null;
-      pluginCatalogRevision?: string;
       pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
       hostBinding?: { hostInstanceId: string; windowLabel: string };
@@ -1050,7 +1046,6 @@ export type SessionEvent =
       runId: string;
       payload: {
         interactionId?: string;
-        pluginCatalogRevision?: string;
         commandId: string;
         messageId: string;
         text: string;
@@ -1749,7 +1744,6 @@ export interface SessionModelSettings {
 
 export interface QueuedInputProjection {
   interactionId?: string;
-  pluginCatalogRevision?: string;
   commandId: string;
   messageId: string;
   runId: string;
@@ -2088,6 +2082,8 @@ export type PreparedRequestToolView = Pick<RunRuntimeSnapshot,
   | 'toolPromptContributions' | 'providerToolAliases' | 'selectedPlugins'>;
 
 export interface PrepareRunRuntimeRequest {
+  /** Session-owned wire names; consumed by the preparation adapter, never sent to Kernel. */
+  previousProviderToolAliases?: readonly ProviderToolAlias[];
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;
@@ -2098,7 +2094,6 @@ export interface PrepareRunRuntimeRequest {
   runId: string;
   profileId?: string;
   reasoningEffortOverride?: LlmReasoningEffort;
-  pluginCatalogRevision?: string;
   pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
 }

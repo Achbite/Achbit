@@ -201,6 +201,10 @@ const SKILLS: &[ProductSkill] = &[
                 "references/update-modes.md",
                 include_str!("../../../skills/achbit-iteration/references/update-modes.md"),
             ),
+            (
+                "references/plugin-development.md",
+                include_str!("../../../skills/achbit-iteration/references/plugin-development.md"),
+            ),
         ],
     },
     ProductSkill {
@@ -228,6 +232,10 @@ const SKILLS: &[ProductSkill] = &[
             (
                 "references/formats.md",
                 include_str!("../../../skills/achbit-documents/references/formats.md"),
+            ),
+            (
+                "references/interactive-previews.md",
+                include_str!("../../../skills/achbit-documents/references/interactive-previews.md"),
             ),
             (
                 "assets/document.html",
@@ -433,6 +441,7 @@ mod tests {
             "SKILL.md",
             "references/design.md",
             "references/formats.md",
+            "references/interactive-previews.md",
             "assets/document.html",
             "assets/document.typ",
         ] {

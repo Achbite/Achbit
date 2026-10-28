@@ -880,9 +880,6 @@ impl TuiApp {
             &new_id("command"),
             self.next_message_profile_id.as_deref(),
             &[],
-            self.plugin_catalog
-                .as_ref()
-                .map_or("", |catalog| catalog.revision.as_str()),
             if is_reply {
                 &[]
             } else {

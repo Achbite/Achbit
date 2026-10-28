@@ -213,7 +213,7 @@ function assertSessionServicePort(value: unknown): asserts value is SessionServi
   if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
   const methods = [
     'createSession', 'deleteSession', 'submit', 'snapshot', 'resourceSnapshot', 'statuses', 'activity',
-    'contextComposition', 'read', 'replaceCapabilities', 'dispose',
+    'contextComposition', 'read', 'dispose',
   ] as const satisfies readonly (keyof SessionServicePort)[];
   for (const method of methods) {
     if (typeof value[method] !== 'function') throw new Error(`session_service_port_invalid:${method}`);
@@ -275,7 +275,7 @@ function decodeCommand(value: unknown): ConversationCommand {
           value,
           ['schemaVersion', 'type', 'commandId', 'sessionId', 'text'],
           [
-            'runId', 'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginCatalogRevision', 'pluginSelections', 'guidanceReferences', 'hostBinding',
+            'runId', 'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginSelections', 'guidanceReferences', 'hostBinding',
           ],
         )
         || (value.runId !== undefined && !validId(value.runId))
@@ -284,7 +284,7 @@ function decodeCommand(value: unknown): ConversationCommand {
           && !isFilesystemReferenceArray(value.filesystemReferences))
         || (value.profileId !== undefined && !validId(value.profileId))
         || (value.reasoningEffortOverride !== undefined && !validReasoningOverride(value.reasoningEffortOverride))
-        || !validPluginSelections(value.pluginCatalogRevision, value.pluginSelections)
+        || !validPluginSelections(value.pluginSelections)
         || !validGuidanceReferences(value.guidanceReferences)
         || !validHostBinding(value.hostBinding)
       ) throw new Error('conversation_command_invalid');
@@ -295,7 +295,7 @@ function decodeCommand(value: unknown): ConversationCommand {
           value,
           ['schemaVersion', 'type', 'commandId', 'sessionId', 'task'],
           [
-            'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginCatalogRevision', 'pluginSelections', 'guidanceReferences', 'hostBinding',
+            'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginSelections', 'guidanceReferences', 'hostBinding',
           ],
         )
         || typeof value.task !== 'string'
@@ -304,7 +304,7 @@ function decodeCommand(value: unknown): ConversationCommand {
           && !isFilesystemReferenceArray(value.filesystemReferences))
         || (value.profileId !== undefined && !validId(value.profileId))
         || (value.reasoningEffortOverride !== undefined && !validReasoningOverride(value.reasoningEffortOverride))
-        || !validPluginSelections(value.pluginCatalogRevision, value.pluginSelections)
+        || !validPluginSelections(value.pluginSelections)
         || !validGuidanceReferences(value.guidanceReferences)
         || !validHostBinding(value.hostBinding)
       ) throw new Error('conversation_command_invalid');
@@ -471,11 +471,9 @@ function validGuidanceReferences(value:unknown):boolean {
     && ['skill.read','doc.read'].includes(String(reference.toolName)));
 }
 
-function validPluginSelections(revision: unknown, value: unknown): boolean {
-  if (value === undefined) return revision === undefined || validId(revision);
+function validPluginSelections(value: unknown): boolean {
+  if (value === undefined) return true;
   if (!Array.isArray(value)) return false;
-  if (value.length === 0) return revision === undefined || validId(revision);
-  if (!validId(revision)) return false;
   const selectionIds = new Set<string>();
   const uris = new Set<string>();
   return value.every((selection) => {

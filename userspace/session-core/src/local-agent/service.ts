@@ -56,7 +56,6 @@ export interface SessionServicePort extends ConversationPort {
   activity: SessionService['activity'];
   contextComposition: SessionService['contextComposition'];
   read: SessionService['read'];
-  replaceCapabilities: SessionService['replaceCapabilities'];
   dispose(): Promise<void>;
 }
 
@@ -372,10 +371,9 @@ export class SessionService implements ConversationPort {
         // A continuation can be assigned by an ancestor other than the creating parent.
         // The current task/run owns its decision route; the creation tree still owns archival.
         if (child.run?.runId !== task.childRunId) continue;
-        const lifecycle = this.#statusStates.get(child.sessionId)!.lifecycle;
-        const plan = child.run.status === 'waiting' && lifecycle.pendingPlan?.runId === task.childRunId ? lifecycle.pendingPlan : null;
-        const approval = lifecycle.pendingApproval?.runId === task.childRunId ? lifecycle.pendingApproval : null;
-        const interactionIds = lifecycle.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
+        const plan = child.run.status === 'waiting' && child.pendingPlan?.runId === task.childRunId ? child.pendingPlan : null;
+        const approval = child.pendingApproval?.runId === task.childRunId ? child.pendingApproval : null;
+        const interactionIds = child.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
         if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,
           displayName: task.displayName, runId: task.childRunId, interactionIds,
           ...(plan ? { plan: { planId: plan.planId, revision: plan.revision } } : {}),
@@ -396,29 +394,31 @@ export class SessionService implements ConversationPort {
 
   async statuses(sessionIds: readonly string[]): Promise<ConversationSessionStatus[]> {
     return await Promise.all(sessionIds.map(async (sessionId) => {
-      // This cache contains no message, tool result, runtime or Actor state.
-      const previous = this.#statusStates.get(sessionId);
-      let read = await this.journal.readRunLifecycle(sessionId, previous?.revision ?? 0);
-      let lifecycle = previous?.lifecycle ?? emptyRunLifecycle();
-      if (read.events.some(event => event.type === 'conversation.revised')) {
-        if (previous) read = await this.journal.readRunLifecycle(sessionId);
-        lifecycle = emptyRunLifecycle();
-      }
-      if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
-      for (const event of activeConversationEvents(read.events)) {
-        if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
-        lifecycle = reduceRunLifecycle(lifecycle, event);
-      }
-      const state = { revision: read.revision, lifecycle };
-      if (state.revision === 0) throw new Error('session_not_found');
-      if (state.revision >= (this.#statusStates.get(sessionId)?.revision ?? 0)) {
-        this.#statusStates.set(sessionId, state);
-      }
-      return {
-        sessionId, revision: state.revision,
-        run: lifecycle.run ? { ...lifecycle.run } : null,
-      };
+      const { revision, lifecycle } = await this.readRunLifecycle(sessionId);
+      return { sessionId, revision, run: lifecycle.run ? { ...lifecycle.run } : null };
     }));
+  }
+
+  private async readRunLifecycle(sessionId: string): Promise<{ revision: number; lifecycle: RunLifecycleState }> {
+    // The cache accelerates journal reads; callers use the lifecycle returned by their own read.
+    const previous = this.#statusStates.get(sessionId);
+    let read = await this.journal.readRunLifecycle(sessionId, previous?.revision ?? 0);
+    let lifecycle = previous?.lifecycle ?? emptyRunLifecycle();
+    if (read.events.some(event => event.type === 'conversation.revised')) {
+      if (previous) read = await this.journal.readRunLifecycle(sessionId);
+      lifecycle = emptyRunLifecycle();
+    }
+    if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+    for (const event of activeConversationEvents(read.events)) {
+      if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+      lifecycle = reduceRunLifecycle(lifecycle, event);
+    }
+    const state = { revision: read.revision, lifecycle };
+    if (state.revision === 0) throw new Error('session_not_found');
+    if (state.revision >= (this.#statusStates.get(sessionId)?.revision ?? 0)) {
+      this.#statusStates.set(sessionId, state);
+    }
+    return state;
   }
 
   async contextComposition(sessionId: string, providerRequestId: string): Promise<ContextCompositionProjection> {
@@ -473,7 +473,7 @@ export class SessionService implements ConversationPort {
   }
 
   /** Journal-only management reads do not activate Providers, tools or Actors. */
-  private async agentManagement(sessionId: string): Promise<AgentManagementSnapshot> {
+  private async agentManagement(sessionId: string): Promise<AgentManagementSnapshot & RunLifecycleState> {
     const read = await this.journal.readAgentLifecycle(sessionId);
     if (read.sessionId !== sessionId || read.events.some(event => event.sessionId !== sessionId)) {
       throw new Error('session_event_identity_mismatch');
@@ -481,8 +481,8 @@ export class SessionService implements ConversationPort {
     if (read.events[0]?.type !== 'session.created') throw new Error('session_creation_event_missing');
     let relations = { agentTasks: [], agentChildren: [] } as import('./agentLifecycle.js').AgentLifecycleState;
     for (const event of read.events) if (event.type !== 'session.created') relations = reduceAgentLifecycle(relations, event);
-    const [status] = await this.statuses([sessionId]);
-    return { sessionId, agentContext: read.events[0].payload.agentContext, ...relations, run: status!.run };
+    const { lifecycle } = await this.readRunLifecycle(sessionId);
+    return { sessionId, agentContext: read.events[0].payload.agentContext, ...relations, ...lifecycle };
   }
 
   /** Physical references only; durable ownership remains in the Session journal. */

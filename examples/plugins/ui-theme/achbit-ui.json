@@ -1,0 +1,1 @@
+{"id":"example-theme","name":"Example theme","description":"A small scoped theme extension.","entry":"index.js","slots":["theme"],"files":["index.js"]}

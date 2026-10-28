@@ -2242,7 +2242,6 @@ fn validate_new_event(
                     &[
                         "filesystemReferences",
                         "pluginSelections",
-                        "pluginCatalogRevision",
                         "guidanceReferences",
                         "interactionId",
                     ]
@@ -3637,7 +3636,6 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
                 "filesystemReferences",
                 "profileId",
                 "reasoningEffortOverride",
-                "pluginCatalogRevision",
                 "pluginSelections",
                 "guidanceReferences",
                 "hostBinding",
@@ -3725,10 +3723,9 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         if let Some(effort) = command.get("reasoningEffortOverride") {
             validate_reasoning_override(effort)?;
         }
-        validate_plugin_selections(
-            command.get("pluginCatalogRevision"),
-            command.get("pluginSelections"),
-        )?;
+        if let Some(selections) = command.get("pluginSelections") {
+            validate_plugin_selection_list(selections)?;
+        }
     }
     if command_type == "plan.respond" {
         exact_object(
@@ -4921,41 +4918,6 @@ fn valid_media_type(value: &str) -> bool {
                     '!' | '#' | '$' | '&' | '^' | '_' | '.' | '+' | '-'
                 )
         })
-}
-
-fn validate_plugin_selections(
-    revision: Option<&Value>,
-    selections: Option<&Value>,
-) -> Result<(), LocalAgentStoreError> {
-    let Some(selections) = selections else {
-        if let Some(revision) = revision {
-            validate_id(
-                "pluginCatalogRevision",
-                revision.as_str().ok_or_else(|| {
-                    LocalAgentStoreError::new(
-                        "plugin_selection_invalid",
-                        "pluginCatalogRevision 必须是字符串。",
-                    )
-                })?,
-            )?;
-        }
-        return Ok(());
-    };
-    let selections = selections.as_array().ok_or_else(|| {
-        LocalAgentStoreError::new("plugin_selection_invalid", "pluginSelections 必须是数组。")
-    })?;
-    if !selections.is_empty() {
-        validate_id(
-            "pluginCatalogRevision",
-            revision.and_then(Value::as_str).ok_or_else(|| {
-                LocalAgentStoreError::new(
-                    "plugin_selection_invalid",
-                    "非空 pluginSelections 必须包含 pluginCatalogRevision。",
-                )
-            })?,
-        )?;
-    }
-    validate_plugin_selection_list(&Value::Array(selections.clone()))
 }
 
 fn validate_plugin_selection_list(selections: &Value) -> Result<(), LocalAgentStoreError> {

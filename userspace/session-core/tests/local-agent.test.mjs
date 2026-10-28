@@ -535,9 +535,14 @@ test('subagent models discovery uses the Host port without starting children', a
     assert.deepEqual(discovered.models, models.map(model => ({ ...model,
       parameters: { ...model.parameters, fileInputMediaTypes: [] },
     })));
-    assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
-      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false, coordinator: false,
-    }));
+    assert.deepEqual(discovered.operations.map(operation => operation.action).sort(),
+      ['cancel', 'compact', 'models', 'send', 'spawn', 'wait']);
+    const spawnProperties = discovered.operations.find(operation => operation.action === 'spawn').inputSchema.properties;
+    assert.deepEqual(spawnProperties.profileId.enum, ['profile:configured']);
+    assert.deepEqual(spawnProperties.preset.enum, ['analysis', 'collaboration']);
+    for (const field of ['permissions', 'permissionPolicy', 'runner', 'workspaceSandbox', 'loop', 'context', 'capabilities']) {
+      assert.equal(spawnProperties[field], undefined, field);
+    }
     assert.equal(discovered.parentAgentId, 'session:owner');
     assert.deepEqual(discovered.agents, []);
     assert.equal(discovered.fullConfiguration, false);
@@ -899,10 +904,10 @@ test('request-boundary refresh retains the starting selection when another tool 
     yield providerEvent(request.requestId,'completed',{});
   }},kernel,preparation.port,'selected-boundaries');
   t.after(async()=>{finishTool();await actor.dispose();});
-  await actor.submit({...messageCommand(sessionId,'command:selection-start','Read.'),pluginCatalogRevision:'catalog:first',pluginSelections:[first]});
+  await actor.submit({...messageCommand(sessionId,'command:selection-start','Read.'),pluginSelections:[first]});
   await waitUntil(()=>toolStarted,'tool executing');
   assert.deepEqual(preparation.prepared.at(-1).pluginSelections,[first]);
-  await actor.submit({...messageCommand(sessionId,'command:selection-next','Use Second too.'),pluginCatalogRevision:'catalog:second',pluginSelections:[second]});
+  await actor.submit({...messageCommand(sessionId,'command:selection-next','Use Second too.'),pluginSelections:[second]});
   finishTool();
   await waitForProjection(actor,value=>value.run?.status==='completed');
   assert.equal(requests,2);

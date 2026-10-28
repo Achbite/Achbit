@@ -563,7 +563,6 @@ const store = create<LocalAgentState>((set, get) => ({
     const promise = (async () => {
       const statuses = (async () => {
         try {
-          const requestedCatalog = get().catalog;
           const items = await getConversationStatuses(signal);
           if (generation !== refreshGeneration) return null;
           set((state) => {
@@ -571,24 +570,9 @@ const store = create<LocalAgentState>((set, get) => ({
               const current = state.sessionStatuses[item.sessionId];
               return [item.sessionId, current && current.revision > item.revision ? current : item];
             }));
-            // Host titles can change without a Session revision. A catalog mutation
-            // owns its returned titles; an older status read must not undo a rename.
-            let catalog = state.catalog;
-            if (!state.catalogBusy && catalog === requestedCatalog) {
-              const titles = new Map(items.filter((item) => item.title !== undefined)
-                .map((item) => [item.sessionId, item.title!]));
-              const sessions = catalog.sessions.map((session) => {
-                const title = titles.get(session.id);
-                return title === undefined || title === session.title ? session : { ...session, title };
-              });
-              if (sessions.some((session, index) => session !== catalog.sessions[index])) {
-                catalog = { ...catalog, sessions };
-              }
-            }
             if (state.statusError === null
-              && catalog === state.catalog
               && JSON.stringify(sessionStatuses) === JSON.stringify(state.sessionStatuses)) return state;
-            return { sessionStatuses, catalog, statusError: null };
+            return { sessionStatuses, statusError: null };
           });
           return items;
         } catch (error) {
@@ -1024,7 +1008,6 @@ async function submitNewRun(
       ...(guidanceReferences.length ? {guidanceReferences} : {}),
       ...(executionSelections.length
         ? {
-            pluginCatalogRevision: pluginCatalog.revision,
             pluginSelections: executionSelections.map((selection) => ({ ...selection })),
           }
         : {}),
