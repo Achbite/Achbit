@@ -472,6 +472,7 @@ export class SessionActor {
         environment: runtime.environment,
         ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
         ...recoveryPluginSelection(snapshot, command.runId, runtime),
+        previousProviderToolAliases: (snapshot.state.runToolViews[command.runId] ?? runtime).providerToolAliases,
         rebindHost: { commandId: command.commandId, expectedBinding: command.expectedHostBinding, hostBinding: command.hostBinding },
       });
     } catch (error) {
@@ -828,9 +829,12 @@ export class SessionActor {
         ? before.state.modelSettings.reasoningEffortOverride : null;
     const directoryReferences = command.filesystemReferences?.filter(reference => reference.kind === 'directory') ?? [];
     const runWorkspaceBindings = appendResourceBindings(before.state.workspaceBindings, directoryReferences);
+    const previousRun = before.state.run?.runId;
+    const previousView = previousRun ? before.state.runToolViews[previousRun] ?? before.state.runRuntimeSnapshots[previousRun] : undefined;
     const prepared = await this.#composition.runPreparation.prepare({
       sessionId: this.sessionId,
       runId,
+      previousProviderToolAliases: previousView?.providerToolAliases,
       environment: savedSessionEnvironment(before.events),
       ...(command.hostBinding ? { hostBinding: { ...command.hostBinding } } : {}),
       ...(profileId ? { profileId } : {}),
@@ -1287,13 +1291,15 @@ export class SessionActor {
           const selections = [...new Map([...initialSelections, ...queued.flatMap((input) => input.pluginSelections)]
             .map((selection) => [selection.uri, selection])).values()];
           const events: NewSessionEvent[] = [];
-          if (selections.length || activeView.selectedPlugins.plugins.length) {
+          if (selections.length || activeView.selectedPlugins.plugins.length
+            || activeView.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable')) {
             const catalogRevision = queued.filter((input) => input.pluginSelections.length).at(-1)?.pluginCatalogRevision;
             const prepared = await this.#composition.runPreparation.prepare({
               sessionId: this.sessionId, runId, profileId: runtime.provider.profileId,
               environment: runtime.environment,
               ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
               pluginSelections: selections,
+              previousProviderToolAliases: activeView.providerToolAliases,
               refreshPlugins: !queued.some(input=>input.pluginSelections.length),
               ...(catalogRevision ? { pluginCatalogRevision: catalogRevision } : {}),
             });
@@ -1404,6 +1410,7 @@ export class SessionActor {
         restoreEnvironment: true,
         ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
         ...recoveryPluginSelection(snapshot, runId, runtime),
+        previousProviderToolAliases: (snapshot.state.runToolViews[runId] ?? runtime).providerToolAliases,
       });
     } catch (error) {
       await this.settleRecoveryFailure(runId, error);

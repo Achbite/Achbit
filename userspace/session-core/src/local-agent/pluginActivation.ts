@@ -9,6 +9,7 @@ export function preparePluginActivation(input: PluginActivationInput) {
     sessionId, runId, profileId: runtime.provider.profileId,
     environment: runtime.environment,
     ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
+    previousProviderToolAliases: runtime.providerToolAliases,
     pluginSelections: uris.map(uri => ({ selectionId: nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) })),
   });
 }

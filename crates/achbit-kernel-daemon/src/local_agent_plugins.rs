@@ -331,6 +331,35 @@ pub(crate) fn plugin_uri_for_activation_media_type(
     Ok(None)
 }
 
+/// Registration inputs that may change between model requests. Do not refresh
+/// Provider, permission defaults or workspace configuration as a side effect.
+pub(crate) const REGISTRATION_KEYS: &[&str] = &[
+    "plugins.sources",
+    "plugins.disabled",
+    "skills.mounts",
+    "mcp.servers",
+];
+
+pub(crate) fn refresh_registration_settings(target: &mut Value, current: &Value) {
+    for key in REGISTRATION_KEYS {
+        match current.get(*key) {
+            Some(value) => target[*key] = value.clone(),
+            None => {
+                target
+                    .as_object_mut()
+                    .expect("runtime settings object")
+                    .remove(*key);
+            }
+        }
+    }
+}
+
+pub(crate) fn same_registration_settings(left: &Value, right: &Value) -> bool {
+    REGISTRATION_KEYS
+        .iter()
+        .all(|key| left.get(*key) == right.get(*key))
+}
+
 pub(crate) fn resolve_plugin_selection(
     settings: &Value,
     selections: &mut Vec<PluginSelectionInput>,
@@ -1009,6 +1038,23 @@ mod tests {
             .unwrap()
             .computer_use_instance()
             .is_none());
+    }
+
+    #[test]
+    fn live_registration_refresh_keeps_provider_environment_and_permission_defaults_frozen() {
+        let mut frozen = json!({"plugins.sources":"[]", "agent.systemPrompt":"original", "agent.permissions.shell":"ask", "mcp.servers":"[]"});
+        let current = json!({"plugins.sources":"[{\"id\":\"new\"}]", "agent.systemPrompt":"changed", "agent.permissions.shell":"allow", "skills.mounts":"[]"});
+        let original = frozen.clone();
+        refresh_registration_settings(&mut frozen, &current);
+        assert_eq!(frozen["plugins.sources"], current["plugins.sources"]);
+        assert_eq!(frozen["agent.systemPrompt"], original["agent.systemPrompt"]);
+        assert_eq!(
+            frozen["agent.permissions.shell"],
+            original["agent.permissions.shell"]
+        );
+        assert!(frozen.get("mcp.servers").is_none());
+        assert!(!same_registration_settings(&original, &frozen));
+        assert!(same_registration_settings(&frozen, &current));
     }
 
     #[test]

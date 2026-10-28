@@ -480,9 +480,10 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
   }
 
   async prepare(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime> {
+    const { previousProviderToolAliases, ...kernelRequest } = request;
     const value = await this.json('/api/local-agent/runtime/prepare-run', {
       method: 'POST',
-      body: JSON.stringify(request),
+      body: JSON.stringify(kernelRequest),
     });
     if (!isExactRecord(value, [
       'schemaVersion',
@@ -554,7 +555,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           .filter((tool) => tool.availability === 'callable')
           .map((tool) => tool.name),
         ...sessionControlToolDefinitions().map((tool) => tool.name),
-      ]);
+      ], previousProviderToolAliases);
       const wireName = (canonicalName: string): string => {
         const alias = providerToolAliases.find((candidate) => (
           candidate.canonicalName === canonicalName

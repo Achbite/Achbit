@@ -56,6 +56,7 @@ interface ProviderMessageToolCodec {
 
 export function createProviderToolAliases(
   canonicalNames: readonly string[],
+  previous: readonly ProviderToolAlias[] = [],
 ): ProviderToolAlias[] {
   const names = [...new Set(canonicalNames)]
     .sort((left, right) => left.localeCompare(right, 'en'));
@@ -72,10 +73,23 @@ export function createProviderToolAliases(
   }
 
   const seenWireNames = new Map<string, string>();
-  return names.map((canonicalName) => {
+  const previousNames = new Set<string>();
+  const retained = previous.map(alias => {
+    if (!CANONICAL_TOOL_NAME_PATTERN.test(alias.canonicalName)
+      || !PROVIDER_TOOL_NAME_PATTERN.test(alias.wireName)
+      || previousNames.has(alias.canonicalName) || seenWireNames.has(alias.wireName)) {
+      throw new LoopFailure('provider_tool_alias_snapshot_invalid', 'Previous tool aliases are invalid.');
+    }
+    previousNames.add(alias.canonicalName);
+    seenWireNames.set(alias.wireName, alias.canonicalName);
+    return { ...alias };
+  });
+  // Keep existing names and declaration order. New registrations cannot rename
+  // existing tools, even when their readable names collide with a new plugin.
+  return [...retained, ...names.filter(name => !previousNames.has(name)).map((canonicalName) => {
     const base = readableWireBase(canonicalName);
     const collides = (baseGroups.get(base)?.length ?? 0) > 1;
-    const needsSuffix = collides || base.length > 64;
+    const needsSuffix = collides || base.length > 64 || seenWireNames.has(base);
     const wireName = needsSuffix
       ? `${base.slice(0, 64 - HASH_SUFFIX_LENGTH - 1)}_${shortNameHash(canonicalName)}`
       : base;
@@ -94,7 +108,7 @@ export function createProviderToolAliases(
     }
     seenWireNames.set(wireName, canonicalName);
     return { canonicalName, wireName };
-  });
+  })];
 }
 
 export function providerWireName(
@@ -142,8 +156,8 @@ export function createProviderToolCodec(
       return tool;
     })
     .sort((left, right) => (
-      left.pluginUri!.localeCompare(right.pluginUri!, 'en')
-      || left.name.localeCompare(right.name, 'en')
+      aliases.findIndex(alias => alias.canonicalName === left.name)
+      - aliases.findIndex(alias => alias.canonicalName === right.name)
     ))
     .map((tool) => freezeProviderToolDefinition(tool, workspaceToolNames.has(tool.name)));
   const kernel = [...core, ...plugin];

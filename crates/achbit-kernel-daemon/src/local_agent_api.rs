@@ -186,6 +186,14 @@ impl LocalAgentRuntime {
             .map(|prepared| &prepared.runtime_settings)
             .unwrap_or(&gui.user_settings)
             .clone();
+        // Only extension registrations are live at a request boundary. Provider,
+        // environment and all other run settings retain their original snapshot.
+        if previous.is_some() && !request.restore_environment {
+            crate::local_agent_plugins::refresh_registration_settings(
+                &mut settings,
+                &gui.user_settings,
+            );
+        }
         let permissions = self
             .journal
             .permissions_for_run(&request.session_id, &settings)
@@ -233,12 +241,6 @@ impl LocalAgentRuntime {
                 "Container tools require a Host execution route.",
             ));
         }
-        let requested_plugin_identity = json!({
-            "pluginCatalogRevision": request.plugin_catalog_revision.clone(),
-            "refreshPlugins":request.refresh_plugins,
-            "pluginSelections": request.plugin_selections.clone(),
-            "rebindHost": request.rebind_host,
-        });
         let requested_host = request
             .rebind_host
             .as_ref()
@@ -282,9 +284,12 @@ impl LocalAgentRuntime {
                 ));
             }
             if let Some(existing) = prepared_runs.get(&key).and_then(|views| {
-                views.iter().find(|view| {
+                views.iter().rev().take(1).find(|view| {
                     view.mcp.is_some()
-                        && view.requested_plugin_identity == requested_plugin_identity
+                        && crate::local_agent_plugins::same_registration_settings(
+                            &view.runtime_settings,
+                            settings,
+                        )
                         && view.plugin_selection.same_inputs(&plugin_selection)
                         && view.response.pointer("/environment/hostBinding") == requested_host
                 })
@@ -681,7 +686,6 @@ impl LocalAgentRuntime {
                 executor_config,
                 secrets,
                 kernel_catalog_snapshot_ref,
-                requested_plugin_identity,
                 response: response.clone(),
                 provider_binding,
                 approval_reviewer_binding,
@@ -899,7 +903,6 @@ struct PreparedRunRecord {
     // None after retirement; immutable response identity remains available for restore/release.
     mcp: Option<crate::local_agent_mcp::McpRuntime>,
     kernel_catalog_snapshot_ref: String,
-    requested_plugin_identity: Value,
     response: Value,
 }
 
@@ -953,7 +956,9 @@ pub(crate) struct PrepareRunRuntimeRequest {
     rebind_host: Option<RebindHostRequest>,
     #[serde(default)]
     restore_environment: bool,
-    plugin_catalog_revision: Option<String>,
+    // Catalog revisions are caller correlation, not an equality gate for live discovery.
+    #[serde(rename = "pluginCatalogRevision")]
+    _plugin_catalog_revision: Option<String>,
     #[serde(default)]
     refresh_plugins: bool,
     #[serde(default)]

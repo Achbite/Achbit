@@ -156,7 +156,7 @@ test('desktop activation and explicit selection carry execution availability wit
       const events = await readEvents(journal, sessionId);
       const activated = events.find(event => event.type === 'session.plugins.activated');
       assert.equal(activated.payload.kernelCatalogSnapshotRef,
-        events.find(event => event.type === 'run.tools.prepared').payload.toolView.kernelCatalogSnapshotRef);
+        events.find(event => event.type === 'run.tools.prepared' && event.sequence > activated.sequence).payload.toolView.kernelCatalogSnapshotRef);
     }
   }
 });

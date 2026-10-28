@@ -2088,6 +2088,8 @@ export type PreparedRequestToolView = Pick<RunRuntimeSnapshot,
   | 'toolPromptContributions' | 'providerToolAliases' | 'selectedPlugins'>;
 
 export interface PrepareRunRuntimeRequest {
+  /** Session-owned wire names; consumed by the preparation adapter, never sent to Kernel. */
+  previousProviderToolAliases?: readonly ProviderToolAlias[];
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;
