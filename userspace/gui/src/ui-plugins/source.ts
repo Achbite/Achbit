@@ -63,4 +63,5 @@ export async function installLocalPlugin(path: string, replacePath?: string): Pr
   if (!response.ok) throw new Error(`Plugin installation: ${response.status} ${await response.text()}`);
   const result = await response.json();
   if (!result.ok) throw new Error(`${result.error}: ${result.message}`);
+  if (result.data?.application?.status === 'failed') throw new Error(result.data.application.error ?? 'Plugin activation failed');
 }

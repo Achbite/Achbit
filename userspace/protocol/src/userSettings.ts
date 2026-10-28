@@ -144,7 +144,7 @@ export interface PatchUserSettingsRequest {
   patches: Record<string, UserSettingValue>;
 }
 
-export type UserSettingsActivation = 'immediate' | 'nextRun';
+export type UserSettingsActivation = 'immediate' | 'nextRequest' | 'nextRun';
 
 export interface PatchUserSettingsResult {
   settings: UserSettings;

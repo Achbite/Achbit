@@ -369,7 +369,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       });
       return null;
     }
-    if (result.data.activation !== 'immediate' && result.data.activation !== 'nextRun') {
+    if (result.data.activation !== 'immediate' && result.data.activation !== 'nextRun' && result.data.activation !== 'nextRequest') {
       set({ errorMessage: fallbackError });
       return null;
     }
@@ -422,22 +422,21 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     pendingNextRunActivation: false,
     errorMessage: null,
 
-    loadUserSettings: async () => {
-      if (get().loading) return;
-      set({ loading: true, errorMessage: null });
-      const result = await getUserSettings();
-      if (!result.ok || !result.data) {
-        set({
-          loading: false,
-          errorMessage: result.message ?? activeT('settings.error.loadUser'),
-        });
-        return;
-      }
-      try {
-        applyCanonicalSettings(result.data);
-      } catch (reason) {
-        set({ loading: false, errorMessage: reason instanceof Error ? reason.message : String(reason) });
-      }
+    loadUserSettings: () => {
+      // Reads and writes share the queue. An external change arriving during a
+      // read must cause another read, and an older read cannot overwrite a write.
+      const result = pendingWrite.then(async () => {
+        set({ loading: true, errorMessage: null });
+        try {
+          const result = await getUserSettings();
+          if (!result.ok || !result.data) throw new Error(result.message ?? activeT('settings.error.loadUser'));
+          applyCanonicalSettings(result.data);
+        } catch (reason) {
+          set({ loading: false, errorMessage: reason instanceof Error ? reason.message : String(reason) });
+        }
+      });
+      pendingWrite = result.then(() => undefined, () => undefined);
+      return result;
     },
 
     patchUserSetting: async (key, value) => {

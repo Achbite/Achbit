@@ -1,0 +1,14 @@
+# Develop and install Achbit plugins
+
+Use the CLI path and Host data directory reported by the current execution environment. `instance` identifies the target; `--host-data-dir` selects an already running instance and fails if it is unavailable. Keep the normal and Debug instances distinct.
+
+1. Run `plugins capabilities` for the small directory. Read only the needed `plugins guide plugins` or `plugins guide ui`, and `plugins template cli|service|ui|guidance`. These resources come from the running package; no source checkout is required.
+2. Author the returned template files in the task workspace. Customize its ID, contract and implementation. UI TypeScript needs compilation into a standalone browser module. Include dependencies/resources in the distributable, preserving the manifest's files contract.
+3. Run `plugins inspect <directory|manifest|zip>`, then `plugins install <path>` on the intended instance. Use existing Shell approval with the exact target and effect; installing a plugin does not change the task's permissions.
+4. Read both the saved registration and `application`. Services report actual process status and errors. UI status reports connected window modules; module activation alone does not prove rendering. CLI tools and Skills become discoverable at the next model request in the same run. Search and activate only the required plugin using its returned URI, then call the declared tool or read the Skill.
+5. Correct observed issues in the same plugin. `plugins update <id|installed-path> <new-path>` installs a new managed copy, retaining enablement and service state. Existing tool attempts retain their binding until completion; later requests see the update. `plugins status <target>` reads current state. Explicitly disable then enable a failed service to retry after addressing its cause; no automatic retry loop is added.
+6. Package the plugin's manifest and runtime files after the authorized Debug check. Keep state, credentials and logs outside the artifact. A plugin using published interfaces does not require rebuilding Achbit itself. Changes to compiled Host/Kernel/Session interfaces do.
+
+The source directory is an authoring location. The watcher observes the installed copy. Recompiling the source requires `plugins update`; it does not by itself hot-replace the installation. `plugins disable` withdraws task tools at the request boundary; `plugins remove` removes registration while retaining plugin data.
+
+The stable system prefix and historical messages remain unchanged during plugin refresh. New tool names and guidance are appended where possible; changed/removed tools are still represented accurately. A Provider may invalidate cache entries when actual tool schemas change. Use reported cache usage to measure the outcome rather than promising a fixed hit rate.

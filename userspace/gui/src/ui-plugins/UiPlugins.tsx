@@ -1,3 +1,5 @@
+import { watchUserSettings, reportUiPlugins } from '../services/pluginManagement';
+import { useLocalAgentStore } from '../state/localAgentStore';
 import React, {
   createContext,
   useCallback,
@@ -53,6 +55,7 @@ interface RuntimeContext {
   runtime: UiPluginRuntime;
   connectionError: string | null;
   refresh(path?: string): void;
+  watchHost(signal: AbortSignal): Promise<void>;
 }
 const Context = createContext<RuntimeContext | null>(null);
 const EMPTY: readonly UiPluginEntry[] = [];
@@ -68,6 +71,30 @@ export function UiPluginsProvider({ children }: { children: React.ReactNode }) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   const latestFiles = useRef<UiPluginFile[]>([]);
+  const watchHost = useCallback(async (signal: AbortSignal) => {
+    const clientId = crypto.randomUUID();
+    let ready = false;
+    let pending = Promise.resolve();
+    const publish = () => {
+      const entries = runtime.getSnapshot();
+      const result = pending.then(() => signal.aborted ? undefined : reportUiPlugins(clientId, entries, signal));
+      pending = result.catch(error => { if (!signal.aborted) setConnectionError(errorText(error)); });
+      return result;
+    };
+    const unsubscribe = runtime.subscribe(() => { if (ready) void publish().catch(() => {}); });
+    try {
+      await watchUserSettings(clientId, signal, async () => {
+        ready = true;
+        await useSettingsStore.getState().loadUserSettings();
+        const error = useSettingsStore.getState().errorMessage;
+        if (error) throw new Error(error);
+        if (!signal.aborted) {
+          await useLocalAgentStore.getState().refreshPluginCatalog();
+          await publish();
+        }
+      });
+    } finally { unsubscribe(); }
+  }, [runtime]);
   const refresh = useCallback(
     (path?: string) => {
       if (path)
@@ -112,8 +139,8 @@ export function UiPluginsProvider({ children }: { children: React.ReactNode }) {
   return (
     <Context.Provider
       value={useMemo(
-        () => ({ runtime, connectionError, refresh }),
-        [runtime, connectionError, refresh],
+        () => ({ runtime, connectionError, refresh, watchHost }),
+        [runtime, connectionError, refresh, watchHost],
       )}
     >
       {children}
@@ -128,7 +155,7 @@ export function useUiPlugins() {
     context?.runtime.getSnapshot ?? emptySnapshot,
     emptySnapshot,
   );
-  return { entries, connectionError: context?.connectionError ?? null, refresh: context?.refresh };
+  return { entries, connectionError: context?.connectionError ?? null, refresh: context?.refresh, watchHost: context?.watchHost };
 }
 
 /** Only this mount is replaced. The React owner retains the draft, scroll and conversation. */

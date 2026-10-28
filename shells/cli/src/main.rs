@@ -8,6 +8,7 @@ mod gui_attach;
 #[path = "../../shared/i18n.rs"]
 mod i18n;
 mod model_services;
+mod plugins;
 mod render;
 #[path = "../../shared/session_navigation.rs"]
 mod session_navigation;
@@ -1525,7 +1526,7 @@ fn new_id(kind: &str) -> String {
 }
 
 fn print_help() {
-    println!("配置：instance | services | connections list/set/remove | models list/set/remove/default/probe\nset 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。\n模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days=30]\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
+    println!("插件：plugins list/status [id|installed-path] | capabilities | guide plugins/ui | template cli/service/ui/guidance | inspect/install <path> | update <id|installed-path> <path> | enable/disable/remove <id|installed-path>\n管理使用当前 Host；安装后通过 plugin.search 与 plugin.activate 在同一轮后续步骤使用工具。\n配置：instance | services | connections list/set/remove | models list/set/remove/default/probe\nset 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。\n模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days=30]\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
     println!(
         r#"配置 JSON：models set 的 --input 是完整 profile 对象；connections set 是 {{"connection":{{...}},"profile":{{...}}}}（profile 可选）。先用 models list/connections list 读取当前字段，修改后通过 set 保存。
 密钥只通过 --api-key-file <文件|-> 提供。models probe <profile-id> 发起真实请求，失败返回非零退出码。help/-h/--help 无需连接 Host。"#

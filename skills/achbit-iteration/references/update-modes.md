@@ -5,11 +5,12 @@ Use the actual checkout, container mount and running target. Choose one update p
 | Change | Update path |
 | --- | --- |
 | GUI source | `make dev-achbit-gui`; open its actual development URL and retain that page for Vite HMR |
-| TypeScript display plugin | `make ui-plugin UI_PLUGIN=<repo-relative-dir>` or `make ui-plugin-watch`; the enabled compiled entry is hot-replaced |
-| Display manifest or compiled module | Save the selected source; the Host replaces that module |
+| TypeScript display plugin | Compile with `make ui-plugin UI_PLUGIN=<repo-relative-dir>` or `make ui-plugin-watch`, then `plugins update <target> <directory>` through the target Host CLI |
+| Display manifest or compiled module | Update the managed installation; connected windows replace the installed module after old cleanup |
 | Packaged GUI resources | `make ui-update UI_PACKAGE=<actual-package-dir>`, then reload that interface |
 | Selected external Skill / CLI plugin content | Captured before the next model request; existing calls retain their binding |
-| Saved runtime configuration | Captured by the next run; permission revocation still applies before execution |
+| Plugin registrations (`plugins.sources`, `plugins.disabled`, `skills.mounts`, `mcp.servers`) | Refreshed at the next model request in the same run; discover and activate newly installed capabilities |
+| Other saved runtime configuration | Captured by the next run; permission revocation still applies before execution |
 | Session, Kernel, native shell or compiled-in docs/Skills | Build the affected runtime and restart only the authorized target |
 
 Interface reload uses Cmd+Shift+R on macOS, Ctrl+Shift+R elsewhere, or `browser.page` with `action: refreshInterface`. `scheduled` is queued; `needsUser` requires user handling of unsaved changes. `openSelf` opens packaged resources, not source HMR.

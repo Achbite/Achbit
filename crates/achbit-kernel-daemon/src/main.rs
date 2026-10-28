@@ -46,6 +46,7 @@ mod model_auth;
 mod model_connections;
 mod model_usage;
 mod plugin_installation;
+mod plugin_management;
 mod prelude;
 mod provider_transport;
 mod routes;

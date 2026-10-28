@@ -1,0 +1,1 @@
+{"schema":"achbit.service-plugin.v1","id":"example-service","name":"Example local service","description":"A local JSON endpoint for plugin development.","entry":"entry.mjs","files":["entry.mjs"]}

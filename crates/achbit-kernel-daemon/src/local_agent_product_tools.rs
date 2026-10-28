@@ -201,6 +201,10 @@ const SKILLS: &[ProductSkill] = &[
                 "references/update-modes.md",
                 include_str!("../../../skills/achbit-iteration/references/update-modes.md"),
             ),
+            (
+                "references/plugin-development.md",
+                include_str!("../../../skills/achbit-iteration/references/plugin-development.md"),
+            ),
         ],
     },
     ProductSkill {

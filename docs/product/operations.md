@@ -18,6 +18,8 @@ User images and GUI observations supply pixels for one successful request. Later
 
 ## Settings and extensions
 
+For self-development and installation, use the current Host CLI: `plugins capabilities`, then the needed `plugins guide` / `plugins template`; `plugins inspect`, `install`, `update`, `enable`, `disable`, `remove`, and `status` share the Settings operations. Target an existing instance with `--host-data-dir`. Read both registration and actual application state. New registrations enter discovery at the next model request in the same run; installation does not grant task activation or permission. The built-in `achbit-iteration` Skill includes the complete development/update workflow.
+
 Discover a missing capability with `plugin.search`, using a short product/capability query. All keywords must match. Zero matches means that query did not match; shorten it or browse without `query`. Follow `nextOffset` only when more results are needed.
 
 Activate relevant enabled results with `plugin.activate` alone, using their exact URIs. Tools and guidance enter the next request. Search does not start programs; activation neither installs/enables plugins nor grants permissions. User `@` mentions are optional. Read current schemas rather than guessing names or arguments.

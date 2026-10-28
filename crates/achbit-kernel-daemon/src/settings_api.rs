@@ -39,7 +39,10 @@ pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Js
 
 fn setting_activates_at_next_run(key: &str) -> bool {
     // These are defaults read once when Session creates a new conversation.
-    if key == "plugins.services" || key.starts_with("agent.subagents.") {
+    if key == "plugins.services"
+        || key.starts_with("agent.subagents.")
+        || crate::local_agent_plugins::REGISTRATION_KEYS.contains(&key)
+    {
         return false;
     }
     key.starts_with("skills.")
@@ -84,6 +87,57 @@ pub(crate) async fn user_settings_get(ReadyState(state): ReadyState) -> Json<Api
         "overriddenKeys": [],
         "storePath": store_path.to_string_lossy()
     }))
+}
+
+/// Subscribe before ready so a concurrent management operation cannot be missed.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SettingsEventsQuery {
+    client_id: Option<String>,
+}
+pub(crate) async fn user_settings_events(
+    ReadyState(state): ReadyState,
+    Query(query): Query<SettingsEventsQuery>,
+) -> Response {
+    use axum::response::{sse::Event, Sse};
+    let mut changes = state
+        .gui
+        .lock()
+        .expect("gui state lock")
+        .settings_changes
+        .subscribe();
+    let lease = if let Some(client_id) = query.client_id {
+        if client_id.is_empty() || client_id.len() > 128 {
+            return ApiResponse::error("plugin_client_invalid", "Invalid client ID")
+                .into_response();
+        }
+        let mut gui = state.gui.lock().expect("gui state lock");
+        if gui.ui_plugin_clients.contains_key(&client_id) {
+            return ApiResponse::error("plugin_client_duplicate", "Client already connected")
+                .into_response();
+        }
+        gui.ui_plugin_clients.insert(client_id.clone(), None);
+        Some(crate::plugin_management::UiRuntimeLease {
+            gui: state.gui.clone(),
+            client_id,
+        })
+    } else {
+        None
+    };
+    let stream = async_stream::stream! {
+        let _lease = lease;
+        let shutdown = crate::wait_for_host_shutdown();
+        tokio::pin!(shutdown);
+        yield Ok::<_, std::convert::Infallible>(Event::default().event("ready").data("{}"));
+        loop {
+            let changed = tokio::select! { biased; _ = &mut shutdown => break, changed = changes.changed() => changed };
+            if changed.is_err() { break; }
+            yield Ok(Event::default().event("change").data("{}"));
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 pub(crate) async fn user_settings_patch(
@@ -191,6 +245,7 @@ pub(crate) fn apply_user_settings_patch_locked(state: &AppState, body: Value) ->
             return ApiResponse::error("write_settings_failed", error);
         }
         gui.user_settings = next_settings.clone();
+        gui.settings_changes.send_replace(());
         if let Some(sources) = &service_sources {
             let data = gui.paths.directories.data_dir.clone();
             gui.service_plugins.activate(sources, &data);
@@ -199,7 +254,7 @@ pub(crate) fn apply_user_settings_patch_locked(state: &AppState, body: Value) ->
     ApiResponse::ok(json!({
         "settings": next_settings,
         "changedKeys": changed_keys,
-        "activation": if has_next_run_activation { "nextRun" } else { "immediate" }
+        "activation": if has_next_run_activation { "nextRun" } else if changed_keys.iter().any(|key| crate::local_agent_plugins::REGISTRATION_KEYS.contains(&key.as_str())) { "nextRequest" } else { "immediate" }
     }))
 }
 

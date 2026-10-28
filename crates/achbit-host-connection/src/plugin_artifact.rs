@@ -35,6 +35,11 @@ const SLOTS: &[&str] = &[
     "tool.result",
 ];
 
+/// The same slot directory used by manifest validation and development discovery.
+pub fn ui_plugin_slots() -> &'static [&'static str] {
+    SLOTS
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UiPluginManifest {

@@ -79,6 +79,9 @@ pub(crate) struct GuiState {
     _config_root_lease: ConfigRootLease,
     pub(crate) paths: HostPaths,
     pub(crate) user_settings: Value,
+    pub(crate) settings_changes: tokio::sync::watch::Sender<()>,
+    pub(crate) ui_plugin_clients:
+        HashMap<String, Option<Vec<crate::plugin_management::UiRuntimeEntry>>>,
     pub(crate) service_plugins: crate::service_plugins::ServicePlugins,
     pub(crate) llm_profiles: LlmProfileStore,
     pub(crate) conversation_catalog: crate::conversation_catalog::ConversationCatalog,
@@ -135,6 +138,8 @@ impl GuiState {
             _config_root_lease: config_root_lease,
             paths,
             user_settings,
+            settings_changes: tokio::sync::watch::channel(()).0,
+            ui_plugin_clients: HashMap::new(),
             service_plugins: crate::service_plugins::ServicePlugins::default(),
             llm_profiles,
             conversation_catalog,

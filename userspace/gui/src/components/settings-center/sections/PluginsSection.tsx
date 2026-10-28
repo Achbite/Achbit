@@ -1,3 +1,4 @@
+import { manageLocalPlugin } from '../../../services/pluginManagement';
 import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
 import ToggleSwitch from '../../shared/ToggleSwitch';
@@ -223,6 +224,14 @@ export default function PluginsSection() {
       return next;
     });
     try {
+      if (item.path && ['plugins.sources', 'plugins.services', 'workbench.uiPlugins', 'skills.mounts'].includes(item.key) && !replacement) {
+        await manageLocalPlugin(remove ? 'remove' : enabled ? 'enable' : 'disable', item.path);
+        await useSettingsStore.getState().loadUserSettings();
+        if (remove) setExpanded(null);
+        setRevision(value => value + 1);
+        void useLocalAgentStore.getState().refreshPluginCatalog();
+        return;
+      }
       const current = useSettingsStore.getState().effectiveSettings[item.key];
       let value: unknown;
       if (item.key === 'plugins.disabled') {

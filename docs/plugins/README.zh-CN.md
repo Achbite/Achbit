@@ -20,6 +20,20 @@
 
 托管 Shell、容器和插件激活分别有明确的资源所有者。完成事件主动送到 Session，主对话模型不必反复询问子代理是否完成。关闭 Reader 只释放订阅，不终止子任务。拆除可选能力后，核心 Loop 与剩余工具应继续工作。
 
+## 自身研发与管理
+
+当前实例的 CLI 支持 `plugins list`、`plugins status [id|已安装路径]`、`plugins inspect <路径>`、`plugins install <路径>`、`plugins update <id|已安装路径> <新制品路径>` 和 `plugins enable|disable|remove <id|已安装路径>`。制品路径可以是目录、清单或 ZIP；通过 `--host-data-dir <数据目录>` 精确连接已经运行的普通或 Debug 实例。GUI 和 CLI 共用安装与管理操作，Agent 使用现有 Shell 审批。
+
+先用 `plugins capabilities` 获取小型能力目录，再按需读取 `plugins guide plugins|ui` 或 `plugins template cli|service|ui|guidance`。模板返回工作区文件名与内容，不自动安装；文档和模板随当前运行包分发，不要求源码仓库。
+
+回执分别报告保存结果与 `application`。服务状态来自实际进程；UI 的 `windowModule` 状态来自仍然连接的窗口，断开后移除该窗口报告。没有窗口报告或尚在加载时为 `client-pending`，模块激活不等于画面已经验收。CLI 工具和 Skill 的 `available` 仅说明可被发现。
+
+插件、Skill 和 MCP 注册在同一 run 的下一次模型请求边界刷新。新增能力通过 `plugin.search` 发现，再按需 `plugin.activate`；更新、停用和移除作用于后续请求，已发出的调用保留执行绑定直至结算。Provider、环境和其他运行默认配置仍保持本轮快照。注册键的配置回执使用 `activation: nextRequest`。
+
+缓存保护保留初始系统指令与工具指引，后续变化在会话历史中追加；新增插件不改名或重排已有工具，未改变的注册复用准备视图。已移除工具仍会撤下，实际 schema 变化可能影响 Provider 缓存，命中率以实际用量为准。
+
+开发流程是编写与编译、更新到目标 Debug 实例的受管理副本、观察实际行为，再打包插件制品。源目录不是已安装副本的监听目标；修改 Achbit 编译接口时才需要应用重建。
+
 ## 制品与导入
 
 准备包含清单及运行文件的插件目录，打开 **设置 → 插件 → 添加**，选择 ZIP、目录或具体清单文件。检查只读取描述并验证入口，不执行插件代码。一个目录存在多份受支持清单时，必须选择具体文件。也可以直接选择 ZIP 进行安装或更新。一个 ZIP 只包含一个插件，清单位于压缩包根目录或单层外包目录。Host 临时解压、按相同清单与入口合同检查，再安装自身副本；预览、取消或失败不留下解压安装。ZIP 支持存储/Deflate 压缩，解压后上限 512 MiB，只接受普通文件和目录；清单歧义、非法条目和解压错误会明确报告。

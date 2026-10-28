@@ -6,9 +6,9 @@ use achbit_host_connection::plugin_artifact::{copy_plugin, inspect_plugin, prepa
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct InstallRequest {
-    path: String,
+    pub(crate) path: String,
     #[serde(default)]
-    replace_path: Option<String>,
+    pub(crate) replace_path: Option<String>,
 }
 
 pub(crate) async fn install(
@@ -26,6 +26,10 @@ fn install_owned(state: AppState, request: InstallRequest) -> Json<ApiResponse> 
         Ok(guard) => guard,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
     };
+    install_locked(&state, request)
+}
+
+pub(crate) fn install_locked(state: &AppState, request: InstallRequest) -> Json<ApiResponse> {
     let (settings, data) = {
         let gui = state.gui.lock().expect("gui state lock");
         (
@@ -140,6 +144,11 @@ fn install_owned(state: AppState, request: InstallRequest) -> Json<ApiResponse> 
     );
     if response.0.ok {
         if let Some(data) = response.0.data.as_mut() {
+            let enabled = sources
+                .iter()
+                .find(|source| source["path"] == installed["path"])
+                .is_some_and(|source| source["enabled"] == true);
+            data["application"] = crate::plugin_management::application(state, &installed, enabled);
             data["plugin"] = installed;
         }
     } else if let Err(error) = fs::remove_dir_all(directory) {
@@ -159,7 +168,7 @@ fn settings_key(candidate: &Value) -> Result<&'static str, String> {
     }
 }
 
-fn source_list(settings: &Value, key: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn source_list(settings: &Value, key: &str) -> Result<Vec<Value>, String> {
     let text = settings.get(key).map_or(Ok("[]"), |value| {
         value
             .as_str()

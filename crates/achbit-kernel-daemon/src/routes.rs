@@ -49,6 +49,30 @@ pub(crate) fn build_app(state: HostState) -> Router {
             "/api/host/plugins/install",
             post(crate::plugin_installation::install),
         )
+        .route(
+            "/api/host/plugins",
+            get(crate::plugin_management::inventory),
+        )
+        .route(
+            "/api/host/plugins/inspect",
+            post(crate::plugin_management::inspect),
+        )
+        .route(
+            "/api/host/plugins/ui-runtime",
+            post(crate::plugin_management::report_ui),
+        )
+        .route(
+            "/api/host/plugins/manage",
+            post(crate::plugin_management::manage),
+        )
+        .route(
+            "/api/host/plugins/capabilities",
+            get(crate::plugin_management::capabilities),
+        )
+        .route(
+            "/api/user-settings/events",
+            get(crate::settings_api::user_settings_events),
+        )
         .route("/api/plugin-services", get(crate::service_plugins::list))
         .route(
             "/api/plugin-services/events",
