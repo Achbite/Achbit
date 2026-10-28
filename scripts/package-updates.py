@@ -43,6 +43,7 @@ def macos(app, output):
 
 
 def linux(stage, output):
+    output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='appimage-', dir=output.parent) as temporary:
         appdir = Path(temporary) / 'Achbit.AppDir'
         binaries = appdir / 'usr/bin'
