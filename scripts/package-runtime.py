@@ -104,7 +104,7 @@ def tui_fonts(root, target):
 def assemble(args):
     root, stage = args.root, args.stage
     debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
-    version = json.loads((root / 'package.json').read_text())['version']
+    version = os.environ.get('ACHBIT_BUILD_VERSION') or json.loads((root / 'package.json').read_text())['version']
     macos = args.platform == 'macos-arm64'
     windows = args.platform == 'win64'
     identity = signing_identity() if macos else None
@@ -182,8 +182,10 @@ export ACHBIT_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"
                 'export ACHBIT_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"\n'
                 'exec "$APP_DIR/MacOS/achbit-cli" debug "$@"\n')
             launcher.chmod(0o755)
+        assemble_computer_use(root, args.native, app / "Contents/Helpers", identity)
         sign_app(app, identity, native_components=True)
-        assemble_computer_use(root, args.native, stage, identity)
+    if windows:
+        (stage / 'package-files.json').write_text(json.dumps(sorted({entry.name for entry in stage.iterdir()} | {'package-files.json', 'README.md'})) + '\n')
     documentation = app_name + '/Contents/Resources/docs/' if macos else 'docs/'
     distribution_doc = 'debug-control.md' if debug else 'distribution.md'
     (stage / 'README.md').write_text((root / 'docs' / distribution_doc).read_text().replace('(product/', '(' + documentation + 'product/'))
@@ -200,7 +202,7 @@ PROGRAM_ENTRIES = {
     'achbit-kernel', 'achbit-kernel.exe', 'achbit-first-party-provider', 'achbit-first-party-provider.exe',
     'achbit-host-web', 'achbit-host-web.exe', 'achbit-cli.exe', 'achbit-tui.exe',
     'node', 'node_modules', 'session-core', 'web', 'web-achbit-gui', 'bwrap', 'WebView2Loader.dll',
-    'BUILDINFO.json', 'build-info.json', 'build-info.txt', 'README.md', 'README.txt', 'LICENSE', 'licenses', 'THIRD-PARTY.json', 'docs',
+    'package-files.json', 'BUILDINFO.json', 'build-info.json', 'build-info.txt', 'README.md', 'README.txt', 'LICENSE', 'licenses', 'THIRD-PARTY.json', 'docs',
 }
 
 

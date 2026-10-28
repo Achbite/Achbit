@@ -1147,6 +1147,21 @@ impl LocalAgentKernel {
         self.records.read(call_id)
     }
 
+    pub(crate) fn has_active_work(&self) -> Result<bool, LocalAgentKernelError> {
+        if !self.lock_active()?.is_empty()
+            || self.jobs.has_active_work().map_err(|error| {
+                LocalAgentKernelError::new("managed_process_state_failed", error)
+            })?
+        {
+            return Ok(true);
+        }
+        #[cfg(feature = "debug-control")]
+        if self.has_active_debug_operations()? {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub(crate) fn shutdown_plugins(&self) -> Result<(), LocalAgentKernelError> {
         #[cfg(feature = "debug-control")]
         self.shutdown_debug_operations()?;

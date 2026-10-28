@@ -273,19 +273,20 @@ fn watch_process_exit(pid: libc::pid_t) -> Result<ProcessExit, String> {
     })
 }
 
-/// Packaged location relative to the shared Host: a sibling App bundle on macOS, a sibling
+/// Packaged location relative to the shared Host: an independently signed nested App on macOS, a sibling
 /// executable in the installation directory on Windows.
 fn packaged_location(host_executable: &Path) -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     return host_executable
         .parent()
-        .and_then(|p| p.ancestors().nth(3))
+        .and_then(|p| p.parent())
         .map(|root| {
-            root.join(if cfg!(feature = "debug-control") {
-                "Achbit Debug Computer Use.app"
-            } else {
-                "Achbit Computer Use.app"
-            })
+            root.join("Helpers")
+                .join(if cfg!(feature = "debug-control") {
+                    "Achbit Debug Computer Use.app"
+                } else {
+                    "Achbit Computer Use.app"
+                })
         })
         .ok_or_else(|| "computer_component_package_path_invalid".into());
     #[cfg(windows)]

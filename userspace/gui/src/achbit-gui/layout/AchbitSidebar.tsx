@@ -7,6 +7,7 @@ import type {
 import { t, type UiLanguage } from '../../i18n';
 import AchbitBrand from './AchbitBrand';
 import AchbitShellIcon from '../../components/shared/AchbitShellIcon';
+import { ProductUpdateNotice } from '../../components/shared/ProductUpdateNotice';
 import { SessionRunStatus } from '../../components/local-agent/SessionRunStatus';
 import { runReadMarker } from './useReadRunMarkers';
 import { canDropSidebarItem, type SidebarDragItem, type SidebarDropEdge } from './sidebarOrder';
@@ -437,12 +438,13 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
       </section>
 
       <footer className="achbit-gui-sidebar-footer">
-      <button type="button" className="achbit-gui-sidebar-settings" onClick={onOpenSettings}>
-        <span className="achbit-gui-sidebar-settings__icon">
-          <AchbitShellIcon name="settings" />
-        </span>
-        <span>{t(language, 'achbitGui.settings.entry')}</span>
-      </button>
+        <ProductUpdateNotice />
+        <button type="button" className="achbit-gui-sidebar-settings" onClick={onOpenSettings}>
+          <span className="achbit-gui-sidebar-settings__icon">
+            <AchbitShellIcon name="settings" />
+          </span>
+          <span>{t(language, 'achbitGui.settings.entry')}</span>
+        </button>
       </footer>
     </div>
   );

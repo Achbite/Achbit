@@ -6,7 +6,7 @@ Achbit 提供图形界面、CLI 和 TUI。三种入口共享模型设置、会�
 
 主程序支持 macOS 12 及以上；桌面截图与操作要求 macOS 15.2 及以上。macOS 12–15.1 会在启用桌面控制前显示版本要求，聊天、文件工具和浏览器工具继续可用。
 
-打开 `Achbit-<version>-macos-arm64.pkg` 完成安装。应用位于 `/Applications/Achbit.app`；终端可使用 `achbit`、`achbit-cli` 和 `achbit-tui`，命令安装在 `/usr/local/bin`。
+打开 `Achbit-<version>-macos-arm64.pkg`，安装到当前用户。应用位于 `~/Applications/Achbit.app`，终端命令 `achbit`、`achbit-cli` 和 `achbit-tui` 位于 `~/.local/bin`。将 `export PATH="$HOME/.local/bin:$PATH"` 加入所用 Shell 的启动文件后重新打开终端。应用目录由当前用户写入，自动更新无需管理员权限。
 
 解压版可直接打开 `Achbit.app`，或使用同目录的 `Achbit-CLI.command`、`Achbit-TUI.command`。移动解压版时应保留这些文件的相对位置。用户文件存放在下表所列目录，与应用位置无关。
 
@@ -14,7 +14,7 @@ macOS TUI 默认使用 GUI“外观 → 字体详情 → 终端与代码”的�
 
 输入 `/font` 查看四套内置字体及系统默认选项，`/font compact` 等命令只切换当前窗口，`/font follow` 重新读取 GUI 选择。内置终端版本保持英文一格、中文两格；自定义终端字体须为固定字宽。首次使用可能需要允许启动器控制 Terminal，拒绝时显示原始错误；启动诊断区分字体准备、窗口创建、字体应用和 TUI 首帧确认。`achbit-tui --in-place` 保留在当前终端运行，管道、帮助和 `--smoke` 也不打开新窗口，这些方式使用原终端字体。更多命令与阅读规则见[产品指南](product/operations.md#reading-and-appearance)。
 
-macOS 安装包包含 `Achbit.app` 和独立的 `Achbit Computer Use.app`（显示名称为 Achbit Computer Use）。桌面截图与操作由后者执行，需要首次为该辅助 App 授予辅助功能和屏幕录制权限；`computer.control status` 返回实际执行进程。运行 `bash build.sh --stage computer-use` 可单独更新辅助组件，下一次调用前由 GUI、CLI、TUI 共用的 Host 退出旧组件并启动新版，旧观察句柄需重新获取。工具定义和内置指南仍由 Kernel 构建提供。
+macOS 安装包包含 `Achbit.app`，内部 `Contents/Helpers/Achbit Computer Use.app` 保持独立签名和执行进程（显示名称为 Achbit Computer Use）。整包更新会一起替换主程序、辅助 App 和运行资源。桌面截图与操作由后者执行，需要首次为该辅助 App 授予辅助功能和屏幕录制权限；`computer.control status` 返回实际执行进程。运行 `bash build.sh --stage computer-use` 可单独更新辅助组件，下一次调用前由 GUI、CLI、TUI 共用的 Host 退出旧组件并启动新版，旧观察句柄需重新获取。工具定义和内置指南仍由 Kernel 构建提供。
 
 macOS 更新需持续使用同一签名身份，以保留辅助功能和屏幕录制授权。首次安装或从早期 ad-hoc 构建切换签名身份时，系统可能要求授权一次；日常更新不应通过重置权限完成。授权保留与系统的“继续允许”提醒是两件事：当前外部窗口采用直接捕获，macOS 仍可能再次提醒，不能据此断言签名失效或重新申请了首次授权。本机开发的固定签名设置见[运行管理](product/operations.md#macos-signing)。
 
@@ -30,7 +30,7 @@ Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 �
 
 ## Linux
 
-解压后使用包内 `Achbit`、`achbit-cli` 或 `achbit-tui`。桌面环境需要 GTK、WebKitGTK 和 ALSA（`libasound2`，用于完成提示音）。工作区 Shell 的环境要求见[执行环境](product/execution-environments.md)。
+需要自动更新时，下载与架构对应的 `.AppImage`，放在当前用户可写的目录并赋予执行权限，然后直接运行。附加 `--cli` 或 `--tui` 可启动对应终端入口。保留的 tar.gz 解压版使用包内 `Achbit`、`achbit-cli` 或 `achbit-tui`，通过手动替换更新。桌面环境仍需要 GTK、WebKitGTK 和 ALSA（`libasound2`，用于完成提示音）；AppImage 是程序更新单元，不包含整套系统桌面库。工作区 Shell 的环境要求见[执行环境](product/execution-environments.md)。
 
 ## 用户目录
 
@@ -58,7 +58,11 @@ Windows TUI 默认打开专用控制台，读取 GUI“外观 → 字体详情 �
 
 ## 更新与功能配置
 
-更新前结束或取消正在执行的任务，并关闭 Achbit 的各个入口。若曾用 `achbit-cli start-host` 启动常驻后台服务，先执行 `achbit-cli stop-host`，再运行新安装包或替换解压版程序。设置、会话和附件位于用户目录，更新程序不会覆盖这些文件。
+从 0.6.63 起，本地 GUI 启动后检查新版本，运行期间每 30 分钟再次检查。SSH 和仅连接外部 Host 的窗口不负责安装更新，更新本地程序前应先关闭这些窗口。新版本从 GitHub Releases 下载并验证更新签名；通过验证后，等待所有任务、审批和后台工作结束，其他使用同一程序的入口关闭，且没有未保存的设置或最近 15 秒的输入活动，再自动安装并重启。未发送草稿和当前视图在重启后恢复。GUI 未运行时不会在后台自行唤起；下次启动再检查。
+
+0.6.62 及以前的客户端没有更新器，需要手动安装一次包含更新器的新版。macOS 新包安装到 `~/Applications`；旧 `/Applications` 副本和旧命令不会被自动删除，应从新路径启动，并确认终端 PATH 优先使用 `~/.local/bin`。两处程序使用相同的用户数据目录，勿同时打开两份程序。
+
+若曾用 `achbit-cli start-host` 启动常驻后台服务，自动更新会等待它退出；执行 `achbit-cli stop-host` 后继续。手动运行安装器或替换解压版程序前，也应结束任务并关闭各入口。设置、会话和附件位于独立用户目录，程序包不包含或覆盖这些文件。下载、签名或安装失败会显示原始错误，可重新检查。
 
 | 调整内容 | 生效时机 |
 | --- | --- |

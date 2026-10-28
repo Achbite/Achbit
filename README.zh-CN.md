@@ -41,9 +41,9 @@ Achbit 是一个本地优先的编程 Agent，提供桌面 GUI、TUI 和 CLI。�
 
 | 平台 | 启动 Achbit |
 | --- | --- |
-| macOS Apple Silicon | 安装 `.pkg` 后打开 `/Applications/Achbit.app`，或打开解压版中的 `Achbit.app`。 |
+| macOS Apple Silicon | 安装 `.pkg` 后打开 `~/Applications/Achbit.app`，或打开解压版中的 `Achbit.app`。 |
 | Windows x64 | 运行 Setup 安装器，或打开 ZIP 解压目录中的 `Achbit.exe`。 |
-| Linux | 解压对应架构的程序包，运行 `./Achbit`。 |
+| Linux | 运行对应架构并已授予执行权限的 `.AppImage`，或解压 tar 包后运行 `./Achbit`。 |
 
 1. 打开 **设置 → 模型与服务**，添加 API 连接或受支持的订阅。[DeepSeek 配置 →](docs/product/deepseek.zh-CN.md)
 2. 选择项目文件夹和模型。

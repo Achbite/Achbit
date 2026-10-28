@@ -784,7 +784,7 @@
     "agent.tool.status.cancelled": "Cancelled",
     "agent.tool.status.indeterminate": "Unknown",
     "agent.tool.notExecuted.approvalRequired": "Not executed: reading requires additional approval",
-  "agent.tool.notExecuted.cancelled": "Not executed: cancelled",
+    "agent.tool.notExecuted.cancelled": "Not executed: cancelled",
     "agent.tool.notExecuted.dependencyFailed": "Not executed: predecessor did not succeed",
     "achbitGui.session.removeFromProject": "Move out of project",
     "achbitGui.project.manageWorkspaces": "Manage workspaces",
@@ -1280,8 +1280,8 @@
     "tui.status.failed": "failed",
     "tui.status.cancelled": "cancelled",
     "tui.status.notExecutedApprovalRequired": "Not executed: reading requires additional approval",
-  "tui.status.notExecutedDependencyPending": "Not executed: predecessor still running",
-  "tui.status.notExecutedCancelled": "not executed: cancelled",
+    "tui.status.notExecutedDependencyPending": "Not executed: predecessor still running",
+    "tui.status.notExecutedCancelled": "not executed: cancelled",
     "tui.status.notExecutedDependencyFailed": "not executed: predecessor did not succeed",
     "tui.status.indeterminate": "indeterminate",
     "tui.status.published": "published",
@@ -1373,7 +1373,12 @@
     "agent.tool.shell.currentDirectory": "current working directory",
     "agent.tool.shell.searching": "Searching in {targets} for “{query}”",
     "agent.tool.shell.searched": "Searched in {targets} for “{query}”",
-    "agent.tool.shell.moreIntents": " · {count} more"
+    "agent.tool.shell.moreIntents": " · {count} more",
+    "productUpdate.downloading": "Downloading {version}",
+    "productUpdate.waiting": "Update ready. Restarting automatically when idle.",
+    "productUpdate.installing": "Updating and restarting…",
+    "productUpdate.error": "Automatic update did not finish",
+    "productUpdate.retry": "Check again"
   },
   "settings": {
     "workbench.language": {

@@ -45,6 +45,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
 async fn main() {
+    let _installation = achbit_host_connection::installation::Installation::current()
+        .expect("The installed program is being updated or its directory is not writable");
     if std::env::var("ACHBIT_SSH_ASKPASS").as_deref() == Ok("1") {
         if let Err(error) = achbit_host_connection::ssh::run_askpass_helper() {
             eprintln!("{error}");

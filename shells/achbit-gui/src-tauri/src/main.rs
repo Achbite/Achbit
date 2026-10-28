@@ -11,6 +11,7 @@ mod native_browser;
 #[path = "../../../shared/native_path_dialog/mod.rs"]
 mod native_path_dialog;
 mod notifications;
+mod product_update;
 mod ssh_auth;
 mod ssh_gui;
 
@@ -329,6 +330,11 @@ fn main() {
         open_file::achbit_open_file,
         file_reader::achbit_read_local_file,
         open_file::achbit_locate_path,
+        product_update::achbit_update_status,
+        product_update::achbit_update_check,
+        product_update::achbit_update_prepare_response,
+        product_update::achbit_update_restore,
+        product_update::achbit_update_restored,
         achbit_boot_target,
         achbit_default_workspace_path,
         achbit_host_startup_status,
@@ -348,6 +354,7 @@ fn main() {
     ];
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol(APP_ASSET_SCHEME, |_ctx, request| {
             serve_bundled_asset(APP_ASSET_DIR, request)
         })
@@ -497,6 +504,7 @@ fn main() {
             app.manage(HostProcessGroup::new(None));
             app.manage(HostStartupStatusStore::new());
             app.manage(ssh_auth::AuthUi::default());
+            product_update::start(app.handle())?;
             // Host startup and WebView initialization are independent. A cold
             // WebView2 profile must not delay the daemon's startup work.
             let app_handle = app.handle().clone();

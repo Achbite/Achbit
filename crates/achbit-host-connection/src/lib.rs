@@ -7,6 +7,7 @@ pub use paths::{configure_runtime_child, configured_path, runtime_root};
 mod client_lease;
 #[cfg(any(target_os = "macos", windows))]
 pub mod computer_use;
+pub mod installation;
 pub mod loopback_http;
 pub mod process;
 #[cfg(test)]

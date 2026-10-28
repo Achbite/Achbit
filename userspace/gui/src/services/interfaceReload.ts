@@ -4,11 +4,14 @@ const storageKey = 'achbit:interface-reload';
 const views = new Map<string, () => unknown>();
 const guards = new Map<symbol, () => { label: string; busy: boolean } | null>();
 let restored: Record<string, unknown> = {};
-try {
-  const saved = typeof sessionStorage === 'undefined' ? null : sessionStorage.getItem(storageKey);
-  if (saved) restored = JSON.parse(saved);
-  if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(storageKey);
-} catch (error) { console.error('Cannot restore interface view state', error); }
+export function restoreInterfaceViews() {
+  try {
+    const saved = typeof sessionStorage === 'undefined' ? null : sessionStorage.getItem(storageKey);
+    if (saved) restored = JSON.parse(saved);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(storageKey);
+  } catch (error) { console.error('Cannot restore interface view state', error); }
+}
+restoreInterfaceViews();
 
 /** Only view state is saved here. Session facts are read again from the shared service. */
 export function restoredInterfaceView<T>(key: string, initial: T): T {
@@ -40,7 +43,7 @@ export function registerInterfaceReloadGuard(read: () => { label: string; busy: 
 }
 export function interfaceReloadGuards() { return [...guards.values()].flatMap(read => read() ?? []); }
 export function requestInterfaceReload() { window.dispatchEvent(new Event('achbit:request-interface-reload')); }
-function saveInterfaceViews() {
+export function saveInterfaceViews() {
   sessionStorage.setItem(storageKey, JSON.stringify(Object.fromEntries([...views].map(([key, read]) => [key, read()]))));
 }
 export function reloadInterface() {

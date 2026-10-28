@@ -19,6 +19,7 @@ mod host_lifecycle;
 mod host_runtime;
 mod host_services;
 mod host_shutdown;
+mod host_update;
 mod kernel_api;
 mod kernel_tool_worker;
 mod llm_profiles;
@@ -210,6 +211,7 @@ async fn run() {
     let host_connection =
         HostConnection::from_environment().expect("初始化 Host Shell 本地连接凭证");
     let state = HostState {
+        updates: Arc::new(host_update::Updates::new().expect("Acquire installation lease")),
         host_connection,
         gui,
         catalog_reader,

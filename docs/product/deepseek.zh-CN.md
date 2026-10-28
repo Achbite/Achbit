@@ -10,7 +10,7 @@
 
 | 平台 | 打开 GUI | 解压版终端启动器 |
 | --- | --- | --- |
-| macOS Apple Silicon | 安装 PKG 后打开 `/Applications/Achbit.app`，或打开解压目录中的 `Achbit.app`。 | `./Achbit-CLI.command`、`./Achbit-TUI.command` |
+| macOS Apple Silicon | 安装 PKG 后打开 `~/Applications/Achbit.app`，或打开解压目录中的 `Achbit.app`。 | `./Achbit-CLI.command`、`./Achbit-TUI.command` |
 | Windows x64 | 安装 Windows Setup 后从开始菜单打开，或打开解压版 `Achbit.exe`。 | `.\achbit-cli.bat`、`.\achbit-tui.bat` |
 | Linux x64 / ARM64 | 解压对应架构的程序包，运行 `./Achbit`。 | `./achbit-cli`、`./achbit-tui` |
 

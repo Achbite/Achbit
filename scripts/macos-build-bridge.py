@@ -47,6 +47,8 @@ def request_host(operation, shared=None, output=None, timeout=3600):
     directory = Path(tempfile.mkdtemp(prefix='request-', dir=BRIDGE))
     request = {'workerId': worker['workerId'], 'operation': operation,
                'buildKind': os.environ.get('ACHBIT_BUILD_KIND', 'normal')}
+    if 'ACHBIT_BUILD_VERSION' in os.environ:
+        request['buildVersion'] = os.environ['ACHBIT_BUILD_VERSION']
     # Forward the public identity selector explicitly; credentials stay in the host keychain.
     if 'ACHBIT_MACOS_SIGN_IDENTITY' in os.environ:
         request['signingIdentity'] = os.environ['ACHBIT_MACOS_SIGN_IDENTITY']
@@ -192,6 +194,10 @@ def serve(container_id):
                         arguments = ['bash', str(PACKAGER)]
                         environment = os.environ.copy()
                         environment['ACHBIT_BUILD_KIND'] = request.get('buildKind', 'normal')
+                        if request.get('buildVersion'):
+                            environment['ACHBIT_BUILD_VERSION'] = request['buildVersion']
+                        else:
+                            environment.pop('ACHBIT_BUILD_VERSION', None)
                         if 'signingIdentity' in request:
                             environment['ACHBIT_MACOS_SIGN_IDENTITY'] = request['signingIdentity']
                         if operation in ('check', 'check-runtime'):

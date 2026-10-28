@@ -122,6 +122,15 @@ pub(crate) async fn monitor_host_lifetime(state: HostState) {
     }
 }
 
+pub(crate) fn can_prepare_update() -> bool {
+    let state = LIFETIME
+        .get()
+        .expect("Host lifetime configured")
+        .lock()
+        .expect("Host lifetime lock");
+    !state.stopping && !state.persistent && state.clients <= 1
+}
+
 pub(crate) fn begin_host_shutdown() -> bool {
     let Some(lifetime) = LIFETIME.get() else {
         return false;

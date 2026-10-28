@@ -1,3 +1,4 @@
+import { restoreAfterProductUpdate, installProductUpdateMonitor } from '../services/productUpdates';
 import { installInterfaceReloadShortcut } from '../services/interfaceReload';
 import InterfaceReloadDialog from '../components/shared/InterfaceReloadDialog';
 import { requestInterfaceReload } from '../services/interfaceReload';
@@ -113,43 +114,49 @@ document.documentElement.dataset.shell = isTauriShell ? 'tauri' : 'browser';
 
 installNativeContextMenuGuard();
 
-const stopReloadShortcut = installInterfaceReloadShortcut();
-const stopUpdateMonitor = installInterfaceUpdateMonitor();
-const root = ReactDOM.createRoot(rootEl);
-let compositionDisposed = false;
-const disposeComposition = () => {
-  if (compositionDisposed) return;
-  compositionDisposed = true;
-  window.removeEventListener('pagehide', handlePageHide);
-  stopUpdateMonitor();
-  stopReloadShortcut();
-  root.unmount();
-  removePaletteDefaults();
-};
-const handlePageHide = (event: PageTransitionEvent) => {
-  if (!event.persisted) disposeComposition();
-};
-window.addEventListener('pagehide', handlePageHide);
-import.meta.hot?.dispose(disposeComposition);
+async function mountProduct(rootEl: HTMLElement) {
+  await restoreAfterProductUpdate();
+  const stopProductUpdates = await installProductUpdateMonitor();
+  const stopReloadShortcut = installInterfaceReloadShortcut();
+  const stopUpdateMonitor = installInterfaceUpdateMonitor();
+  const root = ReactDOM.createRoot(rootEl);
+  let compositionDisposed = false;
+  const disposeComposition = () => {
+    if (compositionDisposed) return;
+    compositionDisposed = true;
+    window.removeEventListener('pagehide', handlePageHide);
+    stopProductUpdates();
+    stopUpdateMonitor();
+    stopReloadShortcut();
+    root.unmount();
+    removePaletteDefaults();
+  };
+  const handlePageHide = (event: PageTransitionEvent) => {
+    if (!event.persisted) disposeComposition();
+  };
+  window.addEventListener('pagehide', handlePageHide);
+  import.meta.hot?.dispose(disposeComposition);
 
-try {
-  reactRootCreated = true;
-  root.render(
-    <React.StrictMode>
-      <InterfaceUpdateNotice />
-      <InterfaceReloadDialog />
-      <ErrorBoundary>
-        <PaletteOverrides />
-        <GuiTypography />
-        <UiPluginsProvider><AchbitGuiApp /></UiPluginsProvider>
-      </ErrorBoundary>
-    </React.StrictMode>
-  );
-} catch (error) {
-  disposeComposition();
-  if (!reactRootCreated) {
-    renderBootstrapError(error);
-  } else {
-    console.error('[Achbit root render]', error);
+  try {
+    reactRootCreated = true;
+    root.render(
+      <React.StrictMode>
+        <InterfaceUpdateNotice />
+        <InterfaceReloadDialog />
+        <ErrorBoundary>
+          <PaletteOverrides />
+          <GuiTypography />
+          <UiPluginsProvider><AchbitGuiApp /></UiPluginsProvider>
+        </ErrorBoundary>
+      </React.StrictMode>
+    );
+  } catch (error) {
+    disposeComposition();
+    if (!reactRootCreated) {
+      renderBootstrapError(error);
+    } else {
+      console.error('[Achbit root render]', error);
+    }
   }
 }
+void mountProduct(rootEl).catch(renderBootstrapError);
