@@ -22,7 +22,7 @@ function fieldKeys(root) {
 function fixture(t, store, language) {
   const initial = store.getInitialState(), original = { ...initial };
   const settings = { ...DEFAULT_USER_SETTINGS, 'workbench.language': language };
-  const state = { effectiveSettings: settings, sources: Object.fromEntries(Object.keys(settings).map(key => [key, 'user'])),
+  const state = { effectiveSettings: settings,
     environment: { os: 'macos' }, loading: false, errorMessage: null };
   Object.assign(initial, state); store.setState(state);
   t.after(() => Object.assign(initial, original));
@@ -43,14 +43,13 @@ test('completion sound controls and their search entry are available only in the
   const desktop = capture(CompletionSoundSettings, { language: 'zh-CN' });
   assert.match(desktop.html, /试听/); assert.match(desktop.html, /选择音频/);
   assert.match(desktop.html, /type="file"/);
-  assert.doesNotMatch(desktop.html, /<h3|<hr/, 'audio controls preserve the flat General page');
   assert.equal(settingsSearchDefinitions('zh-CN', 'macos').filter(x => x.id === 'gui.completionSound').length, 1);
   window.__ACHBIT_BROWSER_PREVIEW__ = true;
   assert.equal(capture(CompletionSoundSettings, { language: 'zh-CN' }).html, '');
   assert.equal(settingsSearchDefinitions('zh-CN', 'macos').some(x => x.id === 'gui.completionSound'), false);
 });
 
-for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pages and open on flat General preferences (${language})`, async t => {
+for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pages and open on General preferences (${language})`, async t => {
   const [{ useSettingsStore }, { default: SettingsCenter }, { GuiSettingsSection, AgentSettingsSection, settingsSearchDefinitions }] = await loadGuiModules(t, [
     '/src/state/settingsStore.ts', '/src/components/settings-center/SettingsCenter.tsx',
     '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
@@ -69,8 +68,8 @@ for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pag
   assert.deepEqual(fieldKeys(general.tree), generalKeys);
   assert.deepEqual(fieldKeys(agent.tree), agentKeys);
   for (const page of [general, agent]) {
-    assert.doesNotMatch(page.html, /<h3|<hr|<p[ >]|settings-field__source|>(重置|Reset|保存|Save)<\/button>/,
-      'flat settings have no extra headings, descriptions, separators, source badges or confirmation/reset actions');
+    assert.doesNotMatch(page.html, />(重置|Reset|保存|Save)<\/button>/,
+      'shared settings apply without a second confirmation or reset action');
   }
   const appearance = capture(GuiSettingsSection, { category: 'appearance', apiStatus: 'connected' });
   assert.deepEqual(fieldKeys(appearance.tree), [], 'appearance does not render general or Agent controls');

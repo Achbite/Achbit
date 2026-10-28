@@ -86,7 +86,7 @@ window.fetch = async (input, init) => {
     }
     const settings = { ...useSettingsStore.getState().effectiveSettings, ...Object.fromEntries(Object.entries(subagentDefaults)
       .map(([key, value]) => [`agent.subagents.${key}`, value])) };
-    return Response.json({ ok: true, data: { settings, runtimeSettings: settings, overriddenKeys: [], storePath: 'fixture' } });
+    return Response.json({ ok: true, data: { settings, runtimeSettings: settings, storePath: 'fixture' } });
   }
   if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: currentProjection });
   throw new Error(`Unexpected fixture request: ${url.pathname}`);

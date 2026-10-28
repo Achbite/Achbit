@@ -2,7 +2,6 @@ packages:
   - "plugins/chrome-devtools"
   - "userspace/gui"
   - "userspace/protocol"
-  - "userspace/presentation-core"
   - "userspace/session-core"
   - "shells/achbit-gui"
 allowBuilds:

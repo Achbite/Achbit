@@ -15,8 +15,8 @@
     "build:ui": "bash ./build.sh --stage ui",
     "build:kernel": "bash ./build.sh --stage daemon",
     "start": "pnpm tauri:dev:achbit-gui",
-    "typecheck": "pnpm --filter @achbit/protocol typecheck && pnpm --filter @achbit/presentation-core typecheck && pnpm --filter @achbit/session-core typecheck && pnpm --filter @achbit/client typecheck",
-    "build:userspace-shared": "pnpm --filter @achbit/protocol build && pnpm --filter @achbit/presentation-core build && pnpm --filter @achbit/session-core build",
+    "typecheck": "pnpm --filter @achbit/protocol typecheck && pnpm --filter @achbit/session-core typecheck && pnpm --filter @achbit/client typecheck",
+    "build:userspace-shared": "pnpm --filter @achbit/protocol build && pnpm --filter @achbit/session-core build",
     "build:gui-native": "bash ./build.sh --stage native-gui"
   },
   "devDependencies": {

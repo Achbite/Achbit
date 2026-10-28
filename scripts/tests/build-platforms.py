@@ -172,7 +172,7 @@ def emit(relative):
 if name=='pnpm':
     if 'install' in args or 'typecheck' in args: pass
     elif 'build:userspace-shared' in args:
-        for package in ('protocol','presentation-core','session-core'):
+        for package in ('protocol','session-core'):
             emit('userspace/'+package+'/dist/index.js')
     elif 'build:web' in args: emit('userspace/gui/dist-achbit-gui/index.html')
     else: sys.exit('Unexpected non-compilation command: '+str(args))
@@ -213,7 +213,7 @@ else: sys.exit('Expected workspace compilation: '+str(args))
                 self.assertIn('packages=0 updated="code"', result.stdout)
                 self.assertEqual(files(self.root / 'bin'), before)
                 self.assertFalse((self.root / '.build-cache/build.lock').exists())
-                for package_name in ('protocol', 'presentation-core', 'session-core'):
+                for package_name in ('protocol', 'session-core'):
                     self.assertTrue((self.root / f'userspace/{package_name}/dist/index.js').is_file())
                 self.assertTrue((self.root / 'userspace/gui/dist-achbit-gui/index.html').is_file())
                 for binary in ('achbit-kernel-daemon', 'achbit-first-party-provider', 'achbit-host-web',

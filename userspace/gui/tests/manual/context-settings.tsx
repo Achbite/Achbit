@@ -40,7 +40,7 @@ window.fetch = async (input, init) => {
       return Response.json({ ok: true, data: { settings, changedKeys: Object.keys(patches),
         activation: Object.keys(patches).some(name => name.startsWith('agent.contextManagement.')) ? 'nextRun' : 'immediate' } });
     }
-    return Response.json({ ok: true, data: { settings, runtimeSettings: settings, overriddenKeys: Object.keys(settings),
+    return Response.json({ ok: true, data: { settings, runtimeSettings: settings,
       storePath: '/fixture/settings.json', environment: { os: 'macos' } } });
   }
   if (path === '/api/llm/profiles') {
@@ -58,7 +58,7 @@ window.fetch = async (input, init) => {
   throw new Error(`Unexpected fixture request: ${path}`);
 };
 useSettingsStore.setState({ userSettings: settings, effectiveSettings: { ...DEFAULT_USER_SETTINGS, 'workbench.language': 'zh-CN', ...settings },
-  sources: Object.fromEntries(Object.keys(settings).map(name => [name, 'user'])), loading: false, environment: { os: 'macos' } });
+  loading: false, environment: { os: 'macos' } });
 useLocalAgentStore.setState({ selectedProfileId: 'model:fixture' });
 function Fixture() {
   return <>

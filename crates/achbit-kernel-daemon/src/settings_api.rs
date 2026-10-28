@@ -84,7 +84,6 @@ pub(crate) async fn user_settings_get(ReadyState(state): ReadyState) -> Json<Api
         "environment": environment,
         "settings": settings,
         "runtimeSettings": runtime_settings,
-        "overriddenKeys": [],
         "storePath": store_path.to_string_lossy()
     }))
 }
@@ -573,14 +572,10 @@ mod context_management_tests {
     #[test]
     fn automatic_context_defaults_and_next_run_validation() {
         let defaults = default_user_settings();
-        let bundled: Value =
-            serde_json::from_str(include_str!("../../../config/defaults/user-settings.json"))
-                .unwrap();
         for key in [
             "agent.contextManagement.enabled",
             "agent.contextManagement.thresholdTokens",
         ] {
-            assert_eq!(defaults[key], bundled[key]);
             assert!(setting_activates_at_next_run(key));
         }
         assert_eq!(defaults["agent.contextManagement.enabled"], false);

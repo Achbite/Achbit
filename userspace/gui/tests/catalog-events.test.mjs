@@ -14,7 +14,7 @@ function events(signal) {
     fail(error) { controller.error(error); } };
 }
 
-test('Host catalog notifications refresh external additions and removals without polling or changing the active view', async t => {
+test('Host catalog notifications refresh titles and external additions/removals without changing the active view', async t => {
   const current = summary('session:current'), external = summary('session:external', 'Canonical external title');
   let catalog = catalogOf(current), stream, streamSignal, reads = 0;
   installGuiFetch(t, (url, init) => {
@@ -32,16 +32,21 @@ test('Host catalog notifications refresh external additions and removals without
   await waitUntil(() => stream);
   assert.equal(reads, 0, 'connecting alone does not start a catalog polling chain');
   stream.send('ready'); await waitUntil(() => reads === 1 && store.getState().catalogStatus === 'ready');
-  catalog = catalogOf(external, current); stream.send('change');
+  const generated = { ...current, title: 'Generated title' };
+  catalog = catalogOf(generated); stream.send('change');
+  await waitUntil(() => store.getState().catalog.sessions[0].title === generated.title);
+  assert.equal(store.getState().projection, projection, 'catalog titles update without a Session revision or projection refresh');
+  catalog = catalogOf(external, generated); stream.send('change');
   await waitUntil(() => store.getState().catalog.sessions.some(item => item.id === external.id));
   assert.equal(store.getState().catalog.sessions[0].title, external.title);
   assert.equal(store.getState().sessionId, current.id);
   assert.equal(store.getState().projection, projection);
   assert.equal(store.getState().selectedProfileId, 'profile:chosen');
   assert.equal(store.getState().draftProjectId, 'project:draft');
-  catalog = catalogOf(current); stream.send('change');
+  catalog = catalogOf(generated); stream.send('change');
   await waitUntil(() => store.getState().catalog.sessions.length === 1);
-  assert.equal(reads, 3);
+  assert.equal(store.getState().catalog.sessions[0].title, generated.title);
+  assert.equal(reads, 4);
   stop(); assert.equal(streamSignal.aborted, true, 'unmount releases the stream');
 });
 

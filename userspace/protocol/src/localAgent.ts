@@ -369,8 +369,6 @@ export interface ConversationSessionSummary {
 /** Compact Session facts for navigation; reading these does not start a run. */
 export interface ConversationSessionStatus {
   sessionId: string;
-  /** Host catalog metadata, independent of Session revision. */
-  title?: string;
   revision: number;
   run: Pick<RunProjection, 'runId' | 'status' | 'waitingReason'> | null;
 }

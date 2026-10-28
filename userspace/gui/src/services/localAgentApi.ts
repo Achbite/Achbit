@@ -118,10 +118,9 @@ export async function watchConversationCatalog(signal: AbortSignal, changed: () 
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
   const value = await request<unknown>(`${API_BASE}/conversation/statuses`, { signal });
   if (!Array.isArray(value) || !value.every((item) => (
-    isExactRecord(item, ['sessionId', 'revision', 'run'], ['title'])
+    isExactRecord(item, ['sessionId', 'revision', 'run'])
     && isIdentifier(item.sessionId)
     && Number.isSafeInteger(item.revision) && Number(item.revision) >= 1
-    && (item.title === undefined || typeof item.title === 'string')
     && (item.run === null || (
       isExactRecord(item.run, ['runId', 'status'], ['waitingReason'])
       && isIdentifier(item.run.runId)

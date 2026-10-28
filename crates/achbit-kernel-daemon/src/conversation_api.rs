@@ -242,20 +242,7 @@ pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> 
     )
     .await
     {
-        Ok(mut value) => {
-            let gui = state.gui.lock().expect("gui state lock");
-            if let Some(statuses) = value.as_array_mut() {
-                for status in statuses {
-                    if let Some(session) = status["sessionId"]
-                        .as_str()
-                        .and_then(|id| gui.conversation_catalog.session(id))
-                    {
-                        status["title"] = json!(session.title);
-                    }
-                }
-            }
-            ApiResponse::ok(value)
-        }
+        Ok(value) => ApiResponse::ok(value),
         Err(error) => session_service_error(error),
     }
 }

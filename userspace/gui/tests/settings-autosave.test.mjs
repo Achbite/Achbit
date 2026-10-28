@@ -202,7 +202,7 @@ test('rapid shared-setting writes and readback stay ordered without dropping eit
       persisted = { ...persisted, ...patches };
       return Response.json({ ok: true, data: { settings: persisted, changedKeys: Object.keys(patches), activation: 'immediate' } });
     }
-    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, overriddenKeys: Object.keys(persisted), storePath: '/fixture/settings.json' } });
+    return Response.json({ ok: true, data: { settings: persisted, runtimeSettings: persisted, storePath: '/fixture/settings.json' } });
   });
   const first = useSettingsStore.getState().patchUserSetting('gui.showReasoning', true);
   const second = useSettingsStore.getState().patchUserSetting('gui.usageWidget.currency', 'CNY');

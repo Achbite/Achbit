@@ -44,9 +44,6 @@ importers:
       '@codemirror/view':
         specifier: 6.43.12
         version: 6.43.12
-      '@achbit/presentation-core':
-        specifier: workspace:*
-        version: link:../presentation-core
       '@achbit/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -135,16 +132,6 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.2(@types/node@22.19.19)
-
-  userspace/presentation-core:
-    dependencies:
-      '@achbit/protocol':
-        specifier: workspace:*
-        version: link:../protocol
-    devDependencies:
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
 
   userspace/protocol:
     devDependencies:

@@ -129,7 +129,6 @@ export interface GetUserSettingsResult {
   environment?: Record<string, unknown>;
   settings: UserSettings;
   runtimeSettings: UserSettings;
-  overriddenKeys: string[];
   storePath: string;
 }
 
