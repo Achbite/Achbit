@@ -1,11 +1,13 @@
 ---
 name: achbit-documents
-description: Create a requested HTML, PDF or Markdown document with readable typography and explicit artifact delivery.
+description: Create HTML, PDF or Markdown documents and interactive frontend previews with explicit artifact delivery.
 ---
 
 # Document output
 
-Use only when the user wants a document, not for an ordinary reply. Preserve the content, language, audience and requested format.
+Use for a requested document or interactive frontend preview. Preserve the content, language, audience and requested format. Ordinary text replies do not need document generation.
+
+For an interactive component within a reply, read [references/interactive-previews.md](references/interactive-previews.md) and use the existing file and artifact tools. The document renderer below is for document output.
 
 Read relevant resources with `skill.read`, name `achbit-documents`:
 

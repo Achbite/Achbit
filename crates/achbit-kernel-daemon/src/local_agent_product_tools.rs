@@ -234,6 +234,10 @@ const SKILLS: &[ProductSkill] = &[
                 include_str!("../../../skills/achbit-documents/references/formats.md"),
             ),
             (
+                "references/interactive-previews.md",
+                include_str!("../../../skills/achbit-documents/references/interactive-previews.md"),
+            ),
+            (
                 "assets/document.html",
                 include_str!("../../../skills/achbit-documents/assets/document.html"),
             ),
@@ -437,6 +441,7 @@ mod tests {
             "SKILL.md",
             "references/design.md",
             "references/formats.md",
+            "references/interactive-previews.md",
             "assets/document.html",
             "assets/document.typ",
         ] {
