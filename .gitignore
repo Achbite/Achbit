@@ -58,6 +58,7 @@ _agent_tmp_*
 # Product documentation excludes local engineering notes, task receipts and preview output.
 /docs/architecture/
 /docs/task-receipts/
+/docs/tcr/
 /.task-artifacts/
 
 # Root Rust kernel workspace is library-only during the skeleton stage.
