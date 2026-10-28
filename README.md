@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/ac-mark.png" alt="Achbit AC logo" width="144">
+  <img src="assets/brand/ac-mark.png" alt="Achbit AC logo" width="112">
 </p>
 <p align="center">
   <a href="https://github.com/Achbite/Achbit/releases">Download</a> ·
@@ -14,7 +14,26 @@ Achbit is a local-first coding agent with a desktop GUI, TUI, and CLI. Read and 
 
 Connect your preferred model service, then extend the agent with Skills, CLI tools, MCP, and plugins. The **AC** mark recalls “Accepted” in programming contests.
 
-[Quick start](#quick-start) · [Computer Use](#computer-use) · [Terminal](#terminal) · [Plugins](#plugins) · [Architecture](#how-it-fits-together) · [Build](#build-from-source) · [Documentation](#documentation)
+[Overview](#see-it-in-action) · [Quick start](#quick-start) · [Computer Use](#computer-use) · [Terminal](#terminal) · [Plugins](#plugins) · [Architecture](#how-it-fits-together) · [Build](#build-from-source) · [Documentation](#documentation)
+
+## See it in action
+
+![Achbit animated overview: a project conversation, browser interactions, GUI/TUI/CLI, and model and plugin extensions](assets/readme/achbit-overview-en.gif)
+
+A 24-second workflow overview, combining an actual Achbit interface screenshot with illustrated browser interactions and terminal commands. [Watch / download MP4](assets/readme/achbit-overview-en.mp4) · [Animation source](assets/readme/achbit-overview.html)
+
+## What you can do
+
+| Work you want to do | How Achbit helps |
+| --- | --- |
+| **Understand and change a project** | Read files, edit code, run commands, and review results in one conversation. |
+| **Check a running interface** | Use the built-in browser, Chrome DevTools MCP, or native macOS / Windows tools to observe and interact with applications. [Computer Use →](#computer-use) |
+| **Work from the desktop or terminal** | GUI, TUI, and CLI share conversations and saved model connections. [Terminal →](#terminal) |
+| **Choose a model service** | Connect supported APIs, local Ollama, or supported Coding Plans. Model profiles keep your endpoint and capability settings. [Models & services →](docs/product/model-services.md) |
+| **Bring your own tools** | Add Skills, CLI tools, MCP servers, hosted services, and UI modules. Import or update plugin ZIPs from settings. [Plugins →](#plugins) |
+| **Keep useful work with its result** | Inspect files, tool output, browser previews, and generated deliverables alongside the conversation. [Try a complete task →](examples/deepseek-browser-checklist/README.md) |
+
+Start with a small task, then continue in the same conversation: **read the project → make a change → open the page → inspect the result**.
 
 ## Quick start
 

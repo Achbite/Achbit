@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/ac-mark.png" alt="Achbit AC 图标" width="144">
+  <img src="assets/brand/ac-mark.png" alt="Achbit AC 图标" width="112">
 </p>
 <p align="center">
   <a href="https://github.com/Achbite/Achbit/releases">下载</a> ·
@@ -14,7 +14,26 @@ Achbit 是一个本地优先的编程 Agent，提供桌面 GUI、TUI 和 CLI。�
 
 连接你选择的模型服务，通过 Skill、CLI 工具、MCP 和插件扩展能力。**AC** 图标取意于编程竞赛中的 “Accepted”。
 
-[快速开始](#快速开始) · [Computer Use](#computer-use) · [终端](#终端) · [插件](#插件) · [结构](#结构) · [构建](#从源码构建) · [文档](#文档)
+[动态演示](#动态演示) · [快速开始](#快速开始) · [Computer Use](#computer-use) · [终端](#终端) · [插件](#插件) · [结构](#结构) · [构建](#从源码构建) · [文档](#文档)
+
+## 动态演示
+
+![Achbit 动态概览：项目会话、浏览器操作、GUI/TUI/CLI，以及模型与插件扩展](assets/readme/achbit-overview-zh.gif)
+
+24 秒了解主要工作流，结合真实 Achbit 界面截图、浏览器交互示意与终端命令示例。[观看 / 下载 MP4](assets/readme/achbit-overview-zh.mp4) · [动画源文件](assets/readme/achbit-overview.html)
+
+## 可以用它做什么
+
+| 你要完成的工作 | Achbit 提供的能力 |
+| --- | --- |
+| **理解并修改项目** | 在同一个会话中阅读文件、编辑代码、运行命令并检查结果。 |
+| **检查实际运行的界面** | 使用内置浏览器、Chrome DevTools MCP，或 macOS / Windows 原生工具观察应用、操作控件。[Computer Use →](#computer-use) |
+| **在桌面或终端中工作** | GUI、TUI、CLI 共用会话与已保存的模型连接。[终端入口 →](#终端) |
+| **选择模型服务** | 接入受支持的 API、本地 Ollama 或 Coding Plan，用模型配置保存端点与能力设置。[模型与服务 →](docs/product/model-services.md) |
+| **带上自己的工具** | 添加 Skill、CLI 工具、MCP 服务、托管服务和界面模块，通过设置导入或更新插件 ZIP。[插件扩展 →](#插件) |
+| **把任务和产出放在一起** | 在会话旁边查看文件、工具输出、浏览器预览和生成的交付物。[体验完整任务 →](examples/deepseek-browser-checklist/README.zh-CN.md) |
+
+从一个小任务开始，在同一会话中继续推进：**阅读项目 → 修改代码 → 打开页面 → 检查结果**。
 
 ## 快速开始
 
