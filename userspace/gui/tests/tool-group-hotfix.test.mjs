@@ -52,7 +52,7 @@ test('ordinary, browser, computer and approval activities use exactly one shared
   }
 });
 
-test('an arriving computer operation never forces expansion and the compact Shell preview stays within the folded group',async t=>{
+test('arriving computer and running Shell operations respect both disclosure levels',async t=>{
   const {layout,render}=await renderer(t);
   const calls=[tool('first'),tool('second')];
   assert.doesNotMatch(render(calls),/fs\.first/);
@@ -65,6 +65,11 @@ test('an arriving computer operation never forces expansion and the compact Shel
     liveOutput:{stdout:'recent output\n',stderr:'',stdoutBytes:14,stderrBytes:0,truncated:false}};
   const html=render([...calls,running,computer('A')]);
   assert.equal((html.match(/class="local-agent__tool-group-summary"/g)??[]).length,1);
-  assert.match(html,/sleep 120/);assert.match(html,/recent output/);
-  assert.doesNotMatch(html,/fs\.first|fs\.second|Observe · Editor/);
+  assert.doesNotMatch(html,/sleep 120|recent output|fs\.first|fs\.second|Observe · Editor/);
+  layout.state.set('tool-group:expanded',true);
+  const entries=render([...calls,running,computer('A')]);
+  assert.match(entries,/sleep 120/);assert.match(entries,/Observe · Editor A/);
+  assert.doesNotMatch(entries,/recent output/,'opening a mixed group does not open individual tool details');
+  layout.state.set(`tool:${running.activityId}:expanded`,true);
+  assert.match(render([...calls,running,computer('A')]),/recent output/);
 });

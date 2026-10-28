@@ -1,6 +1,6 @@
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import { isPendingShell, shellCommandPreview, shellOutputTail } from './shellProgress';
+import { isPendingShell, shellCommandPreview } from './shellProgress';
 import './shellProgress.css';
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@achbit/protocol';
@@ -92,7 +92,6 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
 }) => {
   const [expanded, setExpanded] = useConversationRowState('tool-group:expanded', false);
   const tools = activities.filter(activity => !activity.agent);
-  const runningShells = tools.filter(isPendingShell).slice(-3);
   return (
     <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><article className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
       <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
@@ -117,11 +116,6 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
           <AchbitShellIcon name="chevronRight" />
         </span>
       </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
-      {!expanded && runningShells.length > 0 && <div className="local-agent__shell-progress-window">
-        {runningShells.map(activity => <ToolActivityEntry key={activity.activityId} activity={activity}
-          artifacts={artifacts} language={language} onExpand={onExpand}
-          onOpenWorkspaceResource={onOpenWorkspaceResource} />)}
-      </div>}
       {expanded && tools.length > 0 && (
         <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
           {tools.map((activity) => (
@@ -313,12 +307,6 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
       </button>}
       </div>}</UiRegion>
       {stopError && <small className="local-agent__tool-error" role="alert">{stopError}</small>}
-      {!expanded && isPendingShell(activity) && <div className="local-agent__shell-progress-tail">
-        {(['stdout', 'stderr'] as const).map(stream => output?.[stream] && <section key={stream}>
-          <small>{stream}</small><pre>{shellOutputTail(output[stream])}</pre>
-        </section>)}
-        {!output?.stdout && !output?.stderr && <small>{language === 'zh-CN' ? '尚无输出' : 'No output yet'}</small>}
-      </div>}
       {expanded && (
         <UiPluginSlotView slot="tool.result" input={{ kind: 'tool.result', activity, toolId: tool?.operation ?? activity.label, locale: language, theme }}>
         <div className={`local-agent__tool-entry-details${filePath ? ' local-agent__tool-entry-details--file' : ''}`}>
@@ -445,16 +433,16 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
             <span>{t(language, 'agent.tool.shell.duration', {duration: process.result.durationMs})}</span>
             {process.result.timedOut && <span>{t(language, 'agent.tool.shell.timedOut')}</span>}
           </div>}
-          {!result && output && (
+          {!result && (output || isPendingShell(activity)) && (
             <div className="local-agent__shell-result">
-              {output.truncated && <small>{t(language, 'agent.tool.shell.truncated')}</small>}
-              {(['stdout', 'stderr'] as const).map((stream) => output[stream] && (
+              {output?.truncated && <small>{t(language, 'agent.tool.shell.truncated')}</small>}
+              {(['stdout', 'stderr'] as const).map((stream) => output?.[stream] && (
                 <section key={stream}>
                   <span>{t(language, `agent.tool.shell.${stream}`)}</span>
                   <pre>{output[stream]}</pre>
                 </section>
               ))}
-              {!output.stdout && !output.stderr && (
+              {!output?.stdout && !output?.stderr && (
                 <small>{language === 'zh-CN' ? '尚无输出' : 'No output yet'}</small>
               )}
             </div>

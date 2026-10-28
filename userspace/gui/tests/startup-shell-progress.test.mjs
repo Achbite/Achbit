@@ -96,7 +96,7 @@ test('welcome is chosen randomly and remains stable while the new conversation i
   assert.equal(store.getState().welcomeIndex, 3, 'repeated clicks do not redraw the random selection');
 });
 
-test('a quiet Shell displays its command before completion, then a bounded live tail without expanding details', async t => {
+test('a running Shell stays folded until explicit disclosure, retaining live output and cancellation', async t => {
   const previous = globalThis.self; globalThis.self = {};
   t.after(() => { if (previous === undefined) delete globalThis.self; else globalThis.self = previous; });
   const journal = new InMemoryCommandJournal(), sessionId = 'session:quiet-shell';
@@ -121,28 +121,38 @@ test('a quiet Shell displays its command before completion, then a bounded live 
   assert.equal(activity.tool.shell.command,'printf started; sleep 120; printf done');
   assert.equal(activity.tool.shell.result, undefined);
   assert.deepEqual(await decodeGuiProjection(base), base);
-  const [{ToolActivityGroup}, {ConversationVirtualRow}, {shellOutputTail}] = await loadGuiModules(t,[
-    '/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx','/src/components/local-agent/shellProgress.ts']);
+  const [{ToolActivityGroup}, {ConversationVirtualRow}, {ConversationSessionScope}] = await loadGuiModules(t,[
+    '/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx','/src/components/local-agent/ConversationSessionScope.tsx']);
   const layout = {state:new Map()};
-  const render = a => renderToStaticMarkup(createElement(ConversationVirtualRow,{rowKey:'shell',eager:true,virtualizer:{layout:()=>layout},children:()=>createElement(ToolActivityGroup,{activities:[a],language:'zh-CN',onExpand(){},onOpenWorkspaceResource(){}})}));
-  // Module loading under a busy test runner must not advance this elapsed-time
-  // fixture across a whole-second boundary. Keep the exact 120-second assertion.
+  const render = a => renderToStaticMarkup(createElement(ConversationSessionScope.Provider,{value:sessionId},
+    createElement(ConversationVirtualRow,{rowKey:'shell',eager:true,virtualizer:{layout:()=>layout},children:()=>createElement(ToolActivityGroup,{activities:[a],language:'zh-CN',onExpand(){},onOpenWorkspaceResource(){}})})));
   assert.ok(Number.isFinite(Number(activity.startedAt)));
   t.mock.method(Date, 'now', () => Number(activity.startedAt) + 120000);
   const quiet = render(activity);
-  assert.match(quiet,/sleep 120/); assert.match(quiet,/尚无输出/); assert.match(quiet,/120 秒/);
-  assert.doesNotMatch(quiet,/退出码/);
+  assert.match(quiet,/aria-expanded="false"/);
+  assert.doesNotMatch(quiet,/sleep 120|尚无输出|120 秒|<pre>|local-agent__tool-stop/);
+  layout.state.set('tool-group:expanded',true);
+  const entries = render(activity);
+  assert.match(entries,/sleep 120/); assert.match(entries,/120 秒/);
+  assert.match(entries,/local-agent__tool-stop/,'the expanded list retains per-command cancellation without opening details');
+  assert.doesNotMatch(entries,/尚无输出|<pre>/,'opening the group only reveals entries');
+  layout.state.set(`tool:${activity.activityId}:expanded`,true);
+  const emptyDetails = render(activity);
+  assert.match(emptyDetails,/尚无输出/);
+  assert.doesNotMatch(emptyDetails,/退出码/,'a quiet active command has no fabricated final result');
+  layout.state.set('tool-group:expanded',false);
   const text = 'old-hidden\nline-one\nline-two\nline-three\n';
   await publish({type:'output',stream:'stdout',offset:0,bytes:[...new TextEncoder().encode(text)]});
   const updated = await actor.snapshot();
   assert.equal(updated.revision,base.revision);
   const live = updated.activities.find(a => a.callId === activity.callId);
-  assert.match(render(live),/line-three/); assert.doesNotMatch(render(live),/old-hidden/);
-  assert.match(render(live),/aria-expanded="false"/);
-  layout.state.set(`tool:${activity.activityId}:expanded`,true);
-  assert.match(render(live),/old-hidden/,'expanding from the compact window preserves the complete available output');
-  assert.equal(shellOutputTail('10%\r20%\r30%\r40%'), '20%\n30%\n40%');
-  assert.equal(shellOutputTail('x'.repeat(10000)).length,241);
+  assert.equal(render(live),quiet,'new output cannot change the collapsed tool group');
+  layout.state.set('tool-group:expanded',true);
+  assert.match(render(live),/old-hidden\nline-one\nline-two\nline-three/,'explicit details retain the complete available output');
+  layout.state.set(`tool:${activity.activityId}:expanded`,false);
+  assert.doesNotMatch(render(live),/old-hidden|line-three|<pre>/,'an active command stays folded after a user closes its details');
+  assert.match(render(live),/local-agent__tool-stop/);
+
 });
 
 test('native startup completion wakes the observer and its subscription is released', async t => {
