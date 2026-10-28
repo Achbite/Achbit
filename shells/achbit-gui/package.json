@@ -1,6 +1,6 @@
 {
   "name": "@achbit/achbit-gui-shell",
-  "version": "0.6.62",
+  "version": "0.6.63",
   "license": "MIT",
   "private": true,
   "type": "module",

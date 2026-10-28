@@ -10,7 +10,7 @@ Download a package offered for your platform from [Achbit Releases](https://gith
 
 | Platform | Open the GUI | Portable terminal launchers |
 | --- | --- | --- |
-| macOS Apple Silicon | Install the PKG and open `/Applications/Achbit.app`, or open `Achbit.app` in the extracted archive. | `./Achbit-CLI.command`, `./Achbit-TUI.command` |
+| macOS Apple Silicon | Install the PKG and open `~/Applications/Achbit.app`, or open `Achbit.app` in the extracted archive. | `./Achbit-CLI.command`, `./Achbit-TUI.command` |
 | Windows x64 | Install Windows Setup and use the Start menu, or open the portable `Achbit.exe`. | `.\achbit-cli.bat`, `.\achbit-tui.bat` |
 | Linux x64 / ARM64 | Extract the matching archive and run `./Achbit`. | `./achbit-cli`, `./achbit-tui` |
 

@@ -41,9 +41,9 @@ Download a package from [Releases](https://github.com/Achbite/Achbit/releases).
 
 | Platform | Start Achbit |
 | --- | --- |
-| macOS Apple Silicon | Install the `.pkg`, then open `/Applications/Achbit.app`, or open `Achbit.app` from the portable archive. |
+| macOS Apple Silicon | Install the `.pkg`, then open `~/Applications/Achbit.app`, or open `Achbit.app` from the portable archive. |
 | Windows x64 | Run the Setup installer, or open `Achbit.exe` from the portable ZIP. |
-| Linux | Extract a package for your architecture and run `./Achbit`. |
+| Linux | Run the executable `.AppImage` for your architecture, or extract the tar archive and run `./Achbit`. |
 
 1. Open **Settings → Models & services** and add an API connection or supported subscription. [DeepSeek setup →](docs/product/deepseek.md)
 2. Choose a project folder and a model.

@@ -34,7 +34,7 @@ The default `runtime` stage compiles shared TypeScript and GUI resources, compil
 
 Daily builds include the current Kernel, Host, CLI/TUI, Session, GUI, runtime dependencies and product resources. They retain the existing release profile, compiler caches and user data, and generate no ZIP, tar.gz, PKG or Setup. Existing distribution archives remain from the last explicit package build. `make build` and `pnpm build` select this same path; `make package` and `pnpm package` select explicit full packaging.
 
-After building on macOS, open `bin/macos-arm64/Achbit.app` from this checkout. A copy installed in `/Applications` is a separate product. Building does not restart a running GUI/Host; quit and reopen the checkout's App to load the new native code and resources.
+After building on macOS, open `bin/macos-arm64/Achbit.app` from this checkout. A copy installed in `~/Applications` is a separate product. Building does not restart a running GUI/Host; quit and reopen the checkout's App to load the new native code and resources.
 
 For compiler outputs alone, use `bash ./build.sh --stage code`. It compiles shared TypeScript, GUI resources, the Linux Rust workspace and native GUI shell in Docker, without updating `bin/`. Outputs remain in `userspace/*/dist`, `userspace/gui/dist-achbit-gui`, and the container's `CARGO_TARGET_DIR/release` (normally `/workspace/target/release`, backed by a Docker volume).
 
@@ -53,6 +53,55 @@ make ui-update UI_PACKAGE=bin/macos-arm64
 For a separate worktree, also pass its `CONTAINER_NAME`. Select `bin/win64` or the generated Linux directory for those packages. macOS resource replacement runs on the host so signing can access its Keychain. Reload with **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** elsewhere.
 
 A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#更新与功能配置).
+
+
+## Automatic application updates
+
+The native GUI uses `tauri-plugin-updater` with a static GitHub Releases feed. The public verification key is compiled into `shells/achbit-gui/src-tauri/tauri.conf.json`; its production endpoint is `https://github.com/Achbite/Achbit/releases/latest/download/latest.json`. No application server is required. The first updater-enabled version must be installed manually by clients running 0.6.62 or earlier.
+
+Package stages retain the normal archives/installers and add the updater's installation units:
+
+| Feed target | Updater asset | Initial installation |
+| --- | --- | --- |
+| `darwin-aarch64` | `Achbit-<version>-macos-arm64.app.tar.gz` | Current-user PKG or an App in a writable directory |
+| `windows-x86_64` | `Achbit-<version>-win64-setup.exe` | Per-user NSIS Setup |
+| `linux-aarch64` / `linux-x86_64` | Corresponding `.AppImage` | Executable AppImage in a writable directory |
+
+The Mac App contains the separately signed Computer Use helper in `Contents/Helpers`. The PKG installs in `~/Applications`, with wrappers in `~/.local/bin`. NSIS accepts Tauri's silent update and relaunch arguments; it waits for the installation lease and replaces only entries in `package-files.json`. Linux tar archives remain manual-update products. GTK/WebKitGTK and other existing system-library requirements still apply.
+
+After building the intended release targets, sign their updater assets and create the feed on the host (the signer delegates to the configured Docker container). The following example includes the Linux architecture produced by an ARM64 development container:
+
+```bash
+python3 scripts/package-updates.py sign \
+  bin/Achbit-0.6.63-macos-arm64.app.tar.gz \
+  bin/Achbit-0.6.63-win64-setup.exe \
+  bin/Achbit-0.6.63-linux-arm64.AppImage
+
+python3 scripts/package-updates.py manifest --version 0.6.63 \
+  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.63 \
+  --artifact darwin-aarch64=bin/Achbit-0.6.63-macos-arm64.app.tar.gz \
+  --artifact windows-x86_64=bin/Achbit-0.6.63-win64-setup.exe \
+  --artifact linux-aarch64=bin/Achbit-0.6.63-linux-arm64.AppImage \
+  --output bin/latest.json
+```
+
+Keep the private signing key outside the checkout. The local signing command reads `TAURI_SIGNING_PRIVATE_KEY` or `TAURI_SIGNING_PRIVATE_KEY_PATH`; its macOS default is `~/Library/Application Support/Achbit-build/updater.key`. CI can supply the same key and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` through secrets. Back up the existing key: changing the compiled public key does not make already-installed clients trust a new private key.
+
+Prepare a draft Release, upload every initial installer/archive plus updater asset, its `.sig`, and `latest.json`, then publish and mark it as the latest stable Release. The feed must name only available platform assets. Its version and URLs identify the new product; publishing an empty or partially uploaded feed is not a completed release. Signing and manifest creation do not themselves push or publish anything.
+
+The GUI checks after startup and every 30 minutes. After verifying the download, it waits for UI input to be idle for 15 seconds and for unsaved settings to be resolved. Host preparation gates new external work and checks Session activity, Kernel work and connected clients. A filesystem lease covers other CLI/TUI/Host processes using the same installation, even with different user roots. Automatic installation is owned by a local GUI with a managed Host. SSH and connect-only windows do not initiate an installation; close them before updating the local installation. A persistent Host blocks automatic installation until explicitly stopped. Only after preparation and a confirmed Host shutdown does the updater replace program files. Drafts and view state are restored before React mounts; Session facts are reloaded from the existing store.
+
+For a local macOS Debug upgrade, build two distinct versions through the existing Docker/native bridge:
+
+```bash
+ACHBIT_BUILD_VERSION=0.6.63-debug.1 bash ./build.sh -debug --stage package-macos
+# Preserve this bin/debug/macos-arm64 in a separate test installation.
+ACHBIT_BUILD_VERSION=0.6.63-debug.2 bash ./build.sh -debug --stage package-macos
+```
+
+Sign the second App archive and serve it with a generated static feed from a loopback-only HTTP server. Start the first Debug App with explicit `ACHBIT_USER_ROOT`, `ACHBIT_DEFAULT_WORKSPACE` and `ACHBIT_DEBUG_UPDATE_URL`, then use `achbit-debug attach` with that state root and an absolute test-workspace path. This exercises the normal GUI-owned automatic Host lifetime. `achbit-debug launch` intentionally creates a persistent Host and therefore is unsuitable for an idle-shutdown acceptance run. Debug updates are disabled unless the loopback endpoint is explicitly supplied; production builds do not read that override. Current local Debug packaging supports this updater chain on macOS; Windows Debug ZIPs are not NSIS update assets.
+
+Record the running versions and GUI/Host PIDs, a rejected signature, busy-work deferral, automatic relaunch and draft restoration. The [automatic-updates TCR](tcr/2026-10-28-automatic-updates.md) records the actual local acceptance scope. Native platform installation, real-provider conversations and a published release remain separate evidence.
 
 ## Debug control for iteration
 
