@@ -132,7 +132,7 @@ container_step() {
     bash "$ROOT_DIR/scripts/build-platforms.sh" "$@"
   else
     local name
-    local environment=(-e ACHBIT_BUILD_COMMIT -e ACHBIT_BUILD_TIME -e ACHBIT_BUILD_KIND)
+    local environment=(-e ACHBIT_BUILD_COMMIT -e ACHBIT_BUILD_TIME -e ACHBIT_BUILD_KIND -e ACHBIT_BUILD_VERSION)
     for name in PNPM_STORE_DIR ACHBIT_WINDOWS_NODE_BIN ACHBIT_NODE_LICENSE ACHBIT_DISABLE_SCCACHE; do
       [ -z "${!name+x}" ] || environment+=(-e "$name")
     done

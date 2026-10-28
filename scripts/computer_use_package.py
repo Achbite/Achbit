@@ -1,4 +1,4 @@
-"""The native plugin is a sibling App, so updating it does not reseal the GUI."""
+"""The native plugin remains independently signed inside the GUI application bundle."""
 import argparse
 import json
 import os
@@ -58,7 +58,7 @@ def assemble(root, native, destination, identity):
     binaries.mkdir(parents=True)
     resources.mkdir()
     shutil.copy2(native / 'Achbit-Computer-Use', binaries / 'Achbit-Computer-Use')
-    version = json.loads((root / 'package.json').read_text())['version']
+    version = os.environ.get('ACHBIT_BUILD_VERSION') or json.loads((root / 'package.json').read_text())['version']
     info = dict(CFBundleIdentifier='com.achbite.achbit.computer-use', CFBundleExecutable='Achbit-Computer-Use',
         CFBundleName='Achbit Computer Use', CFBundleDisplayName='Achbit Computer Use', CFBundlePackageType='APPL',
         CFBundleInfoDictionaryVersion='6.0', CFBundleVersion=version, CFBundleShortVersionString=version,
@@ -76,6 +76,10 @@ def assemble(root, native, destination, identity):
 
 def update(root, native, destination):
     identity = signing_identity()
+    parent_app = destination / "Achbit.app"
+    if not parent_app.is_dir(): raise ValueError("Build the complete Achbit App before updating its helper.")
+    require_same_identity(parent_app, identity)
+    destination = parent_app / "Contents/Helpers"
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / APP_NAME
     if target.exists():
@@ -90,6 +94,7 @@ def update(root, native, destination):
         except OSError:
             if previous.exists(): previous.rename(target)
             raise
+    sign_app(parent_app, identity)
     print(f'Updated {target}. The GUI Host retires its old helper between calls; observe again after updating.')
 
 

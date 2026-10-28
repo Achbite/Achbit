@@ -562,6 +562,7 @@ class NativeMacArgumentsTests(unittest.TestCase):
             (root / 'commands').mkdir()
             (root / 'shared').mkdir()
             shutil.copy2(ROOT / 'scripts/package-macos.sh', root / 'scripts/package-macos.sh')
+            shutil.copy2(ROOT / 'scripts/package-updates.py', root / 'scripts/package-updates.py')
             write(root, 'package.json', b'{"version":"0.0.0"}')
             write(root, 'NODE-LICENSE', b'fixture license')
             stub = ('#!' + sys.executable + '\n' + r'''import json,os,sys
@@ -571,8 +572,11 @@ name=Path(__file__).name
 with (root/'calls.jsonl').open('a') as log:
     log.write(json.dumps({'name':name,'argv':sys.argv[1:],'tauriConfig':os.environ.get('TAURI_CONFIG')})+'\n')
 if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
+if name=='package-runtime.py' and sys.argv[1]=='assemble':
+    stage=Path(sys.argv[sys.argv.index('--stage')+1])
+    (stage/('Achbit-Debug.app' if os.environ.get('ACHBIT_BUILD_KIND')=='debug' else 'Achbit.app')).mkdir()
 ''')
-            for name in ('cargo', 'node', 'uname', 'xcrun', 'codesign', 'strip', 'pkgbuild'):
+            for name in ('cargo', 'node', 'uname', 'xcrun', 'codesign', 'strip', 'pkgbuild', 'productbuild'):
                 write(root, 'commands/' + name, stub.encode())
                 (root / 'commands' / name).chmod(0o755)
             (root / 'commands/python3').symlink_to(sys.executable)
@@ -609,7 +613,10 @@ if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
                         ['build', '--release', *gui_features, '--manifest-path',
                          str(root / 'shells/achbit-gui/src-tauri/Cargo.toml')],
                     ])
-                    config = {'productName': 'Achbit-Debug', 'identifier': 'com.achbite.achbit.debug'} if kind == 'debug' else None
+                    config = {'version': '0.0.0'}
+                    if kind == 'debug':
+                        config.update(productName='Achbit-Debug', identifier='com.achbite.achbit.debug',
+                            plugins={'updater': {'dangerousInsecureTransportProtocol': True}})
                     self.assertEqual([json.loads(call['tauriConfig']) if call['tauriConfig'] else None
                                       for call in cargo], [config, config])
                     publication = [call for call in calls if call['name'] == 'package-runtime.py' and call['argv'][0] == 'publish']
@@ -1006,18 +1013,24 @@ exec "$ACHBIT_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.
             write(stage, 'Achbit.app/Contents/Resources/node/bin/node', stub)
             (stage / 'Achbit.app/Contents/Resources/node/bin/node').chmod(0o755)
             write(stage, 'Achbit.app/Contents/Resources/session-core/dist/index.js', b'Session')
-            write(stage, 'Achbit Computer Use.app/Contents/MacOS/Achbit-Computer-Use', b'Computer Use')
+            write(stage, 'Achbit.app/Contents/Helpers/Achbit Computer Use.app/Contents/MacOS/Achbit-Computer-Use', b'Computer Use')
             def inspect(command, **kwargs):
+                if command[0] == 'productbuild':
+                    import xml.etree.ElementTree as ET
+                    distribution = ET.parse(command[command.index('--distribution') + 1]).getroot()
+                    self.assertEqual(distribution.find('domains').attrib, {
+                        'enable_anywhere': 'false', 'enable_currentUserHome': 'true', 'enable_localSystem': 'false'})
+                    return subprocess.CompletedProcess(command, 0)
                 self.assertEqual(command[0], 'pkgbuild')
                 payload = Path(command[command.index('--root') + 1])
                 app = payload / 'Applications/Achbit.app'
                 self.assertEqual((app / 'Contents/MacOS/achbit-cli').read_bytes(), stub)
-                self.assertEqual((payload / 'Applications/Achbit Computer Use.app/Contents/MacOS/Achbit-Computer-Use').read_bytes(), b'Computer Use')
+                self.assertEqual((app / 'Contents/Helpers/Achbit Computer Use.app/Contents/MacOS/Achbit-Computer-Use').read_bytes(), b'Computer Use')
                 arguments = ['--session', 'session:launcher', 'argument with spaces', 'literal "$HOME"', '']
                 for name in ('achbit', 'achbit-tui'):
-                    launcher = (payload / 'usr/local/bin' / name).read_text()
+                    launcher = (payload / '.local/bin' / name).read_text()
                     # Relocate only the installation root; execute the remaining launcher unchanged.
-                    install_root = '/Applications/Achbit.app'
+                    install_root = '$HOME/Applications/Achbit.app'
                     self.assertIn(install_root, launcher, 'Cannot safely relocate the installer fixture')
                     relocated = root / name
                     relocated.write_text(launcher.replace(install_root, str(app)))
@@ -1043,7 +1056,7 @@ exec "$ACHBIT_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.
             with patch.object(installers, 'subprocess') as packager:
                 packager.run.side_effect = inspect
                 installers.macos(stage, root / 'Achbit.pkg', '0.6.2')
-                packager.run.assert_called_once()
+                self.assertEqual(packager.run.call_count, 2)
 
     def test_windows_computer_use_update_renames_the_running_image_aside(self):
         import computer_use_package

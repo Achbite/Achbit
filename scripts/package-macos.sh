@@ -28,7 +28,7 @@ if [ "${1:-}" = --computer-use ]; then
   exit 0
 fi
 for tool in xcrun codesign strip python3; do command -v "$tool" >/dev/null; done
-if [ "$runtime_only" -eq 0 ] && [ "${ACHBIT_BUILD_KIND:-normal}" != debug ]; then command -v pkgbuild >/dev/null; fi
+if [ "$runtime_only" -eq 0 ] && [ "${ACHBIT_BUILD_KIND:-normal}" != debug ]; then command -v pkgbuild >/dev/null; command -v productbuild >/dev/null; fi
 xcrun --find clang >/dev/null
 xcrun --sdk macosx --show-sdk-path >/dev/null
 [ -x "$NODE" ] || { printf 'Set ACHBIT_MACOS_NODE_BIN to the installed Node runtime.\n' >&2; exit 1; }
@@ -39,12 +39,12 @@ python3 scripts/macos_signing.py
 [ "$#" -eq 2 ] || { printf 'Use build.sh --stage package-macos; shared assets are supplied by that invocation.\n' >&2; exit 2; }
 SHARED="$1"
 OUTPUT="$2"
+export TAURI_CONFIG="$(python3 scripts/package-updates.py config)"
 cargo_args=(build --release)
 gui_args=(build --release)
 if [ "${ACHBIT_BUILD_KIND:-normal}" = debug ]; then
   cargo_args+=(--features achbit-kernel-daemon/debug-control,achbit-cli/debug-control)
   gui_args+=(--features debug-control)
-  export TAURI_CONFIG='{"productName":"Achbit-Debug","identifier":"com.achbite.achbit.debug"}'
 fi
 export CARGO_TARGET_DIR="${ACHBIT_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
 "$CARGO" "${cargo_args[@]}" -p achbit-kernel-daemon -p achbit-first-party-tools -p achbit-host-web -p achbit-cli -p achbit-tui -p achbit-computer-use
@@ -56,7 +56,10 @@ if [ "$runtime_only" -eq 1 ]; then
   python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64"
   exit 0
 fi
-VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+VERSION="$(python3 scripts/package-updates.py version)"
+product=Achbit
+[ "${ACHBIT_BUILD_KIND:-normal}" != debug ] || product=Achbit-Debug
+python3 scripts/package-updates.py macos "$STAGE/$product.app" "$OUTPUT/$product-$VERSION-macos-arm64.app.tar.gz"
 if [ "${ACHBIT_BUILD_KIND:-normal}" = debug ]; then
   python3 scripts/package-runtime.py publish "$STAGE" "$OUTPUT/macos-arm64" "$OUTPUT/Achbit-Debug-$VERSION-macos-arm64.tar.gz"
 else

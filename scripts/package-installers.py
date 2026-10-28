@@ -15,13 +15,12 @@ def macos(stage, output, version):
         payload = work / 'payload'
         app = payload / 'Applications/Achbit.app'
         shutil.copytree(stage / 'Achbit.app', app, symlinks=True)
-        shutil.copytree(stage / 'Achbit Computer Use.app', payload / 'Applications/Achbit Computer Use.app', symlinks=True)
-        commands = payload / 'usr/local/bin'
+        commands = payload / '.local/bin'
         commands.mkdir(parents=True)
         for name, shell in [('achbit', 'cli'), ('achbit-cli', 'cli'), ('achbit-tui', 'tui')]:
             launcher = commands / name
             launcher.write_text('#!/bin/sh\n'
-                'APP_DIR="/Applications/Achbit.app/Contents"\n'
+                'APP_DIR="$HOME/Applications/Achbit.app/Contents"\n'
                 'export ACHBIT_RUNTIME_DIR="$APP_DIR/Resources"\n'
                 'export ACHBIT_KERNEL_BIN="$APP_DIR/MacOS/achbit-kernel"\n'
                 + ('exec "$APP_DIR/Resources/node/bin/node" "$APP_DIR/Resources/tui/window.mjs" "$@"\n'
@@ -33,10 +32,24 @@ def macos(stage, output, version):
             'BundleIsRelocatable': False,
             'BundleHasStrictIdentifier': True,
             'BundleOverwriteAction': 'upgrade',
-        } for name in ['Achbit.app', 'Achbit Computer Use.app']]))
+        } for name in ['Achbit.app']]))
+        component = work / 'Achbit.pkg'
         subprocess.run(['pkgbuild', '--root', str(payload), '--component-plist', str(components),
             '--identifier', 'com.achbite.achbit', '--version', version,
-            '--install-location', '/', '--ownership', 'recommended', str(output)], check=True)
+            '--install-location', '/', '--ownership', 'recommended', str(component)], check=True)
+        distribution = work / 'Distribution.xml'
+        distribution.write_text('''<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>Achbit</title>
+  <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+  <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+  <choices-outline><line choice="achbit"/></choices-outline>
+  <choice id="achbit" visible="false" title="Achbit"><pkg-ref id="com.achbite.achbit"/></choice>
+  <pkg-ref id="com.achbite.achbit" version="''' + version + '''">Achbit.pkg</pkg-ref>
+</installer-gui-script>
+''')
+        subprocess.run(['productbuild', '--distribution', str(distribution),
+            '--package-path', str(work), str(output)], check=True)
 
 
 def windows(stage, output, version):
@@ -51,6 +64,7 @@ def windows(stage, output, version):
         subprocess.run(['makensis', '-V2', f'-DSTAGE={stage.resolve()}',
             f'-DOUTPUT={output.resolve()}', f'-DVERSION={version}',
             f'-DUNINSTALL_FILES={uninstall}',
+            f'-DINSTALL_RUNTIME={Path(__file__).parent / "installers/install-runtime.ps1"}',
             str(Path(__file__).parent / 'installers/windows.nsi')], check=True)
 
 

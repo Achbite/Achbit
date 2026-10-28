@@ -107,6 +107,10 @@ ENV PNPM_STORE_DIR=/root/.local/share/pnpm/store \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# AppImage distribution for the Tauri updater.
+COPY scripts/setup-appimage-tool.sh /tmp/setup-appimage-tool.sh
+RUN bash /tmp/setup-appimage-tool.sh && rm /tmp/setup-appimage-tool.sh
+
 WORKDIR /workspace
 
 # 默认前台保活；Makefile 通过 docker exec 进入交互式 bash

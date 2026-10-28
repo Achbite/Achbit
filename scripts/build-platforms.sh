@@ -27,6 +27,7 @@ check_platform() {
   case "$1" in
     linux)
       require strip; require bwrap
+      if [ "${2:-package}" = package ]; then require appimagetool; fi
       pkg-config --exists openssl gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0 || { printf 'Linux desktop SDK is incomplete.\n' >&2; exit 1; }
       ;;
     windows)
@@ -105,6 +106,7 @@ case "${1:-}" in
     else
       case "$(uname -m)" in x86_64) platform_dir=linux-x64 ;; aarch64) platform_dir=linux-arm64 ;; *) printf 'Unsupported Linux architecture.\n' >&2; exit 1 ;; esac
     fi
+    export TAURI_CONFIG="$(python3 scripts/package-updates.py config)"
     cargo_features=()
     gui_features=()
     product=Achbit
@@ -112,7 +114,6 @@ case "${1:-}" in
       [ "$platform" = windows ] || { printf 'Unsupported Debug container platform: %s\n' "$platform" >&2; exit 2; }
       cargo_features=(--features achbit-kernel-daemon/debug-control,achbit-cli/debug-control)
       gui_features=(--features debug-control)
-      export TAURI_CONFIG='{"productName":"Achbit-Debug","identifier":"com.achbite.achbit.debug"}'
       product=Achbit-Debug
     fi
     cargo build --release "${target_args[@]}" "${cargo_features[@]}" -p achbit-kernel-daemon -p achbit-first-party-tools -p achbit-host-web -p achbit-cli -p achbit-tui
@@ -133,9 +134,12 @@ case "${1:-}" in
       python3 scripts/package-runtime.py publish "$stage" "$output/$platform_dir"
       exit 0
     fi
-    version="$(node -p 'require("./package.json").version')"
+    version="$(python3 scripts/package-updates.py version)"
     archive="$output/$product-$version-$platform_dir.tar.gz"
     [ "$platform" != windows ] || archive="$output/$product-$version-$platform_dir.zip"
+    if [ "$platform" = linux ]; then
+      python3 scripts/package-updates.py linux "$stage" "$output/$product-$version-$platform_dir.AppImage"
+    fi
     installer_args=()
     if [ "$platform" = windows ] && [ "${ACHBIT_BUILD_KIND:-normal}" != debug ]; then
       installer="$(dirname "$shared")/Achbit-$version-win64-setup.exe"
