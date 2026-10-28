@@ -29,7 +29,7 @@
   transition: background-color 140ms ease, color 140ms ease;
 }
 
-.achbit-gui-sidebar-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; flex: none; }
+.achbit-gui-sidebar-footer { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 4px 0; flex: none; }
 .achbit-gui-sidebar-footer .achbit-gui-sidebar-settings { margin: 0; width: 100%; flex: 1 1 auto; gap: 9px; padding-inline: 10px; }
 
 .achbit-gui-sidebar-action svg,

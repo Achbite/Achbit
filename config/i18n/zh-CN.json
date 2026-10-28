@@ -784,7 +784,7 @@
     "agent.tool.status.cancelled": "已取消",
     "agent.tool.status.indeterminate": "待确认",
     "agent.tool.notExecuted.approvalRequired": "未执行：读取需要额外授权",
-  "agent.tool.notExecuted.cancelled": "未执行：已取消",
+    "agent.tool.notExecuted.cancelled": "未执行：已取消",
     "agent.tool.notExecuted.dependencyFailed": "未执行：前序调用未成功",
     "achbitGui.session.removeFromProject": "移出项目",
     "achbitGui.project.manageWorkspaces": "管理工作区",
@@ -1280,8 +1280,8 @@
     "tui.status.failed": "失败",
     "tui.status.cancelled": "已取消",
     "tui.status.notExecutedApprovalRequired": "未执行：读取需要额外授权",
-  "tui.status.notExecutedDependencyPending": "未执行：前序调用仍在运行",
-  "tui.status.notExecutedCancelled": "未执行：已取消",
+    "tui.status.notExecutedDependencyPending": "未执行：前序调用仍在运行",
+    "tui.status.notExecutedCancelled": "未执行：已取消",
     "tui.status.notExecutedDependencyFailed": "未执行：前序调用未成功",
     "tui.status.indeterminate": "结果未确定",
     "tui.status.published": "已发布",
@@ -1373,7 +1373,12 @@
     "agent.tool.shell.currentDirectory": "当前工作目录",
     "agent.tool.shell.searching": "在 {targets} 中搜索“{query}”",
     "agent.tool.shell.searched": "已在 {targets} 中搜索“{query}”",
-    "agent.tool.shell.moreIntents": " · 另 {count} 项"
+    "agent.tool.shell.moreIntents": " · 另 {count} 项",
+    "productUpdate.downloading": "正在下载 {version}",
+    "productUpdate.waiting": "更新已就绪，空闲后自动重启",
+    "productUpdate.installing": "正在更新并重启…",
+    "productUpdate.error": "自动更新未完成",
+    "productUpdate.retry": "重新检查"
   },
   "settings": {
     "workbench.language": {
