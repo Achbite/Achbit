@@ -13,6 +13,7 @@ import { useConversationHost } from './ConversationHost';
 import { workspaceResourceLink } from './documentResources';
 import { requestWorkspacePreview } from './readerState';
 import 'katex/dist/katex.min.css';
+import { InlineInteractivePreview } from './InteractivePreview';
 
 const StreamingContext = createContext(false);
 const COMPONENTS = {
@@ -22,6 +23,7 @@ const COMPONENTS = {
     if (!React.isValidElement<{ className?: string; children?: React.ReactNode }>(child)) return <pre>{children}</pre>;
     const language = /language-([^\s]+)/.exec(child.props.className ?? '')?.[1] ?? '';
     const code = String(child.props.children ?? '');
+    if (language === 'achbit-preview') return <InlineInteractivePreview source={code} pending={streaming} />;
     return language === 'mermaid' && !streaming
       ? <MermaidContent source={code} /> : <CodeContent code={code} language={language} streaming={streaming} />;
   },

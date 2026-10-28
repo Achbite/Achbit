@@ -30,6 +30,7 @@ import { RunFailureDetails, providerRetryAttempt, ProviderRetryStatus } from './
 import { InteractionCard } from './InteractionCard';
 import { messageDisplayText } from './interactionPresentation';
 import { isAutomaticApproval } from './composerDecisions';
+import { PreviewArtifactsScope } from './InteractivePreview';
 
 interface ConversationTranscriptProps {
   layoutCache: ConversationLayoutCache;
@@ -359,7 +360,7 @@ export function ConversationTranscript({
   }, [virtualizer, viewport.bodyRef]);
 
   return (
-    <>
+    <PreviewArtifactsScope.Provider value={projection}>
     {linkChoices && linkChoices.sessionId === projection?.sessionId && <ResourceLinkChoices
       language={language} targets={linkChoices.targets} onClose={() => setLinkChoices(null)}
       onSelect={target => {
@@ -434,7 +435,7 @@ export function ConversationTranscript({
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
       <div ref={messageEndRef} />
     </div>
-    </>
+    </PreviewArtifactsScope.Provider>
   );
 }
 

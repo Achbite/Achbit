@@ -17,6 +17,7 @@ export class ConversationLayoutCache {
 }
 
 interface ObservedRow {
+  key: string;
   node: HTMLElement;
   show(visible: boolean): void;
   nearby: boolean;
@@ -28,6 +29,7 @@ const ROW_RETENTION_MS = 30_000;
 /** Keep every anchor in the scroll surface; only its expensive content is virtual. */
 export class ConversationVirtualizer {
   private rows = new Map<string, ObservedRow>();
+  private retainedPreviews = new Map<string, ObservedRow>();
   private intersection: IntersectionObserver | null = null;
   private resize: ResizeObserver | null = null;
   private connected = false;
@@ -64,7 +66,7 @@ export class ConversationVirtualizer {
   }
 
   register(key: string, node: HTMLElement, show: ObservedRow['show']): () => void {
-    const row: ObservedRow = { node, show, nearby: true, releaseTimer: null };
+    const row: ObservedRow = { key, node, show, nearby: true, releaseTimer: null };
     this.rows.set(key, row);
     this.observe(node);
     return () => {
@@ -72,7 +74,22 @@ export class ConversationVirtualizer {
       this.intersection?.unobserve(node);
       this.resize?.unobserve(node);
       if (this.rows.get(key)?.node === node) this.rows.delete(key);
+      if (this.retainedPreviews.get(key) === row) this.retainedPreviews.delete(key);
     };
+  }
+
+  /** Keep the four most recently loaded/interacted preview rows alive during scrolling. */
+  retainPreview(key: string): void {
+    const row = this.rows.get(key);
+    if (!row) return;
+    this.retainedPreviews.delete(key);
+    this.retainedPreviews.set(key, row);
+    this.cancelRelease(row);
+    while (this.retainedPreviews.size > 4) {
+      const [oldest, previous] = this.retainedPreviews.entries().next().value!;
+      this.retainedPreviews.delete(oldest);
+      this.updateVisibility(previous);
+    }
   }
 
   measure(node: HTMLElement, measuredHeight?: number): void {
@@ -86,6 +103,7 @@ export class ConversationVirtualizer {
 
   disconnect(): void {
     this.connected = false;
+    this.retainedPreviews.clear();
     for (const row of this.rows.values()) this.cancelRelease(row);
     this.body?.removeEventListener('focusout', this.interactionEnded);
     this.body?.ownerDocument.removeEventListener('selectionchange', this.interactionEnded);
@@ -120,7 +138,7 @@ export class ConversationVirtualizer {
   private updateVisibility(row: ObservedRow): void {
     // Recent content stays mounted while the reader moves back and forth.
     // Focus and selection extend its lifetime until the interaction ends.
-    if (row.nearby || this.interacting(row)) {
+    if (row.nearby || this.interacting(row) || this.retainedPreviews.get(row.key) === row) {
       this.cancelRelease(row);
       if (row.nearby) row.show(true);
       return;
@@ -128,7 +146,7 @@ export class ConversationVirtualizer {
     if (row.releaseTimer !== null || row.node.dataset.virtualRendered !== 'true') return;
     row.releaseTimer = setTimeout(() => {
       row.releaseTimer = null;
-      if (this.connected && !row.nearby && !this.interacting(row)) row.show(false);
+      if (this.connected && !row.nearby && !this.interacting(row) && this.retainedPreviews.get(row.key) !== row) row.show(false);
     }, ROW_RETENTION_MS);
   }
 

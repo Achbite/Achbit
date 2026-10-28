@@ -8,7 +8,7 @@ export type ReaderTarget = (({ kind: 'workspace'; workspaceId: string; logicalPa
   | { kind: 'resource'; resource: ResourceReference; name: string }
   | { kind: 'diff'; file: ChangedFile }
   | { kind: 'file'; path: string }
-  | { kind: 'artifact'; artifact: ArtifactProjection }
+  | { kind: 'artifact'; artifact: ArtifactProjection; interactive?: boolean }
   | AgentReaderTarget) & { sourceSessionId?: string }
   | { kind: 'browser'; previewId?: string; url?: string; filePath?: string; selfPreview?: boolean };
 export type ResolvedReaderTarget = Exclude<ReaderTarget, { kind: 'browser' }>
@@ -78,6 +78,6 @@ function readerResourceKey(target: ReaderTarget): string {
   if (target.kind === 'file') return 'file:' + target.path;
   if (target.kind === 'workspace')
     return 'resource:' + resourceKey({ workspaceId: target.workspaceId, logicalPath: target.logicalPath });
-  if (target.kind === 'artifact') return 'artifact:' + target.artifact.artifactId;
+  if (target.kind === 'artifact') return (target.interactive ? 'preview:' : 'artifact:') + target.artifact.artifactId;
   return 'browser:' + target.previewId;
 }

@@ -41,6 +41,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import './documentPreview.css';
+import { ArtifactInteractivePreview } from './InteractivePreview';
 import type { ReaderNavigation } from './readerState';
 
 const DocumentPreview = lazy(() =>
@@ -459,6 +460,8 @@ export function ResourcePreview({
                   active={preview.visible && preview.activeId === tab.id} />
               ) : tab.target.kind === 'diff' && preview.sessionId ? (
                 <FileChangePreview sessionId={sourceSessionId(tab.target)!} file={tab.target.file} />
+              ) : tab.target.kind === 'artifact' && tab.target.interactive && preview.sessionId ? (
+                <ArtifactInteractivePreview sessionId={sourceSessionId(tab.target)!} artifact={tab.target.artifact} />
               ) : (
                 preview.sessionId && (
                   <ReaderDocument
