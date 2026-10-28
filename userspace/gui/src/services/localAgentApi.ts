@@ -577,7 +577,7 @@ function isTimelineItem(value: unknown): boolean {
 }
 
 function isQueuedInput(value: unknown): boolean {
-  return isExactRecord(value, ['commandId', 'messageId', 'runId', 'text', 'filesystemReferences', 'pluginSelections', 'sequence', 'createdAt', 'status'], ['pluginCatalogRevision','guidanceReferences','interactionId'])
+  return isExactRecord(value, ['commandId', 'messageId', 'runId', 'text', 'filesystemReferences', 'pluginSelections', 'sequence', 'createdAt', 'status'], ['guidanceReferences','interactionId'])
     && (value.interactionId === undefined || isIdentifier(value.interactionId))
     && isIdentifier(value.commandId) && isIdentifier(value.messageId) && isIdentifier(value.runId)
     && typeof value.text === 'string'

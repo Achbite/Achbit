@@ -1,4 +1,5 @@
 use crate::local_agent_mcp::McpServerSource;
+use achbit_host_connection::plugin_artifact::skill_metadata;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -700,7 +701,7 @@ fn skill_catalog_entries(settings: &Value) -> Result<Vec<PluginCatalogEntry>, St
         entries.push(PluginCatalogEntry::Skill(SkillLocator {
             public: PublicPluginCatalogItem {
                 uri: format!("plugin://{}@skill", plugin_slug(&id)),
-                display_name: skill_display_name(&path, ""),
+                display_name: skill_metadata(&path, "").0,
                 short_description: format!("Skill file {}", path.display()),
                 icon_ref: None,
                 management: Some(json!({"key":"skills.mounts","id":mount_id,"path":path})),
@@ -728,8 +729,9 @@ fn skill_plugin(locator: &SkillLocator) -> Result<PluginSource, String> {
     if instructions.trim().is_empty() {
         return Err(format!("Skill 文件 {} 不能为空", path.display()));
     }
-    let display_name = skill_display_name(path, &instructions);
-    let short_description = skill_short_description(&instructions, &display_name);
+    let (name, description) = skill_metadata(path, &instructions);
+    let display_name = truncate_utf8(&name, 160);
+    let short_description = truncate_utf8(&description, 240);
     path.to_str()
         .ok_or_else(|| format!("Skill 路径不是 UTF-8：{}", path.display()))?;
     let plugin_artifact_ref = crate::utils::new_runtime_ref("plugin-artifact")?;
@@ -815,37 +817,6 @@ fn skill_id(mount_id: &str, path: &Path, index: usize) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("skill");
     format!("{mount_id}-{parent}-{}", index + 1)
-}
-
-fn skill_display_name(path: &Path, instructions: &str) -> String {
-    instructions
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("# "))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| truncate_utf8(line, 160))
-        .unwrap_or_else(|| {
-            path.parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .unwrap_or("Skill")
-                .to_string()
-        })
-}
-
-fn skill_short_description(instructions: &str, fallback: &str) -> String {
-    instructions
-        .lines()
-        .map(str::trim)
-        .find(|line| {
-            !line.is_empty()
-                && !line.starts_with('#')
-                && *line != "---"
-                && !line.starts_with("name:")
-                && !line.starts_with("description:")
-        })
-        .map(|line| truncate_utf8(line, 240))
-        .unwrap_or_else(|| format!("Skill plugin {fallback}"))
 }
 
 fn plugin_slug(value: &str) -> String {
@@ -1086,7 +1057,13 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let directory = TestDirectory(root);
         fs::create_dir(directory.0.join("good")).unwrap();
+        fs::create_dir(directory.0.join("metadata")).unwrap();
         fs::create_dir(directory.0.join("bad")).unwrap();
+        fs::write(
+            directory.0.join("metadata/SKILL.md"),
+            "---\nname: metadata-skill\ndescription: Use the declared capability.\n---\n# A different heading\nRead the full guidance unchanged.",
+        )
+        .unwrap();
         fs::write(
             directory.0.join("good/SKILL.md"),
             "# Good Skill\nRead the selected document.",
@@ -1124,6 +1101,41 @@ mod tests {
             uri: plugin["uri"].as_str().unwrap().into(),
             label: plugin["displayName"].as_str().unwrap().into(),
         };
+        for (directory_name, expected_name, expected_description) in [
+            ("good", "Good Skill", "Read the selected document."),
+            ("metadata", "metadata-skill", "Use the declared capability."),
+        ] {
+            let path = directory.0.join(directory_name).join("SKILL.md");
+            let inspected =
+                achbit_host_connection::plugin_artifact::inspect_plugin(path.to_str().unwrap())
+                    .unwrap();
+            assert_eq!(inspected["id"], expected_name);
+            assert_eq!(inspected["name"], expected_name);
+            assert_eq!(inspected["description"], expected_description);
+            let listed = plugins
+                .iter()
+                .find(|plugin| plugin["displayName"] == expected_name)
+                .unwrap();
+            assert_eq!(listed["shortDescription"], inspected["description"]);
+            let found = search_plugins(&settings, expected_name, 10, 0, false).unwrap();
+            assert_eq!(found["total"], 1);
+            assert_eq!(found["plugins"][0]["uri"], listed["uri"]);
+            assert_eq!(
+                found["plugins"][0]["shortDescription"],
+                inspected["description"]
+            );
+            let selected =
+                resolve_plugin_selection(&settings, &mut vec![selection(listed)], false).unwrap();
+            let config = local_agent_plugin_config(&settings, &selected).unwrap();
+            assert_eq!(
+                config["selectedPlugins"][0]["displayName"],
+                inspected["name"]
+            );
+            assert_eq!(
+                config["selectedPlugins"][0]["capabilitySummary"],
+                fs::read_to_string(&path).unwrap()
+            );
+        }
         let selected =
             resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
         assert_eq!(selected.plugins.len(), 1);

@@ -482,7 +482,6 @@ pub struct AgentChildProjection {
 pub struct QueuedInputProjection {
     pub interaction_id: Option<String>,
     pub guidance_references: Option<Vec<GuidanceReference>>,
-    pub plugin_catalog_revision: Option<String>,
     pub command_id: String,
     pub message_id: String,
     pub run_id: String,
@@ -2580,7 +2579,6 @@ pub fn message_command_with_profile_and_plugins(
     text: &str,
     profile_id: Option<&str>,
     filesystem_references: &[FilesystemReference],
-    plugin_catalog_revision: &str,
     plugin_selections: &[PluginSelectionInput],
 ) -> Value {
     let mut command = message_command_with_profile(session_id, command_id, text, profile_id);
@@ -2588,7 +2586,6 @@ pub fn message_command_with_profile_and_plugins(
         command["filesystemReferences"] = json!(filesystem_references);
     }
     if !plugin_selections.is_empty() {
-        command["pluginCatalogRevision"] = json!(plugin_catalog_revision);
         command["pluginSelections"] = json!(plugin_selections);
     }
     command
@@ -2600,7 +2597,6 @@ pub fn focus_command(
     task: &str,
     profile_id: Option<&str>,
     filesystem_references: &[FilesystemReference],
-    plugin_catalog_revision: &str,
     plugin_selections: &[PluginSelectionInput],
 ) -> Value {
     let mut command = json!({
@@ -2617,7 +2613,6 @@ pub fn focus_command(
         command["filesystemReferences"] = json!(filesystem_references);
     }
     if !plugin_selections.is_empty() {
-        command["pluginCatalogRevision"] = json!(plugin_catalog_revision);
         command["pluginSelections"] = json!(plugin_selections);
     }
     command
@@ -3676,7 +3671,6 @@ mod tests {
             "Inspect directory",
             None,
             &[reference],
-            "plugin-catalog:test",
             &[],
         );
         let encoded = command["filesystemReferences"][0]

@@ -558,7 +558,6 @@ export type ConversationCommand =
       filesystemReferences?: FilesystemReference[];
       profileId?: string;
       reasoningEffortOverride?: LlmReasoningEffort | null;
-      pluginCatalogRevision?: string;
       pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
       hostBinding?: { hostInstanceId: string; windowLabel: string };
@@ -572,7 +571,6 @@ export type ConversationCommand =
       filesystemReferences?: FilesystemReference[];
       profileId?: string;
       reasoningEffortOverride?: LlmReasoningEffort | null;
-      pluginCatalogRevision?: string;
       pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
       hostBinding?: { hostInstanceId: string; windowLabel: string };
@@ -1050,7 +1048,6 @@ export type SessionEvent =
       runId: string;
       payload: {
         interactionId?: string;
-        pluginCatalogRevision?: string;
         commandId: string;
         messageId: string;
         text: string;
@@ -1749,7 +1746,6 @@ export interface SessionModelSettings {
 
 export interface QueuedInputProjection {
   interactionId?: string;
-  pluginCatalogRevision?: string;
   commandId: string;
   messageId: string;
   runId: string;
@@ -2100,7 +2096,6 @@ export interface PrepareRunRuntimeRequest {
   runId: string;
   profileId?: string;
   reasoningEffortOverride?: LlmReasoningEffort;
-  pluginCatalogRevision?: string;
   pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
 }

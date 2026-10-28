@@ -2008,7 +2008,6 @@
                 "text": {"type": "string"},
                 "profileId": {"$ref": "#/$defs/Id"},
                 "filesystemReferences": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/FilesystemReference"}},
-                "pluginCatalogRevision": {"$ref": "#/$defs/Id"},
                 "pluginSelections": {"type": "array", "items": {"$ref": "#/$defs/PluginSelectionInput"}},
                 "reasoningEffortOverride": {"oneOf": [{"type": "null"}, {"enum": ["low", "medium", "high", "xhigh", "max"]}]},
                 "guidanceReferences": {"type": "array", "items": {"$ref": "#/$defs/GuidanceReference"}},
@@ -2042,7 +2041,6 @@
                 "task": {"type": "string", "minLength": 1},
                 "profileId": {"$ref": "#/$defs/Id"},
                 "filesystemReferences": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/FilesystemReference"}},
-                "pluginCatalogRevision": {"$ref": "#/$defs/Id"},
                 "pluginSelections": {"type": "array", "items": {"$ref": "#/$defs/PluginSelectionInput"}},
                 "reasoningEffortOverride": {"oneOf": [{"type": "null"}, {"enum": ["low", "medium", "high", "xhigh", "max"]}]},
                 "guidanceReferences": {"type": "array", "items": {"$ref": "#/$defs/GuidanceReference"}},
@@ -2704,7 +2702,6 @@
                   "commandId": {"$ref": "#/$defs/Id"},
                   "messageId": {"$ref": "#/$defs/Id"},
                   "text": {"type": "string"},
-                  "pluginCatalogRevision": {"$ref": "#/$defs/Id"},
                   "filesystemReferences": {"type": "array", "items": {"$ref": "#/$defs/FilesystemReference"}},
                   "pluginSelections": {"type": "array", "items": {"$ref": "#/$defs/PluginSelectionInput"}},
                   "guidanceReferences": {"type": "array", "items": {"$ref": "#/$defs/GuidanceReference"}}
@@ -4530,9 +4527,6 @@
         },
         "text": {
           "type": "string"
-        },
-        "pluginCatalogRevision": {
-          "$ref": "#/$defs/Id"
         },
         "filesystemReferences": {
           "type": "array",

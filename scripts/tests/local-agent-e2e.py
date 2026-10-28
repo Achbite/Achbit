@@ -445,7 +445,7 @@ def assert_unknown_attachment_fields_rejected(
     fixture.require(envelope.get("ok") is False, "未声明的附件字段被当前 Session wire 合同接受")
 
 
-def selected_plugin_catalog(daemon: fixture.OwnedDaemon, label: str) -> tuple[str, list[dict[str, Any]]]:
+def selected_plugin_catalog(daemon: fixture.OwnedDaemon, label: str) -> list[dict[str, Any]]:
     catalog = fixture.api_json(
         daemon.base_url,
         "/api/conversation/plugins",
@@ -472,7 +472,7 @@ def selected_plugin_catalog(daemon: fixture.OwnedDaemon, label: str) -> tuple[st
         and len([uri for uri in uris if isinstance(uri, str) and uri.endswith("@mcp")]) == 1,
         f"{label} 必须选中三项 first-party 插件及当前 Skill/MCP fixture",
     )
-    return revision, selected_plugins
+    return selected_plugins
 
 
 def submit_message(
@@ -482,7 +482,7 @@ def submit_message(
     text: str,
     filesystem_references: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    revision, plugins = selected_plugin_catalog(daemon, "message.submit")
+    plugins = selected_plugin_catalog(daemon, "message.submit")
     selections = []
     for index, plugin in enumerate(plugins):
         fixture.require(isinstance(plugin, dict), "插件目录项不是对象")
@@ -508,7 +508,6 @@ def submit_message(
             "sessionId": session_id,
             "text": text,
             **({"filesystemReferences": filesystem_references} if filesystem_references else {}),
-            "pluginCatalogRevision": revision,
             "pluginSelections": selections,
         },
         timeout=15,
@@ -524,7 +523,7 @@ def start_cli_ask_with_file(
     file_path: Path,
     text: str,
 ) -> subprocess.Popen[str]:
-    _, plugins = selected_plugin_catalog(daemon, "CLI ask")
+    plugins = selected_plugin_catalog(daemon, "CLI ask")
     command = [
         str(fixture.CLI_BINARY),
         "--api", daemon.base_url,

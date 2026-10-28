@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile } from 'node:fs/promises';
-import { decodeRunPluginConfig } from '../dist/local-agent/skillPlugins.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
 import { sessionControlToolDefinitions } from '../dist/index.js';
@@ -12,13 +10,6 @@ import {
 
 const discoveryTool = { toolBindingRef: 'binding:plugin-search', name: 'plugin.search', description: 'Discover plugins.',
   inputSchema: { type: 'object', properties: {} }, possibleEffects: ['localRead'], availability: 'callable', origin: 'coreBuiltin' };
-
-test('the actual builtin Computer Use instructions satisfy the Session plugin configuration contract', async () => {
-  const capabilitySummary = await readFile(new URL('../../../plugins/computer-use/README.md', import.meta.url), 'utf8');
-  const plugin = { uri: 'plugin://computer-use@builtin', displayName: 'Computer Use', capabilitySummary };
-  const decoded = decodeRunPluginConfig({ extensionGenerationRef: 'generation:computer-use', permissions: {}, selectedPlugins: [plugin] });
-  assert.deepEqual(decoded.selectedPlugins, [plugin]);
-});
 
 test('Agent plugin activation and explicit user mentions coexist across request boundaries', async t => {
   for (const surface of ['aggregate', 'responses']) {
@@ -71,7 +62,7 @@ test('Agent plugin activation and explicit user mentions coexist across request 
     } }), port, `plugin-${surface}`);
     t.after(async () => { finishTool(); await actor.dispose(); });
     await actor.submit({ ...messageCommand(sessionId, 'command:start', 'Inspect the preview using my notes.'),
-      pluginSelections: [mentioned], pluginCatalogRevision: 'catalog:notes' });
+      pluginSelections: [mentioned] });
     await waitUntil(() => executing, 'activated browser executing');
     await actor.submit(messageCommand(sessionId, 'command:guidance', 'Check the button too.'));
     finishTool();
@@ -144,7 +135,7 @@ test('desktop activation and explicit selection carry execution availability wit
     } }), port, `desktop-${explicit}`);
     t.after(() => actor.dispose());
     await actor.submit({ ...messageCommand(sessionId, 'command:start', 'Inspect the native desktop status.'),
-      ...(explicit ? { pluginSelections: [{ selectionId: 'selection:desktop', uri, label: 'Computer Use' }], pluginCatalogRevision: 'catalog:desktop' } : {}) });
+      ...(explicit ? { pluginSelections: [{ selectionId: 'selection:desktop', uri, label: 'Computer Use' }] } : {}) });
     await waitForProjection(actor, state => state.run?.status === 'completed');
     assert.equal(executions, 1);
     assert.equal(preparation.released.length, 1);

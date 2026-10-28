@@ -285,40 +285,6 @@ impl ToolProvider for ProductToolProvider {
     }
 }
 
-struct ManagedShellToolProvider {
-    shell: BuiltinToolProvider,
-    process: bool,
-}
-
-impl ToolProvider for ManagedShellToolProvider {
-    fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
-        let mut installed = Box::new(self.shell).install()?;
-        installed
-            .tools
-            .retain(|tool| matches!(tool.name.as_str(), "bash" | "powershell"));
-        if self.process {
-            installed.tools.push(PendingToolContribution {
-                origin: "coreBuiltin",
-                provider_ref: "achbit:processes".into(),
-                plugin_uri: None,
-                plugin_instance_ref: None,
-                contribution_ref: "achbit:processes/process".into(),
-                name: "process".into(),
-                description: "Manage owned commands.".into(),
-                input_schema: crate::managed_processes::schema(&[]),
-                effect_class: None,
-                effect_scope: CatalogEffectScope::Process,
-                availability: ToolAvailability::Callable,
-                availability_reason: None,
-                runtime_status: None,
-                logical_target: None,
-                binding: ToolExecutorBinding::Process,
-            });
-        }
-        Ok(installed)
-    }
-}
-
 struct ContainerToolProvider {
     instance: String,
     adapter: Arc<crate::container_tools::Containers>,
@@ -347,19 +313,6 @@ impl ToolProvider for ContainerToolProvider {
     }
 }
 
-struct CoreToolProvider(BuiltinToolProvider);
-
-impl ToolProvider for CoreToolProvider {
-    fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
-        let mut installed = Box::new(self.0).install()?;
-        installed
-            .tools
-            .retain(|tool| !matches!(tool.name.as_str(), "bash" | "powershell"));
-        Ok(installed)
-    }
-}
-
-#[derive(Clone)]
 struct BuiltinToolProvider {
     registry: Arc<KernelToolRegistry>,
     executors: Arc<KernelExecutorRegistry>,
@@ -400,7 +353,7 @@ impl BuiltinToolProvider {
 
 impl ToolProvider for BuiltinToolProvider {
     fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
-        let tools = self
+        let mut tools: Vec<_> = self
             .registry
             .descriptors()
             .map(|descriptor| PendingToolContribution {
@@ -437,6 +390,23 @@ impl ToolProvider for BuiltinToolProvider {
                 },
             })
             .collect();
+        tools.push(PendingToolContribution {
+            origin: "coreBuiltin",
+            provider_ref: "achbit:processes".into(),
+            plugin_uri: None,
+            plugin_instance_ref: None,
+            contribution_ref: "achbit:processes/process".into(),
+            name: "process".into(),
+            description: "Manage owned commands.".into(),
+            input_schema: crate::managed_processes::schema(&[]),
+            effect_class: None,
+            effect_scope: CatalogEffectScope::Process,
+            availability: ToolAvailability::Callable,
+            availability_reason: None,
+            runtime_status: None,
+            logical_target: None,
+            binding: ToolExecutorBinding::Process,
+        });
         Ok(InstalledToolProvider {
             tools,
             dispose: Box::new(|| Ok(())),
@@ -676,21 +646,11 @@ impl ToolCatalogSnapshot {
                 });
         let builtin =
             BuiltinToolProvider::prepare(executor_config, secret_provider, enable_web_search)?;
-        let shell = builtin.clone();
         let mut providers: Vec<Box<dyn ToolProvider>> = vec![
-            Box::new(CoreToolProvider(builtin)),
+            Box::new(builtin),
             Box::new(McpToolProvider::prepare(mcp)?),
             Box::new(ProductToolProvider(product)),
         ];
-        if selection.allows_kernel("bash")
-            || selection.allows_kernel("powershell")
-            || selection.allows_kernel("process")
-        {
-            providers.push(Box::new(ManagedShellToolProvider {
-                shell,
-                process: selection.allows_kernel("process"),
-            }));
-        }
         if let Some(provider) = container_provider {
             providers.push(Box::new(provider));
         }
@@ -2065,6 +2025,7 @@ mod tests {
                 "fs.read",
                 "fs.write",
                 "powershell",
+                "process",
                 "web.fetch",
                 "web.search",
             ]

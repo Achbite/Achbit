@@ -456,7 +456,6 @@ enum Outcome {
 
 #[derive(Debug, Clone)]
 struct PluginBinding {
-    catalog_revision: String,
     selections: Vec<PluginSelectionInput>,
 }
 
@@ -556,10 +555,7 @@ fn plugin_binding_from_catalog(
             label: plugin.display_name.clone(),
         });
     }
-    Ok(PluginBinding {
-        catalog_revision: catalog.revision,
-        selections,
-    })
+    Ok(PluginBinding { selections })
 }
 
 async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
@@ -894,7 +890,6 @@ fn contextual_input_command(
         &new_id("command"),
         profile_id,
         filesystem_references,
-        plugin_binding.map_or("", |binding| binding.catalog_revision.as_str()),
         plugin_binding.map_or(&[], |binding| binding.selections.as_slice()),
     )
 }
@@ -1316,7 +1311,6 @@ async fn run_chat(
                     None
                 } else {
                     Some(PluginBinding {
-                        catalog_revision: plugin_catalog.revision.clone(),
                         selections: selected_plugins.clone(),
                     })
                 };
@@ -1622,7 +1616,6 @@ mod tests {
             &task,
             None,
             &[],
-            "",
             &[],
         );
         command["filesystemReferences"] = json!([existing.clone()]);

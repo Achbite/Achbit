@@ -956,9 +956,6 @@ pub(crate) struct PrepareRunRuntimeRequest {
     rebind_host: Option<RebindHostRequest>,
     #[serde(default)]
     restore_environment: bool,
-    // Catalog revisions are caller correlation, not an equality gate for live discovery.
-    #[serde(rename = "pluginCatalogRevision")]
-    _plugin_catalog_revision: Option<String>,
     #[serde(default)]
     refresh_plugins: bool,
     #[serde(default)]

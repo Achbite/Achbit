@@ -86,7 +86,6 @@ pub fn contextual_input_command(
     command_id: &str,
     profile_id: Option<&str>,
     filesystem_references: &[FilesystemReference],
-    catalog_revision: &str,
     selections: &[PluginSelectionInput],
 ) -> Result<serde_json::Value, String> {
     let original_text = text;
@@ -183,7 +182,6 @@ pub fn contextual_input_command(
             task,
             profile_id,
             filesystem_references,
-            catalog_revision,
             selections,
         ));
     }
@@ -193,7 +191,6 @@ pub fn contextual_input_command(
         original_text,
         profile_id,
         filesystem_references,
-        catalog_revision,
         selections,
     );
     if let Some(run) = projection
@@ -342,7 +339,6 @@ mod tests {
                 "command:test",
                 None,
                 &references,
-                "catalog:test",
                 &selections,
             )
             .unwrap();
@@ -378,7 +374,6 @@ mod tests {
                     "command:test",
                     None,
                     &[],
-                    "",
                     &[]
                 )
                 .is_err(),
@@ -392,7 +387,6 @@ mod tests {
             "command:test",
             None,
             &[],
-            "",
             &[],
         )
         .unwrap();

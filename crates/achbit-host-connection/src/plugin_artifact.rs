@@ -222,6 +222,14 @@ fn inspect_directory(path: &str) -> Result<serde_json::Value, String> {
         root.join("SKILL.md")
     };
     let instructions = read_utf8(&skill, 512 * 1024)?;
+    let (name, description) = skill_metadata(&skill, &instructions);
+    Ok(
+        json!({"kind":"guidance","manifestPath":skill,"path":skill,"id":name,"name":name,"description":description}),
+    )
+}
+
+/// Shared Skill metadata. Names stay untruncated because inspection also uses them as artifact IDs.
+pub fn skill_metadata(path: &Path, instructions: &str) -> (String, String) {
     let field = |key: &str| {
         instructions
             .lines()
@@ -235,15 +243,28 @@ fn inspect_directory(path: &str) -> Result<serde_json::Value, String> {
                 .find_map(|line| line.strip_prefix("# ").map(str::to_owned))
         })
         .unwrap_or_else(|| {
-            root.file_name()
+            path.parent()
+                .and_then(Path::file_name)
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()
         });
-    let description = field("description").unwrap_or_else(|| "提供任务方法与指导资料。".into());
-    Ok(
-        json!({"kind":"guidance","manifestPath":skill,"path":skill,"id":name,"name":name,"description":description}),
-    )
+    let description = field("description")
+        .or_else(|| {
+            instructions
+                .lines()
+                .map(str::trim)
+                .find(|line| {
+                    !line.is_empty()
+                        && !line.starts_with('#')
+                        && *line != "---"
+                        && !line.starts_with("name:")
+                        && !line.starts_with("description:")
+                })
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "提供任务方法与指导资料。".into());
+    (name, description)
 }
 
 /// Copy declared resources into a new Host-owned directory, without running install scripts.

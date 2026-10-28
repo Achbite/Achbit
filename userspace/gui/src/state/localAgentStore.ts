@@ -1024,7 +1024,6 @@ async function submitNewRun(
       ...(guidanceReferences.length ? {guidanceReferences} : {}),
       ...(executionSelections.length
         ? {
-            pluginCatalogRevision: pluginCatalog.revision,
             pluginSelections: executionSelections.map((selection) => ({ ...selection })),
           }
         : {}),

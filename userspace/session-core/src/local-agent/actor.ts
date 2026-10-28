@@ -802,7 +802,6 @@ export class SessionActor {
         payload: {
           commandId: command.commandId, messageId: this.#nextId('message'), text: submittedText,
           ...(command.guidanceReferences?.length ? {guidanceReferences:structuredClone(command.guidanceReferences)} : {}),
-          ...(command.pluginCatalogRevision ? { pluginCatalogRevision: command.pluginCatalogRevision } : {}),
           ...(command.filesystemReferences?.length ? { filesystemReferences: command.filesystemReferences.map((reference) => ({ ...reference })) } : {}),
           ...(command.pluginSelections?.length ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) } : {}),
         },
@@ -839,9 +838,6 @@ export class SessionActor {
       ...(command.hostBinding ? { hostBinding: { ...command.hostBinding } } : {}),
       ...(profileId ? { profileId } : {}),
       ...(reasoningEffortOverride ? { reasoningEffortOverride } : {}),
-      ...(command.pluginCatalogRevision
-        ? { pluginCatalogRevision: command.pluginCatalogRevision }
-        : {}),
       ...(command.pluginSelections?.length
         ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) }
         : {}),
@@ -1293,7 +1289,6 @@ export class SessionActor {
           const events: NewSessionEvent[] = [];
           if (selections.length || activeView.selectedPlugins.plugins.length
             || activeView.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable')) {
-            const catalogRevision = queued.filter((input) => input.pluginSelections.length).at(-1)?.pluginCatalogRevision;
             const prepared = await this.#composition.runPreparation.prepare({
               sessionId: this.sessionId, runId, profileId: runtime.provider.profileId,
               environment: runtime.environment,
@@ -1301,7 +1296,6 @@ export class SessionActor {
               pluginSelections: selections,
               previousProviderToolAliases: activeView.providerToolAliases,
               refreshPlugins: !queued.some(input=>input.pluginSelections.length),
-              ...(catalogRevision ? { pluginCatalogRevision: catalogRevision } : {}),
             });
             const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools, toolPromptContributions,
               providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
@@ -1850,7 +1844,6 @@ function recoveryPluginSelection(
   runId: string,
   runtime: LoopSnapshot['state']['runRuntimeSnapshots'][string],
 ): {
-  pluginCatalogRevision?: string;
   pluginSelections?: Extract<ConversationCommand, { type: 'message.submit' }>['pluginSelections'];
 } {
   const started = snapshot.events.find((event): event is Extract<
@@ -1872,7 +1865,6 @@ function recoveryPluginSelection(
   ));
   if (selections.length === 0) return {};
   return {
-    pluginCatalogRevision: active.catalogRevision,
     pluginSelections: selections.map((selection) => ({ ...selection })),
   };
 }

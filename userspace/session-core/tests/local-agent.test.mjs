@@ -899,10 +899,10 @@ test('request-boundary refresh retains the starting selection when another tool 
     yield providerEvent(request.requestId,'completed',{});
   }},kernel,preparation.port,'selected-boundaries');
   t.after(async()=>{finishTool();await actor.dispose();});
-  await actor.submit({...messageCommand(sessionId,'command:selection-start','Read.'),pluginCatalogRevision:'catalog:first',pluginSelections:[first]});
+  await actor.submit({...messageCommand(sessionId,'command:selection-start','Read.'),pluginSelections:[first]});
   await waitUntil(()=>toolStarted,'tool executing');
   assert.deepEqual(preparation.prepared.at(-1).pluginSelections,[first]);
-  await actor.submit({...messageCommand(sessionId,'command:selection-next','Use Second too.'),pluginCatalogRevision:'catalog:second',pluginSelections:[second]});
+  await actor.submit({...messageCommand(sessionId,'command:selection-next','Use Second too.'),pluginSelections:[second]});
   finishTool();
   await waitForProjection(actor,value=>value.run?.status==='completed');
   assert.equal(requests,2);
