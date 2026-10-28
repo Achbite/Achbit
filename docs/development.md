@@ -101,8 +101,6 @@ ACHBIT_BUILD_VERSION=0.6.63-debug.2 bash ./build.sh -debug --stage package-macos
 
 Sign the second App archive and serve it with a generated static feed from a loopback-only HTTP server. Start the first Debug App with explicit `ACHBIT_USER_ROOT`, `ACHBIT_DEFAULT_WORKSPACE` and `ACHBIT_DEBUG_UPDATE_URL`, then use `achbit-debug attach` with that state root and an absolute test-workspace path. This exercises the normal GUI-owned automatic Host lifetime. `achbit-debug launch` intentionally creates a persistent Host and therefore is unsuitable for an idle-shutdown acceptance run. Debug updates are disabled unless the loopback endpoint is explicitly supplied; production builds do not read that override. Current local Debug packaging supports this updater chain on macOS; Windows Debug ZIPs are not NSIS update assets.
 
-Record the running versions and GUI/Host PIDs, a rejected signature, busy-work deferral, automatic relaunch and draft restoration. The [automatic-updates TCR](tcr/2026-10-28-automatic-updates.md) records the actual local acceptance scope. Native platform installation, real-provider conversations and a published release remain separate evidence.
-
 ## Debug control for iteration
 
 Build the isolated Windows or macOS product through the same container/native packaging entrypoint:
@@ -122,6 +120,8 @@ For historical-session latency, measure process startup, navigation readiness an
 Product guides are ordinary Markdown files under the environment snapshot’s `productDocsPath`. Search and read them with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
 
 ## Checks
+
+TCRs, per-run acceptance reports and temporary preview/export scripts belong in ignored task output directories such as `.build-cache/` or `.task-artifacts/`. Keep them out of versioned product documentation and build tooling.
 
 Run these inside the development container:
 
