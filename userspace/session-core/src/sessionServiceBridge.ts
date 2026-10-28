@@ -213,7 +213,7 @@ function assertSessionServicePort(value: unknown): asserts value is SessionServi
   if (!isRecord(value)) throw new Error('session_service_port_invalid:object');
   const methods = [
     'createSession', 'deleteSession', 'submit', 'snapshot', 'resourceSnapshot', 'statuses', 'activity',
-    'contextComposition', 'read', 'replaceCapabilities', 'dispose',
+    'contextComposition', 'read', 'dispose',
   ] as const satisfies readonly (keyof SessionServicePort)[];
   for (const method of methods) {
     if (typeof value[method] !== 'function') throw new Error(`session_service_port_invalid:${method}`);

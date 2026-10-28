@@ -535,9 +535,14 @@ test('subagent models discovery uses the Host port without starting children', a
     assert.deepEqual(discovered.models, models.map(model => ({ ...model,
       parameters: { ...model.parameters, fileInputMediaTypes: [] },
     })));
-    assert.deepEqual(discovered.operations, agentOperationDefinitions(capabilities, {
-      presetIds: ['analysis', 'collaboration'], profileIds: ['profile:configured'], fullConfiguration: false, coordinator: false,
-    }));
+    assert.deepEqual(discovered.operations.map(operation => operation.action).sort(),
+      ['cancel', 'compact', 'models', 'send', 'spawn', 'wait']);
+    const spawnProperties = discovered.operations.find(operation => operation.action === 'spawn').inputSchema.properties;
+    assert.deepEqual(spawnProperties.profileId.enum, ['profile:configured']);
+    assert.deepEqual(spawnProperties.preset.enum, ['analysis', 'collaboration']);
+    for (const field of ['permissions', 'permissionPolicy', 'runner', 'workspaceSandbox', 'loop', 'context', 'capabilities']) {
+      assert.equal(spawnProperties[field], undefined, field);
+    }
     assert.equal(discovered.parentAgentId, 'session:owner');
     assert.deepEqual(discovered.agents, []);
     assert.equal(discovered.fullConfiguration, false);
