@@ -9,8 +9,6 @@ WORKDIR_IN_CTNR="${WORKDIR_IN_CTNR:-/workspace}"
 OUTPUT_DIR="${ACHBIT_OUTPUT_DIR:-$ROOT_DIR/bin}"
 [[ "$OUTPUT_DIR" = /* ]] || OUTPUT_DIR="$ROOT_DIR/$OUTPUT_DIR"
 export ACHBIT_BUILD_KIND=normal
-export ACHBIT_BUILD_COMMIT="${ACHBIT_BUILD_COMMIT:-$(achbit_source_commit "$ROOT_DIR")}"
-export ACHBIT_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STAGES=()
 usage() {
   cat <<'HELP'
@@ -29,6 +27,7 @@ Usage: bash build.sh [-debug] [--stage STAGE]...
   computer-use        Update only the independently signed macOS Computer Use App.
   computer-use-windows  Update only Achbit-Computer-Use.exe in bin/win64 (GUI may keep running).
 Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, ACHBIT_OUTPUT_DIR,
+  ACHBIT_BUILD_COMMIT (source snapshots without readable Git metadata),
   CARGO_TARGET_DIR, RUSTC_WRAPPER, SCCACHE_DIR,
   ACHBIT_MACOS_CARGO, ACHBIT_MACOS_NODE_BIN, ACHBIT_MACOS_CARGO_TARGET_DIR,
   ACHBIT_MACOS_SIGN_IDENTITY (default: Achbit Local Development).
@@ -49,6 +48,11 @@ while [ "$#" -gt 0 ]; do
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+# Keep assignment separate from export so a failed Git lookup stops the build
+# with its original error instead of publishing an unknown source identity.
+ACHBIT_BUILD_COMMIT="${ACHBIT_BUILD_COMMIT:-$(achbit_source_commit "$ROOT_DIR")}"
+export ACHBIT_BUILD_COMMIT
+export ACHBIT_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$ACHBIT_BUILD_KIND" = debug ]; then
   if [ -n "${ACHBIT_OUTPUT_DIR+x}" ] && [ "$OUTPUT_DIR" != "$ROOT_DIR/bin/debug" ]; then
     printf 'Debug output is fixed at bin/debug; remove conflicting ACHBIT_OUTPUT_DIR.\n' >&2; exit 2

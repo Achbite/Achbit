@@ -2,19 +2,21 @@
 # Shared, path-independent source identity for build and package tooling.
 # This file only defines functions and is safe to source from another script.
 
-achbit_source_git_available() {
+achbit_source_git() {
   local root="$1"
+  shift
+  # The caller selected this worktree. Bind mounts may retain a different host
+  # owner; trust only this directory for this invocation, never global config.
+  git -c safe.directory="$root" -C "$root" "$@"
+}
+
+achbit_source_git_available() {
   command -v git >/dev/null 2>&1 || return 1
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1
+  achbit_source_git "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
 achbit_source_commit() {
-  local root="$1"
-  if ! achbit_source_git_available "$root"; then
-    printf 'unknown\n'
-    return 0
-  fi
-  git -C "$root" rev-parse HEAD
+  achbit_source_git "$1" rev-parse HEAD
 }
 
 achbit_source_status() {
@@ -27,7 +29,7 @@ achbit_source_status() {
     printf 'git-metadata=unavailable\n'
     return 0
   fi
-  git -C "$root" status --porcelain=v1 --untracked-files=all
+  achbit_source_git "$root" status --porcelain=v1 --untracked-files=all
 }
 
 achbit_source_dirty() {

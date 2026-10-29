@@ -44,7 +44,7 @@ run_static() {
     bash -n "$script"
   done
   if achbit_source_git_available "$ROOT_DIR"; then
-    git -C "$ROOT_DIR" diff --check
+    achbit_source_git "$ROOT_DIR" diff --check
   else
     printf '[test] Git diff check: SKIP (Git metadata is host-owned and unavailable in this compile/test snapshot)\n'
     skipped_checks=$((skipped_checks + 1))
