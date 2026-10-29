@@ -15,7 +15,7 @@ import LlmSection from './sections/LlmSection';
 import PluginsSection from './sections/PluginsSection';
 import AchbitShellIcon, { type AchbitShellIconName } from '../shared/AchbitShellIcon';
 import './settingsCenter.css';
-import { createInteractionFocus, InteractionFocusContext } from '../shared/interactionFocus';
+import { createInteractionFocus, InteractionFocusContext, useInteractionFocus } from '../shared/interactionFocus';
 
 type SettingsKey = 'general' | 'about' | 'gui' | 'agent' | 'environment' | 'permissions' | 'llm' | 'plugins';
 
@@ -30,7 +30,9 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   serverVersion,
   navigationTarget,
 }) => {
-  const [interaction] = useState(createInteractionFocus);
+  const inheritedInteraction = useInteractionFocus();
+  const [localInteraction] = useState(createInteractionFocus);
+  const interaction = inheritedInteraction ?? localInteraction;
   useEffect(() => () => interaction.clearReveal(), [interaction]);
   const [activeKey, setActiveKey] = useState<SettingsKey>(
     () => takeRestoredInterfaceView<SettingsKey>('settingsPage', 'general'),
@@ -148,8 +150,8 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
 
   return (
     <InteractionFocusContext.Provider value={interaction}><SettingsSearchTargets.Provider value={targets.current}><SettingsSearchContext.Provider value={register}><div className="settings-center"
-      onPointerDownCapture={event => interaction.pointerDown(event.target)}
-      onKeyDownCapture={event => interaction.keyDown(event.key)}>
+      onPointerDownCapture={inheritedInteraction ? undefined : event => interaction.pointerDown(event.target)}
+      onKeyDownCapture={inheritedInteraction ? undefined : event => interaction.keyDown(event.key)}>
       {navigationTarget ? createPortal(navigation, navigationTarget) : navigation}
 
       <section className="settings-body" ref={scrollRef}>

@@ -14,6 +14,7 @@ import AchbitGuiApp from './AchbitGuiApp';
 import { installNativeContextMenuGuard } from '../utils/nativeContextMenuGuard';
 import { activeT } from '../i18n';
 import { UiPluginsProvider } from '../ui-plugins/UiPlugins';
+import { createInteractionFocus, installInteractionFocus, InteractionFocusContext } from '../components/shared/interactionFocus';
 
 const removePaletteDefaults = installPaletteDefaults();
 
@@ -119,6 +120,8 @@ async function mountProduct(rootEl: HTMLElement) {
   const stopProductUpdates = await installProductUpdateMonitor();
   const stopReloadShortcut = installInterfaceReloadShortcut();
   const stopUpdateMonitor = installInterfaceUpdateMonitor();
+  const interaction = createInteractionFocus();
+  const stopInteractionFocus = installInteractionFocus(document, interaction);
   const root = ReactDOM.createRoot(rootEl);
   let compositionDisposed = false;
   const disposeComposition = () => {
@@ -129,6 +132,7 @@ async function mountProduct(rootEl: HTMLElement) {
     stopUpdateMonitor();
     stopReloadShortcut();
     root.unmount();
+    stopInteractionFocus();
     removePaletteDefaults();
   };
   const handlePageHide = (event: PageTransitionEvent) => {
@@ -140,7 +144,7 @@ async function mountProduct(rootEl: HTMLElement) {
   try {
     reactRootCreated = true;
     root.render(
-      <React.StrictMode>
+      <InteractionFocusContext.Provider value={interaction}><React.StrictMode>
         <InterfaceUpdateNotice />
         <InterfaceReloadDialog />
         <ErrorBoundary>
@@ -148,7 +152,7 @@ async function mountProduct(rootEl: HTMLElement) {
           <GuiTypography />
           <UiPluginsProvider><AchbitGuiApp /></UiPluginsProvider>
         </ErrorBoundary>
-      </React.StrictMode>
+      </React.StrictMode></InteractionFocusContext.Provider>
     );
   } catch (error) {
     disposeComposition();

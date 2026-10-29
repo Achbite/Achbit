@@ -12,6 +12,7 @@ import { resourceKey, type ResourceReference } from '../../services/conversation
 import { restoredInterfaceView, takeRestoredInterfaceView, useInterfaceReloadView } from '../../services/interfaceReload';
 import type { BrowserAnnotation, BrowserAnnotationDraft, BrowserReviewEdit } from './browserReview';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
+import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import { createPortal } from 'react-dom';
@@ -525,6 +526,7 @@ function ReaderStart({
   pages: NativePage[];
 }) {
   const addressId = useId();
+  const interaction = useInteractionFocus();
   const browserButton = useRef<HTMLButtonElement>(null);
   const [enteringAddress, setEnteringAddress] = useState(false);
   const [url, setUrl] = useState(''),
@@ -568,7 +570,7 @@ function ReaderStart({
                   event.preventDefault();
                   event.stopPropagation();
                   setEnteringAddress(false);
-                  browserButton.current?.focus();
+                  returnFocusTo(browserButton.current, interaction, event.currentTarget);
                 }
               }}
             >
@@ -880,6 +882,7 @@ function ReaderFileActions({ sessionId, target, language }: {
   sessionId: string | null; target?: ReaderTarget; language: UiLanguage;
 }) {
   const host = useConversationHost();
+  const interaction = useInteractionFocus();
   const [error, setError] = useState('');
   const menu = useRef<HTMLDetailsElement>(null);
   const open = async (action: 'code' | 'folder') => {
@@ -900,7 +903,10 @@ function ReaderFileActions({ sessionId, target, language }: {
       <details className="reader-external-open" ref={menu} data-native-overlay onBlur={event => {
         if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
       }} onKeyDown={event => {
-        if (event.key === 'Escape') { event.stopPropagation(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); }
+        if (event.key === 'Escape') {
+          event.stopPropagation(); event.currentTarget.open = false;
+          returnFocusTo(event.currentTarget.querySelector('summary'), interaction, event.currentTarget);
+        }
       }}>
         <summary aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <AchbitShellIcon name="chevronDown" /></summary>
         <div role="menu">

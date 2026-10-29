@@ -78,7 +78,7 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
     keyboardOpen.current = keyboard;
     setOpen(true);
   };
-  const close = (keyboard = true) => {
+  const close = (keyboard = interaction?.keyboard ?? keyboardOpen.current) => {
     restoreFocus.current = keyboard;
     setOpen(false);
   };

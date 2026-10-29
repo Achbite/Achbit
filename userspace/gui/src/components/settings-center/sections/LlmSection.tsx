@@ -1,4 +1,5 @@
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
+import { captureFocusReturn, returnInteractionFocus, useInteractionFocus } from '../../shared/interactionFocus';
 import NativeSelect from '../../shared/NativeSelect';
 import { modelReasoningEfforts, type UserSettings } from '@achbit/protocol';
 import { t } from '../../../i18n';
@@ -158,6 +159,7 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
 }
 
 export default function LlmSection({ active = true }: { active?: boolean }) {
+  const interaction = useInteractionFocus();
   const { text, language } = useModelLanguage();
   const theme = useDisplayTheme();
   const [page, setPage] = useState<Page>({ kind: 'list' });
@@ -175,12 +177,13 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]') || (event.target instanceof Element && event.target.closest('[data-escape-layer="open"]'))) return;
       if (page.kind === 'list') return;
       event.preventDefault(); event.stopPropagation();
+      const origin = captureFocusReturn();
       setPage({ kind: 'list' });
-      requestAnimationFrame(() => addButton.current?.focus({ preventScroll: true }));
+      requestAnimationFrame(() => returnInteractionFocus({ ...origin, target: addButton.current }, interaction?.keyboard ?? true));
     };
     document.addEventListener('keydown', escape, true);
     return () => document.removeEventListener('keydown', escape, true);
-  }, [active, page.kind]);
+  }, [active, page.kind, interaction]);
   const refresh = useCallback(async (id?: string) => {
     const [connectionsResult, profilesResult] = await Promise.all([getModelConnections(), getLlmProfiles()]);
     setCatalog(data(connectionsResult));

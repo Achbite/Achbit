@@ -11,6 +11,7 @@ import { PANE_GEOMETRY } from '../../components/shared/paneGeometry';
 import { InterfaceLoadBoundary } from '../../components/shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import ModalDialog from '../../components/shared/ModalDialog';
+import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../components/shared/interactionFocus';
 import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   ConversationProject,
@@ -143,16 +144,17 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     return () => { disposed = true; unlisten?.(); };
   }, [activateSession]);
   const settingsClose = useRef<HTMLButtonElement>(null);
-  const settingsOpener = useRef<HTMLElement | null>(null);
+  const interaction = useInteractionFocus();
+  const settingsOpener = useRef<FocusReturn | null>(null);
   useLayoutEffect(() => {
     if (settingsOpen) {
-      settingsOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      settingsOpener.current = interaction ? interaction.capture() : captureFocusReturn();
       settingsClose.current?.focus({ preventScroll: true });
-    } else if (settingsOpener.current?.isConnected) {
-      settingsOpener.current.focus({ preventScroll: true });
+    } else if (settingsOpener.current) {
+      returnInteractionFocus(settingsOpener.current, interaction?.keyboard ?? true);
       settingsOpener.current = null;
     }
-  }, [settingsOpen]);
+  }, [settingsOpen, interaction]);
   useEffect(() => {
     if (!settingsOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {

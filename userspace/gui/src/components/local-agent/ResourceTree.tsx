@@ -10,6 +10,7 @@ import type { UiLanguage } from '../../i18n';
 import type { ReaderTarget } from './readerState';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 
 type Node = { name: string; parentId?: string; entry?: ResourceEntry; children?: ResourceEntry[]; error?: string };
 
@@ -24,6 +25,7 @@ export function ResourceTree(props: ResourceTreeProps) {
 }
 
 function ResourceTreeContents({ sessionId, language, openTarget, visible, activeTarget, onAttach }: ResourceTreeProps) {
+  const interaction = useInteractionFocus();
   const { resources } = useConversationHost();
   const chinese = language === 'zh-CN';
   const [filter, setFilter] = useState('');
@@ -31,7 +33,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   const [actionError, setActionError] = useState('');
   const menuAnchor = useRef<HTMLElement | null>(null);
   const treeAnchor = useRef<HTMLElement | null>(null);
-  const closeMenu = useCallback(() => { setMenu(null); menuAnchor.current?.focus(); }, []);
+  const closeMenu = useCallback((closing: HTMLElement | null) => { setMenu(null); returnFocusTo(menuAnchor.current, interaction, closing); }, [interaction]);
   const openMenu = (entry: ResourceEntry | undefined, anchor: HTMLElement, x: number, y: number) => {
     if (!entry) return;
     menuAnchor.current = anchor; setActionError(''); setMenu({ entry, x, y });
