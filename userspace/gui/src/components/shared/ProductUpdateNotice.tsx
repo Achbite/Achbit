@@ -7,7 +7,7 @@ import './productUpdateNotice.css';
 
 export function ProductUpdateNotice() {
   const language = useUiLanguage();
-  const update = useSyncExternalStore(subscribeProductUpdates, productUpdateSnapshot);
+  const update = useSyncExternalStore(subscribeProductUpdates, productUpdateSnapshot, productUpdateSnapshot);
   const [retryError, setRetryError] = useState<string | null>(null);
   if (!['downloading', 'waiting', 'preparing', 'installing', 'error'].includes(update.phase)) return null;
   const label = ['preparing', 'installing'].includes(update.phase) ? 'installing' : update.phase;
