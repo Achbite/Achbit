@@ -5,7 +5,7 @@ import { useSettingsStore } from '../../../state/settingsStore';
 export default function WorkspaceSandboxSettings({ chinese }: { chinese: boolean }) {
   const environment = useSettingsStore((state) => state.environment);
   const reload = useSettingsStore((state) => state.loadUserSettings);
-  const sandbox = environment?.workspaceSandbox as { backend?: string; available?: boolean; reason?: string } | undefined;
+  const sandbox = environment?.workspaceSandbox as { available?: boolean; reason?: string } | undefined;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialize = async () => {
@@ -22,7 +22,7 @@ export default function WorkspaceSandboxSettings({ chinese }: { chinese: boolean
     <div className="settings-card settings-card__body">
       <div className="settings-field settings-field--compact">
         <div className="settings-field__main">
-          <div className="settings-field__label">{sandbox?.available ? (chinese ? '可用' : 'Available') : (chinese ? '尚不可用' : 'Unavailable')}{sandbox?.backend ? ` · ${sandbox.backend}` : ''}</div>
+          <div className="settings-field__label">{sandbox?.available ? (chinese ? '可用' : 'Available') : (chinese ? '尚不可用' : 'Unavailable')}</div>
           {sandbox?.reason && <p className="settings-field__description">{sandbox.reason}</p>}
         </div>
         {environment?.os === 'windows' && !sandbox?.available && <button className="settings-button" disabled={pending} onClick={() => void initialize()}>{pending ? (chinese ? '正在检查…' : 'Checking…') : (chinese ? '检查 Windows 支持' : 'Check Windows support')}</button>}

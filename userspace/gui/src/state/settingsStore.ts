@@ -209,7 +209,7 @@ function permissionPolicyOptionValues(): string[] {
 
 function settingDefinitionFromSchema(schema: SettingDefinitionSchema): SettingDefinition {
   const text = settingText('en-US', schema.key);
-  if (!text?.label || !text.description) {
+  if (!text?.label || typeof text.description !== 'string') {
     throw new Error(`setting_i18n_text_missing:${schema.key}`);
   }
   const options = schema.options?.map((value) => {

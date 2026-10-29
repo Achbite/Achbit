@@ -106,28 +106,43 @@ test('interface reload restores the current settings page once, then subsequent 
   assert.equal(values.has('achbit:interface-reload'), false);
 });
 
-for (const language of ['zh-CN', 'en-US']) test(`Windows automatic fallback offers PowerShell 7 installation from observed state (${language})`, async t => {
+for (const language of ['zh-CN', 'en-US']) test(`Windows automatic shell shows its observed name without fallback instructions (${language})`, async t => {
   const [{ useSettingsStore }, { AgentSettingsSection }] = await loadGuiModules(t, [
     '/src/state/settingsStore.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
   ]);
   const initial = fixture(t, useSettingsStore, language);
   const fallback = { os: 'windows', shellAvailable: true, configuration: { windowsShell: 'auto' },
+    workspaceSandbox: { available: true, backend: 'windows-lpac' },
     shell: { dialect: 'windowsPowerShell', executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' } };
   const render = environment => {
     initial.environment = environment;
-    return capture(AgentSettingsSection, { category: 'environment' }).html;
+    const page = capture(AgentSettingsSection, { category: 'environment' });
+    const field = findReactElement(page.tree, node => node.props.definition?.key === 'agent.windows.shell');
+    return { ...page, field };
   };
-  const html = render(fallback);
-  assert.match(html, /role="status"/);
-  assert.match(html, /winget install --id Microsoft.PowerShell --source winget/);
-  assert.match(html, language === 'zh-CN' ? /已自动使用 Windows PowerShell 5.1/ : /Windows PowerShell 5.1 is being used automatically/);
-  // A pending preference change must not rewrite the captured discovery result.
-  initial.effectiveSettings['agent.windows.shell'] = 'powershell7';
-  assert.match(render(fallback), /role="status"/);
+  for (const [dialect, name] of [['windowsPowerShell', 'Windows PowerShell 5.1'], ['powershell7', 'PowerShell 7']]) {
+    const { html, field } = render({ ...fallback, shell: { ...fallback.shell, dialect } });
+    assert.match(html, new RegExp(`<option value="auto" selected="">${name.replace('.', '\\.')}</option>`));
+    assert.equal(field.props.definition.options.filter(option => option.label === name).length, 1);
+    assert.equal(field.props.value, 'auto', 'displaying discovery must not pin the saved automatic preference');
+    assert.doesNotMatch(html, /winget install|未检测到 PowerShell|优先|未安装时|fall back|Install PowerShell|windows-lpac/);
+    assert.match(html, language === 'zh-CN' ? />可用</ : />Available</);
+    assert.equal(field.props.definition.description, '');
+  }
+  const automatic = language === 'zh-CN' ? '自动' : 'Automatic';
   for (const other of [
     { ...fallback, configuration: { windowsShell: 'windowsPowerShell' } },
-    { ...fallback, shell: { dialect: 'powershell7', executable: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' } },
     { ...fallback, shellAvailable: false },
-    { ...fallback, os: 'linux' },
-  ]) assert.doesNotMatch(render(other), /winget install --id Microsoft.PowerShell/, 'only an observed automatic fallback should prompt installation');
+  ]) assert.equal(render(other).field.props.definition.options.find(option => option.value === 'auto').label, automatic,
+    'unknown automatic discovery must not be inferred from a manual selection or an unavailable shell');
+  initial.effectiveSettings['agent.windows.shell'] = 'powershell7';
+  const explicit = render(fallback).field;
+  assert.equal(explicit.props.value, 'powershell7');
+  assert.equal(explicit.props.definition.options.find(option => option.value === 'auto').label, automatic);
+  const writes = [];
+  initial.patchUserSetting = async (key, value) => { writes.push([key, value]); return 'nextRun'; };
+  await render(fallback).field.props.onChange('agent.windows.shell', 'windowsPowerShell');
+  assert.deepEqual(writes, [['agent.windows.shell', 'windowsPowerShell']]);
+  initial.environment = { ...fallback, os: 'linux' };
+  assert.doesNotMatch(capture(AgentSettingsSection, { category: 'environment' }).html, /aria-label="Windows [Ss]hell"/);
 });

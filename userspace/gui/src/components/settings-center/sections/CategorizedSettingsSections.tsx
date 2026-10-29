@@ -16,6 +16,7 @@ import { hasDesktopNotifications } from '../../../services/runtimeAdapter';
 import SettingsField from '../SettingsField';
 import WorkspaceSandboxSettings from './WorkspaceSandboxSettings';
 import CommandDenylistSettings from './CommandDenylistSettings';
+import { windowsShellOptions } from './windowsShellOptions';
 
 interface RuntimeProps {
   apiStatus: string;
@@ -172,11 +173,15 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const available = useMemo(() => agentSettingDefinitions(), []);
   const environment = useSettingsStore((state) => state.environment);
-  const shellSettings = useMemo(() => definitionsFor(AGENT_SHELL_KEYS, available, language), [available, language]);
+  const shellSettings = useMemo(() => definitionsFor(AGENT_SHELL_KEYS, available, language).map(definition =>
+    definition.key === 'agent.windows.shell' ? {
+      ...definition,
+      options: [...windowsShellOptions(definition.options ?? [], String(effectiveSettings[definition.key] ?? 'auto'), environment)],
+    } : definition), [available, language, effectiveSettings, environment]);
   const shell = environment?.shell as { executable?: string; dialect?: string } | undefined;
-  const observedConfiguration = environment?.configuration as { windowsShell?: string } | undefined;
-  const powershellFallback = environment?.os === 'windows' && environment.shellAvailable === true
-    && observedConfiguration?.windowsShell === 'auto' && shell?.dialect === 'windowsPowerShell';
+  const shellName = shell?.dialect === 'powershell7' ? 'PowerShell 7'
+    : shell?.dialect === 'windowsPowerShell' ? 'Windows PowerShell 5.1'
+      : shell?.dialect === 'bash' ? (environment?.os === 'windows' ? 'Git Bash' : 'Bash') : shell?.dialect;
   const commands = Array.isArray(environment?.developerCommands) ? environment.developerCommands.filter((item): item is string => typeof item === 'string') : [];
   const chinese = language === 'zh-CN';
   const response = useMemo(
@@ -229,23 +234,19 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
     <div>
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
       {category === 'agent' && renderCard(null, [...response, ...contextManagement, ...instructions])}
-      {category === 'environment' && environment?.os === 'windows' && renderCard('Windows Shell', shellSettings,
-        powershellFallback && <div className="settings-field__description" role="status">
-          <p>{chinese ? '未检测到 PowerShell 7，已自动使用 Windows PowerShell 5.1。建议安装 PowerShell 7；安装后点击“刷新环境”。' : 'PowerShell 7 was not found. Windows PowerShell 5.1 is being used automatically. Install PowerShell 7, then select Refresh environment.'}</p>
-          <code>winget install --id Microsoft.PowerShell --source winget</code>
-        </div>)}
+      {category === 'environment' && environment?.os === 'windows' && renderCard(null, shellSettings)}
       {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
       {category === 'environment' && <div className="settings-card">
-        <h3 className="settings-card__title">{chinese ? '环境上下文' : 'Environment context'}</h3>
+        <h3 className="settings-card__title">{chinese ? '本机环境' : 'Local environment'}</h3>
         <div className="settings-card__body">
           <div className="settings-field settings-field--compact">
             <div className="settings-field__main">
-              <div className="settings-field__label">{chinese ? '本机环境' : 'Local environment'}</div>
+              <div className="settings-field__label">{chinese ? '开发工具' : 'Developer tools'}</div>
             </div>
             <button className="settings-button" disabled={loading} onClick={() => void patchUserSetting('agent.environmentRevision', Number(effectiveSettings['agent.environmentRevision'] ?? 0) + 1)}>{chinese ? '刷新环境' : 'Refresh environment'}</button>
           </div>
           {environment && <div className="settings-field__description">
-            <p>{chinese ? '本机检测' : 'Local observation'}: {String(environment.os)} · {String(environment.arch)} · {shell?.dialect ?? '—'}</p>
+            <p>{String(environment.os)} · {String(environment.arch)} · {shellName ?? '—'}</p>
             <p style={{ overflowWrap: 'anywhere' }}>{shell?.executable || (chinese ? '未找到所选 Shell' : 'Selected shell not found')}</p>
             <p>{chinese ? '可用开发命令' : 'Developer commands'}: {commands.join(' · ') || '—'}</p>
           </div>}

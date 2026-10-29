@@ -4,6 +4,7 @@ import '../settingsCenter.css';
 import { useEffect, useRef, useState } from 'react';
 import { reconcileSettingFields } from '../settingDraft';
 import { useSettingsStore } from '../../../state/settingsStore';
+import { windowsShellOptions } from './windowsShellOptions';
 
 type ProjectEnvironment = { kind: 'native'; shell?: 'auto' | 'powershell7' | 'windowsPowerShell' | 'gitBash'; gitBashPath?: string } | { kind: 'wsl'; distribution: string; worker: string };
 
@@ -34,6 +35,12 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
   useInterfaceReloadGuard(dirty, chinese ? '工作区环境' : 'Workspace environment', saving);
   const textDirty = target.kind === 'wsl' ? dirty : target.shell === 'gitBash'
     && target.gitBashPath !== (savedTarget.kind === 'native' ? savedTarget.gitBashPath : undefined);
+  const shellOptions = windowsShellOptions([
+    { value: 'auto', label: chinese ? '自动' : 'Automatic' },
+    { value: 'powershell7', label: 'PowerShell 7' },
+    { value: 'windowsPowerShell', label: 'Windows PowerShell 5.1' },
+    { value: 'gitBash', label: 'Git Bash' },
+  ], target.kind === 'native' ? target.shell ?? '' : '', environment);
   const save = async (next = target, replaceDraft = true) => {
     setSaving(true);
     setError(null);
@@ -62,8 +69,7 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
           <label className="settings-field settings-field--compact"><span>Shell</span>
             <NativeSelect className="settings-field__select" disabled={saving} value={target.shell ?? ''} onChange={event => void save({ ...(savedTarget.kind === 'native' ? savedTarget : { kind: 'native' }), shell: (event.target.value || undefined) as Extract<ProjectEnvironment, {kind: 'native'}>['shell'] }, false)}>
               <option value="">{chinese ? '使用全局默认' : 'Global default'}</option>
-              <option value="auto">{chinese ? 'PowerShell 7 优先，未安装时使用 5.1' : 'Prefer PowerShell 7, fall back to 5.1'}</option>
-              <option value="powershell7">PowerShell 7</option><option value="windowsPowerShell">Windows PowerShell 5.1</option><option value="gitBash">Git Bash</option>
+              {shellOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </NativeSelect></label>
           {target.shell === 'gitBash' && <label className="settings-field settings-field--compact"><span>{chinese ? 'Git Bash 路径' : 'Git Bash path'}</span>
             <input className="settings-field__input" disabled={saving} value={target.gitBashPath ?? ''} placeholder={chinese ? '留空自动检测' : 'Auto detect when empty'} onChange={event => setTarget({ ...target, gitBashPath: event.target.value })} /></label>}
@@ -71,9 +77,9 @@ export default function ProjectEnvironmentSettings({ chinese, projectId }: { chi
         {target.kind === 'wsl' && <>
           <label className="settings-field settings-field--compact"><span>{chinese ? 'WSL 发行版' : 'WSL distribution'}</span>
             <input className="settings-field__input" value={target.distribution} disabled={saving} placeholder="Ubuntu" onChange={(event) => setTarget({ ...target, distribution: event.target.value })} /></label>
-          <label className="settings-field settings-field--compact"><span>{chinese ? 'Linux Kernel 可执行文件' : 'Linux Kernel executable'}</span>
+          <label className="settings-field settings-field--compact"><span>{chinese ? 'Achbit 可执行文件' : 'Achbit executable'}</span>
             <input className="settings-field__input" value={target.worker} disabled={saving} placeholder="/opt/achbit/achbit-kernel" onChange={(event) => setTarget({ ...target, worker: event.target.value })} /></label>
-          <p className="settings-field__description">{chinese ? 'Bash 和文件操作在所选 WSL 发行版中执行；请填写该发行版内已安装的 Linux Achbit 可执行文件路径。' : 'Bash and file operations run in the selected WSL distribution. Enter the path to its installed Linux Achbit executable.'}</p>
+          <p className="settings-field__description">{chinese ? '填写所选发行版中 achbit-kernel 的路径。' : 'Enter the path to achbit-kernel in the selected distribution.'}</p>
         </>}
         {textDirty && <div className="settings-actions"><button className="settings-button" disabled={saving || !!configurationError || (target.kind === 'wsl' && (!target.distribution.trim() || !target.worker.trim()))} onClick={() => void save()}>{chinese ? '保存环境' : 'Save environment'}</button></div>}
       </>}
