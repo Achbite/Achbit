@@ -8,6 +8,7 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     throw new Error('session_environment_invalid');
   }
   const data = value as Record<string, unknown>;
+  let hostExecutionAllowed = true;
   {
     const shell = data.shell as Record<string, unknown> | null;
     const target = data.executionTarget as Record<string, unknown> | null;
@@ -32,6 +33,7 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     const constraints = composition.policyConstraints as Record<string, unknown>;
     if (!constraints || Object.keys(constraints).length !== 2
       || Object.entries(expected).some(([key, value]) => constraints[key] !== value)) throw new Error('agent_composition_invalid');
+    hostExecutionAllowed = expected.allowHostExecution;
   }
   if (data.executionPath !== undefined && typeof data.executionPath !== 'string') throw new Error('session_environment_invalid');
   if (data.commandPaths !== undefined && (!data.commandPaths || typeof data.commandPaths !== 'object'
@@ -69,14 +71,18 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     os: data.os, arch: data.arch, shell: data.shell,
     ...(hasLocalCli ? {
       achbitCli: (data.runtimeExecutables as Record<string, string>).cli,
+      achbitCliExecutionScope: 'host',
       hostDataDirectory: data.hostDataDirectory,
     } : {}),
     ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }),
     ...(typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
   })}. ` : '';
+  const cli = !hasShell || !hasLocalCli ? '' : hostExecutionAllowed
+    ? 'For Achbit configuration, achbitCli requires Host execution under the current permission policy. Use --host-data-dir hostDataDirectory; instance/services/connections/models expose current facts and supported edits. Shell HOME is task-local. '
+    : 'For Achbit configuration, achbitCli requires Host execution. Host execution is disabled for this session, so this CLI is unavailable here. ';
   return {
     id: ENVIRONMENT_ID,
-    text: `${execution}${hasShell && hasLocalCli ? 'For Achbit configuration use achbitCli with --host-data-dir hostDataDirectory; instance/services/connections/models expose current facts and supported edits. Shell HOME is task-local. Use the existing Host-execution permission when this CLI needs host files and loopback access. ' : ''}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,
+    text: `${execution}${cli}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,
   };
 }
 

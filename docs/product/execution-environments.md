@@ -15,7 +15,7 @@ Use the run's recorded target, shell and PATH, plus the project's build instruct
 
 Project files remain read-only to workspace Shell even when file-tool edits are allowed. Session-managed drafts already have file access; that does not approve independent Shell effects. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
-Workspace Shell HOME is session-managed; it is not the application configuration root. For Achbit configuration, use the reported `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`; request Host execution when needed instead of guessing paths under HOME.
+Workspace Shell HOME is session-managed; it is not the application configuration root. The reported `achbitCli` is a Host administration command (`achbitCliExecutionScope: host`). Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
 Workspace Shell is offline by default, including loopback access. Network grants can be per call, task or conversation as offered by the decision. Explicit command deny/ask rules still apply. Host execution uses real host-user permissions, including network and writes outside the sandbox; a working directory is not isolation. With Plan approval enabled or an active Plan, each Host call requires separate approval. An approval or a failed command does not authorize an automatic broader retry.
 

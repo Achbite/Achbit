@@ -1539,8 +1539,22 @@ test('new runs refresh execution facts while restart and compaction retain each 
     assert.equal(modelEnvironment[field], undefined);
   }
   assert.equal(modelEnvironment.achbitCli, '/opt/achbit/achbit-cli');
+  assert.equal(modelEnvironment.achbitCliExecutionScope, 'host');
   assert.equal(modelEnvironment.hostDataDirectory, '/actual-host/data');
   assert.match(shellText, /--host-data-dir/u);
+  assert.match(shellText, /requires Host execution/u);
+  for (const recipe of [
+    { permissionPolicy: { id: 'workspace-only' }, workspaceSandbox: { backendId: 'platform' } },
+    { permissionPolicy: { id: 'local-standard' }, workspaceSandbox: { backendId: 'platform', requireIsolatedProcesses: true } },
+  ]) {
+    const restricted = { ...observed, agentComposition: { ...recipe,
+      policyConstraints: { allowHostExecution: false, allowExternalTools: false }, sandboxCoverage: 'workspaceShell' } };
+    const before = structuredClone(restricted);
+    const text = environmentInstruction(restricted, ['bash']).text;
+    assert.match(text, /Host execution is disabled for this session/u);
+    assert.doesNotMatch(text, /use achbitCli with --host-data-dir/u);
+    assert.deepEqual(restricted, before, 'describing CLI availability must not alter permissions');
+  }
   for (const field of ['os', 'arch', 'shell', 'productDocsPath']) {
     assert.deepEqual(modelEnvironment[field], observed[field]);
   }
