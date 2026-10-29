@@ -1,8 +1,8 @@
 # Plugin development
 
-[简体中文](README.zh-CN.md) · [Project README](../../README.md#plugins) · [Product operations](../product/operations.md#settings-and-extensions)
+[简体中文](README.zh-CN.md) · [Product operations](../product/operations.md#settings-and-extensions)
 
-[Boundaries](#boundaries) · [Artifacts and import](#artifacts-and-import) · [Discovery](#discovery) · [CLI tools](#cli-tools) · [Hosted services](#hosted-services) · [UI and Skills](#ui-and-skills) · [Provider files and conversations](#provider-files-and-conversations) · [Validation](#validation)
+[Boundaries](#boundaries) · [Artifacts and import](#artifacts-and-import) · [Discovery](#discovery) · [CLI tools](#cli-tools) · [Hosted services](#hosted-services) · [UI and Skills](#ui-and-skills) · [Provider files and conversations](#provider-files-and-conversations)
 
 This guide specifies the existing extension contracts. Examples are protocol templates, not additions to the built-in plugin catalog. An extension that fits one of these contracts is distributed as its own files and imported through Settings; it does not require a new Host interface, model registration or changes to the Agent Loop.
 
@@ -158,12 +158,4 @@ These rules apply only to a plugin exposing a compatible model endpoint:
 - Reuse a remote conversation only when the retained client history matches a confirmed checkpoint; send only the appended messages/attachments. History edits, compaction or a new Session can require a new remote conversation. Keep account and request purpose separate. Auxiliary title requests (`conversationTitle`) must not advance the main conversation. If unsupported, return an explicit error; the Host retains its initial message-derived title and records that failure.
 - A provider adapter must propagate cancellation and preserve upstream errors. Unknown completion after cancellation/failure is not a confirmed cursor. Do not silently replay requests as successful continuations.
 
-Native upload and local document operations are distinct. Local PDF reading/export uses its own plugin tools; Documents PDF export takes Typst source and uses Rust Typst, while HTML/Markdown keep their respective source formats. See [document input/output rules](../../skills/achbit-documents/references/formats.md). Website parsing accuracy is an upstream result, not proof of transport correctness.
-
-## Validation
-
-Build the plugin entry with its own dependencies, then import the actual directory or manifest into an isolated Achbit Debug instance. Check discovery, one real invocation or service handshake, and disable/removal cleanup. Verify failure/cancellation where the plugin owns work. A service test should confirm that its port is released and any intended persistent state survives restart. Do not require unrelated platform matrices or new model tools for a plugin using an existing protocol.
-
-For changes to Achbit itself, use the repository's [development and test entrypoints](../development.md#checks) and provide a TCR when changing tests. Keep unit tests, Debug loading, a real Provider conversation and release packaging as separate evidence. For UI/service lifecycle testing, use [Debug control](../debug-control.md).
-
-The implementation owners are [tool manifest](../../crates/achbit-kernel-abi/src/tool_plugin.rs), [service manifest](../../crates/achbit-kernel-abi/src/service_plugin.rs), [import inspection](../../crates/achbit-host-web/src/ui_plugins.rs), [CLI invocation](../../crates/achbit-kernel-daemon/src/local_agent_cli.rs), [tool discovery](../../crates/achbit-kernel-daemon/src/local_agent_mcp.rs), [service supervision](../../crates/achbit-kernel-daemon/src/service_plugins.rs) and [task activation](../../userspace/session-core/src/local-agent/pluginActivation.ts).
+Native upload and local document operations are distinct. Local PDF reading/export uses its own plugin tools; Documents PDF export takes Typst source and uses Rust Typst, while HTML/Markdown keep their respective source formats. See [document output](../product/operations.md#document-output). Website parsing accuracy is an upstream result, not proof of transport correctness.

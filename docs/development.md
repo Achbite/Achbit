@@ -121,7 +121,7 @@ Product guides are ordinary Markdown files under the environment snapshot’s `p
 
 ## Checks
 
-TCRs, per-run acceptance reports and temporary preview/export scripts belong in ignored task output directories such as `.build-cache/` or `.task-artifacts/`. Keep them out of versioned product documentation and build tooling.
+TCRs, per-run acceptance reports and temporary preview/export scripts belong in ignored task output directories such as `.build-cache/` or `.task-artifacts/`. Keep them out of versioned product documentation and build tooling. Before a necessary test change, document its purpose and coverage in a TCR; preserve the existing assertions and failure semantics.
 
 Run these inside the development container:
 
@@ -136,6 +136,18 @@ bash ./test.sh full       # Complete registered suite, including shared shells a
 The end-to-end suite uses local fixture providers; its results do not establish real-provider connectivity or native desktop behavior. For explicitly requested standard-package/installer acceptance, use the target package for a real CLI conversation and TUI/GUI startup. A Debug test package alone does not require those checks. Documentation-only changes use static and content/link checks without rebuilding the runtime.
 
 The native GUI has a separate Cargo workspace at `shells/achbit-gui/src-tauri/Cargo.toml`. Windows dedicated-console font verification requires an interactive Windows desktop: set `ACHBIT_TEST_TUI_FONTS` to the extracted terminal TTF directory and `ACHBIT_TEST_TUI_RESULT` to a new receipt path, then run `cargo test -p achbit-tui windows_terminal::tests -- --include-ignored --test-threads=1`. It creates its own console and checks the bundled families and system font; ignored tests or an earlier receipt do not establish a new result.
+
+### Plugin checks
+
+Build the plugin entry with its own dependencies, then import its directory or manifest into an isolated Debug instance using the [plugin interfaces](plugins/README.md). Exercise discovery, the affected invocation or service handshake, and owned-resource cleanup. For service lifecycle changes, check port release and the intended persistent state across restart. Use [Debug control](debug-control.md) for direct tool/UI operations; a plugin using an existing protocol does not require unrelated platform checks.
+
+### Windows desktop checks
+
+Choose the capture, UI Automation or physical-input route affected by the change. Record the initial state, action and resulting state before a reload or another driver changes the target. CDP reads may corroborate desktop input; CDP mutations do not exercise Windows mouse or keyboard input. Check preview feedback or stop/release behavior only when it is part of the change.
+
+For an external Chrome experiment, use an owned instance with a unique profile and task-scoped temporary directory. A browser that outlives a Shell call must not depend on that call's TEMP/TMP directory. Inspect the exact instance and page before CDP commands, retain its PID, and close only the instance created for the check.
+
+PowerShell verification scripts should stop on errors and check native command exit codes. Distinguish a rejected action from dispatched input followed by an observation failure; preserve the original result before deciding whether another action is appropriate. A foreground query after activating a window cannot establish which window had focus before activation.
 
 ## Contributing
 

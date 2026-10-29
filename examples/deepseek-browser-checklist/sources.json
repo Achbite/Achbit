@@ -1,9 +1,6 @@
 {
   "report": "report.html",
   "language": "zh-CN",
-  "generatedOn": "2026-10-23",
-  "tested": false,
-  "testingNote": "本次仅通过 Computer Use 内置浏览器查阅公开文档并进行页面观察，未安装浏览器二进制，未运行 Chromium、Firefox 或 WebKit 兼容性测试。以下均为文档陈述，不代表实测结果。",
   "sources": [
     {
       "id": "src-playwright-browsers",
@@ -11,7 +8,6 @@
       "publisher": "Microsoft / Playwright",
       "url": "https://playwright.dev/docs/browsers",
       "accessed": "2026-10-23",
-      "accessedVia": "Computer Use 内置浏览器：browser.observe 读取正文，browser.page 点击目录跳转到 Firefox / WebKit 小节核对",
       "pageLanguage": "en",
       "facts": [
         {

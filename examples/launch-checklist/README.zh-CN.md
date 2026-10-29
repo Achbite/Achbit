@@ -12,4 +12,4 @@
 
 这个项目演示文件预览 → 页面观察 → 交互 → 重载 → 可视验证。勾选框是示例任务，勾选本身不会执行应用构建或测试。
 
-[运行摘要](run-summary.json) · [浏览器截图](launch-checklist-final.png)
+[界面预览](launch-checklist-final.png)
