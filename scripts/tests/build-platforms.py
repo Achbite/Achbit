@@ -162,7 +162,7 @@ root=Path(__file__).resolve().parents[1]
 name=Path(__file__).name
 args=sys.argv[1:]
 with (root/'calls.jsonl').open('a') as log:
-    log.write(json.dumps({'name':name,'args':args})+'\n')
+    log.write(json.dumps({'name':name,'args':args,'sourceCommit':os.environ.get('ACHBIT_BUILD_COMMIT')})+'\n')
 if os.environ.get('FAIL_COMPILER')==name:
     sys.exit(47)
 def emit(relative):
@@ -223,6 +223,48 @@ else: sys.exit('Expected workspace compilation: '+str(args))
         self.assertFalse(any('--target' in call['args'] for call in calls))
         self.assertFalse(any('list' in call['args'] for call in calls))
         self.assertTrue(all('--release' in call['args'] for call in calls if call['name'] == 'cargo'))
+        self.assertTrue(all(call['sourceCommit'] == 'fixture' for call in calls))
+
+    @unittest.skipUnless(os.geteuid() == 0, 'different-owner bind mount requires container root')
+    def test_build_reads_current_commit_from_a_different_owner_without_global_git_changes(self):
+        self.environment.pop('ACHBIT_BUILD_COMMIT', None)
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True, capture_output=True)
+        os.chown(self.root, 1001, -1)
+        plain = subprocess.run(['git', '-c', 'safe.directory=', '-C', str(self.root), 'status'],
+                               text=True, capture_output=True)
+        self.assertNotEqual(plain.returncode, 0)
+        self.assertIn('dubious ownership', plain.stderr)
+        global_config = ['git', 'config', '--global', '--list']
+        before = subprocess.run(global_config, text=True, capture_output=True)
+        commits = []
+        git = ['git', '-c', f'safe.directory={self.root}', '-C', str(self.root)]
+        for message in ('first', 'second'):
+            subprocess.run([*git, '-c', 'user.name=Build fixture', '-c', 'user.email=build@example.invalid',
+                            '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', message],
+                           check=True, capture_output=True)
+            expected = subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True).strip()
+            commits.append(expected)
+            (self.root / 'calls.jsonl').unlink(missing_ok=True)
+            result = self.build('--stage', 'code')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+            self.assertTrue(calls)
+            self.assertEqual({call['sourceCommit'] for call in calls}, {expected})
+        self.assertNotEqual(commits[0], commits[1])
+        after = subprocess.run(global_config, text=True, capture_output=True)
+        self.assertEqual((after.returncode, after.stdout, after.stderr),
+                         (before.returncode, before.stdout, before.stderr))
+
+    def test_missing_source_identity_preserves_git_error_and_stops_before_compilation(self):
+        self.environment.pop('ACHBIT_BUILD_COMMIT', None)
+        result = self.build('--stage', 'code')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not a git repository', result.stderr)
+        self.assertFalse((self.root / 'calls.jsonl').exists())
+        self.assertFalse((self.root / 'bin').exists())
+        self.assertFalse((self.root / '.build-cache/build.lock').exists())
+        help_result = self.build('--help')
+        self.assertEqual(help_result.returncode, 0, help_result.stdout + help_result.stderr)
 
     def test_compiler_failure_stops_build_and_releases_owned_resources(self):
         for compiler, stage in (('pnpm', 'shared'), ('cargo', 'code')):
@@ -251,7 +293,8 @@ class BuildTests(unittest.TestCase):
         (self.root / 'scripts/step.py').write_text(STEP)
         (self.root / 'scripts/macos-build-bridge.py').write_text(STEP)
         (self.root / 'scripts/build-platforms.sh').write_text('#!/usr/bin/env bash\nexec python3 "$(dirname "$0")/step.py" "$@"\n')
-        self.environment = {**os.environ, 'ACHBIT_OUTPUT_DIR': str(self.root / 'output')}
+        self.environment = {**os.environ, 'ACHBIT_OUTPUT_DIR': str(self.root / 'output'),
+                            'ACHBIT_BUILD_COMMIT': 'fixture'}
 
     def build(self, config, *arguments, via_make=False):
         (self.root / 'fixture.json').write_text(json.dumps(config))

@@ -1,8 +1,8 @@
 # 插件开发规则
 
-[English](README.md) · [项目 README](../../README.zh-CN.md#插件) · [产品操作说明](../product/operations.md#settings-and-extensions)
+[English](README.md) · [产品操作说明](../product/operations.md#settings-and-extensions)
 
-[职责边界](#职责边界) · [制品与导入](#制品与导入) · [发现与描述](#发现与描述) · [CLI 工具协议](#cli-工具协议) · [托管服务协议](#托管服务协议) · [UI 与 Skill](#ui-与-skill) · [模型端点的文件与会话](#模型端点的文件与会话) · [验证](#验证)
+[职责边界](#职责边界) · [制品与导入](#制品与导入) · [发现与描述](#发现与描述) · [CLI 工具协议](#cli-工具协议) · [托管服务协议](#托管服务协议) · [UI 与 Skill](#ui-与-skill) · [模型端点的文件与会话](#模型端点的文件与会话)
 
 本文说明现有的通用扩展合同。示例是协议模板，不会加入内置插件目录。符合这些合同的插件以独立文件交付，经设置页导入即可使用，无需逐个增加 Host 接口、模型注册或修改 Agent Loop。
 
@@ -158,12 +158,4 @@ MCP 集成使用 `mcp.servers` 和既有传输。服务描述用于发现，工�
 - 只有客户端保留历史与已确认检查点一致时才复用远端会话，只追加新消息与附件。编辑历史、压缩上下文或新建 Session 可以产生新的远端会话。账号与用途分别隔离；辅助标题请求 `conversationTitle` 不得推进正文会话。不支持该用途时明确返回错误，Host 保留已有首条消息生成的初始标题并记录失败。
 - 适配器传递取消并保留上游错误。取消或失败后的未知完成状态不能视为已确认游标，也不能静默重放并当作成功续接。
 
-原生上传与本地文档操作是不同能力。本地 PDF 阅读、导出使用各自插件工具；Documents 的 PDF 导出接收 Typst 源码，由 Rust Typst 编译，HTML/Markdown 分别接收对应格式源码。见[文档输入输出规则](../../skills/achbit-documents/references/formats.md)。网页解析准确性属于上游结果，不能用传输成功证明。
-
-## 验证
-
-使用插件自己的依赖构建入口，再在独立 Achbit Debug 实例导入实际目录或清单。验证发现、一次真实调用或服务握手、停用/移除时的清理；插件拥有异步工作时核对失败与取消。服务应核对端口释放、预期持久化状态能否跨重启保留。使用已有协议的插件不需要额外的平台矩阵或新增模型工具。
-
-修改 Achbit 自身时，使用仓库的[开发与测试入口](../development.md#checks)，测试变更提供 TCR。单元测试、Debug 加载、真实 Provider 对话与发布打包分别记录。UI/服务生命周期验证可使用 [Debug 控制](../debug-control.md)。
-
-源码责任方：[工具清单](../../crates/achbit-kernel-abi/src/tool_plugin.rs)、[服务清单](../../crates/achbit-kernel-abi/src/service_plugin.rs)、[导入检查](../../crates/achbit-host-web/src/ui_plugins.rs)、[CLI 调用](../../crates/achbit-kernel-daemon/src/local_agent_cli.rs)、[工具发现](../../crates/achbit-kernel-daemon/src/local_agent_mcp.rs)、[服务监督](../../crates/achbit-kernel-daemon/src/service_plugins.rs)、[任务激活](../../userspace/session-core/src/local-agent/pluginActivation.ts)。
+原生上传与本地文档操作是不同能力。本地 PDF 阅读、导出使用各自插件工具；Documents 的 PDF 导出接收 Typst 源码，由 Rust Typst 编译，HTML/Markdown 分别接收对应格式源码。见[文档输出](../product/operations.md#document-output)。网页解析准确性属于上游结果，不能用传输成功证明。

@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use Achbit in research, prototypes, or technical writing, please cite it using this metadata."
 title: "Achbit"
 type: software
-version: 0.6.61
+version: 0.6.65
 authors:
   - name: "Achbit Team"
 year: 2026

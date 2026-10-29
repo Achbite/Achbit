@@ -30,7 +30,10 @@ export default function NativeSelect({ onChange, onPointerDown, onKeyDown, onCli
       };
       frame.current = requestAnimationFrame(closed);
     }}
-    onKeyDown={event => { pointerSelection.current = false; stop(); onKeyDown?.(event); }}
+    onKeyDown={event => {
+      if (event.key !== 'Escape') { pointerSelection.current = false; stop(); }
+      onKeyDown?.(event);
+    }}
     onChange={event => { onChange?.(event); finish(event.currentTarget); }}
     onClick={onClick}
     onBlur={event => { pointerSelection.current = false; stop(); onBlur?.(event); }}

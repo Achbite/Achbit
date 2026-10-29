@@ -1383,7 +1383,7 @@
   "settings": {
     "workbench.language": {
       "label": "显示语言",
-      "description": "选择界面显示语言，即刻生效。历史消息、文件名和文档内容保留原文。",
+      "description": "立即生效。",
       "options": {
         "zh-CN": "简体中文",
         "en-US": "English"
@@ -1391,7 +1391,7 @@
     },
     "gui.colorTheme": {
       "label": "主题模式",
-      "description": "选择系统、浅色或深色外观；系统模式会随 macOS 外观实时切换。",
+      "description": "",
       "options": {
         "system": "跟随系统",
         "light": "明亮",
@@ -1400,7 +1400,7 @@
     },
     "gui.accentColor": {
       "label": "强调色",
-      "description": "用于主要操作、活动状态和流式光标的统一颜色。",
+      "description": "",
       "options": {
         "blue": "蓝色",
         "purple": "紫色",
@@ -1421,7 +1421,7 @@
     },
     "gui.showReasoning": {
       "label": "推理详情",
-      "description": "允许点击推理状态查看模型提供的推理文本。默认关闭，仅影响显示，不改变模型推理强度。"
+      "description": "点击推理状态查看详情。"
     },
     "gui.usageWidget.enabled": {
       "label": "用量浮窗",
@@ -1437,7 +1437,7 @@
     },
     "gui.usageWidget.visibility": {
       "label": "浮窗显示",
-      "description": "选择浮窗的显示方式。",
+      "description": "",
       "options": {
         "summary": "摘要",
         "collapsed": "收起",
@@ -1446,7 +1446,7 @@
     },
     "gui.defaultFileOpen": {
       "label": "文本文件默认打开方式",
-      "description": "选择文本文件的打开应用。",
+      "description": "",
       "options": {
         "reader": "Achbit Reader",
         "vscode": "Visual Studio Code"
@@ -1466,9 +1466,9 @@
     },
     "agent.windows.shell": {
       "label": "Windows Shell",
-      "description": "应用于后续运行。默认优先 PowerShell 7，未安装时使用系统 PowerShell；运行中不切换。",
+      "description": "",
       "options": {
-        "auto": "PowerShell 7 优先，未安装时使用 5.1",
+        "auto": "自动",
         "powershell7": "PowerShell 7",
         "windowsPowerShell": "Windows PowerShell 5.1",
         "gitBash": "Git Bash"
@@ -1476,7 +1476,7 @@
     },
     "agent.windows.gitBashPath": {
       "label": "Git Bash 路径",
-      "description": "可选的 bash.exe 完整路径。留空时检测 Git 安装目录。"
+      "description": "留空自动检测。"
     },
     "agent.contextManagement.enabled": {
       "label": "自动上下文管理",

@@ -1383,7 +1383,7 @@
   "settings": {
     "workbench.language": {
       "label": "Display Language",
-      "description": "Change the interface language immediately. Existing messages, file names and document contents keep their original text.",
+      "description": "Applies immediately.",
       "options": {
         "zh-CN": "Simplified Chinese",
         "en-US": "English"
@@ -1391,7 +1391,7 @@
     },
     "gui.colorTheme": {
       "label": "Theme mode",
-      "description": "Choose system, light, or dark appearance. System mode follows macOS appearance changes.",
+      "description": "",
       "options": {
         "system": "System",
         "light": "Light",
@@ -1400,7 +1400,7 @@
     },
     "gui.accentColor": {
       "label": "Accent color",
-      "description": "The shared color used for primary actions, active states, and streaming cursors.",
+      "description": "",
       "options": {
         "blue": "Blue",
         "purple": "Purple",
@@ -1409,7 +1409,7 @@
     },
     "gui.navigationDensity": {
       "label": "Navigation density",
-      "description": "Adjust spacing in the Achbit rails without changing session data.",
+      "description": "Adjust sidebar item spacing.",
       "options": {
         "comfortable": "Comfortable",
         "compact": "Compact"
@@ -1421,7 +1421,7 @@
     },
     "gui.showReasoning": {
       "label": "Reasoning details",
-      "description": "Click the reasoning status to read reasoning supplied by the model. Off by default; this display preference does not change reasoning effort."
+      "description": "Click the reasoning status to view details."
     },
     "gui.usageWidget.enabled": {
       "label": "Usage widget",
@@ -1437,7 +1437,7 @@
     },
     "gui.usageWidget.visibility": {
       "label": "Widget visibility",
-      "description": "Choose how the widget appears.",
+      "description": "",
       "options": {
         "summary": "Summary",
         "collapsed": "Collapsed",
@@ -1446,7 +1446,7 @@
     },
     "gui.defaultFileOpen": {
       "label": "Open text files with",
-      "description": "Choose an app for opening text files.",
+      "description": "",
       "options": {
         "reader": "Achbit Reader",
         "vscode": "Visual Studio Code"
@@ -1466,9 +1466,9 @@
     },
     "agent.windows.shell": {
       "label": "Windows shell",
-      "description": "Applies to subsequent runs. Auto prefers PowerShell 7, then Windows PowerShell. Never switches during execution.",
+      "description": "",
       "options": {
-        "auto": "Prefer PowerShell 7, fall back to 5.1",
+        "auto": "Automatic",
         "powershell7": "PowerShell 7",
         "windowsPowerShell": "Windows PowerShell 5.1",
         "gitBash": "Git Bash"
@@ -1476,7 +1476,7 @@
     },
     "agent.windows.gitBashPath": {
       "label": "Git Bash path",
-      "description": "Optional full path to bash.exe. Leave empty to detect the Git installation."
+      "description": "Leave empty to detect automatically."
     },
     "agent.contextManagement.enabled": {
       "label": "Automatic context management",

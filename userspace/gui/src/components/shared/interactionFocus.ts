@@ -27,7 +27,7 @@ export function returnInteractionFocus(origin: FocusReturn, keyboard: boolean) {
   }
 }
 
-/** One interaction policy for settings controls, search targets and portalled editors. */
+/** One interaction policy for controls, search targets and portalled editors. */
 export function createInteractionFocus() {
   let keyboard = true;
   let pointerTarget: HTMLElement | null = null;
@@ -45,9 +45,11 @@ export function createInteractionFocus() {
     },
     keyDown(key: string) {
       if (['Shift', 'Control', 'Alt', 'Meta'].includes(key)) return;
+      clearReveal();
+      // Dismissing a pointer-opened layer is not keyboard navigation.
+      if (key === 'Escape') return;
       keyboard = true;
       pointerTarget = null;
-      clearReveal();
     },
     capture(target?: HTMLElement | null) {
       return captureFocusReturn(target ?? (keyboard ? null : pointerTarget));
@@ -63,6 +65,47 @@ export function createInteractionFocus() {
     },
     clearReveal,
   };
+}
+
+/** Capture at the document so portals and a focused body share the same policy. */
+export function installInteractionFocus(owner: Document, interaction: ReturnType<typeof createInteractionFocus>) {
+  let frame: number | null = null;
+  const cancelPointerCleanup = () => {
+    if (frame !== null) owner.defaultView?.cancelAnimationFrame(frame);
+    frame = null;
+  };
+  const pointerDown = (event: PointerEvent) => {
+    cancelPointerCleanup();
+    interaction.pointerDown(event.target);
+  };
+  const keyDown = (event: KeyboardEvent) => {
+    cancelPointerCleanup();
+    interaction.keyDown(event.key);
+    const active = owner.activeElement;
+    if (event.key !== 'Escape' || interaction.keyboard || !(active instanceof HTMLElement)
+      || !active.matches('button, summary, a[href], [role="button"], [role="tab"]')) return;
+    // Let the layer handle Escape before releasing a surviving pointer trigger.
+    // Editing controls and genuine keyboard focus keep their normal lifetime.
+    frame = owner.defaultView?.requestAnimationFrame(() => {
+      frame = null;
+      if (!interaction.keyboard) finishPointerFocus(active, true);
+    }) ?? null;
+  };
+  owner.addEventListener('pointerdown', pointerDown, true);
+  owner.addEventListener('keydown', keyDown, true);
+  return () => {
+    owner.removeEventListener('pointerdown', pointerDown, true);
+    owner.removeEventListener('keydown', keyDown, true);
+    cancelPointerCleanup();
+    interaction.clearReveal();
+  };
+}
+
+/** Return from a closing layer without taking focus from another control. */
+export function returnFocusTo(target: HTMLElement | null | undefined, interaction: ReturnType<typeof createInteractionFocus> | null, closing: HTMLElement | null | undefined) {
+  if (!target) return;
+  const active = document.activeElement;
+  returnInteractionFocus({ target, previous: active && closing?.contains(active) ? active : null }, interaction?.keyboard ?? true);
 }
 
 export const InteractionFocusContext = createContext<ReturnType<typeof createInteractionFocus> | null>(null);

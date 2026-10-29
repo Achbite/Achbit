@@ -12,4 +12,4 @@ The same prompt is in [prompt.en.txt](prompt.en.txt). Use **Reset checklist** to
 
 The example exercises file preview → page observation → interaction → reload → visual verification. The checkboxes represent this demo's tasks; ticking them does not run an application build or test suite.
 
-[Run summary](run-summary.json) · [Browser capture](launch-checklist-final.png)
+[Interface preview](launch-checklist-final.png)

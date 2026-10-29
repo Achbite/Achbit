@@ -9,6 +9,7 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import SubagentQuickSettings from './SubagentQuickSettings';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
+import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 
 interface SessionModelSelectorProps {
   language: UiLanguage;
@@ -27,6 +28,7 @@ interface SessionModelSelectorProps {
 export default function SessionModelSelector({ language, profiles, connections = [], selectedProfileId,
   reasoningEffortOverride, contextUsage, contextCompositions, busy = false, confirmed, requestedPanel, onSelect }: SessionModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const interaction = useInteractionFocus();
   const [choosingModel, setChoosingModel] = useState(false);
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [contextOpen, setContextOpen] = useState(false);
@@ -55,7 +57,7 @@ export default function SessionModelSelector({ language, profiles, connections =
   const effortLabel = selected?.thinking === 'disabled'
     ? (chinese ? '不适用' : 'Not applicable')
     : effectiveEffort ? t(language, `settings.llm.effort.${effectiveEffort}`) : (chinese ? '选择强度' : 'Choose level');
-  const close = () => { setOpen(false); triggerRef.current?.focus({ preventScroll: true }); };
+  const close = () => { setOpen(false); returnFocusTo(triggerRef.current, interaction, menuRef.current); };
   useEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>(subagentsOpen ? 'input[role="switch"]' : choosingModel

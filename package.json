@@ -1,6 +1,6 @@
 {
   "name": "achbit",
-  "version": "0.6.63",
+  "version": "0.6.65",
   "license": "MIT",
   "private": true,
   "description": "Achbit - 本地优先的 AI 编程工作台",

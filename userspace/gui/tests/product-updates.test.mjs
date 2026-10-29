@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { loadGuiModules } from './gui-projection-contract.mjs';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -29,6 +31,25 @@ function browser(t) {
   });
   return { saved, calls, handlers, root, window, status, cleanups };
 }
+
+test('product update notice renders the current update snapshot on the server', async t => {
+  const b = browser(t);
+  const [updates, { ProductUpdateNotice }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+  ]);
+  const render = () => renderToStaticMarkup(createElement(ProductUpdateNotice));
+  assert.equal(render(), '');
+  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop);
+  assert.match(render(), /data-product-update="waiting"/);
+  b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'downloading', downloaded: 25, total: 100 } });
+  const downloading = render();
+  assert.match(downloading, /role="progressbar"/);
+  assert.match(downloading, /aria-valuenow="25"/);
+  b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'error', error: 'Download interrupted' } });
+  const failed = render();
+  assert.match(failed, /data-product-update="error"/);
+  assert.match(failed, /Download interrupted/);
+});
 
 test('a real restart snapshot restores the draft and selected conversation before mounting', async t => {
   const b = browser(t);

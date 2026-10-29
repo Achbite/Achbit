@@ -30,10 +30,11 @@ export async function runTreeResourceAction(action: TreeResourceAction, entry: R
 
 export function ResourceTreeMenu({ entry, sessionId, language, x, y, onOpen, onAttach, onClose, onError }: {
   entry: ResourceEntry; sessionId: string; language: UiLanguage; x: number; y: number;
-  onOpen(): void; onAttach?: AttachTreeResource; onClose(): void; onError(message: string): void;
+  onOpen(): void; onAttach?: AttachTreeResource; onClose(closing: HTMLElement | null): void; onError(message: string): void;
 }) {
   const host = useConversationHost();
   const menu = useRef<HTMLDivElement>(null);
+  const close = () => onClose(menu.current);
   const [busy, setBusy] = useState(false);
   const zh = language === 'zh-CN';
   const items: { action: TreeResourceAction; label: string; disabled?: boolean }[] = [
@@ -54,16 +55,16 @@ export function ResourceTreeMenu({ entry, sessionId, language, x, y, onOpen, onA
     element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }, [x, y]);
   useEffect(() => {
-    const dismiss = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) onClose(); };
+    const dismiss = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) close(); };
     document.addEventListener('pointerdown', dismiss);
-    window.addEventListener('resize', onClose);
-    return () => { document.removeEventListener('pointerdown', dismiss); window.removeEventListener('resize', onClose); };
+    window.addEventListener('resize', close);
+    return () => { document.removeEventListener('pointerdown', dismiss); window.removeEventListener('resize', close); };
   }, [onClose]);
   return createPortal(<div ref={menu} className="resource-tree-menu" role="menu" data-native-overlay
     aria-label={zh ? '文件操作' : 'File actions'} aria-busy={busy} style={{ left: x, top: y }}
     onContextMenu={event => event.preventDefault()}
     onKeyDown={event => {
-      if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); onClose(); return; }
+      if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); close(); return; }
       if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault();
       const buttons = [...menu.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
@@ -76,7 +77,7 @@ export function ResourceTreeMenu({ entry, sessionId, language, x, y, onOpen, onA
       onClick={() => {
         setBusy(true);
         void runTreeResourceAction(item.action, entry, sessionId, host, onOpen, onAttach)
-          .then(onClose).catch(error => { onError(error instanceof Error ? error.message : String(error)); onClose(); });
+          .then(close).catch(error => { onError(error instanceof Error ? error.message : String(error)); close(); });
       }}>{item.label}</button>)}
   </div>, document.body);
 }

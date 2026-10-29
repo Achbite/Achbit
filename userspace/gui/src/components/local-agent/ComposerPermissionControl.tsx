@@ -6,6 +6,7 @@ import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
+import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 
 type PermissionRow = { key: string; label: string; values: readonly (readonly [string, string])[] };
 const askAllowDeny = [['ask', 'agent.permission.ask'], ['allow', 'agent.permission.allow'], ['deny', 'agent.permission.deny']] as const;
@@ -19,6 +20,7 @@ const rows: PermissionRow[] = [
 ];
 
 export function ComposerPermissionControl({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
+  const interaction = useInteractionFocus();
   const { permissionControlRef, permissionMenuRef, permissionMenuOpen, setPermissionMenuOpen, setAttachmentMenuOpen } = composer;
   const defaults = useSettingsStore(state => state.effectiveSettings);
   const patchDefault = useSettingsStore(state => state.patchUserSetting);
@@ -55,7 +57,7 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   useLayoutEffect(() => {
     if (permissionMenuOpen) permissionMenuRef.current?.querySelector<HTMLElement>(detail ? '[aria-checked="true"]' : 'button')?.focus({ preventScroll: true });
   }, [permissionMenuOpen, page, permissionMenuRef]);
-  const close = () => { setPermissionMenuOpen(false); permissionControlRef.current?.querySelector('button')?.focus(); };
+  const close = () => { setPermissionMenuOpen(false); returnFocusTo(permissionControlRef.current?.querySelector('button'), interaction, permissionMenuRef.current); };
   const change = async (key: string, value: string) => {
     setBusy(true);
     try {
