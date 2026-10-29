@@ -73,15 +73,15 @@ After building the intended release targets, sign their updater assets and creat
 
 ```bash
 python3 scripts/package-updates.py sign \
-  bin/Achbit-0.6.63-macos-arm64.app.tar.gz \
-  bin/Achbit-0.6.63-win64-setup.exe \
-  bin/Achbit-0.6.63-linux-arm64.AppImage
+  bin/Achbit-0.6.65-macos-arm64.app.tar.gz \
+  bin/Achbit-0.6.65-win64-setup.exe \
+  bin/Achbit-0.6.65-linux-arm64.AppImage
 
-python3 scripts/package-updates.py manifest --version 0.6.63 \
-  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.63 \
-  --artifact darwin-aarch64=bin/Achbit-0.6.63-macos-arm64.app.tar.gz \
-  --artifact windows-x86_64=bin/Achbit-0.6.63-win64-setup.exe \
-  --artifact linux-aarch64=bin/Achbit-0.6.63-linux-arm64.AppImage \
+python3 scripts/package-updates.py manifest --version 0.6.65 \
+  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.65 \
+  --artifact darwin-aarch64=bin/Achbit-0.6.65-macos-arm64.app.tar.gz \
+  --artifact windows-x86_64=bin/Achbit-0.6.65-win64-setup.exe \
+  --artifact linux-aarch64=bin/Achbit-0.6.65-linux-arm64.AppImage \
   --output bin/latest.json
 ```
 
@@ -94,9 +94,9 @@ The GUI checks after startup and every 30 minutes. After verifying the download,
 For a local macOS Debug upgrade, build two distinct versions through the existing Docker/native bridge:
 
 ```bash
-ACHBIT_BUILD_VERSION=0.6.63-debug.1 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION=0.6.65-debug.1 bash ./build.sh -debug --stage package-macos
 # Preserve this bin/debug/macos-arm64 in a separate test installation.
-ACHBIT_BUILD_VERSION=0.6.63-debug.2 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION=0.6.65-debug.2 bash ./build.sh -debug --stage package-macos
 ```
 
 Sign the second App archive and serve it with a generated static feed from a loopback-only HTTP server. Start the first Debug App with explicit `ACHBIT_USER_ROOT`, `ACHBIT_DEFAULT_WORKSPACE` and `ACHBIT_DEBUG_UPDATE_URL`, then use `achbit-debug attach` with that state root and an absolute test-workspace path. This exercises the normal GUI-owned automatic Host lifetime. `achbit-debug launch` intentionally creates a persistent Host and therefore is unsuitable for an idle-shutdown acceptance run. Debug updates are disabled unless the loopback endpoint is explicitly supplied; production builds do not read that override. Current local Debug packaging supports this updater chain on macOS; Windows Debug ZIPs are not NSIS update assets.
