@@ -24,29 +24,23 @@ To investigate startup latency, set `ACHBIT_STARTUP_TIMING=1` for the target pro
 
 Compare the external launch timestamp with `gui.entry` to identify waiting before entry, then compare `gui.daemon_start`, `kernel.entry`, `kernel.published`, `gui.daemon_ready`, and `gui.proxy_ready`. `kernel.execution_finished` marks the end of initialization; readiness and health results determine success. Intervals across threads and processes can overlap and must not simply be added. Record first artifact launch, repeated launch at the same path, and a cold launch after clearing system caches as separate observations.
 
-## Choose an interface
+## Commands and lifecycle
 
-| Goal | Command |
+The [Debug interfaces and CLI reference](product/debug-control.md) is the canonical command inventory, including arguments, HTTP envelopes, direct tools, GUI actions, Session observation and metrics. It is also shipped under `productDocsPath` for shell-based discovery inside Achbit. `./achbit-debug --help` lists the implemented CLI command groups.
+
+| Need | Entry point |
 | --- | --- |
-| Inspect tools | `tools list`, `tools inspect --tool NAME` |
-| Execute directly | `tools call --tool NAME --input JSON`; add `--no-wait` for asynchronous submission |
-| Wait for a result | `operation inspect --operation-id ID --wait-ms 180000` |
-| Respond to tool authorization | `operation respond --operation-id ID --decision-id ID --decision allow\|deny` |
-| Inspect the plugin catalog | `components list`, `components inspect --uri URI`, `components activate --plugin-selections JSON` |
-| Inspect the interface | `surfaces list`, `surfaces inspect --target main` |
-| Operate the interface | `action --target TARGET --name ACTION --args JSON` |
-| Validate an Agent task | `task submit --text TEXT --follow` |
-| Follow an existing task | `observe subscribe --session-id ID`, then `observe --subscription-id ID --follow` |
-| Read original results | `result read --operation-id ID`, `--record-id ID`, or `--session-id ID --event-sequence N` |
-| Query timing or usage | `metrics query --kind tool\|ui\|component\|session\|provider` |
-| Clean up this instance | `stop`; `detach` releases control without cancelling tasks |
+| Run one tool without a model | `tools list`, `tools inspect`, `tools call`, then `operation inspect/respond/cancel/release` |
+| Inspect or operate GUI/components | `gui ready`, `surfaces list/inspect`, `action`, `components list/inspect/activate` |
+| Run an Agent task | `task submit --follow`; `task inspect/message/respond/cancel` |
+| Observe an existing task | `observe subscribe`, then one `observe --follow` connection; `observe status` for diagnosis |
+| Read facts and timings | `result read`, `metrics query/export` |
+| Close an owned launch | `stop`: GUI exit followed by persistent Host cleanup |
+| Close a separately started GUI | `gui stop --expected-pid PID [--gui-host-id ID]`, using values from `surfaces list` |
+| Release control while retaining tasks | `detach`, after active direct-tool operations finish |
 
-Append these commands to `./achbit-debug`. Arguments can use `@JSON-file`. Inspect first to obtain actual selectors, component IDs, action signatures, and availability; do not guess names.
+`launch` creates a persistent controller-owned Host; `attach` does not acquire ownership. For update and GUI-owned Host lifecycle checks, start the normal Debug App and attach to that instance instead. `gui stop` confirms GUI process exit; it does not stop a persistent Host. `inspect.identity.pid` identifies the Host, while `surfaces list.guiPid` identifies the GUI. `instances` inspects only the explicitly selected state root. A test harness that keeps the GUI as its own child must reap it concurrently with the CLI shutdown wait; a terminated but unreaped child can still appear present to another process.
 
-Direct tool context does not currently provide run-owned browser or desktop bindings. Activating Computer Use does not make all its tools callable. Use GUI surface/action interfaces when applicable. Report a missing entrypoint rather than creating a simulated Provider just to construct interface state.
+UI actions preserve dispatch versus observation: `partial` remains nonzero, and a menu/window action that closes its own surface may interrupt observation. Use `gui stop` for confirmed shutdown. Read actual selectors and action signatures first; do not replay a completed action merely to obtain another screenshot. Direct tools, GUI actions and observations do not start model requests. Direct tool context does not supply Session/run-owned browser or desktop bindings; see the shipped reference for the supported paths.
 
-UI actions can use `waitFor` for DOM or component state. Returning from an action does not establish business completion. `partial` results and nonzero exits retain original errors and observation gaps; do not replay already-executed actions. When visual confirmation is needed, read the screenshot from the original receipt. Archiving or presenting an image does not load its pixels into the model.
-
-Use one `--follow` connection for task observation. It receives batches of text, tools, decisions, and terminal state without status polling. Determine success from the task's terminal state, not from the observation stream closing.
-
-See [Debug control](product/debug-control.md) for full arguments and examples. Inside the product, read the same file under `productDocsPath` through the shell. Building does not update running processes. Restart target GUI/Host instances only within the authorized scope; keep the standard installation independent.
+Building does not update running processes. Restart only the target GUI/Host within the authorized scope and keep the standard installation independent.
