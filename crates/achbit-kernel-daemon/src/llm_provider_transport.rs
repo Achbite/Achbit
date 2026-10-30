@@ -27,7 +27,12 @@ pub(crate) fn anthropic_stream_request_body(
         }
     } else if matches!(
         profile.connection.adapter_id.as_str(),
-        "minimax" | "minimax-cn" | "minimax-coding" | "minimax-coding-cn"
+        "minimax"
+            | "minimax-cn"
+            | "minimax-coding"
+            | "minimax-coding-cn"
+            | "kimi-coding"
+            | "kimi-coding-global"
     ) {
         if let Some(thinking) = &profile.thinking {
             body["thinking"] =

@@ -253,21 +253,26 @@ pub(crate) fn openai_compatible_request_body(
     if !matches!(
         compatibility,
         ProviderThinkingCompatibility::DeepSeek | ProviderThinkingCompatibility::Moonshot
-    ) {
+    ) && !openai_reasoning_enabled(profile)
+    {
         if let Some(temperature) = profile.temperature {
             body["temperature"] = json!(temperature);
         }
     }
-    let kimi_k3 = compatibility == ProviderThinkingCompatibility::Moonshot
-        && profile.model.starts_with("kimi-k3");
-    if let Some(effort) = profile
-        .reasoning_effort
-        .as_ref()
-        .filter(|_| compatibility != ProviderThinkingCompatibility::Moonshot || kimi_k3)
+    let effort_only = (compatibility == ProviderThinkingCompatibility::Moonshot
+        && kimi_supports_reasoning_effort(&profile.model))
+        || is_openai_gpt6(profile);
+    let effort = if effort_only && profile.thinking.as_deref() == Some("disabled") {
+        Some("none")
+    } else {
+        profile.reasoning_effort.as_deref()
+    };
+    if let Some(effort) =
+        effort.filter(|_| compatibility != ProviderThinkingCompatibility::Moonshot || effort_only)
     {
         body["reasoning_effort"] = json!(effort);
     }
-    if let Some(thinking) = profile.thinking.as_ref().filter(|_| !kimi_k3) {
+    if let Some(thinking) = profile.thinking.as_ref().filter(|_| !effort_only) {
         body["thinking"] = if compatibility == ProviderThinkingCompatibility::Moonshot
             && profile.model.starts_with("kimi-k2.7-code")
             && thinking == "enabled"
@@ -276,6 +281,10 @@ pub(crate) fn openai_compatible_request_body(
         } else {
             json!({ "type": thinking })
         };
+    }
+    if is_openai_gpt6(profile) {
+        let output = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
+        body["max_completion_tokens"] = output;
     }
     if compatibility == ProviderThinkingCompatibility::Glm && stream && !tools.is_empty() {
         body["tool_stream"] = json!(true);
@@ -333,14 +342,19 @@ fn responses_request_body(
             .max_output_tokens
             .expect("resolved Provider runtime has maxOutputTokens"),
     });
-    if let Some(effort) = profile
-        .reasoning_effort
-        .as_ref()
-        .filter(|_| profile.thinking.as_deref() != Some("disabled"))
-    {
+    let effort = if profile.thinking.as_deref() == Some("disabled") {
+        Some("none")
+    } else {
+        profile.reasoning_effort.as_deref()
+    };
+    if let Some(effort) = effort {
         body["reasoning"] = json!({ "effort": effort });
     }
-    if provider_thinking_compatibility(profile) != ProviderThinkingCompatibility::DeepSeek {
+    if !matches!(
+        provider_thinking_compatibility(profile),
+        ProviderThinkingCompatibility::DeepSeek | ProviderThinkingCompatibility::Moonshot
+    ) && !openai_reasoning_enabled(profile)
+    {
         if let Some(temperature) = profile.temperature {
             body["temperature"] = json!(temperature);
         }
@@ -1040,15 +1054,27 @@ fn conversation_title_profile(profile: &ResolvedLlmProfile) -> ResolvedLlmProfil
     let compatibility = provider_thinking_compatibility(profile);
     let deepseek = compatibility == ProviderThinkingCompatibility::DeepSeek
         || profile.connection.adapter_id == "deepseek";
-    // The existing Moonshot wire adapter omits thinking for K3 and uses effort instead.
     let effort_only = profile.kind == "responses"
+        || is_openai_gpt6(profile)
         || compatibility == ProviderThinkingCompatibility::Moonshot
-            && profile.model.starts_with("kimi-k3");
+            && kimi_supports_reasoning_effort(&profile.model);
     let output_budget = if deepseek && profile.kind == "responses" {
         // DeepSeek Responses requires explicit none; omission enables its default reasoning.
         selected.thinking = None;
         selected.reasoning_effort = Some("none".into());
         256
+    } else if compatibility == ProviderThinkingCompatibility::Moonshot
+        && profile.model == "kimi-for-coding-highspeed"
+    {
+        // This fixed-effort Code model supports off, but no adjustable low effort.
+        selected.thinking = Some("disabled".into());
+        selected.reasoning_effort = None;
+        256
+    } else if model_requires_thinking(profile) {
+        // Title requests must obey the same always-on thinking contract as chat.
+        selected.thinking = Some("enabled".into());
+        selected.reasoning_effort = Some("low".into());
+        2048
     } else if !effort_only && (profile.thinking.is_some() || deepseek) {
         selected.thinking = Some("disabled".into());
         selected.reasoning_effort = None;
@@ -2009,6 +2035,39 @@ pub(crate) fn normalize_ollama_base_url(profile: &ResolvedLlmProfile) -> String 
         base.to_string()
     } else {
         format!("{base}/api/chat")
+    }
+}
+
+fn kimi_supports_reasoning_effort(model: &str) -> bool {
+    model.starts_with("kimi-k3")
+        || matches!(
+            model,
+            "k3" | "k3-256k" | "k3.1-pro" | "k3.1-pro-highspeed" | "kimi-for-coding"
+        )
+}
+
+fn is_openai_gpt6(profile: &ResolvedLlmProfile) -> bool {
+    profile.provider_flavor.as_deref().unwrap_or("openai") == "openai"
+        && profile.model.starts_with("gpt-6")
+}
+
+fn openai_reasoning_enabled(profile: &ResolvedLlmProfile) -> bool {
+    is_openai_gpt6(profile)
+        && profile.thinking.as_deref() != Some("disabled")
+        && profile.reasoning_effort.as_deref() != Some("none")
+}
+
+fn model_requires_thinking(profile: &ResolvedLlmProfile) -> bool {
+    match profile.provider_flavor.as_deref() {
+        Some("zhipu") => profile.model == "glm-5.3",
+        Some("moonshot") => {
+            profile.model.starts_with("kimi-k3")
+                || matches!(profile.model.as_str(), "k3.1-pro" | "k3.1-pro-highspeed")
+        }
+        _ => matches!(
+            profile.model.as_str(),
+            "gpt-6-astra" | "gpt-6.1-sol" | "MiniMax-M3.1-Flash"
+        ),
     }
 }
 
@@ -3087,6 +3146,196 @@ mod tests {
             ),
             content.as_str().unwrap()
         );
+    }
+
+    #[test]
+    fn subscription_and_api_presets_reach_their_native_request_contracts() {
+        let root = std::env::temp_dir().join(
+            crate::new_runtime_ref("model-wire-test")
+                .unwrap()
+                .replace(':', "-"),
+        );
+        let mut gui = GuiState::open_at(&root).unwrap();
+        let adapters = crate::model_connections::adapter_descriptors();
+        let client = reqwest::Client::new();
+        for (adapter_id, model_id) in [
+            ("openai", "gpt-6.1-sol"),
+            ("openai", "gpt-6.1-terra"),
+            ("zhipu", "glm-5.3"),
+            ("glm-coding", "glm-5.3"),
+            ("zai-coding", "glm-5.3"),
+            ("moonshot", "kimi-k3"),
+            ("kimi-coding", "k3.1-pro"),
+            ("kimi-coding-global", "k3-256k"),
+            ("minimax-coding", "MiniMax-M3.1-Flash"),
+        ] {
+            let adapter = adapters
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == adapter_id)
+                .unwrap();
+            let mut preset = adapter["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["model"] == model_id)
+                .unwrap()
+                .clone();
+            let id = format!("wire:{adapter_id}:{model_id}");
+            preset["id"] = json!(id);
+            preset["connectionId"] = json!(id);
+            let mut document = crate::model_connections::document(&gui).unwrap();
+            document["connections"].as_array_mut().unwrap().push(json!({
+                "id":id,"name":adapter_id,"adapterId":adapter_id,
+                "billingMode":adapter["billingModes"][0],"baseUrl":adapter["defaultBaseUrl"],
+                "credentialKind":"apiKey","credentialRef":format!("local-secret:{id}"),
+            }));
+            document["profiles"]
+                .as_array_mut()
+                .unwrap()
+                .push(preset.clone());
+            let mut secrets = crate::model_connections::secrets(&gui).unwrap();
+            secrets[&id] = json!("fixture-plan-or-api-key");
+            crate::model_connections::store(&mut gui, document, Some(secrets)).unwrap();
+            let resolved = resolve_llm_profile(&gui, Some(&id)).unwrap();
+            assert_eq!(resolved.model, model_id);
+            assert!(
+                resolved.context_window_tokens.unwrap()
+                    > u64::from(resolved.max_output_tokens.unwrap())
+            );
+            assert_eq!(
+                resolved.image_input,
+                adapter_id != "zhipu" && adapter_id != "glm-coding" && adapter_id != "zai-coding"
+            );
+            let envelope = provider_input(
+                json!({"messages":[{"role":"user","content":"Inspect the project"}],
+                "tools":[{"name":"fs_read","description":"Read","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}],"hostedTools":[]}),
+            );
+            // Each advertised protocol must preserve the model, tool definition and effort.
+            for protocol in adapter["protocols"].as_array().unwrap() {
+                // GPT-6 tool calling uses the preset's Responses protocol.
+                if adapter_id == "openai" && protocol != "responses" {
+                    continue;
+                }
+                let mut profile = resolved.clone();
+                profile.kind = protocol.as_str().unwrap().into();
+                let prepared = prepare_test_request(&profile, &envelope).unwrap();
+                let request = build_provider_request(&client, &profile, &prepared)
+                    .unwrap()
+                    .build()
+                    .unwrap();
+                assert!(request
+                    .url()
+                    .as_str()
+                    .starts_with(adapter["defaultBaseUrl"].as_str().unwrap()));
+                let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+                assert_eq!(body["model"], model_id);
+                assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+                let effort = match protocol.as_str().unwrap() {
+                    "responses" => &body["reasoning"]["effort"],
+                    "anthropic" => {
+                        assert_eq!(body["thinking"]["type"], "adaptive");
+                        &body["output_config"]["effort"]
+                    }
+                    _ => &body["reasoning_effort"],
+                };
+                assert_eq!(
+                    effort, &preset["reasoningEffort"],
+                    "{adapter_id} {protocol}"
+                );
+                assert_eq!(
+                    request.headers()[if protocol == "anthropic" {
+                        "x-api-key"
+                    } else {
+                        "authorization"
+                    }],
+                    if protocol == "anthropic" {
+                        "fixture-plan-or-api-key"
+                    } else {
+                        "Bearer fixture-plan-or-api-key"
+                    }
+                );
+                assert!(request.headers().get("ChatGPT-Account-Id").is_none());
+            }
+        }
+        drop(gui);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_reasoning_models_keep_explicit_choices_and_use_valid_title_requests() {
+        for (adapter, flavor, model, kind) in [
+            ("openai", "openai", "gpt-6.1-sol", "responses"),
+            ("openai-codex", "openai", "gpt-6-astra", "responses"),
+            ("glm-coding", "zhipu", "glm-5.3", "openaiCompatible"),
+            ("moonshot", "moonshot", "kimi-k3", "openaiCompatible"),
+            ("kimi-coding", "moonshot", "k3.1-pro", "responses"),
+            ("kimi-coding", "moonshot", "k3.1-pro", "anthropic"),
+            (
+                "minimax-coding",
+                "openai",
+                "MiniMax-M3.1-Flash",
+                "anthropic",
+            ),
+        ] {
+            let mut profile = test_profile(kind);
+            profile.connection.adapter_id = adapter.into();
+            profile.provider_flavor = Some(flavor.into());
+            profile.model = model.into();
+            profile.context_window_tokens = Some(16_384);
+            profile.max_output_tokens = Some(8192);
+            profile.thinking = Some("enabled".into());
+            profile.reasoning_effort = Some("max".into());
+            let title = conversation_title_profile(&profile);
+            assert_eq!(title.thinking.as_deref(), Some("enabled"), "{model}");
+            assert_eq!(title.reasoning_effort.as_deref(), Some("low"), "{model}");
+            assert_eq!(title.max_output_tokens, Some(2048));
+            assert_eq!(profile.reasoning_effort.as_deref(), Some("max"));
+        }
+        let mut fixed = test_profile("responses");
+        fixed.model = "kimi-for-coding-highspeed".into();
+        fixed.provider_flavor = Some("moonshot".into());
+        fixed.thinking = Some("enabled".into());
+        let title = conversation_title_profile(&fixed);
+        let body = responses_request_body(&title, &[], &[], &[], true).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "none");
+        assert_eq!(body["max_output_tokens"], 256);
+        for model in ["gpt-6.1-terra", "gpt-6-luna"] {
+            let mut profile = test_profile("responses");
+            profile.model = model.into();
+            profile.thinking = Some("enabled".into());
+            profile.reasoning_effort = Some("high".into());
+            profile.temperature = Some(0.7);
+            let body = responses_request_body(&profile, &[], &[], &[], true).unwrap();
+            assert!(body.get("temperature").is_none());
+            profile.thinking = Some("disabled".into());
+            let body = responses_request_body(&profile, &[], &[], &[], true).unwrap();
+            assert_eq!(body["reasoning"]["effort"], "none");
+            assert_eq!(body["temperature"], 0.7);
+            let body = openai_compatible_request_body(&profile, &[], &[], true);
+            assert_eq!(body["reasoning_effort"], "none");
+            assert_eq!(body["max_completion_tokens"], 512);
+            assert!(body.get("thinking").is_none());
+            assert!(body.get("max_tokens").is_none());
+        }
+        for model in ["k3.1-pro", "k3", "k3-256k", "kimi-for-coding"] {
+            let mut profile = test_profile("openaiCompatible");
+            profile.provider_flavor = Some("moonshot".into());
+            profile.model = model.into();
+            profile.reasoning_effort = Some("high".into());
+            profile.thinking = Some("enabled".into());
+            let body = openai_compatible_request_body(&profile, &[], &[], true);
+            assert_eq!(body["reasoning_effort"], "high", "{model}");
+            profile.thinking = Some("disabled".into());
+            let body = openai_compatible_request_body(&profile, &[], &[], true);
+            assert_eq!(
+                body["reasoning_effort"], "none",
+                "explicit disable must not silently enable reasoning"
+            );
+            let body = responses_request_body(&profile, &[], &[], &[], true).unwrap();
+            assert_eq!(body["reasoning"]["effort"], "none");
+        }
     }
 
     #[test]

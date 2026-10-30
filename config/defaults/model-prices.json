@@ -15,6 +15,51 @@
     }
   },
   {
+    "model": "gpt-6.1-sol",
+    "adapterId": "openai",
+    "input": 2,
+    "cacheRead": 0.1,
+    "cacheWrite": 2.5,
+    "output": 10,
+    "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+    "effectiveFrom": "2026-10-30",
+    "longContext": {
+      "threshold": 272000,
+      "inputMultiplier": 2,
+      "outputMultiplier": 1.5
+    }
+  },
+  {
+    "model": "gpt-6.1-terra",
+    "adapterId": "openai",
+    "input": 1,
+    "cacheRead": 0.05,
+    "cacheWrite": 1.25,
+    "output": 5,
+    "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+    "effectiveFrom": "2026-10-30",
+    "longContext": {
+      "threshold": 272000,
+      "inputMultiplier": 2,
+      "outputMultiplier": 1.5
+    }
+  },
+  {
+    "model": "gpt-6-luna",
+    "adapterId": "openai",
+    "input": 0.1,
+    "cacheRead": 0.01,
+    "cacheWrite": 0.125,
+    "output": 0.5,
+    "source": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+    "effectiveFrom": "2026-10-30",
+    "longContext": {
+      "threshold": 272000,
+      "inputMultiplier": 2,
+      "outputMultiplier": 1.5
+    }
+  },
+  {
     "model": "gpt-5.6-sol",
     "adapterId": "openai",
     "input": 4,

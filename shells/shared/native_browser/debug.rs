@@ -501,7 +501,7 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         }
         let native = dialogs(&app, "inspect", json!({})).await?;
         let menus = dialogs(&app, "menus", json!({})).await?;
-        Ok(json!({"surfaces":surfaces,"nativeDialogs":native,"nativeMenus":menus}))
+        Ok(json!({"guiPid":std::process::id(),"guiHostId":app.state::<super::NativeBrowser>().binding.host_instance_id,"surfaces":surfaces,"nativeDialogs":native,"nativeMenus":menus}))
     } else if action == "debug:metrics" {
         let mut records = Vec::new();
         let path = directory(&app);

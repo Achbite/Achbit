@@ -1,6 +1,7 @@
 import CommandRuleSettings from './CommandRuleSettings';
 import { requestInterfaceReload } from '../../../services/interfaceReload';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useSyncExternalStore } from 'react';
+import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate } from '../../../services/productUpdates';
 import type { UserSettingValue } from '@achbit/protocol';
 import { normalizeUiLanguage, t } from '../../../i18n';
 import { localizeSettingDefinition } from '../../../settingsLocalization';
@@ -30,6 +31,7 @@ const GENERAL_KEYS = [
   'gui.navigationDensity',
   'gui.showContextRail',
   'gui.showReasoning',
+  'gui.autoUpdate',
   'gui.completionSound.foreground',
   'gui.usageWidget.enabled',
   'gui.usageWidget.visibility',
@@ -93,6 +95,8 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   serverVersion,
   category = 'appearance',
 }) => {
+  const update = useSyncExternalStore(subscribeProductUpdates, productUpdateSnapshot, productUpdateSnapshot);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
   const loading = useSettingsStore((state) => state.loading);
   const errorMessage = useSettingsStore((state) => state.errorMessage);
@@ -110,6 +114,10 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   const onChange = (key: string, value: UserSettingValue) => {
     return patchUserSetting(key, value);
   };
+  const updateBusy = ['checking', 'downloading', 'preparing', 'installing'].includes(update.phase);
+  const updateAction = update.phase === 'waiting' ? 'installNow'
+    : ['preparing', 'installing'].includes(update.phase) ? 'installing'
+      : updateBusy ? update.phase : 'check';
 
   return (
     <div>
@@ -150,6 +158,16 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
             </tbody>
           </table>
           <div className="settings-card__body">
+            {update.phase !== 'disabled' && <button type="button" className="settings-button"
+              disabled={updateBusy}
+              onClick={() => {
+                setUpdateError(null);
+                void requestProductUpdate().catch(reason => setUpdateError(String(reason)));
+              }}>
+              {t(language, `productUpdate.${updateAction}`, { version: update.version ?? '' })}
+            </button>}
+            {update.phase === 'current' && <p role="status">{t(language, 'productUpdate.current')}</p>}
+            {(updateError || update.error) && <div className="settings-error" role="alert">{updateError || update.error}</div>}
             <button type="button" className="settings-button" onClick={() => requestInterfaceReload()}>
               {language === 'zh-CN' ? '重新加载界面' : 'Reload interface'}
             </button>

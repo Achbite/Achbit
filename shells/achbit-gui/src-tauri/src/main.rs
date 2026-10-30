@@ -332,6 +332,8 @@ fn main() {
         open_file::achbit_locate_path,
         product_update::achbit_update_status,
         product_update::achbit_update_check,
+        product_update::achbit_update_configure,
+        product_update::achbit_update_install,
         product_update::achbit_update_prepare_response,
         product_update::achbit_update_restore,
         product_update::achbit_update_restored,

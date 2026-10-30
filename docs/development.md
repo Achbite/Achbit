@@ -1,6 +1,6 @@
 # Development and validation
 
-Use the Docker development environment for dependencies, shared TypeScript, GUI resources, tests, and general builds. The macOS packaging stage delegates native compilation and signing to the Mac host. Start with the [English](../README.md#build-from-source) or [简体中文](../README.zh-CN.md#从源码构建) build instructions.
+Use the Docker development environment for dependencies, shared TypeScript, GUI resources, tests, and general builds. The macOS packaging stage delegates native compilation and signing to the Mac host. Start with the [build instructions](../README.md#build-from-source).
 
 ## Development container
 
@@ -52,7 +52,7 @@ make ui-update UI_PACKAGE=bin/macos-arm64
 
 For a separate worktree, also pass its `CONTAINER_NAME`. Select `bin/win64` or the generated Linux directory for those packages. macOS resource replacement runs on the host so signing can access its Keychain. Reload with **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** elsewhere.
 
-A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#更新与功能配置).
+A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#updates-and-configuration-changes).
 
 
 ## Automatic application updates
@@ -67,21 +67,23 @@ Package stages retain the normal archives/installers and add the updater's insta
 | `windows-x86_64` | `Achbit-<version>-win64-setup.exe` | Per-user NSIS Setup |
 | `linux-aarch64` / `linux-x86_64` | Corresponding `.AppImage` | Executable AppImage in a writable directory |
 
+On macOS, Tauri checks, downloads and verifies the signed archive; Achbit stages the complete App beside its installation and owns bundle replacement. A failed replacement restores the previous App before restarting. If restoration fails, the backup and both errors are retained, and further updates and automatic restart stop until the installation is recovered. No administrator prompt is needed for the supported writable installation.
+
 The Mac App contains the separately signed Computer Use helper in `Contents/Helpers`. The PKG installs in `~/Applications`, with wrappers in `~/.local/bin`. NSIS accepts Tauri's silent update and relaunch arguments; it waits for the installation lease and replaces only entries in `package-files.json`. Linux tar archives remain manual-update products. GTK/WebKitGTK and other existing system-library requirements still apply.
 
 After building the intended release targets, sign their updater assets and create the feed on the host (the signer delegates to the configured Docker container). The following example includes the Linux architecture produced by an ARM64 development container:
 
 ```bash
 python3 scripts/package-updates.py sign \
-  bin/Achbit-0.6.65-macos-arm64.app.tar.gz \
-  bin/Achbit-0.6.65-win64-setup.exe \
-  bin/Achbit-0.6.65-linux-arm64.AppImage
+  bin/Achbit-0.6.66-macos-arm64.app.tar.gz \
+  bin/Achbit-0.6.66-win64-setup.exe \
+  bin/Achbit-0.6.66-linux-arm64.AppImage
 
-python3 scripts/package-updates.py manifest --version 0.6.65 \
-  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.65 \
-  --artifact darwin-aarch64=bin/Achbit-0.6.65-macos-arm64.app.tar.gz \
-  --artifact windows-x86_64=bin/Achbit-0.6.65-win64-setup.exe \
-  --artifact linux-aarch64=bin/Achbit-0.6.65-linux-arm64.AppImage \
+python3 scripts/package-updates.py manifest --version 0.6.66 \
+  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.66 \
+  --artifact darwin-aarch64=bin/Achbit-0.6.66-macos-arm64.app.tar.gz \
+  --artifact windows-x86_64=bin/Achbit-0.6.66-win64-setup.exe \
+  --artifact linux-aarch64=bin/Achbit-0.6.66-linux-arm64.AppImage \
   --output bin/latest.json
 ```
 
@@ -89,14 +91,14 @@ Keep the private signing key outside the checkout. The local signing command rea
 
 Prepare a draft Release, upload every initial installer/archive plus updater asset, its `.sig`, and `latest.json`, then publish and mark it as the latest stable Release. The feed must name only available platform assets. Its version and URLs identify the new product; publishing an empty or partially uploaded feed is not a completed release. Signing and manifest creation do not themselves push or publish anything.
 
-The GUI checks after startup and every 30 minutes. After verifying the download, it waits for UI input to be idle for 15 seconds and for unsaved settings to be resolved. Host preparation gates new external work and checks Session activity, Kernel work and connected clients. A filesystem lease covers other CLI/TUI/Host processes using the same installation, even with different user roots. Automatic installation is owned by a local GUI with a managed Host. SSH and connect-only windows do not initiate an installation; close them before updating the local installation. A persistent Host blocks automatic installation until explicitly stopped. Only after preparation and a confirmed Host shutdown does the updater replace program files. Drafts and view state are restored before React mounts; Session facts are reloaded from the existing store.
+The GUI checks after startup and every 30 minutes when the saved `gui.autoUpdate` preference is enabled (the default). Turning it off prevents scheduled checks and automatic installation; manual checks remain available from About Achbit. After verifying the download, it waits for input in the Achbit window to be idle for 15 seconds and for unsaved settings to be resolved. Activity in other applications does not reset the timer. Clicking the ready update arrow requests installation and skips only the local input grace period; IME composition and all UI/Host activity guards still apply. Host preparation gates new external work and checks Session activity, Kernel work and connected clients. A filesystem lease covers other CLI/TUI/Host processes using the same installation, even with different user roots. Automatic installation is owned by a local GUI with a managed Host. SSH and connect-only windows do not initiate an installation; close them before updating the local installation. A persistent Host blocks automatic installation until explicitly stopped. Only after preparation and a confirmed Host shutdown does the updater replace program files. Drafts and view state are restored before React mounts; Session facts are reloaded from the existing store.
 
 For a local macOS Debug upgrade, build two distinct versions through the existing Docker/native bridge:
 
 ```bash
-ACHBIT_BUILD_VERSION=0.6.65-debug.1 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION=0.6.66-debug.1 bash ./build.sh -debug --stage package-macos
 # Preserve this bin/debug/macos-arm64 in a separate test installation.
-ACHBIT_BUILD_VERSION=0.6.65-debug.2 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION=0.6.66-debug.2 bash ./build.sh -debug --stage package-macos
 ```
 
 Sign the second App archive and serve it with a generated static feed from a loopback-only HTTP server. Start the first Debug App with explicit `ACHBIT_USER_ROOT`, `ACHBIT_DEFAULT_WORKSPACE` and `ACHBIT_DEBUG_UPDATE_URL`, then use `achbit-debug attach` with that state root and an absolute test-workspace path. This exercises the normal GUI-owned automatic Host lifetime. `achbit-debug launch` intentionally creates a persistent Host and therefore is unsuitable for an idle-shutdown acceptance run. Debug updates are disabled unless the loopback endpoint is explicitly supplied; production builds do not read that override. Current local Debug packaging supports this updater chain on macOS; Windows Debug ZIPs are not NSIS update assets.
@@ -132,6 +134,8 @@ bash ./test.sh full       # Complete registered suite, including shared shells a
 ```
 
 `bash ./test.sh static` checks shell syntax and Git whitespace and can run on the host. A container snapshot without accessible host-owned Git metadata reports that diff check as skipped; run it on the host separately. Skipped checks are not passing checks.
+
+On Windows, `node --test scripts/tests/windows-installer.test.mjs` executes the replacement script with Windows PowerShell 5.1 against disposable installations. It covers fresh installation, upgrades, ownership preservation, and rollback. The cross-volume case requires the checkout and TEMP to be on different volumes; otherwise that case reports a skip.
 
 The end-to-end suite uses local fixture providers; its results do not establish real-provider connectivity or native desktop behavior. For explicitly requested standard-package/installer acceptance, use the target package for a real CLI conversation and TUI/GUI startup. A Debug test package alone does not require those checks. Documentation-only changes use static and content/link checks without rebuilding the runtime.
 

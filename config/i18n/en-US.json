@@ -1375,9 +1375,17 @@
     "agent.tool.shell.searched": "Searched in {targets} for “{query}”",
     "agent.tool.shell.moreIntents": " · {count} more",
     "productUpdate.downloading": "Downloading {version}",
-    "productUpdate.waiting": "Update ready. Restarting automatically when idle.",
+    "productUpdate.waiting": "Update ready. Restarting automatically when Achbit is idle.",
+    "productUpdate.ready": "Update {version} is ready",
+    "productUpdate.installNow": "Install update and restart",
+    "productUpdate.check": "Check for updates",
+    "productUpdate.checking": "Checking for updates…",
+    "productUpdate.current": "You are up to date",
+    "productUpdate.reason.clients": "Waiting for other Achbit clients to close",
+    "productUpdate.reason.tasks": "Waiting for Achbit tasks, approvals or background work to finish",
+    "productUpdate.reason.interface": "Waiting for Achbit input to finish, settings to be saved and the interface to be ready",
     "productUpdate.installing": "Updating and restarting…",
-    "productUpdate.error": "Automatic update did not finish",
+    "productUpdate.error": "Update did not finish",
     "productUpdate.retry": "Check again"
   },
   "settings": {
@@ -1414,6 +1422,10 @@
         "comfortable": "Comfortable",
         "compact": "Compact"
       }
+    },
+    "gui.autoUpdate": {
+      "label": "Automatic updates",
+      "description": "Check and download updates automatically, then install and restart when Achbit is idle. Activity in other apps does not delay updates. When disabled, check from About Achbit or click the ready update arrow to install."
     },
     "gui.completionSound.foreground": {
       "label": "Play completion sound in foreground",

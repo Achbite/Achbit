@@ -15,21 +15,25 @@ use std::{
 const HELP: &str = r#"Achbit Debug CLI (debug-only)
   launch --artifact DIR --workspace DIR --state-root DIR [--headless]
   instances | inspect | attach --workspace DIR | detach | stop
+  gui ready [--gui-host-id ID] | gui stop --expected-pid PID [--gui-host-id ID]
   tools list | tools inspect --tool fs.read
   tools call --tool fs.read --input '{"path":"example.txt"}' [--no-wait]
-  operation inspect|cancel|respond --operation-id ID [--decision-id ID --decision allow|deny]
+  operation inspect|cancel|respond|release --operation-id ID [--decision-id ID --decision allow|deny]
   components list|inspect|activate [--params @JSON_FILE]
   surfaces list|inspect [--target main] | action --target main --name NAME --args JSON
   task submit --text TEXT [--profile-id ID] [--follow]
   task inspect|message|cancel|respond --session-id ID [--text TEXT | --run-id ID | --command JSON]
   observe subscribe --session-id ID [--run-id ID]
   observe --subscription-id ID [--follow] [--wait-ms 180000]
-  metrics query|export [--kind tool|component|session|provider|usage] [--params @JSON_FILE]
+  observe status --subscription-id ID
+  metrics query|export [--kind tool|component|ui|event|session|run|provider|usage] [--params @JSON_FILE]
   result read --operation-id ID | --record-id ID | --session-id ID --event-sequence N
 Every connected command requires --state-root DIR (or explicit ACHBIT_USER_ROOT).
 --control-id ID overrides the local attachment receipt. --params JSON or @FILE supplies
 structured method parameters. Results go to stdout; errors use JSON on stderr.
 Observation streams and metrics export use JSONL. Failed terminal operations exit nonzero.
+stop requires launch ownership; gui stop closes the exact GUI and confirms its process exit.
+instances inspects only the selected state root. detach does not cancel Session tasks.
 The CLI never starts an Agent Loop for tools or UI actions. Timeout does not cancel work.
 "#;
 
@@ -116,6 +120,7 @@ impl Args {
                     | "limit"
                     | "from-ms"
                     | "to-ms"
+                    | "expected-pid"
             ) {
                 json!(item
                     .parse::<u64>()
@@ -183,6 +188,33 @@ fn validate_shutdown(result: &Value, expected: &HostProcessIdentity) -> Result<(
         ));
     }
     Ok(())
+}
+fn validate_gui_shutdown(result: &Value, expected_pid: u32) -> Result<(), String> {
+    if result["status"] != "accepted" || result["pid"].as_u64() != Some(u64::from(expected_pid)) {
+        return Err(format!(
+            "GUI shutdown was not accepted for PID {expected_pid}: {result}"
+        ));
+    }
+    Ok(())
+}
+async fn stop_gui(client: &Client, params: Value) -> Result<Value, String> {
+    let pid = params["expectedPid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or("gui stop requires a positive --expected-pid from surfaces list or launch")?;
+    let mut result = client.call("gui.stop", params).await?;
+    validate_gui_shutdown(&result, pid)?;
+    tokio::task::spawn_blocking(move || {
+        achbit_host_connection::installation::wait_for_process_exit(pid, Duration::from_secs(30))
+    })
+    .await
+    .map_err(|error| format!("GUI exit wait failed: {error}; acknowledgement: {result}"))?
+    .map_err(|error| {
+        format!("GUI PID {pid} exit was not confirmed: {error}; acknowledgement: {result}")
+    })?;
+    result["exited"] = json!(true);
+    Ok(result)
 }
 fn gui_process_definitely_absent(pid: u64) -> bool {
     #[cfg(unix)]
@@ -383,6 +415,10 @@ pub(super) async fn run(values: &[String]) -> Result<(), String> {
         save_receipt(&root, &receipt)?;
         return output(&result);
     }
+    if args.method == "gui.stop" {
+        params["expectedIdentity"] = json!(connection.identity);
+        return output(&stop_gui(&client, params).await?);
+    }
     if args.method == "stop" {
         if receipt["ownsHost"] != true || receipt["instanceId"] != connection.identity.instance_id {
             return Err(
@@ -409,7 +445,7 @@ pub(super) async fn run(values: &[String]) -> Result<(), String> {
                             .into(),
                     ),
                 };
-            client.call("gui.stop",json!({"guiHostId":selected,"expectedPid":receipt["guiPid"],"expectedIdentity":connection.identity})).await?;
+            stop_gui(&client, json!({"guiHostId":selected,"expectedPid":receipt["guiPid"],"expectedIdentity":connection.identity})).await?;
         }
         let response = client
             .http
@@ -766,6 +802,39 @@ mod tests {
         assert_eq!(result, original, "Failure must preserve the actual receipt");
         result["cleanupComplete"] = json!(true);
         assert!(validate_shutdown(&result, &identity('b')).is_err());
+    }
+    #[test]
+    fn gui_shutdown_requires_acceptance_for_the_requested_process() {
+        let accepted = json!({"status":"accepted","pid":456,"hostInstanceId":"gui-test"});
+        assert!(validate_gui_shutdown(&accepted, 456).is_ok());
+        assert!(validate_gui_shutdown(&accepted, 789).is_err());
+        assert!(validate_gui_shutdown(&json!({"status":"failed","pid":456}), 456).is_err());
+        assert!(validate_gui_shutdown(&json!({"status":"accepted"}), 456).is_err());
+    }
+    #[test]
+    fn gui_stop_parses_a_numeric_pid_and_preserves_structured_parameters() {
+        let args = Args::parse(
+            &[
+                "gui",
+                "stop",
+                "--expected-pid",
+                "456",
+                "--gui-host-id",
+                "gui-test",
+                "--params",
+                "{\"expectedPid\":123,\"target\":\"main\"}",
+            ]
+            .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(args.method, "gui.stop");
+        let params = args.params().unwrap();
+        assert_eq!(params["expectedPid"], 456);
+        assert_eq!(params["guiHostId"], "gui-test");
+        assert_eq!(params["target"], "main");
+        let invalid =
+            Args::parse(&["gui", "stop", "--expected-pid", "invalid"].map(str::to_string)).unwrap();
+        assert!(invalid.params().is_err());
     }
     #[cfg(any(unix, windows))]
     #[test]

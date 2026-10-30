@@ -160,7 +160,15 @@ unsafe fn menu_command(name: &str, args: &Value) -> Result<Value, String> {
                 return Err("debug_menu_item_disabled".into());
             }
             if depth + 1 == path.len() {
-                let _: () = msg_send![menu, performActionForItemAtIndex:index];
+                // Tauri invokes this callback inside Tao's event-handler lock.
+                // Quit re-enters that handler, so dispatch the native action on
+                // the next main-queue turn after this callback has returned.
+                let menu = Retained::retain(menu).ok_or("debug_menu_unavailable")?;
+                let action = block2::RcBlock::new(move || {
+                    let _: () = msg_send![&*menu, performActionForItemAtIndex:index];
+                });
+                let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
+                let _: () = msg_send![queue, addOperationWithBlock:&*action];
             } else {
                 menu = msg_send![item, submenu];
                 if menu.is_null() {

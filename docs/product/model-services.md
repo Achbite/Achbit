@@ -18,7 +18,7 @@ achbit-cli quota CONNECTION_ID
 achbit-cli --model PROFILE_ID ask "Explain this code."
 ```
 
-TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [English](deepseek.md) or [Chinese](deepseek.zh-CN.md) guide.
+TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [DeepSeek setup guide](deepseek.md).
 
 ## Configure through the CLI
 
@@ -54,7 +54,7 @@ Choose **API connection** or **Coding Plan** directly in Models & services. The 
 | Google Gemini | Gemini API | No Google account subscription login supplied | API Key; OpenAI-compatible Chat Completions |
 | DeepSeek | DeepSeek API | — | API Key; Responses, Chat Completions or Messages |
 | GLM / Z.ai | China and global API | China and global Coding Plan | Separate plan keys and endpoints; Chat Completions |
-| Moonshot / Kimi | Moonshot API | Kimi Code China and global | Separate plan keys and endpoints; Chat Completions |
+| Moonshot / Kimi | Moonshot API (Chat Completions) | Kimi Code China and global | Separate plan keys and endpoints; Code supports Responses, Chat Completions and Messages |
 | MiniMax | China and global API | China Token Plan and global M / Coding Plan | API Key or Subscription Key; Messages |
 | Alibaba Cloud | DashScope API | Coding Plan and Token Plan | Dedicated plan key and endpoint; Chat Completions |
 | Volcengine | Ark API | Coding Plan | Dedicated plan key and endpoint; Chat Completions |
@@ -64,9 +64,18 @@ Choose **API connection** or **Coding Plan** directly in Models & services. The 
 
 Plan billing does not imply OAuth. API-key plans never enter the Codex login flow. Choose a key and endpoint from the same provider, region and plan. Provider tool eligibility and account permissions still apply; this client does not impersonate another coding tool. Claude, Cursor, GitHub Copilot and Google consumer subscriptions are not interchangeable API credentials and are not advertised as direct subscription integrations here.
 
-Templates are starting configurations, not a live model inventory. Enter the model ID your account offers when no model is prefilled. Newly added presets start with a conservative 128,000-token context and 16,000-token output budget; adjust these to the model and plan limits. Image input must be enabled for a model that supports it. The **Test** button sends a real short request and reports its error unchanged. Protocol tests do not prove account access, quota or every model-specific feature.
+Templates are starting configurations, not a live model inventory. Enter the model ID your account offers when no model is prefilled. Selecting a preset while adding a model applies its protocol, context, output budget, image support and thinking defaults together. Existing saved profiles are not rewritten when templates change. Account and plan limits may be lower than a model's full context capacity; adjust the context and output budget accordingly. Kimi and MiniMax presets use an editable 32K output budget, not a claimed server maximum. Templates without verified model specifications retain a conservative 128K context and 16K output budget.
+
+- OpenAI API and Codex presets include GPT-6 Astra, GPT-6.1 Sol, GPT-6.1 Terra and GPT-6 Luna, using Responses for reasoning with tools. Codex's Sol preset uses its 500K default context. Astra and Sol require thinking; Terra and Luna allow disabling it. Temperature is omitted while GPT-6 reasoning is enabled.
+- GLM-5.3 is available in the China/global API and Coding Plan entries, with text input, 1M context, and `low` / `high` / `max` effort. Thinking cannot be disabled. The dedicated plan endpoints remain separate from API endpoints.
+- Kimi Code includes `k3.1-pro`, `k3.1-pro-highspeed`, `k3`, `k3-256k`, `kimi-for-coding` (K2.8 Preview), and `kimi-for-coding-highspeed` (K2.7 Code Highspeed). New presets use native Responses and support images. K3.1 Pro requires thinking; the K3 and K2 Code variants route to K2.8 Preview without thinking when disabled. K2.7 Code Highspeed has no adjustable effort. Higher-tier plans are required for some models and 1M contexts. The metered API retains its separate `kimi-k3` model ID.
+- MiniMax API and plan entries include M3.1 Flash and M3 with image input and 1M context. Messages sends adaptive thinking; M3.1 Flash requires thinking.
+
+Thinking and effort selectors show the supported choices for these models. An incompatible saved selection remains visible with a warning until you change it. Title generation uses low effort for models that require thinking. The **Test** button sends a real short request and reports its error unchanged. Protocol tests do not prove account access, quota or every model-specific feature.
 
 Codex exposes a provider quota snapshot. Other plan presets show recorded request/token usage; absence of a quota API is not a zero balance. Plan usage does not display a made-up per-token bill. Gemini tool-call thought signatures are retained through the journal and sent back on subsequent Chat Completions requests.
+
+Model references (checked 2026-10-30): [OpenAI models](https://developers.openai.com/codex/models), [GPT-6 parameters](https://developers.openai.com/api/docs/guides/latest-model), [GLM-5.3](https://docs.z.ai/guides/llm/glm-5.3), [Kimi Code models](https://www.kimi.com/code/docs/en/kimi-code/models.html), [MiniMax models](https://platform.minimax.io/docs/guides/text-generation).
 
 Endpoint references (checked 2026-10-23): [GLM](https://docs.bigmodel.cn/cn/coding-plan/quick-start), [Z.ai](https://zcode.z.ai/en/docs/configuration), [Kimi Code](https://www.kimi.com/code/docs/en/), [MiniMax Global](https://platform.minimax.io/docs/m-plan/other-tools), [MiniMax China](https://platform.minimax.cn/docs/api-reference/text-anthropic-api), [Alibaba Cloud](https://help.aliyun.com/en/model-studio/base-url), [Volcengine](https://docs.volcengine.com/docs/ark/coding-plan-personal-faq?lang=zh), [Gemini](https://ai.google.dev/gemini-api/docs/openai), [Claude API](https://platform.claude.com/docs/en/api/overview).
 

@@ -77,6 +77,7 @@ type SettingsStore = SettingsStateData & SettingsActions;
 
 const SETTING_DEFINITION_SCHEMAS: SettingDefinitionSchema[] = [
   { key: 'gui.showReasoning', group: 'gui', control: 'boolean' },
+  { key: 'gui.autoUpdate', group: 'gui', control: 'boolean' },
   { key: 'gui.completionSound.foreground', group: 'gui', control: 'boolean' },
   { key: 'gui.defaultFileOpen', group: 'gui', control: 'select', options: ['reader', 'vscode'] },
   { key: 'gui.showRuntimeFiles', group: 'gui', control: 'boolean' },

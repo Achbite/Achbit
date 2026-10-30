@@ -1,17 +1,17 @@
 # Workbench Controls Example
 
-在「设置 → 插件」添加此目录并启用，即可替换对话标题、设置导航和文件树的展示。它不默认安装；导入后使用的是 Host 保存的托管副本。编辑源码目录的 `index.mjs` 后，通过插件详情的“更新”重新选择此目录，或执行 `plugins update <id|installed-path> <source-directory>` 更新安装副本，现有 GUI 会加载新模块，无需编译完整应用。
+Add this directory in **Settings → Plugins**, then enable it to replace the conversation header, settings navigation, and file tree presentation. The example is not installed by default. Import creates a Host-managed copy. After editing the source `index.mjs`, choose **Update** in plugin details and select this directory again, or run `plugins update <id|installed-path> <source-directory>`. The current GUI loads the updated module without rebuilding the entire application.
 
-此示例只消费三个分区已有 owner 的视图数据和动作。它不读取文件 API、不发送 Session 命令、不保存额外的页面状态。
+The example consumes the existing owners' view data and actions for three slots. It does not read file APIs, send Session commands, or keep additional page state.
 
-| slot | input.data.kind | 主要数据 | scope.actions |
+| Slot | input.data.kind | Main data | scope.actions |
 | --- | --- | --- | --- |
-| conversation.header | conversationHeader | sessionId、title、project、reader | toggleReader、toggleReaderExpanded、toggleTree |
-| settings.navigation | settingsNavigation | pages、activePage、searchQuery | selectSettingsPage、setSettingsSearch |
-| reader.tree | resourceTree | items、filter、showRuntime、selectedId、watchError、visible | setTreeFilter、setTreeRuntimeVisible、setTreeItemExpanded、openTreeItem、openTreeItemMenu |
+| conversation.header | conversationHeader | sessionId, title, project, reader | toggleReader, toggleReaderExpanded, toggleTree |
+| settings.navigation | settingsNavigation | pages, activePage, searchQuery | selectSettingsPage, setSettingsSearch |
+| reader.tree | resourceTree | items, filter, showRuntime, selectedId, watchError, visible | setTreeFilter, setTreeRuntimeVisible, setTreeItemExpanded, openTreeItem, openTreeItemMenu |
 
-`conversation.header` 的 `heading` 与 `reader` 是两个可挂载的现有区域；示例自绘标题，并调用 `scope.regions.mount('reader', container)` 保留已有 Reader tabs 和控制按钮。可以挂载 `heading` 保留原标题。
+The `heading` and `reader` regions in `conversation.header` can mount existing controls. This example renders its own heading and calls `scope.regions.mount('reader', container)` to retain Reader tabs and controls. Mount `heading` to retain the original title.
 
-文件树的节点 ID 是 owner 提供的不透明 ID。展开和打开只接受当前展示的节点；不从 ID 推算路径。目录使用展开动作，文件使用打开动作，unavailable 节点保留错误并禁用操作。筛选仅匹配已加载节点，语义与内置文件树一致。
+File-tree node IDs are opaque values supplied by the owner. Expand and open actions accept only currently displayed nodes; do not derive paths from IDs. Directories use expansion, files use opening, and unavailable nodes retain their errors with actions disabled. Filtering matches loaded nodes, with the same semantics as the built-in tree.
 
-验证时可打开已有文件后替换插件，检查 Reader tabs 仍可切换；在设置中输入草稿后导航到另一页并返回，检查草稿仍在；展开目录、筛选并打开文件，再编辑示例样式并通过上述更新操作重新安装，检查新模块仍由同一文件树 owner 提供状态。真实鼠标、焦点、原生窗口布局需要在运行的 GUI 中确认。
+To validate the example, open a file before replacing the plugin and check that Reader tabs still work. Enter a settings draft, navigate away and back, and check that it remains. Expand, filter, and open tree entries, then edit and reinstall the example through Update. Confirm that the same tree owner still supplies state. Verify physical mouse input, focus, and native window layout in the running GUI.

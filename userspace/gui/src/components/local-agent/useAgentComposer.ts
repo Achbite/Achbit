@@ -3,7 +3,7 @@ import { localizePlugin } from '../../pluginLocalization';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
 import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { PlanResponse, PluginSelectionInput, ProjectionMessage } from '@achbit/protocol';
+import { modelReasoningEfforts, type PlanResponse, type PluginSelectionInput, type ProjectionMessage } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { shouldSubmitComposerKey } from './composerKeyboard';
@@ -705,9 +705,9 @@ export function useAgentComposer(
   )));
   const selectedProfile = profiles.find(profile => profile.id === selectedProfileId);
   // A null Session override inherits the Profile, as it does in Provider binding.
-  // Only a missing effective effort requires an explicit selection.
+  // Models with adjustable effort require a selected level; fixed-effort models use their service default.
   const modelSelectionConfirmed = Boolean(selectedProfile?.enabled
-    && (selectedProfile.thinking === 'disabled' || (reasoningEffortOverride ?? selectedProfile.reasoningEffort)));
+    && (selectedProfile.thinking === 'disabled' || modelReasoningEfforts(selectedProfile).length === 0 || (reasoningEffortOverride ?? selectedProfile.reasoningEffort)));
   const selectModel = async (profileId: string, effort: import('@achbit/protocol').LlmReasoningEffort | null) => {
     await saveModelChoice(profileId, effort);
   };

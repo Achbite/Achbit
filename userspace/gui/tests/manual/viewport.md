@@ -1,10 +1,10 @@
-# 工具输出的边界滚动
+# Scroll handoff at tool-output boundaries
 
-按 `vite.config.ts` 构建手工夹具，打开 `viewport.html`。夹具使用实际 `ToolActivityGroup`、`useConversationViewport` 和 Composer，不访问 daemon 或 Provider。
+Build the manual fixture with `vite.config.ts` and open `viewport.html`. It uses the real `ToolActivityGroup`, `useConversationViewport`, and Composer without a daemon or Provider.
 
-1. 展开长命令输出。鼠标始终放在输出区域，向下滚动：输出尚未到底时外层位置应保持；到底后继续滚动应带动外层。
-2. 反向向上滚动：先滚动输出，触顶后继续带动外层。顶部读数显示外层位置及输出当前位置/最大位置，便于核对。
-3. 向上阅读后点击“追加正文”，应保持阅读位置；回到对话末尾后追加正文，继续跟随最新。
-4. 展开/收起命令和工具组，标题应保持在当前阅读位置；缩小视口后重复两个方向。
+1. Expand long command output. Keep the pointer inside it and scroll down. The outer position should remain unchanged until the output reaches its bottom; continued scrolling should then move the outer conversation.
+2. Reverse direction. Scroll the output first, then hand off to the outer conversation at the top. The counters display outer position and current/maximum output position.
+3. Scroll up to read, then click the append-body control. The reading position should stay fixed. Return to the conversation end and append again; following should resume.
+4. Expand and collapse commands and tool groups. Their headings should retain the current reading position. Reduce the viewport and repeat in both directions.
 
-`nested-scroll.test.mjs` 验证滚动交接时的跟随状态；浏览器的原生边界滚动需在本夹具实际操作验证，不能用合成 wheel 事件代替。
+`nested-scroll.test.mjs` checks following state during handoff. Verify native browser boundary scrolling by interacting with this fixture; synthetic wheel events do not replace that check.

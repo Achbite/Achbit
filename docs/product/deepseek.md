@@ -1,4 +1,4 @@
-[English](deepseek.md) | [简体中文](deepseek.zh-CN.md) · [Achbit](https://github.com/Achbite/Achbit)
+[Achbit](https://github.com/Achbite/Achbit)
 
 # Use DeepSeek with Achbit (Achbite)
 

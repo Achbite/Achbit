@@ -4,12 +4,13 @@ version = 4
 
 [[package]]
 name = "achbit-gui-tauri-shell"
-version = "0.6.65"
+version = "0.6.66"
 dependencies = [
  "achbit-host-connection",
  "achbit-kernel-abi",
  "base64 0.22.1",
  "block2",
+ "flate2",
  "getrandom 0.3.4",
  "gtk",
  "image",
@@ -23,6 +24,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -37,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "achbit-host-connection"
-version = "0.6.65"
+version = "0.6.66"
 dependencies = [
  "achbit-kernel-abi",
  "base64 0.22.1",
@@ -52,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "achbit-kernel-abi"
-version = "0.6.65"
+version = "0.6.66"
 dependencies = [
  "serde",
  "serde_json",

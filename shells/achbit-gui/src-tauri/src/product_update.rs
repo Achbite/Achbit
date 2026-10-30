@@ -1,4 +1,7 @@
 //! Native product updates. Session remains the authority for task activity.
+#[cfg(any(target_os = "macos", test))]
+mod macos;
+
 use super::{runtime_locations, HostApiEnvelope, HostProcessGroup};
 use achbit_host_connection::installation::{wait_for_process_exit, Installation};
 use achbit_host_connection::loopback_http::request_loopback_json_until;
@@ -10,7 +13,7 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -45,6 +48,10 @@ pub struct ProductUpdates {
     sequence: AtomicU64,
     wake: Notify,
     installation: Installation,
+    enabled: AtomicBool,
+    automatic: AtomicBool,
+    check_requested: AtomicBool,
+    install_requested: AtomicBool,
 }
 
 fn restart_path() -> PathBuf {
@@ -113,22 +120,42 @@ pub fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         preparation: Mutex::new(None),
         sequence: AtomicU64::new(0),
         wake: Notify::new(),
+        enabled: AtomicBool::new(enabled),
+        // The GUI supplies the saved preference after loading user settings.
+        automatic: AtomicBool::new(false),
+        check_requested: AtomicBool::new(false),
+        install_requested: AtomicBool::new(false),
     });
     if enabled {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let updates = app.state::<ProductUpdates>();
-            if failed_restart {
-                updates.wake.notified().await;
-            } else {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
+            let mut automatic_retry = !failed_restart;
+            let mut next_check = Instant::now() + Duration::from_secs(5);
             loop {
-                if let Err(error) = check(&app).await {
-                    updates.publish(&app, "error", None, Some(error));
+                let manual = updates.check_requested.swap(false, Ordering::SeqCst);
+                automatic_retry |= manual;
+                let automatic = updates.enabled.load(Ordering::SeqCst)
+                    && automatic_retry
+                    && updates.automatic.load(Ordering::SeqCst);
+                if updates.enabled.load(Ordering::SeqCst)
+                    && (manual || (automatic && Instant::now() >= next_check))
+                {
+                    if let Err(error) = check(&app).await {
+                        updates.publish(&app, "error", None, Some(error));
+                    }
+                    next_check = Instant::now() + Duration::from_secs(30 * 60);
+                    continue;
                 }
-                let period = Duration::from_secs(30 * 60);
-                let _ = tokio::time::timeout(period, updates.wake.notified()).await;
+                if automatic {
+                    let _ = tokio::time::timeout(
+                        next_check.saturating_duration_since(Instant::now()),
+                        updates.wake.notified(),
+                    )
+                    .await;
+                } else {
+                    updates.wake.notified().await;
+                }
             }
         });
     }
@@ -144,8 +171,37 @@ pub fn achbit_update_status(updates: State<'_, ProductUpdates>) -> Status {
         .clone()
 }
 #[tauri::command]
-pub fn achbit_update_check(updates: State<'_, ProductUpdates>) {
+pub fn achbit_update_check(updates: State<'_, ProductUpdates>) -> Result<(), String> {
+    if !updates.enabled.load(Ordering::SeqCst) {
+        return Err(updates
+            .status
+            .lock()
+            .map_err(|_| "Product update status lock poisoned")?
+            .error
+            .clone()
+            .unwrap_or_else(|| "Product updates are unavailable for this window".into()));
+    }
+    updates.check_requested.store(true, Ordering::SeqCst);
     updates.wake.notify_one();
+    Ok(())
+}
+#[tauri::command]
+pub fn achbit_update_configure(updates: State<'_, ProductUpdates>, enabled: bool) {
+    updates.automatic.store(enabled, Ordering::SeqCst);
+    updates.wake.notify_one();
+}
+#[tauri::command]
+pub fn achbit_update_install(updates: State<'_, ProductUpdates>) -> Result<(), String> {
+    let status = updates
+        .status
+        .lock()
+        .map_err(|_| "Product update status lock poisoned")?;
+    if !updates.enabled.load(Ordering::SeqCst) || status.phase != "waiting" {
+        return Err("No downloaded update is ready to install".into());
+    }
+    updates.install_requested.store(true, Ordering::SeqCst);
+    updates.wake.notify_one();
+    Ok(())
 }
 #[tauri::command]
 pub fn achbit_update_prepare_response(
@@ -268,6 +324,12 @@ async fn check(app: &AppHandle) -> Result<(), String> {
     let bytes = Arc::new(bytes);
     state.publish(app, "waiting", None, None);
     loop {
+        if !state.automatic.load(Ordering::SeqCst)
+            && !state.install_requested.load(Ordering::SeqCst)
+        {
+            state.wake.notified().await;
+            continue;
+        }
         let _owner = match state.installation.update_owner() {
             Ok(owner) => owner,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -278,13 +340,17 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             Err(error) => return Err(error.to_string()),
         };
         let nonce = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let manual = state.install_requested.swap(false, Ordering::SeqCst);
         let (send, receive) = oneshot::channel();
         *state
             .preparation
             .lock()
             .map_err(|_| "Update preparation lock poisoned")? = Some((nonce, send));
-        app.emit("achbit:update-prepare", nonce)
-            .map_err(|error| error.to_string())?;
+        app.emit(
+            "achbit:update-prepare",
+            json!({ "nonce": nonce, "manual": manual }),
+        )
+        .map_err(|error| error.to_string())?;
         let reply = tokio::time::timeout(Duration::from_secs(5), receive).await;
         state
             .preparation
@@ -292,6 +358,10 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             .map_err(|_| "Update preparation lock poisoned")?
             .take();
         if let Ok(Ok(Some(storage))) = reply {
+            if !manual && !state.automatic.load(Ordering::SeqCst) {
+                let _ = app.emit("achbit:update-resume", ());
+                continue;
+            }
             state.publish(app, "preparing", None, None);
             let handle = app.clone();
             let update = update.clone();
@@ -309,7 +379,7 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             state.publish(app, "waiting", Some("interface"), None);
         }
         let _ = app.emit("achbit:update-resume", ());
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), state.wake.notified()).await;
     }
 }
 
@@ -390,6 +460,7 @@ fn install(
         None => None,
     };
     let mut committed = false;
+    let mut can_restart = true;
     let mut restart = Restart {
         version: update.version.clone(),
         storage,
@@ -423,7 +494,23 @@ fn install(
             browser.stop();
         }
         state.publish(app, "installing", None, None);
-        update.install(bytes).map_err(|error| error.to_string())?;
+        #[cfg(target_os = "macos")]
+        let replacement = macos::install(
+            state
+                .installation
+                .root()
+                .ok_or("Installation directory is unavailable")?,
+            bytes,
+        )
+        .map_err(|failure| (failure.message, failure.can_restart));
+        #[cfg(not(target_os = "macos"))]
+        let replacement = update
+            .install(bytes)
+            .map_err(|error| (error.to_string(), true));
+        if let Err((error, restart_allowed)) = replacement {
+            can_restart = restart_allowed;
+            return Err(error);
+        }
         Ok(true)
     })();
     if !committed {
@@ -440,10 +527,29 @@ fn install(
         }
     } else if let Err(error) = &result {
         restart.error = Some(error.clone());
-        save_restart(&restart)?;
-        state.publish(app, "error", None, Some(error.clone()));
-        // Tauri owns package rollback. Relaunch the retained application to reconnect its Host.
-        app.restart();
+        let mut failure = error.clone();
+        if let Err(save_error) = save_restart(&restart) {
+            failure.push_str(&format!(
+                "; cannot save update recovery state: {save_error}"
+            ));
+            can_restart = false;
+        }
+        if can_restart {
+            state.publish(app, "error", None, Some(failure));
+            // The replacement either left the App untouched or restored it successfully.
+            app.restart();
+        }
+        // Keep the recovery error visible; do not start another automatic update against
+        // an installation that requires manual recovery. Keep the GUI open for the error.
+        state.enabled.store(false, Ordering::SeqCst);
+        if let Err(lease_error) = state.installation.resume() {
+            failure.push_str(&format!(
+                "; cannot resume installation lease: {lease_error}"
+            ));
+        }
+        state.publish(app, "error", None, Some(failure.clone()));
+        let _ = app.emit("achbit:update-resume", ());
+        return Err(failure);
     }
     result
 }
