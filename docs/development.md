@@ -67,6 +67,8 @@ Package stages retain the normal archives/installers and add the updater's insta
 | `windows-x86_64` | `Achbit-<version>-win64-setup.exe` | Per-user NSIS Setup |
 | `linux-aarch64` / `linux-x86_64` | Corresponding `.AppImage` | Executable AppImage in a writable directory |
 
+On macOS, Tauri checks, downloads and verifies the signed archive; Achbit stages the complete App beside its installation and owns bundle replacement. A failed replacement restores the previous App before restarting. If restoration fails, the backup and both errors are retained, and further updates and automatic restart stop until the installation is recovered. No administrator prompt is needed for the supported writable installation.
+
 The Mac App contains the separately signed Computer Use helper in `Contents/Helpers`. The PKG installs in `~/Applications`, with wrappers in `~/.local/bin`. NSIS accepts Tauri's silent update and relaunch arguments; it waits for the installation lease and replaces only entries in `package-files.json`. Linux tar archives remain manual-update products. GTK/WebKitGTK and other existing system-library requirements still apply.
 
 After building the intended release targets, sign their updater assets and create the feed on the host (the signer delegates to the configured Docker container). The following example includes the Linux architecture produced by an ARM64 development container:

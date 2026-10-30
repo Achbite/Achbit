@@ -31,6 +31,8 @@ tauri-plugin-updater = "=2.12.0"
 tokio = { version = "1", features = ["time", "sync"] }
 rodio = { version = "0.20", default-features = false, features = ["wav"] }
 tempfile = "3"
+flate2 = "1"
+tar = "0.4"
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [target.'cfg(windows)'.dependencies]

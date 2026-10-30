@@ -1,4 +1,7 @@
 //! Native product updates. Session remains the authority for task activity.
+#[cfg(any(target_os = "macos", test))]
+mod macos;
+
 use super::{runtime_locations, HostApiEnvelope, HostProcessGroup};
 use achbit_host_connection::installation::{wait_for_process_exit, Installation};
 use achbit_host_connection::loopback_http::request_loopback_json_until;
@@ -45,7 +48,7 @@ pub struct ProductUpdates {
     sequence: AtomicU64,
     wake: Notify,
     installation: Installation,
-    enabled: bool,
+    enabled: AtomicBool,
     automatic: AtomicBool,
     check_requested: AtomicBool,
     install_requested: AtomicBool,
@@ -117,7 +120,7 @@ pub fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         preparation: Mutex::new(None),
         sequence: AtomicU64::new(0),
         wake: Notify::new(),
-        enabled,
+        enabled: AtomicBool::new(enabled),
         // The GUI supplies the saved preference after loading user settings.
         automatic: AtomicBool::new(false),
         check_requested: AtomicBool::new(false),
@@ -132,8 +135,12 @@ pub fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 let manual = updates.check_requested.swap(false, Ordering::SeqCst);
                 automatic_retry |= manual;
-                let automatic = automatic_retry && updates.automatic.load(Ordering::SeqCst);
-                if manual || (automatic && Instant::now() >= next_check) {
+                let automatic = updates.enabled.load(Ordering::SeqCst)
+                    && automatic_retry
+                    && updates.automatic.load(Ordering::SeqCst);
+                if updates.enabled.load(Ordering::SeqCst)
+                    && (manual || (automatic && Instant::now() >= next_check))
+                {
                     if let Err(error) = check(&app).await {
                         updates.publish(&app, "error", None, Some(error));
                     }
@@ -165,8 +172,14 @@ pub fn achbit_update_status(updates: State<'_, ProductUpdates>) -> Status {
 }
 #[tauri::command]
 pub fn achbit_update_check(updates: State<'_, ProductUpdates>) -> Result<(), String> {
-    if !updates.enabled {
-        return Err("Product updates are unavailable for this window".into());
+    if !updates.enabled.load(Ordering::SeqCst) {
+        return Err(updates
+            .status
+            .lock()
+            .map_err(|_| "Product update status lock poisoned")?
+            .error
+            .clone()
+            .unwrap_or_else(|| "Product updates are unavailable for this window".into()));
     }
     updates.check_requested.store(true, Ordering::SeqCst);
     updates.wake.notify_one();
@@ -183,7 +196,7 @@ pub fn achbit_update_install(updates: State<'_, ProductUpdates>) -> Result<(), S
         .status
         .lock()
         .map_err(|_| "Product update status lock poisoned")?;
-    if !updates.enabled || status.phase != "waiting" {
+    if !updates.enabled.load(Ordering::SeqCst) || status.phase != "waiting" {
         return Err("No downloaded update is ready to install".into());
     }
     updates.install_requested.store(true, Ordering::SeqCst);
@@ -447,6 +460,7 @@ fn install(
         None => None,
     };
     let mut committed = false;
+    let mut can_restart = true;
     let mut restart = Restart {
         version: update.version.clone(),
         storage,
@@ -480,7 +494,23 @@ fn install(
             browser.stop();
         }
         state.publish(app, "installing", None, None);
-        update.install(bytes).map_err(|error| error.to_string())?;
+        #[cfg(target_os = "macos")]
+        let replacement = macos::install(
+            state
+                .installation
+                .root()
+                .ok_or("Installation directory is unavailable")?,
+            bytes,
+        )
+        .map_err(|failure| (failure.message, failure.can_restart));
+        #[cfg(not(target_os = "macos"))]
+        let replacement = update
+            .install(bytes)
+            .map_err(|error| (error.to_string(), true));
+        if let Err((error, restart_allowed)) = replacement {
+            can_restart = restart_allowed;
+            return Err(error);
+        }
         Ok(true)
     })();
     if !committed {
@@ -497,10 +527,29 @@ fn install(
         }
     } else if let Err(error) = &result {
         restart.error = Some(error.clone());
-        save_restart(&restart)?;
-        state.publish(app, "error", None, Some(error.clone()));
-        // Tauri owns package rollback. Relaunch the retained application to reconnect its Host.
-        app.restart();
+        let mut failure = error.clone();
+        if let Err(save_error) = save_restart(&restart) {
+            failure.push_str(&format!(
+                "; cannot save update recovery state: {save_error}"
+            ));
+            can_restart = false;
+        }
+        if can_restart {
+            state.publish(app, "error", None, Some(failure));
+            // The replacement either left the App untouched or restored it successfully.
+            app.restart();
+        }
+        // Keep the recovery error visible; do not start another automatic update against
+        // an installation that requires manual recovery. Keep the GUI open for the error.
+        state.enabled.store(false, Ordering::SeqCst);
+        if let Err(lease_error) = state.installation.resume() {
+            failure.push_str(&format!(
+                "; cannot resume installation lease: {lease_error}"
+            ));
+        }
+        state.publish(app, "error", None, Some(failure.clone()));
+        let _ = app.emit("achbit:update-resume", ());
+        return Err(failure);
     }
     result
 }
