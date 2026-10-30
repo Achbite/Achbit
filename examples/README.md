@@ -1,6 +1,6 @@
 # Achbit examples
 
-[简体中文](README.zh-CN.md) · [Back to README](../README.md)
+[Back to README](../README.md)
 
 | Example | What you can inspect |
 | --- | --- |

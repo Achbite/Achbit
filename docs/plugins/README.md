@@ -1,6 +1,6 @@
 # Plugin development
 
-[简体中文](README.zh-CN.md) · [Product operations](../product/operations.md#settings-and-extensions)
+[Product operations](../product/operations.md#settings-and-extensions)
 
 [Boundaries](#boundaries) · [Artifacts and import](#artifacts-and-import) · [Discovery](#discovery) · [CLI tools](#cli-tools) · [Hosted services](#hosted-services) · [UI and Skills](#ui-and-skills) · [Provider files and conversations](#provider-files-and-conversations)
 

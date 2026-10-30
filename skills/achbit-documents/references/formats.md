@@ -16,14 +16,14 @@ Start from `assets/document.typ` and replace its example content. Set the page a
 #set page(paper: "a4", margin: 20mm)
 #set text(size: 11pt, lang: "zh")
 
-= 文档标题
+= Document title
 
-正文内容。可以写 *强调*，公式 $a^2 + b^2 = c^2$，以及列表。
+Body text can include *emphasis*, equations such as $a^2 + b^2 = c^2$, and lists.
 
 #table(
   columns: (1fr, auto),
-  table.header([项目], [金额]),
-  [示例], [30.50],
+  table.header([Item], [Amount]),
+  [Example], [30.50],
 )
 ```
 

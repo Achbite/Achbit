@@ -4,8 +4,7 @@
 <p align="center">
   <a href="https://github.com/Achbite/Achbit/releases">Download</a> ·
   <a href="docs/product/deepseek.md">DeepSeek setup</a> ·
-  <a href="examples/README.md">Examples</a> ·
-  <a href="README.zh-CN.md">简体中文</a>
+  <a href="examples/README.md">Examples</a>
 </p>
 
 # Achbit
@@ -55,7 +54,7 @@ The navigation holds your projects and conversations. Tool results stay with the
 
 Packages include their runtime. See [platform requirements and installation](docs/distribution.md) for WebView2, Linux desktop dependencies, and the packages available for each release.
 
-Starting with 0.6.61, application data directories, environment variables and integration identifiers use Achbit names. A default first launch uses a new data directory; previous data and credentials are left untouched and are not automatically imported. See the [data directory guide](docs/distribution.md#产品标识与数据目录) when configuring launchers or integrations.
+Starting with 0.6.61, application data directories, environment variables and integration identifiers use Achbit names. A default first launch uses a new data directory; previous data and credentials are left untouched and are not automatically imported. See the [data directory guide](docs/distribution.md#product-identity-and-data-directories) when configuring launchers or integrations.
 
 ## Computer Use
 
@@ -87,7 +86,7 @@ Import an external plugin from **Settings → Plugins → Add**, selecting its Z
 
 Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
 
-See the **[complete plugin development rules](docs/plugins/README.md)** for artifact layout, manifest fields, stdin/stdout contracts, lifecycle, file transport and validation; [中文文档](docs/plugins/README.zh-CN.md) is also available. This describes generic extension contracts and does not add experimental plugins to the built-in catalog.
+See the **[complete plugin development rules](docs/plugins/README.md)** for artifact layout, manifest fields, stdin/stdout contracts, lifecycle, file transport and validation. This describes generic extension contracts and does not add experimental plugins to the built-in catalog.
 
 ## How it fits together
 

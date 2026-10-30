@@ -1,6 +1,6 @@
 # DeepSeek API: from browser research to a working checklist
 
-[简体中文](README.zh-CN.md) · [All examples](../README.md)
+[All examples](../README.md)
 
 Use DeepSeek and Achbit's Computer Use plugin to read public documentation and create an interactive checklist. This example includes a self-contained reference page and a prompt for creating your own version.
 

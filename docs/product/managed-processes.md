@@ -1,6 +1,6 @@
 # Managed commands and dependency waiting
 
-Shell, PowerShell, long-running tasks, 托管任务, 长命令, 等待, 卡住, 取消.
+Shell, PowerShell, managed commands, long-running tasks, dependency waiting, and cancellation.
 
 ## Choose execution and waiting
 
@@ -26,4 +26,4 @@ Use concrete evidence. Network failure, proxy configuration, missing credentials
 
 Within existing task authorization, cancel the job, repair the environment or restart the shell command as needed. `{"action":"cancel","jobId":"<returned jobId>"}` targets that execution. Recheck partial effects before repeating a mutation. Ask only for genuinely missing information or a material choice; routine recovery needs no additional confirmation.
 
-The GUI's **Stop command / 停止此命令** cancels one execution without stopping the whole Loop. The task's Stop action cancels the run and cleans its owned jobs. Process cancellation covers the owned command/process group, not an existing user container. Run end cleans temporary test containers under the existing container contract. No command survives the owning run's cleanup by default.
+The GUI's **Stop command** cancels one execution without stopping the whole Loop. The task's Stop action cancels the run and cleans its owned jobs. Process cancellation covers the owned command/process group, not an existing user container. Run end cleans temporary test containers under the existing container contract. No command survives the owning run's cleanup by default.

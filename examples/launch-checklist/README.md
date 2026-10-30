@@ -1,6 +1,6 @@
 # Launch checklist
 
-[简体中文](README.zh-CN.md) · [All examples](../README.md)
+[All examples](../README.md)
 
 A small Computer Use project: four release tasks, progress counters, filters, and browser-local persistence. Open `index.html` directly; no server or dependencies are required.
 

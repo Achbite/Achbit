@@ -1,6 +1,6 @@
 # Development and validation
 
-Use the Docker development environment for dependencies, shared TypeScript, GUI resources, tests, and general builds. The macOS packaging stage delegates native compilation and signing to the Mac host. Start with the [English](../README.md#build-from-source) or [简体中文](../README.zh-CN.md#从源码构建) build instructions.
+Use the Docker development environment for dependencies, shared TypeScript, GUI resources, tests, and general builds. The macOS packaging stage delegates native compilation and signing to the Mac host. Start with the [build instructions](../README.md#build-from-source).
 
 ## Development container
 
@@ -52,7 +52,7 @@ make ui-update UI_PACKAGE=bin/macos-arm64
 
 For a separate worktree, also pass its `CONTAINER_NAME`. Select `bin/win64` or the generated Linux directory for those packages. macOS resource replacement runs on the host so signing can access its Keychain. Reload with **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** elsewhere.
 
-A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#更新与功能配置).
+A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#updates-and-configuration-changes).
 
 
 ## Automatic application updates
@@ -89,7 +89,7 @@ Keep the private signing key outside the checkout. The local signing command rea
 
 Prepare a draft Release, upload every initial installer/archive plus updater asset, its `.sig`, and `latest.json`, then publish and mark it as the latest stable Release. The feed must name only available platform assets. Its version and URLs identify the new product; publishing an empty or partially uploaded feed is not a completed release. Signing and manifest creation do not themselves push or publish anything.
 
-The GUI checks after startup and every 30 minutes. After verifying the download, it waits for UI input to be idle for 15 seconds and for unsaved settings to be resolved. Host preparation gates new external work and checks Session activity, Kernel work and connected clients. A filesystem lease covers other CLI/TUI/Host processes using the same installation, even with different user roots. Automatic installation is owned by a local GUI with a managed Host. SSH and connect-only windows do not initiate an installation; close them before updating the local installation. A persistent Host blocks automatic installation until explicitly stopped. Only after preparation and a confirmed Host shutdown does the updater replace program files. Drafts and view state are restored before React mounts; Session facts are reloaded from the existing store.
+The GUI checks after startup and every 30 minutes when the saved `gui.autoUpdate` preference is enabled (the default). Turning it off prevents scheduled checks and automatic installation; manual checks remain available from About Achbit. After verifying the download, it waits for input in the Achbit window to be idle for 15 seconds and for unsaved settings to be resolved. Activity in other applications does not reset the timer. Clicking the ready update arrow requests installation and skips only the local input grace period; IME composition and all UI/Host activity guards still apply. Host preparation gates new external work and checks Session activity, Kernel work and connected clients. A filesystem lease covers other CLI/TUI/Host processes using the same installation, even with different user roots. Automatic installation is owned by a local GUI with a managed Host. SSH and connect-only windows do not initiate an installation; close them before updating the local installation. A persistent Host blocks automatic installation until explicitly stopped. Only after preparation and a confirmed Host shutdown does the updater replace program files. Drafts and view state are restored before React mounts; Session facts are reloaded from the existing store.
 
 For a local macOS Debug upgrade, build two distinct versions through the existing Docker/native bridge:
 
@@ -132,6 +132,8 @@ bash ./test.sh full       # Complete registered suite, including shared shells a
 ```
 
 `bash ./test.sh static` checks shell syntax and Git whitespace and can run on the host. A container snapshot without accessible host-owned Git metadata reports that diff check as skipped; run it on the host separately. Skipped checks are not passing checks.
+
+On Windows, `node --test scripts/tests/windows-installer.test.mjs` executes the replacement script with Windows PowerShell 5.1 against disposable installations. It covers fresh installation, upgrades, ownership preservation, and rollback. The cross-volume case requires the checkout and TEMP to be on different volumes; otherwise that case reports a skip.
 
 The end-to-end suite uses local fixture providers; its results do not establish real-provider connectivity or native desktop behavior. For explicitly requested standard-package/installer acceptance, use the target package for a real CLI conversation and TUI/GUI startup. A Debug test package alone does not require those checks. Documentation-only changes use static and content/link checks without rebuilding the runtime.
 

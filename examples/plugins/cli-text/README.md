@@ -1,13 +1,13 @@
-# 本地 CLI 工具模板
+# Local CLI tool template
 
-设置 → 插件 → 添加，选择本目录。界面读取 `achbit-tool.json` 的名称、用途和入口。
+Choose **Settings → Plugins → Add** and select this directory. The interface reads the name, purpose, and entrypoint from `achbit-tool.json`.
 
-登记并启用后，Agent 可以根据任务通过 `plugin.search` 发现“文本统计”，再通过 `plugin.activate` 加载；也可以由用户在输入框明确选择。仅登记不会把工具加入每个任务。激活后的下一次模型请求获得工具和说明，作用于本次运行。
+After registration and enablement, the Agent can discover this text-statistics tool through `plugin.search` and load it through `plugin.activate`. Users can also select it explicitly in the composer. Registration alone does not add it to every task. Activation supplies tools and guidance to the next model request in the current run.
 
-搜索使用 manifest 的名称、用途以及各工具的名称和说明；因此应描述实际能完成的任务。查询使用短关键词，空白分隔的词必须全部命中同一插件。需要浏览目录时可省略 query，使用返回的 nextOffset 继续读取，不必预先知道插件名。
+Search matches the manifest's name and purpose plus tool names and descriptions, so describe the work the plugin performs. Use short keywords; every whitespace-separated word must match the same plugin. To browse without knowing a name, omit query and continue with the returned nextOffset.
 
-程序从 stdin 接收一个 JSON 对象 `{name, arguments, context}`，向 stdout 写出一个 JSON 结果；失败返回 `{error:{code,message}}`，诊断写 stderr。
+The program reads one JSON object `{name, arguments, context}` from stdin and writes one JSON result to stdout. Failures return `{error:{code,message}}`; diagnostics go to stderr.
 
-`command` 是已有解释器，`entry` 是目录内的单文件构建产物，`args` 在入口后传递。不通过 Shell 拼接执行。需要第三方库的工具应将自身代码构建为单文件入口并使用已配置的解释器环境。其他静态文件不自动复制到调用目录。
+`command` is an available interpreter, `entry` is a single-file build output within the directory, and `args` follow that entrypoint. Execution does not concatenate a shell command. Tools needing third-party libraries must bundle their own code into one entrypoint and use the configured interpreter environment. Other static files are not automatically copied into the invocation directory.
 
-已选择的入口在请求准备时捕获，保存新入口后从下次请求起生效；等待授权/在途调用继续使用旧内容。工具调用经过现有 Kernel 执行链，本地外部程序仍按外部执行权限处理。每次调用单独运行，超时或取消回收本次进程。
+Selected entrypoint content is captured during request preparation. A saved replacement takes effect at the next request; pending approvals and in-flight calls retain their original content. Calls use the existing Kernel execution path, and local external programs remain subject to external execution permissions. Each invocation has its own process, reclaimed on timeout or cancellation.

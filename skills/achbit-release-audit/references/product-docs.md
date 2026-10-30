@@ -21,7 +21,7 @@ Write for the reader's next action, not the history of the implementation.
 
 ## Synchronize and check
 
-Preserve existing language conventions and current feature facts. Keep README language variants aligned when they are affected. Reuse existing pages instead of creating another documentation system.
+Maintain product documentation in English and preserve current feature facts. Existing localized document paths may link to the canonical English guide. Interface localization remains separate. Reuse existing pages instead of creating another documentation system.
 
 Check changed commands/keys against their entrypoints, relative links/anchors and direct consumers. Built-in resources are registered in `crates/achbit-kernel-daemon/src/local_agent_product_tools.rs`; package copies are selected by `scripts/package-runtime.py`. Retain registered names unless their public removal is in scope.
 

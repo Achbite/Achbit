@@ -18,7 +18,7 @@ achbit-cli quota CONNECTION_ID
 achbit-cli --model PROFILE_ID ask "Explain this code."
 ```
 
-TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [English](deepseek.md) or [Chinese](deepseek.zh-CN.md) guide.
+TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [DeepSeek setup guide](deepseek.md).
 
 ## Configure through the CLI
 

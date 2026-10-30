@@ -32,7 +32,7 @@ Activate relevant enabled results with `plugin.activate` alone, using their exac
 | Custom Skills | `skills.mounts`; folder or `SKILL.md` |
 | Display plugins | `workbench.uiPlugins`, `achbit-ui.json`; see [UI plugins](ui-plugins.md) |
 
-For importable artifacts, manifest fields, invocation and cleanup rules, see [Plugin development](../plugins/README.md) ([简体中文](../plugins/README.zh-CN.md)).
+For importable artifacts, manifest fields, invocation and cleanup rules, see [Plugin development](../plugins/README.md).
 
 Settings switches/selections save immediately; numeric fields commit with Enter. Text edits and new connections retain Save/Create. Saved runtime configuration generally applies to the next run; selected Skill/CLI-plugin content is refreshed before the next request. In-flight calls keep their captured bindings. Relevant permission revocation is checked before execution.
 
