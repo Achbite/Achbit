@@ -228,16 +228,33 @@ pub(crate) fn adapter_descriptors() -> Value {
             "imageInput": matches!(id, "gpt-6-astra" | "deepseek-flash")
         })
     };
-    let mut astra = model(
-        "GPT-6 Astra",
-        "gpt-6-astra",
-        "responses",
-        "openai",
-        1_050_000,
-        128_000,
-    );
-    let custom_astra = astra.clone();
-    astra["hostedWebSearch"] = json!("web_search");
+    // Model capacities are presets; account/plan limits may be lower.
+    // Sources: OpenAI model catalog, GLM-5.3 guide, Kimi Code model configuration,
+    // and MiniMax text-generation guide (see docs/product/model-services.md).
+    let openai_models: Vec<Value> = [
+        ("GPT-6 Astra", "gpt-6-astra"),
+        ("GPT-6.1 Sol", "gpt-6.1-sol"),
+        ("GPT-6.1 Terra", "gpt-6.1-terra"),
+        ("GPT-6 Luna", "gpt-6-luna"),
+    ]
+    .into_iter()
+    .map(|(name, id)| {
+        let mut preset = model(name, id, "responses", "openai", 1_050_000, 128_000);
+        preset["imageInput"] = json!(true);
+        preset["thinking"] = json!("enabled");
+        preset["reasoningEffort"] = json!("medium");
+        preset["hostedWebSearch"] = json!("web_search");
+        preset
+    })
+    .collect();
+    let mut codex_models = openai_models.clone();
+    // Codex / ChatGPT Work currently defaults Sol to 500K context.
+    codex_models[1]["contextWindowTokens"] = json!(500_000);
+    let mut custom_astra = openai_models[0].clone();
+    custom_astra
+        .as_object_mut()
+        .unwrap()
+        .remove("hostedWebSearch");
     let mut deepseek = model(
         "DeepSeek Flash",
         "deepseek-flash",
@@ -248,12 +265,80 @@ pub(crate) fn adapter_descriptors() -> Value {
     );
     deepseek["thinking"] = json!("enabled");
     deepseek["reasoningEffort"] = json!("max");
+    let mut glm = model(
+        "GLM 5.3",
+        "glm-5.3",
+        "openaiCompatible",
+        "zhipu",
+        1_000_000,
+        131_072,
+    );
+    glm["thinking"] = json!("enabled");
+    glm["reasoningEffort"] = json!("max");
+    let mut kimi_api = model(
+        "Kimi K3",
+        "kimi-k3",
+        "openaiCompatible",
+        "moonshot",
+        1_048_576,
+        32_768,
+    );
+    kimi_api["imageInput"] = json!(true);
+    kimi_api["thinking"] = json!("enabled");
+    kimi_api["reasoningEffort"] = json!("max");
+    let kimi_models: Vec<Value> = [
+        ("Kimi K3.1 Pro", "k3.1-pro", 1_048_576, Some("high")),
+        (
+            "Kimi K3.1 Pro Highspeed",
+            "k3.1-pro-highspeed",
+            1_048_576,
+            Some("high"),
+        ),
+        ("Kimi K3", "k3", 1_048_576, Some("high")),
+        ("Kimi K3 · 256K", "k3-256k", 262_144, Some("high")),
+        (
+            "Kimi K2.8 Preview",
+            "kimi-for-coding",
+            1_048_576,
+            Some("max"),
+        ),
+        (
+            "Kimi K2.7 Code Highspeed",
+            "kimi-for-coding-highspeed",
+            262_144,
+            None,
+        ),
+    ]
+    .into_iter()
+    .map(|(name, id, context, effort)| {
+        // 32K is an editable output budget, not a published server maximum.
+        let mut preset = model(name, id, "responses", "moonshot", context, 32_768);
+        preset["imageInput"] = json!(true);
+        preset["thinking"] = json!("enabled");
+        if let Some(effort) = effort {
+            preset["reasoningEffort"] = json!(effort);
+        }
+        preset
+    })
+    .collect();
+    let minimax_models: Vec<Value> = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+        .into_iter()
+        .map(|id| {
+            let mut preset = model(id, id, "anthropic", "openai", 1_000_000, 32_768);
+            preset["imageInput"] = json!(true);
+            preset["thinking"] = json!("enabled");
+            if id == "MiniMax-M3.1-Flash" {
+                preset["reasoningEffort"] = json!("max");
+            }
+            preset
+        })
+        .collect();
     let mut adapters = json!([
-        {"id":"openai","name":"OpenAI","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible"],"defaultBaseUrl":"https://api.openai.com/v1","models":[astra],"pricing":true,"quota":false,"source":"builtin"},
-        {"id":"openai-codex","name":"OpenAI · Codex","billingModes":["subscription"],"authMethods":["browser","deviceCode"],"protocols":["responses"],"defaultBaseUrl":"https://chatgpt.com/backend-api/codex","models":[astra],"pricing":false,"quota":true,"source":"builtin"},
+        {"id":"openai","name":"OpenAI","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible"],"defaultBaseUrl":"https://api.openai.com/v1","models":openai_models,"pricing":true,"quota":false,"source":"builtin"},
+        {"id":"openai-codex","name":"OpenAI · Codex","billingModes":["subscription"],"authMethods":["browser","deviceCode"],"protocols":["responses"],"defaultBaseUrl":"https://chatgpt.com/backend-api/codex","models":codex_models,"pricing":false,"quota":true,"source":"builtin"},
         {"id":"deepseek","name":"DeepSeek","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible","anthropic"],"defaultBaseUrl":"https://api.deepseek.com","models":[deepseek],"pricing":true,"quota":false,"source":"builtin"},
-        {"id":"zhipu","name":"GLM API","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[model("GLM 5.3","glm-5.3","openaiCompatible","zhipu",1_000_000,131_072)],"pricing":false,"quota":false,"source":"builtin"},
-        {"id":"moonshot","name":"Kimi","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://api.moonshot.ai/v1","models":[model("Kimi K3","kimi-k3","openaiCompatible","moonshot",1_000_000,32768)],"pricing":false,"quota":false,"source":"builtin"},
+        {"id":"zhipu","name":"GLM API","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[glm],"pricing":false,"quota":false,"source":"builtin"},
+        {"id":"moonshot","name":"Kimi","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://api.moonshot.ai/v1","models":[kimi_api],"pricing":false,"quota":false,"source":"builtin"},
         {"id":"custom","name":"自定义 API","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible","anthropic"],"defaultBaseUrl":"https://api.openai.com/v1","models":[custom_astra],"pricing":false,"quota":false,"source":"builtin"},
         {"id":"ollama","name":"Ollama","billingModes":["metered"],"authMethods":["none"],"protocols":["ollama"],"defaultBaseUrl":"http://127.0.0.1:11434","models":[],"pricing":false,"quota":false,"source":"builtin"}
     ]);
@@ -450,14 +535,23 @@ pub(crate) fn adapter_descriptors() -> Value {
             "",
         ),
     ] {
-        let models = if model_id.is_empty() {
-            Vec::new()
+        let models = match id {
+            "zai" | "glm-coding" | "zai-coding" => vec![glm.clone()],
+            "kimi-coding" | "kimi-coding-global" => kimi_models.clone(),
+            "minimax" | "minimax-cn" | "minimax-coding" | "minimax-coding-cn" => {
+                minimax_models.clone()
+            }
+            _ if model_id.is_empty() => Vec::new(),
+            _ => vec![model(model_id, model_id, protocol, flavor, 128_000, 16_000)],
+        };
+        let protocols = if matches!(id, "kimi-coding" | "kimi-coding-global") {
+            vec!["responses", "openaiCompatible", "anthropic"]
         } else {
-            vec![model(model_id, model_id, protocol, flavor, 128_000, 16_000)]
+            vec![protocol]
         };
         adapters.as_array_mut().unwrap().push(json!({
             "id":id, "name":name, "billingModes":[billing], "authMethods":["apiKey"],
-            "protocols":[protocol], "defaultBaseUrl":url, "models":models,
+            "protocols":protocols, "defaultBaseUrl":url, "models":models,
             "pricing":false, "quota":false, "source":"builtin"
         }));
     }
