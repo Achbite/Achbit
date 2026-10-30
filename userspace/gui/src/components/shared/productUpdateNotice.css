@@ -16,6 +16,7 @@
 }
 .product-update-notice__icon > [data-ui-icon] { width: 18px; height: 18px; }
 .product-update-notice__icon:hover { background: var(--ac-surface-hover); }
+button.product-update-notice__icon { cursor: pointer; }
 .product-update-notice[data-product-update='error'] .product-update-notice__icon { color: var(--ac-warning); cursor: pointer; }
 .product-update-notice__progress {
   position: absolute;

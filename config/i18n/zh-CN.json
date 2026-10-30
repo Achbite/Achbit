@@ -1375,9 +1375,17 @@
     "agent.tool.shell.searched": "已在 {targets} 中搜索“{query}”",
     "agent.tool.shell.moreIntents": " · 另 {count} 项",
     "productUpdate.downloading": "正在下载 {version}",
-    "productUpdate.waiting": "更新已就绪，空闲后自动重启",
+    "productUpdate.waiting": "更新已就绪，Achbit 空闲后自动重启",
+    "productUpdate.ready": "更新 {version} 已就绪",
+    "productUpdate.installNow": "安装更新并重启",
+    "productUpdate.check": "检查更新",
+    "productUpdate.checking": "正在检查更新…",
+    "productUpdate.current": "当前已是最新版本",
+    "productUpdate.reason.clients": "等待其他 Achbit 入口关闭",
+    "productUpdate.reason.tasks": "等待 Achbit 任务、审批或后台工作结束",
+    "productUpdate.reason.interface": "等待 Achbit 输入结束、设置保存和界面就绪",
     "productUpdate.installing": "正在更新并重启…",
-    "productUpdate.error": "自动更新未完成",
+    "productUpdate.error": "更新未完成",
     "productUpdate.retry": "重新检查"
   },
   "settings": {
@@ -1414,6 +1422,10 @@
         "comfortable": "舒适",
         "compact": "紧凑"
       }
+    },
+    "gui.autoUpdate": {
+      "label": "自动更新",
+      "description": "自动检查并下载更新，Achbit 空闲后安装和重启；操作其他软件不影响空闲判定。关闭后可在“关于 Achbit”中检查更新，或点击已就绪的更新箭头安装。"
     },
     "gui.completionSound.foreground": {
       "label": "前台任务完成时播放提示音",
