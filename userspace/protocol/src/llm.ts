@@ -10,10 +10,25 @@ export type LlmReasoningEffort = typeof LLM_REASONING_EFFORTS[number];
 export function isLlmReasoningEffort(value: unknown): value is LlmReasoningEffort {
   return typeof value === 'string' && LLM_REASONING_EFFORTS.some(effort => effort === value);
 }
-export function modelReasoningEfforts(profile?: Pick<LlmProviderProfile, 'providerFlavor'>): readonly LlmReasoningEffort[] {
-  return profile?.providerFlavor === 'deepseek' ? ['low', 'high', 'max'] : LLM_REASONING_EFFORTS;
+type ModelThinkingProfile = Pick<LlmProviderProfile, 'providerFlavor'> & Partial<Pick<LlmProviderProfile, 'model'>>;
+export function modelReasoningEfforts(profile?: ModelThinkingProfile): readonly LlmReasoningEffort[] {
+  const model = profile?.model ?? '';
+  if (profile?.providerFlavor === 'deepseek'
+    || profile?.providerFlavor === 'zhipu' && model === 'glm-5.3') return ['low', 'high', 'max'];
+  if (profile?.providerFlavor === 'moonshot') {
+    if (model.startsWith('kimi-k3') || ['k3', 'k3-256k', 'k3.1-pro', 'k3.1-pro-highspeed', 'kimi-for-coding'].includes(model)) return ['low', 'high', 'max'];
+    if (model.startsWith('kimi-k2.7-code') || model === 'kimi-for-coding-highspeed') return [];
+  }
+  return LLM_REASONING_EFFORTS;
 }
 export type LlmThinkingMode = 'enabled' | 'disabled';
+export function modelThinkingModes(profile?: ModelThinkingProfile): readonly LlmThinkingMode[] {
+  const model = profile?.model ?? '';
+  const required = profile?.providerFlavor === 'zhipu' && model === 'glm-5.3'
+    || profile?.providerFlavor === 'moonshot' && (model.startsWith('kimi-k3') || ['k3.1-pro', 'k3.1-pro-highspeed'].includes(model))
+    || profile?.providerFlavor === 'openai' && ['gpt-6-astra', 'gpt-6.1-sol', 'MiniMax-M3.1-Flash'].includes(model);
+  return required ? ['enabled'] : ['enabled', 'disabled'];
+}
 export type LlmHostedWebSearch = 'web_search';
 
 export interface LlmProviderProfile {
