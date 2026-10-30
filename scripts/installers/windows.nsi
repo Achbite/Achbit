@@ -87,9 +87,10 @@ Section "Achbit" Main
   File /r "${STAGE}/*"
   SetOutPath "$PLUGINSDIR"
   File /oname=install-runtime.ps1 "${INSTALL_RUNTIME}"
-  ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install-runtime.ps1" -Stage "$PLUGINSDIR\runtime" -Destination "$INSTDIR"' $0
+  StrCpy $R6 "$LOCALAPPDATA\Achbit\Logs\installer-error.log"
+  ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install-runtime.ps1" -Stage "$PLUGINSDIR\runtime" -Destination "$INSTDIR" -ErrorLog "$R6"' $0
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP "Achbit program replacement failed (exit $0). The installer retained the previous program or its recovery files."
+    MessageBox MB_ICONSTOP "Achbit program replacement failed (exit $0). The installer retained the previous program or its recovery files.$\r$\nError details: $R6"
     Abort
   ${EndIf}
   ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\libexec\windows-environment.ps1"' $0
