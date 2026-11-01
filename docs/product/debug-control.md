@@ -92,11 +92,23 @@ Optional plugins: `components list`, `components inspect --uri URI`, then `compo
 ```sh
 ./achbit-debug surfaces list
 ./achbit-debug surfaces inspect --target main
+./achbit-debug surfaces actions --target main
+./achbit-debug action --target main --name ui.action --observation state --args '{"actionId":"composer.controls.attachments","waitFor":{"actionId":"composer.controls.attachments","attribute":"aria-expanded","equals":"true"}}'
 ./achbit-debug action --target main --name click --args '{"selector":"OBSERVED_SELECTOR"}'
 ./achbit-debug action --target main --name plugin.action --args '{"componentId":"OBSERVED_ID","action":"OBSERVED_ACTION","arguments":[]}'
 ```
 
-Use current surface IDs, selectors, component signatures and availability from inspection. DOM actions: `click`, `type`, `select`, `key`, `scroll`, `focus`, `wait`. A component callback returning does not establish asynchronous business completion.
+Use current surface IDs, selectors, component signatures and availability from inspection. Component observations include stable `ownerId`, document/instance identity, source locations and declared DOM boundaries. An inherited region identifies its container, not complete coverage of all child controls. Plugin descendants without their own declarations report `implementationCoverage: plugin-internal-unmapped` and the current renderer ID/generation. Repeated owners keep distinct instances; ambiguous selectors/instance IDs are rejected instead of choosing the first match. Unmounted or unmarked boundaries remain explicit.
+
+Opening the Debug app automatically enables ownership labels for the current document. Hover or focus a control to see its owner, part, instance and source. Controls with a declared `actionId` also display that exact CLI action ID. Use `action --target main --name ui.overlay --args '{"enabled":false}'` to turn labels off in that document, or pass `true` to turn them back on. Its label is positioned within the viewport independently of the highlighted control's width, including narrow icons and dividers. It never intercepts business clicks or changes layout. Multiple source declarations are reported as ambiguous. Source locations come from build-time declarations in a Debug-only resource. Ordinary and Debug packages load the same business GUI assets, with diagnostic code attached only by Debug packaging.
+
+`surfaces actions` lists currently mounted, explicitly declared interactions. A stable `actionId` identifies the operation; `target` identifies the existing Session, activity, question, option, or file. Copy target fields from the current catalog. Omitting fields is allowed only when the match is unique. Duplicate, unmounted, unavailable and undeclared-availability targets fail without invoking a handler. For example, a mounted tool card exposes `conversation.tool.toggle` with its `sessionId` and `activityId`. Virtualized cards must first be mounted through normal navigation/scrolling.
+
+The catalog and receipt distinguish `dom.click`/`dom.type`/`dom.select` from `component.callback`. DOM declarations point to the real rendered control and reuse its ordinary handlers, disabled state and hit checks; these are synthetic DOM events (`trustedNativeInput: false`), not OS input. Existing region callbacks retain their own completion contract. `unmarkedVisibleControls` explicitly lists remaining controls without semantic action declarations; catalog coverage is `declared-interactions-only`, never a claim to cover all UI. Native windows, menus and dialogs retain the separate observed IDs and commands below.
+
+Stable action waits accept `actionId`, `target` and an expected `attribute`/`equals`, `value`, `text`, `visible` or `absent` condition. Component-state waits accept `ownerId`, `target`, `path` and `equals`. A timeout preserves the executed action and reports incomplete observation. A successful DOM condition does not assert Session task completion, persistence or authorization. Batch pipelines should specify each scenario's preconditions and result assertions; never blindly replay toggles or approve every decision to make a test pass.
+
+DOM actions: `click`, `type`, `select`, `key`, `scroll`, `focus`, `wait`. A component callback returning does not establish asynchronous business completion.
 
 Add `waitFor` to `--args` to observe a result, with `timeoutMs` up to 15000:
 
@@ -120,9 +132,11 @@ For a native menu, use `action --target main --name menu.select` with the `itemP
 
 Window actions use `window.focus`, `window.minimize`, `window.show`, `window.hide`, `window.maximize`, `window.unmaximize`, or `window.close`. `window.close` is a window action; use the lifecycle commands above for process cleanup.
 
-Use published AX/UIA actions; the original `nativeDialogs.lastResult` confirms selection or cancellation. System permission and external login windows require human handling.
+File/directory pickers use the ordinary Tauri path in both builds; the mixed path picker uses the same modal/thread implementation in both. Diagnostics never substitute a sheet or worker merely to make inspection possible. Native inspection is limited to dialogs actually registered by the shared adapter; Tauri-owned dialogs or modal loops that do not serve the Debug bridge may require manual observation. Do not interpret an unavailable observer as a cancelled or completed selection.
 
-Receipts retain before/after observations, errors, operation identity, timings and `screenshot.contentRef`. Missing render/capture or truncated observation returns `partial` and a nonzero CLI exit. Inspect that receipt; do not replay an action just to obtain a screenshot. Load the original capture through an available image reader when visual evidence is needed; a path, archive or presentation alone does not load pixels.
+Use published AX/UIA actions when available; the original `nativeDialogs.lastResult` confirms selection or cancellation for registered dialogs. System permission and external login windows require human handling.
+
+Receipts retain before/after observations, errors, operation identity and timings. The default `--observation full` also captures `screenshot.contentRef` and native dialog state; missing capture or truncated observation returns `partial` and a nonzero CLI exit. The explicit `--observation state` mode omits those two captures and reports `not-requested`, while retaining DOM/component observations, frame timing and wait conditions. It proves no visual or native-dialog result and does not silently replace a failed full capture. Inspect the receipt; do not replay an action just to obtain a screenshot. Load the original capture through an available image reader when visual evidence is needed; a path, archive or presentation alone does not load pixels.
 
 ## Session tasks and results
 

@@ -20,7 +20,6 @@ function achbitGuiDevelopmentEntry(): Plugin {
 }
 
 export default defineConfig(({ command }) => {
-  const debug = process.env.ACHBIT_BUILD_KIND === 'debug';
   const host = process.env.ACHBIT_HOST ?? '127.0.0.1';
   const hostPort = process.env.ACHBIT_HOST_PORT ?? '31245';
   const devPort = Number(process.env.ACHBIT_GUI_DEV_PORT ?? '5174');
@@ -49,20 +48,15 @@ export default defineConfig(({ command }) => {
   };
   return {
     plugins: [achbitGuiDevelopmentEntry(), react(), pdfDocumentAssets(), {
-      name: 'achbit-build-kind',
-      transformIndexHtml: {
-        order: 'pre',
-        handler: () => debug ? [{ tag: 'script', attrs: { type: 'module', src: '/src/debug/install.ts' }, injectTo: 'head' }] : [],
-      },
+      name: 'achbit-common-gui-entry',
       async writeBundle(options) {
         if (!options.dir) throw new Error('GUI output directory is required.');
         await rename(resolve(options.dir, 'achbit-gui.html'), resolve(options.dir, 'index.html'));
       },
     }],
-    define: { __ACHBIT_DEBUG__: JSON.stringify(debug) },
     base: './',
     build: {
-      outDir: debug ? '../../.build-cache/gui-debug' : 'dist-achbit-gui',
+      outDir: 'dist-achbit-gui',
       emptyOutDir: true,
       chunkSizeWarningLimit: 650,
       rollupOptions: {

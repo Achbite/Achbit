@@ -33,12 +33,23 @@ def copy_js_package(source, target, debug=False):
         shutil.copy2(file, destination)
 
 
+def copy_gui(root, destination, debug=False):
+    """Both packages use identical business assets; only Debug attaches diagnostics."""
+    shutil.copytree(root / 'userspace/gui/dist-achbit-gui', destination)
+    if debug:
+        shutil.copytree(root / '.build-cache/gui-diagnostics', destination / 'debug')
+        entry = destination / 'index.html'
+        html = entry.read_text()
+        if html.count('</head>') != 1:
+            raise ValueError('GUI entry must have one head for diagnostic assembly')
+        entry.write_text(html.replace('</head>', '<script src="./debug/ui.js"></script>\n</head>'))
+
+
 def shared(root, destination, dependency_list):
     debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
     copy_js_package(root / 'userspace/session-core', destination / 'session-core', debug)
     copy_js_package(root / 'userspace/protocol', destination / 'node_modules/@achbit/protocol')
-    gui_dist = root / '.build-cache/gui-debug' if debug else root / 'userspace/gui/dist-achbit-gui'
-    shutil.copytree(gui_dist, destination / 'web-achbit-gui')
+    copy_gui(root, destination / 'web-achbit-gui', debug)
     shutil.copytree(root / 'docs/product', destination / 'docs/product')
     shutil.copytree(root / 'docs/plugins', destination / 'docs/plugins')
     shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')

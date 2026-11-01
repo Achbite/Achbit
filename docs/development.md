@@ -121,6 +121,10 @@ For historical-session latency, measure process startup, navigation readiness an
 
 Product guides are ordinary Markdown files under the environment snapshot’s `productDocsPath`. Search and read them with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
 
+### UI ownership declarations
+
+New independently owned GUI controls use `useUiOwner('stable.semantic.name')` and spread `identity.part('trigger')` (or another local part) onto existing DOM elements. Keep the same instance on Portal roots, use different part names for distinct controls, and do not insert layout wrappers for diagnostics. Owners are not plugin slots or Session identities. Existing `UiRegion` / `UiPluginSlotView` boundaries are marked without changing their replacement scope; unmarked plugin internals inherit the region identity but explicitly report `plugin-internal-unmapped` implementation coverage, along with the current renderer identity. Build-time source extraction validates unique explicit owner declarations; repeated mounted instances are legal. Debug uses the existing registry and surface actions, not a second business store or model tool.
+
 ## Checks
 
 TCRs, per-run acceptance reports and temporary preview/export scripts belong in ignored task output directories such as `.build-cache/` or `.task-artifacts/`. Keep them out of versioned product documentation and build tooling. Before a necessary test change, document its purpose and coverage in a TCR; preserve the existing assertions and failure semantics.

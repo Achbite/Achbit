@@ -8,6 +8,7 @@
     "dev": "vite --config vite.achbit-gui.config.ts",
     "build": "pnpm typecheck && pnpm build:web",
     "build:web": "vite build --config vite.achbit-gui.config.ts",
+    "build:debug-ui": "vite build --config vite.debug-ui.config.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:manual": "tsc --noEmit -p tsconfig.manual.json",
     "test": "node --test tests/*.test.mjs"

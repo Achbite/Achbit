@@ -3,6 +3,8 @@ import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { ApprovalReviewReason } from './ApprovalReviewReason';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { useConversationSessionId } from './ConversationSessionScope';
 
 /** A view of the recorded request/decision; it never issues an authorization. */
 export function ApprovalActivity({ activity, pending, reviewing, language, onExpand }: {
@@ -13,11 +15,14 @@ export function ApprovalActivity({ activity, pending, reviewing, language, onExp
   onExpand(): void;
 }) {
   const [expanded, setExpanded] = useConversationRowState(`approval:${activity.activityId}:expanded`, false);
+  const identity = useUiOwner('conversation.approval-record', undefined, {
+    sessionId: useConversationSessionId(), activityId: activity.activityId,
+  });
   const status = activity.status === 'completed' ? 'accepted'
     : activity.status === 'denied' ? 'denied'
       : pending ? (reviewing ? 'reviewing' : 'waiting') : 'unanswered';
   return <article className="local-agent__approval-record">
-    <button type="button" className="local-agent__approval-record-heading" aria-expanded={expanded}
+    <button {...identity.action('toggle', 'click')} type="button" className="local-agent__approval-record-heading" aria-expanded={expanded}
       onClick={() => { if (!expanded) onExpand(); setExpanded((value) => !value); }}>
       <AchbitShellIcon name="hand" />
       <span>{t(language, `agent.approval.record.${status}`)}</span>

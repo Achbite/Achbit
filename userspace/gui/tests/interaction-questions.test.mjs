@@ -84,8 +84,9 @@ test('question header shows the dynamic page count and navigation never submits 
     const composer = { pendingInteraction: { interactionId: `question:${index}`, prompt: `Question ${index + 1}` },
       interactionNavigation: { index, count: 7, previous: () => moves.push(index - 1), next: () => moves.push(index + 1) },
       respondInteraction: answer => answers.push(answer) };
-    const tree = ComposerQuestionPrompt({ language: 'en-US', composer });
-    const html = renderToStaticMarkup(tree);
+    let tree;
+    function Probe() { tree = ComposerQuestionPrompt({ language: 'en-US', composer }); return tree; }
+    const html = renderToStaticMarkup(createElement(Probe));
     assert.match(html, new RegExp(`${index + 1}/7`));
     const previous = findReactElement(tree, node => node.props['aria-label'] === 'Previous question');
     const next = findReactElement(tree, node => node.props['aria-label'] === 'Next question');
@@ -137,11 +138,17 @@ test('answering during independent work uses the original question and leaves th
 test('shared question choices send stable IDs even when labels match and never invent Markdown choices', async t => {
   const [{ InteractionOptions }] = await loadGuiModules(t, ['/src/components/local-agent/InteractionOptions.tsx']);
   const answers = [];
-  const choices = InteractionOptions({ options: [{ id: 'first', label: 'Continue' }, { id: 'second', label: 'Continue' }],
+  const renderOptions = props => {
+    let tree;
+    function Probe() { tree = InteractionOptions({ interactionId: 'question:choices', surface: 'composer', ...props }); return tree; }
+    renderToStaticMarkup(createElement(Probe));
+    return tree;
+  };
+  const choices = renderOptions({ options: [{ id: 'first', label: 'Continue' }, { id: 'second', label: 'Continue' }],
     disabled: false, onAnswer: id => answers.push(id) });
   choices.props.children[1].props.onClick();
   assert.deepEqual(answers, ['second']);
-  assert.equal(InteractionOptions({ options: undefined, disabled: false, onAnswer() {} }), null);
+  assert.equal(renderOptions({ options: undefined, disabled: false, onAnswer() {} }), null);
 });
 
 test('concurrent approval and text decisions expose separate views without mixing their controls', async t => {

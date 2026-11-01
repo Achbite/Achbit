@@ -7,6 +7,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
 import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 
 type PermissionRow = { key: string; label: string; values: readonly (readonly [string, string])[] };
 const askAllowDeny = [['ask', 'agent.permission.ask'], ['allow', 'agent.permission.allow'], ['deny', 'agent.permission.deny']] as const;
@@ -26,6 +27,7 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   const patchDefault = useSettingsStore(state => state.patchUserSetting);
   const settingsError = useSettingsStore(state => state.errorMessage);
   const sessionId = useLocalAgentStore(state => state.sessionId);
+  const identity = useUiOwner('composer.permissions', undefined, { sessionId });
   const projection = useLocalAgentStore(state => state.projection);
   const setPermissions = useLocalAgentStore(state => state.setPermissions);
   const revoke = useLocalAgentStore(state => state.revokeAuthorization);
@@ -70,7 +72,7 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
     finally { setBusy(false); }
   };
   return <div ref={permissionControlRef} className="local-agent__permission-control">
-    <button type="button" className="local-agent__permission-summary" aria-label={t(language, 'settings.nav.permissions')}
+    <button {...identity.action('toggle', 'click')} type="button" className="local-agent__permission-summary" aria-label={t(language, 'settings.nav.permissions')}
       title={summary} aria-expanded={permissionMenuOpen} onClick={() => { setPermissionMenuOpen(open => !open); setAttachmentMenuOpen(false); }}>
       <AchbitShellIcon name="shield" /><span>{summary}</span>
     </button>
@@ -85,9 +87,9 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
         }
       }}>
       <header className="local-agent__permission-heading">
-        {page && <button type="button" aria-label={t(language, 'agent.permission.back')} onClick={() => setPage(null)}><AchbitShellIcon name="chevronLeft" /></button>}
+        {page && <button {...identity.action('back', 'click')} type="button" aria-label={t(language, 'agent.permission.back')} onClick={() => setPage(null)}><AchbitShellIcon name="chevronLeft" /></button>}
         <strong>{t(language, heading)}</strong>
-        <button type="button" aria-label={t(language, 'agent.permission.close')} onClick={close}><AchbitShellIcon name="close" /></button>
+        <button {...identity.action('close', 'click')} type="button" aria-label={t(language, 'agent.permission.close')} onClick={close}><AchbitShellIcon name="close" /></button>
       </header>
       {page === 'grants' ? <div className="local-agent__permission-grants">
         {grants.map(grant => <div key={grant.authorityId}>
@@ -98,10 +100,10 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
                 {t(language, `agent.permission.file.${access}`)}{paths.map(path => <code key={String(path)} title={String(path)}>{String(path)}</code>)}
               </span>)}
             </> : String(grant.context.command)}</span>
-          <button type="button" disabled={busy} onClick={async () => { setBusy(true); try { await revoke(grant.authorityId); } catch {} finally { setBusy(false); } }}>{t(language, 'agent.permission.revoke')}</button>
+          <button {...identity.action('revoke', 'click', { authorityId: grant.authorityId })} type="button" disabled={busy} onClick={async () => { setBusy(true); try { await revoke(grant.authorityId); } catch {} finally { setBusy(false); } }}>{t(language, 'agent.permission.revoke')}</button>
         </div>)}
       </div> : detail ? <div role="radiogroup" aria-label={t(language, detail.label)}>
-        {detail.values.map(([value, label]) => <button key={value} type="button" className="local-agent__permission-option" role="radio"
+        {detail.values.map(([value, label]) => <button {...identity.action('select', 'click', { setting: detail.key, value })} key={value} type="button" className="local-agent__permission-option" role="radio"
           aria-checked={settings[detail.key] === value} disabled={busy} onClick={() => void change(detail.key, value)}>
           <span className="local-agent__permission-radio" aria-hidden="true" /><span>{t(language, label)}
             {detail.key === 'agent.permissions.shell' && value === 'review' && <small>{t(language, 'agent.permission.reviewHelp')}</small>}
@@ -110,10 +112,10 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
         </button>)}
       </div> : <>
         <div className="local-agent__permission-invariant"><span>{t(language, 'agent.permission.workspaceRead')}</span><strong>{t(language, 'agent.permission.workspaceReadAllowed')}</strong></div>
-        {rows.map(row => <button key={row.key} type="button" className="local-agent__permission-row" disabled={busy} onClick={() => setPage(row)}>
+        {rows.map(row => <button {...identity.action('open-setting', 'click', { setting: row.key })} key={row.key} type="button" className="local-agent__permission-row" disabled={busy} onClick={() => setPage(row)}>
           <span>{t(language, row.label)}</span><span>{t(language, row.values.find(([value]) => value === settings[row.key])![1])}<AchbitShellIcon name="chevronRight" /></span>
         </button>)}
-        {grants.length > 0 && <button type="button" className="local-agent__permission-row" onClick={() => setPage('grants')}>
+        {grants.length > 0 && <button {...identity.action('grants', 'click')} type="button" className="local-agent__permission-row" onClick={() => setPage('grants')}>
           <span>{t(language, 'agent.permission.runGrants')}</span><span>{grants.length}<AchbitShellIcon name="chevronRight" /></span>
         </button>}
       </>}

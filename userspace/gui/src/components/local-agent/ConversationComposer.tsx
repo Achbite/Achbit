@@ -1,4 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { BrowserAnnotationDraft } from './browserReview';
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
@@ -31,6 +32,7 @@ export function ConversationComposer({
   onDismissUiActionError,
   onEditBrowserReview,
 }: ConversationComposerProps) {
+  const identity = useUiOwner('composer.controls', undefined, { conversationKey: composer.conversationKey });
   const connections = useLocalAgentStore(state => state.connections);
   const concurrentDecisionKey = composer.pendingApproval && (composer.pendingPlan || composer.pendingInteraction)
     ? JSON.stringify([composer.conversationKey, composer.pendingApproval.approvalId,
@@ -410,6 +412,7 @@ export function ConversationComposer({
         )}
         {composer.textDecision && <span className="local-agent__decision-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>}
         <textarea
+          {...identity.action('input', 'type')}
           ref={textareaRef}
           value={draft}
           aria-controls={commandSuggestions.length ? commandMenuId : undefined}
@@ -445,6 +448,7 @@ export function ConversationComposer({
           {!composer.textDecision && !composer.editingMessage && <UiRegion slot="composer.attachments" data={regionData} actions={regionActions} debugActions={debugActions}><div className="local-agent__composer-tools">
             <div ref={attachmentControlRef} className="local-agent__attachment-control">
               <button
+                {...identity.action('attachments', 'click')}
                 type="button"
                 className="local-agent__attach"
                 aria-label={t(language, 'agent.attachment.menu')}
@@ -462,6 +466,7 @@ export function ConversationComposer({
               {attachmentMenuOpen && (
                 <div className="local-agent__attachment-menu" role="menu">
                   <button
+                    {...identity.action('choose-files', 'click')}
                     type="button"
                     role="menuitem"
                     onClick={() => {
@@ -476,6 +481,7 @@ export function ConversationComposer({
                     </span>
                   </button>
                   <button
+                    {...identity.action('plugins', 'click')}
                     type="button"
                     role="menuitem"
                     onClick={openPluginPicker}
@@ -487,6 +493,7 @@ export function ConversationComposer({
                     </span>
                   </button>
                   <button
+                    {...identity.action('focus-command', 'click')}
                     type="button"
                     role="menuitem"
                     onClick={insertFocusCommand}
@@ -519,6 +526,7 @@ export function ConversationComposer({
             />}
             <div className="local-agent__composer-primary-actions">
               {(pendingPlan || pendingInteraction?.allowFreeform) && <button
+                {...identity.action('skip', 'click')}
                 type="button"
                 className="local-agent__interaction-secondary"
                 disabled={submitting}
@@ -538,6 +546,7 @@ export function ConversationComposer({
                 <span>{t(language, pendingPlan ? 'agent.plan.ignoreAndStop' : 'agent.interaction.skip')}</span>
               </button>}
               {showStopAction && <button
+                {...identity.action('stop', 'click')}
                 type="button"
                 className="local-agent__send local-agent__send--stop"
                 aria-label={t(language, 'agent.composer.stopCurrentRun')}
@@ -545,6 +554,7 @@ export function ConversationComposer({
                 onClick={() => void cancelRun()}
               ><AchbitShellIcon name="stop" /></button>}
               {(!showStopAction || composer.textDecision) && <button
+                {...identity.action('submit', 'click')}
                 type="button"
                 className={`local-agent__send${composer.textDecision || composer.editingMessage ? ' local-agent__send--decision' : ''}`}
                 aria-label={submitting

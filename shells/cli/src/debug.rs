@@ -20,7 +20,8 @@ const HELP: &str = r#"Achbit Debug CLI (debug-only)
   tools call --tool fs.read --input '{"path":"example.txt"}' [--no-wait]
   operation inspect|cancel|respond|release --operation-id ID [--decision-id ID --decision allow|deny]
   components list|inspect|activate [--params @JSON_FILE]
-  surfaces list|inspect [--target main] | action --target main --name NAME --args JSON
+  surfaces list|inspect|actions [--target main]
+  action --target main --name NAME --args JSON [--observation full|state]
   task submit --text TEXT [--profile-id ID] [--follow]
   task inspect|message|cancel|respond --session-id ID [--text TEXT | --run-id ID | --command JSON]
   observe subscribe --session-id ID [--run-id ID]

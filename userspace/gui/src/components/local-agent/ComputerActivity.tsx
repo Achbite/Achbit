@@ -5,6 +5,8 @@ import { ArtifactImageLink } from './ArtifactLinks';
 import { FileChanges } from './FileChanges';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { useConversationRowState } from './ConversationVirtualRow';
+import { useConversationSessionId } from './ConversationSessionScope';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import './computerActivity.css';
 
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
@@ -70,13 +72,16 @@ export function ComputerActivity({ activity, computer, artifacts, language, stat
   language: UiLanguage; statusLabel: string; onExpand(): void;
 }) {
   const [expanded, setExpanded] = useConversationRowState(`computer:${activity.activityId}:details`, false);
+  const identity = useUiOwner('conversation.computer', undefined, {
+    sessionId: useConversationSessionId(), activityId: activity.activityId,
+  });
   const theme = useDisplayTheme();
   const observation = computer.observation;
   const target = text(computer.window?.title) || text(computer.page?.title) || text(computer.page?.url) || computer.app;
   const error = activity.tool?.error ?? activity.tool?.projectionError ?? activity.interruption;
   const summary = computerActivitySummary(computer, language);
   return <div className={`local-agent__tool-entry local-agent__tool-entry--${activity.status} computer-activity`}>
-    <button type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded}
+    <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded}
       onClick={() => { onExpand(); setExpanded(!expanded); }}>
       <span className="local-agent__tool-entry-icon"><AchbitShellIcon name="browser" /></span>
       <strong>{summary}</strong>
@@ -101,7 +106,7 @@ export function ComputerActivity({ activity, computer, artifacts, language, stat
       </div>}
       <FileChanges activities={[activity]} inlineDiff />
       <details className="computer-activity__parameters" onToggle={onExpand}>
-        <summary>{t(language, 'agent.computer.parameters')}</summary>
+        <summary {...identity.action('parameters', 'click')}>{t(language, 'agent.computer.parameters')}</summary>
         {computer.inputObservation && computer.inputObservation.artifactIds.length > 0 && <ObservationImages
           ids={computer.inputObservation.artifactIds} artifacts={artifacts} language={language} before />}
         <pre>{JSON.stringify(computer.input, null, 2)}</pre>

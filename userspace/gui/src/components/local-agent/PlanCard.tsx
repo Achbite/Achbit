@@ -1,4 +1,6 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { useConversationSessionId } from './ConversationSessionScope';
 import React, { useEffect, useRef } from 'react';
 import type { PlanOperation, PlanProjection, WorkspaceBindingDisplay } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
@@ -27,6 +29,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
   onToggle,
 }) => {
   const cardRef = useRef<HTMLElement>(null);
+  const identity = useUiOwner('conversation.plan', undefined, {
+    sessionId: useConversationSessionId(), runId: plan.runId, callId: plan.callId, revision: String(plan.revision),
+  });
   const previousStatus = useRef(plan.status);
   const [expanded, setExpanded] = useConversationRowState(`plan:${plan.revision}:${plan.status}:expanded`, false);
   const toggle = (next: boolean) => {
@@ -48,7 +53,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
   const stepCount = t(language, 'agent.plan.stepCount', { count: plan.steps.length });
 
   if (addition) return <UiRegion slot="activity.row" actions={{ setExpanded: toggle }}><article ref={cardRef} className="local-agent__tool-entry">
-    <button type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded}
+    <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" aria-expanded={expanded}
       onClick={() => toggle(!expanded)}>
       <AchbitShellIcon name="compose" />
       <strong>{language === 'zh-CN' ? '计划范围调整' : 'Plan scope adjustment'}</strong>
@@ -63,6 +68,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
       {expanded ? (
         <div className="local-agent__plan-document">
           <button
+            {...identity.action('toggle', 'click')}
             type="button"
             className="local-agent__plan-document-meta"
             aria-expanded="true"
@@ -83,6 +89,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
         </div>
       ) : (
         <button
+          {...identity.action('toggle', 'click')}
           type="button"
           className="local-agent__plan-card-summary"
           aria-expanded="false"

@@ -1,4 +1,5 @@
 import UiIcon from '../../icons/registry';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import React, { useEffect, useState } from 'react';
@@ -7,6 +8,7 @@ import type { JsonObject } from '@achbit/protocol';
 import { useConversationRowState } from './ConversationVirtualRow';
 
 export function ReasoningDetails({ sessionId, requestId, live = false, summary }: { sessionId: string; requestId: string; live?: boolean; summary?: React.ReactNode }) {
+  const identity = useUiOwner('conversation.reasoning', undefined, { sessionId, requestId });
   const language = useUiLanguage();
   const { readConversation } = useConversationHost();
   const [open, setOpen] = useConversationRowState(`reasoning:${requestId}:open`, false);
@@ -28,14 +30,14 @@ export function ReasoningDetails({ sessionId, requestId, live = false, summary }
     return () => { controller.abort(); clearTimeout(timer); };
   }, [readConversation, sessionId, requestId, live, open, offset]);
   return <details className="conversation-reasoning" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>{summary ?? t(language, live ? 'agent.reasoning.running' : 'agent.reasoning.view')}<UiIcon name="chevronDown" size={14} className="conversation-disclosure-chevron" /></summary>
+    <summary {...identity.action('toggle', 'click')}>{summary ?? t(language, live ? 'agent.reasoning.running' : 'agent.reasoning.view')}<UiIcon name="chevronDown" size={14} className="conversation-disclosure-chevron" /></summary>
     {open && <div className="conversation-reasoning-body" tabIndex={0}>{error ? <p role="alert">{error}</p> : !page ? <span>{t(language, 'agent.reasoning.loading')}</span> : <>
       {Array.isArray(page.parts) && page.parts.map((part, index) => part && typeof part === 'object' && !Array.isArray(part)
         ? <section key={index}><small>{t(language, part.kind === 'summary' ? 'agent.reasoning.summary' : 'agent.reasoning.text')}</small><pre>{String(part.content)}</pre></section> : null)}
       {Array.isArray(page.parts) && !page.parts.length && <span>{t(language, 'agent.reasoning.empty')}</span>}
       {page.truncated === true && <small>{t(language, live ? 'agent.reasoning.recent' : 'agent.reasoning.truncated')}</small>}
-      {!live && offset > 0 && <button type="button" onClick={() => setOffset(0)}>{t(language, 'agent.reasoning.start')}</button>}
-      {!live && typeof page.nextOffset === 'number' && <button type="button" onClick={() => setOffset(Number(page.nextOffset))}>{t(language, 'agent.reasoning.next')}</button>}
+      {!live && offset > 0 && <button {...identity.action('start', 'click')} type="button" onClick={() => setOffset(0)}>{t(language, 'agent.reasoning.start')}</button>}
+      {!live && typeof page.nextOffset === 'number' && <button {...identity.action('next', 'click')} type="button" onClick={() => setOffset(Number(page.nextOffset))}>{t(language, 'agent.reasoning.next')}</button>}
     </>}</div>}
   </details>;
 }

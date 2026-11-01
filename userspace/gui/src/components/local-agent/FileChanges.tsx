@@ -1,10 +1,10 @@
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { requestReader } from './readerState';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ActivityProjection } from '@achbit/protocol';
 import { useConversationHost, useConversationTheme } from './ConversationHost';
-import { loadCodeLanguage } from './codeLanguage';
 import { useConversationSessionId } from './ConversationSessionScope';
 import { useConversationRowState } from './ConversationVirtualRow';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -18,6 +18,7 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
   const language = useUiLanguage();
   const { readChange } = useConversationHost();
   const sessionId = useConversationSessionId();
+  const identity = useUiOwner('conversation.changes', undefined, { sessionId, groupId: activities[0]?.activityId });
   const [expanded, setExpanded] = useConversationRowState('file-changes:expanded', !compact);
   const [showAll, setShowAll] = useConversationRowState('file-changes:show-all', false);
   const previousView = useRef({ sessionId, compact });
@@ -58,31 +59,32 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
   const total = counts.size === all.length && counts.size > binaryCount ? [...counts.values()].reduce((total, value) => value.kind === 'text' ? ({ added: total.added + value.counts.added, removed: total.removed + value.counts.removed }) : total, { added: 0, removed: 0 }) : null;
   if (!all.length || !sessionId) return null;
   if (inlineDiff) return <section className="conversation-changes conversation-changes--inline">
-    {all.map(file => <InlineFileChange key={file.key} sessionId={sessionId} file={file} />)}
+    {all.map(file => <InlineFileChange key={file.key} sessionId={sessionId} groupId={activities[0]?.activityId} file={file} />)}
   </section>;
   const entries = displayed.map((file) => {
     const statistic = counts.get(file.key);
     return <div className="conversation-change-row" key={file.key}>
-      <button type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId, { kind: 'diff', file })}>
+      <button {...identity.action('open-file', 'click', { fileKey: file.key })} type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId, { kind: 'diff', file })}>
         <span>{file.path}</span>{statistic?.kind === 'text' ? <DiffCounts counts={statistic.counts} /> : <small>{statistic?.kind === 'binary' ? t(language, 'changes.binaryPrefix') : ''}{file.changes.length > 1 ? t(language, 'changes.count', { count: file.changes.length }) : ({ create: t(language, 'changes.create'), modify: t(language, 'changes.modify'), delete: t(language, 'changes.delete') }[file.changes[0]!.change.kind])}</small>}
       </button>
     </div>;
   });
   return <section className={`conversation-changes${compact ? ' conversation-changes--compact' : ''}${expanded ? ' is-expanded' : ''}`}>
-    <button type="button" className="conversation-changes-heading" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+    <button {...identity.action('toggle', 'click')} type="button" className="conversation-changes-heading" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
       <AchbitShellIcon name="compose" /><span><strong>{t(language, 'changes.files', { count: all.length })}</strong>{!compact && <small>{t(language, 'changes.round')}</small>}</span>
       {total && <DiffCounts counts={total} />}
       {binaryCount > 0 && <small className="conversation-change-binary-count">{t(language, 'changes.binaryCount', { count: binaryCount })}</small>}
       <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
     {(compact || expanded) && <div className="conversation-change-list">{entries}
-      {!compact && all.length > 3 && <button className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
+      {!compact && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
       {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><summary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</summary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
     </div>}
   </section>;
 }
 
-function InlineFileChange({ sessionId, file }: { sessionId: string; file: ChangedFile }) {
+function InlineFileChange({ sessionId, groupId, file }: { sessionId: string; groupId: string | undefined; file: ChangedFile }) {
+  const identity = useUiOwner('conversation.inline-change', undefined, { sessionId, groupId, fileKey: file.key });
   const language = useUiLanguage();
   const { readChange } = useConversationHost();
   const [state, setState] = useState<{ preview?: ChangePreview; binary?: boolean; error?: string }>({});
@@ -100,7 +102,7 @@ function InlineFileChange({ sessionId, file }: { sessionId: string; file: Change
   }, [readChange, sessionId, file.key, revision]);
   const latest = file.changes.at(-1)!.change;
   return <div className="conversation-change-row">
-    <button type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId,
+    <button {...identity.action('open-file', 'click')} type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId,
       latest.after.exists ? { kind: 'workspace', workspaceId: latest.workspaceId, logicalPath: file.path } : { kind: 'diff', file })}>
       <span>{file.path}</span>{state.preview && <DiffCounts counts={state.preview.counts} />}
     </button>
@@ -140,8 +142,8 @@ export function FileChangePreview({ sessionId, file }: { sessionId: string; file
     const controller = new AbortController();
     let dispose: (() => void) | undefined;
     setStatus('changes.loading'); setError(''); setBinary(false);
-    void Promise.all([readRoundChange(readChange, sessionId, file, controller.signal), import('./codeDiffView')])
-      .then(async ([change, { createCodeDiffView }]) => {
+    void Promise.all([readRoundChange(readChange, sessionId, file, controller.signal), import('./codeDiffView'), import('./codeLanguage')])
+      .then(async ([change, { createCodeDiffView }, { loadCodeLanguage }]) => {
         const language = await loadCodeLanguage('', change.path);
         if (controller.signal.aborted || !container.current) return;
         const view = createCodeDiffView(container.current, change.before ?? '', change.after ?? '', language, theme === 'vs-dark');

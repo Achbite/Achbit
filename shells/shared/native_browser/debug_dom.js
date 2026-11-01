@@ -6,19 +6,58 @@
   const selectorFor = element => {
     const parts = [];
     for (let node = element; node?.nodeType === 1; node = node.parentElement) {
+      const identity = ['data-ui-owner', 'data-ui-instance', 'data-ui-part'].map(key => [key, node.getAttribute(key)]);
+      if (identity.every(([, value]) => value)) {
+        const semantic = identity.map(([key, value]) => `[${key}="${CSS.escape(value)}"]`).join('');
+        if (document.querySelectorAll(semantic).length === 1) { parts.unshift(semantic); break; }
+      }
       if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) { parts.unshift('#' + CSS.escape(node.id)); break; }
       const siblings = [...(node.parentElement?.children ?? [])].filter(other => other.localName === node.localName);
       parts.unshift(node.localName + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ''));
     }
     return parts.join(' > ');
   };
+  const select = selector => {
+    const matches = document.querySelectorAll(selector);
+    if (matches.length > 1) throw Error('debug_element_ambiguous');
+    return matches[0] ?? null;
+  };
   const visible = element => {
     const r = element.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
+    return !element.closest('[data-achbit-diagnostic]') && r.width > 0 && r.height > 0 && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
   };
   const frames = () => [...document.querySelectorAll('iframe,frame')];
+  const actionTarget = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.values(value).some(item => typeof item !== 'string')) throw Error('debug_action_target_invalid');
+    return value;
+  };
+  const domActions = () => [...document.querySelectorAll('[data-ui-action]')].map(element => {
+    const kind = element.dataset.uiActionKind;
+    if (!['click', 'type', 'select', 'key', 'scroll'].includes(kind)) throw Error('debug_action_kind_invalid');
+    const disabled = !!element.closest(':disabled,[aria-disabled="true"],[inert]');
+    const reason = disabled ? 'debug_element_disabled' : !visible(element) ? 'debug_element_hidden'
+      : kind === 'type' && element.readOnly ? 'debug_input_read_only' : null;
+    return { actionId: element.dataset.uiAction, execution: `dom.${kind}`, target: actionTarget(JSON.parse(element.dataset.uiTarget ?? '{}')),
+      selector: selectorFor(element), availability: reason ? 'unavailable' : 'available', reason,
+      arguments: kind === 'type' ? ['text'] : kind === 'select' ? ['value'] : kind === 'key' ? ['key'] : kind === 'scroll' ? ['x', 'y'] : [],
+      businessCompletion: 'not-asserted', identity: window.__ACHBIT_DEBUG_UI__?.identity?.(element) ?? { coverage: 'uncovered' } };
+  });
+  const actions = () => [...domActions(), ...(window.__ACHBIT_DEBUG_UI__?.list() ?? []).flatMap(component => component.actions
+    .filter(action => action.actionId).map(action => ({ ...action, componentId: component.id, ownerId: component.ownerId,
+      target: component.target ?? {}, source: component.source })))];
+  const productText = () => {
+    // Exclude only diagnostic nodes. Preserve the browser's existing rendered-text semantics.
+    const diagnostics = [...document.querySelectorAll('[data-achbit-diagnostic]')];
+    const visibility = diagnostics.map(element => element.hidden);
+    try {
+      diagnostics.forEach(element => { element.hidden = true; });
+      return document.body?.innerText ?? '';
+    } finally {
+      diagnostics.forEach((element, index) => { element.hidden = visibility[index]; });
+    }
+  };
   const inspect = () => {
-    const text = document.body?.innerText ?? '';
+    const text = productText();
     const elements = [...document.querySelectorAll('a,button,input,textarea,select,summary,[role],[tabindex],[contenteditable="true"]')].filter(visible);
     return {
     url: location.href, title: document.title, readyState: document.readyState,
@@ -34,7 +73,8 @@
         if (typeof element.click === 'function') actions.push('click');
         if (editable) actions.push('type');
         if (element instanceof HTMLSelectElement) actions.push('select');
-        return { selector: selectorFor(element), role: element.getAttribute('role') ?? element.localName,
+        return { ownership: window.__ACHBIT_DEBUG_UI__?.identity?.(element) ?? { coverage: 'uncovered' },
+          selector: selectorFor(element), role: element.getAttribute('role') ?? element.localName,
           text: (element.getAttribute('aria-label') ?? element.innerText ?? '').slice(0, 1000),
           value: element.matches('input[type="password"]') ? undefined : element.value,
           checked: element.checked, disabled, readOnly: !!element.readOnly,
@@ -45,6 +85,7 @@
       }), elementLimit: 512,
     frames: frames().map((frame, index) => ({ index, title: frame.title, src: frame.src, selector: selectorFor(frame), visible: visible(frame) })),
     components: window.__ACHBIT_DEBUG_UI__?.list() ?? [],
+    ownershipOverlay: window.__ACHBIT_DEBUG_UI__?.overlayStatus?.() ?? { enabled: false, coverage: 'unavailable' },
     };
   };
   function requestFrame(frame, request) {
@@ -65,21 +106,42 @@
   }
   function waitFor(spec) {
     if (!spec) return Promise.resolve(null);
-    if (typeof spec.selector !== 'string' && typeof spec.componentId !== 'string') throw Error('debug_wait_target_required');
+    if (typeof spec.selector !== 'string' && typeof spec.componentId !== 'string' && typeof spec.ownerId !== 'string' && typeof spec.actionId !== 'string') throw Error('debug_wait_target_required');
     if (spec.path !== undefined && (!Array.isArray(spec.path) || spec.path.some(key => typeof key !== 'string'))) throw Error('debug_wait_path_invalid');
     const timeoutMs = Math.min(Math.max(Number(spec.timeoutMs ?? 5000), 1), 15000);
     const matches = () => {
+      if (typeof spec.ownerId === 'string') {
+        const owner = window.__ACHBIT_DEBUG_UI__?.owner(spec.ownerId, spec.target ?? {});
+        if (!owner) return spec.absent === true;
+        if (spec.absent) return false;
+        if (!('equals' in spec)) return true;
+        const value = (spec.path ?? []).reduce((value, key) => value?.[key], owner.input);
+        return JSON.stringify(value) === JSON.stringify(spec.equals);
+      }
       if (typeof spec.componentId === 'string') {
-        const component = window.__ACHBIT_DEBUG_UI__?.list().find(item => item.id === spec.componentId);
+        const components = window.__ACHBIT_DEBUG_UI__?.list().filter(item => item.id === spec.componentId) ?? [];
+        if (components.length > 1) throw Error('debug_component_ambiguous');
+        const component = components[0];
         if (spec.absent) return !component;
         if (!component) return false;
         if (!('equals' in spec)) return true;
         const value = (spec.path ?? []).reduce((current, key) => current?.[key], component.input);
         return JSON.stringify(value) === JSON.stringify(spec.equals);
       }
-      const element = document.querySelector(spec.selector);
+      let selector = spec.selector;
+      if (typeof spec.actionId === 'string') {
+        const target = actionTarget(spec.target ?? {});
+        const found = domActions().filter(action => action.actionId === spec.actionId
+          && Object.entries(target).every(([key, value]) => action.target[key] === value));
+        if (found.length > 1) throw Error('debug_action_target_ambiguous');
+        if (!found.length) return spec.absent === true;
+        selector = found[0].selector;
+      }
+      const element = select(selector);
       if (spec.absent) return !element;
-      return !!element && (!spec.visible || visible(element)) && (spec.text === undefined || element.textContent.includes(spec.text)) && (spec.value === undefined || element.value === spec.value);
+      return !!element && (!spec.visible || visible(element)) && (spec.text === undefined || element.textContent.includes(spec.text))
+        && (spec.value === undefined || element.value === spec.value)
+        && (spec.attribute === undefined || element.getAttribute(spec.attribute) === spec.equals);
     };
     if (matches()) return Promise.resolve({ matched: true });
     return new Promise((resolve, reject) => {
@@ -87,8 +149,10 @@
       const timer = setTimeout(() => { cancelAnimationFrame(frame); reject(Error('debug_wait_condition_timeout')); }, timeoutMs);
       // Component state and input.value need not mutate DOM attributes.
       const check = () => {
-        if (matches()) { clearTimeout(timer); resolve({ matched: true }); }
-        else frame = requestAnimationFrame(check);
+        try {
+          if (matches()) { clearTimeout(timer); resolve({ matched: true }); }
+          else frame = requestAnimationFrame(check);
+        } catch (error) { clearTimeout(timer); reject(error); }
       };
       frame = requestAnimationFrame(check);
     });
@@ -98,6 +162,25 @@
     if (!Array.isArray(path) || path.some(item => !Number.isSafeInteger(item) || item < 0) || path.length > 16) throw Error('debug_invalid_frame_path');
     if (path.length) return requestFrame(frames()[path[0]], { ...request, framePath: path.slice(1) });
     if (request.name === 'inspect') return inspect();
+    if (request.name === 'actions') return { actions: actions(), coverage: 'declared-interactions-only',
+      unmarkedVisibleControls: [...document.querySelectorAll('button,input,textarea,select,summary')]
+        .filter(element => visible(element) && !element.dataset.uiAction).map(element => ({ selector: selectorFor(element), identity: window.__ACHBIT_DEBUG_UI__?.identity?.(element) })) };
+    if (request.name === 'ui.action') {
+      const args = request.args ?? {};
+      if (typeof args.actionId !== 'string') throw Error('debug_action_id_required');
+      const target = actionTarget(args.target ?? {});
+      const found = actions().filter(action => action.actionId === args.actionId
+        && Object.entries(target).every(([key, value]) => action.target[key] === value));
+      if (!found.length) throw Error('debug_action_not_mounted');
+      if (found.length !== 1) throw Error('debug_action_target_ambiguous');
+      const action = found[0];
+      if (action.availability !== 'available') throw Error(action.reason ?? 'debug_action_availability_not_declared');
+      const dom = action.execution.startsWith('dom.');
+      const result = await dispatch({ ...request, name: dom ? action.execution.slice(4) : 'plugin.action',
+        args: dom ? { ...args, selector: action.selector } : { ...args, componentId: action.componentId, action: action.name } });
+      return { ...result, action: { actionId: action.actionId, target: action.target, execution: action.execution,
+        ...(dom ? { trustedNativeInput: false } : { componentId: action.componentId }) } };
+    }
     if (request.name === 'components') return window.__ACHBIT_DEBUG_UI__?.list() ?? [];
     if (request.name === 'metrics') return window.__ACHBIT_DEBUG_UI__?.measurements() ?? { records: [], coverage: 'not-applicable' };
     if (request.name === 'surfaces') {
@@ -114,14 +197,19 @@
     const before = inspect();
     const startedAt = performance.now();
     const args = request.args ?? {};
-    const element = args.selector ? document.querySelector(args.selector) : null;
+    const element = args.selector ? select(args.selector) : null;
     if (args.selector && !element) throw Error('debug_element_not_found');
     if (element && element.closest(':disabled,[aria-disabled="true"],[inert]')) throw Error('debug_element_disabled');
     let result;
     switch (request.name) {
+      case 'ui.overlay':
+        if (!window.__ACHBIT_DEBUG_UI__?.setOverlay) throw Error('debug_ui_ownership_unavailable');
+        result = window.__ACHBIT_DEBUG_UI__.setOverlay(args.enabled); break;
       case 'plugin.action':
         if (!window.__ACHBIT_DEBUG_UI__) throw Error('debug_ui_components_unavailable');
-        result = await window.__ACHBIT_DEBUG_UI__.call(args.componentId, args.action, args.arguments ?? []); break;
+        result = typeof args.actionId === 'string'
+          ? await window.__ACHBIT_DEBUG_UI__.callAction(args.actionId, args.target ?? {}, args.arguments ?? [])
+          : await window.__ACHBIT_DEBUG_UI__.call(args.componentId, args.action, args.arguments ?? []); break;
       case 'click': {
         if (!element || typeof element.click !== 'function') throw Error('debug_click_selector_required');
         element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });

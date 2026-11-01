@@ -6,7 +6,6 @@ import React, {
   useContext,
   useEffect,
   useLayoutEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -27,6 +26,7 @@ import type {
 } from './types';
 import { queryModelUsage, startModelAuth, getModelAuth, cancelModelAuth, logoutModelConnection, getModelQuota } from '../services/apiClient';
 import type { ApiResponse } from '@achbit/protocol';
+import { useUiOwner } from '../ui-ownership/useUiOwner';
 import './uiPlugins.css';
 function result<T>(response: ApiResponse<T>): T {
   if (!response.ok || response.data === undefined) throw new Error(response.message ?? response.error ?? 'Empty response');
@@ -194,25 +194,22 @@ export function UiPluginSlotView({
   latestInput.current = input;
   const liveActions = useRef(actions); liveActions.current = actions;
   const liveDebugActions = useRef(debugActions); liveDebugActions.current = debugActions;
+  const identity = useUiOwner(`region.${slot}`, {
+    slot, pluginId: entry?.manifest?.id ?? null,
+    read: () => latestInput.current,
+    actions: () => (liveActions.current ?? {}) as Record<string, (...args: never[]) => unknown>,
+    actionStates: () => liveDebugActions.current ?? {},
+  });
+  const debugId = identity.instanceId;
   const names = Object.keys(regions ?? {}).join('|');
   const regionHosts = useMemo(() => Object.fromEntries(context && typeof document !== 'undefined' && names ? names.split('|').map(name => {
     const host = document.createElement('div'); host.style.display = 'contents'; host.dataset.uiRegion = name;
+    for (const [key, value] of Object.entries(identity.part(`region.${name}`))) host.setAttribute(key, value);
     return [name, host];
-  }) : []), [names]);
+  }) : []), [names, debugId, slot]);
   const portals = Object.entries(regions ?? {}).flatMap(([name, child]) => regionHosts[name] ? [createPortal(child, regionHosts[name], name)] : []);
   const positions = useRef<Array<{ element: HTMLElement; top: number; left: number }>>([]);
   const retiredView = useRef<Promise<void>>(Promise.resolve());
-  const debugId = useId();
-  useLayoutEffect(() => {
-    if (typeof __ACHBIT_DEBUG__ === 'undefined' || !__ACHBIT_DEBUG__) return;
-    return window.__ACHBIT_DEBUG_UI__?.register(debugId, {
-      slot, pluginId: entry?.manifest?.id ?? null,
-      read: () => latestInput.current,
-      actions: () => (liveActions.current ?? {}) as Record<string, (...args: never[]) => unknown>,
-      actionStates: () => liveDebugActions.current ?? {},
-    });
-  }, [debugId, slot, entry?.manifest?.id]);
-
   useLayoutEffect(() => {
     const root = container.current;
     if (!root || !entry || !renderer || !context) return;
@@ -277,14 +274,15 @@ export function UiPluginSlotView({
           } : {}),
         };
         scope.onDispose(() => { Object.values(regionHosts).forEach(host => host.remove()); });
-        const debugStartedAt = typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__ ? performance.now() : 0;
+        const diagnostics = window.__ACHBIT_DEBUG_UI__;
+        const debugStartedAt = diagnostics ? performance.now() : 0;
         let view: UiPluginView;
         try { view = renderer(root, value, viewScope); }
         catch (error) {
-          if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'failed');
+          diagnostics?.measure(debugId, 'plugin.mount', debugStartedAt, 'failed');
           throw error;
         }
-        if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.mount', debugStartedAt, 'completed');
+        diagnostics?.measure(debugId, 'plugin.mount', debugStartedAt, 'completed');
         if (!view || typeof view.update !== 'function' || typeof view.dispose !== 'function')
           throw new Error('UI renderer must return update and dispose functions.');
         mounted.current = view;
@@ -320,12 +318,13 @@ export function UiPluginSlotView({
 
   useLayoutEffect(() => {
     if (!mounted.current || !entry || !context) return;
-    const debugStartedAt = typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__ ? performance.now() : 0;
+    const diagnostics = window.__ACHBIT_DEBUG_UI__;
+    const debugStartedAt = diagnostics ? performance.now() : 0;
     try {
       mounted.current.update(input);
-      if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'completed');
+      diagnostics?.measure(debugId, 'plugin.update', debugStartedAt, 'completed');
     } catch (error) {
-      if (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__) window.__ACHBIT_DEBUG_UI__?.measure(debugId, 'plugin.update', debugStartedAt, 'failed');
+      diagnostics?.measure(debugId, 'plugin.update', debugStartedAt, 'failed');
       context.runtime.report(entry, error);
     }
   }, [input, entry, context?.runtime]);
@@ -333,19 +332,20 @@ export function UiPluginSlotView({
   if (!entry) return <>{children}{Object.values(regions ?? {})}</>;
   if (entry.status === 'error')
     return (
-      <><div role="alert" className="ui-plugin-error">
+      <><div {...identity.part('error')} role="alert" className="ui-plugin-error">
         <strong>{entry.manifest?.name}</strong>
         <pre>{entry.error}</pre>
       </div>{portals}</>
     );
   if (entry.status === 'loading')
     return (
-      <><div className="ui-plugin-loading" role="status">
+      <><div {...identity.part('loading')} className="ui-plugin-loading" role="status">
         {input.locale === 'zh-CN' ? '正在更新展示插件…' : 'Updating display plugin…'}
       </div>{portals}</>
     );
   return (
     <><div
+      {...identity.part('renderer')}
       className="ui-plugin-view"
       data-ui-plugin={entry.manifest?.id}
       data-ui-generation={entry.generation}
