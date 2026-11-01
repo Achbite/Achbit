@@ -22,6 +22,20 @@ def title_request(body):
     return bool(messages and messages[0].get('content', '').startswith('Name this conversation from the user'))
 
 
+def execution_review_request(body, *, decision_only=False):
+    if body.get('model') != 'mock-reviewer':
+        return False
+    names = sorted(tool['function']['name'] for tool in body.get('tools', []))
+    require(names == ([] if decision_only else ['fs_read', 'session_read']),
+            f'Unexpected execution reviewer tool authority: {names}')
+    if decision_only:
+        response_format = body.get('response_format', {})
+        require(response_format.get('type') == 'json_schema'
+                and response_format.get('json_schema', {}).get('name') == 'execution_permission_decision',
+                'The reviewer correction did not request a structured decision')
+    return True
+
+
 def configure_review(daemon, server, profile_id):
     fixture.write_configuration(daemon.config_root, f'http://127.0.0.1:{server.server_port}/v1', {})
     settings_root = daemon.config_root / 'config/user/local/settings'
@@ -53,7 +67,7 @@ class Provider(fixture.MockProviderHandler):
             if title_request(body):
                 self._send_text('Permission validation')
                 return
-            if not body.get('tools'):
+            if execution_review_request(body):
                 state.reviews += 1
                 require(state.mode == 'review', 'Review ran without user delegation')
                 require(body['model'] == 'mock-reviewer', 'The selected approval model was not used')
@@ -157,7 +171,7 @@ class ReviewFailureProvider(fixture.MockProviderHandler):
             if title_request(body):
                 self._send_text('Permission validation')
                 return
-            if not body.get('tools'):
+            if execution_review_request(body, decision_only=state.reviews > 0):
                 state.reviews += 1
                 require(state.scenario == 'invalid-decision', 'An unavailable reviewer was replaced by another model')
                 require(body['model'] == 'mock-reviewer', 'Selected reviewer was not used')
@@ -265,7 +279,7 @@ class PreviousRunGuidanceProvider(fixture.MockProviderHandler):
             if title_request(body):
                 self._send_text('Permission validation')
                 return
-            if not body.get('tools'):
+            if execution_review_request(body):
                 state.reviews += 1
                 require(body['model'] == 'mock-reviewer', 'The selected reviewer was not used for prior-run guidance')
                 require(body.get('reasoning_effort') == 'xhigh', 'The configured reviewer effort was not used')

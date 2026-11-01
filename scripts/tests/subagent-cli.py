@@ -88,6 +88,9 @@ class State(fixture.ProviderState):
             self.requests.append(dict(lane=lane, ordinal=ordinal, sessionId=sid, receipt=receipt, body=body))
         results = {message['tool_call_id']: json.loads(message['content']) for message in body['messages']
                    if message.get('role') == 'tool'}
+        for call_id, result in results.items():
+            require(call_id == 'over-limit' or result.get('accepted') is not False,
+                    f'{lane}: tool {call_id} was rejected: {json.dumps(result, ensure_ascii=False)}')
         if 'models' in results:
             operations = {operation['action'] for operation in results['models']['operations']}
             expected = {'models', 'spawn', 'send', 'compact', 'wait', 'cancel'}
@@ -177,7 +180,7 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('analysis-read-complete' if lane == 'ANALYSIS_READ' else 'nested-read-complete')
             elif lane == 'MEMBER_INITIAL':
                 if ordinal == 1:
-                    agent('nested', action='spawn', preset='collaboration', capabilities=ANALYSIS_CAPABILITIES,
+                    agent('nested', action='spawn', preset='e2e-reader',
                           task='NESTED_READ', name='Nested reader', delivery='wait')
                 elif ordinal == 2:
                     require(results['nested']['outcome'] == 'completed'
@@ -224,7 +227,8 @@ class Provider(fixture.MockProviderHandler):
                     self._send_text('member-followup-complete')
             elif lane == 'MAIN_CANCEL':
                 if ordinal == 1:
-                    agent('cancel-child', action='spawn', preset='analysis', capabilities=ANALYSIS_CAPABILITIES,
+                    agent('cancel-child', action='spawn', preset='collaboration', capabilities=ANALYSIS_CAPABILITIES,
+                          tools=dict(kernel=[], controls=['interaction.request'], plugins=False),
                           task='CHILD_CANCEL', name='Waiting child', delivery='async')
                 else:
                     require(ordinal == 2, 'Parent resumed unexpectedly before cancellation')
@@ -246,6 +250,10 @@ def configure(daemon, server):
         # The family retains both the collaborator and its nested reader until explicit close.
         'agent.subagents.maxConcurrent': 4, 'agent.subagents.maxMembersPerSession': 2,
         'agent.subagents.allowMemberAnalysis': True,
+        # Only the coordinator configures capabilities; children select this bounded preset.
+        'agent.subagents.presets': json.dumps([dict(
+            id='e2e-reader', name='E2E one-shot reader', capabilities=ANALYSIS_CAPABILITIES,
+            tools=dict(kernel=['fs.read'], controls=[], plugins=False))]),
     })
     path = daemon.config_root / 'config/user/local/settings/llm-profiles.json'
     profiles = json.loads(path.read_text(encoding='utf-8'))
@@ -324,7 +332,7 @@ def validate_journal(daemon, session, mode):
                 and members[0]['childRunId'] != members[1]['childRunId'], 'Member follow-up did not reuse its Session with a new run')
         member = snapshots[members[0]['agentSessionId']]
         require(len(member['agentTasks']) == 1 and member['agentTasks'][0]['capabilities'] == ANALYSIS_CAPABILITIES,
-                'Explicit nested capabilities are not retained under their actual parent')
+                'Nested preset capabilities are not retained under their actual parent')
         children = snapshots[session]['agentChildren']
         require(len(children) == 2 and len(member['agentChildren']) == 1, 'Created agents are absent from agentChildren')
         require(all(child['closed'] for child in children)
@@ -470,6 +478,7 @@ def check_mode(mode):
                     capture_output=True, text=True, encoding='utf-8', timeout=75)
                 # A one-shot CLI may observe the pending child Plan before the
                 # fixture's explicit user confirmation reaches the producer.
+                state.assert_healthy()
                 require(result.returncode in (0, 5), result.stdout + result.stderr)
                 stdout, stderr = result.stdout, result.stderr
                 def completed():
