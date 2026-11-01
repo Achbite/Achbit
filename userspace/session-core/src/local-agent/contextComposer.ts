@@ -7,6 +7,7 @@ import type {
   ContextCompositionTool,
   JsonObject,
   ModelMessage,
+  ManagedProcessSnapshot,
   ProviderRequest,
   PreparedToolDescriptor,
   PreparedRequestToolView,
@@ -18,6 +19,7 @@ import type {
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import {
+  isManagedProcessSnapshot,
   LOCAL_AGENT_PROTOCOL_VERSION,
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
@@ -341,15 +343,34 @@ export function messagesFromJournal(
   const throughSequence = events.at(-1)?.sequence ?? 0;
   const retained: ContextMessageContribution[] = [];
   const pendingHostRebinds: ContextMessageContribution[] = [];
-  const pendingAgentEvidence: ContextMessageContribution[] = [];
+  const pendingRunEvidence: (ContextMessageContribution | Extract<SessionEvent, {type: 'process.wait.changed'}>)[] = [];
   const pendingProcessUpdates = new Map<string, ContextMessageContribution>();
-  const observedProcesses = new Map<string, string>();
+  const deliveredProcessResults = new Set<string>();
   const flushProcessUpdates = () => {
     for (const [jobId, contribution] of pendingProcessUpdates) {
       messages.push(contribution);
-      observedProcesses.set(jobId, contribution.message.content);
+      deliveredProcessResults.add(jobId);
     }
     pendingProcessUpdates.clear();
+  };
+  const flushRunEvidence = () => {
+    for (const item of pendingRunEvidence.splice(0)) {
+      if ('message' in item) {
+        messages.push(item);
+        continue;
+      }
+      // A result that wins the race to the next request supersedes an unseen review.
+      const { waitId, startedAt, reviewAt, jobIds } = item.payload;
+      if (jobIds.some(id => deliveredProcessResults.has(id))) continue;
+      messages.push({
+        contributionId: `process-review:${item.eventId}`, contributionKind: 'journalMessages',
+        sourceSequence: item.sequence, label: 'Dependency wait review',
+        message: {role: 'user', content: JSON.stringify({
+          type: 'process.wait.review', waitId, waitingSince: startedAt, deadline: reviewAt,
+          jobs: processReviewJobs(events, item),
+        })},
+      });
+    }
   };
   const completionResults = new Map<string, ContextMessageContribution>();
   const approvalsByCallId = new Map(events.flatMap((event) => (
@@ -428,12 +449,20 @@ export function messagesFromJournal(
       && contribution.contributionId !== `workspace-snapshot:${retainedRunInputId}`) continue;
     retained.push({ ...contribution, message: cloneModelMessage(contribution.message) });
     if (contribution.contributionId.startsWith('process-update:')) {
-      const previous = JSON.parse(contribution.message.content) as { process: { jobId: string } };
-      observedProcesses.set(previous.process.jobId, contribution.message.content);
+      const previous = JSON.parse(contribution.message.content) as { process: { jobId: string; status: string } };
+      if (previous.process.status !== 'active') deliveredProcessResults.add(previous.process.jobId);
     }
   }
   let todoList: TodoListProjection | null = null;
   for (const event of events) {
+    // A paired status/wait/cancel result can already deliver this job's terminal fact.
+    if (event.type === 'tool.completed') {
+      const job = managedJobFromRecord(event.payload.record);
+      if (job && job.status !== 'active') {
+        deliveredProcessResults.add(job.jobId);
+        pendingProcessUpdates.delete(job.jobId);
+      }
+    }
     todoList = advanceTodoList(todoList, event);
     let messageBindings = workspaceBindings;
     let changedBindings = false;
@@ -706,17 +735,17 @@ export function messagesFromJournal(
     } else if (event.type === 'agent.task.completed') {
       const task = agentTasks.get(event.payload.taskId);
       if (!task) throw new LoopFailure('agent_task_source_missing', '子任务结果缺少已登记任务来源。');
-      if (!returnedAgentResults.has(event.payload.taskId)) pendingAgentEvidence.push({
+      if (!returnedAgentResults.has(event.payload.taskId)) pendingRunEvidence.push({
         contributionId: `agent-result:${event.payload.taskId}`, contributionKind: 'journalMessages', label: 'Subtask result',
         sourceSequence: event.sequence,
         message: { role: 'user', content: JSON.stringify({ type: 'agent.result', taskId: event.payload.taskId,
           agentId: task.agentSessionId, result: event.payload.result }) },
       });
     } else if (event.type === 'wake.triggered') {
-      pendingAgentEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
+      pendingRunEvidence.push({ contributionId: `scheduled-input:${event.eventId}`, contributionKind: 'journalMessages', label: 'Scheduled follow-up',
         sourceSequence: event.sequence, message: { role: 'user', content: event.payload.text } });
     } else if (event.type === 'agent.message.received') {
-      pendingAgentEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
+      pendingRunEvidence.push({ contributionId: `agent-message:${event.eventId}`, contributionKind: 'journalMessages', label: 'Collaborator message',
         sourceSequence: event.sequence,
         message: { role: 'user', content: JSON.stringify({ type: 'agent.message', agentId: event.payload.sourceSessionId, text: event.payload.text }) } });
     } else if (event.type === 'session.control.rejected') {
@@ -798,16 +827,16 @@ export function messagesFromJournal(
         },
       });
     } else if (event.type === 'process.updated') {
-      // Coalesce the feed only until the next request. Once observed, its
-      // snapshot stays in history; a later status must not rewrite a tool result.
-      const content = JSON.stringify({ type: 'process.updated', process: processContext(event.payload.job) });
-      // Heartbeat revisions belong to the journal, not repeated model messages.
-      if (observedProcesses.get(event.payload.job.jobId) === content) pendingProcessUpdates.delete(event.payload.job.jobId);
-      else pendingProcessUpdates.set(event.payload.job.jobId, {
-        contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
-        sourceSequence: event.sequence,
-        label: 'Managed process update', message: { role: 'user', content },
-      });
+      const job = event.payload.job;
+      if (job.status !== 'active' && !deliveredProcessResults.has(job.jobId)) {
+        pendingProcessUpdates.set(job.jobId, {
+          contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
+          sourceSequence: event.sequence, label: 'Managed process result',
+          message: { role: 'user', content: JSON.stringify({type: 'process.updated', process: processContext(job)}) },
+        });
+      }
+    } else if (event.type === 'process.wait.changed' && event.payload.phase === 'review') {
+      pendingRunEvidence.push(event);
     } else if (event.type === 'run.host.rebound') {
       // Rebinding happens while a tool is waiting. Its notice belongs to the next
       // Agent request, after the pending result, not inside the call/result pair.
@@ -817,7 +846,7 @@ export function messagesFromJournal(
     } else if (event.type === 'context.composed' && event.payload.purpose === 'agent') {
       flushProcessUpdates();
       messages.push(...pendingHostRebinds.splice(0));
-      messages.push(...pendingAgentEvidence.splice(0));
+      flushRunEvidence();
     } else if (event.type === 'provider.turn.settled' && event.payload.outcome === 'completed') {
       if (event.payload.toolCallInputs) {
         messages.push({
@@ -895,7 +924,7 @@ export function messagesFromJournal(
   }
   flushProcessUpdates();
   messages.push(...pendingHostRebinds);
-  messages.push(...pendingAgentEvidence);
+  flushRunEvidence();
   if (completionResults.size > 0) {
     throw new LoopFailure(
       'provider_call_result_completion_missing',
@@ -1447,6 +1476,11 @@ function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown
 function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknown {
   const output = structuredClone(value);
   if (!isRecord(output)) return output;
+  const job = managedJobFromRecord(record);
+  if (job?.status === 'active' && !(record.toolName === 'process' && record.input.action === 'status')) {
+    // The tool call already names the command. Starting or waiting only needs its handle.
+    output.job = { jobId: job.jobId, status: job.status, startedAt: job.startedAt };
+  }
   if (['fs.write', 'fs.edit', 'fs.delete', 'bash', 'powershell', 'container', 'document.render', 'browser.capture'].includes(record.toolName)) {
     delete output.fileChanges;
   }
@@ -1486,7 +1520,31 @@ function stripShellDiagnostics(output: Record<string, unknown>): void {
   delete output.capturedBytes;
 }
 
-function processContext(job: import('@achbit/protocol').ManagedProcessSnapshot): unknown {
+function managedJobFromRecord(record: ToolExecutionRecord): ManagedProcessSnapshot | undefined {
+  if (record.outcome !== 'completed' || !['bash', 'powershell', 'container', 'process'].includes(record.toolName)) return;
+  const job = isRecord(record.output) ? record.output.job : undefined;
+  return isManagedProcessSnapshot(job) ? job : undefined;
+}
+
+function processReviewJobs(events: readonly SessionEvent[], review: Extract<SessionEvent, {type: 'process.wait.changed'}>) {
+  // Freeze the evidence as of this decision, including jobs first seen in a tool receipt.
+  const wanted = new Set(review.payload.jobIds);
+  const latest = new Map<string, ManagedProcessSnapshot>();
+  for (const fact of events) {
+    if (fact.sequence > review.sequence) break;
+    if (!('runId' in fact) || fact.runId !== review.runId) continue;
+    const job = fact.type === 'process.updated' ? fact.payload.job
+      : fact.type === 'tool.completed' ? managedJobFromRecord(fact.payload.record) : undefined;
+    if (job && wanted.has(job.jobId) && job.revision > (latest.get(job.jobId)?.revision ?? 0)) latest.set(job.jobId, job);
+  }
+  return review.payload.jobIds.map(id => {
+    const job = latest.get(id);
+    if (!job) throw new LoopFailure('process_review_job_missing', 'Dependency review is missing its recorded job.');
+    return processContext(job);
+  });
+}
+
+function processContext(job: ManagedProcessSnapshot): unknown {
   // Bound each appended snapshot; the complete output remains in Kernel storage.
   const { result, output } = job;
   const details = isRecord(result) ? { ...result } : result;
