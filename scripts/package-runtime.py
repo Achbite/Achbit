@@ -235,7 +235,7 @@ def publish(stage, destination, archive=None, installer=None):
                         if file.is_file():
                             output.write(file, str(Path(destination.name) / file.relative_to(stage)))
             else:
-                with tarfile.open(packaged, 'w:gz', compresslevel=6) as output:
+                with tarfile.open(packaged, 'w:gz', compresslevel=9) as output:
                     output.add(stage, arcname=destination.name)
             artifacts.append((packaged, archive))
         if installer is not None:

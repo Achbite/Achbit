@@ -2,7 +2,7 @@ import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { useConversationHost } from './ConversationHost';
-import { highlightCode, type CodeSpan } from './codeLanguage';
+import type { CodeSpan } from './codeLanguage';
 import { memo, useEffect, useId, useState } from 'react';
 import { useConversationSessionId } from './ConversationSessionScope';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -23,7 +23,7 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
   useEffect(() => {
     if (streaming) return;
     let current = true;
-    void highlightCode(code, language).then((spans) => {
+    void import('./codeLanguage').then(({ highlightCode }) => highlightCode(code, language)).then((spans) => {
       if (current) { setRendered({ code, spans }); setHighlightError(''); }
     }).catch((error: unknown) => { if (current) { setRendered(null); setHighlightError(String(error)); } });
     return () => { current = false; };
