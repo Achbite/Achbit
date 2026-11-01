@@ -232,12 +232,17 @@ export class SessionActor {
       signal?.addEventListener('abort', wake, { once: true });
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const snapshot = await this.loadSnapshot();
+        // A restored or delayed timer may not have run yet. Publish already-due
+        // inputs before deciding this wait expired, using the same clock boundary.
+        const { snapshot, now } = await this.withWrite(async () => {
+          const now = Date.now();
+          return { snapshot: await this.triggerDueWakeups(runId, now), now };
+        });
         if (this.#disposed) throw new Error('session_actor_disposed');
         if (this.#loopFailure) throw this.#loopFailure;
         if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
         if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
-        if (Date.now() >= deadline) return { timedOut: true };
+        if (now >= deadline) return { timedOut: true };
         if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
         await changed;
       } finally {
@@ -284,18 +289,24 @@ export class SessionActor {
       this.#wakeTimers.set(id, setTimeout(() => {
         this.#wakeTimers.delete(id);
         void this.withWrite(async () => {
-          if (this.#disposed) return;
-          const current = await this.loadSnapshot();
-          if (!pendingWakeups(current.events, runId).has(id)) return;
-          if (Date.now() < event.payload.dueAt) {
-            this.restoreWakeTimers(current);
-            return;
-          }
-          await this.appendEvents([{ type: 'wake.triggered', sessionId: this.sessionId, runId,
-            payload: { scheduleId: id, text: event.payload.text } }], current);
+          const current = await this.triggerDueWakeups(runId, Date.now());
+          this.restoreWakeTimers(current);
         }).catch(error => { this.#loopFailure = error; for (const wake of this.#changes) wake(); });
       }, Math.max(0, event.payload.dueAt - Date.now())));
     }
+  }
+
+  /** Called under the Actor write lease by both timers and input waits. */
+  private async triggerDueWakeups(runId: string, now: number): Promise<LoopSnapshot> {
+    const snapshot = await this.loadSnapshot();
+    if (this.#disposed || snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return snapshot;
+    const due: NewSessionEvent[] = [...pendingWakeups(snapshot.events, runId).values()]
+      .filter(event => event.payload.dueAt <= now)
+      .map(event => ({ type: 'wake.triggered', sessionId: this.sessionId, runId,
+        payload: { scheduleId: event.payload.scheduleId, text: event.payload.text } }));
+    if (!due.length) return snapshot;
+    await this.appendEvents(due, snapshot);
+    return this.loadSnapshot();
   }
 
   async waitForRunResult(runId: string): Promise<AgentTaskResult> {
