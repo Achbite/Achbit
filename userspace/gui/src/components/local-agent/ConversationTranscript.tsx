@@ -1,3 +1,4 @@
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { parseLocalTarget, bindLocalTarget, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
 import { ResourceLinkChoices } from './ResourceLinkChoices';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -226,7 +227,7 @@ export function ConversationTranscript({
           <div className="local-agent__message-content">
             {(item.value.content.trim() || item.value.replyToInteraction) && (
               <div className="local-agent__message-text">
-                {item.value.replyToInteraction && <InteractionReplyQuote prompt={item.value.replyToInteraction.prompt} language={language} />}
+                {item.value.replyToInteraction && <InteractionReplyQuote sessionId={projection?.sessionId} interactionId={item.value.replyToInteraction.interactionId} prompt={item.value.replyToInteraction.prompt} language={language} />}
                 {item.value.role === 'assistant'
                   ? committedProviderContent(
                       item.streamId,
@@ -373,7 +374,7 @@ export function ConversationTranscript({
             setUiActionError(`${t(language, 'agent.link.unableToOpen')}\n${target.path}\n${reason instanceof Error ? reason.message : String(reason)}`);
         });
       }} />}
-    <ConversationNavigation key={sessionKey} entries={navigation} viewport={viewport} language={language}
+    <ConversationNavigation key={sessionKey} sessionId={sessionKey} entries={navigation} viewport={viewport} language={language}
       onNavigate={(entry) => viewport.scrollToAnchor(entry.key)} />
     <div
       ref={transcriptRef}
@@ -427,7 +428,7 @@ export function ConversationTranscript({
         if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
         const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
         const hasFileChanges = changeActivities.some(activity => activity.tool?.fileChanges?.length);
-        return <ConversationRoundView language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
+        return <ConversationRoundView sessionId={sessionKey} language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
           displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
           {hasFileChanges ? <FileChanges activities={changeActivities} /> : null}
         </ConversationRoundView>;
@@ -446,13 +447,14 @@ function samePlanReference(
   return reference?.planId === plan.planId && reference.revision === plan.revision;
 }
 
-function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, displaySettled, timing, onToggleProcess, rows, children }: {
-  language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
+function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eagerRows, displaySettled, timing, onToggleProcess, rows, children }: {
+  sessionId: string; language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
   displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
   timing: NonNullable<SessionProjection['runTimings']>[number] | undefined;
   rows: Array<{ key: string; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
+  const identity = useUiOwner('conversation.round', undefined, { sessionId, roundKey });
   const state = virtualizer.layout(`${roundKey}:disclosure`).state;
   const [disclosure, updateDisclosure] = useState(() => (state.get('process') as { displaySettled: boolean; open: boolean } | undefined) ?? { displaySettled, open: false });
   const setDisclosure = (value: typeof disclosure) => { state.set('process', value); updateDisclosure(value); };
@@ -462,7 +464,7 @@ function ConversationRoundView({ language, roundKey, virtualizer, eagerRows, dis
   const firstProcess = rows.find(row => row.process)?.key;
   return <section className="conversation-round">
     {rows.map(row => <React.Fragment key={row.key}>
-      {displaySettled && row.key === firstProcess && <div className="conversation-process-heading"><button className="conversation-process-toggle" type="button"
+      {displaySettled && row.key === firstProcess && <div className="conversation-process-heading"><button {...identity.action('toggle-process', 'click')} className="conversation-process-toggle" type="button"
         data-conversation-anchor={`${roundKey}:disclosure`} aria-expanded={expanded} onClick={(event) => {
         onToggleProcess(event.currentTarget);
         setDisclosure({ displaySettled, open: !expanded });
@@ -484,13 +486,16 @@ function CommittedPresentation({ identity, text, onDisplayed, children }: { iden
   return <>{children}</>;
 }
 
-export function InteractionReplyQuote({ prompt, language }: { prompt: string; language: UiLanguage }) {
+export function InteractionReplyQuote({ sessionId, interactionId, prompt, language }: {
+  sessionId: string | undefined; interactionId: string; prompt: string; language: UiLanguage;
+}) {
+  const identity = useUiOwner('conversation.answered-question', undefined, { sessionId, interactionId });
   const [expanded, setExpanded] = useConversationRowState('interaction-reply:expanded', false);
   const toggleLabel = language === 'zh-CN'
     ? (expanded ? '收起问题' : '展开问题')
     : (expanded ? 'Collapse question' : 'Expand question');
   return <div className="conversation-answered-question">
-    <button type="button" className="conversation-answered-question-toggle" aria-expanded={expanded}
+    <button type="button" {...identity.action('toggle', 'click')} className="conversation-answered-question-toggle" aria-expanded={expanded}
       aria-label={toggleLabel} title={toggleLabel} onClick={() => setExpanded((value) => !value)}>
       {!expanded && <span><MarkdownInline>{prompt.split(/\n\s*\n/)[0]!}</MarkdownInline></span>}
       <AchbitShellIcon name="chevronDown" />

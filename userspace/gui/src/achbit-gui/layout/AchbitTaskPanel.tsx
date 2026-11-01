@@ -91,7 +91,7 @@ export function ConversationOutputs({ artifacts, language, expanded, onExpandedC
     </div>
     {artifacts.length === 0 ? <div className="achbit-gui-task-list-card__empty">{t(language, 'achbitGui.outputs.empty')}</div> : <>
       <div className="achbit-gui-output-list">
-        <ArtifactLinks artifacts={expanded ? artifacts : artifacts.slice(0, 3)} onOpen={onOpen} />
+        <ArtifactLinks location="outputs" artifacts={expanded ? artifacts : artifacts.slice(0, 3)} onOpen={onOpen} />
       </div>
       {!expanded && artifacts.length > 3 && <button ref={navigation} type="button" className="achbit-gui-output-more" onClick={() => onExpandedChange(true)}>
         <AchbitShellIcon name="chevronRight" />{t(language, 'achbitGui.outputs.showAll', { count: artifacts.length })}

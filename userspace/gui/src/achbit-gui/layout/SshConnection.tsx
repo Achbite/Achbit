@@ -1,3 +1,4 @@
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useState } from 'react';
 import ModalDialog from '../../components/shared/ModalDialog';
 import AchbitShellIcon from '../../components/shared/AchbitShellIcon';
@@ -11,6 +12,7 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
   const apiStatus = useAppStatusStore(state => state.apiStatus);
   const remote = isRemoteHost();
   const connected = remote && apiStatus === 'connected';
+  const identity = useUiOwner('connection.ssh');
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [destination, setDestination] = useState(''), [port, setPort] = useState('');
   const [username, setUsername] = useState('');
@@ -33,7 +35,7 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
     }).catch(reason => setError(String(reason)));
   };
   return <>
-    <button type="button" className="reader-icon-button ssh-connection-button" data-connected={connected} title={connectionLabel}
+    <button type="button" {...identity.action('open', 'click')} className="reader-icon-button ssh-connection-button" data-connected={connected} title={connectionLabel}
       aria-label={remote ? `${connectionLabel} · ${text('details')}` : connectionLabel} aria-haspopup="dialog" aria-expanded={open} onClick={showConnection}>
       <AchbitShellIcon name="link" />
     </button>

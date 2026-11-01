@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModule } from './gui-projection-contract.mjs';
+import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 import { collectUiSources } from '../ui-ownership-sources.mjs';
 
 const component = ownerId => ({ ownerId, slot: null, pluginId: null, read: () => null,
@@ -321,4 +321,47 @@ test('diagnostic overlay follows modal/popover layers without taking business in
   assert.match(label, /actionId composer\.controls\.attachments/);
   assert.match(label, /ConversationComposer\.tsx:\d+/);
   window.__ACHBIT_DEBUG_UI__.setOverlay(false);
+});
+
+test('sidebar actions preserve project scope and identify the correct session after reordering', async t => {
+  const { default: Sidebar } = await loadGuiModule(t, '/src/achbit-gui/layout/AchbitSidebar.tsx');
+  const project = { id: 'project:p', title: 'Project' };
+  const sessions = ['session:a', 'session:b'].map(id => ({ id, projectId: project.id, title: 'Same title' }));
+  const calls = [];
+  const props = { language: 'en-US', catalogStatus: 'ready', projects: [project], activeSessionId: sessions[0].id,
+    collapsedProjectIds: new Set(), readRunMarkers: {}, sessionStatuses: {},
+    onCreatePrimarySession: () => calls.push(['new', null]),
+    onCreateProjectSession: item => calls.push(['new', item.id]),
+    onOpenProjectContextMenu: (_, item) => calls.push(['project-menu', item.id]),
+    onActivateSession: item => calls.push(['open', item.id]),
+    onOpenSessionContextMenu: (_, item) => calls.push(['session-menu', item.id]),
+  };
+  function render(ordered) {
+    let tree;
+    function Probe() {
+      tree = Sidebar({ ...props, sessions: ordered });
+      return tree;
+    }
+    renderToStaticMarkup(createElement(Probe));
+    return tree;
+  }
+  function click(tree, action, target) {
+    const button = findReactElement(tree, node => {
+      if (node.type !== 'button' || node.props['data-ui-action'] !== `navigation.sidebar.${action}`) return false;
+      const actual = JSON.parse(node.props['data-ui-target']);
+      return Object.entries(target).every(([key, value]) => actual[key] === value);
+    });
+    button.props.onClick({ stopPropagation() {} });
+  }
+  const tree = render(sessions);
+  click(tree, 'new-chat', { entry: 'primary', projectId: project.id });
+  click(tree, 'new-chat', { entry: 'project', projectId: project.id });
+  click(tree, 'new-chat', { entry: 'standalone' });
+  click(tree, 'project-menu', { projectId: project.id });
+  click(tree, 'open-session', { sessionId: sessions[1].id });
+  click(render([...sessions].reverse()), 'session-menu', { sessionId: sessions[0].id });
+  assert.deepEqual(calls, [
+    ['new', project.id], ['new', project.id], ['new', null], ['project-menu', project.id],
+    ['open', sessions[1].id], ['session-menu', sessions[0].id],
+  ]);
 });

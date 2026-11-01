@@ -1,15 +1,18 @@
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useEffect, useState } from 'react';
 import type { ConversationNavigationEntry } from './conversationWindow';
 import type { ConversationViewport } from './useConversationViewport';
 import type { UiLanguage } from '../../i18n';
 import { activeConversationAnchor } from './conversationNavigationPosition';
 
-export function ConversationNavigation({ entries, viewport, onNavigate, language }: {
+export function ConversationNavigation({ sessionId, entries, viewport, onNavigate, language }: {
+  sessionId: string;
   entries: ConversationNavigationEntry[];
   viewport: ConversationViewport;
   onNavigate(entry: ConversationNavigationEntry): void;
   language: UiLanguage;
 }) {
+  const identity = useUiOwner('conversation.navigation', undefined, { sessionId });
   const [active, setActive] = useState<string>();
   const [preview, setPreview] = useState<ConversationNavigationEntry | null>(null);
   useEffect(() => {
@@ -53,7 +56,7 @@ export function ConversationNavigation({ entries, viewport, onNavigate, language
   return <nav className="conversation-navigation" aria-label={zh ? '对话导航' : 'Conversation navigation'}>
     <div className="conversation-navigation__ticks">
       {entries.map((entry, index) => <button
-        type="button" key={entry.key}
+        {...identity.action('jump', 'click', { rowKey: entry.key })} type="button" key={entry.key}
         aria-current={active === entry.key ? 'location' : undefined}
         aria-label={`${zh ? '跳至消息' : 'Go to message'} ${index + 1}: ${entry.label}`}
         onMouseEnter={() => setPreview(entry)} onMouseLeave={() => setPreview(null)}

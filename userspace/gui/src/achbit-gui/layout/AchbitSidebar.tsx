@@ -1,3 +1,4 @@
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   ConversationProject,
@@ -73,6 +74,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
   onOpenSessionContextMenu,
   onOpenSettings,
 }) => {
+  const identity = useUiOwner('navigation.sidebar');
   const listRef = useRef<HTMLElement>(null);
   const projectListId = useId();
   const [expandedProjectLists, setExpandedProjectLists] = useState<ReadonlySet<string>>(() => new Set());
@@ -222,6 +224,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
       >
         <button
           type="button"
+          {...identity.action('open-session', 'click', { sessionId: session.id })}
           className={session.id === activeSessionId ? 'active' : ''}
           onClick={() => onActivateSession(session)}
           onContextMenu={(event) => onOpenSessionContextMenu(event, session)}
@@ -235,6 +238,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
         </button>
         <button
           type="button"
+          {...identity.action('session-menu', 'click', { sessionId: session.id })}
           className="achbit-gui-session-row__menu"
           onClick={(event) => onOpenSessionContextMenu(event, session)}
           aria-label={t(language, 'achbitGui.session.actions')}
@@ -266,6 +270,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
       <div className="achbit-gui-sidebar-actions">
         <button
           type="button"
+          {...identity.action('new-chat', 'click', { entry: 'primary', projectId: activeProject?.id })}
           className="achbit-gui-sidebar-action achbit-gui-sidebar-action--primary"
           onClick={() => {
             if (activeProject) onCreateProjectSession(activeProject);
@@ -296,6 +301,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           </div>
           <button
             type="button"
+            {...identity.action('project-create-menu', 'click')}
             className="achbit-gui-sidebar-text-action achbit-gui-sidebar-reveal-action"
             onClick={onOpenProjectCreateMenu}
             onPointerDown={(event) => event.stopPropagation()}
@@ -334,6 +340,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                   >
                     <button
                       type="button"
+                      {...identity.action('toggle-project', 'click', { projectId: project.id })}
                       className="achbit-gui-project-archive-group__select"
                       onClick={() => onToggleProject(project.id)}
                       aria-expanded={!collapsed}
@@ -348,6 +355,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                     <div className="achbit-gui-project-archive-group__actions">
                       <button
                         type="button"
+                        {...identity.action('new-chat', 'click', { entry: 'project', projectId: project.id })}
                         className="achbit-gui-project-archive-group__compose"
                         onClick={(event) => {
                           event.stopPropagation();
@@ -361,6 +369,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                       </button>
                       <button
                         type="button"
+                        {...identity.action('project-menu', 'click', { projectId: project.id })}
                         className="achbit-gui-project-archive-group__menu"
                         onClick={(event) => onOpenProjectContextMenu(event, project)}
                         aria-label={t(language, 'achbitGui.project.actions')}
@@ -387,6 +396,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                       {projectSessions.length > PROJECT_SESSION_PREVIEW_LIMIT && (
                         <button
                           type="button"
+                          {...identity.action('more-project-sessions', 'click', { projectId: project.id })}
                           className="achbit-gui-project-sessions-toggle"
                           onPointerDown={(event) => event.stopPropagation()}
                           onClick={() => setExpandedProjectLists((current) => {
@@ -417,6 +427,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           </div>
           <button
             type="button"
+            {...identity.action('new-chat', 'click', { entry: 'standalone' })}
             className="achbit-gui-sidebar-new-chat"
             onClick={onCreatePrimarySession}
             disabled={busy}
@@ -439,7 +450,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
 
       <footer className="achbit-gui-sidebar-footer">
         <ProductUpdateNotice />
-        <button type="button" className="achbit-gui-sidebar-settings" onClick={onOpenSettings}>
+        <button type="button" {...identity.action('settings', 'click')} className="achbit-gui-sidebar-settings" onClick={onOpenSettings}>
           <span className="achbit-gui-sidebar-settings__icon">
             <AchbitShellIcon name="settings" />
           </span>

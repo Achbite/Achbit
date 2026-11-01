@@ -4,7 +4,8 @@ import { useUiLanguage } from '../../useUiLanguage';
 import './imageReview.css';
 
 /** Reuse the loaded image; fitting and zooming are local presentation state. */
-export function ImageReview({ source, alt, children, className = '', imageClassName, title, onError }: {
+export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError }: {
+  triggerIdentity?: Readonly<Record<`data-ui-${string}`, string>>;
   source?: string; alt: string; children?: ReactNode; className?: string; imageClassName?: string;
   title?: string; onError?(): void;
 }) {
@@ -39,7 +40,7 @@ export function ImageReview({ source, alt, children, className = '', imageClassN
   };
   const frameless = !className && typeof navigator !== 'undefined' && /Win/.test(navigator.platform);
   return <>
-    <button type="button" className={className || 'conversation-image-review__open'} disabled={!source}
+    <button {...triggerIdentity} type="button" className={className || 'conversation-image-review__open'} disabled={!source}
       data-frameless={frameless || undefined}
       aria-label={`${t(language, 'content.image.expand')}${alt ? ` · ${alt}` : ''}`} title={title}
       onClick={() => { setZoom(null); dialog.current?.showModal(); setOpen(true); }}>
