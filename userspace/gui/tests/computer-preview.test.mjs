@@ -159,6 +159,8 @@ test('one preview image control distinguishes drag from activation and preserves
     handlers.onPointerCancel(pointer(20, 30));
     handlers.onPointerMove(pointer(80, 80));
     assert.equal(moves.length, 2, 'cancelled gestures stop moving');
+    handlers.onClick(click(1));
+    assert.equal(activations.length, 2, 'cancelling even a small gesture cannot activate the target');
     return control;
   }
   const html = renderToStaticMarkup(createElement(Probe));
