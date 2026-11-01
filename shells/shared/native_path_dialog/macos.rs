@@ -51,37 +51,25 @@ fn selection(panel: &NSOpenPanel, response: isize) -> Result<Option<Vec<PathBuf>
     }
 }
 
-#[cfg(not(feature = "debug-control"))]
 pub(super) fn pick(
     parent: &tauri::Window,
     options: &PathOptions,
 ) -> Result<Option<Vec<PathBuf>>, String> {
     let panel = configured_panel(parent, options)?;
-    selection(&panel, panel.runModal())
-}
-
-#[cfg(feature = "debug-control")]
-pub(super) fn begin(
-    parent: &tauri::Window,
-    options: &PathOptions,
-    sender: std::sync::mpsc::SyncSender<Result<Option<Vec<PathBuf>>, String>>,
-) -> Result<(), String> {
-    let window = parent.ns_window().map_err(|error| error.to_string())?;
-    let panel = configured_panel(parent, options)?;
-    let id = debug_panel::opened(&panel)?;
-    let result_panel = panel.clone();
-    let completion = block2::RcBlock::new(move |response: isize| {
-        let result = selection(&result_panel, response);
-        debug_panel::completed(id.clone(), &result);
-        let _ = sender.send(result);
-    });
-    unsafe {
-        panel.beginSheetModalForWindow_completionHandler(
-            &*(window as *const objc2_app_kit::NSWindow),
-            &completion,
-        );
+    // Diagnostics observe the same application-modal operation as the normal build.
+    // Failure to attach diagnostics must not change the user's selection result.
+    #[cfg(feature = "debug-control")]
+    let observation = debug_panel::opened(&panel);
+    #[cfg(feature = "debug-control")]
+    if let Err(error) = &observation {
+        eprintln!("[debug] native dialog observation unavailable: {error}");
     }
-    Ok(())
+    let result = selection(&panel, panel.runModal());
+    #[cfg(feature = "debug-control")]
+    if let Ok(id) = observation {
+        debug_panel::completed(id, &result);
+    }
+    result
 }
 
 #[cfg(feature = "debug-control")]

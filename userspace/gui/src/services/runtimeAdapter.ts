@@ -111,7 +111,7 @@ export interface NativePathSelection {
 
 export async function pickNativePaths(options: NativePathOptions): Promise<NativePathSelection[] | null> {
   if (!hasNativePathPicker()) throw new Error('native_path_picker_unavailable');
-  if (options.kind === 'path' || (typeof __ACHBIT_DEBUG__ !== 'undefined' && __ACHBIT_DEBUG__)) {
+  if (options.kind === 'path') {
     return tauriInvoke()!<NativePathSelection[] | null>('achbit_pick_path', { options: {
       title: options.title,
       kind: options.kind,
