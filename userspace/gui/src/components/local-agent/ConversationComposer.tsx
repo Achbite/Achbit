@@ -417,7 +417,7 @@ export function ConversationComposer({
           rows={compactInput ? 1 : 3}
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'
             : pendingInteraction ? 'agent.composer.placeholder.interaction' : 'agent.composer.placeholder.task')}
-          disabled={Boolean(pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}
+          disabled={Boolean(!pendingPlan && pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}
           onChange={(event) => {
             // Typing after a send re-engages the surface even when focus was retained.
             editedDraft.current = event.target.value;
@@ -528,7 +528,7 @@ export function ConversationComposer({
                     await composer.submitPlanDecision({ kind: 'cancel' });
                   } else {
                     try {
-                      await composer.respondInteraction(t(language, 'agent.interaction.skip'));
+                      await composer.respondInteraction(t(language, 'agent.interaction.skip'), pendingInteraction?.interactionId);
                     } catch {
                       // The store retains the command error and the current answer.
                     }
@@ -544,13 +544,13 @@ export function ConversationComposer({
                 title={t(language, 'agent.composer.stop')}
                 onClick={() => void cancelRun()}
               ><AchbitShellIcon name="stop" /></button>}
-              {!showStopAction && <button
+              {(!showStopAction || composer.textDecision) && <button
                 type="button"
                 className={`local-agent__send${composer.textDecision || composer.editingMessage ? ' local-agent__send--decision' : ''}`}
                 aria-label={submitting
                     ? t(language, 'agent.composer.sending')
-                    : pendingInteraction ? (language === 'zh-CN' ? '回答' : 'Answer')
-                      : pendingPlan ? (language === 'zh-CN' ? '提交修改意见' : 'Request changes')
+                    : pendingPlan ? (language === 'zh-CN' ? '提交修改意见' : 'Request changes')
+                      : pendingInteraction ? (language === 'zh-CN' ? '回答' : 'Answer')
                         : t(language, composer.editingMessage ? 'agent.message.regenerate' : 'agent.composer.send')}
                 title={t(language, 'agent.composer.sendEnter')}
                 disabled={!canSend}

@@ -34,7 +34,7 @@ test('GUI commands dispatch existing actions without sending model prompts or ca
     setItem(_key, value) { draft = JSON.parse(value).draft; },
   };
   t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
-  store.setState({ sessionId: 'session:remote', projection: { run: { status: 'running' }, plans: [] },
+  store.setState({ sessionId: 'session:remote', projection: { run: { runId: 'run:remote', status: 'running' }, plans: [], interactions: [] },
     profiles: [], selectedProfileId: null, cancelRun: async () => { cancelled++; }, sendMessage: async () => { sent++; } });
   function Probe() { composer = useAgentComposer('zh-CN', () => {}); return null; }
   function render() { Object.assign(store.getInitialState(), store.getState()); renderToStaticMarkup(createElement(Probe)); }
@@ -45,7 +45,7 @@ test('GUI commands dispatch existing actions without sending model prompts or ca
   assert.equal(cancelled, 0);
   assert.equal(sent, 0);
   draft = '/cancel';
-  store.setState({ sessionId: 'session:remote', projection: { run: { status: 'running' }, plans: [] } });
+  store.setState({ sessionId: 'session:remote', projection: { run: { runId: 'run:remote', status: 'running' }, plans: [], interactions: [] } });
   render();
   await composer.submitDraft();
   assert.equal(cancelled, 1);

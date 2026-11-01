@@ -125,7 +125,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
     } catch (error) { setRuleError(error instanceof Error ? error.message : String(error)); }
   };
   useLayoutEffect(() => {
-    if (pendingApproval && !reviewing && document.activeElement === document.body) approvalRef.current?.focus({ preventScroll: true });
+    // A native Reader WebView can own focus while this document still reports body.
+    if (pendingApproval && !reviewing && document.hasFocus() && document.activeElement === document.body) approvalRef.current?.focus({ preventScroll: true });
   }, [pendingApproval?.approvalId, reviewing]);
   const answerApproval = async (decision: 'allow' | 'deny', scope?: ShellAuthorizationScope) => {
     if (!pendingApproval || submitting || reviewing) return;

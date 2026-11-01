@@ -26,7 +26,7 @@ test('foreground questions retain their full history card and both answer entran
   assert.doesNotMatch(answered, /<textarea/);
 });
 
-test('all current unanswered questions come forward only at the user-input wait and withdraw when work resumes', async t => {
+test('current unanswered questions stay in the shared composer during work and waits, until answered or the run ends', async t => {
   const previousStorage = globalThis.sessionStorage;
   globalThis.sessionStorage = { getItem: () => null, setItem() {}, removeItem() {} };
   t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
@@ -57,9 +57,10 @@ test('all current unanswered questions come forward only at the user-input wait 
     { runId: 'run:current', status: 'waiting', waitingReason: 'approval' },
     { runId: 'run:current', status: 'waiting', waitingReason: 'plan' },
   ]) {
-    assert.equal(render(run).pendingInteraction, null);
-    assert.equal(composer.interactionNavigation, null);
-    assert.equal(composer.textDecision, false, 'open questions alone never take over the ordinary composer');
+    assert.equal(render(run).pendingInteraction.interactionId, questions[0].interactionId);
+    assert.equal(composer.interactionNavigation.count, 5);
+    assert.equal(composer.textDecision, true, 'independent work and session.wait must not hide the answer entrance');
+    assert.equal(composer.showStopAction, true, 'pending questions cannot remove cancellation while the run is active');
   }
   const waiting = { runId: 'run:current', status: 'waiting', waitingReason: 'userInput' };
   assert.equal(render(waiting).pendingInteraction.interactionId, questions[0].interactionId);
@@ -68,8 +69,12 @@ test('all current unanswered questions come forward only at the user-input wait 
   const updated = interactions.map(item => item.interactionId === questions[0].interactionId ? { ...item, status: 'answered' } : item);
   assert.equal(render(waiting, updated).pendingInteraction.interactionId, questions[1].interactionId);
   assert.equal(composer.interactionNavigation.count, 4);
-  assert.equal(render({ runId: 'run:current', status: 'running' }, updated).pendingInteraction, null);
-  assert.equal(render({ runId: 'run:current', status: 'cancelled' }, updated).pendingInteraction, null);
+  assert.equal(render({ runId: 'run:current', status: 'running' }, updated).pendingInteraction.interactionId, questions[1].interactionId);
+  for (const status of ['completed', 'failed', 'cancelled', 'indeterminate', 'releasing', 'releaseFailed']) {
+    assert.equal(render({ runId: 'run:current', status }, updated).pendingInteraction, null);
+    assert.equal(composer.interactionNavigation, null);
+  }
+  assert.equal(render(waiting, updated.map(item => ({ ...item, status: 'answered' }))).pendingInteraction, null);
 });
 
 test('question header shows the dynamic page count and navigation never submits an answer', async t => {
@@ -91,6 +96,42 @@ test('question header shows the dynamic page count and navigation never submits 
   }
   assert.deepEqual(moves, [1, 2, 4, 5]);
   assert.deepEqual(answers, []);
+});
+
+test('answering during independent work uses the original question and leaves the ordinary draft intact', async t => {
+  const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
+  const draft = value => JSON.stringify({ draft: value, pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] });
+  const ordinaryKey = 'achbit:composer:session:questions';
+  const answerKey = `${ordinaryKey}:interaction:question:scope`;
+  const saved = new Map([[ordinaryKey, draft('Keep this unrelated follow-up')], [answerKey, draft('Inspect the current window')]]);
+  globalThis.sessionStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  t.after(() => {
+    if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+  });
+  const [{ useLocalAgentStore: store }, { useAgentComposer }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/components/local-agent/useAgentComposer.ts',
+  ]);
+  globalThis.document = { activeElement: null };
+  const question = { interactionId: 'question:scope', runId: 'run:current', status: 'pending', mode: 'continue',
+    kind: 'question', prompt: 'Which window?', allowFreeform: true };
+  const projection = { sessionId: 'session:questions', run: { runId: 'run:current', status: 'running' },
+    interactions: [question], plans: [] };
+  const before = structuredClone(projection), answers = [];
+  store.setState({ sessionId: projection.sessionId, projection, loading: false, submitting: false, runtimeReady: true,
+    respondInteraction: async (...args) => { answers.push(args); },
+    sendMessage: () => assert.fail('a question reply is not an ordinary message') });
+  Object.assign(store.getInitialState(), store.getState());
+  let composer;
+  function Probe() { composer = useAgentComposer('en-US', () => {}); return null; }
+  renderToStaticMarkup(createElement(Probe));
+  assert.equal(composer.draft, 'Inspect the current window');
+  assert.equal(composer.canSend, true);
+  await composer.submitDraft();
+  assert.deepEqual(answers, [['Inspect the current window', 'question:scope']]);
+  assert.equal(JSON.parse(saved.get(ordinaryKey)).draft, 'Keep this unrelated follow-up');
+  assert.equal(JSON.parse(saved.get(answerKey)).draft, '');
+  assert.deepEqual(projection, before, 'only the Session response may change question/run facts');
 });
 
 test('shared question choices send stable IDs even when labels match and never invent Markdown choices', async t => {
@@ -150,4 +191,73 @@ test('reply text and navigation use the answered question label without rewritin
   const rounds = [{ rows: [{ key: 'reply', item: { type: 'message', value: message } }] }];
   assert.equal(conversationNavigation(rounds, questions)[0].label, 'Inspect this window');
   assert.equal(message.content, 'same-id');
+});
+
+
+test('question replies keep stop available and skip identifies the displayed question', async t => {
+  const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
+  const answers = [], actions = [];
+  const composer = {
+    profiles: [], selectedProfileId: null, draft: 'Inspect the current window', pastedTexts: [], pastedImages: [], failedDrafts: [],
+    pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
+    textDecision: true, canSend: true, showStopAction: true, submitting: false,
+    pendingInteraction: { interactionId: 'question:second', kind: 'question', prompt: 'Which window?', allowFreeform: true },
+    respondInteraction: async (...args) => { answers.push(args); },
+    cancelRun: async () => { actions.push('stop'); },
+    submitDraft: async () => { actions.push('answer'); },
+  };
+  let tree;
+  function Probe() { tree = ConversationComposer({ language: 'en-US', composer, uiActionError: null }); return null; }
+  renderToStaticMarkup(createElement(Probe));
+  const stop = findReactElement(tree, node => node.type === 'button' && node.props.className?.includes('local-agent__send--stop'));
+  const answer = findReactElement(tree, node => node.type === 'button' && node.props['aria-label'] === 'Answer');
+  const skip = findReactElement(tree, node => node.type === 'button' && node.props.className === 'local-agent__interaction-secondary');
+  assert.equal(answer.props.disabled, false);
+  answer.props.onClick();
+  assert.deepEqual(actions, ['answer'], 'submitting an answer does not cancel the run');
+  await skip.props.onClick();
+  assert.equal(answers[0][1], 'question:second', 'skip must not fall back to the Session default question');
+  stop.props.onClick();
+  assert.deepEqual(actions, ['answer', 'stop']);
+});
+
+test('a foreground plan accepts revision text while a choice-only question remains pending', async t => {
+  const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
+  const key = 'achbit:composer:session:plan:plan:plan:current:1';
+  const saved = new Map([[key, JSON.stringify({ draft: 'Retain the current configuration', pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] })]]);
+  globalThis.sessionStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  t.after(() => {
+    if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+  });
+  const [{ useLocalAgentStore: store }, { useAgentComposer }, { ConversationComposer }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/components/local-agent/useAgentComposer.ts', '/src/components/local-agent/ConversationComposer.tsx',
+  ]);
+  globalThis.document = { activeElement: null };
+  const question = { interactionId: 'question:choices', runId: 'run:current', status: 'pending', mode: 'continue',
+    kind: 'question', prompt: 'Choose a window', allowFreeform: false, options: [{ id: 'current', label: 'Current window' }] };
+  const plan = { planId: 'plan:current', runId: 'run:current', revision: 1, title: 'Prepare a report', status: 'pending' };
+  const projection = { sessionId: 'session:plan', run: { runId: 'run:current', status: 'waiting', waitingReason: 'plan' },
+    interactions: [question], pendingPlan: plan, plans: [plan], contextCompositions: [], queuedInputs: [] };
+  const plans = [];
+  store.setState({ sessionId: projection.sessionId, projection, loading: false, submitting: false, runtimeReady: true,
+    respondPlan: async value => { plans.push(value); },
+    respondInteraction: () => assert.fail('revision text must not answer the background question') });
+  Object.assign(store.getInitialState(), store.getState());
+  let composer, tree;
+  function Probe() {
+    composer = useAgentComposer('en-US', () => {});
+    tree = ConversationComposer({ language: 'en-US', composer, uiActionError: null });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  assert.equal(composer.draft, 'Retain the current configuration');
+  assert.equal(composer.canSend, true);
+  const textarea = findReactElement(tree, node => node.type === 'textarea');
+  assert.equal(textarea.props.disabled, false, 'a background choice-only question must not disable plan revision input');
+  const submit = findReactElement(tree, node => node.type === 'button' && node.props['aria-label'] === 'Request changes');
+  assert.equal(submit.props.disabled, false);
+  assert.equal(composer.showStopAction, false, 'plan cancellation retains its existing cancel-and-stop control');
+  await composer.submitDraft();
+  assert.deepEqual(plans, [{ kind: 'requestRevision', text: 'Retain the current configuration' }]);
 });
