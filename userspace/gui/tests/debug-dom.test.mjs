@@ -93,7 +93,7 @@ test('semantic DOM actions click the real target and observe its state without c
   mounted = [a, b];
   const dom = bridge({ querySelectorAll: selector => selector === '[data-ui-action]' ? mounted : mounted.filter(item => `#${item.id}` === selector),
     documentProps: { elementFromPoint: () => hit }, globals: {
-      CSS: { escape: value => value }, getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+      CSS: { escape: value => value }, getComputedStyle: element => ({ display: 'block', visibility: 'visible', pointerEvents: element.pointerEvents ?? 'auto' }),
       PointerEvent: class {}, MouseEvent: class {},
     } });
   const catalog = await dom.dispatch({ name: 'actions' });
@@ -109,6 +109,9 @@ test('semantic DOM actions click the real target and observe its state without c
   assert.equal(result.action.execution, 'dom.click');
   assert.equal(result.action.trustedNativeInput, false);
   assert.equal(result.businessCompletion, 'not-asserted');
+  b.pointerEvents = 'none';
+  await assert.rejects(dom.dispatch({ name: 'ui.action', args: { actionId: 'conversation.tool.toggle', target } }), /pointer_inactive/);
+  b.pointerEvents = 'auto';
   disabled = true;
   await assert.rejects(dom.dispatch({ name: 'ui.action', args: { actionId: 'conversation.tool.toggle', target } }), /element_disabled/);
   mounted = [a];

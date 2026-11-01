@@ -10,6 +10,11 @@
       if (identity.every(([, value]) => value)) {
         const semantic = identity.map(([key, value]) => `[${key}="${CSS.escape(value)}"]`).join('');
         if (document.querySelectorAll(semantic).length === 1) { parts.unshift(semantic); break; }
+        const target = node.getAttribute('data-ui-target');
+        if (target) {
+          const scoped = semantic + `[data-ui-target="${CSS.escape(target)}"]`;
+          if (document.querySelectorAll(scoped).length === 1) { parts.unshift(scoped); break; }
+        }
       }
       if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) { parts.unshift('#' + CSS.escape(node.id)); break; }
       const siblings = [...(node.parentElement?.children ?? [])].filter(other => other.localName === node.localName);
@@ -36,6 +41,7 @@
     if (!['click', 'type', 'select', 'key', 'scroll'].includes(kind)) throw Error('debug_action_kind_invalid');
     const disabled = !!element.closest(':disabled,[aria-disabled="true"],[inert]');
     const reason = disabled ? 'debug_element_disabled' : !visible(element) ? 'debug_element_hidden'
+      : kind === 'click' && getComputedStyle(element).pointerEvents === 'none' ? 'debug_element_pointer_inactive'
       : kind === 'type' && element.readOnly ? 'debug_input_read_only' : null;
     return { actionId: element.dataset.uiAction, execution: `dom.${kind}`, target: actionTarget(JSON.parse(element.dataset.uiTarget ?? '{}')),
       selector: selectorFor(element), availability: reason ? 'unavailable' : 'available', reason,
