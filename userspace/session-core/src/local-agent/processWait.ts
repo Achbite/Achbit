@@ -1,6 +1,6 @@
 import type { ProcessWaitState, SessionEvent } from '@achbit/protocol';
 
-// One Host-side health check; a healthy result never schedules a model request.
+// The first unbounded dependency wait offers one decision point to the existing Loop.
 export const PROCESS_WAIT_REVIEW_MS = 120_000;
 
 export function activeProcessWait(events: readonly SessionEvent[], runId: string): ProcessWaitState | undefined {

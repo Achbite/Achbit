@@ -31,7 +31,7 @@ pub(crate) fn schema(targets: &[&str]) -> Value {
         "tool":{"type":"string","enum":targets,"description":"For start: the execution tool. Container jobs accept create or exec."},
         "input":{"type":"object","description":"For start: the chosen tool's exact input, excluding workspace and workspaceId; select workspace on this process call. Include any permission request. Omit timeout for no runtime limit."},
         "jobId":{"type":"string","description":"For wait/status/cancel: the jobId returned by start."},
-        "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional explicit dependency-wait deadline, without stopping the job. Normally omit; completion resumes the task."}
+        "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional dependency decision deadline in seconds. The job keeps running. Without a deadline the first dependency wait offers one review after 120 seconds."}
     }});
     if targets.is_empty() {
         schema["properties"]["action"]["enum"] = json!(["wait", "status", "cancel"]);
