@@ -45,14 +45,14 @@ export function ContextUsageControl({
       )
     : null;
   const contextLabel = contextPercent === null
-    ? t(language, 'common.notAvailable')
+    ? ''
     : `${Math.round(contextPercent)}%`;
   const contextTitle = displayedUsage
     ? t(language, 'agent.context.windowUsage', {
         used: formatTokens(displayedUsage.inputTokens + displayedUsage.outputTokens, language),
         capacity: formatTokens(displayedUsage.contextWindowTokens, language),
       })
-    : t(language, 'common.notAvailable');
+    : undefined;
   const contextReceipt = contextCompositions.find(receipt => receipt.providerRequestId === contextUsage?.providerRequestId) ?? null;
   const capacityMetrics = useMemo(
     () => buildCapacityMetrics(displayedUsage, language),
@@ -162,7 +162,7 @@ export function ContextUsageControl({
         type="button"
         className={`achbit-session-model__context${contextPercent === null ? ' achbit-session-model__context--unknown' : ''}`}
         style={{ '--achbit-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
-        aria-label={contextLabel}
+        aria-label={contextLabel || t(language, 'agent.context.window')}
         aria-expanded={contextOpen}
         disabled={!hasContextFacts}
         title={contextTitle}
