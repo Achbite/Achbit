@@ -1438,8 +1438,13 @@ pub(crate) fn local_agent_provider_stream_response(
         let mut usage_call = match usage_store.begin(&profile, &archive_identity) {
             Ok(call) => call,
             Err(error) => {
-                yield Ok::<Bytes, Infallible>(Bytes::from(provider_event(&request_id, provider_attempt_id.as_deref(), "failed",
-                    json!({"code":"usage_record_failed","message":error}))));
+                let (packet, _) = archived_provider_event(
+                    &mut archive,
+                    &request_id, provider_attempt_id.as_deref(),
+                    "failed",
+                    json!({"code":"usage_record_failed","message":error}),
+                );
+                yield Ok::<Bytes, Infallible>(Bytes::from(packet));
                 return;
             }
         };
@@ -1561,11 +1566,27 @@ pub(crate) fn local_agent_provider_stream_response(
                         return;
                     }
                 };
-                let observed = accumulator.observed_usage().map_err(|error| error.message)
-                    .and_then(|observed| usage_call.observe(observed));
-                if let Err(error) = observed {
-                    yield Ok::<Bytes, Infallible>(Bytes::from(provider_event(&request_id, provider_attempt_id.as_deref(), "failed",
-                        json!({"code":"usage_record_failed","message":error}))));
+                let observed = match accumulator.observed_usage() {
+                    Ok(observed) => observed,
+                    Err(error) => {
+                        let (packet, _) = archived_provider_event(
+                            &mut archive,
+                            &request_id, provider_attempt_id.as_deref(),
+                            "failed",
+                            error.into_failure(profile.api_key.as_deref()),
+                        );
+                        yield Ok::<Bytes, Infallible>(Bytes::from(packet));
+                        return;
+                    }
+                };
+                if let Err(error) = usage_call.observe(observed) {
+                    let (packet, _) = archived_provider_event(
+                        &mut archive,
+                        &request_id, provider_attempt_id.as_deref(),
+                        "failed",
+                        json!({"code":"usage_record_failed","message":error}),
+                    );
+                    yield Ok::<Bytes, Infallible>(Bytes::from(packet));
                     return;
                 }
                 for emission in emissions {
@@ -1681,10 +1702,12 @@ pub(crate) fn local_agent_provider_stream_response(
                 // timing before publishing completion; dropping an unfinished stream
                 // still leaves its completion fields unknown.
                 if let Err(error) = usage_call.finish_timing() {
-                    yield Ok::<Bytes, Infallible>(Bytes::from(provider_event(
+                    let (packet, _) = archived_provider_event(
+                        &mut archive,
                         &request_id, provider_attempt_id.as_deref(), "failed",
                         json!({"code":"usage_record_failed","message":error}),
-                    )));
+                    );
+                    yield Ok::<Bytes, Infallible>(Bytes::from(packet));
                     return;
                 }
                 break 'provider;
@@ -3606,6 +3629,159 @@ mod tests {
                 .collect();
             assert_eq!(replay.as_bytes(), delivered.as_ref());
             assert_eq!(lines.last().unwrap()["data"]["outcome"], outcome);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_usage_failures_preserve_identity_and_archive_delivered_events() {
+        use axum::{routing::post, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for stage in ["invalid", "begin", "observe", "finish"] {
+            let directory = std::env::temp_dir().join(
+                crate::utils::new_runtime_ref("usage-failure")
+                    .unwrap()
+                    .replace(':', "-"),
+            );
+            let path = directory.join("usage.sqlite3");
+            let store = Arc::new(crate::model_usage::UsageStore::open(&path).unwrap());
+            let trigger = match stage {
+                "begin" => Some("BEFORE INSERT ON provider_usage"),
+                "observe" => Some("BEFORE UPDATE ON provider_usage WHEN json_extract(NEW.record, '$.inputTokens') IS NOT NULL"),
+                "finish" => Some("BEFORE UPDATE ON provider_usage WHEN json_extract(NEW.record, '$.completedAt') IS NOT NULL"),
+                _ => None,
+            };
+            if let Some(trigger) = trigger {
+                rusqlite::Connection::open(&path)
+                    .unwrap()
+                    .execute_batch(&format!(
+                        "CREATE TRIGGER fixture_usage_failure {trigger} BEGIN SELECT RAISE(FAIL, 'fixture usage write denied'); END;"
+                    ))
+                    .unwrap();
+            }
+            let usage = if stage == "invalid" {
+                json!({"prompt_tokens":30,"completion_tokens":6,"prompt_cache_hit_tokens":18,"prompt_cache_miss_tokens":10})
+            } else {
+                json!({"prompt_tokens":30,"completion_tokens":6})
+            };
+            let chunk = json!({"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}],"usage":usage});
+            let payload = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+            let requests = Arc::new(AtomicUsize::new(0));
+            let captured = requests.clone();
+            let server = Router::new().route(
+                "/chat/completions",
+                post(move || {
+                    let payload = payload.clone();
+                    captured.fetch_add(1, Ordering::SeqCst);
+                    async move { ([("content-type", "text/event-stream")], payload) }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+            let mut profile = test_profile("openaiCompatible");
+            profile.base_url = Some(format!("http://{address}"));
+            profile.api_key = Some("usage-test-key".into());
+            let response = local_agent_provider_stream_response(
+                crate::provider_transport::ProviderTransport::new()
+                    .unwrap()
+                    .client,
+                Some("attempt:usage".into()),
+                profile,
+                test_codex_context("session:usage"),
+                provider_input(
+                    json!({"messages":[{"role":"user","content":"usage check"}],"tools":[],"hostedTools":[]}),
+                ),
+                "request:usage".into(),
+                directory.clone(),
+                json!({"sessionId":"session:usage","runId":"run:usage","requestId":"request:usage","providerAttemptId":"attempt:usage"}),
+                store.clone(),
+            );
+            let delivered = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            task.abort();
+            let _ = task.await;
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                usize::from(stage != "begin"),
+                "{stage}"
+            );
+            let delivered = String::from_utf8(delivered.to_vec()).unwrap();
+            let events: Vec<Value> = delivered
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|data| serde_json::from_str(data).unwrap())
+                .collect();
+            assert!(!events.is_empty(), "{stage}: {delivered}");
+            assert!(events
+                .iter()
+                .all(|event| event["requestId"] == "request:usage"
+                    && event["providerAttemptId"] == "attempt:usage"));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event["type"] == "failed")
+                    .count(),
+                1,
+                "{stage}"
+            );
+            assert!(
+                !events.iter().any(|event| event["type"] == "completed"),
+                "{stage}"
+            );
+            let failure = &events.last().unwrap()["data"];
+            assert_eq!(events.last().unwrap()["type"], "failed", "{stage}");
+            assert_eq!(
+                failure["code"],
+                if stage == "invalid" {
+                    "provider_usage_invalid"
+                } else {
+                    "usage_record_failed"
+                },
+                "{stage}"
+            );
+            assert_eq!(
+                failure["message"],
+                if stage == "invalid" {
+                    "Provider 缓存 token 必须完整划分输入 token 总量。"
+                } else {
+                    "fixture usage write denied"
+                },
+                "{stage}"
+            );
+            let archive_path = directory.join("timeline.jsonl");
+            assert_eq!(
+                failure["diagnostics"]["archivePath"],
+                archive_path.to_string_lossy().as_ref(),
+                "{stage}"
+            );
+            let log = std::fs::read_to_string(archive_path).unwrap();
+            let lines: Vec<Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let replay: String = lines
+                .iter()
+                .filter(|line| line["type"] == "session.event")
+                .map(|line| {
+                    provider_event(
+                        "request:usage",
+                        Some("attempt:usage"),
+                        line["data"]["type"].as_str().unwrap(),
+                        line["data"]["data"].clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(replay, delivered, "{stage}");
+            assert_eq!(lines.last().unwrap()["type"], "archive.closed", "{stage}");
+            assert_eq!(
+                lines.last().unwrap()["data"]["outcome"],
+                "failed",
+                "{stage}"
+            );
+            drop(store);
             std::fs::remove_dir_all(directory).unwrap();
         }
     }

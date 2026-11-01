@@ -743,10 +743,12 @@ export interface ModelInteractionRequest {
 }
 
 export interface ProviderTokenUsage {
+  /** Complete input including cache reads/writes exactly once; normalized by Provider adapter. */
   inputTokens: number;
   outputTokens: number;
   contextWindowTokens: number;
   cacheReadInputTokens?: number;
+  /** Ordinary input + cache writes; together with reads exactly partitions inputTokens. */
   cacheMissInputTokens?: number;
 }
 
