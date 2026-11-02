@@ -376,6 +376,12 @@ impl ConversationCatalog {
             .find(|workspace| workspace.workspace_id == workspace_id)
     }
 
+    pub(crate) fn session_workdir(&self, session_id: &str) -> Option<&ConversationWorkspaceRecord> {
+        self.workspaces.iter().find(|workspace| {
+            workspace.session_workdir && workspace.owner_session_id.as_deref() == Some(session_id)
+        })
+    }
+
     pub(crate) fn insert_project(&mut self, project: ConversationProjectRecord) {
         self.projects.retain(|candidate| candidate.id != project.id);
         self.projects.insert(0, project);
