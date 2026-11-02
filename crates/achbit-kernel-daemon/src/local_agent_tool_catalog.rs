@@ -198,6 +198,18 @@ impl ToolProvider for ProductToolProvider {
                 },
             )
             .collect();
+        if let Some((session_id, instance)) = &self.0.diagnostics {
+            tools.push(PendingToolContribution {
+                origin: "extension", provider_ref: "achbit:session-diagnostics".into(),
+                plugin_uri: Some(crate::local_agent_plugins::SESSION_DIAGNOSTICS_URI.into()), plugin_instance_ref: Some(instance.clone()),
+                contribution_ref:"achbit:session-diagnostics/read".into(), name:"session.diagnostics".into(),
+                description:"Inspect the current session's recorded run, context or reasoning. Omit view for a summary.".into(),
+                input_schema: crate::local_agent_product_tools::session_diagnostics_schema(),
+                effect_class:Some(ToolEffectClass::Read), effect_scope:CatalogEffectScope::LocalRead,
+                availability:ToolAvailability::Callable, availability_reason:None, runtime_status:None,
+                logical_target:Some(session_id.clone()), binding:ToolExecutorBinding::Product(Arc::clone(&self.0)),
+            });
+        }
         for (name, field, description, scope) in [
             ("artifact.prepare", "path", "Archive a workspace file as an immutable resource version. Re-prepare after modifying it; its logical identity stays stable.", CatalogEffectScope::WorkspaceRead),
             ("artifact.preview", "url", "Register an HTTP(S) live preview reference without fetching or verifying it. Call after updating the preview to record its latest presentation version.", CatalogEffectScope::LocalRead),
@@ -1099,7 +1111,11 @@ impl PreparedCatalogBinding {
                 .map(PreparedToolInput::Document)
                 .map_err(|error| ToolCatalogError::new(error.code, error.message)),
             ToolExecutorBinding::Product(_) => {
-                let targets = product_logical_targets(self.tool_name(), &raw_arguments)?;
+                let targets = if let Some(target) = self.logical_target() {
+                    vec![target.to_owned()]
+                } else {
+                    product_logical_targets(self.tool_name(), &raw_arguments)?
+                };
                 Ok(PreparedToolInput::Dynamic {
                     arguments: raw_arguments,
                     targets,

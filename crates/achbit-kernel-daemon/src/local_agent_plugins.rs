@@ -98,6 +98,7 @@ enum PluginContribution {
     Host,
     Container,
     Document,
+    SessionDiagnostics,
     Mcp { plugin_uri: String },
 }
 
@@ -182,6 +183,13 @@ impl ResolvedPluginSelection {
             .map(|plugin| plugin.plugin_instance_ref.clone())
     }
 
+    pub(crate) fn diagnostics_instance(&self) -> Option<String> {
+        self.plugins
+            .iter()
+            .find(|plugin| matches!(plugin.contribution, PluginContribution::SessionDiagnostics))
+            .map(|plugin| plugin.plugin_instance_ref.clone())
+    }
+
     pub(crate) fn container_instance(&self) -> Option<String> {
         self.plugins
             .iter()
@@ -219,6 +227,7 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
                         PluginContribution::Host
                             | PluginContribution::Container
                             | PluginContribution::Document
+                            | PluginContribution::SessionDiagnostics
                     ) =>
                 {
                     "host"
@@ -249,6 +258,8 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
     Ok(json!({"revision":revision,"plugins":plugins}))
 }
 
+pub(crate) const SESSION_DIAGNOSTICS_URI: &str = "plugin://session-diagnostics@builtin";
+
 pub(crate) fn plugin_allowed_for_session(uri: &str, is_child_agent: bool) -> bool {
     !is_child_agent || uri != "plugin://computer-use@builtin"
 }
@@ -269,7 +280,8 @@ pub(crate) fn search_plugins(
             _ => String::new(),
         };
         let item = source.into_public();
-        if !item.enabled
+        if item.uri == SESSION_DIAGNOSTICS_URI
+            || !item.enabled
             || !item.available
             || !plugin_allowed_for_session(&item.uri, is_child_agent)
         {
@@ -565,6 +577,33 @@ fn plugin_catalog(
             contribution: PluginContribution::Document,
             implementation: json!({"host":"native","plugin":"documents"}),
             content: Arc::from(guide.as_bytes()),
+        }),
+    )?;
+    let uri = SESSION_DIAGNOSTICS_URI;
+    let description = "读取本次会话的运行摘要、上下文和推理诊断。";
+    let enabled = !disabled_plugins.iter().any(|id| id == uri);
+    insert_plugin_source(
+        &mut sources,
+        PluginCatalogEntry::Loaded(PluginSource {
+            public: PublicPluginCatalogItem {
+                uri: uri.into(),
+                display_name: "Session Diagnostics".into(),
+                short_description: description.into(),
+                icon_ref: None,
+                management: Some(json!({"key":"plugins.disabled","id":uri})),
+                activation_media_types: vec![],
+                enabled,
+                available: enabled,
+                error: None,
+            },
+            plugin_artifact_ref: crate::utils::new_runtime_ref("plugin-artifact")?,
+            plugin_instance_ref: String::new(),
+            capability_refs: vec!["host:session-diagnostics".into()],
+            capability_summary: description.into(),
+            tool_prompt_provider: None,
+            contribution: PluginContribution::SessionDiagnostics,
+            implementation: json!({"host":"native","plugin":"session-diagnostics"}),
+            content: Arc::from(description.as_bytes()),
         }),
     )?;
     for source in skill_catalog_entries(settings)? {
@@ -955,6 +994,32 @@ mod tests {
         let exhausted = search_plugins(&settings, "", 2, expected.len(), false).unwrap();
         assert_eq!(exhausted["plugins"], json!([]));
         assert!(exhausted["nextOffset"].is_null());
+    }
+
+    #[test]
+    fn diagnostics_is_a_user_selected_component_outside_agent_discovery() {
+        let settings = json!({});
+        let catalog = plugin_catalog_projection(&settings).unwrap();
+        assert!(catalog["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["uri"] == SESSION_DIAGNOSTICS_URI && p["available"] == true));
+        let browse = search_plugins(&settings, "", usize::MAX, 0, false).unwrap();
+        assert!(!browse["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["uri"] == SESSION_DIAGNOSTICS_URI));
+        let mut selections = vec![PluginSelectionInput {
+            selection_id: "user:selection".into(),
+            uri: SESSION_DIAGNOSTICS_URI.into(),
+            label: "Diagnostics".into(),
+        }];
+        assert!(resolve_plugin_selection(&settings, &mut selections, false)
+            .unwrap()
+            .diagnostics_instance()
+            .is_some());
     }
 
     #[test]

@@ -111,6 +111,39 @@ test('Host Shell declarations follow effective permissions and retain grants for
   assert.ok(sandbox.inputSchema.properties.requestHostPermission);
 });
 
+test('the main request only offers referenced history or actual image evidence, with matching target and view boundaries', async () => {
+  const { sessionReadAllowed } = await import('../dist/local-agent/sessionReading.js');
+  const { preparePluginActivation } = await import('../dist/local-agent/pluginActivation.js');
+  const runtime = runtimeSnapshot('run:reader', { tools: [{ name: 'session.read', description: 'History',
+    origin: 'coreBuiltin', toolBindingRef: 'binding:history', availability: 'callable', possibleEffects: ['localRead'],
+    inputSchema: { type: 'object', properties: { sessionId: { type: 'string' }, view: { type: 'string' } }, required: ['sessionId'] } }] });
+  const input = { sessionId: 'session:current', runId: 'run:reader', runtime, workspaceBindings: [],
+    providerRequestId: 'request:reader', responseConstraint: 'normal' };
+  const msg = (content, extra = {}) => ({type: 'message.committed', eventId: 'e:input', sequence: 1, sessionId: input.sessionId,
+    payload: {messageId: 'm:input', role: 'user', content, ...extra}});
+  const project = events => buildAgentProviderRequest({...input, events});
+  const ordinary = await project([msg('Repair the ledger.')]);
+  assert.ok(!ordinary.request.tools.some(tool => tool.name === 'session_read'));
+  assert.ok(!ordinary.receipt.messages.some(message => message.contributionId === 'session:images'));
+  const referenced = await project([msg('Read `session:saved` and sessionId="custom-archive".')]);
+  const history = referenced.request.tools.find(tool => tool.name === 'session_read');
+  assert.deepEqual(history.inputSchema.properties.sessionId.enum, ['session:saved', 'custom-archive']);
+  assert.ok(sessionReadAllowed(referenced.toolCodec.sessionReadScope, { sessionId: 'session:saved', view: 'context' }));
+  assert.ok(!sessionReadAllowed(referenced.toolCodec.sessionReadScope, { sessionId: input.sessionId, view: 'context' }));
+  const withImage = msg('Compare this to session:saved.', {filesystemReferences: [{kind: 'file', mediaType: 'image/png',
+    referenceId: 'image:1', workspaceId: 'workspace:file', logicalPath: 'image.png', displayName: 'image.png', byteLength: 2}]});
+  const mixed = await project([withImage]);
+  assert.ok(mixed.receipt.messages.some(message => message.contributionId === 'session:images'));
+  assert.ok(sessionReadAllowed(mixed.toolCodec.sessionReadScope, { sessionId: input.sessionId, view: 'images' }));
+  for (const view of ['summary','context','reasoning']) assert.ok(!sessionReadAllowed(mixed.toolCodec.sessionReadScope, { sessionId: input.sessionId, view }));
+  const parent = await project([{type:'agent.task.created', payload:{createsAgent:true, agentSessionId:'session:child', taskId:'task:one'}, runId: input.runId,
+    sessionId: input.sessionId, sequence: 1}]);
+  assert.ok(sessionReadAllowed(parent.toolCodec.sessionReadScope, { sessionId:'session:child', view:'resources' }));
+  assert.ok(!sessionReadAllowed(parent.toolCodec.sessionReadScope, { sessionId:'session:child', view:'context' }));
+  assert.throws(() => preparePluginActivation({runtime, pluginUris:['plugin://session-diagnostics@builtin']}),
+    error => error.code === 'plugin_user_selection_required');
+});
+
 test('coding tool feedback separates complete results from continuation and audit data', () => {
   const result = (toolName, input, output, error, origin = 'coreBuiltin') => {
     const base = { sessionId: 'session:feedback', runId: 'run:feedback', callId: 'call:one' };

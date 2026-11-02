@@ -1,3 +1,4 @@
+import { sessionReadAllowed } from './sessionReading.js';
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, APPROVAL_HISTORY_VIEWS, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
@@ -1889,6 +1890,11 @@ function decodeProviderOutputBlock(
       }
       if (!isRecord(input)) {
         return rejectInput('Provider function_call arguments 必须是 JSON 对象。');
+      }
+      if (canonicalName === 'session.read' && toolCodec.sessionReadScope && !sessionReadAllowed(toolCodec.sessionReadScope, input)) {
+        const message = 'The requested session and view are outside this tool declaration.';
+        return { outputIndex: output.outputIndex, kind: 'toolCallRejected', providerCallId, name: canonicalName, item,
+          error: { code: 'session_read_scope', message, issues: [{ path: '$', rule: 'session_read_scope', message }] } };
       }
       let decodedInput: JsonObject;
       try {

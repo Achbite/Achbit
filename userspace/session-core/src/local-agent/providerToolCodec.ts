@@ -11,6 +11,7 @@ import type {
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
+import type { SessionReadScope } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
 
 const PROVIDER_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -35,6 +36,7 @@ export const CORE_TOOL_ORDER = [
 ] as const;
 
 export interface ProviderToolCodec {
+  readonly sessionReadScope?: SessionReadScope;
   definitions: readonly ProviderToolDefinition[];
   kernelDefinitions: readonly ProviderToolDefinition[];
   controlDefinitions: readonly ProviderToolDefinition[];
@@ -168,6 +170,7 @@ export function createProviderToolCodec(
   controls: readonly ProviderToolDefinition[],
   aliases: readonly ProviderToolAlias[],
   workspaceBindings: readonly WorkspaceBindingDisplay[],
+  sessionReadScope?: SessionReadScope,
 ): ProviderToolCodec {
   const workspaceToolNames = new Set(runtimeTools
     .filter(isWorkspaceScopedTool)
@@ -276,6 +279,7 @@ export function createProviderToolCodec(
     workspaceIdByHandle,
     workspaceHandleById,
     workspaceToolNames,
+    sessionReadScope,
     receiptTools,
   });
 }

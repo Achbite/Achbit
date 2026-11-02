@@ -571,6 +571,10 @@ impl LocalAgentRuntime {
                             .desktop
                             .run(&request.session_id, &request.run_id),
                     )
+                    .with_session_diagnostics(
+                        &request.session_id,
+                        plugin_selection.diagnostics_instance(),
+                    )
                     .with_containers(plugin_selection.container_instance())
                     .with_documents(plugin_selection.document_instance())
                     .with_browser_binding(environment.get("hostBinding").cloned().map(

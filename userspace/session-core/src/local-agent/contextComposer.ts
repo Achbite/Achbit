@@ -26,6 +26,7 @@ import {
   SESSION_CONTROL_AGENT,
   SESSION_CONTROL_SESSION,
 } from '@achbit/protocol';
+import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
 import { environmentInstruction } from './sessionEnvironment.js';
 import { permissionInstructionText } from './skillPlugins.js';
@@ -129,9 +130,12 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     artifactPresent: providerWireName(input.runtime, SESSION_CONTROL_ARTIFACT_PRESENT),
   };
   const surface = input.toolStage ?? input.runtime;
+  const readScope = surface.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')
+    ? sessionReadScope(input.sessionId, modelViewEvents) : undefined;
   const runtimeTools = surface.tools.filter(tool => tool.availability === 'callable'
     && (hasWorkspaceBindings || !tool.possibleEffects.some(effect =>
-      effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')));
+      effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')))
+    .flatMap(tool => tool.name === 'session.read' && readScope ? sessionReadTool(tool, readScope) : [tool]);
   const hasPluginDiscovery = runtimeTools.some(tool => tool.name === 'plugin.search');
   const hostedTools: ProviderRequest['hostedTools'] = surface.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: surface.webSearch.providerToolType }]
@@ -150,6 +154,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
+    readScope,
   );
   const fixedViews = journalModelViews(modelViewEvents).contributions;
   const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
@@ -222,7 +227,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     },
   });
   const imageReader = toolCodec.wireByCanonical.get('session.read');
-  if (imageReader && toolCodec.canonicalByWire.has(imageReader)) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
+  if (readScope?.currentViews.includes('images') && imageReader && toolCodec.canonicalByWire.has(imageReader)) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
     label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];

@@ -305,7 +305,7 @@ for (const scenario of [
       return completedExecutionReply(request, { content: `read evidence:${request.providerCallId ?? request.callId}` });
     } }),
   });
-  await fixture.service.submit(messageCommand(ownerId, 'command:discovery-batch', 'Discover models and read the independent evidence.'));
+  await fixture.service.submit(messageCommand(ownerId, 'command:discovery-batch', 'Discover models and read the independent evidence in session:evidence.'));
   const state = await completed(fixture.service, ownerId);
   assert.deepEqual(state.agentTasks ?? [], []);
   assert.equal(state.todoList.items[0].status, 'inProgress');
