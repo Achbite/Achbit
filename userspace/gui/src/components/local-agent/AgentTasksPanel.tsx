@@ -79,7 +79,7 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
         {!projection && !child.readError && <p role="status">{t(language, 'agent.team.loading')}</p>}
         {projection && expanded && <>
           <AgentConversationHistory projection={projection} name={name} language={language} expanded />
-          <ArtifactLinks artifacts={projection.artifacts} onOpen={(workspaceId, path) => requestWorkspacePreview(sessionId, workspaceId, path)} />
+          <ArtifactLinks location="agent" artifacts={projection.artifacts} onOpen={(workspaceId, path) => requestWorkspacePreview(sessionId, workspaceId, path)} />
           <div ref={decision}><ChildDecisions key={`${projection.pendingPlan?.planId ?? ''}:${projection.pendingPlan?.revision ?? ''}`}
             child={child} projection={projection} language={language} /></div>
           {projection.terminalError && <p role="alert" className="agent-tasks__error">{projection.terminalError.message}</p>}

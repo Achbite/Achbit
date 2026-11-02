@@ -43,9 +43,8 @@ const CONTEXT_MANAGEMENT_KEYS = ['agent.contextManagement.enabled', 'agent.conte
 const AGENT_INSTRUCTION_KEYS = ['agent.systemPrompt'] as const;
 const AGENT_RESPONSE_KEYS = ['agent.responseLanguage'] as const;
 const AGENT_SHELL_KEYS = ['agent.windows.shell', 'agent.windows.gitBashPath'] as const;
+const AGENT_WORKFLOW_KEYS = ['agent.minimalMode', 'agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'] as const;
 const AGENT_PERMISSION_KEYS = [
-  'agent.permissions.workspaceMutation',
-  'agent.permissions.engineeringDecisions',
   'agent.permissions.shell',
   'agent.permissions.shellAccess',
   'agent.permissions.networkRead',
@@ -79,7 +78,7 @@ export function settingsSearchDefinitions(language: ReturnType<typeof normalizeU
   const groups = {
     general: GENERAL_KEYS,
     gui: APPEARANCE_KEYS,
-    agent: [...AGENT_RESPONSE_KEYS, ...CONTEXT_MANAGEMENT_KEYS, ...AGENT_INSTRUCTION_KEYS],
+    agent: [...AGENT_RESPONSE_KEYS, ...CONTEXT_MANAGEMENT_KEYS, ...AGENT_INSTRUCTION_KEYS, ...AGENT_WORKFLOW_KEYS],
     environment: os === 'windows' ? AGENT_SHELL_KEYS : [],
     permissions: AGENT_PERMISSION_KEYS,
     llm: AGENT_WEB_KEYS,
@@ -214,6 +213,7 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
     () => definitionsFor(AGENT_INSTRUCTION_KEYS, available, language),
     [available, language],
   );
+  const workflow = useMemo(() => definitionsFor(AGENT_WORKFLOW_KEYS, available, language), [available, language]);
   const permissions = useMemo(
     () => definitionsFor(AGENT_PERMISSION_KEYS, available, language),
     [available, language],
@@ -252,6 +252,7 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
     <div>
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
       {category === 'agent' && renderCard(null, [...response, ...contextManagement, ...instructions])}
+      {category === 'agent' && renderCard(t(language, 'agent.permission.workflow'), workflow)}
       {category === 'environment' && environment?.os === 'windows' && renderCard(null, shellSettings)}
       {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
       {category === 'environment' && <div className="settings-card">

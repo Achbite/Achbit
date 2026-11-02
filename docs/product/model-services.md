@@ -22,7 +22,7 @@ TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects direc
 
 ## Configure through the CLI
 
-The configuration CLI uses Host execution under the current permission policy. Its executable and `hostDataDirectory` in the command environment are Host paths; their declaration does not grant workspace-sandbox access. If the session disables Host execution, this CLI is unavailable in that session. `--host-data-dir` attaches to that existing Host and never starts another instance. It overrides inherited ACHBIT_API_URL/ACHBIT_PORT and selects the actual Host data directory even when Shell HOME is task-local. `ACHBIT_USER_ROOT` remains the way to start/select an independent instance outside a task.
+The configuration CLI uses Host execution under the current permission policy. The shell environment includes its executable and `hostDataDirectory` when product Skills are available. Both paths follow Host permissions. If the session disables Host execution, this CLI is unavailable in that session. `--host-data-dir` attaches to that existing Host and never starts another instance. It overrides inherited ACHBIT_API_URL/ACHBIT_PORT and selects the actual Host data directory even when Shell HOME is task-local. `ACHBIT_USER_ROOT` remains the way to start/select an independent instance outside a task.
 
 ```sh
 "/absolute/path/achbit-cli" --host-data-dir "/actual/instance/data" instance
@@ -138,7 +138,15 @@ Pixels enter one successful logical request, including its retries. Later reques
 
 ## Task tool selection
 
+**Settings → Agent behavior → Minimal mode** (`agent.minimalMode`, off by default) applies to new conversations without an explicit recipe, across GUI, CLI and TUI. It selects `fs.read`, `fs.edit`, `fs.write` and the configured shell (Bash or PowerShell), with no Session controls, plugins, product prompt contributions or background title request. Project edits and host Shell commands run without routine approval or a workspace Shell sandbox; configured command rules still apply. Changing the default does not reconfigure existing conversations. An explicit creation recipe takes precedence.
+
 A Session recipe may select `tools.kernel` (canonical Kernel tool names), `tools.controls` (Session controls), and `tools.plugins` (whether extension activation is part of this task). Omitted groups keep the inherited selection; an empty array installs none. A child may narrow this selection but cannot expand its parent's tools or plugin access. This selection does not grant filesystem, process or external permissions.
+
+A recipe can select an independent list of Host-installed `productComponents`. Achbit installs `achbit.collaboration` (progress and communication), `achbit.work-method`, `achbit.verification`, `achbit.delivery`, and `achbit.rich-replies` (inline diagrams) as prompt contributions. `achbit.conversation-title` enables the separate background model request for naming new conversations. It adds no model instruction or tool. The standard product enables these components by default. A recipe with `tools.plugins: false` defaults to none. An explicit list overrides these defaults independently of the tool selection. For example, `"productComponents": ["achbit.rich-replies"]` enables diagram guidance alone. `"productComponents": []` leaves only the coding core and applicable capability instructions. Child recipes inherit an explicit selection unless they supply another.
+
+Ordinary requests project the current tool contracts directly. Run status, wait queues, timers, unpaired progress snapshots, and tool catalog changes stay in the journal. Actual user decisions and the results of requested operations are preserved.
+
+The Host installs product contributions in the Session configuration registry. The Session freezes their selected text in the run snapshot and continues to compose the same stage-specific tool contracts and journal. Internal compaction uses the shared prefix and accepts only text. The Host checks the creation recipe before scheduling a model-generated title. Ordinary first-message and manual titles use the catalog directly.
 
 The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":[],"plugins":false}`. Give it a reading task and exact file references. Use `collaboration` when the work needs editing, messaging or other installed capabilities; explicit task selections can narrow that preset as well. `fs.read` does not search unknown paths.
 

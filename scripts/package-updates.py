@@ -34,7 +34,7 @@ def macos(app, output):
     with tempfile.NamedTemporaryFile(dir=output.parent, suffix='.tar.gz', delete=False) as file:
         temporary = Path(file.name)
     try:
-        with tarfile.open(temporary, 'w:gz', compresslevel=6) as archive:
+        with tarfile.open(temporary, 'w:gz', compresslevel=9) as archive:
             archive.add(app, arcname=app.name)
         temporary.replace(output)
     finally:

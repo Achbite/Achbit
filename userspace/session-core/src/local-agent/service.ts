@@ -29,6 +29,7 @@ import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
+import type { InstructionContribution } from './skillPlugins.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
 import { LoopFailure } from './loopFailure.js';
 
@@ -42,6 +43,7 @@ export interface SessionCompositionFactory {
   create(input: {
     sessionId: string;
     workspaceBindings: readonly WorkspaceBindingDisplay[];
+    promptContributions: readonly InstructionContribution[];
   }): Promise<{
     composition: AgentComposition;
   }>;
@@ -120,6 +122,7 @@ export class SessionService implements ConversationPort {
     if (input.recipe) {
       const recipe = decodeAgentRecipe(input.recipe);
       if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
+      this.configurations.productInstructions(recipe);
       if (recipe.configuration) this.configurations.resolve(recipe.configuration, {}, true);
       if (recipe.runner) this.loops.validate(recipe.runner);
       if (input.agentContext?.configuration && recipe.configuration
@@ -539,11 +542,12 @@ export class SessionService implements ConversationPort {
     if (!first) throw new Error('session_not_found');
     if (first.type !== 'session.created') throw new Error('session_creation_event_missing');
     const profileId = first.payload.profileId;
+    const configuration = first.payload.recipe?.configuration ?? first.payload.agentContext?.configuration;
     const installed = await this.compositions.create({
       sessionId,
       workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
+      promptContributions: this.configurations.productInstructions(first.payload.recipe),
     });
-    const configuration = first.payload.recipe?.configuration ?? first.payload.agentContext?.configuration;
     try {
       if (configuration) {
         if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');

@@ -29,6 +29,17 @@ impl KernelToolExecutor for FsReadExecutor {
             code: "fs_read_metadata_failed", stage: "metadata", message: format!("Cannot inspect {path}: {error}"),
             details: serde_json::json!({"path":path,"ioKind":format!("{:?}",error.kind()),"osCode":error.raw_os_error()}),
         })?;
+        if metadata.is_dir() {
+            if start_byte.is_some() {
+                return Err(KernelError::InvalidCommand(
+                    "Use startLine for a directory. startByte applies to files.".into(),
+                ));
+            }
+            let mut output = read_directory_page(&target, start_line, max_lines, max_bytes)?;
+            output["workspaceId"] = serde_json::json!(workspace_id(&context)?);
+            output["path"] = serde_json::json!(normalize_relative_path(&path));
+            return Ok(ok(invocation.id, output));
+        }
         if !metadata.is_file() {
             return Err(KernelError::Structured {
                 code: "fs_read_not_file",
@@ -49,6 +60,54 @@ impl KernelToolExecutor for FsReadExecutor {
         output["path"] = serde_json::json!(normalize_relative_path(&path));
         Ok(ok(invocation.id, output))
     }
+}
+
+fn read_directory_page(path: &Path, start: u32, limit: u32, max_bytes: u32) -> KernelResult<Value> {
+    let io_error = |error: std::io::Error| KernelError::Structured {
+        code: "fs_read_directory_failed",
+        stage: "read",
+        message: format!("Cannot list {}: {error}", path.display()),
+        details: serde_json::json!({"ioKind": format!("{:?}", error.kind()), "osCode": error.raw_os_error()}),
+    };
+    let mut children = fs::read_dir(path)
+        .map_err(io_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io_error)?;
+    children.sort_by_cached_key(|entry| entry.file_name());
+    let offset = (start - 1) as usize;
+    let mut entries = Vec::new();
+    let mut bytes = 2; // JSON array brackets
+    for entry in children.iter().skip(offset).take(limit as usize) {
+        let file_type = entry.file_type().map_err(io_error)?;
+        let kind = if file_type.is_symlink() {
+            "symlink"
+        } else if file_type.is_dir() {
+            "directory"
+        } else if file_type.is_file() {
+            "file"
+        } else {
+            "other"
+        };
+        let item = serde_json::json!({"name": entry.file_name().to_string_lossy(), "kind": kind});
+        let size = item.to_string().len() + usize::from(!entries.is_empty());
+        if bytes + size > max_bytes as usize {
+            if entries.is_empty() {
+                return Err(KernelError::InvalidCommand(
+                    "Directory entry exceeds maxBytes. Increase maxBytes.".into(),
+                ));
+            }
+            break;
+        }
+        bytes += size;
+        entries.push(item);
+    }
+    let end = offset + entries.len();
+    let truncated = end < children.len();
+    let mut page = serde_json::json!({"kind":"directory","startLine":start,"entries":entries,"truncated":truncated});
+    if truncated {
+        page["nextStartLine"] = serde_json::json!(end + 1);
+    }
+    Ok(page)
 }
 
 impl KernelToolExecutor for FsWriteExecutor {

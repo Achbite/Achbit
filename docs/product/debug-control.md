@@ -83,7 +83,7 @@ The two `/api/debug/*` routes are compiled only with `debug-control`. The Host c
 ./achbit-debug operation inspect --operation-id OPERATION_ID --wait-ms 180000
 ```
 
-Each call is an independent Kernel operation with its own permissions and result. `fs.read` takes one file; submit separate calls for concurrent reads. For a pending decision, use `operation respond --operation-id ID --decision-id ID --decision allow|deny` within existing authorization, or `operation cancel --operation-id ID`. Acceptance or approval is not completion. `tools call` waits up to 180000 ms by default; `--no-wait` returns the submission immediately. Explicit `operation inspect` defaults to a snapshot, with `--wait-ms` capped at 180000. `operation release --operation-id ID` requires a terminal operation and returns its existing record; it does not cancel execution or delete stored results.
+Each call is an independent Kernel operation with its own permissions and result. `fs.read` takes one file or bound directory; submit separate calls for concurrent reads. For a pending decision, use `operation respond --operation-id ID --decision-id ID --decision allow|deny` within existing authorization, or `operation cancel --operation-id ID`. Acceptance or approval is not completion. `tools call` waits up to 180000 ms by default; `--no-wait` returns the submission immediately. Explicit `operation inspect` defaults to a snapshot, with `--wait-ms` capped at 180000. `operation release --operation-id ID` requires a terminal operation and returns its existing record; it does not cancel execution or delete stored results.
 
 Optional plugins: `components list`, `components inspect --uri URI`, then `components activate --plugin-selections JSON` using the inspected catalog. Activation does not grant execution permission. Direct tool contexts currently lack the run-owned browser/desktop bindings; activating Computer Use alone does not make those tools callable. Use the GUI actions below when suitable. Report an unavailable path rather than starting a fixture Provider or Agent merely to manufacture GUI state.
 
@@ -92,11 +92,29 @@ Optional plugins: `components list`, `components inspect --uri URI`, then `compo
 ```sh
 ./achbit-debug surfaces list
 ./achbit-debug surfaces inspect --target main
+./achbit-debug surfaces actions --target main
+./achbit-debug action --target main --name ui.action --observation state --args '{"actionId":"composer.controls.attachments","waitFor":{"actionId":"composer.controls.attachments","attribute":"aria-expanded","equals":"true"}}'
 ./achbit-debug action --target main --name click --args '{"selector":"OBSERVED_SELECTOR"}'
 ./achbit-debug action --target main --name plugin.action --args '{"componentId":"OBSERVED_ID","action":"OBSERVED_ACTION","arguments":[]}'
 ```
 
-Use current surface IDs, selectors, component signatures and availability from inspection. DOM actions: `click`, `type`, `select`, `key`, `scroll`, `focus`, `wait`. A component callback returning does not establish asynchronous business completion.
+Use current surface IDs, selectors, component signatures and availability from inspection. Component observations include stable `ownerId`, document/instance identity, source locations and declared DOM boundaries. An inherited region identifies its container, not complete coverage of all child controls. Plugin descendants without their own declarations report `implementationCoverage: plugin-internal-unmapped` and the current renderer ID/generation. Repeated owners keep distinct instances; ambiguous selectors/instance IDs are rejected instead of choosing the first match. Unmounted or unmarked boundaries remain explicit.
+
+Opening the Debug app automatically enables ownership labels for the current document. Hover or focus a control to see its owner, part, instance and source. Controls with a declared `actionId` also display that exact CLI action ID. Use `action --target main --name ui.overlay --args '{"enabled":false}'` to turn labels off in that document, or pass `true` to turn them back on. Its label is positioned within the viewport independently of the highlighted control's width, including narrow icons and dividers. It never intercepts business clicks or changes layout. Multiple source declarations are reported as ambiguous. Source locations come from build-time declarations in a Debug-only resource. Ordinary and Debug packages load the same business GUI assets, with diagnostic code attached only by Debug packaging.
+
+`surfaces actions` lists currently mounted, explicitly declared interactions. A stable `actionId` identifies the operation; `target` identifies the existing Session, activity, question, option, or file. Copy target fields from the current catalog. Omitting fields is allowed only when the match is unique. Duplicate, unmounted, unavailable and undeclared-availability targets fail without invoking a handler. For example, a mounted tool card exposes `conversation.tool.toggle` with its `sessionId` and `activityId`. Virtualized cards must first be mounted through normal navigation/scrolling.
+
+Repeated controls share an action ID and identify their mounted target with session, project, row, round, interaction or artifact IDs. The three new-chat entries use `navigation.sidebar.new-chat` and distinguish the primary, project and standalone buttons with `target.entry`. Use the current catalog for the primary button’s project context. A sidebar button revealed by keyboard focus may report `debug_element_pointer_inactive`. Bring the Debug window to the foreground with `window.focus`, focus its catalog selector, and check availability again before invoking the action ID. The click still checks the actual hit target.
+
+Rich-text actions use `conversation.table.expand` / `close`, `conversation.code.copy`, and `conversation.preview.toggle-source` / `reload` / `open-reader`. Message content carries the canonical `sessionId` and `rowKey` (the existing stream ID for provider text), plus `contentKey`, the parsed Markdown `blockKey`, and the nested node's source `nodeOffset`. Identical text at different positions therefore has different targets. These semantic targets survive virtual row remounts and completion of the same stream; React instance IDs and generated selectors are only valid for the current mount. Navigate or scroll normally until a target mounts, then reuse its action ID and target. Content edits can change parsed source positions; discover the new targets after an edit. Unscoped Markdown does not claim a durable block target.
+
+Message attachment actions use `conversation.references.open` with the original `messageId` and `referenceId`. Preview actions also identify `artifactId` and `location` (`inline` or `reader`); repeated inline references retain their own block positions. They operate the existing controls and do not change the preview retention policy. Table dialogs expose their matching `close` action. Source-view code copying remains a separate code action with `contentKey: "preview-source"`.
+
+The catalog and receipt distinguish `dom.click`/`dom.type`/`dom.select` from `component.callback`. DOM declarations point to the real rendered control and reuse its ordinary handlers, disabled state and hit checks; these are synthetic DOM events (`trustedNativeInput: false`), not OS input. Existing region callbacks retain their own completion contract. `unmarkedVisibleControls` explicitly lists remaining controls without semantic action declarations; catalog coverage is `declared-interactions-only`, never a claim to cover all UI. Native windows, menus and dialogs retain the separate observed IDs and commands below.
+
+Stable action waits accept `actionId`, `target` and an expected `attribute`/`equals`, `value`, `text`, `visible` or `absent` condition. Component-state waits accept `ownerId`, `target`, `path` and `equals`. A timeout preserves the executed action and reports incomplete observation. A successful DOM condition does not assert Session task completion, persistence or authorization. Batch pipelines should specify each scenario's preconditions and result assertions; never blindly replay toggles or approve every decision to make a test pass.
+
+DOM actions: `click`, `type`, `select`, `key`, `scroll`, `focus`, `wait`. A component callback returning does not establish asynchronous business completion.
 
 Add `waitFor` to `--args` to observe a result, with `timeoutMs` up to 15000:
 
@@ -120,9 +138,11 @@ For a native menu, use `action --target main --name menu.select` with the `itemP
 
 Window actions use `window.focus`, `window.minimize`, `window.show`, `window.hide`, `window.maximize`, `window.unmaximize`, or `window.close`. `window.close` is a window action; use the lifecycle commands above for process cleanup.
 
-Use published AX/UIA actions; the original `nativeDialogs.lastResult` confirms selection or cancellation. System permission and external login windows require human handling.
+File/directory pickers use the ordinary Tauri path in both builds; the mixed path picker uses the same modal/thread implementation in both. Diagnostics never substitute a sheet or worker merely to make inspection possible. Native inspection is limited to dialogs actually registered by the shared adapter; Tauri-owned dialogs or modal loops that do not serve the Debug bridge may require manual observation. Do not interpret an unavailable observer as a cancelled or completed selection.
 
-Receipts retain before/after observations, errors, operation identity, timings and `screenshot.contentRef`. Missing render/capture or truncated observation returns `partial` and a nonzero CLI exit. Inspect that receipt; do not replay an action just to obtain a screenshot. Load the original capture through an available image reader when visual evidence is needed; a path, archive or presentation alone does not load pixels.
+Use published AX/UIA actions when available; the original `nativeDialogs.lastResult` confirms selection or cancellation for registered dialogs. System permission and external login windows require human handling.
+
+Receipts retain before/after observations, errors, operation identity and timings. The default `--observation full` also captures `screenshot.contentRef` and native dialog state; missing capture or truncated observation returns `partial` and a nonzero CLI exit. The explicit `--observation state` mode omits those two captures and reports `not-requested`, while retaining DOM/component observations, frame timing and wait conditions. It proves no visual or native-dialog result and does not silently replace a failed full capture. Inspect the receipt; do not replay an action just to obtain a screenshot. Load the original capture through an available image reader when visual evidence is needed; a path, archive or presentation alone does not load pixels.
 
 ## Session tasks and results
 
@@ -168,6 +188,8 @@ Forwarded child decisions retain `sourceSessionId` and `agentRoute`; respond usi
 | `session`, `run` | Session timing for `sessionId`, optionally `runId`. |
 | `provider` | Provider request measurements and usage. |
 | `usage` | Existing usage query API; supply its structured query through `--query` or `--params`. |
+
+Each WebView keeps its latest 4096 component measurements until a UI action collects them or a GUI metrics query drains them into a native receipt. Merely inspecting a surface or listing actions does not drain this buffer. Overflow evicts the oldest samples and is reported through `components.dropped`, `incomplete` coverage and the metrics query’s `droppedComponentMeasurements`. The samples collected with a click can predate it. A partial receipt still contains the observed UI outcome; inspect that outcome before deciding whether to repeat an operation. For bounded batches, collect component metrics between batches and check the loss counter.
 
 `metrics export` writes each available record as a JSONL line and finishes with a `metrics.summary` line containing the remaining metadata. Use `--params JSON` or `@FILE` for filters; `fromMs` / `toMs` are epoch milliseconds. Kernel timing uses `Us`; UI/component timing uses `Ms`. Preserve coverage and unknown values; do not sum overlapping spans or mix Session-only and child-inclusive usage. External controller tokens are not measured by the target.
 

@@ -53,7 +53,7 @@ export function sessionControlInstructions(
     ...(available(SESSION_CONTROL_TODO_UPDATE) && (!optionalTools || optionalTools.includes(SESSION_CONTROL_TODO_UPDATE)) ? [`Track useful progress with ${names.todoUpdate}.`] : []),
     ...(available(SESSION_CONTROL_ARTIFACT_PRESENT) && (!optionalTools || optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT)) ? [`Deliver requested resources with ${names.artifactPresent}.`] : []),
   ];
-  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${controls.length ? `${controls.join(' and ')} must each be the only call in their turn.` : ''}${hasWorkspaceBindings ? ' Use a logical workspace handle from the Session binding list and workspace-relative paths; never invent or expose a workspaceId.' : ''} ${routes.join(' ')}`;
+  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${controls.length ? `${controls.join(' and ')} must each be the only call in their turn.` : ''} ${routes.join(' ')}`;
 }
 
 const INTERACTION_SCHEMA: JsonObject = {
@@ -119,8 +119,8 @@ const PLAN_OPERATION_SCHEMA: JsonObject = {
         operation: { type: 'string', enum: ['bash', 'powershell'] },
         command: { type: 'string', minLength: 1, maxLength: 16_384 },
         writablePaths: {
-          type: 'array', minItems: 1,
-          description: 'Approved test/output directories, including their contents. Project files stay read-only outside these directories. Command is an example, not an authorization lock.',
+          type: 'array',
+          description: 'Workspace-relative test or output directories this command may write. Use [] for a command needing no project writes.',
           items: { type: 'object', additionalProperties: false, required: ['path', 'kind'], properties: {
             path: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['directory'] },
           } },
@@ -336,7 +336,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Publish changes needing new authorization; reuse confirmed scope for related work. extendScope adds scope; a full revision replaces the Plan and complete manifest. Follow current confirmation settings. Shell writablePaths defines write scope; command is an example. Todo is independent.',
+      description: 'Submit a plan for confirmation. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Submit alone.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {
@@ -645,8 +645,8 @@ function decodePlanOperation(value: unknown, index: number): PlanOperation {
       throw new SessionControlError('session_control_plan_shell_invalid', 'Shell Plan command 不得超过 16384 个字符。');
     }
     const terminal = value.terminal === undefined ? undefined : decodeTerminalInput(value.terminal);
-    if (!Array.isArray(value.writablePaths) || !value.writablePaths.length) {
-      throw new SessionControlError('session_control_plan_shell_invalid', 'writablePaths 必须包含至少一个测试或输出目录。');
+    if (!Array.isArray(value.writablePaths)) {
+      throw new SessionControlError('session_control_plan_shell_invalid', 'writablePaths 必须是目录列表，无项目写入时使用 []。');
     }
     const writablePaths = value.writablePaths.map((entry) => {
       if (!isRecord(entry) || entry.kind !== 'directory') {

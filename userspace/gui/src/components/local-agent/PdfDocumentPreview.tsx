@@ -5,6 +5,7 @@ import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import 'pdfjs-dist/web/pdf_viewer.css';
 import type { UiLanguage } from '../../i18n';
 import { readViewState, saveViewState } from './readerState';
+import { bindViewerZoom } from './viewerZoom';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type ReadingPosition = { page: number; scale: string; left: number; top: number };
@@ -46,6 +47,14 @@ export default function PdfDocumentPreview({ blob, language, readingKey }: { blo
     let resizeFrame = 0;
     let position = readingKey ? readViewState<ReadingPosition>(readingKey + ':pdf', initialPosition) : initialPosition;
     let location: ReadingPosition | null = null;
+    // PDF.js rounds numeric scales to hundredths. Carry the fraction across slow pinch updates.
+    let remainder = 1;
+    const stopZoom = bindViewerZoom(container, 'modified', (factor, origin) => {
+      if (!initialized) return;
+      const requested = reader.currentScale * factor * remainder;
+      reader.updateScale({ scaleFactor: factor * remainder, origin: [origin.x, origin.y], drawingDelay: 150 });
+      remainder = Math.round(requested * 100) / 100 === reader.currentScale ? requested / reader.currentScale : 1;
+    });
     setCount(0); setError(null); setScale(position.scale);
 
     const restoreLocation = (saved: ReadingPosition) => {
@@ -53,6 +62,7 @@ export default function PdfDocumentPreview({ blob, language, readingKey }: { blo
         destArray: [null, { name: 'XYZ' }, saved.left, saved.top, null], ignoreDestinationZoom: true });
     };
     changeScale.current = (value) => {
+      remainder = 1;
       const currentPage = reader.currentPageNumber;
       const anchor = location;
       reader.currentScaleValue = value;
@@ -113,6 +123,7 @@ export default function PdfDocumentPreview({ blob, language, readingKey }: { blo
       if (!signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
     });
     return () => {
+      stopZoom();
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       controller.abort();

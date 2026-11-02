@@ -1,5 +1,5 @@
 import type { RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
-import { decodeAgentRecipe, permissionPolicyConstraints } from '@achbit/protocol';
+import { decodeAgentRecipe, permissionPolicyConstraints, SESSION_CONTROL_AGENT } from '@achbit/protocol';
 
 const ENVIRONMENT_ID = 'achbit.session-environment';
 
@@ -63,7 +63,9 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     || ['locale', 'responseLanguage', 'userShell'].some((key) => data[key] !== null && typeof data[key] !== 'string')) {
     throw new Error('session_environment_invalid');
   }
-  const hasLocalCli = (data.executionTarget as Record<string, unknown>).kind === 'native'
+  const hasProductSkills = toolNames.includes('skill.read');
+  const needsProductDocs = hasProductSkills || toolNames.includes(SESSION_CONTROL_AGENT);
+  const hasLocalCli = hasProductSkills && hostExecutionAllowed && (data.executionTarget as Record<string, unknown>).kind === 'native'
     && typeof (data.runtimeExecutables as Record<string, unknown> | undefined)?.cli === 'string'
     && typeof data.hostDataDirectory === 'string';
   const hasShell = toolNames.some(name => name === 'bash' || name === 'powershell');
@@ -74,12 +76,11 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
       achbitCliExecutionScope: 'host',
       hostDataDirectory: data.hostDataDirectory,
     } : {}),
-    ...(data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands }),
-    ...(typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
+    ...(needsProductDocs && (data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands })),
+    ...(needsProductDocs && typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
   })}. ` : '';
-  const cli = !hasShell || !hasLocalCli ? '' : hostExecutionAllowed
-    ? 'For Achbit configuration, achbitCli requires Host execution under the current permission policy. Use --host-data-dir hostDataDirectory; instance/services/connections/models expose current facts and supported edits. Shell HOME is task-local. '
-    : 'For Achbit configuration, achbitCli requires Host execution. Host execution is disabled for this session, so this CLI is unavailable here. ';
+  const cli = hasShell && hasLocalCli
+    ? 'For Achbit configuration, achbitCli requires Host execution with --host-data-dir hostDataDirectory. ' : '';
   return {
     id: ENVIRONMENT_ID,
     text: `${execution}${cli}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,

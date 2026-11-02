@@ -5,7 +5,7 @@ Quick directions for using Achbit. Read only the section needed for the task; cu
 ## Tools and validation
 
 - Use CLI/MCP for program operations and GUI tools for interface actions or visual confirmation. A program having a GUI does not make all its operations GUI tasks.
-- File tools operate on bound workspaces. Use `fs.read` for known text, with line/byte bounds; use file tools for project edits and deletion. Use the project's declared environment for commands.
+- File tools operate on bound workspaces. Use `fs.read` for UTF-8 files or the immediate contents of a bound directory (`.` lists its root). Use the returned cursor for the next page; use file tools for project edits and deletion. Use the project's declared environment for commands.
 - Preserve actual results: rejected input was not executed; approval is not execution; a dispatched action with a failed observation is not a fully verified action. Correct the reported cause instead of repeating an unchanged failure.
 - Live output is bounded. Inspect the returned full-output paths when needed; do not rerun a command just to recover its log.
 - For Achbit Debug control, read [Debug control](debug-control.md). Direct tool/UI operations do not need an Agent task.
@@ -86,6 +86,14 @@ Switching conversations changes the view, not the previous task. Reopening a GUI
 ## Models and context
 
 Use [model services](model-services.md) for profiles, authentication, images, context settings and usage. The selected model/environment is captured for a run. A slow request alone does not prove a stuck Loop; inspect its Provider/tool result and original error.
+
+To read another conversation from an Agent task, include its exact `session:…` ID in your message. For a caller-assigned ID use `sessionId="..."`. The history reader targets those user references. Archived images and child workdir resources have their own scoped views.
+
+For diagnostics of the current task, explicitly select **Session Diagnostics** in the composer plugin picker, or start the task with `achbit-cli ask --plugin plugin://session-diagnostics@builtin "Inspect this conversation's context"`. Its `session.diagnostics` operation uses the current session. Normal tasks do not advertise that operation. CLI, GUI and Debug user-facing inspection use the Session query API directly.
+
+Use `/plan <task>` to request a plan for one task. Read the proposed work and confirm, request changes, or cancel. Confirmation continues the same task and keeps its other tool permissions. The next task uses the saved Plan preference.
+
+The composer’s **Workflow & permissions** menu groups Plan confirmation and engineering decisions under **Workflow**. **Tool access** covers reads in bound directories, command approval, execution scope, network reads, and external actions. Active grants can be revoked from the menu. In Settings, change the workflow defaults under **Agent behavior**, and change tool policies or command rules under **Tool permissions**.
 
 Use `/focus <task>` after completion to summarize prior work and continue. Compression does not delete history. Read historical facts with `session.read`, starting from summary and narrowing to messages, tools or context; check truncation and pagination instead of repeatedly requesting full snapshots.
 

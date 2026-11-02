@@ -549,6 +549,7 @@ export type ConversationCommand =
   | {
       schemaVersion: typeof CONVERSATION_COMMAND_VERSION;
       type: 'message.submit';
+      planMode?: 'manual';
       commandId: string;
       sessionId: string;
       runId?: string;
@@ -743,10 +744,12 @@ export interface ModelInteractionRequest {
 }
 
 export interface ProviderTokenUsage {
+  /** Complete input including cache reads/writes exactly once; normalized by Provider adapter. */
   inputTokens: number;
   outputTokens: number;
   contextWindowTokens: number;
   cacheReadInputTokens?: number;
+  /** Ordinary input + cache writes; together with reads exactly partitions inputTokens. */
   cacheMissInputTokens?: number;
 }
 
@@ -2048,6 +2051,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  /** Explicit confirmation requested for this run only. */
+  planMode?: 'manual';
   /** Execution selection from the Kernel; not model-facing framework metadata. */
   toolSelection?: AgentRecipe['tools'];
   contextManagement: ContextManagementSettings;

@@ -189,7 +189,7 @@ test('Actor disposal releases its composition when managed process closure fails
 });
 
 
-test('process heartbeats retain journal facts without repeating unchanged model context', () => {
+test('background progress stays in the journal and only terminal results enter ordinary model turns', () => {
   const events = [], sessionId = 'session:process-heartbeat', runId = 'run:process-heartbeat';
   const add = (type, payload) => events.push({ type, payload, sessionId, runId,
     eventId: `event:${events.length + 1}`, sequence: events.length + 1, occurredAt: '2026-10-26T00:00:00Z' });
@@ -205,7 +205,7 @@ test('process heartbeats retain journal facts without repeating unchanged model 
   const render = () => messagesFromJournal(events, runId, []);
   add('process.updated', { job });
   const initial = render();
-  assert.equal(initial.length, 1);
+  assert.equal(initial.length, 0, 'an active snapshot is not an unsolicited model message');
   freeze(initial);
   job = { ...job, revision: 2 };
   add('process.updated', { job });
@@ -214,26 +214,69 @@ test('process heartbeats retain journal facts without repeating unchanged model 
   job = { ...job, revision: 3, lastOutputAt: '2', output: { ...job.output, stdout: 'compiled 1 file', stdoutBytes: 15 } };
   add('process.updated', { job });
   const progress = render();
-  assert.deepEqual(progress.slice(0, initial.length), initial, 'the previously observed process snapshot is immutable');
-  assert.equal(progress.length, 2);
-  assert.equal(JSON.parse(progress.at(-1).message.content).process.output.stdout, 'compiled 1 file');
+  assert.deepEqual(progress, initial, 'changed stdout is also omitted during independent work');
   freeze(progress);
   job = { ...job, revision: 4 };
   add('process.updated', { job });
   add('message.committed', { messageId: 'message:user', role: 'user', content: 'Please also report the compiler version.' });
   const withInput = render();
-  assert.equal(withInput.length, 3, 'real user input remains present while the duplicate process update is omitted');
+  assert.equal(withInput.length, 1, 'real user input remains present while the duplicate process update is omitted');
   assert.equal(withInput.at(-1).message.content, 'Please also report the compiler version.');
   freeze(withInput);
   job = { ...job, revision: 5, status: 'failed', completedAt: '3',
     error: { code: 'build_failed', message: 'Compiler exited with status 1.' }, result: { exitCode: 1, durationMs: 2000, timedOut: false } };
   add('process.updated', { job });
   const failed = render();
-  assert.equal(failed.length, 4);
+  assert.equal(failed.length, 2);
   assert.equal(JSON.parse(failed.at(-1).message.content).process.status, 'failed');
   assert.equal(JSON.parse(failed.at(-1).message.content).process.error.message, 'Compiler exited with status 1.');
   freeze(failed);
   add('process.updated', { job: { ...job, revision: 6 } });
   assert.deepEqual(render(), failed, 'a terminal heartbeat does not erase or repeat the failure');
   assert.equal(events.filter(event => event.type === 'process.updated').length, 6, 'all canonical heartbeat facts remain in the journal');
+});
+
+test('previously delivered active snapshots are retained in the frozen model view', () => {
+  const message = {role:'user',content:JSON.stringify({type:'process.updated',process:{jobId:'old-job',status:'active',output:{stdout:'previously delivered'}}})};
+  const previous = {contributionId:'process-update:old', contributionKind:'journalMessages', label:'Managed process update', sourceSequence:1,message};
+  const events = [{type:'context.composed',runId:'run:legacy',sequence:2,payload:{purpose:'agent',modelView:{throughSequence:1,additions:[previous]}}}];
+  assert.deepEqual(messagesFromJournal(events,'run:legacy',[]).map(c => c.message),[message]);
+});
+
+test('a terminal result that arrives before the next model request supersedes its pending wait review', () => {
+  const sessionId = 'session:deadline', runId = 'run:deadline';
+  const job = {jobId: 'job:deadline', sessionId, runId, callId: 'call:start', revision: 1,
+    toolName: 'bash', command: 'build', targets: ['.'], status: 'active', startedAt: '1',
+    output: {stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, truncated: false}};
+  const fact = (sequence, type, payload) => ({sequence, eventId: `event:${sequence}`, sessionId, runId, type, payload});
+  const events = [
+    fact(1, 'process.updated', {job}),
+    fact(2, 'process.wait.changed', {phase: 'review', waitId: 'wait:build', jobIds: [job.jobId],
+      startedAt: 1, reviewAt: 120001, reviewed: true, afterSequence: 1}),
+  ];
+  const atReview = messagesFromJournal(events, runId, []);
+  assert.equal(JSON.parse(atReview[0].message.content).type, 'process.wait.review');
+  const terminal = {job: {...job, revision: 2, status: 'completed', completedAt: '120002'}};
+  const compose = facts => messagesFromJournal(facts, runId, []).map(item => JSON.parse(item.message.content).type);
+  assert.deepEqual(compose([...events, fact(3, 'process.updated', terminal)]), ['process.updated']);
+  assert.deepEqual(compose([...events, fact(3, 'context.composed', {purpose: 'agent',
+    modelView: {throughSequence: 2, additions: atReview}}), fact(4, 'process.updated', terminal)]),
+  ['process.wait.review', 'process.updated'], 'a review already delivered remains part of model history');
+});
+
+test('a background Shell result keeps its recovery path when Session clips the visible tail', () => {
+  const fullOutput = { stdout: { path: '/archive/job.stdout', bytes: 2100 } };
+  const output = text => ({ stdout: text, stderr: '', stdoutBytes: text.length, stderrBytes: 0, truncated: false });
+  const result = stdout => {
+    const job = { jobId: 'job:tail', revision: 2, sessionId: 'session:tail', runId: 'run:tail', callId: 'call:tail',
+      toolName: 'bash', command: 'build', status: 'completed', startedAt: '1', completedAt: '2', output: output(stdout),
+      result: { command: 'build', exitCode: 0, truncated: false, fullOutput } };
+    const event = { sequence: 1, eventId: 'event:one', sessionId: job.sessionId, runId: job.runId, type: 'process.updated', payload: { job } };
+    return JSON.parse(messagesFromJournal([event], job.runId, [])[0].message.content).process;
+  };
+  const clipped = result('x'.repeat(2100));
+  assert.equal(clipped.output.truncated, true);
+  assert.equal(clipped.output.stdout.length, 2000);
+  assert.deepEqual(clipped.result.fullOutput, fullOutput);
+  assert.equal(result('done').result.fullOutput, undefined);
 });

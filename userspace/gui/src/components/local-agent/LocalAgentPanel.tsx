@@ -143,7 +143,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         </div>, reader: <div className="local-agent__header-preview">
           {resourcePreview.visible && <div className="reader-header-tabs" ref={setReaderHeader} />}
           <div className="local-agent__header-actions">
-          <ReaderControls language={language} preview={resourcePreview} disabled={!sessionId} />
+          <ReaderControls sessionId={sessionId} language={language} preview={resourcePreview} disabled={!sessionId} />
           </div>
         </div> }} />
       </header>
@@ -174,8 +174,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           onEditMessage={composer.beginMessageEdit}
           automaticReview={automaticReview}
         />
-        {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
-        {mode !== 'panel' && !!display.artifacts.length && <ArtifactShortcuts
+        {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks location="conversation" artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
+        {mode !== 'panel' && !!display.artifacts.length && <ArtifactShortcuts location="shortcuts"
           title={t(language, 'achbitGui.outputs.title')} artifacts={display.artifacts}
           onOpen={resourcePreview.openWorkspaceResource} />}
       </div>

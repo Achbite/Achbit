@@ -5,11 +5,13 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { hasNativeBrowser, nativeBrowserCommand, nativeHostBinding, type NativeHostBinding } from '../../services/nativeBrowser';
 import { acceptPreview, activateDesktopPreview, computerPreviewSources, constrainPreviewPosition, previewPlacement, previewFrameConstraints, previewRailElements, readDesktopPreview, targetIdentity,
   type BrowserPreviewTarget, type ComputerPreview, type DesktopPreviewTarget } from '../../services/computerPreview';
+import { dismissPreview, isPreviewDismissed, type PreviewDismissals, type PreviewSource } from '../../services/computerPreview';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import './computerTargetPreview.css';
 
 const copy = {
-  'zh-CN': { title: '正在操作', open: '显示目标', move: '拖动预览窗口，或用方向键移动', active: '实时预览', starting: '正在连接', updating: '正在更新', stopping: '正在结束', stopped: '已结束', inactive: '目标未连接', closed: '目标已关闭', failed: '预览失败', browser: '浏览器' },
-  'en-US': { title: 'Working in', open: 'Show target', move: 'Drag preview, or move with arrow keys', active: 'Live preview', starting: 'Connecting', updating: 'Updating', stopping: 'Finishing', stopped: 'Finished', inactive: 'Target disconnected', closed: 'Target closed', failed: 'Preview failed', browser: 'Browser' },
+  'zh-CN': { close: '隐藏操作预览', title: '正在操作', open: '显示目标', move: '拖动预览窗口，或用方向键移动', active: '实时预览', starting: '正在连接', updating: '正在更新', stopping: '正在结束', stopped: '已结束', inactive: '目标未连接', closed: '目标已关闭', failed: '预览失败', browser: '浏览器' },
+  'en-US': { close: 'Hide operation preview', title: 'Working in', open: 'Show target', move: 'Drag preview, or move with arrow keys', active: 'Live preview', starting: 'Connecting', updating: 'Updating', stopping: 'Finishing', stopped: 'Finished', inactive: 'Target disconnected', closed: 'Target closed', failed: 'Preview failed', browser: 'Browser' },
 };
 
 /** Live Host view only: it never adds preview frames to the conversation. */
@@ -24,6 +26,7 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
   const binding = useRef<NativeHostBinding | undefined>(undefined);
   const overlay = useRef<HTMLDivElement>(null);
   const [frontTarget, setFrontTarget] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<PreviewDismissals>({});
   const label = copy[language === 'zh-CN' ? 'zh-CN' : 'en-US'];
   const sources = computerPreviewSources(navigator.platform);
 
@@ -76,24 +79,32 @@ export function ComputerTargetPreview({ readerLayout, language, hidden }: {
   }, [owner, sessionId, runId, sources.desktop, sources.browser]);
 
   const live = views.owner === owner ? views : { desktop: null, browser: null };
-  const cards = [live.desktop, live.browser].filter((view): view is ComputerPreview | ComputerPreview<BrowserPreviewTarget> => Boolean(view && (view.target || view.reason || view.frameError) && !(view.state === 'inactive' && !view.reason)));
+  const cards = (['desktop', 'browser'] as const).flatMap(source => {
+    const view = live[source];
+    return view && (view.target || view.reason || view.frameError) && !(view.state === 'inactive' && !view.reason)
+      ? [{ source, view }] : [];
+  });
   const concealed = hidden || readerLayout.expanded || !runId;
-  return <div ref={overlay} className="computer-target-preview" hidden={concealed || cards.length === 0} aria-label={label.title}>
-    {cards.map((view, index) => {
-      const identity = `${owner}:${targetIdentity(view.target) ?? index}`;
+  const sourceHidden = (source: PreviewSource) => isPreviewDismissed(dismissed, sessionId, runId, source);
+  return <div ref={overlay} className="computer-target-preview" hidden={concealed || cards.every(card => sourceHidden(card.source))} aria-label={label.title}>
+    {cards.map(({ source, view }, index) => {
+      const identity = `${owner}:${source}:${targetIdentity(view.target) ?? index}`;
       return <FloatingComputerPreview key={identity} view={view} sessionId={sessionId} runId={runId} language={language}
-        readerLayout={readerLayout} concealed={concealed} index={index} overlay={overlay}
+        readerLayout={readerLayout} concealed={concealed || sourceHidden(source)} index={index} overlay={overlay}
+        onDismiss={() => { if (sessionId && runId) setDismissed(state => dismissPreview(state, sessionId, runId, source)); }}
         raised={frontTarget === identity} onRaise={() => setFrontTarget(identity)} />;
     })}
   </div>;
 }
 
 /** Each exact target owns its position, bounds and activation state. */
-function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise }: {
+export function FloatingComputerPreview({ view, sessionId, runId, language, readerLayout, concealed, index, overlay, raised, onRaise, onDismiss }: {
   view: ComputerPreview<DesktopPreviewTarget | BrowserPreviewTarget>; sessionId: string | null; runId: string | null; language: UiLanguage;
   readerLayout: ConversationReaderLayout; concealed: boolean; index: number; overlay: RefObject<HTMLDivElement | null>;
-  raised: boolean; onRaise(): void;
+  raised: boolean; onRaise(): void; onDismiss(): void;
 }) {
+  const identity = useUiOwner('workbench.controlPreview');
+  const label = copy[language === 'zh-CN' ? 'zh-CN' : 'en-US'];
   const boundary = useRef<HTMLDivElement>(null);
   const manualPosition = useRef<{ left: number; top: number } | null>(null);
   const alignPreview = useRef<(() => void) | null>(null);
@@ -162,20 +173,28 @@ function FloatingComputerPreview({ view, sessionId, runId, language, readerLayou
     finally { if (mounted.current) setActivating(false); }
   }
 
-  return <div ref={boundary} className="computer-target-preview__card" style={{ zIndex: raised ? 1 : 0 }}
-    onPointerDownCapture={onRaise} onFocusCapture={onRaise}>
-    <ComputerPreviewTarget view={view} language={language} activating={activating} onActivate={() => void activate()}
+  return <div {...identity.part('card')} ref={boundary} hidden={concealed} className="computer-target-preview__card" style={{ zIndex: raised ? 1 : 0 }}
+    onPointerDownCapture={onRaise} onFocusCapture={onRaise}
+    onKeyDown={event => {
+      if (event.key !== 'Escape' || event.nativeEvent.isComposing || event.keyCode === 229) return;
+      event.preventDefault(); event.stopPropagation(); onDismiss();
+    }}>
+    <ComputerPreviewTarget identity={identity} view={view} language={language} activating={activating} onActivate={() => void activate()}
       getPosition={() => boundary.current?.getBoundingClientRect() ?? null}
       onMove={position => { manualPosition.current = position; alignPreview.current?.(); }} />
+    <button {...identity.part('close')} type="button" className="computer-target-preview__close" aria-label={label.close} title={label.close}
+      onPointerDown={event => event.stopPropagation()}
+      onClick={event => { event.preventDefault(); event.stopPropagation(); onDismiss(); }}>×</button>
     {(view.reason || view.frameError) && <p className="computer-target-preview__error" role="status">{view.frameError || view.reason}</p>}
     {activationError && <p className="computer-target-preview__error" role="alert">{activationError}</p>}
   </div>;
 }
 
 /** The preview image is one control: a drag moves it, a click reveals its exact bound target. */
-export function ComputerPreviewTarget({ view, language, activating, onActivate, getPosition, onMove }: {
+export function ComputerPreviewTarget({ view, language, activating, onActivate, getPosition, onMove, identity }: {
   view: ComputerPreview<DesktopPreviewTarget | BrowserPreviewTarget>; language: UiLanguage; activating: boolean;
   onActivate(): void; getPosition(): { left: number; top: number } | null; onMove(position: { left: number; top: number }): void;
+  identity?: ReturnType<typeof useUiOwner>;
 }) {
   const label = copy[language === 'zh-CN' ? 'zh-CN' : 'en-US'];
   const target = view.target;
@@ -213,9 +232,13 @@ export function ComputerPreviewTarget({ view, language, activating, onActivate, 
     delete event.currentTarget.dataset.dragging;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
-  return <button type="button" className="computer-target-preview__target" aria-disabled={!canActivate}
-    aria-label={`${label.open} · ${label.move} · ${stateLabel}${title ? ` · ${title}` : ''}`} title={`${label.open} · ${label.move}${title ? ` · ${title}` : ''}`}
-    onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}
+  function cancelDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (drag.current?.pointerId === event.pointerId) moved.current = true;
+    endDrag(event);
+  }
+  return <button {...identity?.part('target')} type="button" className="computer-target-preview__target" aria-disabled={!canActivate}
+    aria-label={`${label.open} · ${label.move} · ${stateLabel}${title ? ` · ${title}` : ''}`} title={`${label.open} · ${label.move} · ${stateLabel}${title ? ` · ${title}` : ''}`}
+    onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={cancelDrag} onLostPointerCapture={cancelDrag}
     onClick={event => {
       const wasDragged = moved.current;
       moved.current = false;
@@ -235,6 +258,5 @@ export function ComputerPreviewTarget({ view, language, activating, onActivate, 
       {pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y) && <span className={`computer-target-preview__pointer${pointer.pulse ? ' computer-target-preview__pointer--pulse' : ''}`}
         style={{ left: `${Math.max(0, Math.min(1, pointer.x)) * 100}%`, top: `${Math.max(0, Math.min(1, pointer.y)) * 100}%` }} />}
     </span> : <span className="computer-target-preview__placeholder">{stateLabel}</span>}
-    <span aria-hidden="true" className={`computer-target-preview__status computer-target-preview__status--${view.state}`} />
   </button>;
 }

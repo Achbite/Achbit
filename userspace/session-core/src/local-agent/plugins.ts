@@ -45,6 +45,12 @@ export interface PluginActivationInput {
   preparation: RunPreparationPort;
 }
 
+/** A controls component may narrow the current request's tool surface. */
+export interface SessionToolStage extends Pick<RunRuntimeSnapshot, 'tools' | 'webSearch'> {
+  readonly controls?: readonly string[];
+  readonly instruction?: string;
+}
+
 /** Implementations are selected together for one logical request, including retries. */
 export interface SessionCapabilities {
   readonly context: {
@@ -62,6 +68,7 @@ export interface SessionCapabilities {
     readonly estimateInput: typeof estimateContextInput;
   };
   readonly controls: {
+    readonly toolStage?: (runtime: RunRuntimeSnapshot, state: LoopSnapshot['state']) => SessionToolStage | undefined;
     readonly optionalTools?: readonly string[];
     readonly decode: typeof decodeSessionControlCall;
     readonly preparePlugins: (input: PluginActivationInput) => Promise<PreparedRunRuntime>;

@@ -23,6 +23,7 @@ struct SessionPermissions {
     approvals: BTreeSet<String>,
     pending_reviews: BTreeSet<String>,
     cancelled_reviews: BTreeSet<String>,
+    manual_plan_run: Option<String>,
     automatic_plans: BTreeSet<String>,
     reviewed_plans: BTreeSet<String>,
     plan_reviews: BTreeMap<(String, String, u64), PlanReviewPermission>,
@@ -146,6 +147,7 @@ impl KernelPermissionModel {
                     approvals: BTreeSet::new(),
                     pending_reviews: BTreeSet::new(),
                     cancelled_reviews: BTreeSet::new(),
+                    manual_plan_run: None,
                     automatic_plans: BTreeSet::new(),
                     reviewed_plans: BTreeSet::new(),
                     plan_reviews: BTreeMap::new(),
@@ -159,6 +161,17 @@ impl KernelPermissionModel {
                 .ok_or_else(invalid_model)?;
             match event["type"].as_str() {
                 Some("run.started") => {
+                    session.manual_plan_run = if payload["runtimeSnapshot"]["planMode"] == "manual"
+                    {
+                        Some(
+                            event["runId"]
+                                .as_str()
+                                .ok_or_else(invalid_model)?
+                                .to_owned(),
+                        )
+                    } else {
+                        None
+                    };
                     session.base = crate::settings_api::permission_settings(
                         &payload["runtimeSnapshot"]["permissions"],
                     );
@@ -288,10 +301,23 @@ impl KernelPermissionModel {
                 }
                 Some("run.finishing") => {
                     let run = event["runId"].as_str().ok_or_else(invalid_model)?;
+                    if session.manual_plan_run.as_deref() == Some(run) {
+                        session.manual_plan_run = None;
+                    }
                     session.plan_reviews.retain(|key, _| key.0 != run);
                     return Ok(());
                 }
                 Some("plan.confirmed") => {
+                    if admit_new
+                        && session.manual_plan_run.is_some()
+                        && session.manual_plan_run.as_deref() == event["runId"].as_str()
+                        && payload.get("source").is_some_and(|source| source != "user")
+                    {
+                        return Err(LocalAgentStoreError::new(
+                            "plan_confirmation_required",
+                            "本次任务的计划须由用户确认。",
+                        ));
+                    }
                     if payload["source"] == "agent" {
                         let reviewed = session.effective.settings
                             ["agent.permissions.workspaceMutation"]
@@ -370,6 +396,20 @@ impl KernelPermissionModel {
             .get(session_id)
             .map(|session| session.effective.clone())
             .ok_or_else(invalid_model)
+    }
+
+    pub(crate) fn run_permissions(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<LocalAgentPermissionPolicy, LocalAgentStoreError> {
+        let session = self.sessions.get(session_id).ok_or_else(invalid_model)?;
+        let mut policy = session.effective.as_ref().clone();
+        if session.manual_plan_run.as_deref() == Some(run_id) {
+            policy
+                .require_manual_plan(self.authorities.has_active_plan_for_run(session_id, run_id));
+        }
+        Ok(policy)
     }
 
     /// Called once when preparing a run. The parent ceiling is already resolved.
@@ -666,6 +706,33 @@ mod tests {
         model.apply(&json!({"type":"approval.resolved", "sessionId":"child", "payload":{
             "approvalId":"review:new", "authorityId":"grant:new", "source":"agent", "decision":"allow"}})).unwrap();
         assert!(!model.revoked("child", "grant:new"));
+    }
+
+    #[test]
+    fn manual_run_requires_user_confirmation_even_with_automatic_session_permissions() {
+        let mut model = KernelPermissionModel::default();
+        let settings = json!({"agent.permissions.workspaceMutation":"allow"});
+        create(&mut model, "s", None, settings.clone());
+        model
+            .apply(&json!({"type":"run.started","sessionId":"s","runId":"r",
+            "payload":{"runtimeSnapshot":{"permissions":settings,"planMode":"manual"}}}))
+            .unwrap();
+        let mut confirmation = json!({"type":"plan.confirmed","sessionId":"s","runId":"r",
+            "payload":{"source":"agent","planId":"p","revision":1,"authorities":[]}});
+        for source in ["agent", "parent", "sessionWorkdir"] {
+            confirmation["payload"]["source"] = json!(source);
+            assert_eq!(
+                model.apply(&confirmation).unwrap_err().code,
+                "plan_confirmation_required"
+            );
+        }
+        confirmation["payload"]["source"] = json!("user");
+        model.apply(&confirmation).unwrap();
+        assert!(model.authorities.has_active_plan_for_run("s", "r"));
+        assert_eq!(
+            model.effective("s").unwrap().settings["agent.permissions.workspaceMutation"],
+            "allow"
+        );
     }
 
     #[test]

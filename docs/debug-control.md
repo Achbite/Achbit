@@ -31,7 +31,7 @@ The [Debug interfaces and CLI reference](product/debug-control.md) is the canoni
 | Need | Entry point |
 | --- | --- |
 | Run one tool without a model | `tools list`, `tools inspect`, `tools call`, then `operation inspect/respond/cancel/release` |
-| Inspect or operate GUI/components | `gui ready`, `surfaces list/inspect`, `action`, `components list/inspect/activate` |
+| Inspect or operate GUI/components | `gui ready`, `surfaces list/inspect/actions`, `action`, `components list/inspect/activate` |
 | Run an Agent task | `task submit --follow`; `task inspect/message/respond/cancel` |
 | Observe an existing task | `observe subscribe`, then one `observe --follow` connection; `observe status` for diagnosis |
 | Read facts and timings | `result read`, `metrics query/export` |

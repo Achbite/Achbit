@@ -1,3 +1,4 @@
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { UsageWidget } from '../../ui-plugins/UsageWidget';
 import { ComputerTargetPreview } from './ComputerTargetPreview';
 import type { ConversationReaderLayout } from '../../components/local-agent/LocalAgentPanel';
@@ -70,6 +71,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   apiStatus,
   serverVersion,
 }) => {
+  const identity = useUiOwner('navigation.toolbar');
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
   const language = normalizeUiLanguage(effectiveSettings['workbench.language']);
   const navigationDensity = effectiveSettings['gui.navigationDensity'] === 'compact'
@@ -396,9 +398,9 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
           resizeHandle={<ResizeHandle className="achbit-gui-navigation-resize" label={t(language, 'achbitGui.navigation.resize')}
             value={navigationWidth.width} min={navigationWidth.min} max={navigationWidth.max} step={PANE_GEOMETRY.navigation.step}
             direction={1} onResize={navigationWidth.setWidth} />} toolbar={<>
-            <button type="button" aria-label={t(language, 'achbitGui.navigation.back')} title={t(language, 'achbitGui.navigation.back')} disabled={busy || history.cursor <= 0} onClick={() => void navigate(-1)}><AchbitShellIcon name="chevronLeft" /></button>
-            <button type="button" aria-label={t(language, 'achbitGui.navigation.forward')} title={t(language, 'achbitGui.navigation.forward')} disabled={busy || history.cursor >= history.entries.length - 1} onClick={() => void navigate(1)}><AchbitShellIcon name="chevronRight" /></button>
-            <button type="button" className="achbit-gui-navigation-toggle" aria-label={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} title={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} aria-expanded={!navigationCollapsed} aria-controls="achbit-navigation-content" onClick={() => setNavigationCollapsed(value => !value)}><AchbitShellIcon name="sidebar" /></button>
+            <button type="button" {...identity.action('back', 'click')} aria-label={t(language, 'achbitGui.navigation.back')} title={t(language, 'achbitGui.navigation.back')} disabled={busy || history.cursor <= 0} onClick={() => void navigate(-1)}><AchbitShellIcon name="chevronLeft" /></button>
+            <button type="button" {...identity.action('forward', 'click')} aria-label={t(language, 'achbitGui.navigation.forward')} title={t(language, 'achbitGui.navigation.forward')} disabled={busy || history.cursor >= history.entries.length - 1} onClick={() => void navigate(1)}><AchbitShellIcon name="chevronRight" /></button>
+            <button type="button" {...identity.action('toggle-sidebar', 'click')} className="achbit-gui-navigation-toggle" aria-label={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} title={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} aria-expanded={!navigationCollapsed} aria-controls="achbit-navigation-content" onClick={() => setNavigationCollapsed(value => !value)}><AchbitShellIcon name="sidebar" /></button>
             {navigationError && <p className="achbit-gui-navigation-error" role="alert">{navigationError}</p>}
             {catalogWatchError && <p className="achbit-gui-navigation-error" role="alert">{catalogWatchError}
               <button type="button" onClick={() => useLocalAgentStore.getState().retryCatalogWatch()}>{t(language, 'achbitGui.statusAction.retry')}</button>

@@ -232,13 +232,18 @@ export class SessionActor {
       signal?.addEventListener('abort', wake, { once: true });
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const snapshot = await this.loadSnapshot();
+        // A restored or delayed timer may not have run yet. Publish already-due
+        // inputs before deciding this wait expired, using the same clock boundary.
+        const { snapshot, now } = await this.withWrite(async () => {
+          const now = Date.now();
+          return { snapshot: await this.triggerDueWakeups(runId, now), now };
+        });
         if (this.#disposed) throw new Error('session_actor_disposed');
         if (this.#loopFailure) throw this.#loopFailure;
         if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
         if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
-        if (Date.now() >= deadline) return { timedOut: true };
-        if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
+        if (now >= deadline) return { timedOut: true };
+        if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
         await changed;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
@@ -284,18 +289,24 @@ export class SessionActor {
       this.#wakeTimers.set(id, setTimeout(() => {
         this.#wakeTimers.delete(id);
         void this.withWrite(async () => {
-          if (this.#disposed) return;
-          const current = await this.loadSnapshot();
-          if (!pendingWakeups(current.events, runId).has(id)) return;
-          if (Date.now() < event.payload.dueAt) {
-            this.restoreWakeTimers(current);
-            return;
-          }
-          await this.appendEvents([{ type: 'wake.triggered', sessionId: this.sessionId, runId,
-            payload: { scheduleId: id, text: event.payload.text } }], current);
+          const current = await this.triggerDueWakeups(runId, Date.now());
+          this.restoreWakeTimers(current);
         }).catch(error => { this.#loopFailure = error; for (const wake of this.#changes) wake(); });
       }, Math.max(0, event.payload.dueAt - Date.now())));
     }
+  }
+
+  /** Called under the Actor write lease by both timers and input waits. */
+  private async triggerDueWakeups(runId: string, now: number): Promise<LoopSnapshot> {
+    const snapshot = await this.loadSnapshot();
+    if (this.#disposed || snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return snapshot;
+    const due: NewSessionEvent[] = [...pendingWakeups(snapshot.events, runId).values()]
+      .filter(event => event.payload.dueAt <= now)
+      .map(event => ({ type: 'wake.triggered', sessionId: this.sessionId, runId,
+        payload: { scheduleId: event.payload.scheduleId, text: event.payload.text } }));
+    if (!due.length) return snapshot;
+    await this.appendEvents(due, snapshot);
+    return this.loadSnapshot();
   }
 
   async waitForRunResult(runId: string): Promise<AgentTaskResult> {
@@ -502,7 +513,8 @@ export class SessionActor {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }
-    const mode = command.patches['agent.permissions.workspaceMutation'];
+    const manualRun = snapshot.state.run && snapshot.state.runRuntimeSnapshots[snapshot.state.run.runId]?.planMode === 'manual';
+    const mode = manualRun ? undefined : command.patches['agent.permissions.workspaceMutation'];
     if (mode === 'allow') {
       const pending = snapshot.state.pendingPlan;
       if (pending) events.push({ type: 'plan.cancelled', sessionId: this.sessionId, runId: pending.runId, callId: pending.callId,
@@ -725,6 +737,7 @@ export class SessionActor {
     return await this.handleRunInput({
       schemaVersion: command.schemaVersion, type: 'message.submit', commandId: command.commandId,
       sessionId: this.sessionId, text: command.text,
+      ...(started.type === 'run.started' && started.payload.runtimeSnapshot.planMode ? { planMode: started.payload.runtimeSnapshot.planMode } : {}),
       filesystemReferences: original.filesystemReferences,
       pluginSelections: original.pluginSelections,
       ...(original.guidanceReferences ? { guidanceReferences: original.guidanceReferences } : {}),
@@ -740,6 +753,10 @@ export class SessionActor {
     beforeRunStart?: (runId: string) => Promise<void>,
   ): Promise<CommandReply> {
     const journalCommand = edit?.command ?? command;
+    const manualPlan = command.type === 'message.submit' && command.planMode === 'manual';
+    if (manualPlan && !submittedText.trim()) {
+      return await this.recordRejection(journalCommand, 'plan_task_empty', '/plan 后必须提供任务正文。');
+    }
     if (!submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
       if (command.type === 'context.focus') {
         return await this.recordRejection(
@@ -775,6 +792,12 @@ export class SessionActor {
         });
       }
       if (!run || !['running', 'waiting'].includes(run.status)) return null;
+      if (manualPlan) {
+        return await this.commitCommandWithinWrite(command, [], {
+          ...acceptedReply(command), status: 'rejected',
+          error: { code: 'plan_run_active', message: '请在当前任务结束后用 /plan 发起新任务。' },
+        });
+      }
       if (command.type === 'context.focus') {
         return await this.commitCommandWithinWrite(command, [], {
           ...acceptedReply(command), status: 'rejected',
@@ -819,6 +842,10 @@ export class SessionActor {
     if (before.state.run && !isTerminal(before.state.run.status)) {
       return await this.recordRejection(command, 'run_release_pending', '当前运行尚未完成资源释放。');
     }
+    const controls = before.state.recipe?.tools?.controls;
+    if (manualPlan && controls && !controls.includes('plan.publish')) {
+      return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
+    }
     const messageId = this.#nextId('message');
     const runId = this.#nextId('run');
     const profileId = command.profileId ?? before.state.modelSettings?.profileId ?? this.#profileId;
@@ -842,9 +869,10 @@ export class SessionActor {
         ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) }
         : {}),
     });
-    const runtimeSnapshot = !this.#agents && prepared.runtimeSnapshot.agentToolsEnabled
-      ? { ...prepared.runtimeSnapshot, agentToolsEnabled: false }
-      : prepared.runtimeSnapshot;
+    const runtimeSnapshot = { ...prepared.runtimeSnapshot,
+      ...(manualPlan ? { planMode: 'manual' as const } : {}),
+      ...(!this.#agents && prepared.runtimeSnapshot.agentToolsEnabled ? { agentToolsEnabled: false } : {}),
+    };
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
       {
@@ -1255,8 +1283,7 @@ export class SessionActor {
           await this.#processes?.sync();
           const current = await this.loadSnapshot();
           if (Object.values(current.state.processes).some(job => job.runId === runId && job.status === 'active')) {
-            await this.waitForProcesses(runId, signal, undefined,
-              wait.deadline === undefined ? undefined : Math.max(0, (wait.deadline - Date.now()) / 1000), wait.afterSequence);
+            await this.waitForProcesses(runId, signal, undefined, undefined, wait);
             return {};
           }
           return this.waitForInput(runId, signal, undefined, undefined, wait);
@@ -1453,13 +1480,13 @@ export class SessionActor {
   }
 
   private async waitForProcesses(runId: string, signal: AbortSignal, jobIds?: string[], timeoutSeconds?: number,
-    afterSequence?: number): Promise<void> {
+    controlWait?: ControlWait): Promise<void> {
     await this.ensureProcesses(runId);
     await this.#processes?.sync();
     let current = await this.loadSnapshot();
     const targets = jobIds ?? Object.values(current.state.processes).filter(job => job.runId === runId && job.status === 'active').map(job => job.jobId);
     const active = (snapshot: LoopSnapshot) => targets.some(id => snapshot.state.processes[id]?.status === 'active');
-    let previous = activeProcessWait(current.events, runId);
+    const previous = activeProcessWait(current.events, runId);
     const record = async (payload: import('@achbit/protocol').ProcessWaitState) => this.withWrite(async () => {
       const snapshot = await this.loadSnapshot();
       if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return;
@@ -1469,42 +1496,37 @@ export class SessionActor {
       if (previous) await record({...previous, phase: 'released'});
       return;
     }
-    // A normal input suspends this clock while the model does useful work. The
-    // scheduled check belongs to the Host; healthy work does not request a model turn.
-    const startedAt = previous?.phase === 'waiting' ? previous.startedAt : Date.now();
     const composition = current.events.findLast(event => event.type === 'context.composed' && event.runId === runId && event.payload.purpose === 'agent');
-    const boundary = composition?.type === 'context.composed' ? composition.payload.modelView?.throughSequence ?? composition.sequence : current.state.revision;
-    let wait = {waitId: previous?.waitId ?? this.#nextId('process-wait'), phase: 'waiting' as const,
-      jobIds: targets, startedAt, reviewAt: startedAt + PROCESS_WAIT_REVIEW_MS,
-      reviewed: previous?.reviewed ?? false, afterSequence: afterSequence ?? boundary};
+    const boundary = controlWait?.afterSequence ?? (composition?.type === 'context.composed'
+      ? composition.payload.modelView?.throughSequence ?? composition.sequence : current.state.revision);
+    // After recovery, an already delivered wake still belongs to the next model turn.
+    if (previous && previous.afterSequence === boundary && previous.phase !== 'waiting') return;
+
+    const startedAt = previous?.phase === 'waiting' ? previous.startedAt : Date.now();
+    const explicitDeadline = controlWait?.deadline ?? (timeoutSeconds === undefined ? undefined : startedAt + timeoutSeconds * 1000);
+    const wait = {waitId: previous?.waitId ?? this.#nextId('process-wait'), phase: 'waiting' as const,
+      jobIds: targets, startedAt, reviewAt: explicitDeadline ?? startedAt + PROCESS_WAIT_REVIEW_MS,
+      reviewed: previous?.reviewed ?? false, afterSequence: boundary};
     await record(wait);
-    const explicitDeadline = timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000;
     const revisions = new Map(targets.map(id => [id, current.state.processes[id]?.revision]));
     const hasResult = (snapshot: LoopSnapshot) => targets.some(id => snapshot.state.processes[id]?.status !== 'active'
       && snapshot.state.processes[id]?.revision !== revisions.get(id));
-    for (;;) {
-      const deadline = Math.min(wait.reviewed ? Infinity : wait.reviewAt, explicitDeadline);
-      const result = await this.waitForInput(runId, signal, undefined, snapshot => !active(snapshot) || hasResult(snapshot),
-        {afterSequence: wait.afterSequence, ...(Number.isFinite(deadline) ? {deadline} : {})});
-      signal.throwIfAborted();
-      // Reconcile completion, errors and user input before accepting a healthy check.
-      await this.#processes?.sync();
-      let keepWaiting = false;
-      await this.withWrite(async () => {
-        current = await this.loadSnapshot();
-        if (current.state.run?.runId !== runId || isTerminal(current.state.run.status) || signal.aborted) return;
-        previous = activeProcessWait(current.events, runId);
-        if (previous?.waitId !== wait.waitId) return;
-        keepWaiting = result.timedOut === true && !wait.reviewed && Date.now() >= wait.reviewAt
-          && Date.now() < explicitDeadline && active(current) && !hasResult(current)
-          && !inputAfter(current.events, runId, wait.afterSequence);
-        if (keepWaiting) wait = {...wait, reviewed: true};
-        const phase = !active(current) ? 'released' : keepWaiting ? 'waiting' : 'resumed';
-        await this.appendEvents([{type: 'process.wait.changed', sessionId: this.sessionId, runId,
-          payload: {...wait, phase}}], current);
-      });
-      if (!keepWaiting) return;
-    }
+    // An explicit wait uses its own budget. The implicit review fires once per logical wait.
+    const deadline = explicitDeadline ?? (wait.reviewed ? undefined : wait.reviewAt);
+    const result = await this.waitForInput(runId, signal, undefined, snapshot => !active(snapshot) || hasResult(snapshot),
+      {afterSequence: boundary, ...(deadline === undefined ? {} : {deadline})});
+    signal.throwIfAborted();
+    await this.#processes?.sync();
+    await this.withWrite(async () => {
+      current = await this.loadSnapshot();
+      if (current.state.run?.runId !== runId || isTerminal(current.state.run.status) || signal.aborted) return;
+      if (activeProcessWait(current.events, runId)?.waitId !== wait.waitId) return;
+      const review = result.timedOut === true && active(current) && !hasResult(current)
+        && !inputAfter(current.events, runId, boundary);
+      const phase = !active(current) ? 'released' : review ? 'review' : 'resumed';
+      await this.appendEvents([{type: 'process.wait.changed', sessionId: this.sessionId, runId,
+        payload: {...wait, phase, reviewed: wait.reviewed || review}}], current);
+    });
   }
 
   private async ensureProcesses(runId: string): Promise<void> {

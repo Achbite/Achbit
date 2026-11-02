@@ -2,7 +2,8 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { isPendingShell, shellCommandPreview } from './shellProgress';
 import './shellProgress.css';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -45,18 +46,25 @@ export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> =
   onExpand,
 }) => {
   const [expanded, setExpanded] = useConversationRowState('hosted-group:expanded', false);
+  const identity = useUiOwner('conversation.hosted-group', undefined, {
+    sessionId: useConversationSessionId(), providerCallId: blocks[0]?.providerCallId,
+  });
+  const summaryRef = useRef<HTMLButtonElement>(null);
+  const changeExpanded = (next: React.SetStateAction<boolean>) => {
+    if (typeof next === 'boolean' && next === expanded) return;
+    onExpand(summaryRef.current ?? undefined);
+    setExpanded(next);
+  };
   const summary = t(language, 'agent.tool.summary.usedMany', { count: blocks.length });
   return (
-    <UiRegion slot="activity.row" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded }}><article className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <UiRegion slot="activity.summary" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded }}><button
+    <UiRegion slot="activity.row" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
+      <UiRegion slot="activity.summary" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded: changeExpanded }}><button
+        {...identity.action('toggle', 'click')} ref={summaryRef}
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
         data-conversation-disclosure={`hosted-group:${blocks[0]?.providerCallId}`}
-        onClick={(event) => {
-          onExpand(event.currentTarget);
-          setExpanded((current) => !current);
-        }}
+        onClick={() => changeExpanded(current => !current)}
       >
         <span className="local-agent__tool-group-icon">
           <AchbitShellIcon name="search" />
@@ -67,7 +75,7 @@ export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> =
         </span>
       </button></UiRegion>
       {expanded && (
-        <UiRegion slot="activity.detail" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
+        <UiRegion slot="activity.detail" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
           {blocks.map((block) => (
             <ProviderHostedEntry
               key={block.providerCallId}
@@ -91,18 +99,25 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   onOpenWorkspaceResource,
 }) => {
   const [expanded, setExpanded] = useConversationRowState('tool-group:expanded', false);
+  const identity = useUiOwner('conversation.tool-group', undefined, {
+    sessionId: useConversationSessionId(), groupId: activities[0]?.activityId,
+  });
+  const summaryRef = useRef<HTMLButtonElement>(null);
+  const changeExpanded = (next: React.SetStateAction<boolean>) => {
+    if (typeof next === 'boolean' && next === expanded) return;
+    onExpand(summaryRef.current ?? undefined);
+    setExpanded(next);
+  };
   const tools = activities.filter(activity => !activity.agent);
   return (
-    <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded }}><article className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><button
+    <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
+      <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded: changeExpanded }}><button
+        {...identity.action('toggle', 'click')} ref={summaryRef}
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
         data-conversation-disclosure={`tool-group:${activities[0]?.activityId}`}
-        onClick={(event) => {
-          onExpand(event.currentTarget);
-          setExpanded(!expanded);
-        }}
+        onClick={() => changeExpanded(current => !current)}
       >
         <span className="local-agent__tool-group-icon">
           <AchbitShellIcon
@@ -117,7 +132,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
         </span>
       </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
       {expanded && tools.length > 0 && (
-        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded }}><div className="local-agent__tool-group-items">
+        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
           {tools.map((activity) => (
             activity.kind === 'approval' ? <ApprovalActivity key={activity.activityId} activity={activity} language={language}
               pending={pendingApproval?.callId === activity.callId} reviewing={reviewingApproval} onExpand={onExpand} />
@@ -145,6 +160,9 @@ interface ProviderHostedEntryProps {
 
 const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, status, language, onExpand }) => {
   const [expanded, setExpanded] = useConversationRowState(`hosted:${hosted.providerCallId}:expanded`, false);
+  const identity = useUiOwner('conversation.hosted-tool', undefined, {
+    sessionId: useConversationSessionId(), providerCallId: hosted.providerCallId,
+  });
   const actionType = providerHostedActionType(hosted.action);
   const fieldLabels: Record<string, string> = {
     queries: 'agent.providerHosted.detail.queries',
@@ -155,7 +173,7 @@ const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, statu
   };
   return (
     <div className={`local-agent__tool-entry local-agent__tool-entry--${status}`}>
-      <button type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`hosted:${hosted.providerCallId}`} aria-expanded={expanded} onClick={(event) => {
+      <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`hosted:${hosted.providerCallId}`} aria-expanded={expanded} onClick={(event) => {
         onExpand(event.currentTarget);
         setExpanded((value) => !value);
       }}>
@@ -218,6 +236,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const [expanded, setExpanded] = useConversationRowState(`tool:${activity.activityId}:expanded`, false);
   const theme = useDisplayTheme();
   const sessionId = useConversationSessionId();
+  const identity = useUiOwner('conversation.tool', undefined, { sessionId, activityId: activity.activityId });
   const activities = useMemo(() => [activity], [activity]);
   const files = useMemo(() => changedFiles(activities), [activities]);
   const tool = activity.tool;
@@ -257,7 +276,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   return (
     <div className={`local-agent__tool-entry local-agent__tool-entry--${activity.status}`}>
       <UiRegion slot="activity.summary">{filePath && sessionId ? <div className="local-agent__tool-file-heading">
-        <button type="button" className="local-agent__tool-entry-heading local-agent__tool-file-link" title={filePath} onClick={() => {
+        <button {...identity.action('open-file', 'click')} type="button" className="local-agent__tool-entry-heading local-agent__tool-file-link" title={filePath} onClick={() => {
           if (readFile) {
             requestReader(sessionId, { kind: 'workspace', workspaceId: readFile.workspaceId!, logicalPath: filePath });
             return;
@@ -270,10 +289,11 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
           <span className="local-agent__tool-entry-icon"><AchbitShellIcon name={readFile ? 'artifact' : 'compose'} /></span>
           <strong>{t(language, readFile ? 'agent.tool.activity.readPath' : tool?.operation === 'fs.delete' ? 'agent.tool.activity.deletedPath' : 'agent.tool.activity.editedPath', { path: '' })}<span>{filePath.split('/').at(-1)}</span></strong>
         </button>
-        <button type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`tool:${activity.activityId}`} aria-label={toolActivitySummary(activity, language)} aria-expanded={expanded} onClick={toggleExpanded}>
+        <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`tool:${activity.activityId}`} aria-label={toolActivitySummary(activity, language)} aria-expanded={expanded} onClick={toggleExpanded}>
           <span className="local-agent__tool-entry-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
         </button>
       </div> : <div className="local-agent__tool-entry-actions"><button
+        {...identity.action('toggle', 'click')}
         type="button"
         className="local-agent__tool-entry-heading"
         aria-expanded={expanded}
@@ -294,7 +314,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
           <AchbitShellIcon name="chevronRight" />
         </span>
       </button>
-      {canStop && <button type="button" className="local-agent__tool-stop"
+      {canStop && <button {...identity.action('stop', 'click')} type="button" className="local-agent__tool-stop"
         aria-label={t(language, stopping ? 'agent.tool.shell.stopping' : 'agent.tool.shell.stop')}
         disabled={stopping} onClick={() => {
           if (stopping) return;

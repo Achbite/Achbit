@@ -2424,4 +2424,5 @@
 .local-agent__terminal-error .local-agent__recovery-actions { margin-top:4px; }
 .local-agent__recovery-actions button:hover:not(:disabled) { background:var(--ac-surface-hover); }
 
-.local-agent__pasted-image > img { width: 48px; height: 48px; object-fit: contain; border-radius: 4px; }
+.local-agent__pasted-image-preview .conversation-image-review__open { width: 48px; height: 48px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
+.local-agent__pasted-image-preview .conversation-image-review__open > img { width: 100%; height: 100%; object-fit: contain; }

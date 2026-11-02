@@ -9,6 +9,7 @@ import { isRemoteHost, getKernelApiBase, getHostConnectionHeaders } from '../../
 export interface ConversationHost {
   resources: typeof resources;
   copyText(text: string): Promise<void>;
+  saveDiagramSvg(image: { svg: string; url: string }): Promise<void>;
   openExternalLink(url: string): Promise<void>;
   readLocalFile?(path: string): Promise<Blob>;
   readArtifact: typeof readConversationArtifact;
@@ -20,9 +21,17 @@ export interface ConversationHost {
   locatePath?(path: string): Promise<void>;
 }
 
+const desktopInvoke = typeof window === 'undefined' ? undefined : window.__TAURI__?.core?.invoke;
 const defaultHost: ConversationHost = {
   resources,
   copyText: async (text) => navigator.clipboard.writeText(text),
+  saveDiagramSvg: async ({ svg, url }) => {
+    if (desktopInvoke) return desktopInvoke<void>('achbit_save_diagram_svg', { svg });
+    const link = document.createElement('a');
+    link.href = url; link.download = 'mermaid.svg';
+    document.body.append(link);
+    try { link.click(); } finally { link.remove(); }
+  },
   openExternalLink: openExternalUrl,
   readLocalFile: async (path) => {
     if (isRemoteHost()) {

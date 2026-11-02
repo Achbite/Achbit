@@ -1321,7 +1321,7 @@ pub(crate) async fn conversation_session_create(
     }
 
     let now = crate::now_text();
-    let (profile_id, bindings) = {
+    let (profile_id, bindings, recipe) = {
         let mut gui = state.gui.lock().expect("gui state lock");
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
@@ -1360,7 +1360,11 @@ pub(crate) async fn conversation_session_create(
             }
             bindings
         };
-        (profile_id, bindings)
+        let recipe = recipe.or_else(|| {
+            (gui.user_settings["agent.minimalMode"] == true)
+                .then(crate::local_agent_recipe::AgentRecipe::minimal_coding)
+        });
+        (profile_id, bindings, recipe)
     };
 
     create_registered_session(
@@ -1574,6 +1578,9 @@ pub(crate) async fn create_agent_session(
         },
         Err(error) => return ApiResponse::error("agent_recipe_invalid", error),
     };
+    if recipe.product_components.is_none() {
+        recipe.product_components = parent_recipe.product_components.clone();
+    }
     recipe.tools.inherit_missing(
         &parent_recipe.tools,
         body.recipe.as_ref().and_then(|value| value.get("tools")),
@@ -1768,14 +1775,18 @@ async fn delete_conversation_session(
             if let Some(task) = gui.conversation_title_tasks.remove(deleted_id) {
                 task.abort();
             }
-            let path = gui.paths.catalog_store_path.clone();
-            if let Err(error) = gui.conversation_catalog.remove_session(&path, deleted_id) {
-                cleanup_errors.push(format!("{deleted_id} [catalog] {error}"));
+            let mut roots = vec![session_attachment_root(
+                &gui.paths.attachment_store_root,
+                deleted_id,
+            )];
+            if let Some(workdir) = gui.conversation_catalog.session_workdir(deleted_id) {
+                match registered_workdir_root(&gui.paths.session_workdir_root, workdir) {
+                    Ok(root) => roots.push(root),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => cleanup_errors.push(format!("{deleted_id} [workdir] {error}")),
+                }
             }
-            [
-                session_attachment_root(&gui.paths.attachment_store_root, deleted_id),
-                session_attachment_root(&gui.paths.session_workdir_root, deleted_id),
-            ]
+            roots
         };
         if let Err(error) = state.local_agent.kernel.delete_session_outputs(deleted_id) {
             cleanup_errors.push(format!(
@@ -1794,7 +1805,12 @@ async fn delete_conversation_session(
             }
         }
         if errors_before == cleanup_errors.len() {
-            cleaned_ids.push(deleted_id.clone());
+            let mut gui = state.gui.lock().expect("gui state lock");
+            let path = gui.paths.catalog_store_path.clone();
+            match gui.conversation_catalog.remove_session(&path, deleted_id) {
+                Ok(()) => cleaned_ids.push(deleted_id.clone()),
+                Err(error) => cleanup_errors.push(format!("{deleted_id} [catalog] {error}")),
+            }
         }
     }
     if let Some(error) = partial_error.take() {
@@ -2519,6 +2535,14 @@ fn schedule_conversation_title(
     {
         return Ok(());
     }
+    let recipe = state
+        .local_agent
+        .journal
+        .agent_recipe(session_id)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    if !recipe.product_component_enabled("achbit.conversation-title", true) {
+        return Ok(());
+    }
     let mut gui = state.gui.lock().expect("gui state lock");
     if gui
         .conversation_catalog
@@ -2647,9 +2671,17 @@ async fn ensure_session_workdir(
             session_id,
         )?;
         if let Some(workspace) = workspace {
-            persist_catalog_rows(&mut gui, vec![workspace], None, None).map_err(|error| {
-                SessionServiceError::new("conversation_catalog_write_failed", error)
-            })?;
+            let new_directory = workspace.canonical_root.clone();
+            if let Err(mut error) = persist_catalog_rows(&mut gui, vec![workspace], None, None) {
+                // Only this call created the directory; it has not been bound to a run.
+                if let Err(cleanup) = fs::remove_dir(&new_directory) {
+                    error.push_str(&format!(" [workdir cleanup: {cleanup}]"));
+                }
+                return Err(SessionServiceError::new(
+                    "conversation_catalog_write_failed",
+                    error,
+                ));
+            }
         }
         binding
     };
@@ -2704,9 +2736,7 @@ fn prepare_session_workdir(
             "对话不存在。",
         ));
     }
-    if let Some(workspace) = catalog.workspaces.iter().find(|workspace| {
-        workspace.session_workdir && workspace.owner_session_id.as_deref() == Some(session_id)
-    }) {
+    if let Some(workspace) = catalog.session_workdir(session_id) {
         if !FsPath::new(&workspace.canonical_root).is_dir() {
             return Err(SessionServiceError::new(
                 "session_workdir_unavailable",
@@ -2721,20 +2751,30 @@ fn prepare_session_workdir(
             None,
         ));
     }
-    let path = session_attachment_root(root, session_id);
-    fs::create_dir_all(&path).map_err(|error| {
+    let workspace_id = random_id("workspace")?;
+    let create_error = |error: std::io::Error| {
         SessionServiceError::new("session_workdir_create_failed", error.to_string())
-    })?;
-    let canonical_root = canonical_folder_path(&path.to_string_lossy())
-        .map_err(|error| SessionServiceError::new("session_workdir_create_failed", error))?;
+    };
+    fs::create_dir_all(root).map_err(create_error)?;
+    let path = fs::canonicalize(root)
+        .map_err(create_error)?
+        .join(workspace_id.replace(':', "-"));
+    #[cfg(unix)]
+    let created = {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(&path)
+    };
+    #[cfg(not(unix))]
+    let created = fs::create_dir(&path);
+    created.map_err(create_error)?;
     let binding = WorkspaceBindingDisplayRecord {
-        workspace_id: random_id("workspace")?,
+        workspace_id,
         display_name: "会话工作目录（Achbit 管理，跨轮保留）".into(),
     };
     let workspace = ConversationWorkspaceRecord {
         workspace_id: binding.workspace_id.clone(),
         display_name: binding.display_name.clone(),
-        canonical_root,
+        canonical_root: path.to_string_lossy().into_owned(),
         owner_session_id: Some(session_id.into()),
         session_workdir: true,
         created_at: crate::now_text(),
@@ -2985,6 +3025,22 @@ fn cleanup_created_snapshot_roots(roots: &[PathBuf]) {
             }
         }
     }
+}
+
+/// A registered workdir, including one allocated by an earlier version, is a direct
+/// child of the private store. Never broaden Session cleanup to a project directory.
+fn registered_workdir_root(
+    store: &FsPath,
+    workspace: &ConversationWorkspaceRecord,
+) -> std::io::Result<PathBuf> {
+    let root = FsPath::new(&workspace.canonical_root);
+    if root.parent() != Some(fs::canonicalize(store)?.as_path()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "registered Session workdir is outside its store",
+        ));
+    }
+    Ok(root.to_owned())
 }
 
 fn session_attachment_root(root: &FsPath, session_id: &str) -> PathBuf {
@@ -3680,7 +3736,21 @@ mod tests {
         let (first, workspace) =
             prepare_session_workdir(&catalog, &root, "session:working").unwrap();
         let workspace = workspace.unwrap();
-        let draft = FsPath::new(&workspace.canonical_root).join("preview.html");
+        let directory = registered_workdir_root(&root, &workspace).unwrap();
+        assert!(!directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(':'));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&directory).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        let draft = directory.join("preview.html");
         fs::write(&draft, "<h1>Edited draft</h1>").unwrap();
         catalog
             .write_rows(&store, vec![workspace], None, None)
@@ -3702,6 +3772,62 @@ mod tests {
             .unwrap()
             .workspace(&first.workspace_id)
             .is_none());
+    }
+
+    #[test]
+    fn registered_workdir_keeps_its_original_path_and_cleanup_stays_in_the_private_store() {
+        let tree = TemporaryTree::new("existing-workdir");
+        let root = tree.0.join("working");
+        let session = "session:existing";
+        let legacy = root.join(if cfg!(windows) {
+            "sha256-legacy"
+        } else {
+            "sha256:legacy"
+        });
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("notes.txt"), "retained").unwrap();
+        let store = tree.0.join("catalog.sqlite3");
+        let mut catalog = ConversationCatalog::load(&store).unwrap();
+        let workspace = ConversationWorkspaceRecord {
+            workspace_id: "workspace:existing".into(),
+            display_name: "Existing working directory".into(),
+            canonical_root: fs::canonicalize(&legacy)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            owner_session_id: Some(session.into()),
+            session_workdir: true,
+            created_at: "now".into(),
+        };
+        catalog
+            .write_rows(
+                &store,
+                vec![workspace.clone()],
+                None,
+                Some(ConversationSessionRecord {
+                    id: session.into(),
+                    title: "Existing".into(),
+                    title_source: None,
+                    workspace_bindings: vec![],
+                    project_id: None,
+                    profile_id: None,
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                }),
+            )
+            .unwrap();
+        let reopened = ConversationCatalog::load(&store).unwrap();
+        let (binding, created) = prepare_session_workdir(&reopened, &root, session).unwrap();
+        assert_eq!(binding.workspace_id, workspace.workspace_id);
+        assert!(created.is_none());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        let recorded = reopened.session_workdir(session).unwrap();
+        let cleanup = registered_workdir_root(&root, recorded).unwrap();
+        assert_eq!(
+            fs::read_to_string(cleanup.join("notes.txt")).unwrap(),
+            "retained"
+        );
+        assert!(registered_workdir_root(&tree.0, recorded).is_err());
     }
 
     #[test]

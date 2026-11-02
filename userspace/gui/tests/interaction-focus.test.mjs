@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadGuiModule } from './gui-projection-contract.mjs';
+import { createElement } from 'react';
+import { fileURLToPath } from 'node:url';
+import { createServer } from 'vite';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
 function documentFixture(t) {
   const saved = Object.fromEntries(['document', 'Element', 'HTMLElement'].map(key => [key, globalThis[key]]));
@@ -219,4 +223,66 @@ test('conversation marker follows the newest message at the reading line after l
   assert.equal(activeConversationAnchor([{ key: 'first', top: 70 }, { key: 'latest', top: 300 }], 40), 'first');
   assert.equal(activeConversationAnchor([{ key: 'first', top: -300 }, { key: 'latest', top: 41 }], 40), 'first');
   assert.equal(activeConversationAnchor([{ key: 'first', top: -301 }, { key: 'latest', top: 40 }], 40), 'latest');
+});
+
+test('manual approval focuses only an idle body in the document that owns keyboard focus', async t => {
+  const effects = [];
+  const effectsKey = Symbol.for('achbit.test.approval-layout-effects');
+  const savedEffects = globalThis[effectsKey];
+  globalThis[effectsKey] = effects;
+  t.after(() => {
+    if (savedEffects === undefined) delete globalThis[effectsKey];
+    else globalThis[effectsKey] = savedEffects;
+  });
+  // SSR does not schedule layout effects. Capture only this component's real callbacks.
+  const loader = await createServer({
+    root: fileURLToPath(new URL('../', import.meta.url)),
+    configFile: false, envFile: false, appType: 'custom',
+    server: { middlewareMode: true, hmr: false, ws: false, watch: null },
+    optimizeDeps: { noDiscovery: true, include: [] },
+    plugins: [{
+      name: 'approval-focus-layout-effects',
+      enforce: 'pre',
+      transform(source, id) {
+        if (id.endsWith('/ComposerDecisionPanels.tsx')) return source.replace("from 'react'", "from 'virtual:approval-focus-react'");
+      },
+      resolveId(source) {
+        if (source === 'virtual:approval-focus-react') return '\0approval-focus-react';
+      },
+      load(id) {
+        if (id === '\0approval-focus-react') return `
+          export { useRef, useState } from 'react';
+          export const useLayoutEffect = effect => globalThis[Symbol.for('achbit.test.approval-layout-effects')].push(effect);
+        `;
+      },
+    }],
+  });
+  t.after(() => loader.close());
+  const { ComposerDecisionPanels } = await loader.ssrLoadModule('/src/components/local-agent/ComposerDecisionPanels.tsx');
+  const { document, element } = documentFixture(t);
+  const composer = { pendingApproval: { approvalId: 'approval:focus', preview: { summary: 'Native input', effects: [], logicalTargets: [] } },
+    projection: { run: { status: 'waiting' } } };
+  const input = element('input');
+  for (const scenario of [
+    { name: 'another WebView or application owns focus', ownsFocus: false, active: document.body, expectedCalls: 0 },
+    { name: 'idle foreground document keeps keyboard access', ownsFocus: true, active: document.body, expectedCalls: 1 },
+    { name: 'an existing editor keeps focus', ownsFocus: true, active: input, expectedCalls: 0 },
+  ]) {
+    document.hasFocus = () => scenario.ownsFocus;
+    document.activeElement = scenario.active;
+    effects.length = 0;
+    let tree;
+    function Probe() { tree = ComposerDecisionPanels({ language: 'en-US', composer }); return null; }
+    renderToStaticMarkup(createElement(Probe));
+    const approval = findReactElement(tree, node => node.type === 'section' && node.props.className === 'local-agent__decision');
+    const focusCalls = [];
+    const panel = element('section');
+    panel.focus = options => { focusCalls.push(options); document.activeElement = panel; };
+    approval.props.ref.current = panel;
+    assert.ok(effects.length, 'run the real component layout effects, which server rendering normally omits');
+    for (const effect of effects) effect();
+    assert.equal(focusCalls.length, scenario.expectedCalls, scenario.name);
+    assert.equal(document.activeElement, scenario.expectedCalls ? panel : scenario.active, scenario.name);
+    if (scenario.expectedCalls) assert.deepEqual(focusCalls, [{ preventScroll: true }]);
+  }
 });

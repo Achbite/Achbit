@@ -83,7 +83,9 @@
 .conversation-table-dialog-header strong { display: block; font-size: calc(14px * var(--ac-ui-font-scale, 1)); font-weight: 500; }
 .conversation-table-dialog-header small { display: block; color: var(--ac-muted); font-size: calc(11px * var(--ac-ui-font-scale, 1)); }
 .conversation-table .conversation-table-close { box-sizing: border-box; display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 6px; color: var(--ac-muted); background: transparent; cursor: pointer; }
-.conversation-table-dialog-body { min-height: 0; padding: 18px; overflow: auto; overscroll-behavior: contain; }
+.conversation-table .conversation-table-zoom-reset { min-height: 30px; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ac-muted); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
+.conversation-table .conversation-table-zoom-reset:hover { background: var(--ac-surface-hover); color: var(--ac-foreground); }
+.conversation-table-dialog-body { min-height: 0; padding: 18px; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; }
 .conversation-table-dialog th { position: sticky; top: -18px; z-index: 1; }
 @media (max-width: 620px) {
   .conversation-table-scroll :is(th, td):first-child { position: static; box-shadow: none; }

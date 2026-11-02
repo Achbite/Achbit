@@ -5013,6 +5013,17 @@ test('the context indicator renders shared Agent usage on each fresh mount', asy
   assert.equal(renderToStaticMarkup(createElement(ContextUsageControl, props)), first);
   const unavailable = renderToStaticMarkup(createElement(ContextUsageControl, { ...props, contextUsage: null }));
   assert.doesNotMatch(unavailable, /16%/);
+  for (const [language, name] of [['zh-CN', '上下文窗口'], ['en-US', 'Context window']]) {
+    const empty = renderToStaticMarkup(createElement(ContextUsageControl, { ...props, language, contextUsage: null }));
+    assert.match(empty, / disabled=""/);
+    assert.ok(empty.includes(`aria-label="${name}"`));
+    assert.doesNotMatch(empty, / title=/, 'an empty ring has no unavailable tooltip');
+    assert.equal(empty.replace(/<[^>]+>/g, ''), '', 'no usage facts leaves the ring visually empty');
+  }
+  const zero = renderToStaticMarkup(createElement(ContextUsageControl, {
+    ...props, contextUsage: { ...props.contextUsage, inputTokens: 0, outputTokens: 0 },
+  }));
+  assert.match(zero, />0%</, 'an observed zero remains visible');
 });
 
 test('usage costs follow the saved display currency while unpriced usage stays unknown', async (t) => {

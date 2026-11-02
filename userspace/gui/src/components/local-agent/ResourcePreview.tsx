@@ -1,3 +1,4 @@
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import ResizeHandle from '../shared/ResizeHandle';
 import { usePaneWidth } from '../shared/usePaneWidth';
 import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
@@ -496,21 +497,23 @@ export function ResourcePreview({
 }
 
 /** Shared header controls stay mounted at the same position in split and expanded views. */
-export function ReaderControls({ language, preview, disabled }: {
+export function ReaderControls({ sessionId, language, preview, disabled }: {
+  sessionId: string | null;
   language: UiLanguage;
   preview: ReturnType<typeof useResourcePreview>;
   disabled: boolean;
 }) {
+  const identity = useUiOwner('reader.controls', undefined, { sessionId });
   const chinese = language === 'zh-CN';
   const expandLabel = preview.expanded ? (chinese ? '返回并排' : 'Restore split view') : (chinese ? '铺满工作区' : 'Expand preview');
   const sidebarLabel = chinese ? '浏览器与预览' : 'Browser and preview';
   return <>
-    {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
-    {preview.visible && <button type="button" className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
+    {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" {...identity.action('toggle-tree', 'click')} className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
+    {preview.visible && <button type="button" {...identity.action('toggle-expanded', 'click')} className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
       <AchbitShellIcon name={preview.expanded ? 'collapse' : 'expand'} />
     </button>}
     <SshConnection language={language} />
-    <button type="button" className="reader-icon-button" disabled={disabled} aria-label={sidebarLabel} title={sidebarLabel} aria-pressed={preview.visible} onClick={preview.toggle}>
+    <button type="button" {...identity.action('toggle', 'click')} className="reader-icon-button" disabled={disabled} aria-label={sidebarLabel} title={sidebarLabel} aria-pressed={preview.visible} onClick={preview.toggle}>
       <AchbitShellIcon name="sidebar" />
     </button>
   </>;

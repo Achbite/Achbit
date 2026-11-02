@@ -1,11 +1,12 @@
 import React, { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime';
 import { toJsxRuntime } from 'hast-util-to-jsx-runtime';
-import { CodeContent, ImageContent, MermaidContent } from './RichContent';
+import { CodeContent, ImageContent } from './RichContent';
+import { MermaidContent } from './MermaidContent';
 import { MarkdownTable } from './MarkdownTable';
 import { formatDecisionProse, StreamingMarkdownParser, type MarkdownBlock } from './streamingMarkdown';
 import { StreamingTextBuffer } from './streamingText';
-import type { ElementContent, Root, RootContent } from 'hast';
+import type { Element, ElementContent, Root, RootContent } from 'hast';
 import './richContent.css';
 import { readableResourceLinks } from './resourceLinks';
 import { ConversationSessionScope } from './ConversationSessionScope';
@@ -15,24 +16,40 @@ import { requestWorkspacePreview } from './readerState';
 import 'katex/dist/katex.min.css';
 import { InlineInteractivePreview } from './InteractivePreview';
 
+import { RichContentScope } from './RichContentIdentity';
+
 const StreamingContext = createContext(false);
+const MarkdownBlockScope = createContext<{ key: string; start: number | undefined } | null>(null);
+
+/** Nested tables/fences share a parsed block, but have distinct source positions within it. */
+function MarkdownNodeScope({ node, children }: { node?: Element; children: React.ReactNode }) {
+  const content = useContext(RichContentScope);
+  const block = useContext(MarkdownBlockScope);
+  const start = node?.position?.start.offset;
+  const target = content && block && block.start !== undefined && start !== undefined
+    ? { ...content, blockKey: block.key, nodeOffset: String(start - block.start) } : null;
+  return <RichContentScope.Provider value={target}>{children}</RichContentScope.Provider>;
+}
 const COMPONENTS = {
-  pre: function MarkdownCode({ children }: { children?: React.ReactNode }) {
+  pre: function MarkdownCode({ node, children }: { node?: Element; children?: React.ReactNode }) {
     const streaming = useContext(StreamingContext);
     const child = React.Children.toArray(children)[0];
     if (!React.isValidElement<{ className?: string; children?: React.ReactNode }>(child)) return <pre>{children}</pre>;
     const language = /language-([^\s]+)/.exec(child.props.className ?? '')?.[1] ?? '';
     const code = String(child.props.children ?? '');
-    if (language === 'achbit-preview') return <InlineInteractivePreview source={code} pending={streaming} />;
-    return language === 'mermaid' && !streaming
-      ? <MermaidContent source={code} /> : <CodeContent code={code} language={language} streaming={streaming} />;
+    return <MarkdownNodeScope node={node}>{language === 'achbit-preview'
+      ? <InlineInteractivePreview source={code} pending={streaming} />
+      : language === 'mermaid' && !streaming
+        ? <MermaidContent source={code} /> : <CodeContent code={code} language={language} streaming={streaming} />}</MarkdownNodeScope>;
   },
-  table: MarkdownTable,
+  table: function ScopedMarkdownTable({ node, children }: { node?: Element; children?: React.ReactNode }) {
+    return <MarkdownNodeScope node={node}><MarkdownTable>{children}</MarkdownTable></MarkdownNodeScope>;
+  },
   img: function MarkdownImage({ src, alt }: { src?: string; alt?: string }) { return <ImageContent source={src ?? ''} alt={alt ?? ''} />; },
   a: ScopedMarkdownLink,
 };
 
-function ScopedMarkdownLink({ href, children, ...attributes }: React.ComponentPropsWithoutRef<'a'>) {
+function ScopedMarkdownLink({ href, children, node: _node, ...attributes }: React.ComponentPropsWithoutRef<'a'> & { node?: Element }) {
   const childSession = useContext(ConversationSessionScope);
   const host = useConversationHost();
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +66,9 @@ function ScopedMarkdownLink({ href, children, ...attributes }: React.ComponentPr
 }
 
 const RenderedBlock = memo(function RenderedBlock({ block }: { block: MarkdownBlock }) {
-  return <StreamingContext.Provider value={block.streaming}>{toJsxRuntime(readableResourceLinks(block.tree), { Fragment, jsx, jsxs, components: COMPONENTS })}</StreamingContext.Provider>;
+  return <MarkdownBlockScope.Provider value={{ key: block.key, start: block.tree.children[0]?.position?.start.offset }}>
+    <StreamingContext.Provider value={block.streaming}>{toJsxRuntime(readableResourceLinks(block.tree), { Fragment, jsx, jsxs, components: COMPONENTS, passNode: true })}</StreamingContext.Provider>
+  </MarkdownBlockScope.Provider>;
 });
 
 export const MarkdownContent = memo(function MarkdownContent({ children, streaming = false, decisionProse = false }: { children: string; streaming?: boolean; decisionProse?: boolean }) {

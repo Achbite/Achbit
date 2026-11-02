@@ -79,10 +79,12 @@ fn normalize_invocation(
     invocation: &mut KernelCanonicalInvocation,
 ) -> Result<(), InvocationNormalizationError> {
     match invocation {
-        KernelCanonicalInvocation::FsRead { path, .. }
-        | KernelCanonicalInvocation::FsWrite { path, .. }
+        KernelCanonicalInvocation::FsRead { path, .. } => {
+            *path = normalize_file_path(path, true)?;
+        }
+        KernelCanonicalInvocation::FsWrite { path, .. }
         | KernelCanonicalInvocation::FsEdit { path, .. } => {
-            *path = normalize_file_path(path)?;
+            *path = normalize_file_path(path, false)?;
         }
         KernelCanonicalInvocation::FsDelete(target) => {
             let path = match target {
@@ -90,7 +92,7 @@ fn normalize_invocation(
                     path
                 }
             };
-            *path = normalize_file_path(path)?;
+            *path = normalize_file_path(path, false)?;
         }
         _ => {}
     }
@@ -98,11 +100,14 @@ fn normalize_invocation(
     Ok(())
 }
 
-fn normalize_file_path(value: &str) -> Result<String, InvocationNormalizationError> {
+fn normalize_file_path(
+    value: &str,
+    allow_root: bool,
+) -> Result<String, InvocationNormalizationError> {
     if std::path::Path::new(value).is_absolute() && !value.contains('\0') {
         return Ok(value.to_owned());
     }
-    normalize_workspace_path(value, false)
+    normalize_workspace_path(value, allow_root)
 }
 
 pub fn normalize_workspace_path(
@@ -138,7 +143,12 @@ pub fn normalize_workspace_path(
         parts.join("/")
     };
     if normalized == "." && !allow_dot {
-        return Err(invalid_path());
+        return Err(ToolValidationError::InvalidValue {
+            field: "path",
+            reason:
+                "must identify an entry inside the workspace; '.' identifies the workspace root",
+        }
+        .into());
     }
     Ok(normalized)
 }

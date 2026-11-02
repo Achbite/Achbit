@@ -145,6 +145,7 @@
     "AgentRecipe": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "productComponents": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
         "tools": {"$ref": "#/$defs/AgentToolSelection"},
         "profileId": {"$ref": "#/$defs/Id"},
         "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
@@ -776,6 +777,7 @@
       ],
       "properties": {
         "toolSelection": {"$ref": "#/$defs/AgentToolSelection"},
+        "planMode": {"const": "manual"},
         "runRuntimeSnapshotRef": {"$ref": "#/$defs/Id"},
         "extensionGenerationRef": {"$ref": "#/$defs/Id"},
         "kernelCatalogSnapshotRef": {"$ref": "#/$defs/Id"},
@@ -1421,7 +1423,7 @@
             "operation": { "enum": ["bash", "powershell"] },
             "command": { "type": "string", "minLength": 1, "maxLength": 16384 },
             "writablePaths": {
-              "type": "array", "minItems": 1,
+              "type": "array",
               "items": {
                 "type": "object", "additionalProperties": false,
                 "required": ["path", "kind"],
@@ -2003,6 +2005,7 @@
               "properties": {
                 "schemaVersion": {"const": "achbit.command.v3"},
                 "type": {"const": "message.submit"},
+                "planMode": {"const": "manual"},
                 "commandId": {"$ref": "#/$defs/Id"},
                 "sessionId": {"$ref": "#/$defs/Id"},
                 "text": {"type": "string"},

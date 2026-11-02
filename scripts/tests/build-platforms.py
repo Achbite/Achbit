@@ -132,6 +132,25 @@ class SharedResourcesTests(unittest.TestCase):
             self.assertEqual((destination / 'session-core/dist/index.js').read_bytes(), b'export {};')
             self.assertFalse((destination / 'session-core/dist/debug').exists())
 
+    def test_gui_business_assets_are_shared_and_only_debug_attaches_diagnostics(self):
+        with tempfile.TemporaryDirectory(prefix='achbit-gui-parity-') as directory:
+            root = Path(directory)
+            entry = b'<html><head><script type="module" src="./assets/main.js"></script></head><body></body></html>'
+            write(root, 'userspace/gui/dist-achbit-gui/index.html', entry)
+            write(root, 'userspace/gui/dist-achbit-gui/assets/main.js', b'BUSINESS')
+            write(root, 'userspace/gui/dist-achbit-gui/assets/main.css', b'STYLES')
+            write(root, '.build-cache/gui-diagnostics/ui.js', b'DIAGNOSTICS')
+            package.copy_gui(root, root / 'normal')
+            package.copy_gui(root, root / 'debug', debug=True)
+            for name in ('main.js', 'main.css'):
+                self.assertEqual((root / 'normal/assets' / name).read_bytes(),
+                                 (root / 'debug/assets' / name).read_bytes())
+            self.assertEqual((root / 'normal/index.html').read_bytes(), entry)
+            self.assertFalse((root / 'normal/debug').exists())
+            self.assertEqual((root / 'debug/debug/ui.js').read_bytes(), b'DIAGNOSTICS')
+            self.assertEqual((root / 'debug/index.html').read_text().replace(
+                '<script src="./debug/ui.js"></script>\n</head>', '</head>'), entry.decode())
+
     def test_debug_js_is_only_published_when_explicitly_selected(self):
         with tempfile.TemporaryDirectory(prefix='achbit-debug-modules-') as directory:
             root = Path(directory)

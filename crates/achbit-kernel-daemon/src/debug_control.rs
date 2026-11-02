@@ -238,6 +238,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
         let action = match method {
             "surfaces.list" => "debug:surfaces",
             "surfaces.inspect" => "debug:inspect",
+            "surfaces.actions" => "debug:actions",
             "gui.ready" => "debug:ready",
             "action" => "debug:action",
             _ => "debug:metrics",

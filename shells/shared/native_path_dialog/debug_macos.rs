@@ -67,9 +67,9 @@ fn command_inner(name: &str, args: &Value) -> Result<Value, String> {
         }
         return Ok(json!({"dialogId":id,"status":"dispatched","completion":"query-native-result"}));
     }
-    let parent = panel
-        .sheetParent()
-        .ok_or("debug_native_dialog_parent_missing")?;
+    // runModal has no sheet parent. Its own native window is the AX search root.
+    let parent = panel.sheetParent();
+    let parent = parent.as_deref().unwrap_or(&panel);
     unsafe {
         let screens: *mut NSArray<AnyObject> = msg_send![class!(NSScreen), screens];
         let screen: *mut AnyObject = msg_send![screens, firstObject];
@@ -91,8 +91,8 @@ fn command_inner(name: &str, args: &Value) -> Result<Value, String> {
     }
 }
 
-// Runs on the existing blocking worker. Main-thread AppKit remains free to serve
-// the accessibility requests and the sheet's original completion callback.
+// Runs on the existing observation worker. Modal-loop availability is reported
+// by the native bridge; diagnostics never change the dialog's execution path.
 pub fn accessibility_command(name: &str, args: &Value, mut state: Value) -> Result<Value, String> {
     let frame = |key: &str| -> Result<[f64; 4], String> {
         serde_json::from_value(state[key].clone())

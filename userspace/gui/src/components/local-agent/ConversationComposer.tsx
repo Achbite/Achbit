@@ -1,4 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { BrowserAnnotationDraft } from './browserReview';
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
@@ -13,6 +14,7 @@ import { pastedTextTitle } from '../../services/pastedText';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
+import { ImageReview } from './ImageReview';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
@@ -31,6 +33,7 @@ export function ConversationComposer({
   onDismissUiActionError,
   onEditBrowserReview,
 }: ConversationComposerProps) {
+  const identity = useUiOwner('composer.controls', undefined, { conversationKey: composer.conversationKey });
   const connections = useLocalAgentStore(state => state.connections);
   const concurrentDecisionKey = composer.pendingApproval && (composer.pendingPlan || composer.pendingInteraction)
     ? JSON.stringify([composer.conversationKey, composer.pendingApproval.approvalId,
@@ -356,7 +359,8 @@ export function ConversationComposer({
             ))}
             {composer.pastedImages.map((image) => (
               <span className="local-agent__pasted-image" key={image.inputId} data-attachment-id={image.inputId}>
-                <img src={image.dataUrl} alt={image.name} />
+                <span className="local-agent__pasted-image-preview"><ImageReview source={image.dataUrl} alt={image.name}
+                  triggerIdentity={identity.action('open-image', 'click', { inputId: image.inputId })} /></span>
                 <span className="local-agent__attachment-name" title={image.name}>{image.name}</span>
                 <button type="button" aria-label={t(language, 'agent.attachment.remove', { name: image.name })}
                   onClick={() => composer.setPastedImages((current) => current.filter((item) => item.inputId !== image.inputId))}>
@@ -410,6 +414,7 @@ export function ConversationComposer({
         )}
         {composer.textDecision && <span className="local-agent__decision-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>}
         <textarea
+          {...identity.action('input', 'type')}
           ref={textareaRef}
           value={draft}
           aria-controls={commandSuggestions.length ? commandMenuId : undefined}
@@ -417,7 +422,7 @@ export function ConversationComposer({
           rows={compactInput ? 1 : 3}
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'
             : pendingInteraction ? 'agent.composer.placeholder.interaction' : 'agent.composer.placeholder.task')}
-          disabled={Boolean(pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}
+          disabled={Boolean(!pendingPlan && pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}
           onChange={(event) => {
             // Typing after a send re-engages the surface even when focus was retained.
             editedDraft.current = event.target.value;
@@ -445,6 +450,7 @@ export function ConversationComposer({
           {!composer.textDecision && !composer.editingMessage && <UiRegion slot="composer.attachments" data={regionData} actions={regionActions} debugActions={debugActions}><div className="local-agent__composer-tools">
             <div ref={attachmentControlRef} className="local-agent__attachment-control">
               <button
+                {...identity.action('attachments', 'click')}
                 type="button"
                 className="local-agent__attach"
                 aria-label={t(language, 'agent.attachment.menu')}
@@ -462,6 +468,7 @@ export function ConversationComposer({
               {attachmentMenuOpen && (
                 <div className="local-agent__attachment-menu" role="menu">
                   <button
+                    {...identity.action('choose-files', 'click')}
                     type="button"
                     role="menuitem"
                     onClick={() => {
@@ -476,6 +483,7 @@ export function ConversationComposer({
                     </span>
                   </button>
                   <button
+                    {...identity.action('plugins', 'click')}
                     type="button"
                     role="menuitem"
                     onClick={openPluginPicker}
@@ -487,6 +495,7 @@ export function ConversationComposer({
                     </span>
                   </button>
                   <button
+                    {...identity.action('focus-command', 'click')}
                     type="button"
                     role="menuitem"
                     onClick={insertFocusCommand}
@@ -519,6 +528,7 @@ export function ConversationComposer({
             />}
             <div className="local-agent__composer-primary-actions">
               {(pendingPlan || pendingInteraction?.allowFreeform) && <button
+                {...identity.action('skip', 'click')}
                 type="button"
                 className="local-agent__interaction-secondary"
                 disabled={submitting}
@@ -528,7 +538,7 @@ export function ConversationComposer({
                     await composer.submitPlanDecision({ kind: 'cancel' });
                   } else {
                     try {
-                      await composer.respondInteraction(t(language, 'agent.interaction.skip'));
+                      await composer.respondInteraction(t(language, 'agent.interaction.skip'), pendingInteraction?.interactionId);
                     } catch {
                       // The store retains the command error and the current answer.
                     }
@@ -538,19 +548,21 @@ export function ConversationComposer({
                 <span>{t(language, pendingPlan ? 'agent.plan.ignoreAndStop' : 'agent.interaction.skip')}</span>
               </button>}
               {showStopAction && <button
+                {...identity.action('stop', 'click')}
                 type="button"
                 className="local-agent__send local-agent__send--stop"
                 aria-label={t(language, 'agent.composer.stopCurrentRun')}
                 title={t(language, 'agent.composer.stop')}
                 onClick={() => void cancelRun()}
               ><AchbitShellIcon name="stop" /></button>}
-              {!showStopAction && <button
+              {(!showStopAction || composer.textDecision) && <button
+                {...identity.action('submit', 'click')}
                 type="button"
                 className={`local-agent__send${composer.textDecision || composer.editingMessage ? ' local-agent__send--decision' : ''}`}
                 aria-label={submitting
                     ? t(language, 'agent.composer.sending')
-                    : pendingInteraction ? (language === 'zh-CN' ? '回答' : 'Answer')
-                      : pendingPlan ? (language === 'zh-CN' ? '提交修改意见' : 'Request changes')
+                    : pendingPlan ? (language === 'zh-CN' ? '提交修改意见' : 'Request changes')
+                      : pendingInteraction ? (language === 'zh-CN' ? '回答' : 'Answer')
                         : t(language, composer.editingMessage ? 'agent.message.regenerate' : 'agent.composer.send')}
                 title={t(language, 'agent.composer.sendEnter')}
                 disabled={!canSend}

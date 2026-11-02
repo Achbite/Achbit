@@ -12,12 +12,17 @@ import { ApprovalReviewReason } from './ApprovalReviewReason';
 import { InteractionOptions } from './InteractionOptions';
 import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
 import type { LocalAgentState } from '../../state/localAgentStore';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { useConversationSessionId } from './ConversationSessionScope';
 
 type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAddition' | 'pendingInteraction'
   | 'pendingApproval' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'respondApproval' | 'projection'>;
 
 export function ComposerQuestionPrompt({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
   const { pendingPlan, pendingScopeAddition, pendingInteraction, interactionNavigation, submitting, submitPlanDecision, respondInteraction, projection } = composer;
+  const identity = useUiOwner('composer.question', undefined, {
+    conversationKey: composer.conversationKey, interactionId: pendingInteraction?.interactionId, planId: pendingPlan?.planId,
+  });
   const confirmation = pendingInteraction?.kind === 'confirmation';
   const sendDecision = async (text: string) => {
     try { await respondInteraction(text, pendingInteraction?.interactionId); } catch { /* The shared store exposes the error. */ }
@@ -36,15 +41,16 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
               <div className="local-agent__interaction-controls">
               {!pendingPlan && interactionNavigation && <div className="local-agent__interaction-navigation" role="group"
                 aria-label={t(language, 'agent.interaction.navigation')}>
-                <button type="button" aria-label={t(language, 'agent.interaction.previous')}
+                <button {...identity.action('previous', 'click')} type="button" aria-label={t(language, 'agent.interaction.previous')}
                   title={t(language, 'agent.interaction.previous')} disabled={submitting || interactionNavigation.index === 0}
                   onClick={interactionNavigation.previous}><AchbitShellIcon name="chevronLeft" size={15} /></button>
                 <span aria-live="polite">{interactionNavigation.index + 1}/{interactionNavigation.count}</span>
-                <button type="button" aria-label={t(language, 'agent.interaction.next')}
+                <button {...identity.action('next', 'click')} type="button" aria-label={t(language, 'agent.interaction.next')}
                   title={t(language, 'agent.interaction.next')} disabled={submitting || interactionNavigation.index === interactionNavigation.count - 1}
                   onClick={interactionNavigation.next}><AchbitShellIcon name="chevronRight" size={15} /></button>
               </div>}
               {(pendingPlan || pendingInteraction?.allowFreeform) && <button
+                {...identity.action('close', 'click')}
                 type="button"
                 className="local-agent__interaction-close"
                 aria-label={t(language, pendingPlan ? 'agent.plan.closeReview' : confirmation ? 'agent.interaction.closeConfirmation' : 'agent.interaction.closeQuestion')}
@@ -103,6 +109,10 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const sessionBrowser = pendingApproval?.preview.authorizationScope === 'sessionBrowser';
   const runCommand = pendingApproval?.preview.authorizationScopes?.includes('runCommand');
   const setMainPermissions = useLocalAgentStore(state => state.setPermissions);
+  const identity = useUiOwner('composer.decision', undefined, {
+    sessionId: useConversationSessionId(), approvalId: pendingApproval?.approvalId,
+    planId: pendingPlan?.planId, interactionId: pendingInteraction?.interactionId,
+  });
   const setPermissions = onSetPermissions ?? setMainPermissions;
   const savedRules = useSettingsStore(state => state.effectiveSettings['agent.permissions.commandRules']);
   const patchSetting = useSettingsStore(state => state.patchUserSetting);
@@ -125,7 +135,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
     } catch (error) { setRuleError(error instanceof Error ? error.message : String(error)); }
   };
   useLayoutEffect(() => {
-    if (pendingApproval && !reviewing && document.activeElement === document.body) approvalRef.current?.focus({ preventScroll: true });
+    // A native Reader WebView can own focus while this document still reports body.
+    if (pendingApproval && !reviewing && document.hasFocus() && document.activeElement === document.body) approvalRef.current?.focus({ preventScroll: true });
   }, [pendingApproval?.approvalId, reviewing]);
   const answerApproval = async (decision: 'allow' | 'deny', scope?: ShellAuthorizationScope) => {
     if (!pendingApproval || submitting || reviewing) return;
@@ -143,7 +154,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
     <>
       {pendingPlan ? reviewingPlan ? <section className="local-agent__auto-review" aria-label={t(language, 'agent.plan.reviewing')}>
           <header><span className="local-agent__auto-review-spinner" aria-hidden="true" /><strong role="status">{t(language, 'agent.plan.reviewing')}</strong>
-            <button type="button" disabled={submitting} onClick={() => void setPermissions({ 'agent.permissions.workspaceMutation': 'plan' }).catch(() => {})}>{t(language, 'agent.permission.takeOver')}</button>
+            <button {...identity.action('take-over-plan', 'click')} type="button" disabled={submitting} onClick={() => void setPermissions({ 'agent.permissions.workspaceMutation': 'plan' }).catch(() => {})}>{t(language, 'agent.permission.takeOver')}</button>
           </header>
         </section> : (
           <>
@@ -155,7 +166,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
             </section>}
             <ol className="local-agent__interaction-options">
               <li>
-                <button type="button" disabled={submitting}
+                <button {...identity.action('confirm-plan', 'click')} type="button" disabled={submitting}
                   title={pendingScopeAddition ? t(language, 'agent.plan.continuePhases') : undefined}
                   onClick={() => void submitPlanDecision({ kind: 'confirm' })}>
                   <span className="local-agent__interaction-option-marker" aria-hidden="true">1</span>
@@ -163,20 +174,20 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
                 </button>
               </li>
               {Boolean(pendingPlan.workspaceRequests?.length) && <li>
-                <button type="button" disabled={submitting} onClick={() => void submitPlanDecision({ kind: 'cancel' })}>
+                <button {...identity.action('cancel-plan', 'click')} type="button" disabled={submitting} onClick={() => void submitPlanDecision({ kind: 'cancel' })}>
                   <span className="local-agent__interaction-option-marker" aria-hidden="true">2</span>
                   <span className="local-agent__interaction-option-copy"><b>{t(language, 'agent.plan.cancelWorkspace')}</b></span>
                 </button>
               </li>}
             </ol>
           </>
-      ) : pendingInteraction && <InteractionOptions options={pendingInteraction.options} disabled={submitting}
+      ) : pendingInteraction && <InteractionOptions interactionId={pendingInteraction.interactionId} surface="composer" options={pendingInteraction.options} disabled={submitting}
         onAnswer={response => { void sendDecision(response); }} />}
       {reviewing && pendingApproval && <section className="local-agent__auto-review" aria-label={t(language, 'agent.permission.reviewing')}>
         <header>
           <span className="local-agent__auto-review-spinner" aria-hidden="true" />
           <strong role="status">{t(language, 'agent.permission.reviewing')}</strong>
-          <button type="button" disabled={submitting} onClick={() => void setPermissions({ 'agent.permissions.shell': 'ask' }).catch(() => {})}>
+          <button {...identity.action('take-over-approval', 'click')} type="button" disabled={submitting} onClick={() => void setPermissions({ 'agent.permissions.shell': 'ask' }).catch(() => {})}>
             {t(language, 'agent.permission.takeOver')}
           </button>
         </header>
@@ -217,29 +228,30 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
           <div className="local-agent__decision-controls">
           {(sessionBrowser || runCommand) ? (
             <details className="local-agent__decision-scope">
-              <summary>
+              <summary {...identity.action('scope', 'click')}>
                 <span>{t(language, 'agent.approval.scope')}</span>
                 <AchbitShellIcon name="chevronDown" />
               </summary>
               {sessionBrowser && <pre className="local-agent__decision-command"><code>{pendingApproval.preview.summary}</code></pre>}
               {runCommand && <p>{t(language, 'agent.permission.grantHelp')}</p>}
               {runCommand && <div className="local-agent__permission-save-rule">
-                <select aria-label={t(language, 'settings.commandRules.title')} value={ruleDecision} onChange={event => setRuleDecision(event.target.value as 'allow' | 'ask' | 'deny')}>
+                <select {...identity.action('rule-decision', 'select')} aria-label={t(language, 'settings.commandRules.title')} value={ruleDecision} onChange={event => setRuleDecision(event.target.value as 'allow' | 'ask' | 'deny')}>
                   {(['allow', 'ask', 'deny'] as const).map(mode => <option key={mode} value={mode}>{t(language, `agent.permission.${mode}`)}</option>)}
                 </select>
-                <button type="button" disabled={submitting || reviewing || ruleSaved} onClick={() => void saveRule()}>{t(language, ruleSaved ? 'agent.permission.ruleSaved' : 'agent.permission.saveRule')}</button>
+                <button {...identity.action('save-rule', 'click')} type="button" disabled={submitting || reviewing || ruleSaved} onClick={() => void saveRule()}>{t(language, ruleSaved ? 'agent.permission.ruleSaved' : 'agent.permission.saveRule')}</button>
                 {ruleError && <p role="alert">{ruleError}</p>}
               </div>}
 
             </details>
           ) : <span />}
           <div className="local-agent__decision-actions">
-            {hostApproval && offeredScopes.includes('runHostShell') && <button type="button"
+            {hostApproval && offeredScopes.includes('runHostShell') && <button {...identity.action('allow-host-run', 'click')} type="button"
               className="local-agent__decision-session" disabled={submitting || reviewing}
               title={t(language, 'agent.permission.scope.runHostShell')}
               onClick={() => void answerApproval('allow', 'runHostShell')}
             >{t(language, 'agent.permission.scope.runHostShell')}</button>}
             {sessionScope && offeredScopes.includes(sessionScope) && <button
+              {...identity.action('allow-session', 'click')}
               type="button"
               className="local-agent__decision-session"
               title={t(language, `agent.permission.scope.${sessionScope}`)}
@@ -247,6 +259,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
               onClick={() => void answerApproval('allow', sessionScope)}
             >{t(language, 'agent.approval.allowSession')}</button>}
             <button
+              {...identity.action('deny', 'click')}
               type="button"
               aria-label={t(language, 'agent.approval.deny')}
               aria-keyshortcuts="Escape"
@@ -254,6 +267,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
               onClick={() => void answerApproval('deny')}
             ><span>{t(language, 'agent.approval.deny')}</span><kbd aria-hidden="true">Esc</kbd></button>
             <button
+              {...identity.action('allow', 'click')}
               type="button"
               className="local-agent__decision-allow"
               aria-label={t(language, sessionBrowser ? 'agent.approval.allowSession' : hostApproval ? 'agent.approval.allowOnce' : primaryScope ? 'agent.approval.allowRun' : 'agent.approval.allow')}

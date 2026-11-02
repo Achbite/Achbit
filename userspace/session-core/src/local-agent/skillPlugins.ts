@@ -104,14 +104,18 @@ function isIdentifier(value: unknown): value is string {
     && /^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$/u.test(value);
 }
 
-export function permissionInstructionText(settings: UserSettings, interactionRequest = 'interaction_request', planPublish = 'plan_publish'): string {
-  const workspaceAutonomyInstruction = settings['agent.permissions.workspaceMutation'] === 'allow'
-    ? "Work directly within the bound workspaces and the user's authorized scope; no additional Plan approval is required. Still clarify missing facts or material decisions. Separate execution permissions still apply."
+export function permissionInstructionText(settings: UserSettings, interactionRequest: string | null = 'interaction_request', planPublish: string | null = 'plan_publish', requestedPlan = false): string {
+  const workspaceAutonomyInstruction = requestedPlan
+    ? (planPublish ? `Propose scope changes with ${planPublish}.` : 'Work within the agreed scope.')
+    : settings['agent.permissions.workspaceMutation'] === 'allow'
+    ? "Work within the bound workspaces and the user's authorized scope."
+    : !planPublish ? 'Work within confirmed scope.'
     : settings['agent.permissions.workspaceMutation'] === 'review'
       ? `Submit a Plan with ${planPublish} for project changes outside confirmed scope. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope and submit again only when new or expanded authorization is needed. Project reads need no Plan.`
     : `Investigate as needed and propose a clearly scoped change. Before making project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Then carry out related work within that scope autonomously, including delegated parent scope, without seeking approval again for ordinary implementation details. Request additional scope only when needed. Project reads need no Plan.`;
   const engineeringDecisionInstruction = settings['agent.permissions.engineeringDecisions'] === 'delegate'
-    ? `Engineering decisions are delegated. Choose the smallest sound approach; use ${interactionRequest} for missing facts or decisions outside the task.`
-    : `Choose local implementation details within the agreed approach. Use ${interactionRequest} before materially changing requirements, public contracts, fact ownership or that approach.`;
-  return `${workspaceAutonomyInstruction}\nUse the workspace bindings to select the task's project. File and shell tools resolve relative paths from the selected workspace, so use those paths for project work. Product documentation and runtime paths locate Achbit's own resources. The Session working directory holds task drafts and previews, which need no Plan; tool execution permissions still apply.\n${engineeringDecisionInstruction}`;
+    ? 'Engineering decisions are delegated. Choose the smallest sound approach.'
+    : 'Choose local implementation details within the agreed approach. Material changes to requirements, public contracts or that approach need the user’s decision.';
+  const interaction = interactionRequest ? ` Use ${interactionRequest} for missing facts or decisions that belong to the user.` : '';
+  return `${workspaceAutonomyInstruction}\nFile and shell paths resolve from the workspace selected for that call. The Session working directory is available for temporary scripts, logs, and other intermediate files needed across calls.\n${engineeringDecisionInstruction}${interaction}`;
 }

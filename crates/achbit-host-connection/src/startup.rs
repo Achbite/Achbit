@@ -27,7 +27,9 @@ pub fn timing(stage: &'static str) {
 
 pub const STARTUP_BUDGET: Duration = Duration::from_secs(15);
 const ATTEMPT_BUDGET: Duration = Duration::from_secs(6);
-const PROBE_INTERVAL: Duration = Duration::from_millis(75);
+// Readiness can arrive within one frame; avoid adding a 75 ms polling step to
+// each owned child. Deadlines, retry conditions and cleanup remain unchanged.
+const PROBE_INTERVAL: Duration = Duration::from_millis(25);
 const CLEANUP_RESERVE: Duration = Duration::from_millis(250);
 
 pub fn remaining(deadline: Instant) -> io::Result<Duration> {

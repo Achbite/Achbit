@@ -55,6 +55,9 @@ case "${1:-}" in
     pnpm build:userspace-shared
     pnpm --filter @achbit/client typecheck
     pnpm --filter @achbit/client build:web
+    if [ "${ACHBIT_BUILD_KIND:-normal}" = debug ]; then
+      pnpm --filter @achbit/client build:debug-ui
+    fi
     if [ "$1" = --shared ]; then
       destination="$2"
       mkdir -p "$destination"

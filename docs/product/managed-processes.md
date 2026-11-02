@@ -4,7 +4,7 @@ Shell, PowerShell, managed commands, long-running tasks, dependency waiting, and
 
 ## Choose execution and waiting
 
-A normal `bash`, `powershell` or container create/exec call keeps its native result if it finishes within the foreground window (currently two seconds). Otherwise the **same execution** continues and returns `output.job`. An active job is a start receipt, not successful command completion. Its jobId belongs to the current run. `process` is always available; the Processes plugin is an optional guide.
+A normal `bash`, `powershell` or container create/exec call keeps its native result if it finishes within the foreground window (currently two seconds). Otherwise the **same execution** continues and returns `output.job`. An active job is a start receipt, not successful command completion. Its jobId belongs to the current run. The task’s tool selection determines whether the model can call `process`.
 
 For a known long task, use `process` with `action: start`, the available `tool`, and that tool's exact `input`. Choose `workspace` on the outer call. Example: `{"action":"start","tool":"bash","input":{"command":"make build"}}`. Container create and exec are supported when the containers capability is available. A create job completes when its result contains the prepared container; that is different from the container's lifetime.
 
@@ -14,11 +14,11 @@ A yielded ordinary command is still an ordering barrier. Later calls in the same
 
 ## One review after prolonged dependency waiting
 
-The automatic review starts 120 seconds after the Loop actually waits on its dependencies. Background runtime during independent work does not count. Output/revision refreshes do not restart this timer. The runtime rechecks completion before delivering a review to the existing Loop.
+Shell and container progress stays available in the activity view and execution logs while the model works on something else. The model receives the start receipt, actual tool results, errors and terminal job results. Requesting `status` explicitly also returns the current output.
 
-Review the job state, start/output timestamps, output tail and original errors. Silence or elapsed time alone does not prove a hang. If normal, call `process` with `action: "wait"` and the same `jobId` again: this logical wait has consumed its one automatic review and will wait for events without another timed model request. Cancelling and replacing a job during diagnosis retains this allowance. This is not a process timeout.
+The first dependency wait without a deadline offers one review after 120 seconds of waiting. A wait with `waitSeconds` uses the chosen deadline instead. When the deadline arrives, Session first checks for completion and new input. If the dependency is still pending, the same Loop receives its job identity, wait timing, last output time and bounded output tails. The model can continue waiting, inspect the job, cancel it, or do other work.
 
-`status` is for a deliberate inspection, not periodic monitoring. `waitSeconds`, when explicitly needed for a task deadline, bounds that wait without killing the command; do not repeat it as a polling loop. Omit `timeout` for no execution deadline; explicit execution timeout still applies to total process runtime.
+Waiting again without a deadline continues on events after the one review. An explicit subsequent deadline offers another decision at the chosen time. A wait deadline leaves the command running. The execution tool’s optional `timeout` limits the lifetime of the command itself.
 
 ## Diagnose and recover
 

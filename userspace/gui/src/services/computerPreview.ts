@@ -4,6 +4,20 @@ export function computerPreviewSources(platform: string) {
   return { desktop: /Mac|Win/.test(platform), browser: /Mac|Win/.test(platform) };
 }
 
+export type PreviewSource = 'desktop' | 'browser';
+/** Workbench-local display state only, separate from Host targets and Session facts. */
+export type PreviewDismissals = Record<string, { runId: string; sources: readonly PreviewSource[] }>;
+export function isPreviewDismissed(state: PreviewDismissals, sessionId: string | null, runId: string | null, source: PreviewSource) {
+  const entry = sessionId ? state[sessionId] : undefined;
+  return Boolean(entry && entry.runId === runId && entry.sources.includes(source));
+}
+export function dismissPreview(state: PreviewDismissals, sessionId: string, runId: string, source: PreviewSource): PreviewDismissals {
+  const previous = state[sessionId];
+  const sources = previous?.runId === runId ? previous.sources : [];
+  if (sources.includes(source)) return state;
+  return { ...state, [sessionId]: { runId, sources: [...sources, source] } };
+}
+
 export interface PreviewFrame { sequence: number; capturedAt: string; width: number; height: number; dataUrl: string; contentKind?: 'image' | 'viewport' }
 
 /** Browser thumbnails have their own bounds, never a new operating viewport. */

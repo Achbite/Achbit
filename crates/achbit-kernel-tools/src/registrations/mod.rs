@@ -80,18 +80,17 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             &[],
         ),
         KernelToolKind::FsEdit => (
-            "Apply exact, non-overlapping replacements atomically to one workspace text file. Match each oldText uniquely against the original file using a small anchor. Combine disjoint changes in one call; replacements all use the original content, not earlier edits in the call.",
+            "Make targeted changes to one text file. All replacements match the original file and apply atomically.",
             &[],
         ),
         KernelToolKind::FsRead => (
-            "Read bounded UTF-8 text from a workspace file. The content field preserves source text and whitespace. Check truncation and returned ranges before reading more. For PDFs or binary files, use a reader suited to that format.",
+            "Read a UTF-8 file or list a directory's immediate entries in name order. Use path='.' for the workspace root.",
             &[
-                "Use for a bounded read of a known text file with an exact file reference.",
-                "Use startLine and maxLines for a line range; startByte and maxBytes for byte bounds."
+                "Continue a partial file with startByte=nextByte, or a directory with startLine=nextStartLine."
             ],
         ),
         KernelToolKind::FsWrite => (
-            "Create or replace one workspace file and any missing parent directories.",
+            "Write the complete contents of a new or existing file. Missing parent directories are created.",
             &[],
         ),
         KernelToolKind::WebFetch => (
@@ -107,18 +106,12 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             ],
         ),
         KernelToolKind::ProcessPowerShell => (
-            "Run PowerShell from the bound workspace root. Project files are read-only except approved output directories and session drafts. Commands over the foreground window return a running job; use process with action=wait and jobId at a dependency. Optional terminal is a one-call PTY; otherwise stdin is closed.",
-            &[
-                "Use PowerShell syntax and preserve the command exit status. For platform details or environment errors, read execution-environments.md in productDocsPath.",
-                "Use Shell for searching files or inspecting several sources in one command."
-            ],
+            "Run PowerShell from the selected workspace. List, search and inspect files here. Project writes are limited to authorized output directories. The session working directory is writable. Longer commands return a running job.",
+            &["Preserve the target program's exit code when printing diagnostics."],
         ),
         KernelToolKind::ProcessShell => (
-            "Run Bash from the bound workspace root. Project files are read-only except approved output directories and session drafts. Commands over the foreground window return a running job; use process with action=wait and jobId at a dependency. Optional terminal is a one-call PTY; otherwise stdin is closed.",
-            &[
-                "Use the project's build/test entrypoints and preserve exit status. Use file tools to edit project files; read execution-environments.md in productDocsPath for scope and environment errors.",
-                "Inspect returned fullOutput paths when output is truncated."
-            ],
+            "Run Bash from the selected workspace. Use ls, rg or find to discover files. Project writes are limited to authorized output directories. The session working directory is writable. Longer commands return a running job.",
+            &["Preserve the target command's exit status through pipelines and trailing diagnostics."],
         ),
     }
 }

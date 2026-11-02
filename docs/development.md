@@ -75,15 +75,15 @@ After building the intended release targets, sign their updater assets and creat
 
 ```bash
 python3 scripts/package-updates.py sign \
-  bin/Achbit-0.6.66-macos-arm64.app.tar.gz \
-  bin/Achbit-0.6.66-win64-setup.exe \
-  bin/Achbit-0.6.66-linux-arm64.AppImage
+  bin/Achbit-0.6.70-macos-arm64.app.tar.gz \
+  bin/Achbit-0.6.70-win64-setup.exe \
+  bin/Achbit-0.6.70-linux-arm64.AppImage
 
-python3 scripts/package-updates.py manifest --version 0.6.66 \
-  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.66 \
-  --artifact darwin-aarch64=bin/Achbit-0.6.66-macos-arm64.app.tar.gz \
-  --artifact windows-x86_64=bin/Achbit-0.6.66-win64-setup.exe \
-  --artifact linux-aarch64=bin/Achbit-0.6.66-linux-arm64.AppImage \
+python3 scripts/package-updates.py manifest --version 0.6.70 \
+  --base-url https://github.com/Achbite/Achbit/releases/download/0.6.70 \
+  --artifact darwin-aarch64=bin/Achbit-0.6.70-macos-arm64.app.tar.gz \
+  --artifact windows-x86_64=bin/Achbit-0.6.70-win64-setup.exe \
+  --artifact linux-aarch64=bin/Achbit-0.6.70-linux-arm64.AppImage \
   --output bin/latest.json
 ```
 
@@ -96,9 +96,9 @@ The GUI checks after startup and every 30 minutes when the saved `gui.autoUpdate
 For a local macOS Debug upgrade, build two distinct versions through the existing Docker/native bridge:
 
 ```bash
-ACHBIT_BUILD_VERSION=0.6.66-debug.1 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION=0.6.70-debug.1 bash ./build.sh -debug --stage package-macos
 # Preserve this bin/debug/macos-arm64 in a separate test installation.
-ACHBIT_BUILD_VERSION=0.6.66-debug.2 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION=0.6.70-debug.2 bash ./build.sh -debug --stage package-macos
 ```
 
 Sign the second App archive and serve it with a generated static feed from a loopback-only HTTP server. Start the first Debug App with explicit `ACHBIT_USER_ROOT`, `ACHBIT_DEFAULT_WORKSPACE` and `ACHBIT_DEBUG_UPDATE_URL`, then use `achbit-debug attach` with that state root and an absolute test-workspace path. This exercises the normal GUI-owned automatic Host lifetime. `achbit-debug launch` intentionally creates a persistent Host and therefore is unsuitable for an idle-shutdown acceptance run. Debug updates are disabled unless the loopback endpoint is explicitly supplied; production builds do not read that override. Current local Debug packaging supports this updater chain on macOS; Windows Debug ZIPs are not NSIS update assets.
@@ -120,6 +120,10 @@ Use the [Debug CLI guide](debug-control.md) with an explicit test workspace and 
 For historical-session latency, measure process startup, navigation readiness and first session activation separately against the same isolated data snapshot. History replay uses the shared Session reducer with indexes scoped to that replay. Resource and artifact previews use the journal's resource fields and the same Session decoders and revision rules, without rereading model context or retaining a persistent projection cache. Concurrent identical previews share only the pending read; each caller receives independent output. Debug action completion and frame observations are distinct from a physical screen-paint measurement.
 
 Product guides are ordinary Markdown files under the environment snapshot’s `productDocsPath`. Search and read them with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
+
+### UI ownership declarations
+
+New independently owned GUI controls use `useUiOwner('stable.semantic.name')` and spread `identity.part('trigger')` (or another local part) onto existing DOM elements. Keep the same instance on Portal roots, use different part names for distinct controls, and do not insert layout wrappers for diagnostics. Owners are not plugin slots or Session identities. Existing `UiRegion` / `UiPluginSlotView` boundaries are marked without changing their replacement scope; unmarked plugin internals inherit the region identity but explicitly report `plugin-internal-unmapped` implementation coverage, along with the current renderer identity. Build-time source extraction validates unique explicit owner declarations; repeated mounted instances are legal. Debug uses the existing registry and surface actions, not a second business store or model tool.
 
 ## Checks
 

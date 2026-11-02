@@ -8,6 +8,8 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { InteractionOptions } from './InteractionOptions';
 import { interactionResponseLabel } from './interactionPresentation';
 import { submitReplyOnEnter } from './replyKeyboard';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { useConversationSessionId } from './ConversationSessionScope';
 
 /** Answers identify the journal question, even while another Provider turn runs. */
 export function InteractionCard({ interaction, language, onRespond, disabled = false }: {
@@ -15,6 +17,9 @@ export function InteractionCard({ interaction, language, onRespond, disabled = f
   onRespond?: (response: string, interactionId: string) => Promise<unknown>;
   disabled?: boolean;
 }) {
+  const identity = useUiOwner('conversation.question', undefined, {
+    sessionId: useConversationSessionId(), interactionId: interaction.interactionId,
+  });
   const respond = useLocalAgentStore(state => state.respondInteraction);
   const [text, setText] = useConversationRowState(`question:${interaction.interactionId}:draft`, '');
   const [sending, setSending] = useState(false);
@@ -49,17 +54,17 @@ export function InteractionCard({ interaction, language, onRespond, disabled = f
   return <article className="local-agent__question" aria-label={t(language, 'agent.question.title')} aria-busy={sending}>
     <header>
       <span>{t(language, pending ? interaction.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question' : `agent.question.${interaction.status}`)}</span>
-      {pending && interaction.allowFreeform && <button className="local-agent__question-skip" type="button" disabled={sending || disabled}
+      {pending && interaction.allowFreeform && <button {...identity.action('skip', 'click')} className="local-agent__question-skip" type="button" disabled={sending || disabled}
         onClick={() => { void answer(t(language, 'agent.interaction.skip')); }}>{t(language, 'agent.interaction.skip')}</button>}
     </header>
     <MarkdownContent decisionProse>{interaction.prompt}</MarkdownContent>
     {pending && <>
-      <InteractionOptions options={interaction.options} disabled={sending || disabled} onAnswer={response => { void answer(response); }} />
+      <InteractionOptions interactionId={interaction.interactionId} surface="card" options={interaction.options} disabled={sending || disabled} onAnswer={response => { void answer(response); }} />
       {interaction.allowFreeform && <form className="local-agent__question-form" onSubmit={event => { event.preventDefault(); void answer(text); }}>
         <span className="local-agent__question-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>
-        <textarea ref={textareaRef} aria-label={t(language, 'agent.question.answer')} placeholder={t(language, 'agent.composer.placeholder.interaction')} value={text} disabled={sending || disabled}
+        <textarea {...identity.action('input', 'type')} ref={textareaRef} aria-label={t(language, 'agent.question.answer')} placeholder={t(language, 'agent.composer.placeholder.interaction')} value={text} disabled={sending || disabled}
           onChange={event => setText(event.target.value)} onKeyDown={submitReplyOnEnter} rows={1} />
-        <button type="submit" disabled={sending || disabled || !text.trim()}>{t(language, 'agent.question.answer')}</button>
+        <button {...identity.action('submit', 'click')} type="submit" disabled={sending || disabled || !text.trim()}>{t(language, 'agent.question.answer')}</button>
       </form>}
     </>}
     {interaction.status === 'answered' && <p className="local-agent__question-answer">{interactionResponseLabel(interaction, interaction.response ?? '')}</p>}

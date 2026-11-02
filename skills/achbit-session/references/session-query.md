@@ -1,6 +1,6 @@
 # Session query quick reference
 
-Call `session.read` with the complete supplied `sessionId`. Start with `view: summary`; reading does not resume execution. Queries cover the current configuration root only.
+Call `session.read` with the historical `sessionId` supplied by the user. The separately selected Session Diagnostics component reads the current session via `session.diagnostics`. Start with `view: summary`; reading does not resume execution. Queries cover the current configuration root only.
 
 | View | Use | Selectors |
 | --- | --- | --- |

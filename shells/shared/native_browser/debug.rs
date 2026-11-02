@@ -177,6 +177,9 @@ fn query_metrics(records: Vec<Value>, input: &Value) -> Result<Value, String> {
                 if phase.starts_with("dom-") && record["result"]["timing"].is_null() {
                     continue;
                 }
+                if phase == "screenshot" && record["screenshot"]["status"] == "not-requested" {
+                    continue;
+                }
                 let sample = json!({"owner":"gui","operationId":record["operationId"],"recordRef":record["recordRef"],"sourcePointer":pointer,"surface":record["target"],"event":record["name"],"phase":phase,"status":record["status"],"occurredAtMs":record["acceptedAtMs"],"clockDomain":clock,"durationMs":duration,"association":"operation"});
                 if matches(&sample) {
                     samples.push(sample);
@@ -493,7 +496,7 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
                         } else {
                             format!("{id}::frame:{suffix}")
                         };
-                        surfaces.push(json!({"id":surface_id,"webviewId":id,"framePath":path,"kind":if id=="main"&&path.is_empty(){"desktop-gui"}else{"embedded-page"},"state":row["state"],"actions":["click","type","select","key","scroll","focus","wait","plugin.action"]}));
+                        surfaces.push(json!({"id":surface_id,"webviewId":id,"framePath":path,"kind":if id=="main"&&path.is_empty(){"desktop-gui"}else{"embedded-page"},"state":row["state"],"actions":["click","type","select","key","scroll","focus","wait","plugin.action","ui.action","ui.overlay"]}));
                     }
                 }
                 Err(error) => surfaces.push(json!({"id":id,"status":"unavailable","error":error})),
@@ -501,7 +504,9 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         }
         let native = dialogs(&app, "inspect", json!({})).await?;
         let menus = dialogs(&app, "menus", json!({})).await?;
-        Ok(json!({"guiPid":std::process::id(),"guiHostId":app.state::<super::NativeBrowser>().binding.host_instance_id,"surfaces":surfaces,"nativeDialogs":native,"nativeMenus":menus}))
+        Ok(
+            json!({"guiPid":std::process::id(),"guiHostId":app.state::<super::NativeBrowser>().binding.host_instance_id,"surfaces":surfaces,"nativeDialogs":native,"nativeMenus":menus}),
+        )
     } else if action == "debug:metrics" {
         let mut records = Vec::new();
         let path = directory(&app);
@@ -543,7 +548,11 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         }
         records.sort_by(|a, b| a["acceptedAtMs"].as_u64().cmp(&b["acceptedAtMs"].as_u64()));
         query_metrics(records, &input)
-    } else if action == "debug:inspect" || action == "debug:components" || action == "debug:ready" {
+    } else if action == "debug:inspect"
+        || action == "debug:components"
+        || action == "debug:ready"
+        || action == "debug:actions"
+    {
         let (id, frame) = target(&input)?;
         if id == "native-dialog" {
             return dialogs(&app, "inspect", input["args"].clone()).await;
@@ -559,6 +568,7 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         let name = match action {
             "debug:components" => "components",
             "debug:ready" => "readiness",
+            "debug:actions" => "actions",
             _ => "inspect",
         };
         dispatch(view, json!({"name":name,"framePath":frame})).await
@@ -568,6 +578,13 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         let operation_id = operation_id(&app, "op");
         let (id, frame) = target(&input)?;
         let name = super::string(&input, "name")?;
+        let observation = match input.get("observation") {
+            None => "full",
+            Some(value) => value.as_str().ok_or("debug_observation_mode_invalid")?,
+        };
+        if !matches!(observation, "full" | "state") {
+            return Err("debug_observation_mode_invalid".into());
+        }
         let args = input.get("args").cloned().unwrap_or_else(|| json!({}));
         let outcome = if name == "menu.select" {
             dialogs(&app, "menu", args).await
@@ -592,8 +609,9 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
             dispatch(view, json!({"name":name,"args":args,"framePath":frame})).await
         };
         let response_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let capture = if let Some(view) =
-            app.get_webview(if id == "native-dialog" { "main" } else { &id })
+        let capture = if observation == "state" {
+            json!({"status":"not-requested"})
+        } else if let Some(view) = app.get_webview(if id == "native-dialog" { "main" } else { &id })
         {
             match snapshot(&app, view, &operation_id).await {
                 Ok(value) => value,
@@ -611,17 +629,22 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
         } else {
             json!({"coverage":"not-applicable"})
         };
-        let native = dialogs(&app, "inspect", json!({}))
-            .await
-            .unwrap_or_else(|error| json!({"status":"unavailable","error":error}));
+        let native = if observation == "state" {
+            json!({"status":"not-requested"})
+        } else {
+            dialogs(&app, "inspect", json!({}))
+                .await
+                .unwrap_or_else(|error| json!({"status":"unavailable","error":error}))
+        };
         let mut receipt = json!({"operationId":operation_id,"origin":"debugOperation","kind":"ui","target":input["target"].as_str().unwrap_or("main"),"name":name,"acceptedAtMs":accepted,"responseDurationMs":response_ms,"totalDurationMs":started.elapsed().as_secs_f64()*1000.0,"clockDomain":"gui.monotonic","screenshot":capture,"nativeDialogs":native,"components":components});
+        receipt["observationMode"] = json!(observation);
         match outcome {
             Ok(value) => {
                 let mut missing = Vec::new();
                 if value["completion"] == "observation-incomplete" {
                     missing.push(json!({"stage":"ui","condition":value["condition"],"render":value["timing"],"coverage":value["after"]["coverage"]}));
                 }
-                if receipt["screenshot"]["contentRef"].as_str().is_none() {
+                if observation == "full" && receipt["screenshot"]["contentRef"].as_str().is_none() {
                     missing.push(json!({"stage":"screenshot","detail":receipt["screenshot"]}));
                 }
                 if matches!(

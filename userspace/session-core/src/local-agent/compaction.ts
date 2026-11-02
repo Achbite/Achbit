@@ -31,8 +31,10 @@ export function prepareContextCompaction(input: {
   runId: string;
   runtime: RunRuntimeSnapshot;
   workspaceBindings: readonly WorkspaceBindingDisplay[];
+  directoryBindings?: readonly WorkspaceBindingDisplay[];
   events: readonly SessionEvent[];
   requestEvent: ContextCompactionRequestEvent;
+  toolStage?: import('./plugins.js').SessionToolStage;
   optionalControlTools?: readonly string[];
 }, signal?: AbortSignal): PreparedContextCompaction {
   signal?.throwIfAborted();
@@ -48,9 +50,11 @@ export function prepareContextCompaction(input: {
     events: sourceEvents,
     modelViewEvents: input.events,
     workspaceBindings: input.workspaceBindings,
+    directoryBindings: input.directoryBindings,
     providerRequestId: input.requestEvent.payload.providerRequestId,
     purpose: 'contextCompaction',
     responseConstraint: 'answerOnly',
+    toolStage: input.toolStage,
     optionalControlTools: input.optionalControlTools,
     summaryInstruction: COMPACTION_INSTRUCTIONS + (focus
       ? `\n\nPrioritize existing facts relevant to the following future-work focus, but do not answer it:\n${focus}` : ''),

@@ -87,16 +87,27 @@ class ProviderState:
                                 for message in messages if message.get("role") == "system")
         fixture.require(GENERATION_ONE not in system_text and GENERATION_TWO not in system_text,
                         "Skill 正文被自动注入系统上下文，应通过读取工具按需加载")
-        mcp_server_id = "fixture-old" if ordinal <= 2 else "fixture-new"
-        reverse_tool = tools_by_name.get(f"mcp.{mcp_server_id}.text.reverse")
-        fixture.require(isinstance(reverse_tool, dict),
-            f"Provider 请求 {ordinal} 缺少 run 已绑定的 MCP reverse 工具：{mcp_server_id}")
-        fixture.require(
-            reverse_tool.get("origin") == "extension"
-            and reverse_tool.get("pluginUri") == f"plugin://{mcp_server_id}@mcp",
-            "MCP reverse 工具没有绑定当前 run 的 plugin owner",
-        )
-        wire_name = reverse_tool["wireName"]
+        expected_model = "mock-main" if ordinal <= 2 else "mock-main-next"
+        fixture.require(body.get("model") == expected_model,
+                        f"Provider 请求 {ordinal} 未保留当前 run 的模型绑定：{body.get('model')}")
+        wire_name = None
+        if ordinal == 2:
+            fixture.require(not any(name.startswith("mcp.") for name in tools_by_name),
+                            "nextRequest 未移除注销的 MCP，或自动激活了尚未选择的新 MCP")
+            fixture.require({tool["pluginUri"] for tool in tools_by_name.values()
+                             if tool.get("origin") == "extension"} == FIRST_PARTY_PLUGIN_URIS,
+                            "注册刷新后的请求未保留精确的已选 first-party 插件")
+        else:
+            mcp_server_id = "fixture-old" if ordinal == 1 else "fixture-new"
+            reverse_tool = tools_by_name.get(f"mcp.{mcp_server_id}.text.reverse")
+            fixture.require(isinstance(reverse_tool, dict),
+                f"Provider 请求 {ordinal} 缺少已选择的 MCP reverse 工具：{mcp_server_id}")
+            fixture.require(
+                reverse_tool.get("origin") == "extension"
+                and reverse_tool.get("pluginUri") == f"plugin://{mcp_server_id}@mcp",
+                "MCP reverse 工具没有绑定当前请求的 plugin owner",
+            )
+            wire_name = reverse_tool["wireName"]
         for name, plugin_uri in FIRST_PARTY_TOOL_OWNERS.items():
             tool = tools_by_name.get(name)
             fixture.require(
@@ -141,7 +152,6 @@ class ProviderState:
         elif ordinal == 2:
             fixture.require(GENERATION_ONE not in joined, "下一请求仍使用旧 Skill 内容")
             fixture.require(GENERATION_TWO in results.get("provider-call-skill-one", ""), "按需读取没有取得已更新 Skill 正文")
-            fixture.require(wire_name == self.old_wire_name(), "nextRun MCP 配置提前影响了当前 run")
             settings = fixture.api_json(self._daemon.base_url, "/api/user-settings", token=self._daemon.token)
             fixture.require(settings["runtimeSettings"]["agent.permissions.networkRead"] == "allow", "内容刷新激活了 nextRun 权限")
             fixture.require(
@@ -193,7 +203,7 @@ class ProviderState:
         return {
             "read": tools_by_name["fs.read"]["wireName"],
             **({"readWorkspace": attachment_workspace} if ordinal == 1 else {}),
-            "reverse": wire_name,
+            **({"reverse": wire_name} if wire_name is not None else {}),
             "pdf": tools_by_name["pdf.read"]["wireName"],
             "search": tools_by_name["web.search"]["wireName"],
             "fetch": tools_by_name["web.fetch"]["wireName"],
@@ -585,15 +595,15 @@ def patch_plugins(
         method="PATCH",
         body={"patches": changed},
     )
-    fixture.require(result.get("activation") == "nextRun", "插件设置未声明 nextRun 激活")
+    fixture.require(result.get("activation") == "nextRequest", "插件注册未声明 nextRequest 激活")
     fixture.require(set(result.get("changedKeys", [])) == set(changed), "插件设置变更键不完整")
 
     snapshot = fixture.api_json(daemon.base_url, "/api/user-settings", token=daemon.token)
     for key in changed:
         fixture.require(snapshot["settings"].get(key) == new_settings[key], f"{key} 未写入保存设置")
         fixture.require(
-            snapshot["runtimeSettings"].get(key) == old_settings[key],
-            f"{key} 在当前 run 内提前激活",
+            snapshot["runtimeSettings"].get(key) == new_settings[key],
+            f"{key} 未发布到下一请求的注册设置",
         )
 
 
@@ -602,7 +612,7 @@ def assert_runtime_activated(daemon: fixture.OwnedDaemon, new_settings: dict[str
     for key in ("skills.mounts", "mcp.servers"):
         fixture.require(
             snapshot["runtimeSettings"].get(key) == new_settings[key],
-            f"{key} 未在下一 run 激活",
+            f"{key} 未激活到插件注册视图",
         )
 
 
@@ -716,6 +726,17 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
         fixture.require(all(receipt.get("kernelCatalogSnapshotRef") in views for receipt in receipts),
             "context receipt 未引用已记录的工具视图")
         runtime = views[receipts[0]["kernelCatalogSnapshotRef"]]
+        fixture.require(runtime["permissions"]["agent.permissions.networkRead"] == "allow",
+                        "当前 run 未保留允许真实 web 工具的权限快照")
+        if run_index == 0:
+            refreshed = views[receipts[1]["kernelCatalogSnapshotRef"]]
+            fixture.require(receipts[0]["kernelCatalogSnapshotRef"] != receipts[1]["kernelCatalogSnapshotRef"],
+                            "插件注册修改后 continuation 没有取得新的请求工具视图")
+            fixture.require({plugin["uri"] for plugin in refreshed["selectedPlugins"]["plugins"]}
+                            == FIRST_PARTY_PLUGIN_URIS,
+                            "新请求视图未移除已注销的 Skill/MCP，或自动选择了新插件")
+            fixture.require(not any(tool["name"].startswith("mcp.") for tool in refreshed["tools"]),
+                            "已注销 MCP 仍存在于 continuation 的 prepared 工具视图")
         workspace_bindings = payload.get("workspaceBindings")
         fixture.require(isinstance(workspace_bindings, list) and workspace_bindings, "run.started 缺少 workspace bindings")
         primary_workspace_id = workspace_bindings[0].get("workspaceId")
@@ -1082,9 +1103,22 @@ def main() -> None:
             )
 
             skill_file.write_text(f"# Runtime fixture\n\n{GENERATION_TWO}\n", encoding="utf-8")
-            patch_plugins(daemon_one,
-                {**old_plugins, "agent.permissions.networkRead": "allow"},
-                {**new_plugins, "agent.permissions.networkRead": "deny"})
+            patch_plugins(daemon_one, old_plugins, new_plugins)
+            permissions = fixture.api_json(daemon_one.base_url, "/api/user-settings", token=daemon_one.token,
+                method="PATCH", body={"patches": {"agent.permissions.networkRead": "deny"}})
+            fixture.require(permissions.get("activation") == "nextRun"
+                            and permissions.get("changedKeys") == ["agent.permissions.networkRead"],
+                            "权限设置未单独声明 nextRun 激活")
+            settings = fixture.api_json(daemon_one.base_url, "/api/user-settings", token=daemon_one.token)
+            fixture.require(settings["settings"]["agent.permissions.networkRead"] == "deny"
+                            and settings["runtimeSettings"]["agent.permissions.networkRead"] == "allow",
+                            "保存权限未更新，或影响了当前 run")
+            profiles = fixture.api_json(daemon_one.base_url, "/api/llm/profiles", token=daemon_one.token)
+            profile = next(profile for profile in profiles["profiles"] if profile["id"] == "e2e-main")
+            updated = fixture.api_json(daemon_one.base_url, "/api/llm/profiles", token=daemon_one.token,
+                method="PATCH", body={"profile": {**profile, "model": "mock-main-next"}})
+            fixture.require(next(profile for profile in updated["profiles"] if profile["id"] == "e2e-main")["model"]
+                            == "mock-main-next", "下一 run 的 Provider 模型配置未保存")
             provider.release_first_request.set()
 
             def first_file_read_waiting() -> dict[str, Any] | None:

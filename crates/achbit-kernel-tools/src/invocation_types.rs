@@ -238,7 +238,7 @@ impl KernelCanonicalInvocation {
                 if start_byte.is_some_and(|value| value > 9_007_199_254_740_991) {
                     return Err(invalid_value("startByte", "must be a safe byte offset"));
                 }
-                validate_path(path, false)?;
+                validate_path(path, true)?;
                 validate_u32("startLine", *start_line, 1, u32::MAX)?;
                 validate_u32("maxLines", *max_lines, 1, 5_000)?;
                 validate_u32("maxBytes", *max_bytes, 1_024, 1_048_576)?;

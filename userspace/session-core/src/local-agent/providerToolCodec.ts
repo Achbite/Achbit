@@ -1,5 +1,6 @@
 import type {
   ContextCompositionTool,
+  FilesystemReference,
   JsonObject,
   ModelMessage,
   PreparedToolDescriptor,
@@ -10,6 +11,7 @@ import type {
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
+import type { SessionReadScope } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
 
 const PROVIDER_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -34,6 +36,7 @@ export const CORE_TOOL_ORDER = [
 ] as const;
 
 export interface ProviderToolCodec {
+  readonly sessionReadScope?: SessionReadScope;
   definitions: readonly ProviderToolDefinition[];
   kernelDefinitions: readonly ProviderToolDefinition[];
   controlDefinitions: readonly ProviderToolDefinition[];
@@ -127,11 +130,47 @@ export function providerWireName(
   return alias.wireName;
 }
 
+/** Render the implicit Host route using the current run's permissions and directory bindings. */
+export function hostShellToolView(
+  tools: readonly PreparedToolDescriptor[],
+  runtime: RunRuntimeSnapshot,
+  bindings: readonly WorkspaceBindingDisplay[],
+  directories: readonly WorkspaceBindingDisplay[] | undefined,
+): readonly PreparedToolDescriptor[] {
+  const composition = runtime.environment.agentComposition;
+  if (!directories?.length || runtime.permissions['agent.permissions.shellAccess'] !== 'full'
+    || (isRecord(composition) && isRecord(composition.policyConstraints) && composition.policyConstraints.allowHostExecution === false)) return tools;
+
+  const directoryIds = new Set(directories.map(binding => binding.workspaceId));
+  const resourceHandles = bindings.flatMap((binding, index) => directoryIds.has(binding.workspaceId) ? [] : [workspaceHandle(index)]);
+  return tools.map(tool => {
+    if (tool.origin !== 'coreBuiltin' || (tool.name !== 'bash' && tool.name !== 'powershell')) return tool;
+    const inputSchema = structuredClone(tool.inputSchema);
+    const properties = inputSchema.properties;
+    if (!isRecord(properties)) throw new LoopFailure('provider_workspace_schema_invalid', `Invalid Shell schema for ${tool.name}.`);
+    delete properties.requestHostPermission;
+    if (!resourceHandles.length) {
+      delete properties.requestFileAccess;
+      delete properties.requestNetworkPermission;
+    }
+    if (tool.name === 'bash' && isRecord(properties.command)) {
+      properties.command.description = 'Bash script. Each call starts at the selected workspace root. Preserve the target command exit status.';
+    }
+    const shell = tool.name === 'bash' ? 'Bash' : 'PowerShell';
+    const discovery = tool.name === 'bash' ? ' Use ls, rg or find to discover files.' : ' List, search and inspect files here.';
+    const access = resourceHandles.length
+      ? `Project and session directories use host-user filesystem permissions. File references (${resourceHandles.join(', ')}) retain their own access permissions.`
+      : "Commands run as the host user and can write files writable by that user.";
+    return { ...tool, inputSchema, description: `Run ${shell} from the selected workspace. ${access}${discovery} Longer commands return a running job.` };
+  });
+}
+
 export function createProviderToolCodec(
   runtimeTools: readonly PreparedToolDescriptor[],
   controls: readonly ProviderToolDefinition[],
   aliases: readonly ProviderToolAlias[],
   workspaceBindings: readonly WorkspaceBindingDisplay[],
+  sessionReadScope?: SessionReadScope,
 ): ProviderToolCodec {
   const workspaceToolNames = new Set(runtimeTools
     .filter(isWorkspaceScopedTool)
@@ -167,7 +206,7 @@ export function createProviderToolCodec(
   const workspaceIdByHandle = new Map<string, string>();
   const workspaceHandleById = new Map<string, string>();
   workspaceBindings.forEach((binding, index) => {
-    const handle = index === 0 ? 'primary' : `workspace${index + 1}`;
+    const handle = workspaceHandle(index);
     workspaceIdByHandle.set(handle, binding.workspaceId);
     workspaceHandleById.set(binding.workspaceId, handle);
   });
@@ -240,16 +279,39 @@ export function createProviderToolCodec(
     workspaceIdByHandle,
     workspaceHandleById,
     workspaceToolNames,
+    sessionReadScope,
     receiptTools,
   });
+}
+
+function workspaceHandle(index: number): string {
+  return index === 0 ? 'primary' : `workspace${index + 1}`;
 }
 
 export function providerWorkspaceBindings(
   bindings: readonly WorkspaceBindingDisplay[],
 ): Array<{ handle: string; displayName: string }> {
   return bindings.map((binding, index) => ({
-    handle: index === 0 ? 'primary' : `workspace${index + 1}`,
+    handle: workspaceHandle(index),
     displayName: binding.displayName,
+  }));
+}
+
+/** Project user-selected resources into the same handles as the tool inputs. */
+export function providerFilesystemReferences(
+  references: readonly FilesystemReference[],
+  bindings: readonly WorkspaceBindingDisplay[],
+) {
+  const handleById = new Map(bindings.map((binding, index) => [binding.workspaceId, workspaceHandle(index)]));
+  return references.map((reference) => ({
+    referenceId: reference.referenceId,
+    workspace: handleById.get(reference.workspaceId) ?? 'unavailable',
+    path: reference.logicalPath,
+    displayName: reference.displayName,
+    kind: reference.kind,
+    ...(reference.kind === 'file'
+      ? { mediaType: reference.mediaType, byteLength: reference.byteLength, ...(reference.source ? { source: reference.source } : {}) }
+      : {}),
   }));
 }
 
@@ -339,7 +401,7 @@ export function providerMessageCodecsByCallId(
       const workspaceIdByHandle = new Map<string, string>();
       const workspaceHandleById = new Map<string, string>();
       event.payload.workspaceBindings.forEach((binding, index) => {
-        const handle = index === 0 ? 'primary' : `workspace${index + 1}`;
+        const handle = workspaceHandle(index);
         workspaceIdByHandle.set(handle, binding.itemId);
         workspaceHandleById.set(binding.itemId, handle);
       });
@@ -427,7 +489,7 @@ function providerWorkspaceSchema(toolName: string, schema: JsonObject): JsonObje
   copy.properties.workspace = {
     type: 'string',
     minLength: 1,
-    description: 'Logical workspace handle from the current Session binding list. Omit to use primary.',
+    description: 'Select the workspace for this call. Omitting it always selects primary, independent of earlier calls.',
   };
   return copy;
 }

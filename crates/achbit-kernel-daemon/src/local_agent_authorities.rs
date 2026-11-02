@@ -231,6 +231,12 @@ impl KernelAuthorityModel {
             .get(session)
             .is_some_and(|s| s.settled.contains(run))
     }
+    pub(crate) fn has_active_plan_for_run(&self, session: &str, run: &str) -> bool {
+        self.sessions
+            .get(session)
+            .and_then(|s| s.active_plan.as_ref())
+            .is_some_and(|plan| plan.2 == run)
+    }
     pub(crate) fn active_plan(&self, session: &str) -> Option<Vec<Value>> {
         self.sessions
             .get(session)?

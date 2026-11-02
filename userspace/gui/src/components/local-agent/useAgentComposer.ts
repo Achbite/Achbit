@@ -45,10 +45,10 @@ export function useAgentComposer(
   const selectedProfileId = useLocalAgentStore((state) => state.selectedProfileId);
   const projection = useLocalAgentStore((state) => state.projection);
   const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
-  // History keeps every question. Foreground answers only at the Session's
-  // user-input wait, never merely because unanswered questions exist.
-  const pendingInteractions = useMemo(() => projection?.run?.status === 'waiting'
-    && projection.run.waitingReason === 'userInput'
+  // Keep unanswered questions reachable in the shared composer, including
+  // independent work and session.wait. The Session still owns the run status.
+  const pendingInteractions = useMemo(() => projection?.run
+    && ['running', 'waiting'].includes(projection.run.status)
     ? projection.interactions.filter(item => item.runId === projection.run?.runId && item.status === 'pending')
     : [], [projection]);
   const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
@@ -271,7 +271,7 @@ export function useAgentComposer(
     if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
     if (!textDecision && !editingMessage && !pendingApproval) {
       const command = parseComposerCommand(submittedText);
-      if (command && !(command.name === 'focus' && command.argument)) {
+      if (command && !((command.name === 'focus' || command.name === 'plan') && command.argument)) {
         await selectCommand(command.name);
         return;
       }
@@ -331,7 +331,9 @@ export function useAgentComposer(
         if (command?.name === 'focus' && command.argument) {
           await focusContext(command.argument, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         } else {
-          await sendMessage(submittedText, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
+          const planTask = command?.name === 'plan' ? command.argument : undefined;
+          await sendMessage(planTask ?? submittedText, submittedFilesystemPaths, submittedPluginSelections,
+            submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages, planTask ? 'manual' : undefined);
         }
       },
     });
@@ -468,6 +470,7 @@ export function useAgentComposer(
   const commandEnabled = (id: ComposerCommand): boolean => {
     if (loading || submitting) return false;
     if (id === 'cancel') return canCancel;
+    if (id === 'plan') return !canCancel;
     if (id === 'agents') return Boolean(sessionId);
     if (id === 'context') return Boolean(projection?.contextUsage);
     if (id === 'model') return !modelSettingsBusy;
@@ -481,9 +484,9 @@ export function useAgentComposer(
   const selectCommand = async (id: ComposerCommand) => {
     if (!commandEnabled(id)) return;
     setAttachmentError(null);
-    if (id === 'focus' || id === 'help') {
+    if (id === 'focus' || id === 'plan' || id === 'help') {
       setCommandDismissed(false);
-      focusComposerDraft(id === 'focus' ? '/focus ' : '/');
+      focusComposerDraft(id === 'help' ? '/' : `/${id} `);
       setCommandActiveIndex(0);
       return;
     }
@@ -714,11 +717,12 @@ export function useAgentComposer(
   const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
   const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
   const canSend = !runtimeReady || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
-    ? Boolean(draft.trim()) && (!pendingInteraction || pendingInteraction.allowFreeform)
+    ? Boolean(draft.trim()) && (Boolean(pendingPlan) || !pendingInteraction || pendingInteraction.allowFreeform)
     : Boolean(draft.trim() || pastedTexts.length || pastedImages.length || pendingFilesystemPaths.length || editingMessage?.message.filesystemReferences.length)
       && !modelSettingsBusy && !catalogBusy
       && Boolean(canCancel || (modelSelectionConfirmed && profiles.some((profile) => profile.id === selectedProfileId && profile.enabled))));
-  const showStopAction = canCancel && !textDecision && !draft.trim() && !pastedTexts.length && !pastedImages.length && !pendingFilesystemPaths.length;
+  const showStopAction = canCancel && !pendingPlan && (Boolean(pendingInteraction)
+    || (!draft.trim() && !pastedTexts.length && !pastedImages.length && !pendingFilesystemPaths.length));
   const canRestoreFailedDraft = composerStateIsEmpty(currentComposerStateRef.current);
   const restoreFailedDraft = (index: number) => {
     const saved = failedDrafts[composerStateKey]?.[index];

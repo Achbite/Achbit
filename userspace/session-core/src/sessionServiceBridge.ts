@@ -4,6 +4,8 @@ import { LoopFailure } from './local-agent/loopFailure.js';
 import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { isShellAuthorizationScope } from '@achbit/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
+import { achbitProductComponents } from './local-agent/productInstructions.js';
+import { SessionConfigurationRegistry } from './local-agent/sessionConfiguration.js';
 import type { ConversationCommand, CommandJournalPort } from '@achbit/protocol';
 import { responseFrames } from './responseFrames.js';
 import {
@@ -69,19 +71,21 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
   const journal = new HttpCommandJournal({ apiBase, serviceToken });
   const kernel = new HttpKernelPort({ apiBase, serviceToken });
   const provider = new HttpProviderPort({ apiBase, serviceToken });
-  const runPreparation = new HttpRunPreparationPort({
-    apiBase,
-    serviceToken,
-    stableCoreInstructions,
-  });
   const factory = await loadSessionServiceFactory();
   const candidate: unknown = await factory({
     journal,
     observation,
+    configurations: new SessionConfigurationRegistry(undefined, achbitProductComponents),
     agentHost: new HttpAgentHostPort({ apiBase, serviceToken }),
     compositions: {
-      create: async () => ({
-        composition: { provider, kernel, runPreparation, async dispose() {} },
+      create: async ({ promptContributions }) => ({
+        composition: {
+          provider, kernel,
+          runPreparation: new HttpRunPreparationPort({
+            apiBase, serviceToken, stableCoreInstructions, promptContributions,
+          }),
+          async dispose() {},
+        },
       }),
     },
   });
@@ -275,10 +279,11 @@ function decodeCommand(value: unknown): ConversationCommand {
           value,
           ['schemaVersion', 'type', 'commandId', 'sessionId', 'text'],
           [
-            'runId', 'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginSelections', 'guidanceReferences', 'hostBinding',
+            'runId', 'planMode', 'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginSelections', 'guidanceReferences', 'hostBinding',
           ],
         )
         || (value.runId !== undefined && !validId(value.runId))
+        || (value.planMode !== undefined && value.planMode !== 'manual')
         || typeof value.text !== 'string'
         || (value.filesystemReferences !== undefined
           && !isFilesystemReferenceArray(value.filesystemReferences))

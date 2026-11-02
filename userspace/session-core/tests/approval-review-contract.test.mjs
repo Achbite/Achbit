@@ -101,19 +101,29 @@ test('approval context admits declared read aliases and keeps decisions and Plan
     { name: 'bash', possibleEffects: ['process'] },
   ].map(tool => ({ ...tool, toolBindingRef: `binding:${tool.name}`, origin: 'coreBuiltin',
     availability: 'callable', description: tool.name, inputSchema: { type: 'object', properties: {}, required: [] } }));
+  tools[0].inputSchema = { type: 'object', required: ['path'], properties: {
+    path: { type: 'string' }, requestFileAccess: { type: 'object' },
+  } };
+  tools[1].inputSchema = { type: 'object', required: ['sessionId'], properties: {
+    sessionId: { type: 'string' }, view: { type: 'string', enum: ['summary', 'messages', 'tools', 'plans', 'context', 'resources'] },
+    resource: { type: 'object' }, providerRequestId: { type: 'string' }, before: { type: 'integer', minimum: 1 },
+  } };
   const reviewRuntime = runtimeSnapshot(runId, { tools, contextWindowTokens: 8192 });
   reviewRuntime.providerToolAliases = reviewRuntime.providerToolAliases.map(alias => ({ ...alias,
     wireName: alias.canonicalName === 'fs.read' ? 'evidence_file_v1'
       : alias.canonicalName === 'session.read' ? 'evidence_history_v1' : alias.wireName }));
   const journal = new InMemoryCommandJournal();
-  await createSession(journal, sessionId, [workspaceBinding]);
+  const attached = { workspaceId: 'workspace:attachments', displayName: 'Materials' };
+  const bindings = [workspaceBinding, attached];
+  const reference = { ...attached, kind: 'directory', logicalPath: '.', referenceId: 'filesystem-reference:materials' };
+  await createSession(journal, sessionId, bindings);
   await journal.append({ type: 'input.accepted', sessionId,
-    payload: { commandId: 'command:input', messageId: 'message:input', text: 'Inspect the change.' } });
+    payload: { commandId: 'command:input', messageId: 'message:input', text: 'Inspect the change alongside session:previous-review.' } });
   await journal.append({ type: 'message.committed', sessionId,
-    payload: { messageId: 'message:input', role: 'user', content: 'Inspect the change.', filesystemReferences: [], pluginSelections: [] } });
-  await journal.append(event('run.started', { inputMessageId: 'message:input', workspaceBindings: [workspaceBinding], runtimeSnapshot: reviewRuntime }));
+    payload: { messageId: 'message:input', role: 'user', content: 'Inspect the change alongside session:previous-review.', filesystemReferences: [reference], pluginSelections: [] } });
+  await journal.append(event('run.started', { inputMessageId: 'message:input', workspaceBindings: bindings, runtimeSnapshot: reviewRuntime }));
   const main = await buildAgentProviderRequest({ sessionId, runId, runtime: reviewRuntime,
-    events: await readEvents(journal, sessionId), workspaceBindings: [workspaceBinding],
+    events: await readEvents(journal, sessionId), workspaceBindings: bindings,
     providerRequestId: 'request:operation', responseConstraint: 'normal' });
   await journal.append(event('context.composed', main.receipt));
   await journal.append(event('tool.requested', { providerCallId: 'provider:operation', attemptId: 'attempt:operation',
@@ -129,6 +139,18 @@ test('approval context admits declared read aliases and keeps decisions and Plan
   assertRuntimeContract('ProviderRequest', reading.request);
   assertRuntimeContract('ContextCompositionReceipt', reading.receipt);
   assert.equal(reading.receipt.responseConstraint, 'normal');
+  const fields = reading.request.tools.find(tool => tool.name === 'evidence_history_v1').inputSchema.properties;
+  assert.deepEqual(Object.keys(fields).sort(), ['before', 'sessionId', 'view']);
+  assert.deepEqual(fields.view.enum, ['summary', 'messages', 'tools', 'plans']);
+  assert.deepEqual(fields.sessionId.enum, [sessionId]);
+  assert.deepEqual(fields.before, { type: 'integer', minimum: 1 });
+  assert.equal('requestFileAccess' in reading.request.tools.find(tool => tool.name === 'evidence_file_v1').inputSchema.properties, false);
+  assert.ok(main.request.tools.find(tool => tool.name === 'evidence_history_v1').inputSchema.properties.view.enum.includes('resources'));
+  assert.deepEqual(main.request.tools.find(tool => tool.name === 'evidence_history_v1').inputSchema.properties.sessionId.enum, ['session:previous-review']);
+  const [origin] = JSON.parse(reading.request.messages[1].content).userMessages[0].filesystemReferences;
+  assert.equal(origin.workspace, 'workspace2');
+  assert.equal(origin.referenceId, reference.referenceId);
+  assert.ok(main.request.messages.some(message => message.role === 'user' && message.content.includes(JSON.stringify(origin))));
   assert.deepEqual(reading.receipt.tools.map(tool => [tool.canonicalName, tool.wireName]), [
     ['fs.read', 'evidence_file_v1'], ['session.read', 'evidence_history_v1'],
   ]);

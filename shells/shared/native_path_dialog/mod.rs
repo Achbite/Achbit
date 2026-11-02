@@ -79,21 +79,12 @@ pub async fn achbit_pick_path(
     let parent = window.clone();
     window
         .run_on_main_thread(move || {
-            #[cfg(all(windows, not(feature = "debug-control")))]
+            #[cfg(windows)]
             let result = windows::pick(&parent, &options);
-            #[cfg(all(windows, feature = "debug-control"))]
-            if let Err(error) = windows::begin(&parent, options, sender.clone()) {
-                let _ = sender.send(Err(error));
-            }
-            #[cfg(all(target_os = "macos", not(feature = "debug-control")))]
+            #[cfg(target_os = "macos")]
             let result = macos::pick(&parent, &options);
-            #[cfg(all(target_os = "macos", feature = "debug-control"))]
-            if let Err(error) = macos::begin(&parent, &options, sender.clone()) {
-                let _ = sender.send(Err(error));
-            }
             #[cfg(target_os = "linux")]
             let result = linux::pick(&parent, &options);
-            #[cfg(not(all(any(target_os = "macos", windows), feature = "debug-control")))]
             let _ = sender.send(result);
         })
         .map_err(|error| error.to_string())?;

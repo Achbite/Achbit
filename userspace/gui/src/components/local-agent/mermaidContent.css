@@ -1,0 +1,24 @@
+.conversation-markdown .conversation-diagram { position: relative; min-width: 0; max-width: 100%; margin-inline: 0; overflow: visible; }
+.conversation-diagram__actions { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: flex-end; gap: 3px; width: fit-content; margin-left: auto; background: var(--ac-surface); border-radius: 18px; }
+.conversation-diagram__actions .reader-icon-button { display: grid; place-items: center; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0; border-radius: 50%; color: var(--ac-muted); background: transparent; cursor: pointer; }
+.conversation-diagram__actions .reader-icon-button:is(:hover:enabled,[aria-expanded=true],[aria-pressed=true]) { color: var(--ac-foreground); background: var(--ac-surface-hover); }
+.conversation-diagram__actions .reader-icon-button:disabled { opacity: .45; cursor: default; }
+.conversation-diagram__actions svg { width: 16px; height: 16px; }
+.conversation-diagram__actions [data-ui-icon=check] { color: var(--ac-success); }
+.conversation-diagram__more { position: relative; }
+.conversation-diagram__menu { position: absolute; top: calc(100% + 4px); right: 0; width: max-content; min-width: 164px; padding: 5px; border: 1px solid var(--ac-border); border-radius: 12px; background: var(--ac-surface); box-shadow: 0 7px 22px color-mix(in srgb, var(--ac-shadow-color) 12%, transparent); }
+.conversation-diagram .conversation-diagram__menu button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px; padding: 6px 9px; border: 0; border-radius: 7px; text-align: left; color: var(--ac-foreground); background: transparent; font: var(--ac-font-body)/1.4 var(--ac-font-ui); cursor: pointer; }
+.conversation-diagram .conversation-diagram__menu button:is(:hover:enabled,:focus-visible) { background: var(--ac-surface-hover); }
+.conversation-diagram__menu button:disabled { opacity: .45; }
+.conversation-diagram__menu small { margin-left: auto; color: var(--ac-muted); font: var(--ac-font-caption)/1.5 var(--ac-font-code); }
+.conversation-diagram__viewport { min-width: 0; overflow-x: auto; }
+.conversation-diagram .conversation-diagram__open { display: block; width: min(100%,var(--diagram-width, 100%)); min-width: var(--diagram-min-width, 0); margin: 0 auto; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+.conversation-diagram .conversation-diagram__open img { display: block; width: 100%; height: auto; }
+.conversation-diagram .conversation-diagram__open[hidden] { display: none; }
+.conversation-diagram .conversation-code .conversation-copy-button { opacity: 1; pointer-events: auto; }
+.conversation-diagram .conversation-code pre { max-height: 340px; }
+.conversation-image-review__dialog[data-diagram] .conversation-image-review__toolbar button { display: inline-grid; place-items: center; border: 0; background: transparent; color: var(--ac-muted); }
+.conversation-image-review__dialog[data-diagram] .conversation-image-review__toolbar button:hover { background: var(--ac-surface-hover); color: var(--ac-foreground); }
+@media (pointer: coarse) {
+  .conversation-diagram__actions .reader-icon-button, .conversation-diagram .conversation-diagram__menu button { min-width: 44px; min-height: 44px; }
+}

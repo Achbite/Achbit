@@ -305,7 +305,7 @@ for (const scenario of [
       return completedExecutionReply(request, { content: `read evidence:${request.providerCallId ?? request.callId}` });
     } }),
   });
-  await fixture.service.submit(messageCommand(ownerId, 'command:discovery-batch', 'Discover models and read the independent evidence.'));
+  await fixture.service.submit(messageCommand(ownerId, 'command:discovery-batch', 'Discover models and read the independent evidence in session:evidence.'));
   const state = await completed(fixture.service, ownerId);
   assert.deepEqual(state.agentTasks ?? [], []);
   assert.equal(state.todoList.items[0].status, 'inProgress');
@@ -885,7 +885,8 @@ function acceptedWait(events, action) {
   return settled ? event : undefined;
 }
 
-test('an accepted session wait reloads with its original timer and deadline and no uncertain Provider result', async t => {
+for (const overdue of [false, true]) test('an accepted session wait reloads with its original timer and deadline and no uncertain Provider result'
+  + (overdue ? ' when both are already due' : ''), async t => {
   const ownerId = 'session:reload-scheduled-wait', reminder = 'Review the stored result after reloading.';
   const original = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
     if (turn === 1) yield call(request, 'reload:schedule', 'session', { action: 'schedule', afterSeconds: 0.45, text: reminder });
@@ -903,6 +904,9 @@ test('an accepted session wait reloads with its original timer and deadline and 
   assert.ok(wait.payload.result.wait.deadline > scheduled.payload.dueAt);
   const journal = await copyCommittedJournal([captured]);
   await original.service.dispose();
+  // Reload may happen after both persisted deadlines. Advance only the clock;
+  // do not run timer callbacks before recovery has reconciled the durable facts.
+  if (overdue) t.mock.timers.enable({ apis: ['Date'], now: wait.payload.result.wait.deadline + 1 });
   const reopened = await serviceFixture(t, ownerId, async function* ({ request }) {
     assert.deepEqual(request.messages.slice(0, sentPrefix.length), sentPrefix);
     assert.equal(request.messages.filter(message => message.role === 'user' && message.content === reminder).length, 1);

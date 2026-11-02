@@ -4,6 +4,7 @@ import type { UiIconName } from '../../icons/registry';
 // same store and Host API as the corresponding buttons.
 export const composerCommands = [
   { id: 'focus', icon: 'activity' },
+  { id: 'plan', icon: 'compose' },
   { id: 'new', icon: 'compose' },
   { id: 'model', icon: 'server' },
   { id: 'context', icon: 'info' },
@@ -28,6 +29,6 @@ export function parseComposerCommand(draft: string): { name: ComposerCommand; ar
   if (!match) return null;
   const command = composerCommands.find(item => item.id === match[1]);
   const argument = match[2]?.trim() ?? '';
-  if (!command || (argument && command.id !== 'focus')) return null;
+  if (!command || (argument && command.id !== 'focus' && command.id !== 'plan')) return null;
   return { name: command.id, argument };
 }

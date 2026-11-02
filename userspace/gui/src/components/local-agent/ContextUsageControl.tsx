@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ContextCompositionProjection, ContextUsageProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { lastCallInputCacheMetric } from '../../utils/providerUsage';
 import { buildContextCompositionLayout, CONTEXT_FOCUS_USED_PERCENT } from './contextCompositionLayout';
 import {
@@ -36,6 +37,7 @@ export function ContextUsageControl({
   rootRef,
   onToggle,
 }: ContextUsageControlProps) {
+  const identity = useUiOwner('composer.context');
   const [hoverContextKey, setHoverContextKey] = useState<ContextFocusKey | null>(null);
   const displayedUsage = contextUsage;
   const contextPercent = displayedUsage
@@ -45,14 +47,14 @@ export function ContextUsageControl({
       )
     : null;
   const contextLabel = contextPercent === null
-    ? t(language, 'common.notAvailable')
+    ? ''
     : `${Math.round(contextPercent)}%`;
   const contextTitle = displayedUsage
     ? t(language, 'agent.context.windowUsage', {
         used: formatTokens(displayedUsage.inputTokens + displayedUsage.outputTokens, language),
         capacity: formatTokens(displayedUsage.contextWindowTokens, language),
       })
-    : t(language, 'common.notAvailable');
+    : undefined;
   const contextReceipt = contextCompositions.find(receipt => receipt.providerRequestId === contextUsage?.providerRequestId) ?? null;
   const capacityMetrics = useMemo(
     () => buildCapacityMetrics(displayedUsage, language),
@@ -159,10 +161,11 @@ export function ContextUsageControl({
   return (
     <>
       <button
+        {...identity.action('trigger', 'click')}
         type="button"
         className={`achbit-session-model__context${contextPercent === null ? ' achbit-session-model__context--unknown' : ''}`}
         style={{ '--achbit-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
-        aria-label={contextLabel}
+        aria-label={contextLabel || t(language, 'agent.context.window')}
         aria-expanded={contextOpen}
         disabled={!hasContextFacts}
         title={contextTitle}
@@ -172,6 +175,7 @@ export function ContextUsageControl({
       </button>
       {contextOpen && hasContextFacts && (
         <section
+          {...identity.part('panel')}
           className="achbit-session-model__context-popover"
           role="dialog"
           aria-label={t(language, 'agent.context.window')}
@@ -186,6 +190,7 @@ export function ContextUsageControl({
               <span>{contextLabel}</span>
             </div>
             <div
+              {...identity.part('capacity')}
               className="achbit-session-model__usage-track"
               role="progressbar"
               aria-label={contextTitle}
@@ -196,7 +201,7 @@ export function ContextUsageControl({
               <span style={{ width: `${contextPercent ?? 0}%` }} />
             </div>
 
-            <div className="achbit-session-model__composition-stage">
+            <div {...identity.part('composition')} className="achbit-session-model__composition-stage">
               {displayedUsage ? (
                 <button
                   type="button"
@@ -246,7 +251,7 @@ export function ContextUsageControl({
               <span>{metricValue(activeMetric, language)}</span>
             </div>
 
-            <div className="achbit-session-model__cache">
+            <div {...identity.part('cache')} className="achbit-session-model__cache">
               <div className="achbit-session-model__cache-head">
                 <strong>
                   {t(language, 'agent.context.inputCache')}
@@ -287,6 +292,7 @@ export function ContextUsageControl({
                     <button
                       type="button"
                       key={section.key}
+                      {...identity.part(`section.${section.key}`)}
                       data-context-key={section.key}
                       className={section.key === activeContextKey ? 'is-active' : ''}
                       {...interactionProps(section.key)}

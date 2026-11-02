@@ -101,6 +101,7 @@ pub(crate) struct ProviderCompletion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProviderUsage {
+    /// Total input, including cache reads and writes exactly once.
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
     pub(crate) cache_read_input_tokens: Option<u64>,
@@ -221,36 +222,38 @@ impl ProviderStreamAccumulator {
     }
 
     fn usage_snapshot(&self) -> Result<Option<ProviderUsage>, ProviderStreamError> {
-        Ok(match (self.input_tokens, self.output_tokens) {
-            (Some(input_tokens), Some(output_tokens)) => Some(match self.kind {
-                ProviderStreamKind::Anthropic => anthropic_usage(
+        // Both Session completion and the usage ledger consume this normalization.
+        let (Some(input_tokens), Some(output_tokens)) = (self.input_tokens, self.output_tokens)
+        else {
+            return Ok(None);
+        };
+        match self.kind {
+            ProviderStreamKind::Anthropic => anthropic_usage(
+                input_tokens,
+                output_tokens,
+                self.cache_read_input_tokens,
+                self.cache_creation_input_tokens,
+            ),
+            ProviderStreamKind::OpenAiCompatible | ProviderStreamKind::Responses => {
+                let cache = cache_usage_from_total(
                     input_tokens,
-                    output_tokens,
                     self.cache_read_input_tokens,
-                    self.cache_creation_input_tokens,
-                )?,
-                ProviderStreamKind::OpenAiCompatible | ProviderStreamKind::Responses => {
-                    let cache = cache_usage_from_total(
-                        input_tokens,
-                        self.cache_read_input_tokens,
-                        self.cache_miss_input_tokens,
-                    )?;
-                    ProviderUsage {
-                        input_tokens,
-                        output_tokens,
-                        cache_read_input_tokens: cache.map(|value| value.0),
-                        cache_miss_input_tokens: cache.map(|value| value.1),
-                    }
-                }
-                ProviderStreamKind::Ollama => ProviderUsage {
+                    self.cache_miss_input_tokens,
+                )?;
+                Ok(Some(ProviderUsage {
                     input_tokens,
                     output_tokens,
-                    cache_read_input_tokens: None,
-                    cache_miss_input_tokens: None,
-                },
-            }),
-            _ => None,
-        })
+                    cache_read_input_tokens: cache.map(|value| value.0),
+                    cache_miss_input_tokens: cache.map(|value| value.1),
+                }))
+            }
+            ProviderStreamKind::Ollama => Ok(Some(ProviderUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens: None,
+                cache_miss_input_tokens: None,
+            })),
+        }
     }
 
     pub(crate) fn observed_usage(
@@ -812,20 +815,8 @@ impl ProviderStreamAccumulator {
         let mut emissions = Vec::new();
         match event_type {
             "message_start" => {
-                set_token_count(
-                    &mut self.input_tokens,
-                    value.pointer("/message/usage/input_tokens"),
-                    "输入 token",
-                )?;
-                set_token_count(
-                    &mut self.cache_read_input_tokens,
-                    value.pointer("/message/usage/cache_read_input_tokens"),
-                    "缓存读取输入 token",
-                )?;
-                set_token_count(
-                    &mut self.cache_creation_input_tokens,
-                    value.pointer("/message/usage/cache_creation_input_tokens"),
-                    "缓存创建输入 token",
+                self.update_anthropic_usage(
+                    value.pointer("/message/usage").unwrap_or(&Value::Null),
                 )?;
             }
             "content_block_start" => {
@@ -896,11 +887,7 @@ impl ProviderStreamAccumulator {
                     .and_then(|delta| delta.get("stop_reason"))
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-                set_token_count(
-                    &mut self.output_tokens,
-                    value.pointer("/usage/output_tokens"),
-                    "输出 token",
-                )?;
+                self.update_anthropic_usage(value.get("usage").unwrap_or(&Value::Null))?;
             }
             "message_stop" => self.source_done = true,
             "error" => {
@@ -912,6 +899,39 @@ impl ProviderStreamAccumulator {
             _ => {}
         }
         Ok(emissions)
+    }
+
+    fn update_anthropic_usage(&mut self, usage: &Value) -> Result<(), ProviderStreamError> {
+        // Anthropic start/delta counters are whole-message cumulative snapshots.
+        // Replace reported counters; omitted or null optional inputs retain their
+        // last reported value, never a synthetic zero or an additional increment.
+        for (field, label, slot) in [
+            ("input_tokens", "输入 token", &mut self.input_tokens),
+            ("output_tokens", "输出 token", &mut self.output_tokens),
+            (
+                "cache_read_input_tokens",
+                "缓存读取输入 token",
+                &mut self.cache_read_input_tokens,
+            ),
+            (
+                "cache_creation_input_tokens",
+                "缓存创建输入 token",
+                &mut self.cache_creation_input_tokens,
+            ),
+        ] {
+            let value = usage.get(field);
+            let value = if field == "output_tokens" {
+                value
+            } else {
+                value.filter(|value| !value.is_null())
+            };
+            let mut reported = None;
+            set_token_count(&mut reported, value, label)?;
+            if reported.is_some() {
+                *slot = reported;
+            }
+        }
+        Ok(())
     }
 
     fn ingest_ollama(
@@ -1094,22 +1114,13 @@ fn anthropic_usage(
     output_tokens: u64,
     cache_read_input_tokens: Option<u64>,
     cache_creation_input_tokens: Option<u64>,
-) -> Result<ProviderUsage, ProviderStreamError> {
-    let Some(cache_read_input_tokens) = cache_read_input_tokens else {
-        return Ok(ProviderUsage {
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: None,
-            cache_miss_input_tokens: None,
-        });
-    };
-    let Some(cache_creation_input_tokens) = cache_creation_input_tokens else {
-        return Ok(ProviderUsage {
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: None,
-            cache_miss_input_tokens: None,
-        });
+) -> Result<Option<ProviderUsage>, ProviderStreamError> {
+    // Anthropic's input_tokens excludes both cache populations. Missing counters
+    // cannot be treated as zero or expose ordinary input as the complete total.
+    let (Some(cache_read_input_tokens), Some(cache_creation_input_tokens)) =
+        (cache_read_input_tokens, cache_creation_input_tokens)
+    else {
+        return Ok(None);
     };
     let cache_miss_input_tokens = input_tokens
         .checked_add(cache_creation_input_tokens)
@@ -1121,12 +1132,12 @@ fn anthropic_usage(
         .ok_or_else(|| {
             ProviderStreamError::new("provider_usage_invalid", "Provider 输入 token 溢出。")
         })?;
-    Ok(ProviderUsage {
+    Ok(Some(ProviderUsage {
         input_tokens: total_input_tokens,
         output_tokens,
         cache_read_input_tokens: Some(cache_read_input_tokens),
         cache_miss_input_tokens: Some(cache_miss_input_tokens),
-    })
+    }))
 }
 
 fn parse_json(payload: &str) -> Result<Value, ProviderStreamError> {
@@ -1276,6 +1287,153 @@ pub(crate) fn sse_json_event(event: &str, value: Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_input_normalization_is_shared_by_completion_and_usage_observation() {
+        let cases = [
+            (ProviderStreamKind::OpenAiCompatible, vec![
+                json!({"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":6,"prompt_tokens_details":{"cached_tokens":18}}}).to_string(),
+                "[DONE]".into(),
+            ]),
+            (ProviderStreamKind::Responses, vec![
+                json!({"type":"response.completed","response":{"usage":{"input_tokens":30,"output_tokens":6,"input_tokens_details":{"cached_tokens":18,"cache_write_tokens":7}}}}).to_string(),
+            ]),
+            (ProviderStreamKind::Anthropic, vec![
+                json!({"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":18,"cache_creation_input_tokens":7}}}).to_string(),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}).to_string(),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}).to_string(),
+                json!({"type":"message_stop"}).to_string(),
+            ]),
+        ];
+        let expected = Some(ProviderUsage {
+            input_tokens: 30,
+            output_tokens: 6,
+            cache_read_input_tokens: Some(18),
+            cache_miss_input_tokens: Some(12),
+        });
+        for (kind, events) in cases {
+            let mut parser = ProviderStreamAccumulator::new(kind);
+            for event in events {
+                parser.ingest_payload(event.as_bytes()).unwrap();
+            }
+            assert_eq!(parser.observed_usage().unwrap().usage, expected, "{kind:?}");
+            assert_eq!(
+                parser.finalize().unwrap().completion.usage,
+                expected,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_incomplete_input_is_unknown_not_ordinary_input_disguised_as_total() {
+        for (read, write) in [(None, None), (Some(18), None), (None, Some(7))] {
+            let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+            let mut usage = json!({"input_tokens":5});
+            if let Some(read) = read {
+                usage["cache_read_input_tokens"] = json!(read);
+            }
+            if let Some(write) = write {
+                usage["cache_creation_input_tokens"] = json!(write);
+            }
+            for event in [
+                json!({"type":"message_start","message":{"usage":usage}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}),
+                json!({"type":"message_stop"}),
+            ] {
+                parser.ingest_payload(event.to_string().as_bytes()).unwrap();
+            }
+            assert_eq!(parser.observed_usage().unwrap().usage, None);
+            assert_eq!(parser.finalize().unwrap().completion.usage, None);
+        }
+        assert_eq!(
+            anthropic_usage(0, 0, Some(0), Some(0)).unwrap(),
+            Some(ProviderUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: Some(0),
+                cache_miss_input_tokens: Some(0),
+            })
+        );
+        assert!(anthropic_usage(u64::MAX, 0, Some(0), Some(1)).is_err());
+        assert!(anthropic_usage(u64::MAX, 0, Some(1), Some(0)).is_err());
+    }
+
+    #[test]
+    fn anthropic_cumulative_usage_replaces_reported_counts_and_preserves_omitted_fields() {
+        let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+        parser.ingest_payload(br#"{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":18,"cache_creation_input_tokens":7}}}"#).unwrap();
+        assert_eq!(
+            parser.observed_usage().unwrap().usage,
+            Some(ProviderUsage {
+                input_tokens: 30,
+                output_tokens: 1,
+                cache_read_input_tokens: Some(18),
+                cache_miss_input_tokens: Some(12),
+            })
+        );
+        parser.ingest_payload(br#"{"type":"message_delta","usage":{"input_tokens":8,"output_tokens":4,"cache_read_input_tokens":20,"cache_creation_input_tokens":9}}"#).unwrap();
+        parser.ingest_payload(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":null,"output_tokens":6,"cache_read_input_tokens":null}}"#).unwrap();
+        parser
+            .ingest_payload(br#"{"type":"message_stop"}"#)
+            .unwrap();
+        let observed = parser.observed_usage().unwrap();
+        assert_eq!(observed.cache_write_tokens, Some(9));
+        assert_eq!(
+            observed.usage,
+            Some(ProviderUsage {
+                input_tokens: 37,
+                output_tokens: 6,
+                cache_read_input_tokens: Some(20),
+                cache_miss_input_tokens: Some(17),
+            })
+        );
+        assert_eq!(parser.finalize().unwrap().completion.usage, observed.usage);
+    }
+
+    #[test]
+    fn anthropic_missing_cache_counts_only_become_known_when_reported() {
+        let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+        parser.ingest_payload(br#"{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":null,"cache_creation_input_tokens":null}}}"#).unwrap();
+        assert_eq!(parser.observed_usage().unwrap().usage, None);
+        parser.ingest_payload(br#"{"type":"message_delta","usage":{"output_tokens":3,"cache_read_input_tokens":0}}"#).unwrap();
+        assert_eq!(parser.observed_usage().unwrap().usage, None);
+        parser.ingest_payload(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6,"cache_creation_input_tokens":7}}"#).unwrap();
+        parser
+            .ingest_payload(br#"{"type":"message_stop"}"#)
+            .unwrap();
+        assert_eq!(
+            parser.finalize().unwrap().completion.usage,
+            Some(ProviderUsage {
+                input_tokens: 12,
+                output_tokens: 6,
+                cache_read_input_tokens: Some(0),
+                cache_miss_input_tokens: Some(12),
+            })
+        );
+    }
+
+    #[test]
+    fn anthropic_cumulative_usage_still_rejects_invalid_counts() {
+        for field in [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+            let mut event = json!({"type":"message_delta","usage":{}});
+            event["usage"][field] = json!(-1);
+            assert_eq!(
+                parser
+                    .ingest_payload(event.to_string().as_bytes())
+                    .unwrap_err()
+                    .code,
+                "provider_usage_invalid",
+                "{field}"
+            );
+        }
+    }
 
     #[test]
     fn responses_preserves_cache_write_usage_without_inventing_missing_values() {

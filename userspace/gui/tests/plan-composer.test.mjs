@@ -74,7 +74,7 @@ test('Plan confirmation and workspace rejection keep their original decision rou
     confirm.props.onClick();
     if (pendingPlan.workspaceRequests) button(tree, '不加入并取消计划').props.onClick();
     else {
-      const prompt = ComposerQuestionPrompt({ language: 'zh-CN', composer });
+      const prompt = capturePanels(ComposerQuestionPrompt, { language: 'zh-CN', composer });
       findReactElement(prompt, node => node.props['aria-label'] === '关闭方案确认').props.onClick();
     }
     assert.deepEqual(decisions, [{ kind: 'confirm' }, { kind: 'cancel' }]);

@@ -24,6 +24,7 @@ pub(crate) struct ProductTools {
     pub(crate) computer_use_instance: Option<String>,
     pub(crate) container_instance: Option<String>,
     pub(crate) document_instance: Option<String>,
+    pub(crate) diagnostics: Option<(String, String)>,
 }
 
 impl ProductTools {
@@ -38,6 +39,7 @@ impl ProductTools {
             computer_use_instance: None,
             container_instance: None,
             document_instance: None,
+            diagnostics: None,
         }
     }
 
@@ -64,6 +66,15 @@ impl ProductTools {
         self
     }
 
+    pub(crate) fn with_session_diagnostics(
+        mut self,
+        session_id: &str,
+        instance: Option<String>,
+    ) -> Self {
+        self.diagnostics = instance.map(|instance| (session_id.to_owned(), instance));
+        self
+    }
+
     pub(crate) fn with_containers(mut self, instance: Option<String>) -> Self {
         self.container_instance = instance;
         self
@@ -81,6 +92,31 @@ impl ProductTools {
 
     pub(crate) fn call(&self, name: &str, input: Value) -> Result<Value, SessionServiceError> {
         match name {
+            "session.diagnostics" => {
+                let (session_id, _) = self.diagnostics.as_ref().ok_or_else(|| {
+                    SessionServiceError::new(
+                        "session_diagnostics_inactive",
+                        "The Session Diagnostics component is not active.",
+                    )
+                })?;
+                let mut query = input;
+                let fields = query.as_object_mut().ok_or_else(|| {
+                    SessionServiceError::new(
+                        "session_diagnostics_input_invalid",
+                        "Session Diagnostics requires an object.",
+                    )
+                })?;
+                if fields
+                    .insert("sessionId".into(), json!(session_id))
+                    .is_some()
+                {
+                    return Err(SessionServiceError::new(
+                        "session_diagnostics_target_invalid",
+                        "This component is bound to the current session.",
+                    ));
+                }
+                self.reader.read(query)
+            }
             "session.read" if input["view"] == "resources" => self
                 .resources
                 .as_ref()
@@ -119,25 +155,7 @@ impl ProductTools {
                     "offset":{"type":"integer","minimum":0,"description":"Use nextOffset from the previous result with the same query; defaults to 0."}
                 }
             })),
-            ("session.read", "Read persisted Achbit conversation facts without resuming the session. Query directly; no prior Skill read is required. Start with summary; use messages, tools, plans or context for details. view=resources lists and reads managed workdirs belonging to this session or its descendants; use exact references returned by the listing. view=images lists archived image references. To inspect images from the current session, pass imageIds with exact referenceId/artifactId values; their pixels enter the next visual input. Include all images needed for comparison. imageIds=[] releases current images. before is an exclusive event-sequence cursor; nextBefore continues older items. For complete long text, select messageId with view=messages or recordId with view=tools, then use each content/input/output/error chunk's nextOffset as offset on the same query until null. Fields have independent cursors; use each returned actual offset (UTF-16 character units). Excerpts report truncation. A session ID is required.".into(), json!({
-                "type":"object", "additionalProperties":false, "required":["sessionId"],
-                "properties": {
-                    "sessionId":{"type":"string","description":"Exact complete ID from the user or Achbit. Preserve it verbatim, including prefixes such as session:."},
-                    "view":{"type":"string","enum":["summary","messages","tools","plans","context","reasoning","images","resources"]},
-                    "resource":{"type":"object","additionalProperties":false,"required":["workspaceId","logicalPath"],"properties":{
-                        "workspaceId":{"type":"string"},"logicalPath":{"type":"string"}},
-                        "description":"Requires view=resources. Use an exact reference returned by the resource listing; never a caller workspace selector. Omit to list managed workdirs; a directory lists entries and a file reads text."},
-                    "startLine":{"type":"integer","minimum":1},
-                    "startByte":{"type":"integer","minimum":0},
-                    "imageIds":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1},"description":"Requires view=images. Exact current-session image references to inspect together. Select only images needed for the current comparison. Omit to list references; [] releases pixels. Do not combine with before or limit."},
-                    "before":{"type":"integer","minimum":1},
-                    "limit":{"type":"integer","minimum":1,"maximum":50},
-                    "recordId":{"type":"string","description":"Exact ToolRecord ID; requires view=tools. Input/output/error return separately bounded chunks; continue each field using its nextOffset."},
-                    "messageId":{"type":"string","description":"Exact committed message ID returned by view=messages; returns a bounded content chunk. Continue with its nextOffset."},
-                    "providerRequestId":{"type":"string","description":"Exact Provider request ID; requires view=context or reasoning."},
-                    "offset":{"type":"integer","minimum":0,"description":"UTF-16 character cursor. Use nextOffset from reasoning, an exact messageId (view=messages), or a field of an exact recordId (view=tools). Fields return independent actual offset/nextOffset and totalCharacters/totalBytes; null nextOffset means that field is complete."}
-                }
-            })),
+            ("session.read", "Read the specified conversation history. Start with summary, then read the relevant messages, tools or plans. Use nextBefore for older entries and nextOffset for longer fields.".into(), session_read_schema()),
             ("skill.read", format!("Read a Achbit product Skill or its reference when guidance is needed. Read only content relevant to the current question. Available: {}. Omit path to read SKILL.md.",
                 SKILLS.iter().map(|skill| format!("{} — {}", skill.id, skill.description())).collect::<Vec<_>>().join("; ")), json!({
                 "type":"object", "additionalProperties":false, "required":["name"],
@@ -149,6 +167,44 @@ impl ProductTools {
 
         ]
     }
+}
+
+fn session_read_schema() -> Value {
+    json!({
+        "type":"object", "additionalProperties":false, "required":["sessionId"],
+        "properties": {
+            "sessionId":{"type":"string","description":"Exact complete ID from the user or Achbit. Preserve it verbatim, including prefixes such as session:."},
+            "view":{"type":"string","enum":["summary","messages","tools","plans","context","reasoning","images","resources"]},
+            "resource":{"type":"object","additionalProperties":false,"required":["workspaceId","logicalPath"],"properties":{
+                "workspaceId":{"type":"string"},"logicalPath":{"type":"string"}},
+                "description":"Requires view=resources. Use an exact reference returned by the resource listing; never a caller workspace selector. Omit to list managed workdirs; a directory lists entries and a file reads text."},
+            "startLine":{"type":"integer","minimum":1},
+            "startByte":{"type":"integer","minimum":0},
+            "imageIds":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1},"description":"Requires view=images. Exact current-session image references to inspect together. Select only images needed for the current comparison. Omit to list references; [] releases pixels. Do not combine with before or limit."},
+            "before":{"type":"integer","minimum":1},
+            "limit":{"type":"integer","minimum":1,"maximum":50},
+            "recordId":{"type":"string","description":"Exact ToolRecord ID; requires view=tools. Input/output/error return separately bounded chunks; continue each field using its nextOffset."},
+            "messageId":{"type":"string","description":"Exact committed message ID returned by view=messages; returns a bounded content chunk. Continue with its nextOffset."},
+            "providerRequestId":{"type":"string","description":"Exact Provider request ID; requires view=context or reasoning."},
+            "offset":{"type":"integer","minimum":0,"description":"UTF-16 character cursor. Use nextOffset from reasoning, an exact messageId (view=messages), or a field of an exact recordId (view=tools). Fields return independent actual offset/nextOffset and totalCharacters/totalBytes; null nextOffset means that field is complete."}
+        }
+    })
+}
+
+pub(crate) fn session_diagnostics_schema() -> Value {
+    let mut schema = session_read_schema();
+    schema["required"] = json!([]);
+    let fields = schema["properties"]
+        .as_object_mut()
+        .expect("session read properties");
+    fields.retain(|name, _| {
+        matches!(
+            name.as_str(),
+            "view" | "before" | "limit" | "recordId" | "messageId" | "providerRequestId" | "offset"
+        )
+    });
+    fields.insert("view".into(), json!({"type":"string","enum":["summary","messages","tools","plans","context","reasoning"]}));
+    schema
 }
 
 struct ProductSkill {
@@ -317,6 +373,47 @@ pub(crate) fn test_product_tools() -> Arc<ProductTools> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_uses_its_selected_session_while_history_uses_the_supplied_id() {
+        struct Echo;
+        impl SessionReadPort for Echo {
+            fn read(&self, query: Value) -> Result<Value, SessionServiceError> {
+                Ok(query)
+            }
+        }
+        let tools = ProductTools::new(Arc::new(Echo));
+        assert_eq!(
+            tools
+                .call("session.diagnostics", json!({"view":"context"}))
+                .unwrap_err()
+                .code,
+            "session_diagnostics_inactive"
+        );
+        let tools = tools.with_session_diagnostics("session:current", Some("instance:test".into()));
+        assert_eq!(
+            tools
+                .call("session.diagnostics", json!({"view":"context"}))
+                .unwrap(),
+            json!({"view":"context","sessionId":"session:current"})
+        );
+        assert_eq!(
+            tools
+                .call("session.diagnostics", json!({"sessionId":"session:other"}))
+                .unwrap_err()
+                .code,
+            "session_diagnostics_target_invalid"
+        );
+        assert_eq!(
+            tools
+                .call(
+                    "session.read",
+                    json!({"sessionId":"session:historical","view":"context"})
+                )
+                .unwrap()["sessionId"],
+            "session:historical"
+        );
+    }
 
     #[test]
     fn product_documentation_does_not_add_tool_or_plugin_entries() {

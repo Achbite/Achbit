@@ -10,6 +10,8 @@ pub(crate) struct AgentRecipe {
     #[serde(default)]
     pub tools: ToolSelection,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_components: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configuration: Option<Value>,
@@ -45,6 +47,19 @@ impl Default for ToolSelection {
     }
 }
 
+fn valid_selection_ids(names: &[String]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    names.iter().all(|name| {
+        name.as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+            && seen.insert(name)
+    })
+}
+
 impl ToolSelection {
     pub fn inherit_missing(&mut self, parent: &Self, requested: Option<&Value>) {
         if requested.and_then(|value| value.get("kernel")).is_none() {
@@ -67,19 +82,12 @@ impl ToolSelection {
     }
 
     fn validate(&self) -> Result<(), String> {
-        for names in [&self.kernel, &self.controls].into_iter().flatten() {
-            let mut seen = std::collections::BTreeSet::new();
-            for name in names {
-                if name.is_empty()
-                    || !name
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
-                    || !name.as_bytes()[0].is_ascii_alphanumeric()
-                    || !seen.insert(name)
-                {
-                    return Err("agent_tools_invalid".into());
-                }
-            }
+        if [&self.kernel, &self.controls]
+            .into_iter()
+            .flatten()
+            .any(|names| !valid_selection_ids(names))
+        {
+            return Err("agent_tools_invalid".into());
         }
         Ok(())
     }
@@ -173,6 +181,31 @@ impl Default for WorkspaceSandboxSelection {
 }
 
 impl AgentRecipe {
+    /// An opt-in creation preset. Unspecified permission settings (including command rules)
+    /// continue to come from the ordinary Kernel permission policy.
+    pub fn minimal_coding() -> Self {
+        Self {
+            tools: ToolSelection {
+                // The Kernel advertises only the Shell selected for the execution environment.
+                kernel: Some(
+                    ["fs.read", "bash", "powershell", "fs.edit", "fs.write"]
+                        .map(String::from)
+                        .into(),
+                ),
+                controls: Some(Vec::new()),
+                plugins: false,
+            },
+            product_components: Some(Vec::new()),
+            permissions: Some(json!({
+                "agent.permissions.workspaceMutation": "allow",
+                "agent.permissions.engineeringDecisions": "delegate",
+                "agent.permissions.shell": "allow",
+                "agent.permissions.shellAccess": "full"
+            })),
+            ..Self::default()
+        }
+    }
+
     pub fn decode(value: &Value) -> Result<Self, String> {
         let mut recipe: Self = serde_json::from_value(value.clone())
             .map_err(|error| format!("agent_recipe_invalid:{error}"))?;
@@ -191,6 +224,15 @@ impl AgentRecipe {
         }
         recipe.validate()?;
         Ok(recipe)
+    }
+
+    /// Host features use the creation recipe and never enter the Agent's tool catalog.
+    pub fn product_component_enabled(&self, id: &str, enabled_by_default: bool) -> bool {
+        self.product_components
+            .as_ref()
+            .map_or(enabled_by_default && self.tools.plugins, |selected| {
+                selected.iter().any(|component| component == id)
+            })
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -221,6 +263,13 @@ impl AgentRecipe {
         if let Some(permissions) = &self.permissions {
             crate::local_agent_store::validate_permission_patches(permissions)
                 .map_err(|error| error.message)?;
+        }
+        if self
+            .product_components
+            .as_ref()
+            .is_some_and(|ids| !valid_selection_ids(ids))
+        {
+            return Err("agent_product_components_invalid".into());
         }
         self.tools.validate()?;
         self.permission_policy.resolve()?;
@@ -406,6 +455,25 @@ mod tests {
         .unwrap();
         assert_eq!(result["agent.permissions.workspaceMutation"], "plan");
         assert_eq!(result["agent.permissions.shell"], "ask");
+    }
+
+    #[test]
+    fn title_component_uses_product_defaults_or_the_explicit_selection() {
+        let title = "achbit.conversation-title";
+        for (input, active) in [
+            (json!({}), true),
+            (json!({"tools":{"plugins":false}}), false),
+            (json!({"productComponents":[]}), false),
+            (json!({"productComponents":["achbit.collaboration"]}), false),
+            (
+                json!({"tools":{"plugins":false},"productComponents":[title]}),
+                true,
+            ),
+        ] {
+            let recipe = AgentRecipe::decode(&input).unwrap();
+            assert_eq!(recipe.product_component_enabled(title, true), active);
+        }
+        assert!(AgentRecipe::decode(&json!({"productComponents":[title,title]})).is_err());
     }
 
     #[test]

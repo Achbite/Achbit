@@ -113,8 +113,10 @@ class Provider(fixture.MockProviderHandler):
                 state.job_id = job['jobId']
                 call('wait-checkpoint', action='wait', jobId=state.job_id, waitSeconds=1)
             elif ordinal == 3:
-                job = next(value['process'] for value in reversed(fixture.json_payloads(body))
-                           if value.get('type') == 'process.updated' and value.get('process', {}).get('jobId') == state.job_id)
+                review = next(value for value in fixture.json_payloads(body) if value.get('type') == 'process.wait.review')
+                job = next(item for item in review['jobs'] if item['jobId'] == state.job_id)
+                require(not any(value.get('type') == 'process.updated' and value['process']['status'] == 'active'
+                                for value in fixture.json_payloads(body)), 'Passive job progress leaked into model context')
                 require(job['status'] == 'active' and 'managed-pid:' in job['output']['stdout'], job)
                 if state.mode == 'user-stop':
                     self._send_text('process-progress')
