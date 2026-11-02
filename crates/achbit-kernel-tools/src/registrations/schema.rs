@@ -10,20 +10,20 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "UTF-8 text file path, relative to the workspace or absolute. External files require permission."
+                    "description": "File or bound directory path. Use '.' to list the selected workspace. External files require permission."
                 },
-                "startByte": { "type": "integer", "minimum": 0, "maximum": 9007199254740991u64, "description": "Resume at nextByte from the previous read, including within long lines. Takes precedence over startLine." },
+                "startByte": { "type": "integer", "minimum": 0, "maximum": 9007199254740991u64, "description": "Files only. Resume at nextByte, including within long lines. Takes precedence over startLine." },
                 "startLine": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": u32::MAX,
-                    "description": "First one-based line to return. Defaults to 1."
+                    "description": "First one-based line or directory entry. Defaults to 1."
                 },
                 "maxLines": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 5000,
-                    "description": "Maximum number of lines to return. Defaults to 2000."
+                    "description": "Maximum number of lines or directory entries. Defaults to 2000."
                 },
                 "maxBytes": {
                     "type": "integer",
@@ -41,7 +41,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "File path, relative to the workspace or absolute. External files require permission. Missing parents are created."
+                    "description": "Workspace-relative or absolute file path. External files require permission."
                 },
                 "content": { "type": "string" },
                 "executable": {
@@ -60,13 +60,13 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 128,
-                    "description": "Non-overlapping replacements matched against the original file and applied atomically.",
+                    "description": "Group non-overlapping changes to this file in one call.",
                     "items": {
                         "type": "object",
                         "required": ["oldText", "newText"],
                         "properties": {
-                            "oldText": { "type": "string", "minLength": 1, "description": "Copy a small, exact, unique region from the original file. Preserve whitespace. Include only enough context to distinguish this occurrence; do not copy large unchanged regions." },
-                            "newText": { "type": "string", "description": "Exact replacement, including any boundary newline that should remain. Empty text deletes the region. After editing shell syntax, bash -n each changed script before running it." }
+                            "oldText": { "type": "string", "minLength": 1, "description": "Exact text from the original file, including whitespace. Use the shortest unique match." },
+                            "newText": { "type": "string", "description": "Replacement text, including any newline to retain. An empty string deletes the match." }
                         },
                         "additionalProperties": false
                     }
@@ -100,7 +100,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 16384,
-                    "description": "Bash script. Each call starts at the selected workspace root. In the sandbox, HOME is the session home directory; TMPDIR is removed after this call. Use an explicit template for temporary files, e.g. mktemp -d \"$TMPDIR/build.XXXXXX\". Store persistent output in the session workspace. Preserve the target command exit status."
+                    "description": "Bash script. Each call starts at the selected workspace root. In the sandbox, HOME is the session home directory; TMPDIR is removed after this call. Use an explicit template for temporary files, e.g. mktemp -d \"$TMPDIR/build.XXXXXX\". Preserve the target command exit status."
                 },
                 "requestNetworkPermission": {
                     "type": "string", "minLength": 1, "maxLength": 1024,
@@ -114,9 +114,9 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 },
                 "requestFileAccess": {
                     "type": "object",
-                    "description": "Request extra absolute paths outside the project. Project edits/deletions use file tools; test/output directory writes use Plan writablePaths.",
+                    "description": "Request access to extra absolute paths outside the project. Existing workspace permissions still apply.",
                     "properties": {
-                        "reason": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Explain why this external access is needed. Project scope changes use Plan instead." },
+                        "reason": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Explain why the external paths are needed." },
                         "read": { "type": "array", "items": { "type": "string", "minLength": 1 } },
                         "write": { "type": "array", "items": { "type": "string", "minLength": 1 } }
                     },

@@ -1481,6 +1481,23 @@ function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknow
     // The tool call already names the command. Starting or waiting only needs its handle.
     output.job = { jobId: job.jobId, status: job.status, startedAt: job.startedAt };
   }
+  if (record.preparedEffect.origin === 'coreBuiltin' && record.outcome === 'completed') {
+    if (record.toolName === 'fs.read' && output.binary === false && output.truncated === false
+      && output.startByte === 0 && typeof output.content === 'string') {
+      // A complete text file has no continuation. Keep its identity, lines and file attributes.
+      for (const key of ['maxBytes', 'maxLines', 'startByte', 'endByte', 'sizeBytes', 'binary', 'byteTruncated']) delete output[key];
+      if (isRecord(output.fileClassification)) {
+        const { kind, executable } = output.fileClassification;
+        output.fileClassification = { kind, executable };
+      }
+    }
+    if (record.toolName === 'fs.write' || record.toolName === 'fs.edit') {
+      if (Array.isArray(output.fileChanges)) output.changed = output.fileChanges.length > 0;
+      // The exact replacements are in the call. The diff and byte ranges belong to the journal.
+      delete output.editPreview;
+      delete output.changedRanges;
+    }
+  }
   if (['fs.write', 'fs.edit', 'fs.delete', 'bash', 'powershell', 'container', 'document.render', 'browser.capture'].includes(record.toolName)) {
     delete output.fileChanges;
   }
@@ -1500,7 +1517,7 @@ function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknow
     if (Object.keys(output.archive).length === 0) delete output.archive;
   }
   if (record.toolName === 'bash' || record.toolName === 'powershell') {
-    stripShellDiagnostics(output);
+    stripShellDiagnostics(output, record.input.command, record.outcome === 'completed');
   }
   if (record.toolName === 'computer.control' && record.input.action !== 'status'
     && isRecord(output.diagnostics) && isRecord(output.diagnostics.native)) {
@@ -1513,7 +1530,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function stripShellDiagnostics(output: Record<string, unknown>): void {
+function stripShellDiagnostics(output: Record<string, unknown>, command: unknown, completeResult: boolean): void {
+  if (output.command === command) delete output.command;
+  if (completeResult && output.truncated === false) delete output.fullOutput;
+  if (isRecord(output.environment) && typeof output.environment.writeScope === 'string') {
+    output.writeScope = output.environment.writeScope;
+  }
   delete output.environment;
   delete output.paths;
   delete output.workspaceMode;
@@ -1547,15 +1569,15 @@ function processReviewJobs(events: readonly SessionEvent[], review: Extract<Sess
 function processContext(job: ManagedProcessSnapshot): unknown {
   // Bound each appended snapshot; the complete output remains in Kernel storage.
   const { result, output } = job;
+  const truncated = output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000;
   const details = isRecord(result) ? { ...result } : result;
   if (isRecord(details)) {
     delete details.stdout; delete details.stderr;
-    if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details);
+    if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details, job.command, job.status === 'completed' && !truncated);
   }
   return { jobId: job.jobId, command: job.command, status: job.status, startedAt: job.startedAt,
     ...(job.lastOutputAt ? {lastOutputAt: job.lastOutputAt} : {}), ...(job.completedAt ? {completedAt: job.completedAt} : {}),
     ...(job.error ? { error: job.error } : {}),
-    output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000),
-    truncated: output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000 },
+    output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000), truncated },
     ...(details !== undefined ? { result: details } : {}) };
 }

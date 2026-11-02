@@ -720,7 +720,7 @@ impl ToolCatalogSnapshot {
         if let Some(process) = contributions.get_mut("process") {
             process.input_schema = crate::managed_processes::schema(&process_targets);
             process.description = format!("{}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically; do not poll.",
-                if process_targets.is_empty() { "Manage existing commands: " } else { "Manage commands: action=start launches one of the declared execution tools; " });
+                if process_targets.is_empty() { "Manage existing commands: " } else { "Start independent long commands with action=start so later calls can proceed. An ordinary command that returns a running job defers later calls in its batch. " });
         }
 
         if let Some(names) = &selection.kernel {

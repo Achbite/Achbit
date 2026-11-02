@@ -4048,6 +4048,8 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
         assert.equal(failedResult?.error?.code, 'bash_exit_nonzero');
         assert.equal(failedResult?.output?.exitCode, 7);
         assert.equal(failedResult?.output?.stderr, 'fixture failure');
+        assert.equal(failedResult?.output?.writeScope, 'hostUser');
+        assert.equal(failedResult?.output?.environment, undefined);
         assert.equal(failedResult?.output?.workspaceId, undefined);
         const todo = request.messages
           .map(jsonMessagePayload)

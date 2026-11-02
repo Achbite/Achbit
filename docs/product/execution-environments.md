@@ -66,6 +66,6 @@ New runs capture runtime settings. On macOS the Host prepares PATH from the logi
 
 Command-not-found describes the prepared PATH, not all installed software. Denied filesystem access and an unreachable socket do not prove a service is stopped. Check the actual error and required scope. Keep files needed by later calls in workspace paths; per-call temporary resources are cleaned.
 
-Use PowerShell syntax on Windows; Windows PowerShell 5.1 lacks && and ||. Preserve $LASTEXITCODE for native commands and pipeline failures in Bash. The shell output tail is bounded to 2000 lines or 50 KiB; inspect returned fullOutput paths for omitted sections without repeating effects. A terminal supplies bounded stdin once to a temporary PTY and must terminate; omitted terminal closes stdin.
+Use PowerShell syntax on Windows; Windows PowerShell 5.1 lacks && and ||. Preserve $LASTEXITCODE for native commands and pipeline failures in Bash. The shell output tail is bounded to 2000 lines or 50 KiB. The model receives stdout, stderr, the exit code and execution scope. Clipped, failed and cancelled results retain available fullOutput log paths for recovery. The Kernel retains the full record. A terminal supplies bounded stdin once to a temporary PTY and must terminate; omitted terminal closes stdin.
 
 For long commands, dependency waits, one-time review and cancellation, read [managed processes](managed-processes.md).

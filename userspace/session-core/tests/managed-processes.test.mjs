@@ -263,3 +263,20 @@ test('a terminal result that arrives before the next model request supersedes it
     modelView: {throughSequence: 2, additions: atReview}}), fact(4, 'process.updated', terminal)]),
   ['process.wait.review', 'process.updated'], 'a review already delivered remains part of model history');
 });
+
+test('a background Shell result keeps its recovery path when Session clips the visible tail', () => {
+  const fullOutput = { stdout: { path: '/archive/job.stdout', bytes: 2100 } };
+  const output = text => ({ stdout: text, stderr: '', stdoutBytes: text.length, stderrBytes: 0, truncated: false });
+  const result = stdout => {
+    const job = { jobId: 'job:tail', revision: 2, sessionId: 'session:tail', runId: 'run:tail', callId: 'call:tail',
+      toolName: 'bash', command: 'build', status: 'completed', startedAt: '1', completedAt: '2', output: output(stdout),
+      result: { command: 'build', exitCode: 0, truncated: false, fullOutput } };
+    const event = { sequence: 1, eventId: 'event:one', sessionId: job.sessionId, runId: job.runId, type: 'process.updated', payload: { job } };
+    return JSON.parse(messagesFromJournal([event], job.runId, [])[0].message.content).process;
+  };
+  const clipped = result('x'.repeat(2100));
+  assert.equal(clipped.output.truncated, true);
+  assert.equal(clipped.output.stdout.length, 2000);
+  assert.deepEqual(clipped.result.fullOutput, fullOutput);
+  assert.equal(result('done').result.fullOutput, undefined);
+});

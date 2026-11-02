@@ -907,40 +907,58 @@ fn fs_edit_rejections_name_the_failing_edit_index_and_shape() {
 }
 
 #[test]
-fn fs_read_distinguishes_missing_metadata_from_a_directory() {
-    let workspace = TempWorkspace::new("read-failure-facts");
-    fs::create_dir(workspace.0.join("directory")).unwrap();
+fn fs_read_lists_bound_directories_and_preserves_missing_file_errors() {
+    let workspace = TempWorkspace::new("read-directory");
+    fs::create_dir(workspace.0.join("nested")).unwrap();
+    fs::write(workspace.0.join("a.txt"), "text").unwrap();
     let tool_registry = KernelToolRegistry::default();
     let registry = KernelExecutorRegistry::from_executors(builtin_executors(
         &tool_registry,
         KernelExecutorConfig::default(),
         Arc::new(EmptySecretProvider),
     ));
-    for (path, expected) in [
-        ("missing", "fs_read_metadata_failed"),
-        ("directory", "fs_read_not_file"),
-    ] {
-        let error = registry
-            .invoke(
-                invocation(
-                    format!("invocation:{path}"),
-                    "fs.read",
-                    serde_json::json!({"path":path}),
-                ),
-                context_with_target(&workspace.0, path),
-            )
-            .unwrap_err();
-        match error {
-            KernelError::Structured { code, details, .. } => {
-                assert_eq!(code, expected);
-                if path == "missing" {
-                    assert_eq!(details["ioKind"], "NotFound");
-                    assert!(details["osCode"].is_number());
-                }
-            }
-            error => panic!("unexpected read error: {error}"),
-        }
-    }
+    let read = |path: &str, args: Value| {
+        registry.invoke(
+            invocation("invocation:read", "fs.read", args),
+            context_with_target(&workspace.0, path),
+        )
+    };
+    let page = read(".", serde_json::json!({"path":".","maxLines":1}))
+        .unwrap()
+        .output;
+    assert_eq!(page["kind"], "directory");
+    assert_eq!(
+        page["entries"],
+        serde_json::json!([{"name":"a.txt","kind":"file"}])
+    );
+    assert_eq!(page["nextStartLine"], 2);
+    let next = read(
+        ".",
+        serde_json::json!({"path":".","startLine":page["nextStartLine"]}),
+    )
+    .unwrap()
+    .output;
+    assert_eq!(
+        next["entries"],
+        serde_json::json!([{"name":"nested","kind":"directory"}])
+    );
+    assert_eq!(next["truncated"], false);
+    let empty = read("nested", serde_json::json!({"path":"nested"}))
+        .unwrap()
+        .output;
+    assert_eq!(empty["entries"], serde_json::json!([]));
+    assert!(read(".", serde_json::json!({"path":".","startByte":1})).is_err());
+    let file = read("a.txt", serde_json::json!({"path":"a.txt"}))
+        .unwrap()
+        .output;
+    assert_eq!(file["content"], "text");
+    let error = read("missing", serde_json::json!({"path":"missing"})).unwrap_err();
+    let KernelError::Structured { code, details, .. } = error else {
+        panic!("expected a structured IO failure")
+    };
+    assert_eq!(code, "fs_read_metadata_failed");
+    assert_eq!(details["ioKind"], "NotFound");
+    assert!(details["osCode"].is_number());
 }
 
 #[cfg(unix)]

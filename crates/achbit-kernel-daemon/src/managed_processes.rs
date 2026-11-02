@@ -28,7 +28,7 @@ pub(crate) struct Input {
 pub(crate) fn schema(targets: &[&str]) -> Value {
     let mut schema = json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
         "action":{"type":"string","enum":["start","wait","status","cancel"]},
-        "tool":{"type":"string","enum":targets,"description":"For start: the execution tool. Container jobs accept create or exec."},
+        "tool":{"type":"string","enum":targets,"description":"The execution tool to start."},
         "input":{"type":"object","description":"For start: the chosen tool's exact input, excluding workspace and workspaceId; select workspace on this process call. Include any permission request. Omit timeout for no runtime limit."},
         "jobId":{"type":"string","description":"For wait/status/cancel: the jobId returned by start."},
         "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional dependency decision deadline in seconds. The job keeps running. Without a deadline the first dependency wait offers one review after 120 seconds."}
@@ -38,6 +38,9 @@ pub(crate) fn schema(targets: &[&str]) -> Value {
         let properties = schema["properties"].as_object_mut().expect("object schema");
         properties.remove("tool");
         properties.remove("input");
+    } else if targets.contains(&"container") {
+        schema["properties"]["tool"]["description"] =
+            json!("The execution tool to start. Container jobs accept create or exec.");
     }
     schema
 }

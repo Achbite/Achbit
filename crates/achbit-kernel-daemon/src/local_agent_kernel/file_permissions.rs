@@ -96,6 +96,26 @@ impl LocalAgentKernel {
             }
             bindings.push(binding);
         }
+        if prepared.operation == "fs.read" {
+            if let Some(directory) = prepared
+                .private_resolved_targets
+                .first()
+                .map(Path::new)
+                .filter(|p| p.is_dir())
+            {
+                if !bindings
+                    .iter()
+                    .any(|binding| directory.starts_with(&binding.root))
+                {
+                    return Err(LocalAgentKernelError::input(
+                        "$.path",
+                        "unboundDirectory",
+                        "Directory listing requires a bound workspace directory.",
+                        None,
+                    ));
+                }
+            }
+        }
         prepare_file_access(
             prepared,
             bindings,
