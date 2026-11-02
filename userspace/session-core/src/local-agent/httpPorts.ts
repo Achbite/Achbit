@@ -468,14 +468,15 @@ export class HttpProviderPort extends LocalAgentHttpPort implements ProviderPort
 
 interface HttpRunPreparationPortOptions extends HttpPortOptions {
   stableCoreInstructions: readonly InstructionContribution[];
+  promptContributions?: readonly InstructionContribution[];
 }
 
 export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPreparationPort {
-  readonly #stableCoreInstructions: readonly InstructionContribution[];
+  readonly #instructions: readonly InstructionContribution[];
 
   constructor(options: HttpRunPreparationPortOptions) {
     super(options);
-    this.#stableCoreInstructions = Object.freeze(options.stableCoreInstructions
+    this.#instructions = Object.freeze([...options.stableCoreInstructions, ...(options.promptContributions ?? [])]
       .map((instruction) => Object.freeze({ ...instruction })));
   }
 
@@ -579,7 +580,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           environment: value.environment as JsonObject,
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
-            ...this.#stableCoreInstructions,
+            ...this.#instructions,
             environmentInstruction(value.environment, tools.filter(tool => tool.availability === 'callable').map(tool => tool.name)),
           ], pluginConfig, {
             interactionRequest: wireName(SESSION_CONTROL_INTERACTION_REQUEST),

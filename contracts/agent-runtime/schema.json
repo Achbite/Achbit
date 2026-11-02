@@ -145,6 +145,7 @@
     "AgentRecipe": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "productComponents": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
         "tools": {"$ref": "#/$defs/AgentToolSelection"},
         "profileId": {"$ref": "#/$defs/Id"},
         "reasoningEffort": {"enum": ["low", "medium", "high", "xhigh", "max"]},

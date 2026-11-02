@@ -1,9 +1,10 @@
-import type { AgentConfiguration, AgentContributionSelection, JsonObject } from '@achbit/protocol';
+import type { AgentConfiguration, AgentContributionSelection, AgentRecipe, JsonObject } from '@achbit/protocol';
 import { SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_TODO_UPDATE } from '@achbit/protocol';
 import type { SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities } from './sessionCapabilities.js';
 import { buildAgentProviderRequest } from './contextComposer.js';
 import { DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
+import type { InstructionContribution } from './skillPlugins.js';
 
 type Kind = keyof AgentConfiguration;
 export interface SessionContribution<K extends Kind = Kind> {
@@ -17,17 +18,44 @@ export interface SessionContribution<K extends Kind = Kind> {
   create(parameters: JsonObject): { implementation: SessionCapabilities[K]; dispose?(): Promise<void> };
 }
 
+export interface SessionProductComponent {
+  id: string;
+  /** An installed component contributes only when selected by the recipe or the product's defaults. */
+  enabledByDefault?: boolean;
+  /** Host metadata components run outside the model context. */
+  text?: string;
+}
+
 const OPTIONAL_CONTROLS = [SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT];
 /** Host-installed contributions, with one catalog for admission, discovery and restoration. */
 export class SessionConfigurationRegistry {
   readonly #entries = new Map<string, SessionContribution>();
 
-  constructor(contributions: readonly SessionContribution[] = builtinSessionContributions()) {
+  readonly #products = new Map<string, SessionProductComponent>();
+
+  constructor(contributions: readonly SessionContribution[] = builtinSessionContributions(), products: readonly SessionProductComponent[] = []) {
+    for (const product of products) {
+      if (this.#products.has(product.id)) throw new Error('session_product_component_duplicate');
+      this.#products.set(product.id, { ...product });
+    }
     for (const contribution of contributions) {
       const key = `${contribution.kind}:${contribution.id}`;
       if (this.#entries.has(key)) throw new Error('session_contribution_duplicate');
       this.#entries.set(key, contribution);
     }
+  }
+
+  productInstructions(recipe?: Pick<AgentRecipe, 'productComponents' | 'tools'>): InstructionContribution[] {
+    const ids = recipe?.productComponents;
+    for (const id of ids ?? []) {
+      if (!this.#products.has(id)) throw new Error(`session_product_component_unavailable:${id}`);
+    }
+    const result: InstructionContribution[] = [];
+    for (const product of this.#products.values()) {
+      const active = ids ? ids.includes(product.id) : product.enabledByDefault && recipe?.tools?.plugins !== false;
+      if (active && product.text !== undefined) result.push({ id: product.id, text: product.text });
+    }
+    return result;
   }
 
   describe(fullConfiguration: boolean): JsonObject {

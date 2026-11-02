@@ -238,6 +238,7 @@ export class AgentManager {
     const recipe = !existingChild ? inheritAgentRecipe(caller.recipe, {
       configuration, runner: this.loops.validate(operation.runner ?? preset.runner ?? caller.recipe?.runner),
       tools: operation.tools ?? preset.tools,
+      productComponents: preset.productComponents,
       permissionPolicy: operation.permissionPolicy ?? preset.permissionPolicy,
       workspaceSandbox: operation.workspaceSandbox ?? preset.workspaceSandbox,
       profileId: modelSelection!.profileId, ...(modelSelection!.reasoningEffortOverride ? { reasoningEffort: modelSelection!.reasoningEffortOverride } : {}),

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { decodeAgentRecipe, inheritAgentRecipe } from '../../protocol/dist/index.js';
+import { achbitProductComponents } from '../dist/local-agent/productInstructions.js';
+import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { stableCoreInstructions } from '../dist/local-agent/coreInstructions.js';
 import { agentOperationDefinitions, sessionControlInstructions, sessionControlToolDefinitions } from '../dist/local-agent/sessionControls.js';
 import { permissionInstructionText } from '../dist/local-agent/skillPlugins.js';
@@ -16,6 +19,34 @@ test('stable core stays separate from dynamic control syntax', () => {
   const text = stableCoreInstructions[0].text;
   assert.doesNotMatch(text, /plan_publish|interaction_request|workspaceId|mutationManifest|\[DONE:|\[PLAN MODE ACTIVE\]/u,
     'tool syntax, dynamic identities and mode-specific formats do not belong in the stable core');
+});
+
+test('Host-installed product slices compose independently from tools, metadata and registration', () => {
+  const extra = { id: 'extension.fixture', text: 'Fixture guidance.' };
+  const standalone = new SessionConfigurationRegistry();
+  const registry = new SessionConfigurationRegistry(undefined, [...achbitProductComponents, extra]);
+  const select = recipe => registry.productInstructions(decodeAgentRecipe(recipe));
+  const base = { tools: { kernel: ['bash'], controls: [], plugins: false } };
+  assert.deepEqual(standalone.productInstructions(), []);
+  assert.deepEqual(select(base), []);
+  assert.deepEqual(select({ productComponents: [] }), []);
+  const full = select({});
+  assert.ok(full.some(item => item.id === 'achbit.collaboration' && /Update them/u.test(item.text)));
+  assert.ok(full.some(item => item.id === 'achbit.rich-replies' && /Mermaid/u.test(item.text)));
+  assert.ok(!full.some(item => item.id === extra.id || item.id === 'achbit.conversation-title'));
+  assert.doesNotMatch(stableCoreInstructions[0].text, /Mermaid|opening explanation|Update them/u);
+  assert.deepEqual(select({ ...base, productComponents: ['achbit.conversation-title', extra.id] }), [extra]);
+  const ids = ['achbit.rich-replies', 'achbit.delivery'];
+  const recipe = { ...base, productComponents: ids };
+  const slices = select(recipe);
+  assert.deepEqual(new Set(slices.map(item => item.id)), new Set(ids));
+  assert.deepEqual(select({ productComponents: ids.toReversed() }), slices, 'registry order keeps equivalent selections stable');
+  assert.deepEqual(inheritAgentRecipe(recipe, {}).productComponents, ids);
+  assert.deepEqual(inheritAgentRecipe(recipe, { productComponents: [] }).productComponents, []);
+  assert.throws(() => select({ productComponents: ['uninstalled'] }), /session_product_component_unavailable/u);
+  for (const invalid of ['achbit.collaboration', ['achbit.collaboration', 'achbit.collaboration']]) {
+    assert.throws(() => select({ productComponents: invalid }), /agent_product_components_invalid/u);
+  }
 });
 
 test('agent operation discovery respects delegation and coordinator boundaries', () => {

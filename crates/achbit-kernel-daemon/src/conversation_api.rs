@@ -1574,6 +1574,9 @@ pub(crate) async fn create_agent_session(
         },
         Err(error) => return ApiResponse::error("agent_recipe_invalid", error),
     };
+    if recipe.product_components.is_none() {
+        recipe.product_components = parent_recipe.product_components.clone();
+    }
     recipe.tools.inherit_missing(
         &parent_recipe.tools,
         body.recipe.as_ref().and_then(|value| value.get("tools")),
@@ -2526,6 +2529,14 @@ fn schedule_conversation_title(
         .as_deref()
         != Some(command_id)
     {
+        return Ok(());
+    }
+    let recipe = state
+        .local_agent
+        .journal
+        .agent_recipe(session_id)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    if !recipe.product_component_enabled("achbit.conversation-title", true) {
         return Ok(());
     }
     let mut gui = state.gui.lock().expect("gui state lock");
