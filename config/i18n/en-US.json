@@ -1504,6 +1504,10 @@
       "label": "Git Bash path",
       "description": "Leave empty to detect automatically."
     },
+    "agent.minimalMode": {
+      "label": "Minimal mode (host execution without routine approval)",
+      "description": "New conversations use only file reading, writing, editing and shell commands. Plan, plugins and automatic titles are off. Shell commands run outside the workspace sandbox and still follow command rules."
+    },
     "agent.contextManagement.enabled": {
       "label": "Automatic context management",
       "description": "Compact history above the threshold when a task finishes or before the next run. May incur additional model charges. Turning this off does not disable context-limit compaction. Applies to the next run."

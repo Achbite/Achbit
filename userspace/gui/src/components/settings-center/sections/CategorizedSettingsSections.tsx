@@ -43,7 +43,7 @@ const CONTEXT_MANAGEMENT_KEYS = ['agent.contextManagement.enabled', 'agent.conte
 const AGENT_INSTRUCTION_KEYS = ['agent.systemPrompt'] as const;
 const AGENT_RESPONSE_KEYS = ['agent.responseLanguage'] as const;
 const AGENT_SHELL_KEYS = ['agent.windows.shell', 'agent.windows.gitBashPath'] as const;
-const AGENT_WORKFLOW_KEYS = ['agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'] as const;
+const AGENT_WORKFLOW_KEYS = ['agent.minimalMode', 'agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'] as const;
 const AGENT_PERMISSION_KEYS = [
   'agent.permissions.shell',
   'agent.permissions.shellAccess',

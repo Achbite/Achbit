@@ -31,7 +31,7 @@ function fixture(t, store, language) {
 const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning', 'gui.autoUpdate', 'gui.completionSound.foreground',
   'gui.usageWidget.enabled', 'gui.usageWidget.visibility', 'gui.usageWidget.currency', 'gui.defaultFileOpen', 'gui.showRuntimeFiles'];
 const agentKeys = ['agent.responseLanguage', 'agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens', 'agent.systemPrompt',
-  'agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'];
+  'agent.minimalMode', 'agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'];
 const accessKeys = ['agent.permissions.shell', 'agent.permissions.shellAccess', 'agent.permissions.networkRead', 'agent.permissions.external'];
 
 test('completion sound controls and their search entry are available only in the desktop shell', async t => {

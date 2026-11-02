@@ -132,6 +132,7 @@ const SETTING_DEFINITION_SCHEMAS: SettingDefinitionSchema[] = [
   { key: 'gui.usageWidget.currency', group: 'gui', control: 'select', options: ['USD', 'CNY'] },
   { key: 'gui.usageWidget.enabled', group: 'gui', control: 'boolean' },
   { key: 'gui.usageWidget.visibility', group: 'gui', control: 'select', options: ['summary', 'collapsed', 'hidden'] },
+  { key: 'agent.minimalMode', group: 'agent', control: 'boolean' },
   { key: 'agent.contextManagement.enabled', group: 'agent', control: 'boolean' },
   { key: 'agent.contextManagement.thresholdTokens', group: 'agent', control: 'number' },
   { key: 'agent.windows.shell', group: 'agent', control: 'select', options: ['auto', 'powershell7', 'windowsPowerShell', 'gitBash'] },

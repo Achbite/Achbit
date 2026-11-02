@@ -1321,7 +1321,7 @@ pub(crate) async fn conversation_session_create(
     }
 
     let now = crate::now_text();
-    let (profile_id, bindings) = {
+    let (profile_id, bindings, recipe) = {
         let mut gui = state.gui.lock().expect("gui state lock");
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
@@ -1360,7 +1360,11 @@ pub(crate) async fn conversation_session_create(
             }
             bindings
         };
-        (profile_id, bindings)
+        let recipe = recipe.or_else(|| {
+            (gui.user_settings["agent.minimalMode"] == true)
+                .then(crate::local_agent_recipe::AgentRecipe::minimal_coding)
+        });
+        (profile_id, bindings, recipe)
     };
 
     create_registered_session(

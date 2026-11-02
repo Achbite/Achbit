@@ -387,6 +387,7 @@ pub(crate) fn default_user_settings() -> Value {
         "agent.subagents.allowMemberAnalysis": true,
         "agent.subagents.allowFullConfiguration": true,
         "agent.subagents.presets": "[]",
+        "agent.minimalMode": false,
         "agent.contextManagement.enabled": false,
         "agent.contextManagement.thresholdTokens": 500_000,
         "agent.responseLanguage": "auto",
@@ -436,6 +437,7 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
     }
     for key in [
         "agent.subagents.enabled",
+        "agent.minimalMode",
         "agent.contextManagement.enabled",
         "agent.subagents.allowMemberAnalysis",
         "agent.subagents.allowFullConfiguration",

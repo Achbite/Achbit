@@ -181,6 +181,31 @@ impl Default for WorkspaceSandboxSelection {
 }
 
 impl AgentRecipe {
+    /// An opt-in creation preset. Unspecified permission settings (including command rules)
+    /// continue to come from the ordinary Kernel permission policy.
+    pub fn minimal_coding() -> Self {
+        Self {
+            tools: ToolSelection {
+                // The Kernel advertises only the Shell selected for the execution environment.
+                kernel: Some(
+                    ["fs.read", "bash", "powershell", "fs.edit", "fs.write"]
+                        .map(String::from)
+                        .into(),
+                ),
+                controls: Some(Vec::new()),
+                plugins: false,
+            },
+            product_components: Some(Vec::new()),
+            permissions: Some(json!({
+                "agent.permissions.workspaceMutation": "allow",
+                "agent.permissions.engineeringDecisions": "delegate",
+                "agent.permissions.shell": "allow",
+                "agent.permissions.shellAccess": "full"
+            })),
+            ..Self::default()
+        }
+    }
+
     pub fn decode(value: &Value) -> Result<Self, String> {
         let mut recipe: Self = serde_json::from_value(value.clone())
             .map_err(|error| format!("agent_recipe_invalid:{error}"))?;

@@ -2,7 +2,7 @@ import React, { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { permissionSettings } from '@achbit/protocol';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
-import { t, type UiLanguage } from '../../i18n';
+import { settingText, t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
@@ -79,6 +79,12 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
     catch { /* Stores expose the original command error. */ }
     finally { setBusy(false); }
   };
+  if (!sessionId && defaults['agent.minimalMode'] === true) {
+    const mode = settingText(language, 'agent.minimalMode');
+    return <span className="local-agent__permission-summary" title={mode?.description}>
+      <AchbitShellIcon name="shield" /><span>{mode?.label}</span>
+    </span>;
+  }
   return <div ref={permissionControlRef} className="local-agent__permission-control">
     <button {...identity.action('toggle', 'click')} type="button" className="local-agent__permission-summary" aria-label={t(language, 'agent.permission.menuTitle')}
       title={summary} aria-expanded={permissionMenuOpen} onClick={() => { setPermissionMenuOpen(open => !open); setAttachmentMenuOpen(false); }}>

@@ -1504,6 +1504,10 @@
       "label": "Git Bash 路径",
       "description": "留空自动检测。"
     },
+    "agent.minimalMode": {
+      "label": "极简模式（本机执行，免常规审批）",
+      "description": "仅对新对话生效。只使用文件读取、写入、编辑和 Shell；不启用 Plan、插件或自动命名。Shell 不使用工作区沙箱，仍遵守命令规则。"
+    },
     "agent.contextManagement.enabled": {
       "label": "自动上下文管理",
       "description": "在任务收尾或下一轮开始前压缩超出阈值的历史，可能产生额外模型费用。关闭不影响容量不足时的压缩。下次运行生效。"
