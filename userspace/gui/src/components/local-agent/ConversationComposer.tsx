@@ -14,6 +14,7 @@ import { pastedTextTitle } from '../../services/pastedText';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
+import { ImageReview } from './ImageReview';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
@@ -358,7 +359,8 @@ export function ConversationComposer({
             ))}
             {composer.pastedImages.map((image) => (
               <span className="local-agent__pasted-image" key={image.inputId} data-attachment-id={image.inputId}>
-                <img src={image.dataUrl} alt={image.name} />
+                <span className="local-agent__pasted-image-preview"><ImageReview source={image.dataUrl} alt={image.name}
+                  triggerIdentity={identity.action('open-image', 'click', { inputId: image.inputId })} /></span>
                 <span className="local-agent__attachment-name" title={image.name}>{image.name}</span>
                 <button type="button" aria-label={t(language, 'agent.attachment.remove', { name: image.name })}
                   onClick={() => composer.setPastedImages((current) => current.filter((item) => item.inputId !== image.inputId))}>

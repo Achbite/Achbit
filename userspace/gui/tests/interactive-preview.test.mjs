@@ -82,3 +82,25 @@ test('recent preview rows survive ordinary virtualization and release least rece
   t.mock.timers.tick(60_000);
   assert.equal(JSON.stringify([...events]), snapshot, 'released views have no delayed work');
 });
+
+
+test('preview actions distinguish repeated inline blocks and the Reader of the same artifact', async t => {
+  const [{ MarkdownContent }, { PreviewArtifactsScope, ArtifactInteractivePreview }, { RichContentScope }] = await loadGuiModules(t, [
+    '/src/components/local-agent/BufferedMarkdown.tsx', '/src/components/local-agent/InteractivePreview.tsx',
+    '/src/components/local-agent/RichContentIdentity.tsx',
+  ]);
+  const artifact = { artifactId: 'artifact:repeated', label: 'Repeated', contentMode: 'fixed', contentType: 'text/html' };
+  const scope = { sessionId: 'session:repeated', artifacts: [artifact] };
+  const preview = '```achbit-preview\nartifact://artifact:repeated\n```';
+  const html = renderToStaticMarkup(createElement(PreviewArtifactsScope.Provider, { value: scope },
+    createElement(RichContentScope.Provider, { value: { sessionId: scope.sessionId, rowKey: 'stream:repeated', contentKey: 'body' } },
+      createElement(MarkdownContent, null, preview + '\n\n' + preview)),
+    createElement(ArtifactInteractivePreview, { sessionId: scope.sessionId, artifact })));
+  const actions = [...html.matchAll(/<button\b[^>]*data-ui-action="conversation.preview.([^"]+)"[^>]*>/g)]
+    .map(([tag, action]) => ({ action, target: JSON.parse(/data-ui-target="([^"]+)"/.exec(tag)[1].replaceAll('&quot;', '"')) }));
+  assert.equal(actions.length, 8);
+  assert.equal(new Set(actions.map(item => JSON.stringify(item))).size, 8);
+  assert.equal(actions.filter(item => item.target.location === 'inline').length, 6);
+  assert.equal(actions.filter(item => item.target.location === 'reader').length, 2);
+  assert.ok(actions.every(item => item.target.artifactId === artifact.artifactId && item.target.sessionId === scope.sessionId));
+});

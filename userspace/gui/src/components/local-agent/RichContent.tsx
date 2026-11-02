@@ -1,14 +1,17 @@
-import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { useConversationHost } from './ConversationHost';
 import type { CodeSpan } from './codeLanguage';
-import { memo, useEffect, useId, useState } from 'react';
+import { memo, useContext, useEffect, useState } from 'react';
 import { useConversationSessionId } from './ConversationSessionScope';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { ImageReview } from './ImageReview';
+import { RichContentScope } from './RichContentIdentity';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 
 export const CodeContent = memo(function CodeContent({ code, language, streaming = false }: { code: string; language: string; streaming?: boolean }) {
+  const target = useContext(RichContentScope);
+  const identity = useUiOwner('conversation.code', undefined, { ...target });
   const uiLanguage = useUiLanguage();
   const host = useConversationHost();
   const [highlightError, setHighlightError] = useState('');
@@ -29,7 +32,7 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
     return () => { current = false; };
   }, [code, language, streaming]);
   return <div className="conversation-code">
-    <header><span>{language || 'text'}</span><button type="button" className="conversation-copy-button" aria-label={t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')} onClick={() => {
+    <header><span>{language || 'text'}</span><button {...(target ? identity.action('copy', 'click') : {})} type="button" className="conversation-copy-button" aria-label={t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')} onClick={() => {
       setCopied(false); setCopyError('');
       void host.copyText(code).then(() => setCopied(true)).catch((error: unknown) => setCopyError(String(error)));
     }}><AchbitShellIcon name={copied ? 'check' : 'copy'} /><span className="conversation-copy-hint" role="status">{t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')}</span></button></header>
@@ -61,26 +64,4 @@ export function ImageContent({ source, alt }: { source: string; alt: string }) {
     <ImageReview source={result.url} alt={alt} onError={() => setResult({ source, decodeFailed: true })} />
   </span>
     : <span role="status">{alt} · {result.decodeFailed ? t(uiLanguage, 'content.image.decodeError') : result.error}</span>;
-}
-
-export function MermaidContent({ source }: { source: string }) {
-  const uiLanguage = useUiLanguage();
-  const theme = useDisplayTheme();
-  const id = `diagram-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
-  const [result, setResult] = useState<{ source: string; theme: string; svg?: string; error?: string } | null>(null);
-  useEffect(() => {
-    let current = true;
-    void import('mermaid').then(async ({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: theme === 'dark' ? 'dark' : 'neutral' });
-      const { svg } = await mermaid.render(id, source);
-      if (current) setResult({ source, theme, svg });
-    }).catch((error: unknown) => { if (current) setResult({ source, theme, error: String(error) }); });
-    return () => { current = false; };
-  }, [id, source, theme]);
-  return <figure className="conversation-diagram">
-    {result?.source !== source || result.theme !== theme ? <span role="status">{t(uiLanguage, 'content.diagram.loading')}</span>
-      : result.svg ? <div dangerouslySetInnerHTML={{ __html: result.svg }} />
-        : <span role="status">{t(uiLanguage, 'content.diagram.error', { error: result.error })}</span>}
-    <details><summary>{t(uiLanguage, 'content.diagram.source')}</summary><pre>{source}</pre></details>
-  </figure>;
 }

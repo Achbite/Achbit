@@ -1,7 +1,7 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { parseLocalTarget, bindLocalTarget, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
 import { ResourceLinkChoices } from './ResourceLinkChoices';
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MessageFeedback, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useConversationHost } from './ConversationHost';
@@ -32,6 +32,7 @@ import { InteractionCard } from './InteractionCard';
 import { messageDisplayText } from './interactionPresentation';
 import { isAutomaticApproval } from './composerDecisions';
 import { PreviewArtifactsScope } from './InteractivePreview';
+import { RichContentScope } from './RichContentIdentity';
 
 interface ConversationTranscriptProps {
   layoutCache: ConversationLayoutCache;
@@ -75,6 +76,7 @@ export function ConversationTranscript({
   onEditMessage,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
+  const referencesIdentity = useUiOwner('conversation.references', undefined, { sessionId: projection?.sessionId });
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
   const onPlanToggle = (card: HTMLElement, expanded: boolean) => {
     const body = viewport.bodyRef.current;
@@ -242,7 +244,7 @@ export function ConversationTranscript({
             {item.value.filesystemReferences.length > 0 && (
               <div className="local-agent__message-attachments">
                 {item.value.filesystemReferences.map((reference) => (
-                  <button type="button"
+                  <button type="button" {...referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
                     onClick={() => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }}
                     className={reference.kind === 'directory'
                       ? 'local-agent__message-directory'
@@ -419,7 +421,10 @@ export function ConversationTranscript({
           required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
             || row.item?.type === 'interaction' && row.item.value.status === 'pending',
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
-          content: () => row.item ? renderItem(row.item) : renderDraft(row.draft!),
+          content: () => <RichContentScope.Provider value={row.item?.type === 'message' || row.item?.type === 'narrative' || row.draft?.type === 'text'
+            ? { sessionId: sessionKey, rowKey: row.key, contentKey: 'body' } : null}>
+            {row.item ? renderItem(row.item) : renderDraft(row.draft!)}
+          </RichContentScope.Provider>,
         }));
         if (showReasoning && projection) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false,
           live: current && !displaySettled, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId}
@@ -489,6 +494,7 @@ function CommittedPresentation({ identity, text, onDisplayed, children }: { iden
 export function InteractionReplyQuote({ sessionId, interactionId, prompt, language }: {
   sessionId: string | undefined; interactionId: string; prompt: string; language: UiLanguage;
 }) {
+  const contentTarget = useContext(RichContentScope);
   const identity = useUiOwner('conversation.answered-question', undefined, { sessionId, interactionId });
   const [expanded, setExpanded] = useConversationRowState('interaction-reply:expanded', false);
   const toggleLabel = language === 'zh-CN'
@@ -500,6 +506,6 @@ export function InteractionReplyQuote({ sessionId, interactionId, prompt, langua
       {!expanded && <span><MarkdownInline>{prompt.split(/\n\s*\n/)[0]!}</MarkdownInline></span>}
       <AchbitShellIcon name="chevronDown" />
     </button>
-    {expanded && <div className="conversation-answered-question-body"><MarkdownContent>{prompt}</MarkdownContent></div>}
+    {expanded && <div className="conversation-answered-question-body"><RichContentScope.Provider value={contentTarget ? { ...contentTarget, contentKey: 'interaction-reply' } : null}><MarkdownContent>{prompt}</MarkdownContent></RichContentScope.Provider></div>}
   </div>;
 }

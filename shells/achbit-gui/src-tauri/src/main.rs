@@ -329,6 +329,7 @@ fn main() {
         native_path_dialog::achbit_pick_path,
         open_file::achbit_open_file,
         file_reader::achbit_read_local_file,
+        achbit_save_diagram_svg,
         open_file::achbit_locate_path,
         product_update::achbit_update_status,
         product_update::achbit_update_check,
@@ -849,6 +850,27 @@ async fn achbit_open_external_url(url: String) -> Result<(), String> {
                 String::from_utf8_lossy(&output.stderr).trim()
             ))
         }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Export the rendered image only to the location selected in the native save panel.
+#[tauri::command]
+async fn achbit_save_diagram_svg(window: tauri::WebviewWindow, svg: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let selection = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_file_name("mermaid.svg")
+            .add_filter("SVG", &["svg"])
+            .blocking_save_file();
+        if let Some(file) = selection {
+            let path = file.into_path().map_err(|error| error.to_string())?;
+            std::fs::write(path, svg).map_err(|error| error.to_string())?;
+        }
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
+import { findReactElement, loadGuiModule, loadGuiModules } from './gui-projection-contract.mjs';
 import { collectUiSources } from '../ui-ownership-sources.mjs';
 
 const component = ownerId => ({ ownerId, slot: null, pluginId: null, read: () => null,
@@ -364,4 +364,75 @@ test('sidebar actions preserve project scope and identify the correct session af
     ['new', project.id], ['new', project.id], ['new', null], ['project-menu', project.id],
     ['open', sessions[1].id], ['session-menu', sessions[0].id],
   ]);
+});
+
+
+test('rich content targets distinguish repeated nested blocks and survive independent render instances', async t => {
+  const [{ MarkdownContent }, { RichContentScope }] = await loadGuiModules(t, [
+    '/src/components/local-agent/BufferedMarkdown.tsx', '/src/components/local-agent/RichContentIdentity.tsx',
+  ]);
+  const table = '| Same | Value |\n| --- | --- |\n| row | 42 |';
+  const code = '```text\nrepeat\n```';
+  const nested = [code, table, code, table].join('\n\n').split('\n').map(line => '> ' + line).join('\n');
+  const source = [table, code, table, code, nested].join('\n\n');
+  const target = { sessionId: 'session:rich', rowKey: 'stream:body', contentKey: 'body' };
+  const render = (value, prefix, streaming = false) => renderToStaticMarkup(createElement(RichContentScope.Provider,
+    { value }, createElement(MarkdownContent, { streaming }, source)), { identifierPrefix: prefix });
+  const read = html => [...html.matchAll(/<button\b[^>]*>/g)].filter(match => match[0].includes('data-ui-action=')).map(([tag]) => ({
+    id: /data-ui-action="([^"]+)"/.exec(tag)[1],
+    target: JSON.parse(/data-ui-target="([^"]+)"/.exec(tag)[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')),
+  }));
+  const first = read(render(target, 'first'));
+  assert.equal(first.filter(item => item.id === 'conversation.table.expand').length, 4);
+  assert.equal(first.filter(item => item.id === 'conversation.code.copy').length, 4);
+  assert.equal(new Set(first.map(item => JSON.stringify(item))).size, 8);
+  assert.deepEqual(read(render(target, 'remounted')), first, 'semantic targets survive fresh React instance IDs');
+  assert.deepEqual(read(render(target, 'streaming', true)), first, 'settling a parsed document keeps block targets');
+  for (const change of [{ rowKey: 'stream:other' }, { contentKey: 'interaction-reply' }]) {
+    const other = read(render({ ...target, ...change }, 'other'));
+    assert.equal(other.length, first.length);
+    assert.ok(other.every((item, index) => JSON.stringify(item) !== JSON.stringify(first[index])));
+  }
+  assert.deepEqual(read(render(null, 'unscoped')), [], 'content without a canonical scope does not invent a durable target');
+});
+
+
+test('transcript scopes rich text by canonical row and opens repeated attachment names by reference', async t => {
+  const previousSelf = globalThis.self;
+  globalThis.self = {};
+  t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
+  const [{ ConversationTranscript }, { ConversationLayoutCache }, { MarkdownContent }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts',
+    '/src/components/local-agent/BufferedMarkdown.tsx',
+  ]);
+  const references = ['a', 'b'].map(id => ({ referenceId: `reference:${id}`, workspaceId: `workspace:${id}`,
+    logicalPath: 'same.txt', displayName: 'same.txt', kind: 'file', byteLength: 1 }));
+  const source = '```text\nsame\n```';
+  const message = { messageId: 'message:source', role: 'user', runId: 'run:source', content: source, filesystemReferences: references };
+  const opened = [];
+  let tree;
+  function Probe() {
+    tree = ConversationTranscript({ layoutCache: new ConversationLayoutCache(), language: 'en-US', loading: false,
+      displaySettledRunIds: new Set(), onDisplayed() {}, projection: { sessionId: 'session:source', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts: [] },
+      hasConversationContent: true, conversationItems: [{ type: 'message', sequence: 1, value: message }], draftItems: [],
+      presentation: { content: () => createElement(MarkdownContent, null, source) },
+      viewport: { bodyRef: { current: null }, transcriptRef: { current: null }, messageEndRef: { current: null }, followingLatest: true,
+        setLatestFollowMode() {}, preserveReadingPosition() {}, scrollToAnchor() {} },
+      openWorkspaceResource: async (...args) => opened.push(args), setUiActionError() {},
+    });
+    return tree;
+  }
+  const html = renderToStaticMarkup(createElement(Probe));
+  const codeTag = [...html.matchAll(/<button\b[^>]*>/g)].find(([tag]) => tag.includes('conversation.code.copy'))?.[0];
+  assert.ok(codeTag);
+  assert.deepEqual(JSON.parse(/data-ui-target="([^"]+)"/.exec(codeTag)[1].replaceAll('&quot;', '"')),
+    { sessionId: 'session:source', rowKey: message.messageId, contentKey: 'body', blockKey: '0', nodeOffset: '0' });
+  const round = findReactElement(tree, node => node.props.roundKey === message.runId);
+  for (const reference of [...references].reverse()) {
+    const button = findReactElement(round.props.rows[0].content(), node => node.props['data-ui-action'] === 'conversation.references.open'
+      && JSON.parse(node.props['data-ui-target']).referenceId === reference.referenceId);
+    assert.deepEqual(JSON.parse(button.props['data-ui-target']), { sessionId: 'session:source', messageId: message.messageId, referenceId: reference.referenceId });
+    button.props.onClick();
+  }
+  assert.deepEqual(opened, [['workspace:b', 'same.txt'], ['workspace:a', 'same.txt']]);
 });
