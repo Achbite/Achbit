@@ -1072,7 +1072,7 @@ function isPlanOperation(value: unknown): boolean {
       && (value.command === undefined || isNonEmptyText(value.command))
       && isArrayOf(value.writablePaths, (entry) => (
         isExactRecord(entry, ['path', 'kind']) && isNonEmptyText(entry.path) && ['file', 'directory'].includes(String(entry.kind))
-      )) && value.writablePaths.length > 0
+      ))
       && (value.terminal === undefined || (
         isExactRecord(value.terminal, ['stdin'])
         && typeof value.terminal.stdin === 'string'

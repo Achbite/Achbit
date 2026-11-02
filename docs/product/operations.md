@@ -87,6 +87,10 @@ Switching conversations changes the view, not the previous task. Reopening a GUI
 
 Use [model services](model-services.md) for profiles, authentication, images, context settings and usage. The selected model/environment is captured for a run. A slow request alone does not prove a stuck Loop; inspect its Provider/tool result and original error.
 
+Use `/plan <task>` to request a plan for one task. Read the proposed work and confirm, request changes, or cancel. Confirmation continues the same task and keeps its other tool permissions. The next task uses the saved Plan preference.
+
+The composer’s **Workflow & permissions** menu groups Plan confirmation and engineering decisions under **Workflow**. **Tool access** covers reads in bound directories, command approval, execution scope, network reads, and external actions. Active grants can be revoked from the menu. In Settings, change the workflow defaults under **Agent behavior**, and change tool policies or command rules under **Tool permissions**.
+
 Use `/focus <task>` after completion to summarize prior work and continue. Compression does not delete history. Read historical facts with `session.read`, starting from summary and narrowing to messages, tools or context; check truncation and pagination instead of repeatedly requesting full snapshots.
 
 Summary/tools views include input rejections and permission-review decisions. Use an exact `providerRequestId` in the context view for recorded review details. `contextPrepared: false` identifies a preparation failure, not a model response. Approval resolution still needs the linked execution record to establish the tool outcome.

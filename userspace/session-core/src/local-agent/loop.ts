@@ -1,6 +1,6 @@
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { permissionInstructionText } from './skillPlugins.js';
-import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
+import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, APPROVAL_HISTORY_VIEWS, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
 import { preparePlanReview } from './planReview.js';
 import type {
@@ -31,7 +31,6 @@ import type {
   ToolInputRejection,
   ToolExecutionRequest,
   ToolExecutionProgress,
-  WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import {
   KERNEL_REPLY_VERSION,
@@ -395,7 +394,8 @@ export async function runAgentLoop(
           runtime,
           events: snapshot.events,
           responseConstraint: 'normal',
-          workspaceBindings: runWorkspaceBindings(snapshot, runId),
+          toolStage: capabilities.controls.toolStage?.(runtime, snapshot.state),
+          ...runWorkspaceContext(snapshot, runId),
           providerRequestId: deps.nextId('provider-request'),
         }, signal);
         const contextBudget = Math.min(capabilities.context.windowTokens(runtime), runtime.provider.contextWindowTokens);
@@ -591,7 +591,7 @@ export async function runAgentLoop(
                   error: { code: 'plan_disabled', message: 'Plan is off. Continue authorized work without publishing a Plan; execution permissions remain separate.' } } }
               : capabilities.controls.publishPlan(
                 snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
-                runWorkspaceBindings(snapshot, runId).map((binding) => binding.workspaceId), deps.nextId,
+                runWorkspaceContext(snapshot, runId).workspaceBindings.map((binding) => binding.workspaceId), deps.nextId,
               );
             let admission: Awaited<ReturnType<KernelPort['planAdmission']>> | undefined;
             if (fact.type === 'plan.published') {
@@ -639,6 +639,10 @@ export async function runAgentLoop(
                 payload: { messageId, role: 'assistant', content: turn.content,
                   providerRequestId: turn.completion.providerRequestId } },
             ];
+            if (preparingRequestedPlan(snapshot, runId)) {
+              await commit(answerFacts);
+              throw new LoopFailure('requested_plan_missing', '本次任务缺少可供确认的计划。');
+            }
             await deps.activity?.sync();
             snapshot = await deps.readSnapshot();
             if (deps.activity?.needsContinuation(snapshot)) {
@@ -656,7 +660,8 @@ export async function runAgentLoop(
             if (canCompact && (capabilities.compaction.settings(runtime).enabled || scheduledContextCompaction(snapshot.events))) {
               const completedContext = await capabilities.context.prepare({
                 sessionId: snapshot.state.sessionId, runId, runtime, events: snapshot.events,
-                responseConstraint: 'normal', workspaceBindings: runWorkspaceBindings(snapshot, runId),
+                responseConstraint: 'normal', ...runWorkspaceContext(snapshot, runId),
+                toolStage: capabilities.controls.toolStage?.(runtime, snapshot.state),
                 providerRequestId: deps.nextId('provider-request'),
               }, signal);
               const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, completedContext.receipt,
@@ -922,10 +927,11 @@ async function performContextCompaction(
     const cutoff = requestEvent.payload.coveredThroughSequence;
     const runtime = runRuntimeSnapshot(snapshot, runId);
     const prepared = await lease.implementation.compaction.prepare({
+      toolStage: lease.implementation.controls.toolStage?.(runtime, snapshot.state),
       sessionId: snapshot.state.sessionId,
       runId,
       runtime,
-      workspaceBindings: runWorkspaceBindings(snapshot, runId),
+      ...runWorkspaceContext(snapshot, runId),
       events: snapshot.events,
       requestEvent,
     }, signal);
@@ -1651,7 +1657,8 @@ async function consumeProviderOutput(
   let progress: Extract<ProviderTurn, { kind: 'tools' }>['progress'];
   for (const call of calls) {
     try {
-      const control = controls.decode(call.callId, call.name, call.input);
+      const isControl = toolCodec.controlDefinitions.some(tool => toolCodec.canonicalByWire.get(tool.name) === call.name);
+      const control = isControl ? controls.decode(call.callId, call.name, call.input) : null;
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
       else if (control?.kind === 'agent' && (agentBatch || agentTurnPolicy(call.input) === 'tools')) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
@@ -1802,7 +1809,7 @@ function reviewOutputBlock(block: DecodedProviderOutputBlock, request: ProviderR
   if (block.kind === 'providerHosted') throw new LoopFailure('approval_review_read_scope', '审批不能调用网络搜索。');
   if (block.kind !== 'toolCall') return block;
   const allowed = block.name === 'session.read'
-    ? block.input.sessionId === request.sessionId && ['summary', 'messages', 'tools', 'plans'].includes(String(block.input.view ?? 'summary'))
+    ? block.input.sessionId === request.sessionId && APPROVAL_HISTORY_VIEWS.includes(String(block.input.view ?? 'summary'))
     : block.name === 'fs.read' && request.workspaceBindings.some(binding => binding.workspaceId === block.input.workspaceId);
   if (allowed) return block;
   return { ...block, kind: 'toolCallRejected', error: { code: 'approval_review_read_scope',
@@ -2921,11 +2928,12 @@ function runRuntimeSnapshot(snapshot: LoopSnapshot, runId: string): RunRuntimeSn
   if (snapshot.state.run?.runId === runId && snapshot.state.run.hostBinding) {
     view.environment = { ...view.environment, hostBinding: { ...snapshot.state.run.hostBinding } };
   }
-  const permissions = snapshot.state.publishedPermissions ?? permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
+  const sessionPermissions = snapshot.state.publishedPermissions ?? permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
+  const permissions = runtime.planMode === 'manual' ? { ...sessionPermissions, 'agent.permissions.workspaceMutation': 'plan' } : sessionPermissions;
   return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'achbit.workspace-autonomy'
     ? { ...instruction, text: permissionInstructionText(permissions,
       view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_INTERACTION_REQUEST)?.wireName,
-      view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_PLAN_PUBLISH)?.wireName) } : instruction) };
+      view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_PLAN_PUBLISH)?.wireName, runtime.planMode === 'manual') } : instruction) };
 }
 
 function contextForToolRequest(snapshot: LoopSnapshot, request: Extract<SessionEvent, { type: 'tool.requested' }>) {
@@ -3067,15 +3075,17 @@ export function loopSnapshot(sessionId: string, events: readonly SessionEvent[])
   return { journalEvents: [...events], events: activeConversationEvents(events), state: recoverSession(sessionId, events) };
 }
 
-function runWorkspaceBindings(
-  snapshot: LoopSnapshot,
-  runId: string,
-): WorkspaceBindingDisplay[] {
+function preparingRequestedPlan(snapshot: LoopSnapshot, runId: string): boolean {
+  return snapshot.state.runRuntimeSnapshots[runId]?.planMode === 'manual' && !snapshot.state.activePlanRef;
+}
+
+function runWorkspaceContext(snapshot: LoopSnapshot, runId: string) {
   const run = snapshot.state.run;
   if (!run || run.runId !== runId) {
     throw new LoopFailure('run_workspace_snapshot_missing', '当前 run 缺少已记录的工作区绑定。');
   }
-  return requestResourceBindings(run.workspaceBindings, snapshot.events);
+  return { directoryBindings: run.workspaceBindings,
+    workspaceBindings: requestResourceBindings(run.workspaceBindings, snapshot.events) };
 }
 
 function positiveOrZeroInteger(value: unknown): number | undefined {

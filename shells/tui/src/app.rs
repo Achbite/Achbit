@@ -42,6 +42,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/agent", "tui.command.agent", true),
     ("/back", "tui.command.back", false),
     ("/focus", "tui.command.focus", true),
+    ("/plan", "tui.command.plan", true),
     ("/reply", "tui.command.reply", true),
     ("/attach", "tui.command.attach", true),
     ("/detach", "tui.command.detach", true),

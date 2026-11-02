@@ -26,7 +26,7 @@ export function planScopeAddition(previous: PlanProjection | undefined, current:
 export function planOperationDetail(operation: PlanOperation, language: UiLanguage = 'zh-CN'): string {
   const chinese = language === 'zh-CN';
   if ('writablePaths' in operation) {
-    const paths = operation.writablePaths.map((target) => target.path + (target.kind === 'directory' ? '/' : '')).join(', ');
+    const paths = operation.writablePaths.map((target) => target.path + (target.kind === 'directory' ? '/' : '')).join(', ') || t(language, 'agent.plan.noProjectWrites');
     return `${t(language, 'agent.tool.shell.command')} · ${t(language, 'agent.tool.shell.writeScope')}: ${paths}${operation.command ? `\n${operation.command}` : ''}${operation.terminal ? ` · ${t(language, 'agent.plan.interactiveTerminal')}` : ''}`;
   }
   const label = operation.operation === 'fs.delete' ? (chinese ? '删除' : 'Delete')

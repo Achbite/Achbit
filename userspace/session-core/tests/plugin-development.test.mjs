@@ -56,12 +56,18 @@ test('one run discovers an installation, activates, updates and withdraws it whi
     requests.push(structuredClone(request));
     if (index === 3) {
       assert.deepEqual(request.tools.slice(0, requests[0].tools.length), requests[0].tools);
-      assert.match(request.messages.at(-1).content, /Text guide 1/);
+      assert.match(request.tools.find(tool => tool.name === 'text_count').description, /Text guide 1/);
     }
-    if (index === 5) assert.match(request.tools.find(tool => tool.name === 'text_count').description, /revision 2/);
+    if (index === 5) {
+      const active = request.tools.find(tool => tool.name === 'text_count').description;
+      assert.match(active, /revision 2/);
+      assert.match(active, /Text guide 2/);
+      assert.doesNotMatch(active, /Text guide 1/);
+    }
     if (index === 7) {
       assert.ok(!request.tools.some(tool => tool.name === 'text_count'));
-      assert.match(request.messages.at(-1).content, /"removed":\["text_count"\]/);
+      assert.deepEqual(request.messages.filter(message => message.role === 'user').map(message => message.content),
+        ['Develop and use a plugin in this task.'], 'tool changes cannot impersonate user input');
       yield providerEvent(request.requestId,'text.delta',{text:'Installed, used, updated and disabled.'});
     } else yield providerEvent(request.requestId,'tool.call',{ callId:`native:${index}`, name:steps[index][0], input:steps[index][0] === 'bash' ? {workspace:'primary',...steps[index][1]} : steps[index][1] });
     yield providerEvent(request.requestId,'completed',{});

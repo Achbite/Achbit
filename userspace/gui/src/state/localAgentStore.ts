@@ -109,6 +109,7 @@ export interface LocalAgentState {
     pastedTexts?: PastedTextInput[],
     onSessionCreated?: (sessionId: string) => void,
     pastedImages?: PastedImageInput[],
+    planMode?: 'manual',
   ): Promise<CommandReply>;
   focusContext(
     task: string,
@@ -630,6 +631,7 @@ const store = create<LocalAgentState>((set, get) => ({
     pastedTexts = [],
     onSessionCreated,
     pastedImages = [],
+    planMode,
   ) => {
     const trimmed = text.trim();
     const inputError = !trimmed && !pastedTexts.length && !pastedImages.length && !filesystemPaths.length
@@ -649,6 +651,7 @@ const store = create<LocalAgentState>((set, get) => ({
       pastedTexts,
       onSessionCreated,
       pastedImages,
+      planMode,
     );
   },
 
@@ -942,6 +945,7 @@ async function submitNewRun(
   pastedTexts: PastedTextInput[],
   onSessionCreated?: (sessionId: string) => void,
   pastedImages: PastedImageInput[] = [],
+  planMode?: 'manual',
 ): Promise<CommandReply> {
   const submissionGeneration = beginSubmission(set);
   try {
@@ -950,6 +954,7 @@ async function submitNewRun(
     const reasoningEffortOverride = get().reasoningEffortOverride;
     const activeRun = get().projection?.run;
     const queuedMessage = type === 'message.submit' && activeRun && ['running', 'waiting'].includes(activeRun.status);
+    if (queuedMessage && planMode) throw new Error('plan_run_active');
     if (!queuedMessage && (!messageProfileId || !get().profiles.some((profile) => profile.id === messageProfileId && profile.enabled))) throw new Error('llm_profile_unavailable');
     const pluginCatalog = get().pluginCatalog;
     const effectivePluginSelections = requiredFilesystemPluginSelections(
@@ -1013,7 +1018,7 @@ async function submitNewRun(
         : {}),
     };
     const command: ConversationCommand = type === 'message.submit'
-      ? { ...common, type, text, ...(queuedMessage ? { runId: activeRun.runId } : {}) }
+      ? { ...common, type, text, ...(planMode ? { planMode } : {}), ...(queuedMessage ? { runId: activeRun.runId } : {}) }
       : { ...common, type, task: text };
     const reply = await submitCommandAndReconcile(set, get, command);
     await Promise.all([

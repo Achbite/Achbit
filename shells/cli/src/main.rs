@@ -1055,7 +1055,7 @@ async fn run_chat(
     println!("session: {}", projection.session_id);
     render_projection(&mut io::stdout().lock(), &projection).map_err(|error| error.to_string())?;
     println!("/sessions 列出会话；/resume <序号或完整 ID> 进入；/new 沿用启动目录新建；切换不会取消后台任务。");
-    println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/cancel；/quit。");
+    println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/plan <任务> 先提交计划，确认后执行本次任务；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/cancel；/quit。");
     render_action_required_if_any(&mut io::stdout().lock(), &projection)
         .map_err(|error| error.to_string())?;
     render_pending_agent_decisions(client, &projection).await?;
@@ -1555,7 +1555,7 @@ chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，
 权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
 文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
 ask/chat 创建新会话时支持 --recipe <JSON 文件> 选择模型、Loop 组件、权限策略和 Sandbox 后端。
-ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务。"#,
+ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务，/plan <任务> 先提交计划，确认后执行本次任务。"#,
     );
 }
 

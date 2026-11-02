@@ -1533,7 +1533,13 @@ test('new runs refresh execution facts while restart and compaction retain each 
     runtimeExecutables: { kernel: '/opt/achbit/achbit-kernel', cli: '/opt/achbit/achbit-cli' } };
   const saved = environmentInstruction(observed);
   assert.equal(saved.text, 'Use zh-CN for user-facing text unless the user requests another language.');
-  const shellText = environmentInstruction(observed, ['bash']).text;
+  const codingText = environmentInstruction(observed, ['bash']).text;
+  assert.match(codingText, /Command environment/u);
+  assert.doesNotMatch(codingText, /productDocsPath|achbitCli|hostDataDirectory|--host-data-dir|commandPaths|developerCommands/u);
+  const agentText = environmentInstruction(observed, ['bash', 'agent']).text;
+  assert.match(agentText, /productDocsPath/u);
+  assert.doesNotMatch(agentText, /achbitCli|--host-data-dir/u);
+  const shellText = environmentInstruction(observed, ['bash', 'skill.read']).text;
   const modelEnvironment = JSON.parse(shellText.slice('Command environment: '.length, shellText.indexOf('}. For Achbit') + 1));
   for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox', 'executionPath', 'agentComposition', 'executionTarget']) {
     assert.equal(modelEnvironment[field], undefined);
@@ -1550,9 +1556,9 @@ test('new runs refresh execution facts while restart and compaction retain each 
     const restricted = { ...observed, agentComposition: { ...recipe,
       policyConstraints: { allowHostExecution: false, allowExternalTools: false }, sandboxCoverage: 'workspaceShell' } };
     const before = structuredClone(restricted);
-    const text = environmentInstruction(restricted, ['bash']).text;
-    assert.match(text, /Host execution is disabled for this session/u);
-    assert.doesNotMatch(text, /use achbitCli with --host-data-dir/u);
+    const text = environmentInstruction(restricted, ['bash', 'skill.read']).text;
+    assert.doesNotMatch(text, /achbitCli|--host-data-dir|Host execution is disabled/u,
+      'a restricted run does not advertise the Host-only CLI or ask the model to evaluate its availability');
     assert.deepEqual(restricted, before, 'describing CLI availability must not alter permissions');
   }
   for (const field of ['os', 'arch', 'shell', 'productDocsPath']) {
@@ -3675,6 +3681,53 @@ test('an escaped Loop fault remains Session-local and releases its runtime', asy
   await healthyActor.dispose();
 });
 
+test('an explicit Plan uses read tools until user confirmation, then restores execution for that task only', async t => {
+  const journal = new InMemoryCommandJournal();
+  const sessionId = 'session:once';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const tools = [['fs.read', 'workspaceRead'], ['fs.write', 'workspaceMutation'], ['bash', 'process'],
+    ['plugin.search', 'localRead'], ['artifact.preview', 'localRead'], ['artifact.prepare', 'workspaceRead']].map(([name, effect]) => ({
+    name, toolBindingRef: `binding:${name}`, description: name, availability: 'callable', origin: 'coreBuiltin',
+    possibleEffects: [effect], inputSchema: { type: 'object', properties: {}, required: [] },
+  }));
+  const preparation = fakeRunPreparation({ tools, permissions: { 'agent.permissions.workspaceMutation': 'allow' } });
+  const requests = [];
+  const provider = { async *stream(request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { name: 'plan_publish', callId: 'provider-call:plan',
+        input: { title: 'Review the guide', summary: 'Read and summarize the guide.',
+          steps: [{ stepId: 'read', title: 'Review', details: 'Read the guide.' }], mutationManifest: [] } });
+    } else {
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: `answer:${requests.length}`, content: 'Reviewed.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } };
+  const actor = actorWith(journal, sessionId, provider, emptyKernel(), preparation.port, 'manual-plan');
+  t.after(() => actor.dispose());
+  const task = { ...messageCommand(sessionId, 'cmd:start', 'Review the guide.'), planMode: 'manual' };
+  assert.equal((await actor.submit(task)).status, 'accepted');
+  const waiting = await waitForProjection(actor, state => state.pendingPlan && state.run?.status === 'waiting');
+  assert.deepEqual(requests[0].tools.map(tool => tool.name).sort(), ['fs_read', 'interaction_request', 'plan_publish']);
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /planMode|preparingPlan|agent\.permissions|workspaceMutation|waitingReason|fs_write|\bbash\b|\/plan /u);
+  assert.equal((await actor.submit({ ...task, commandId: 'cmd:second' })).error?.code, 'plan_run_active');
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.permissions.set', sessionId,
+    commandId: 'cmd:off', patches: { 'agent.permissions.workspaceMutation': 'allow' } });
+  assert.equal((await actor.snapshot()).pendingPlan.planId, waiting.pendingPlan.planId);
+  const response = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', sessionId,
+    runId: waiting.run.runId, commandId: 'cmd:confirm', planId: waiting.pendingPlan.planId,
+    revision: waiting.pendingPlan.revision, response: { kind: 'confirm' } });
+  assert.equal(response.status, 'accepted');
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(requests[1].runId, requests[0].runId);
+  assert.ok(requests[1].tools.some(tool => tool.name === 'fs_write'));
+  assert.ok(requests[1].messages.some(message => jsonMessagePayload(message)?.response?.kind === 'confirm'));
+  await actor.submit(messageCommand(sessionId, 'cmd:normal', 'Review the index.'));
+  await waitForProjection(actor, state => state.run?.status === 'completed' && state.run.runId !== waiting.run.runId);
+  assert.ok(requests[2].tools.some(tool => tool.name === 'fs_write'));
+  assert.ok(!requests[2].tools.some(tool => tool.name === 'plan_publish'));
+});
+
 test('one Plan confirmation resumes the same run while progress remains an explicit model choice', async () => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:confirmed-plan-execution';
@@ -4721,7 +4774,7 @@ test('Provider cache fields are absent together or exactly partition one call in
   }
 });
 
-test('current Todo state precedes later inserted user input without splitting its tool result', () => {
+test('internal Todo progress remains observable without inserting a user message between an interaction and its result', async () => {
   const sessionId = 'session:todo-user-boundary';
   const runId = 'run:todo-user-boundary';
   const events = [
@@ -4829,7 +4882,11 @@ test('current Todo state precedes later inserted user input without splitting it
     item.contributionId === 'message:message:interaction-response'
   ));
   assert.ok(resultIndex >= 0);
-  assert.ok(todoIndex >= 0 && todoIndex < resultIndex, 'Todo stays at its original event boundary');
+  assert.equal(todoIndex, -1, 'a journal progress update cannot impersonate user input');
+  const { advanceTodoList } = await import('../dist/local-agent/todoState.js');
+  assert.deepEqual(advanceTodoList(null, events[1]).items, events[1].payload.items);
+  assert.deepEqual(contributions.filter(item => item.message.role === 'user').map(item => item.message.content),
+    ['Initial request.', 'Option A']);
   assert.ok(userIndex > resultIndex, 'the later tagged user input must follow its tool result');
   assert.equal(contributions.at(-1)?.message.role, 'user');
 });
@@ -4947,6 +5004,10 @@ test('phase plans and progress accept lists beyond the former item counts while 
   };
   input.mutationManifest.push({ workspaceId: 'workspace:primary', operation: 'bash',
     writablePaths: Array.from({ length: 129 }, (_, index) => ({ path: `build/output-${index}`, kind: 'directory' })) });
+  const readOnlyShell = { ...input, mutationManifest: [{ workspaceId: 'workspace:primary', operation: 'bash', writablePaths: [] }] };
+  assert.deepEqual(decodeSessionControlCall('call:read-only', 'plan.publish', readOnlyShell).draft, readOnlyShell);
+  assert.throws(() => decodeSessionControlCall('call:missing-paths', 'plan.publish', { ...input,
+    mutationManifest: [{ workspaceId: 'workspace:primary', operation: 'bash' }] }), /writablePaths/);
   assert.deepEqual(decodeSessionControlCall('call:large-plan', 'plan.publish', input).draft, input);
   const items = input.steps.map(step => ({ text: step.title, status: 'inProgress' }));
   assert.deepEqual(decodeSessionControlCall('call:large-progress', 'todo.update', { items }).items, items);
@@ -5621,7 +5682,9 @@ test('new file inputs preserve the existing Provider prefix and keep historical 
   assert.deepEqual(requests[2].workspaceBindings.map((binding) => binding.workspaceId), ['workspace:test', 'file-workspace:0', 'file-workspace:1']);
   const pastedMessage = (await actor.snapshot()).messages.find((message) => message.role === 'user' && message.content === '');
   assert.equal(pastedMessage.filesystemReferences[0].source, 'pastedText');
-  assert.match(requests[1].messages.at(-1).content, /Read its full contents with fs.read using nextByte/);
+  const attachedText = requests[1].messages.at(-1).content;
+  assert.match(attachedText, /Read the attached pasted text in full/);
+  assert.doesNotMatch(attachedText, /fs[._]read|nextByte/, 'attachment instructions must also work with a Shell-only reader');
   await actor.dispose();
 });
 

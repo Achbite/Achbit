@@ -30,8 +30,85 @@ test('a read task declares only its read tool and omits framework configuration 
   const result = await buildAgentProviderRequest({ sessionId: 'session:read-task', runId: 'run:read-task', runtime,
     events: [], workspaceBindings: [workspaceBinding], providerRequestId: 'request:read-task', responseConstraint: 'normal' });
   assert.deepEqual(result.request.tools.map(tool => tool.name), ['fs_read']);
+  assert.ok(!result.receipt.messages.some(message => message.contributionId === 'session:controls'));
   assert.doesNotMatch(JSON.stringify(result.request.messages), /Mutation permission|Command environment|executionPath|workspaceSandbox|permissionPolicy|agentComposition|Runtime setting|Loaded plugin|delegation|plugin_activate|plan_publish|bash/u);
   assert.ok(result.request.messages.some(message => message.content.includes('primary')), 'file addressing remains actionable');
+});
+
+test('a mutation task describes only its selected controls and readers', async () => {
+  const runtime = runtimeSnapshot('run:limited', { tools: [
+    { name: 'fs.write', toolBindingRef: 'binding:write', description: 'Write a file.', origin: 'coreBuiltin',
+      availability: 'callable', possibleEffects: ['workspaceMutation'], inputSchema: { type: 'object', properties: {}, required: [] } },
+    { name: 'session.read', toolBindingRef: 'binding:history', description: 'Read history.', origin: 'coreBuiltin',
+      availability: 'blocked', possibleEffects: ['localRead'], inputSchema: { type: 'object', properties: {}, required: [] } },
+  ], permissions: { 'agent.permissions.workspaceMutation': 'plan' } });
+  runtime.toolSelection = { controls: [], plugins: false };
+  runtime.instructions.push({ id: 'achbit.workspace-autonomy', text: 'Use plan_publish and interaction_request.' });
+  const { request, receipt } = await buildAgentProviderRequest({ sessionId: 'session:limited', runId: 'run:limited',
+    runtime, events: [], workspaceBindings: [workspaceBinding], providerRequestId: 'request:limited', responseConstraint: 'normal' });
+  assert.deepEqual(request.tools.map(tool => tool.name), ['fs_write']);
+  assert.equal(receipt.messages.some(message => message.contributionId === 'session:images'), false);
+  const guidance = request.messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+  assert.match(guidance, /confirmed scope/u);
+  assert.doesNotMatch(guidance, /plan_publish|interaction_request|session_read/u);
+});
+
+test('controller state stays in the journal while actual user content and current tool contracts are preserved', async () => {
+  const runId = 'run:boundaries', sessionId = 'session:boundaries';
+  const reader = name => ({ name, description: 'Read text.', toolBindingRef: 'binding:' + name, origin: 'coreBuiltin',
+    availability: 'callable', possibleEffects: ['workspaceRead'], inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } } });
+  const view = name => runtimeSnapshot(runId, { tools: [reader(name)], toolPromptContributions: [{
+    canonicalToolName: name, preparedToolBindingRef: 'binding:' + name, origin: 'coreBuiltin',
+    promptSnippet: 'Read text.', usageGuidelines: ['Guidance for ' + name], contributionRef: 'guidance:' + name,
+  }] });
+  const old = view('old.read'), current = view('fs.read');
+  current.toolSelection = { controls: [], plugins: false };
+  const event = (type, payload, sequence) => ({ type, payload, sequence, runId, sessionId, eventId: 'e:' + sequence });
+  const user = event('message.committed', { role: 'user', messageId: 'm:one', content: 'Explain the literal string run.waiting.' }, 1);
+  const start = event('run.started', { inputMessageId: 'm:one', workspaceBindings: [workspaceBinding], runtimeSnapshot: old }, 2);
+  const changes = event('run.tools.prepared', { toolView: current }, 3);
+  const noise = [
+    event('run.waiting', { reason: 'approval', approvalId: 'internal-queue' }, 4),
+    event('todo.updated', { revision: 1, items: [{ text: 'internal-progress', status: 'inProgress' }] }, 5),
+    event('run.timing.updated', { clockDomain: 'internal-clock', totalMs: 37999 }, 6),
+    event('provider.attempt.updated', { phase: 'completed', providerAttemptId: 'internal-attempt' }, 7),
+  ];
+  const compose = events => buildAgentProviderRequest({ sessionId, runId, events, runtime: current,
+    workspaceBindings: [workspaceBinding], providerRequestId: 'request:state', responseConstraint: 'normal' });
+  const expected = (await compose([user, start])).request;
+  const actual = (await compose([user, start, changes, ...noise])).request;
+  assert.deepEqual(actual.messages, expected.messages);
+  assert.deepEqual(actual.tools.map(tool => tool.name), ['fs_read']);
+  assert.deepEqual(actual.messages.filter(message => message.role === 'user').map(message => message.content), [user.payload.content]);
+  assert.match(actual.messages.map(message => message.content).join(' '), /Guidance for fs.read/);
+  assert.doesNotMatch(JSON.stringify(actual.messages), /old.read|plugins.tools.updated|internal-queue|internal-progress|internal-clock|internal-attempt/);
+});
+
+test('Host Shell declarations follow effective permissions and retain grants for file-only handles', async () => {
+  const tool = { name: 'bash', toolBindingRef: 'binding:shell', origin: 'coreBuiltin', availability: 'callable',
+    description: 'Use the workspace sandbox.', possibleEffects: ['process'],
+    inputSchema: { type: 'object', required: ['command'], properties: {
+      command: { type: 'string', description: 'In the sandbox, HOME is the session directory.' },
+      timeout: { type: 'integer' }, terminal: { type: 'object' },
+      requestHostPermission: { type: 'string' }, requestFileAccess: { type: 'object' }, requestNetworkPermission: { type: 'string' },
+    } } };
+  const runtime = runtimeSnapshot('run:shell', { tools: [tool], permissions: { 'agent.permissions.shellAccess': 'full' } });
+  const input = { sessionId: 'session:shell', runId: 'run:shell', runtime, events: [], workspaceBindings: [workspaceBinding],
+    directoryBindings: [workspaceBinding], providerRequestId: 'request:shell', responseConstraint: 'normal' };
+  const declared = async input => (await buildAgentProviderRequest(input)).request.tools.find(item => item.name === 'bash');
+  const host = await declared(input);
+  assert.match(host.description, /as the host user/u);
+  assert.deepEqual(Object.keys(host.inputSchema.properties).sort(), ['command', 'terminal', 'timeout', 'workspace']);
+  assert.doesNotMatch(host.inputSchema.properties.command.description, /sandbox/u);
+
+  const mixed = await declared({ ...input, workspaceBindings: [...input.workspaceBindings, { workspaceId: 'input:one', displayName: 'note.txt' }] });
+  assert.match(mixed.description, /workspace2/u);
+  assert.ok(mixed.inputSchema.properties.requestFileAccess && mixed.inputSchema.properties.requestNetworkPermission);
+  assert.equal(mixed.inputSchema.properties.requestHostPermission, undefined);
+  runtime.permissions['agent.permissions.shellAccess'] = 'workspace';
+  const sandbox = await declared(input);
+  assert.equal(sandbox.description, tool.description);
+  assert.ok(sandbox.inputSchema.properties.requestHostPermission);
 });
 
 test('coding tool feedback separates complete results from continuation and audit data', () => {

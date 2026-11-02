@@ -2859,12 +2859,11 @@ fn valid_plan_body(steps: &[ExecutionPlanStep], operations: &[PlanOperation]) ->
                                 .as_deref()
                                 .is_none_or(|command| !command.is_empty())
                             && operation.writable_paths.as_ref().is_some_and(|paths| {
-                                !paths.is_empty()
-                                    && paths.iter().all(|target| {
-                                        target.path != "."
-                                            && is_normalized_logical_path(&target.path)
-                                            && matches!(target.kind.as_str(), "file" | "directory")
-                                    })
+                                paths.iter().all(|target| {
+                                    target.path != "."
+                                        && is_normalized_logical_path(&target.path)
+                                        && matches!(target.kind.as_str(), "file" | "directory")
+                                })
                             })
                             && operation
                                 .terminal
@@ -3491,11 +3490,13 @@ mod tests {
             }]);
             let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(projection.validate(), Ok(()));
-            for paths in [
-                Value::Null,
-                json!([]),
-                json!([{"path":"../outside", "kind":"file"}]),
-            ] {
+            let mut read_only = value.clone();
+            read_only["plans"][0]["mutationManifest"][0]["writablePaths"] = json!([]);
+            serde_json::from_value::<SessionProjection>(read_only)
+                .unwrap()
+                .validate()
+                .unwrap();
+            for paths in [Value::Null, json!([{"path":"../outside", "kind":"file"}])] {
                 let mut invalid = value.clone();
                 invalid["plans"][0]["mutationManifest"][0]["writablePaths"] = paths;
                 assert!(serde_json::from_value::<SessionProjection>(invalid)

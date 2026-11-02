@@ -1,11 +1,27 @@
 import type {
-  NewSessionEvent, PlanAuthority, SessionProjection,
+  NewSessionEvent, PlanAuthority, RunRuntimeSnapshot, SessionProjection,
 } from '@achbit/protocol';
-import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
-import { canonicalJsonValue } from './providerToolCodec.js';
+import { SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
+import { canonicalJsonValue, providerWireName } from './providerToolCodec.js';
 import { LoopFailure } from './loopFailure.js';
 import type { SessionState } from './reducer.js';
 import type { PlanPublicationDraft, PlanScopeExtension } from './sessionControls.js';
+
+import type { SessionToolStage } from './plugins.js';
+
+const planReaders = new Set(['fs.read', 'session.read', 'skill.read']);
+
+export function requestedPlanToolStage(runtime: RunRuntimeSnapshot, state: SessionState): SessionToolStage | undefined {
+  if (runtime.planMode !== 'manual') return undefined;
+  if (state.activePlanRef) return { tools: runtime.tools, webSearch: runtime.webSearch };
+  return {
+    tools: runtime.tools.filter(tool => (tool.origin === 'extension' || planReaders.has(tool.name))
+      && tool.possibleEffects.every(effect => effect === 'workspaceRead' || effect === 'localRead')),
+    webSearch: { owner: 'unavailable' },
+    controls: [SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH],
+    instruction: `Gather the information needed for the plan, then submit it with ${providerWireName(runtime, SESSION_CONTROL_PLAN_PUBLISH)}.`,
+  };
+}
 
 /** Plan lifecycle is derived from the Session journal, never a second loop or store. */
 export function publishPlan(

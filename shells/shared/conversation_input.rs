@@ -185,15 +185,21 @@ pub fn contextual_input_command(
             selections,
         ));
     }
+    let plan_task = command.and_then(|(name, task)| (name == "plan").then_some(task));
+    if plan_task == Some("") {
+        return Err(language.text("tui.planRequired").to_string());
+    }
     let mut command = message_command_with_profile_and_plugins(
         &projection.session_id,
         command_id,
-        original_text,
+        plan_task.unwrap_or(original_text),
         profile_id,
         filesystem_references,
         selections,
     );
-    if let Some(run) = projection
+    if plan_task.is_some() {
+        command["planMode"] = json!("manual");
+    } else if let Some(run) = projection
         .run
         .as_ref()
         .filter(|run| matches!(run.status.as_str(), "running" | "waiting"))
@@ -325,6 +331,8 @@ mod tests {
             "/",
             "/unknown 请解释这个名字",
             "/focusdir",
+            " /plan task",
+            "/plan.md",
             "/reply-later",
             " /new",
             "\t/focus task",
@@ -361,6 +369,7 @@ mod tests {
         let projection = fixtures::waiting_projection("pendingPlan", serde_json::Value::Null);
         for text in [
             "/focus",
+            "/plan",
             "/reply",
             "/reply 1",
             "/permissions invalid",
@@ -392,5 +401,19 @@ mod tests {
         .unwrap();
         assert_eq!(command["type"], "context.focus");
         assert_eq!(command["task"], "检查\n目录");
+        let plan = contextual_input_command(
+            Language::EnUs,
+            &projection,
+            "/plan 检查\n目录",
+            "command:plan",
+            None,
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(plan["type"], "message.submit");
+        assert_eq!(plan["text"], "检查\n目录");
+        assert_eq!(plan["planMode"], "manual");
+        assert!(plan.get("runId").is_none());
     }
 }

@@ -275,10 +275,11 @@ function decodeCommand(value: unknown): ConversationCommand {
           value,
           ['schemaVersion', 'type', 'commandId', 'sessionId', 'text'],
           [
-            'runId', 'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginSelections', 'guidanceReferences', 'hostBinding',
+            'runId', 'planMode', 'filesystemReferences', 'profileId', 'reasoningEffortOverride', 'pluginSelections', 'guidanceReferences', 'hostBinding',
           ],
         )
         || (value.runId !== undefined && !validId(value.runId))
+        || (value.planMode !== undefined && value.planMode !== 'manual')
         || typeof value.text !== 'string'
         || (value.filesystemReferences !== undefined
           && !isFilesystemReferenceArray(value.filesystemReferences))

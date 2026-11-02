@@ -271,7 +271,7 @@ export function useAgentComposer(
     if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
     if (!textDecision && !editingMessage && !pendingApproval) {
       const command = parseComposerCommand(submittedText);
-      if (command && !(command.name === 'focus' && command.argument)) {
+      if (command && !((command.name === 'focus' || command.name === 'plan') && command.argument)) {
         await selectCommand(command.name);
         return;
       }
@@ -331,7 +331,9 @@ export function useAgentComposer(
         if (command?.name === 'focus' && command.argument) {
           await focusContext(command.argument, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
         } else {
-          await sendMessage(submittedText, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages);
+          const planTask = command?.name === 'plan' ? command.argument : undefined;
+          await sendMessage(planTask ?? submittedText, submittedFilesystemPaths, submittedPluginSelections,
+            submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages, planTask ? 'manual' : undefined);
         }
       },
     });
@@ -468,6 +470,7 @@ export function useAgentComposer(
   const commandEnabled = (id: ComposerCommand): boolean => {
     if (loading || submitting) return false;
     if (id === 'cancel') return canCancel;
+    if (id === 'plan') return !canCancel;
     if (id === 'agents') return Boolean(sessionId);
     if (id === 'context') return Boolean(projection?.contextUsage);
     if (id === 'model') return !modelSettingsBusy;
@@ -481,9 +484,9 @@ export function useAgentComposer(
   const selectCommand = async (id: ComposerCommand) => {
     if (!commandEnabled(id)) return;
     setAttachmentError(null);
-    if (id === 'focus' || id === 'help') {
+    if (id === 'focus' || id === 'plan' || id === 'help') {
       setCommandDismissed(false);
-      focusComposerDraft(id === 'focus' ? '/focus ' : '/');
+      focusComposerDraft(id === 'help' ? '/' : `/${id} `);
       setCommandActiveIndex(0);
       return;
     }

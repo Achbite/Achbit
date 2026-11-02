@@ -1267,6 +1267,14 @@ impl LocalAgentJournal {
         self.permission_model()?.effective(session_id)
     }
 
+    pub(crate) fn run_permissions(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<crate::local_agent_kernel::LocalAgentPermissionPolicy, LocalAgentStoreError> {
+        self.permission_model()?.run_permissions(session_id, run_id)
+    }
+
     pub(crate) fn permissions_for_run(
         &self,
         session_id: &str,
@@ -3633,6 +3641,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
             ],
             &[
                 "runId",
+                "planMode",
                 "filesystemReferences",
                 "profileId",
                 "reasoningEffortOverride",
@@ -3641,6 +3650,14 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
                 "hostBinding",
             ],
         )?;
+        if let Some(mode) = command.get("planMode") {
+            if command_type != "message.submit" || mode != "manual" {
+                return Err(LocalAgentStoreError::new(
+                    "run_plan_mode_invalid",
+                    "单次计划模式只接受新任务的人工确认请求。",
+                ));
+            }
+        }
         if let Some(references) = command.get("guidanceReferences") {
             let references = references.as_array().ok_or_else(|| {
                 LocalAgentStoreError::new(
@@ -3900,7 +3917,6 @@ pub(crate) fn validate_plan_operations(value: &Value) -> Result<(), LocalAgentSt
                 let paths = operation
                     .get("writablePaths")
                     .and_then(Value::as_array)
-                    .filter(|paths| !paths.is_empty())
                     .ok_or_else(|| {
                         LocalAgentStoreError::new(
                             "session_event_invalid",
@@ -5048,9 +5064,16 @@ fn validate_run_runtime_snapshot(
             "approvalReviewer",
             "approvalReviewerError",
             "agentToolsEnabled",
+            "planMode",
             "toolSelection",
         ],
     )?;
+    if value.get("planMode").is_some_and(|mode| mode != "manual") {
+        return Err(LocalAgentStoreError::new(
+            "run_plan_mode_invalid",
+            "单次计划模式无效。",
+        ));
+    }
     if let Some(selection) = value.get("toolSelection") {
         crate::local_agent_recipe::AgentRecipe::decode(&json!({"tools":selection}))
             .map_err(|message| LocalAgentStoreError::new("agent_tools_invalid", message))?;

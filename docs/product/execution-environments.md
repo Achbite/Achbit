@@ -7,7 +7,7 @@ Use the run's recorded target, shell and PATH, plus the project's build instruct
 | Need | Interface or rule |
 | --- | --- |
 | Read/edit project files | File tools and the current workspace/Plan scope |
-| Test/build outputs | Plan `writablePaths` for specific output directories, not the project root |
+| Test/build outputs | Plan `writablePaths` for specific output directories, not the project root | An explicit empty `writablePaths` grants no project write directory to the workspace shell.
 | Optional temporary scripts and logs | The session working directory retains files across calls. Each shell call has its own temporary directory. |
 | Additional outside files | `requestFileAccess` with exact paths and a reason |
 | Network in the sandbox | `requestNetworkPermission`; file scope stays unchanged |
@@ -15,7 +15,7 @@ Use the run's recorded target, shell and PATH, plus the project's build instruct
 
 Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session owns its working directory outside the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
-Workspace Shell HOME is session-managed; it is not the application configuration root. The reported `achbitCli` is a Host administration command (`achbitCliExecutionScope: host`). Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
+Workspace Shell HOME is session-managed; it is not the application configuration root. When the shell and product Skills are selected, the reported `achbitCli` is a Host administration command (`achbitCliExecutionScope: host`). Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
 Workspace Shell is offline by default, including loopback access. Network grants can be per call, task or conversation as offered by the decision. Explicit command deny/ask rules still apply. Host execution uses real host-user permissions, including network and writes outside the sandbox; a working directory is not isolation. With Plan approval enabled or an active Plan, each Host call requires separate approval. An approval or a failed command does not authorize an automatic broader retry.
 

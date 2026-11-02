@@ -30,7 +30,9 @@ function fixture(t, store, language) {
 }
 const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning', 'gui.autoUpdate', 'gui.completionSound.foreground',
   'gui.usageWidget.enabled', 'gui.usageWidget.visibility', 'gui.usageWidget.currency', 'gui.defaultFileOpen', 'gui.showRuntimeFiles'];
-const agentKeys = ['agent.responseLanguage', 'agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens', 'agent.systemPrompt'];
+const agentKeys = ['agent.responseLanguage', 'agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens', 'agent.systemPrompt',
+  'agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'];
+const accessKeys = ['agent.permissions.shell', 'agent.permissions.shellAccess', 'agent.permissions.networkRead', 'agent.permissions.external'];
 
 test('completion sound controls and their search entry are available only in the desktop shell', async t => {
   const previous = globalThis.window;
@@ -66,6 +68,7 @@ for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pag
   const general = capture(GuiSettingsSection, { category: 'general', apiStatus: 'connected' });
   const agent = capture(AgentSettingsSection, { category: 'agent' });
   assert.deepEqual(fieldKeys(general.tree), generalKeys);
+  assert.deepEqual(fieldKeys(capture(AgentSettingsSection, { category: 'permissions' }).tree), accessKeys);
   assert.deepEqual(fieldKeys(agent.tree), agentKeys);
   for (const page of [general, agent]) {
     assert.doesNotMatch(page.html, />(重置|Reset|保存|Save)<\/button>/,
@@ -81,6 +84,7 @@ for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pag
   assert.equal(new Set(entries.map(entry => entry.id)).size, entries.length);
   assert.deepEqual(entries.filter(entry => entry.category === 'general').map(entry => entry.id), generalKeys);
   assert.deepEqual(entries.filter(entry => entry.category === 'agent').map(entry => entry.id), agentKeys);
+  assert.deepEqual(entries.filter(entry => entry.category === 'permissions').map(entry => entry.id), accessKeys);
   assert.deepEqual(entries.filter(entry => entry.category === 'gui').map(entry => entry.id), ['gui.colorTheme', 'gui.accentColor']);
   initial.errorMessage = 'settings_write_failed: permission denied';
   for (const Component of [GuiSettingsSection, AgentSettingsSection]) {

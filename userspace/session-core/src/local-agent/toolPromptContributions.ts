@@ -126,6 +126,29 @@ export function prepareToolPromptContributions(
   return Object.freeze(prepared.sort(comparePreparedContributions));
 }
 
+function assertPromptBinding(tool: PreparedToolDescriptor, contribution: PreparedToolPromptContribution): void {
+  if (tool.toolBindingRef !== contribution.preparedToolBindingRef) {
+    throw new LoopFailure('tool_prompt_binding_stale', `工具指导与当前 binding 不一致：${contribution.canonicalToolName}`);
+  }
+}
+
+/** An extension's current guidance travels with its declaration when the tool is activated or replaced. */
+export function extensionToolGuidance(
+  tools: readonly PreparedToolDescriptor[], contributions: readonly PreparedToolPromptContribution[],
+): readonly PreparedToolDescriptor[] {
+  const byName = new Map(contributions.filter(item => item.origin === 'extension').map(item => [item.canonicalToolName, item]));
+  if (!byName.size) return tools;
+  return tools.map(tool => {
+    const guidance = byName.get(tool.name);
+    if (!guidance || tool.origin !== 'extension') return tool;
+    assertPromptBinding(tool, guidance);
+    const lines = [tool.description];
+    if (guidance.promptSnippet && guidance.promptSnippet !== tool.description) lines.push(guidance.promptSnippet);
+    lines.push(...guidance.usageGuidelines);
+    return { ...tool, description: lines.join('\n') };
+  });
+}
+
 export function renderActiveToolGuidance(
   contributions: readonly PreparedToolPromptContribution[],
   aliases: readonly ProviderToolAlias[],
@@ -142,12 +165,7 @@ export function renderActiveToolGuidance(
   for (const contribution of contributions) {
     const tool = toolsByName.get(contribution.canonicalToolName);
     if (!tool) continue;
-    if (tool.toolBindingRef !== contribution.preparedToolBindingRef) {
-      throw new LoopFailure(
-        'tool_prompt_binding_stale',
-        `工具指导与当前 binding 不一致：${contribution.canonicalToolName}`,
-      );
-    }
+    assertPromptBinding(tool, contribution);
     const wireName = aliasesByCanonical.get(contribution.canonicalToolName);
     if (!wireName) {
       throw new LoopFailure(

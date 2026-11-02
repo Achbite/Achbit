@@ -11,14 +11,19 @@ import { useUiOwner } from '../../ui-ownership/useUiOwner';
 
 type PermissionRow = { key: string; label: string; values: readonly (readonly [string, string])[] };
 const askAllowDeny = [['ask', 'agent.permission.ask'], ['allow', 'agent.permission.allow'], ['deny', 'agent.permission.deny']] as const;
-const rows: PermissionRow[] = [
-  { key: 'agent.permissions.workspaceMutation', label: 'agent.permission.workspaceMutation', values: [['plan', 'agent.permission.workspaceMutationPlan'], ['review', 'agent.permission.workspaceMutationReview'], ['allow', 'agent.permission.workspaceMutationAllow']] },
-  { key: 'agent.permissions.engineeringDecisions', label: 'agent.permission.engineeringDecisions', values: [['ask', 'agent.permission.ask'], ['delegate', 'agent.permission.delegate']] },
-  { key: 'agent.permissions.shell', label: 'agent.permission.shell', values: [['ask', 'agent.permission.ask'], ['review', 'agent.permission.review'], ['allow', 'agent.permission.allow']] },
-  { key: 'agent.permissions.shellAccess', label: 'agent.permission.shellAccess', values: [['workspace', 'agent.permission.workspaceScope'], ['full', 'agent.permission.fullScope']] },
-  { key: 'agent.permissions.networkRead', label: 'agent.permission.networkRead', values: askAllowDeny },
-  { key: 'agent.permissions.external', label: 'agent.permission.externalEffects', values: askAllowDeny },
-];
+type PermissionGroup = 'workflow' | 'access';
+const groups: Record<PermissionGroup, PermissionRow[]> = {
+  workflow: [
+    { key: 'agent.permissions.workspaceMutation', label: 'agent.permission.workspaceMutation', values: [['plan', 'agent.permission.workspaceMutationPlan'], ['review', 'agent.permission.workspaceMutationReview'], ['allow', 'agent.permission.workspaceMutationAllow']] },
+    { key: 'agent.permissions.engineeringDecisions', label: 'agent.permission.engineeringDecisions', values: [['ask', 'agent.permission.ask'], ['delegate', 'agent.permission.delegate']] },
+  ],
+  access: [
+    { key: 'agent.permissions.shell', label: 'agent.permission.shell', values: [['ask', 'agent.permission.ask'], ['review', 'agent.permission.review'], ['allow', 'agent.permission.allow']] },
+    { key: 'agent.permissions.shellAccess', label: 'agent.permission.shellAccess', values: [['workspace', 'agent.permission.workspaceScope'], ['full', 'agent.permission.fullScope']] },
+    { key: 'agent.permissions.networkRead', label: 'agent.permission.networkRead', values: askAllowDeny },
+    { key: 'agent.permissions.external', label: 'agent.permission.externalEffects', values: askAllowDeny },
+  ],
+};
 
 export function ComposerPermissionControl({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
   const interaction = useInteractionFocus();
@@ -33,10 +38,13 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   const revoke = useLocalAgentStore(state => state.revokeAuthorization);
   const taskError = useLocalAgentStore(state => state.error);
   const [busy, setBusy] = useState(false);
-  const [page, setPage] = useState<PermissionRow | 'grants' | null>(null);
+  const [page, setPage] = useState<PermissionRow | PermissionGroup | 'grants' | null>(null);
   const detail = typeof page === 'object' ? page : null;
   const grants = projection?.shellAuthorizations ?? [];
-  const heading = page === 'grants' ? 'agent.permission.runGrants' : detail?.label ?? 'settings.nav.permissions';
+  const group = page === 'workflow' || page === 'access' ? page : null;
+  const back = () => setPage(detail ? (groups.workflow.includes(detail) ? 'workflow' : 'access') : null);
+  const heading = page === 'grants' ? 'agent.permission.runGrants' : detail?.label
+    ?? (group ? `agent.permission.${group}` : 'agent.permission.menuTitle');
   const [position, setPosition] = useState<React.CSSProperties>({});
   const settings = projection?.effectivePermissions ?? permissionSettings({ ...defaults, ...projection?.permissionOverrides });
   const summary = `${t(language, 'agent.permission.shell')}: ${t(language, `agent.permission.${settings['agent.permissions.shell']}`)}`;
@@ -72,14 +80,14 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
     finally { setBusy(false); }
   };
   return <div ref={permissionControlRef} className="local-agent__permission-control">
-    <button {...identity.action('toggle', 'click')} type="button" className="local-agent__permission-summary" aria-label={t(language, 'settings.nav.permissions')}
+    <button {...identity.action('toggle', 'click')} type="button" className="local-agent__permission-summary" aria-label={t(language, 'agent.permission.menuTitle')}
       title={summary} aria-expanded={permissionMenuOpen} onClick={() => { setPermissionMenuOpen(open => !open); setAttachmentMenuOpen(false); }}>
       <AchbitShellIcon name="shield" /><span>{summary}</span>
     </button>
     {permissionMenuOpen && createPortal(<div ref={permissionMenuRef} className="local-agent__permission-menu" style={position}
       data-native-overlay role="dialog" aria-label={t(language, heading)}
       onKeyDown={event => {
-        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (page) setPage(null); else close(); }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (page) back(); else close(); }
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
           const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"], .local-agent__permission-row')];
           const index = options.indexOf(document.activeElement as HTMLButtonElement);
@@ -87,7 +95,7 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
         }
       }}>
       <header className="local-agent__permission-heading">
-        {page && <button {...identity.action('back', 'click')} type="button" aria-label={t(language, 'agent.permission.back')} onClick={() => setPage(null)}><AchbitShellIcon name="chevronLeft" /></button>}
+        {page && <button {...identity.action('back', 'click')} type="button" aria-label={t(language, 'agent.permission.back')} onClick={back}><AchbitShellIcon name="chevronLeft" /></button>}
         <strong>{t(language, heading)}</strong>
         <button {...identity.action('close', 'click')} type="button" aria-label={t(language, 'agent.permission.close')} onClick={close}><AchbitShellIcon name="close" /></button>
       </header>
@@ -110,11 +118,21 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
             {detail.key === 'agent.permissions.shellAccess' && value === 'full' && <small>{t(language, 'agent.permission.fullHelp')}</small>}
           </span>
         </button>)}
-      </div> : <>
-        <div className="local-agent__permission-invariant"><span>{t(language, 'agent.permission.workspaceRead')}</span><strong>{t(language, 'agent.permission.workspaceReadAllowed')}</strong></div>
-        {rows.map(row => <button {...identity.action('open-setting', 'click', { setting: row.key })} key={row.key} type="button" className="local-agent__permission-row" disabled={busy} onClick={() => setPage(row)}>
+      </div> : group ? <>
+        {group === 'access' && <div className="local-agent__permission-invariant"><span>{t(language, 'agent.permission.workspaceRead')}</span><strong>{t(language, 'agent.permission.workspaceReadAllowed')}</strong></div>}
+        {groups[group].map(row => <button {...identity.action('open-setting', 'click', { setting: row.key })} key={row.key} type="button" className="local-agent__permission-row" disabled={busy} onClick={() => setPage(row)}>
           <span>{t(language, row.label)}</span><span>{t(language, row.values.find(([value]) => value === settings[row.key])![1])}<AchbitShellIcon name="chevronRight" /></span>
         </button>)}
+      </> : <>
+        {(['workflow', 'access'] as const).map(key => {
+          const row = groups[key][0];
+          const current = row.values.find(([value]) => value === settings[row.key])!;
+          return <button {...identity.action('open-group', 'click', { group: key })} key={key} type="button"
+            className="local-agent__permission-row" onClick={() => setPage(key)}>
+            <span>{t(language, `agent.permission.${key}`)}</span>
+            <span>{t(language, row.label)} · {t(language, current[1])}<AchbitShellIcon name="chevronRight" /></span>
+          </button>;
+        })}
         {grants.length > 0 && <button {...identity.action('grants', 'click')} type="button" className="local-agent__permission-row" onClick={() => setPage('grants')}>
           <span>{t(language, 'agent.permission.runGrants')}</span><span>{grants.length}<AchbitShellIcon name="chevronRight" /></span>
         </button>}

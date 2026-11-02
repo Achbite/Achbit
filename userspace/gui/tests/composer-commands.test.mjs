@@ -5,17 +5,18 @@ import { loadGuiModules } from './gui-projection-contract.mjs';
 test('GUI slash menu discovers actions and leaves paths and ordinary messages alone', async t => {
   const [commands] = await loadGuiModules(t, ['/src/components/local-agent/composerCommands.ts']);
   const all = commands.suggestComposerCommands('/').map(item => item.id);
-  for (const name of ['focus', 'new', 'model', 'context', 'permissions', 'attach', 'plugins', 'agents', 'cancel', 'help']) {
+  for (const name of ['focus', 'plan', 'new', 'model', 'context', 'permissions', 'attach', 'plugins', 'agents', 'cancel', 'help']) {
     assert.ok(all.includes(name), name);
   }
   assert.deepEqual(commands.suggestComposerCommands('/mo').map(item => item.id), ['model']);
   for (const draft of ['ordinary text', '/remote/workspace/file.txt', '/focus fix the error', '/model ', ' /mo', '\t/mo']) {
     assert.deepEqual(commands.suggestComposerCommands(draft), [], draft);
   }
+  assert.deepEqual(commands.parseComposerCommand('/plan update\nthe guide'), { name: 'plan', argument: 'update\nthe guide' });
   assert.deepEqual(commands.parseComposerCommand('/model'), { name: 'model', argument: '' });
   assert.deepEqual(commands.parseComposerCommand('/focus fix\nthe error'), { name: 'focus', argument: 'fix\nthe error' });
   for (const draft of ['/remote/workspace/file.txt', '/api/v1', '/tmp', '/unknown', '/unknown 请解释这个名字',
-    '/model 是什么意思？', '/new explain', '/focusdir', ' /new', '\t/focus task', 'explain /model']) {
+    '/model 是什么意思？', '/new explain', '/focusdir', '/plan.md', ' /plan explain', ' /new', '\t/focus task', 'explain /model']) {
     assert.equal(commands.parseComposerCommand(draft), null, draft);
   }
   assert.deepEqual(commands.parseComposerCommand('/new  '), { name: 'new', argument: '' });

@@ -471,6 +471,9 @@ fn render_plan_document(
                 write!(out, " {target}")?;
             }
             if let Some(paths) = &operation.writable_paths {
+                if paths.is_empty() {
+                    write!(out, " · 无项目写入")?;
+                }
                 for target in paths {
                     write!(
                         out,

@@ -179,6 +179,12 @@ enum WorkspaceMutationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestedPlanStage {
+    Preparing,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreparedEffectScope {
     LocalRead,
     WorkspaceRead,
@@ -194,6 +200,7 @@ enum PreparedEffectScope {
 pub(crate) struct LocalAgentPermissionPolicy {
     pub(crate) constraints: crate::local_agent_recipe::PolicyConstraints,
     workspace_mutation: WorkspaceMutationMode,
+    requested_plan: Option<RequestedPlanStage>,
     shell: ShellApprovalMode,
     shell_full_access: bool,
     command_rules: Vec<ShellCommandRule>,
@@ -289,6 +296,7 @@ impl LocalAgentPermissionPolicy {
             command_rules,
             settings: settings.clone(),
             workspace_mutation: workspace_mutation_mode(settings)?,
+            requested_plan: None,
             network: permission_mode(
                 settings,
                 "agent.permissions.networkRead",
@@ -299,6 +307,15 @@ impl LocalAgentPermissionPolicy {
                 LocalAgentKernelError::new("agent_permission_setting_invalid", message)
             })?,
         })
+    }
+
+    pub(crate) fn require_manual_plan(&mut self, confirmed: bool) {
+        self.requested_plan = Some(if confirmed {
+            RequestedPlanStage::Confirmed
+        } else {
+            RequestedPlanStage::Preparing
+        });
+        self.workspace_mutation = WorkspaceMutationMode::Plan;
     }
 
     fn with_constraints(
@@ -1339,14 +1356,16 @@ impl LocalAgentKernel {
                 return Ok(prepared);
             }
         }
-        let permissions = self.journal.effective_permissions(&request.session_id)?;
+        let permissions = self
+            .journal
+            .run_permissions(&request.session_id, &request.run_id)?;
         let mut prepared = prepare_effect_target(
             &request.tool_name,
             &request.input,
             &request.workspace_bindings,
             generation,
             binding,
-            permissions.as_ref().clone(),
+            permissions,
             |id| self.resolve_owned_workspace(&request.session_id, id),
             |root| self.workspace_policy(request, root),
         )?;
@@ -1478,8 +1497,11 @@ impl LocalAgentKernel {
                 || prepared.workspace_policy.as_ref().is_some_and(|policy| {
                     matches!(policy.access, WorkspaceAccess::SessionWorkdir(_))
                 })
-                || plan_authority.is_some())
-        {
+                || plan_authority.as_ref().is_some_and(|authority| {
+                    authority["writablePaths"]
+                        .as_array()
+                        .is_some_and(|paths| !paths.is_empty())
+                })) {
             KernelWorkspaceMode::Write
         } else {
             KernelWorkspaceMode::Read
@@ -1539,6 +1561,17 @@ impl LocalAgentKernel {
         }
         if let Some(denied) = policy_denial(prepared) {
             return Ok(denied);
+        }
+        if prepared.permissions.requested_plan == Some(RequestedPlanStage::Preparing)
+            && !matches!(
+                prepared.scope,
+                PreparedEffectScope::LocalRead | PreparedEffectScope::WorkspaceRead
+            )
+        {
+            return Ok(Admission::denied(
+                "plan_confirmation_required",
+                "请先确认本次任务的计划。",
+            ));
         }
         if let PreparedToolInput::Container { input, target } = &prepared.input {
             if input.action == "inspect" {
@@ -2178,6 +2211,12 @@ impl LocalAgentKernel {
                 json!({"source":"user","authorities":[],"workspaceRequests":workspace_requests}),
             );
         }
+        let permissions = self
+            .journal
+            .run_permissions(&request.session_id, &request.run_id)?;
+        if permissions.requested_plan.is_some() {
+            return Ok(json!({"source":"user","authorities":[]}));
+        }
         // An inherited Plan remains the scope ceiling even when the permission
         // mode permits automatic confirmation. Keep its original grant identity.
         let manifest = request
@@ -2197,21 +2236,11 @@ impl LocalAgentKernel {
             // execution still goes through its independent effect admission.
             return Ok(json!({"source":"sessionWorkdir", "authorities":[]}));
         }
-        if authorities.is_empty()
-            && self
-                .journal
-                .effective_permissions(&request.session_id)?
-                .workspace_mutation
-                == WorkspaceMutationMode::Allow
+        if authorities.is_empty() && permissions.workspace_mutation == WorkspaceMutationMode::Allow
         {
             return Ok(json!({"source":"agent", "authorities":[]}));
         }
-        if authorities.is_empty()
-            && self
-                .journal
-                .effective_permissions(&request.session_id)?
-                .workspace_mutation
-                == WorkspaceMutationMode::Review
+        if authorities.is_empty() && permissions.workspace_mutation == WorkspaceMutationMode::Review
         {
             return Ok(json!({"source":"review","authorities":[]}));
         }
@@ -2378,9 +2407,6 @@ impl LocalAgentKernel {
             let paths = workspace_authority["writablePaths"]
                 .as_array()
                 .ok_or("Plan writablePaths missing")?;
-            if paths.is_empty() {
-                return Err("Plan writablePaths is empty".into());
-            }
             Some(
                 paths
                     .iter()
@@ -3453,10 +3479,7 @@ fn plan_operation_covers(scope: &Value, operation: &Value) -> bool {
         if scope["operation"] != operation["operation"] {
             return false;
         }
-        let Some(paths) = scope["writablePaths"]
-            .as_array()
-            .filter(|paths| !paths.is_empty())
-        else {
+        let Some(paths) = scope["writablePaths"].as_array() else {
             return false;
         };
         return operation["writablePaths"]
@@ -6148,7 +6171,11 @@ mod attempt_control_tests {
         let authority = json!({"coveredOperations":[{"workspaceId":"workspace:scope", "operation":"bash", "command":"make build", "writablePaths":[{"path":"build", "kind":"directory"}]}]});
         assert!(authority_covers(&authority, &effect));
         let empty_paths = json!({"coveredOperations":[{"workspaceId":"workspace:scope", "operation":"bash", "writablePaths":[]}]});
-        assert!(!authority_covers(&empty_paths, &effect));
+        assert!(authority_covers(&empty_paths, &effect));
+        let read_only = &empty_paths["coveredOperations"][0];
+        let write_output = &authority["coveredOperations"][0];
+        assert!(plan_operation_covers(write_output, read_only));
+        assert!(!plan_operation_covers(read_only, write_output));
         effect.workspace_id = Some("workspace:other".into());
         assert!(!authority_covers(&authority, &effect));
         effect.workspace_id = Some("workspace:scope".into());

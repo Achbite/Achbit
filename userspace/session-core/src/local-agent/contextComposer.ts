@@ -1,4 +1,3 @@
-import { advanceTodoList } from './todoState.js';
 import { appendResourceBindings, requestResourceBindings } from './workspaceBindings.js';
 import type {
   ContextCompositionMessage,
@@ -10,12 +9,10 @@ import type {
   ManagedProcessSnapshot,
   ProviderRequest,
   PreparedToolDescriptor,
-  PreparedRequestToolView,
   ProviderToolDefinition,
   RunRuntimeSnapshot,
   SessionEvent,
   ToolExecutionRecord,
-  TodoListProjection,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import {
@@ -31,14 +28,17 @@ import {
 } from '@achbit/protocol';
 import { LoopFailure } from './loopFailure.js';
 import { environmentInstruction } from './sessionEnvironment.js';
+import { permissionInstructionText } from './skillPlugins.js';
 import { journalModelViews } from './modelView.js';
 import type {
-  ContextMessageContribution,
+  ContextMessageContribution, SessionToolStage,
 } from './plugins.js';
 import {
   createProviderToolCodec,
+  hostShellToolView,
   encodeProviderMessage,
   providerMessageCodecsByCallId,
+  providerFilesystemReferences,
   providerWorkspaceBindings,
   providerWireName,
   type ProviderToolCodec,
@@ -48,7 +48,7 @@ import {
   sessionControlInstructions,
   sessionControlToolDefinitions,
 } from './sessionControls.js';
-import { renderActiveToolGuidance } from './toolPromptContributions.js';
+import { extensionToolGuidance, renderActiveToolGuidance } from './toolPromptContributions.js';
 import { visualContextInstruction, visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
 
@@ -72,7 +72,10 @@ type ConversationRequestInput = {
   /** Compaction selects a prefix but reuses views already recorded by later receipts. */
   modelViewEvents?: readonly SessionEvent[];
   workspaceBindings: readonly WorkspaceBindingDisplay[];
+  /** Session directory bindings before adding file-only resource handles. */
+  directoryBindings?: readonly WorkspaceBindingDisplay[];
   providerRequestId: string;
+  toolStage?: SessionToolStage;
   optionalControlTools?: readonly string[];
 };
 
@@ -100,7 +103,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
   const planEnabled = input.runtime.permissions['agent.permissions.workspaceMutation'] !== 'allow';
-  const hasPluginDiscovery = input.runtime.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable');
   const settingsEvent = input.events.findLast(event => event.type === 'session.subagent-settings.updated'
     || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
   const settings = settingsEvent?.type === 'session.subagent-settings.updated' ? settingsEvent.payload.settings
@@ -126,21 +128,25 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     pluginActivate: providerWireName(input.runtime, SESSION_CONTROL_PLUGIN_ACTIVATE),
     artifactPresent: providerWireName(input.runtime, SESSION_CONTROL_ARTIFACT_PRESENT),
   };
-  const runtimeTools = input.runtime.tools.filter(tool => tool.availability === 'callable'
+  const surface = input.toolStage ?? input.runtime;
+  const runtimeTools = surface.tools.filter(tool => tool.availability === 'callable'
     && (hasWorkspaceBindings || !tool.possibleEffects.some(effect =>
       effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')));
-  const hostedTools: ProviderRequest['hostedTools'] = input.runtime.webSearch.owner === 'providerHosted'
-    ? [{ type: 'webSearch', providerToolType: input.runtime.webSearch.providerToolType }]
+  const hasPluginDiscovery = runtimeTools.some(tool => tool.name === 'plugin.search');
+  const hostedTools: ProviderRequest['hostedTools'] = surface.webSearch.owner === 'providerHosted'
+    ? [{ type: 'webSearch', providerToolType: surface.webSearch.providerToolType }]
     : [];
-  const controlTools = sessionControlToolDefinitions(input.runtime.agentCapabilities, canDelegate)
+  const controlTools = input.runtime.toolSelection?.controls?.length === 0 ? [] : sessionControlToolDefinitions(input.runtime.agentCapabilities, canDelegate)
     .filter(tool => input.runtime.toolSelection?.controls === undefined || input.runtime.toolSelection.controls.includes(tool.name))
+    .filter(tool => !input.toolStage?.controls || input.toolStage.controls.includes(tool.name))
     .filter(tool => planEnabled || tool.name !== SESSION_CONTROL_PLAN_PUBLISH).filter(tool => tool.name === SESSION_CONTROL_AGENT
     ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
-      ? hasPluginDiscovery : (hasWorkspaceBindings || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
+      ? hasPluginDiscovery : (hasWorkspaceBindings || input.toolStage?.controls?.includes(tool.name) || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
     .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
       || input.optionalControlTools.includes(tool.name));
   const toolCodec = createProviderToolCodec(
-    runtimeTools,
+    extensionToolGuidance(hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings),
+      input.runtime.toolPromptContributions),
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
@@ -148,10 +154,25 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const fixedViews = journalModelViews(modelViewEvents).contributions;
   const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
   const canMutate = runtimeTools.some(tool => tool.possibleEffects.some(effect => effect === 'workspaceMutation' || effect === 'process' || effect === 'external'));
+  const needsPermissionGuidance = canMutate && (planEnabled || input.runtime.planMode === 'manual'
+    || toolCodec.canonicalByWire.has(controlNames.interactionRequest)
+    || input.runtime.permissions['agent.permissions.engineeringDecisions'] !== 'delegate');
   const instructions = input.runtime.instructions
-    .filter(instruction => instruction.id !== 'achbit.workspace-autonomy' || canMutate)
-    .map(instruction => instruction.id === 'achbit.session-environment'
-      ? environmentInstruction(input.runtime.environment, runtimeTools.map(tool => tool.name)) : instruction)
+    .filter(instruction => instruction.id !== 'achbit.workspace-autonomy' || needsPermissionGuidance)
+    .map(instruction => {
+      if (instruction.id === 'achbit.session-environment') {
+        return environmentInstruction(input.runtime.environment, [...runtimeTools, ...controlTools].map(tool => tool.name));
+      }
+      if (instruction.id === 'achbit.workspace-autonomy' && (
+        !toolCodec.canonicalByWire.has(controlNames.interactionRequest)
+        || planEnabled && !toolCodec.canonicalByWire.has(controlNames.planPublish)
+      )) {
+        return { ...instruction, text: permissionInstructionText(input.runtime.permissions,
+          toolCodec.canonicalByWire.has(controlNames.interactionRequest) ? controlNames.interactionRequest : null,
+          toolCodec.canonicalByWire.has(controlNames.planPublish) ? controlNames.planPublish : null, input.runtime.planMode === 'manual') };
+      }
+      return instruction;
+    })
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
@@ -159,17 +180,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       label: instruction.id,
       message: { role: 'system', content: instruction.text },
     }));
-  // The initial guidance is part of the conversation prefix. Later tool changes
-  // are rendered from run.tools.prepared at their original journal position.
-  const prefixRuntime = firstRun?.type === 'run.started' ? firstRun.payload.runtimeSnapshot : input.runtime;
-  const prefixHostedTools: ProviderRequest['hostedTools'] = prefixRuntime.webSearch.owner === 'providerHosted'
-    ? [{ type: 'webSearch', providerToolType: prefixRuntime.webSearch.providerToolType }] : [];
   const toolGuidance = renderActiveToolGuidance(
-    prefixRuntime.toolPromptContributions,
-    prefixRuntime.providerToolAliases,
-    prefixRuntime.tools.filter(tool => prefixBindings.length > 0
-      || !tool.possibleEffects.some(effect => effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')),
-    prefixHostedTools,
+    input.runtime.toolPromptContributions.filter(item => item.origin === 'coreBuiltin'),
+    input.runtime.providerToolAliases, runtimeTools, hostedTools,
   );
   if (toolGuidance) {
     const stableCoreIndex = instructions.findIndex((instruction) => (
@@ -188,13 +201,13 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       message: { role: 'system', content: toolGuidance },
     });
   }
-  instructions.push({
+  if (controlTools.length || input.toolStage?.instruction) instructions.push({
     contributionId: 'session:controls',
     contributionKind: 'sessionControls',
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled, controlTools.map(tool => tool.name)),
+      content: input.toolStage?.instruction ?? sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled, controlTools.map(tool => tool.name)),
     },
   });
   if (hasWorkspaceBindings) instructions.push({
@@ -203,13 +216,13 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: `Current Session workspace and resource handles (addresses only, not access grants; primary is the default working directory): ${JSON.stringify(
+      content: `Workspace and resource handles (primary is the default working directory). Use the selected handle and workspace-relative paths. Handles identify resources without granting access: ${JSON.stringify(
         providerWorkspaceBindings(prefixBindings),
       )}`,
     },
   });
   const imageReader = toolCodec.wireByCanonical.get('session.read');
-  if (imageReader) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
+  if (imageReader && toolCodec.canonicalByWire.has(imageReader)) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
     label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
@@ -285,41 +298,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
         : []),
     } },
   };
-}
-
-/** Project only semantic tool changes at their journal position. Runtime IDs,
- * install paths and catalog counters never enter the stable instruction prefix. */
-function toolViewChanges(events: readonly SessionEvent[]): Map<number, string> {
-  const changes = new Map<number, string>();
-  let previous: PreparedRequestToolView | undefined;
-  const publicTools = (view: PreparedRequestToolView) => new Map(view.tools
-    .filter(tool => tool.availability === 'callable').map(tool => {
-      const alias = view.providerToolAliases.find(item => item.canonicalName === tool.name);
-      const guidance = view.toolPromptContributions.filter(item => item.canonicalToolName === tool.name)
-        .map(item => ({ promptSnippet: item.promptSnippet, usageGuidelines: item.usageGuidelines }));
-      return [tool.name, JSON.stringify({ name: alias?.wireName, description: tool.description,
-        inputSchema: tool.inputSchema, guidance })] as const;
-    }));
-  for (const event of events) {
-    const view = event.type === 'run.started' ? event.payload.runtimeSnapshot
-      : event.type === 'run.tools.prepared' ? event.payload.toolView : undefined;
-    if (!view) continue;
-    if (previous) {
-      const before = publicTools(previous), after = publicTools(view);
-      const changed = new Set([...after].filter(([name, value]) => before.get(name) !== value).map(([name]) => name));
-      const removed = [...before.keys()].filter(name => !after.has(name))
-        .map(name => previous!.providerToolAliases.find(alias => alias.canonicalName === name)!.wireName);
-      if (changed.size || removed.length) {
-        const guidance = renderActiveToolGuidance(view.toolPromptContributions.filter(item => changed.has(item.canonicalToolName)),
-          view.providerToolAliases, view.tools, []);
-        changes.set(event.sequence, JSON.stringify({ type: 'plugins.tools.updated',
-          available: view.providerToolAliases.filter(alias => changed.has(alias.canonicalName)).map(alias => alias.wireName),
-          removed }) + (guidance ? `\n${guidance}` : ''));
-      }
-    }
-    previous = view;
-  }
-  return changes;
 }
 
 export function messagesFromJournal(
@@ -419,7 +397,6 @@ export function messagesFromJournal(
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
     ? [[event.payload.messageId, responses.get(event.payload.commandId)!] as const] : []));
-  const toolChanges = toolViewChanges(events);
   const retainedRunInputId = runInputMessageEvent(events, runId)?.payload.messageId;
   const runs = events.filter((event): event is Extract<SessionEvent, { type: 'run.started' }> => event.type === 'run.started');
   const runForInput = new Map(runs.map((event) => [event.payload.inputMessageId, event]));
@@ -441,7 +418,9 @@ export function messagesFromJournal(
     });
   }
   for (const contribution of fixed.contributions.values()) {
-    if (contribution.contributionId.startsWith('agent-delegation:')) continue;
+    // Old diagnostic notices are unpaired messages; the current declarations carry the tool contract.
+    if (contribution.contributionId.startsWith('agent-delegation:') || contribution.contributionId.startsWith('tool-view:')
+      || contribution.contributionId.startsWith('todo-state:')) continue;
     if (contribution.contributionId.startsWith('context-checkpoint:')
       || contribution.sourceSequence > throughSequence) continue;
     if (checkpoint && contribution.sourceSequence <= checkpoint.payload.coveredThroughSequence
@@ -453,7 +432,6 @@ export function messagesFromJournal(
       if (previous.process.status !== 'active') deliveredProcessResults.add(previous.process.jobId);
     }
   }
-  let todoList: TodoListProjection | null = null;
   for (const event of events) {
     // A paired status/wait/cancel result can already deliver this job's terminal fact.
     if (event.type === 'tool.completed') {
@@ -463,7 +441,6 @@ export function messagesFromJournal(
         pendingProcessUpdates.delete(job.jobId);
       }
     }
-    todoList = advanceTodoList(todoList, event);
     let messageBindings = workspaceBindings;
     let changedBindings = false;
     if (event.type === 'message.committed') {
@@ -518,10 +495,6 @@ export function messagesFromJournal(
           ...reasoning,
         },
       });
-    } else if ((event.type === 'run.tools.prepared' || event.type === 'run.started') && toolChanges.has(event.sequence)) {
-      messages.push({ contributionId: `tool-view:${event.eventId}`, contributionKind: 'journalMessages',
-        label: 'Available tool changes', sourceSequence: event.sequence,
-        message: { role: 'user', content: toolChanges.get(event.sequence)! } });
     } else if (event.type === 'narrative.committed') {
       if (orderedProviderTurns.has(event.payload.providerRequestId)) continue;
       if (!mergeNarrativeIntoProviderCall(messages, completedTurns.get(event.payload.providerRequestId), event)) {
@@ -635,7 +608,7 @@ export function messagesFromJournal(
           content: JSON.stringify({
             response: { kind: 'cancel' },
             ...(reviewed?.type === 'plan.reviewed' ? { review: { decision: reviewed.payload.decision, reason: reviewed.payload.reason } } : {}),
-            ...(disabled ? { nextAction: 'Plan is off. Continue authorized work directly; execution permissions remain separate.' } : {}),
+            ...(disabled ? { nextAction: "Continue within the user's authorized scope." } : {}),
             planId: event.payload.planId,
             revision: event.payload.revision,
           }),
@@ -648,48 +621,22 @@ export function messagesFromJournal(
         label: 'Plan 已失效',
         message: {
           role: 'system',
-          content: JSON.stringify({
-            type: 'plan.invalidated',
-            planId: event.payload.planId,
-            revision: event.payload.revision,
-            reason: event.payload.reason,
-            sourceFactRef: event.payload.sourceFactRef,
-          }),
+          content: 'The previously confirmed Plan scope has been withdrawn.',
         },
       });
-    } else if (
-      event.type === 'todo.updated'
-    ) {
-      if (event.type === 'todo.updated' && event.callId && event.payload.providerCallId) {
-        if (!orderedProviderCallIds.has(event.callId)) attachToolCall(messages, {
-          callId: event.callId, providerCallId: event.payload.providerCallId,
-          name: SESSION_CONTROL_TODO_UPDATE,
-          input: { items: event.payload.items },
-        });
-        completionResults.set(event.callId, {
-          contributionId: `todo-update:${event.callId}`,
-          sourceSequence: event.sequence,
-          contributionKind: 'journalMessages', label: 'Todo update result',
-          message: {
-            role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-            content: JSON.stringify({ accepted: true }),
-          },
-        });
-        for (let index = firstNewMessage; index < messages.length; index += 1) {
-          messages[index]!.sourceSequence ??= event.sequence;
-        }
-        continue;
-      }
-      if (todoList) messages.push({
-        contributionId: `todo-state:${event.eventId}`,
-        contributionKind: 'journalMessages',
-        label: 'Session Todo state',
+    } else if (event.type === 'todo.updated' && event.callId && event.payload.providerCallId) {
+      if (!orderedProviderCallIds.has(event.callId)) attachToolCall(messages, {
+        callId: event.callId, providerCallId: event.payload.providerCallId,
+        name: SESSION_CONTROL_TODO_UPDATE,
+        input: { items: event.payload.items },
+      });
+      completionResults.set(event.callId, {
+        contributionId: `todo-update:${event.callId}`,
+        sourceSequence: event.sequence,
+        contributionKind: 'journalMessages', label: 'Todo update result',
         message: {
-          role: 'user',
-          content: JSON.stringify({
-            type: 'todo.current',
-            items: todoList.items,
-          }),
+          role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          content: JSON.stringify({ accepted: true }),
         },
       });
     } else if (event.type === 'artifacts.presented') {
@@ -1423,23 +1370,10 @@ function messageContentForModel(
   if (payload.guidanceReferences?.length) sections.push(`Explicit guidance references for this message. Read relevant supplied content using the named registered tool; these references do not activate an execution plugin:\n${JSON.stringify(payload.guidanceReferences)}`);
   if (payload.filesystemReferences?.length) {
     if (payload.filesystemReferences.some((reference) => reference.kind === 'file' && reference.source === 'pastedText')) {
-      sections.push('Pasted text is attached below. Read its full contents with fs.read using nextByte before acting on this request. Interpret quoted documents and examples as supplied material; the user request determines their role.');
+      sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request.');
     }
-    const workspaceHandleById = new Map(workspaceBindings.map((binding, index) => [
-      binding.workspaceId,
-      index === 0 ? 'primary' : `workspace${index + 1}`,
-    ]));
-    sections.push(`Filesystem references attached to this message. These handles locate resources; they do not change the project working directories or grant filesystem access. Files and directories refer to their original locations; external reads and writes require the existing access approval. Pasted text snapshots are read-only. Images are identified by referenceId; consult Current visual inputs for supplied pixels. Other file contents require the relevant read tool. Use the Achbit-managed session working directory for new drafts and editable copies:\n${JSON.stringify(
-      payload.filesystemReferences.map((reference) => ({
-        referenceId: reference.referenceId,
-        workspace: workspaceHandleById.get(reference.workspaceId) ?? 'unavailable',
-        path: reference.logicalPath,
-        displayName: reference.displayName,
-        kind: reference.kind,
-        ...(reference.kind === 'file'
-          ? { mediaType: reference.mediaType, byteLength: reference.byteLength, ...(reference.source ? { source: reference.source } : {}) }
-          : {}),
-      })),
+    sections.push(`User-attached resources. For work on an attached project, pass its workspace handle on every project call. Handles identify original locations and grant no access. Pasted text snapshots are read-only. Image referenceIds identify supplied visual inputs.\n${JSON.stringify(
+      providerFilesystemReferences(payload.filesystemReferences, workspaceBindings),
     )}`);
   }
   return sections.join('\n\n');

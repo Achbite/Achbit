@@ -513,7 +513,8 @@ export class SessionActor {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }
-    const mode = command.patches['agent.permissions.workspaceMutation'];
+    const manualRun = snapshot.state.run && snapshot.state.runRuntimeSnapshots[snapshot.state.run.runId]?.planMode === 'manual';
+    const mode = manualRun ? undefined : command.patches['agent.permissions.workspaceMutation'];
     if (mode === 'allow') {
       const pending = snapshot.state.pendingPlan;
       if (pending) events.push({ type: 'plan.cancelled', sessionId: this.sessionId, runId: pending.runId, callId: pending.callId,
@@ -736,6 +737,7 @@ export class SessionActor {
     return await this.handleRunInput({
       schemaVersion: command.schemaVersion, type: 'message.submit', commandId: command.commandId,
       sessionId: this.sessionId, text: command.text,
+      ...(started.type === 'run.started' && started.payload.runtimeSnapshot.planMode ? { planMode: started.payload.runtimeSnapshot.planMode } : {}),
       filesystemReferences: original.filesystemReferences,
       pluginSelections: original.pluginSelections,
       ...(original.guidanceReferences ? { guidanceReferences: original.guidanceReferences } : {}),
@@ -751,6 +753,10 @@ export class SessionActor {
     beforeRunStart?: (runId: string) => Promise<void>,
   ): Promise<CommandReply> {
     const journalCommand = edit?.command ?? command;
+    const manualPlan = command.type === 'message.submit' && command.planMode === 'manual';
+    if (manualPlan && !submittedText.trim()) {
+      return await this.recordRejection(journalCommand, 'plan_task_empty', '/plan 后必须提供任务正文。');
+    }
     if (!submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
       if (command.type === 'context.focus') {
         return await this.recordRejection(
@@ -786,6 +792,12 @@ export class SessionActor {
         });
       }
       if (!run || !['running', 'waiting'].includes(run.status)) return null;
+      if (manualPlan) {
+        return await this.commitCommandWithinWrite(command, [], {
+          ...acceptedReply(command), status: 'rejected',
+          error: { code: 'plan_run_active', message: '请在当前任务结束后用 /plan 发起新任务。' },
+        });
+      }
       if (command.type === 'context.focus') {
         return await this.commitCommandWithinWrite(command, [], {
           ...acceptedReply(command), status: 'rejected',
@@ -830,6 +842,10 @@ export class SessionActor {
     if (before.state.run && !isTerminal(before.state.run.status)) {
       return await this.recordRejection(command, 'run_release_pending', '当前运行尚未完成资源释放。');
     }
+    const controls = before.state.recipe?.tools?.controls;
+    if (manualPlan && controls && !controls.includes('plan.publish')) {
+      return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
+    }
     const messageId = this.#nextId('message');
     const runId = this.#nextId('run');
     const profileId = command.profileId ?? before.state.modelSettings?.profileId ?? this.#profileId;
@@ -853,9 +869,10 @@ export class SessionActor {
         ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) }
         : {}),
     });
-    const runtimeSnapshot = !this.#agents && prepared.runtimeSnapshot.agentToolsEnabled
-      ? { ...prepared.runtimeSnapshot, agentToolsEnabled: false }
-      : prepared.runtimeSnapshot;
+    const runtimeSnapshot = { ...prepared.runtimeSnapshot,
+      ...(manualPlan ? { planMode: 'manual' as const } : {}),
+      ...(!this.#agents && prepared.runtimeSnapshot.agentToolsEnabled ? { agentToolsEnabled: false } : {}),
+    };
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
       {
