@@ -4,7 +4,7 @@ Shell, PowerShell, managed commands, long-running tasks, dependency waiting, and
 
 ## Choose execution and waiting
 
-A normal `bash`, `powershell` or container create/exec call keeps its native result if it finishes within the foreground window (currently two seconds). Otherwise the **same execution** continues and returns `output.job`. An active job is a start receipt, not successful command completion. Its jobId belongs to the current run. The task’s tool selection determines whether the model can call `process`.
+When a task includes `process`, a normal `bash`, `powershell` or container create/exec call keeps its native result if it finishes within the foreground window (currently two seconds). Longer commands continue as the **same execution** and return `output.job` with the current run's job ID. Without the process component, the call waits for the command, cancellation or its timeout and returns the result directly.
 
 For a known long task, use `process` with `action: start`, the available `tool`, and that tool's exact `input`. Choose `workspace` on the outer call. Example: `{"action":"start","tool":"bash","input":{"command":"make build"}}`. Container create and exec are supported when the containers capability is available. A create job completes when its result contains the prepared container; that is different from the container's lifetime.
 

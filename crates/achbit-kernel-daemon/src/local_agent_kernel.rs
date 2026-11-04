@@ -2301,8 +2301,9 @@ impl LocalAgentKernel {
         lease: PhysicalAttemptLease,
     ) -> Result<KernelToolExecutionResult, String> {
         if prepared.source_binding.is_some()
-            || is_shell_tool(&prepared.operation)
-            || matches!(&prepared.input, PreparedToolInput::Container { input, .. } if input.action != "inspect")
+            || (prepared.generation.catalog.has_process_control()
+                && (is_shell_tool(&prepared.operation)
+                    || matches!(&prepared.input, PreparedToolInput::Container { input, .. } if input.action != "inspect")))
         {
             let kernel = self.clone();
             let mut inner = prepared.clone();

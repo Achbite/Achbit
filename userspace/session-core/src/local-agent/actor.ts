@@ -1268,7 +1268,10 @@ export class SessionActor {
       if (timing) await this.appendEvents([timing], current);
     });
     const snapshot = await this.loadSnapshot();
-    await this.ensureProcesses(command.runId);
+    const view = snapshot.state.runToolViews[command.runId] ?? snapshot.state.runRuntimeSnapshots[command.runId];
+    const hasProcessActivity = view?.tools.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'process' && tool.availability === 'callable')
+      || Object.values(snapshot.state.processes).some(job => job.runId === command.runId);
+    if (hasProcessActivity) await this.ensureProcesses(command.runId);
     const runner = this.#composition.runner ?? { run: runAgentLoop };
     const result = await runner.run(
       snapshot,
@@ -1279,6 +1282,7 @@ export class SessionActor {
         ...(this.#agents ? { agents: this.#agents } : {}),
         sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
         waitForInput: async (runId, wait, signal) => {
+          if (!hasProcessActivity) return this.waitForInput(runId, signal, undefined, undefined, wait);
           await this.ensureProcesses(runId);
           await this.#processes?.sync();
           const current = await this.loadSnapshot();
@@ -1288,9 +1292,7 @@ export class SessionActor {
           }
           return this.waitForInput(runId, signal, undefined, undefined, wait);
         },
-        ...((snapshot.state.runRuntimeSnapshots[command.runId]?.tools.some(tool => tool.possibleEffects.includes('process'))
-          || snapshot.state.runRuntimeSnapshots[command.runId]?.toolSelection?.plugins !== false
-          || Object.values(snapshot.state.processes).some(job => job.runId === command.runId)) ? {
+        ...(hasProcessActivity ? {
           activity: createProcessActivity(command.runId,
             async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
             (signal, jobIds, timeoutSeconds) => this.waitForProcesses(command.runId, signal, jobIds, timeoutSeconds)),

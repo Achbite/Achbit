@@ -830,6 +830,13 @@ impl ToolCatalogSnapshot {
         )
     }
 
+    pub(crate) fn has_process_control(&self) -> bool {
+        self.tools.get("process").is_some_and(|tool| {
+            tool.availability == ToolAvailability::Callable
+                && matches!(&tool.binding, ToolExecutorBinding::Process)
+        })
+    }
+
     pub(crate) fn binding_for_name(
         self: &Arc<Self>,
         name: &str,
