@@ -37,7 +37,9 @@ test('Host-installed product slices compose independently from tools, metadata a
   assert.deepEqual(select({ productComponents: [] }), []);
   const full = select({});
   assert.ok(full.some(item => item.id === 'achbit.collaboration' && /Update them/u.test(item.text)));
-  assert.ok(!full.some(item => item.id === 'achbit.rich-replies' || /Mermaid/u.test(item.text)));
+  const rich = full.filter(item => item.id === 'achbit.rich-replies');
+  assert.equal(rich.length, 1);
+  assert.match(rich[0].text, /Mermaid[\s\S]+Markdown table/u);
   assert.ok(!full.some(item => item.id === extra.id || item.id === 'achbit.conversation-title'));
   assert.doesNotMatch(stableCoreInstructions[0].text, /Mermaid|opening explanation|Update them/u);
   assert.deepEqual(select({ ...base, productComponents: ['achbit.conversation-title', extra.id] }), [extra]);

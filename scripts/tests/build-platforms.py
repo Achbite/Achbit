@@ -111,6 +111,7 @@ class SharedResourcesTests(unittest.TestCase):
             write(root, 'LICENSE', b'license')
             write(root, 'skills/achbit-documents/licenses/typst.txt', b'Native renderer license')
             write(root, 'skills/achbit-documents/THIRD_PARTY_NOTICES.md', b'Native renderer notices')
+            write(root, 'skills/achbit-frontend-design/SKILL.md', b'Frontend guidance')
             write(root, 'dependencies.json', b'[]')
             public = {
                 'distribution.md': b'Installation',
@@ -126,6 +127,7 @@ class SharedResourcesTests(unittest.TestCase):
 
             package.shared(root, destination, root / 'dependencies.json')
 
+            public['plugins/achbit-frontend-design/SKILL.md'] = b'Frontend guidance'
             self.assertEqual(files(destination / 'docs'), public)
             self.assertEqual((destination / 'licenses/documents/licenses/typst.txt').read_bytes(), b'Native renderer license')
             self.assertEqual((destination / 'licenses/documents/THIRD_PARTY_NOTICES.md').read_bytes(), b'Native renderer notices')

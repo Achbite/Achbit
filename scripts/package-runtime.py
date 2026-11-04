@@ -52,6 +52,7 @@ def shared(root, destination, dependency_list):
     copy_gui(root, destination / 'web-achbit-gui', debug)
     shutil.copytree(root / 'docs/product', destination / 'docs/product')
     shutil.copytree(root / 'docs/plugins', destination / 'docs/plugins')
+    shutil.copytree(root / 'skills/achbit-frontend-design', destination / 'docs/plugins/achbit-frontend-design')
     shutil.copy2(root / 'docs/distribution.md', destination / 'docs/distribution.md')
     shutil.copy2(root / 'LICENSE', destination / 'LICENSE')
     document_notices = root / 'skills/achbit-documents'

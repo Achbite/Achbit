@@ -195,7 +195,7 @@ impl AgentRecipe {
                 controls: Some(vec!["plan.publish".into()]),
                 plugins: false,
             },
-            product_components: Some(Vec::new()),
+            product_components: Some(vec!["achbit.rich-replies".into()]),
             configuration: Some(json!({
                 "context": { "id": "coding" },
                 "compaction": { "id": "none" },
@@ -438,7 +438,10 @@ mod tests {
         let recipe = AgentRecipe::minimal_coding();
         assert_eq!(recipe.tools.controls, Some(vec!["plan.publish".into()]));
         assert!(!recipe.tools.plugins);
-        assert_eq!(recipe.product_components, Some(Vec::new()));
+        assert_eq!(
+            recipe.product_components,
+            Some(vec!["achbit.rich-replies".into()])
+        );
         assert_eq!(
             recipe.configuration.unwrap()["controls"],
             json!({"id":"standard","parameters":{"optionalTools":[]}})

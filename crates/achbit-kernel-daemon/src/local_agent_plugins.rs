@@ -76,6 +76,7 @@ impl PluginCatalogEntry {
 
     fn into_public(self) -> PublicPluginCatalogItem {
         match self {
+            Self::Skill(locator) if !locator.public.enabled => locator.public,
             Self::Skill(locator) => match skill_plugin(&locator) {
                 Ok(source) => source.public,
                 Err(message) => PublicPluginCatalogItem {
@@ -236,9 +237,10 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
                 }
                 _ => "mcp",
             };
+            let builtin = source.public().uri.ends_with("@builtin");
             let mut item =
                 serde_json::to_value(source.into_public()).expect("catalog item serializes");
-            item["source"] = json!(if kind == "host" { "builtin" } else { "mounted" });
+            item["source"] = json!(if builtin { "builtin" } else { "mounted" });
             item["category"] = json!("functional");
             item["discovery"] = json!("default");
             item["contributionKind"] = json!(kind);
@@ -307,13 +309,14 @@ pub(crate) fn search_plugins(
 /// It does not activate an MCP server or a binary plugin while opening the page.
 pub(crate) fn skill_settings_projection(settings: &Value) -> Result<Value, String> {
     let mut skills = crate::local_agent_product_tools::bundled_skill_settings();
-    for entry in skill_catalog_entries(settings)? {
+    for entry in skill_catalog_entries(settings, &disabled_plugin_ids(settings)?)? {
         let source = entry.into_public();
+        let builtin = source.uri.ends_with("@builtin");
         skills.push(json!({
             "id": source.uri,
             "displayName": source.display_name,
             "description": source.short_description,
-            "source": "mounted",
+            "source": if builtin { "builtin" } else { "mounted" },
         }));
     }
     Ok(json!({ "skills": skills }))
@@ -491,9 +494,7 @@ fn plugin_catalog(
 > {
     let mut sources = BTreeMap::new();
     let uri = "plugin://computer-use@builtin";
-    let disabled_plugins: Vec<String> =
-        serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
-            .map_err(|error| format!("plugin_config_invalid: {error}"))?;
+    let disabled_plugins = disabled_plugin_ids(settings)?;
     let disabled = disabled_plugins.iter().any(|value| value == uri);
     // Shared guidance plus this Kernel platform's desktop identifiers and actions.
     #[cfg(windows)]
@@ -609,7 +610,7 @@ fn plugin_catalog(
             content: Arc::from(description.as_bytes()),
         }),
     )?;
-    for source in skill_catalog_entries(settings)? {
+    for source in skill_catalog_entries(settings, &disabled_plugins)? {
         insert_plugin_source(&mut sources, source)?;
     }
     let mcp_sources = crate::local_agent_mcp::available_server_sources(settings)
@@ -681,7 +682,42 @@ fn insert_plugin_source(
     Ok(())
 }
 
-fn skill_catalog_entries(settings: &Value) -> Result<Vec<PluginCatalogEntry>, String> {
+fn disabled_plugin_ids(settings: &Value) -> Result<Vec<String>, String> {
+    serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
+        .map_err(|error| format!("plugin_config_invalid: {error}"))
+}
+
+fn frontend_design_skill(disabled: &[String]) -> Result<PluginCatalogEntry, String> {
+    let id = "achbit-frontend-design";
+    let uri = format!("plugin://{id}@builtin");
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let runtime = achbit_host_connection::runtime_root(
+        executable
+            .parent()
+            .ok_or("Kernel executable has no directory")?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(PluginCatalogEntry::Skill(SkillLocator {
+        public: PublicPluginCatalogItem {
+            enabled: !disabled.contains(&uri),
+            management: Some(json!({"key":"plugins.disabled","id":uri})),
+            uri,
+            display_name: "Frontend Design".into(),
+            short_description: "前端页面、组件与交互预览的设计指导。".into(),
+            icon_ref: None,
+            activation_media_types: vec![],
+            available: false,
+            error: None,
+        },
+        id: id.into(),
+        path: runtime.join("docs/plugins").join(id).join("SKILL.md"),
+    }))
+}
+
+fn skill_catalog_entries(
+    settings: &Value,
+    disabled: &[String],
+) -> Result<Vec<PluginCatalogEntry>, String> {
     let encoded = settings
         .get("skills.mounts")
         .and_then(Value::as_str)
@@ -689,7 +725,7 @@ fn skill_catalog_entries(settings: &Value) -> Result<Vec<PluginCatalogEntry>, St
     let mounts: Vec<SkillMountSetting> = serde_json::from_str(encoded)
         .map_err(|error| format!("解析 skills.mounts 失败：{error}"))?;
     let mut files = BTreeMap::new();
-    let mut entries = Vec::new();
+    let mut entries = vec![frontend_design_skill(disabled)?];
     for mount in mounts {
         let mut public = PublicPluginCatalogItem {
             uri: format!("plugin://{}@skill-mount", plugin_slug(&mount.id)),
@@ -1211,7 +1247,9 @@ mod tests {
 
         let bad = plugins
             .iter()
-            .find(|plugin| plugin["error"]["code"] == "skill_load_failed")
+            .find(|plugin| {
+                plugin["displayName"] == "bad" && plugin["error"]["code"] == "skill_load_failed"
+            })
             .unwrap();
         assert_eq!(bad["available"], false);
         assert!(bad["error"]["message"]

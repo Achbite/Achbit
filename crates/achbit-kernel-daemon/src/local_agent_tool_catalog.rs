@@ -211,7 +211,7 @@ impl ToolProvider for ProductToolProvider {
             });
         }
         for (name, field, description, scope) in [
-            ("artifact.prepare", "path", "Archive a workspace file as an immutable resource version. Re-prepare after modifying it; its logical identity stays stable.", CatalogEffectScope::WorkspaceRead),
+            ("artifact.prepare", "path", "Archive an existing workspace file or finished interactive preview as an immutable version. For a new standalone HTML, PDF or Markdown document, prefer the Documents plugin when available; its renderer writes the file and archives it. Re-prepare changed files to update their version.", CatalogEffectScope::WorkspaceRead),
             ("artifact.preview", "url", "Register an HTTP(S) live preview reference without fetching or verifying it. Call after updating the preview to record its latest presentation version.", CatalogEffectScope::LocalRead),
         ] {
             tools.push(PendingToolContribution {

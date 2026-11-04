@@ -122,6 +122,8 @@ File-tool arrows open the preview in one step. Edits show changed lines with nea
 
 ## Document output
 
+Mermaid diagrams and Markdown tables can appear directly in replies. For frontend pages, components and interactive previews, search for `frontend`, activate the Frontend Design Skill, then read its returned entry with the file reader. Apply the target project's existing design first. For an inline component, use the interactive preview contract above.
+
 For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` (activate `plugin://documents@builtin` first) with the requested format and workspace destination. PDF content is self-contained Typst source rendered by the bundled Rust renderer; HTML content remains complete HTML, and Markdown content remains Markdown. No Python environment is needed. Renderer errors remain errors, not a different-format delivery.
 
 Archive an existing file with `artifact.prepare`, or register a live URL with `artifact.preview`. Deliver selected results using `artifact.present`, then cite its returned URI. Preparing/registering alone does not deliver; registering a URL does not verify it. Re-prepare edited files and reuse the `deliveryId` for an update. Keep scripts, logs and observation screenshots intermediate unless requested.
