@@ -4,6 +4,21 @@ use std::fs;
 use std::path::Path;
 
 pub const MAX_LLM_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_IMAGE_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+pub fn image_type_from_header(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

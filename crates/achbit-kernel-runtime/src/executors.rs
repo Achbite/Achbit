@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default)]
 pub struct KernelExecutorConfig {
+    pub read_images: bool,
     pub sandbox_backend: Option<String>,
     /// Trusted registration at Host startup; never supplied by a model or tool argument.
     pub sandbox_backends: Arc<crate::workspace_sandbox::SandboxBackendRegistry>,
@@ -247,6 +248,7 @@ pub fn builtin_executors(
                 return (
                     tool_id,
                     Box::new(crate::wsl_execution::WslExecutor {
+                        read_images: config.read_images,
                         target: wsl.clone(),
                         shell: config.shell_program.clone(),
                         execution_path: config.execution_path.clone(),
@@ -289,7 +291,9 @@ fn executor_for_binding(
     secret_provider: Arc<dyn SecretProvider>,
 ) -> Box<dyn KernelToolExecutor> {
     match binding {
-        KernelToolKind::FsRead => Box::new(FsReadExecutor),
+        KernelToolKind::FsRead => Box::new(FsReadExecutor {
+            images: config.read_images,
+        }),
         KernelToolKind::FsWrite => Box::new(FsWriteExecutor),
         KernelToolKind::FsEdit => Box::new(FsEditExecutor),
         KernelToolKind::FsDelete => Box::new(FsDeleteExecutor),

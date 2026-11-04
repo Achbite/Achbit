@@ -116,6 +116,10 @@ struct PluginSource {
 }
 
 impl PluginSource {
+    fn file_entry(&self) -> Option<&Path> {
+        self.implementation.get("path")?.as_str().map(Path::new)
+    }
+
     fn same_input(&self, other: &Self) -> bool {
         self.public == other.public
             && self.implementation == other.implementation
@@ -135,14 +139,7 @@ impl ResolvedPluginSelection {
     pub(crate) fn file_read_roots(&self) -> Vec<PathBuf> {
         self.plugins
             .iter()
-            .filter_map(|plugin| {
-                plugin
-                    .implementation
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .and_then(|path| Path::new(path).parent())
-                    .map(Path::to_path_buf)
-            })
+            .filter_map(|plugin| plugin.file_entry()?.parent().map(Path::to_path_buf))
             .collect()
     }
     pub(crate) fn same_inputs(&self, other: &Self) -> bool {
@@ -466,13 +463,19 @@ pub(crate) fn selected_plugin_snapshot(
 ) -> Value {
     json!({
         "catalogRevision": selection.catalog_revision,
-        "plugins": selection.plugins.iter().map(|plugin| json!({
-            "uri": plugin.public.uri,
-            "pluginArtifactRef": plugin.plugin_artifact_ref,
-            "pluginInstanceRef": plugin.plugin_instance_ref,
-            "extensionGenerationRef": extension_generation_ref,
-            "capabilityRefs": plugin.capability_refs,
-        })).collect::<Vec<_>>(),
+        "plugins": selection.plugins.iter().map(|plugin| {
+            let mut item = json!({
+                "uri": plugin.public.uri,
+                "pluginArtifactRef": plugin.plugin_artifact_ref,
+                "pluginInstanceRef": plugin.plugin_instance_ref,
+                "extensionGenerationRef": extension_generation_ref,
+                "capabilityRefs": plugin.capability_refs,
+            });
+            if let (PluginContribution::Skill, Some(entry)) = (&plugin.contribution, plugin.file_entry()) {
+                item["skillEntryPath"] = json!(achbit_kernel_runtime::file_access::process_visible_path(entry));
+            }
+            item
+        }).collect::<Vec<_>>(),
     })
 }
 

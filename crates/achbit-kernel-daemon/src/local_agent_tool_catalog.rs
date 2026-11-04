@@ -329,6 +329,7 @@ struct BuiltinToolProvider {
     registry: Arc<KernelToolRegistry>,
     executors: Arc<KernelExecutorRegistry>,
     web_search_availability: ToolAvailability,
+    read_images: bool,
     shell_tool: String,
 }
 
@@ -348,6 +349,7 @@ impl BuiltinToolProvider {
             .as_ref()
             .map(|shell| shell.tool.clone())
             .unwrap_or_else(|| if cfg!(windows) { "powershell" } else { "bash" }.into());
+        let read_images = executor_config.read_images;
         let registry = Arc::new(KernelToolRegistry::new());
         let executors = Arc::new(KernelExecutorRegistry::from_executors(builtin_executors(
             registry.as_ref(),
@@ -358,6 +360,7 @@ impl BuiltinToolProvider {
             registry,
             executors,
             web_search_availability,
+            read_images,
             shell_tool,
         })
     }
@@ -375,7 +378,11 @@ impl ToolProvider for BuiltinToolProvider {
                 plugin_instance_ref: None,
                 contribution_ref: format!("tool-contribution:builtin:{}", descriptor.name),
                 name: descriptor.name.clone(),
-                description: descriptor.description.clone(),
+                description: if descriptor.name == "fs.read" && self.read_images {
+                    "Read text, PNG, JPEG, GIF or WebP images, or list a directory. Use path='.' for the workspace root.".into()
+                } else {
+                    descriptor.description.clone()
+                },
                 input_schema: descriptor.input_schema.clone(),
                 effect_class: Some(descriptor.effect_class),
                 effect_scope: match descriptor.effect_scope {
@@ -1275,6 +1282,8 @@ impl PreparedCatalogBinding {
                 })
             }
             (ToolExecutorBinding::Builtin { executors, .. }, PreparedToolInput::Builtin(input)) => {
+                let read_context = matches!(&input, KernelCanonicalInvocation::FsRead { .. })
+                    .then(|| context.clone());
                 executors
                     .invoke(
                         KernelToolInvocation {
@@ -1283,6 +1292,12 @@ impl PreparedCatalogBinding {
                         },
                         context,
                     )
+                    .map(|result| match read_context {
+                        Some(context) if result.output["content"].is_array() => {
+                            crate::tool_images::archive_result_images(result, &context)
+                        }
+                        _ => result,
+                    })
                     .or_else(|error| {
                         let (code, output) = match &error {
                             achbit_kernel_abi::KernelError::Structured {

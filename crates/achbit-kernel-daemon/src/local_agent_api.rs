@@ -445,6 +445,16 @@ impl LocalAgentRuntime {
                 RunPreparationError::new("kernel_runtime_config_prepare_failed", message)
             })?
         };
+        let context = recipe.configuration.as_ref().or_else(|| {
+            agent_context
+                .as_ref()
+                .and_then(|agent| agent.get("configuration"))
+        });
+        let coding_context = context
+            .and_then(|config| config.pointer("/context/id"))
+            .and_then(Value::as_str)
+            == Some("coding");
+        executor_config.read_images = provider_binding.profile().image_input && coding_context;
         executor_config.sandbox_backend =
             if recipe.workspace_sandbox.backend_id == "platform-default" {
                 None

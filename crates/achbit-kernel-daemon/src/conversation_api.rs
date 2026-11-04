@@ -521,21 +521,12 @@ pub(crate) fn read_image_resource(path: &StdPath) -> Result<(&'static str, Vec<u
 }
 
 pub(crate) fn image_media_type(bytes: &[u8]) -> Result<&'static str, String> {
-    if bytes.len() > 8 * 1024 * 1024 {
+    use achbit_kernel_tools::file_content::{image_type_from_header, MAX_IMAGE_INPUT_BYTES};
+    if bytes.len() > MAX_IMAGE_INPUT_BYTES {
         return Err("图片超过 8 MiB 读取限额。".into());
     }
-    let media = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "image/png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        "image/webp"
-    } else {
-        return Err("当前资源不是支持的 PNG、JPEG、GIF 或 WebP 图片。".into());
-    };
-    Ok(media)
+    image_type_from_header(bytes)
+        .ok_or_else(|| "当前资源不是支持的 PNG、JPEG、GIF 或 WebP 图片。".into())
 }
 
 pub(crate) fn resolve_provider_images(

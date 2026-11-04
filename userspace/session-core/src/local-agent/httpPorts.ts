@@ -718,7 +718,8 @@ function decodeSelectedPluginSnapshot(
         'pluginInstanceRef',
         'extensionGenerationRef',
         'capabilityRefs',
-      ])
+      ], ['skillEntryPath'])
+      || plugin.skillEntryPath !== undefined && !isNonEmptyText(plugin.skillEntryPath)
       || typeof plugin.uri !== 'string'
       || !/^plugin:\/\/[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(plugin.uri)
       || seen.has(plugin.uri)
@@ -735,6 +736,7 @@ function decodeSelectedPluginSnapshot(
       pluginInstanceRef: plugin.pluginInstanceRef,
       extensionGenerationRef,
       capabilityRefs: [...plugin.capabilityRefs] as string[],
+      ...(plugin.skillEntryPath === undefined ? {} : { skillEntryPath: plugin.skillEntryPath }),
     };
   });
   const requested = request.pluginSelections ?? [];

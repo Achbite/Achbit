@@ -313,6 +313,7 @@
               "pluginArtifactRef": { "$ref": "#/$defs/Id" },
               "pluginInstanceRef": { "$ref": "#/$defs/Id" },
               "extensionGenerationRef": { "$ref": "#/$defs/Id" },
+              "skillEntryPath": { "type": "string", "minLength": 1 },
               "capabilityRefs": {
                 "type": "array",
                 "uniqueItems": true,

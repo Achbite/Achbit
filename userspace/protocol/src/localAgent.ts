@@ -449,6 +449,8 @@ export interface SelectedPluginSnapshot {
     pluginInstanceRef: string;
     extensionGenerationRef: string;
     capabilityRefs: string[];
+    /** Mounted Skill entry for an ordinary permission-checked fs.read. */
+    skillEntryPath?: string;
   }>;
 }
 

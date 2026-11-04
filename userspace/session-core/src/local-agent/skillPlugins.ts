@@ -2,6 +2,12 @@ import { permissionSettings, validatePermissionPatches } from '@achbit/protocol'
 import type { UserSettings, RunRuntimeSnapshot } from '@achbit/protocol';
 import type { SessionControlWireNames } from './sessionControls.js';
 
+/** A selected entry is a location, not a file grant. Advertise it only with a callable reader. */
+export function mountedSkillEntries(plugins: RunRuntimeSnapshot['selectedPlugins']['plugins'], tools: RunRuntimeSnapshot['tools']) {
+  if (!plugins.length || !tools.some(tool => tool.name === 'fs.read' && tool.availability === 'callable')) return [];
+  return plugins.flatMap(plugin => plugin.skillEntryPath ? [{ uri: plugin.uri, path: plugin.skillEntryPath }] : []);
+}
+
 export type InstructionContribution = RunRuntimeSnapshot['instructions'][number];
 
 export interface RunPluginConfig {

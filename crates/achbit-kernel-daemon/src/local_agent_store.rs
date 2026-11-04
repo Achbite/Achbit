@@ -5572,8 +5572,11 @@ fn validate_run_runtime_snapshot(
                 "extensionGenerationRef",
                 "capabilityRefs",
             ],
-            &[],
+            &["skillEntryPath"],
         )?;
+        if plugin.get("skillEntryPath").is_some() {
+            required_string(plugin, "skillEntryPath")?;
+        }
         let uri = required_string(plugin, "uri")?;
         if !uri.starts_with("plugin://")
             || uri.trim() != uri

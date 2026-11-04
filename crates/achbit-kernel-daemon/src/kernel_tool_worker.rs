@@ -24,6 +24,7 @@ pub(crate) fn run() -> Result<(), String> {
             crate::session_environment::prepare(&settings, None, false)?
         }
         WorkerRequest::Execute {
+            read_images,
             invocation,
             mut context,
             distribution,
@@ -107,6 +108,7 @@ pub(crate) fn run() -> Result<(), String> {
                 let executors = KernelExecutorRegistry::from_executors(builtin_executors(
                     &registry,
                     KernelExecutorConfig {
+                        read_images,
                         shell_program: Some(shell),
                         execution_path: Some(execution_path),
                         ..KernelExecutorConfig::default()
