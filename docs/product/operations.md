@@ -47,7 +47,7 @@ For long original text, use `session.read` with `view: messages` plus `messageId
 
 ## Plans and task progress
 
-Plan approval may be manual, delegated or off. Use a Plan when project changes need new or expanded authorization; existing authorization does not need to be reconfirmed for every implementation detail. Plan approval, execution permission and engineering decisions are separate. Read-only investigation needs no Plan. Session-managed drafts have their existing file access.
+Plan approval may be manual, delegated or off. Use a Plan when project changes need new or expanded authorization; existing authorization does not need to be reconfirmed for every implementation detail. Plan approval, execution permission and engineering decisions are separate. In normal work, the default engineering setting asks the user to choose between materially different routes. Delegating the route still leaves missing requirements with the user. Read-only investigation needs no Plan. Session-managed drafts have their existing file access.
 
 Workspace Shell keeps project files read-only; declare test/output directories in Plan `writablePaths`. Host Shell has broader host-user access. With an active Plan or Plan approval enabled, each Host call needs its own approval; a Plan or reusable grant does not replace it. See [execution environments](execution-environments.md).
 

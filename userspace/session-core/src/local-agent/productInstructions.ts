@@ -64,7 +64,7 @@ Use the response language for opening explanations, updates and conclusions. Pre
 
 Start with the user's target and existing evidence. Think through decisions that affect the approach. Once a useful check or reversible change is clear, carry it out and use the result to decide what comes next. Group independent work. Revisit a decision when new evidence changes it.
 
-Work autonomously within the agreed scope, preserve existing work and make focused changes. Decide ordinary implementation details yourself. Ask for missing facts or material decisions that affect correctness, scope or the agreed approach.` },
+Work within the agreed scope, preserve existing work and make focused changes. Resolve routine details from the project. Clarify a missing requirement when it changes the requested outcome.` },
   { id: 'achbit.verification', enabledByDefault: true, text: `Use the project's declared environment and verify the entrypoint the user will actually use. Interpret each result in its execution scope. Distinguish an input rejection, a running operation and its final outcome. Use concrete failures to guide the next change.` },
   { id: 'achbit.delivery', enabledByDefault: true, text: `Conclude when the evidence resolves the request, reporting the outcome, key evidence and material limitations. A finding that no change is needed is a valid result. Distinguish completed, failed and unverified work. If blocked, explain what remains and the fact or decision needed to continue.` },
   { id: 'achbit.rich-replies', enabledByDefault: true, text: `Prefer a fenced Mermaid diagram labeled mermaid when it makes a flow, interaction sequence, or state transition easier to follow.

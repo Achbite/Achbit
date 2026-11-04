@@ -138,11 +138,11 @@ test('runtime guidance follows selected control aliases and permission modes', (
     'todo.update': names.todoUpdate, 'plugin.activate': names.pluginActivate, 'artifact.present': names.artifactPresent };
   const tool = (name, effects) => ({ name, toolBindingRef: 'binding:' + name, origin: 'coreBuiltin', availability: 'callable',
     description: name, possibleEffects: effects, inputSchema: {type:'object', properties:{path:{type:'string'}}, required:['path']} });
-  const request = (controls, mode) => {
-    const runtime = runtimeSnapshot('run:policy', {tools:[tool('fs.write',['workspaceMutation']),tool('plugin.search',['localRead'])],
-      permissions:{ 'agent.permissions.workspaceMutation':mode, 'agent.permissions.engineeringDecisions':'delegate' }});
+  const request = (controls, mode, engineering = 'delegate', tools = [tool('fs.write',['workspaceMutation']),tool('plugin.search',['localRead'])]) => {
+    const runtime = runtimeSnapshot('run:policy', {tools,
+      permissions:{ 'agent.permissions.workspaceMutation':mode, 'agent.permissions.engineeringDecisions':engineering }});
     runtime.toolSelection = { controls };
-    runtime.providerToolAliases = [...runtime.providerToolAliases.filter(alias => ['fs.write','plugin.search'].includes(alias.canonicalName)),
+    runtime.providerToolAliases = [...runtime.providerToolAliases.filter(alias => tools.some(tool => tool.name === alias.canonicalName)),
       ...controls.map(name => ({canonicalName:name,wireName:aliases[name]}))];
     return buildConversationProviderRequest({runtime,sessionId:'session:policy',runId:'run:policy',providerRequestId:'req',
       purpose:'agent',responseConstraint:'normal',workspaceBindings:[workspaceBinding],events:[]}).request;
@@ -159,6 +159,16 @@ test('runtime guidance follows selected control aliases and permission modes', (
   assert.ok(!noPlan.tools.some(tool => tool.name === names.planPublish));
   assert.ok(noPlan.messages.some(item => item.content.includes(names.interactionRequest)));
   assert.ok(!noPlan.messages.some(item => item.content.includes(names.planPublish)));
+  for (const tools of [undefined, [tool('fs.read',['workspaceRead'])]]) {
+    const ask = request(['interaction.request'], 'allow', 'ask', tools);
+    const delegated = request(['interaction.request'], 'allow', 'delegate', tools);
+    for (const view of [ask, delegated]) {
+      assert.ok(view.messages.some(item => item.content.includes(names.interactionRequest) && item.content.includes('missing requirements')));
+      assert.ok(!view.tools.some(tool => tool.name === names.planPublish));
+    }
+    assert.ok(ask.messages.some(item => /let the user choose/u.test(item.content)));
+    assert.ok(delegated.messages.some(item => /Engineering decisions are delegated/u.test(item.content)));
+  }
   const bare = request([], 'allow');
   assert.ok(!bare.messages.some(item => Object.values(names).some(name => item.content.includes(name))));
 
