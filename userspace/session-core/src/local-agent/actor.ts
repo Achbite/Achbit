@@ -11,7 +11,7 @@ import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/pr
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
-import { errorFact } from './loopFailure.js';
+import { errorFact, LoopFailure } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
@@ -158,7 +158,7 @@ export class SessionActor {
       if (configuration.context.id === 'journal') configuration.context.parameters = {
         ...configuration.context.parameters, maxTokens: lease.implementation.context.windowTokens(runtime),
       };
-      if (configuration.compaction.id === 'summary') configuration.compaction.parameters = {
+      if (configuration.compaction.id === 'summary' && lease.implementation.compaction) configuration.compaction.parameters = {
         ...configuration.compaction.parameters, ...lease.implementation.compaction.settings(runtime),
       };
       return configuration;
@@ -169,6 +169,10 @@ export class SessionActor {
     return this.withWrite(async () => {
       this.assertOperational();
       const snapshot = await this.loadSnapshot();
+      const lease = this.#capabilities.acquire();
+      try {
+        if (!lease.implementation.compaction) throw new LoopFailure('compaction_unavailable', 'This session has no context compaction component.');
+      } finally { await lease.release(); }
       const compactionId = this.#nextId('compaction');
       await this.appendEvents([{ type: 'context.compaction.scheduled', sessionId: this.sessionId,
         payload: { compactionId, requestedBySessionId, ...(focus ? { focus } : {}) } }], snapshot);
@@ -843,7 +847,8 @@ export class SessionActor {
       return await this.recordRejection(command, 'run_release_pending', '当前运行尚未完成资源释放。');
     }
     const controls = before.state.recipe?.tools?.controls;
-    if (manualPlan && controls && !controls.includes('plan.publish')) {
+    if (manualPlan && ((controls && !controls.includes('plan.publish'))
+      || (before.state.recipe?.configuration ?? before.state.agentContext?.configuration)?.controls.id === 'none')) {
       return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
     }
     const messageId = this.#nextId('message');

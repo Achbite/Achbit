@@ -26,9 +26,13 @@ import {
 } from '@achbit/protocol';
 import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
-import { environmentInstruction } from './sessionEnvironment.js';
-import { permissionInstructionText, mountedSkillEntries } from './skillPlugins.js';
 import { managedJobFromRecord, processResult, rejectionContent, toolResultContent } from './modelToolResult.js';
+import { environmentInstruction, primaryWorkingDirectory } from './sessionEnvironment.js';
+import { stableCoreInstructions } from './coreInstructions.js';
+import { codingToolInstruction, codingToolView } from './codingTools.js';
+import { mountedSkillEntries } from './skillPlugins.js';
+import { cancelledPlanResult, confirmedPlanResult } from './planStage.js';
+import { workspacePermissionInstruction } from './workspaceInstructions.js';
 import { journalModelViews } from './modelView.js';
 import type {
   ContextMessageContribution, SessionToolStage,
@@ -40,16 +44,11 @@ import {
   providerMessageCodecsByCallId,
   providerFilesystemReferences,
   providerWorkspaceBindings, workspaceHandleMap,
-  providerWireName,
   type ProviderToolCodec,
 } from './providerToolCodec.js';
-import {
-  confirmedPlanExecutionInstruction,
-  sessionControlInstructions,
-  sessionControlToolDefinitions,
-} from './sessionControls.js';
-import { extensionToolGuidance, renderActiveToolGuidance } from './toolPromptContributions.js';
-import { visualContextInstruction, visualContextMessages } from './visualContext.js';
+import { activeSessionControls, RESPONSE_PHASE_INSTRUCTION } from './sessionControls.js';
+import { applyToolGuidance, hostedToolGuidance, type ToolGuidanceContributor } from './toolPromptContributions.js';
+import { visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
 
 
@@ -77,6 +76,7 @@ type ConversationRequestInput = {
   providerRequestId: string;
   toolStage?: SessionToolStage;
   optionalControlTools?: readonly string[];
+  toolGuidance?: readonly ToolGuidanceContributor[];
 };
 
 export async function buildAgentProviderRequest(input: ConversationRequestInput & {
@@ -102,32 +102,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     throw new LoopFailure('tool_result_missing', `调用 ${openCall.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
-  const planEnabled = input.runtime.permissions['agent.permissions.workspaceMutation'] !== 'allow';
-  const settingsEvent = input.events.findLast(event => event.type === 'session.subagent-settings.updated'
-    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
-  const settings = settingsEvent?.type === 'session.subagent-settings.updated' ? settingsEvent.payload.settings
-    : settingsEvent?.type === 'session.created' ? settingsEvent.payload.subagentSettings : undefined;
-  const isChild = input.events.some(event => event.type === 'session.created' && event.payload.agentContext !== undefined);
-  const children = new Set<string>();
-  for (const event of input.events) {
-    if (event.type === 'agent.task.created' && event.payload.createsAgent) children.add(event.payload.agentSessionId);
-    if (event.type === 'agent.closed') children.delete(event.payload.agentSessionId);
-  }
-  const canDelegate = settings?.enabled === true && input.runtime.agentCapabilities.delegation;
-  const hasAgentTools = input.runtime.agentToolsEnabled === true
-    && (canDelegate || (isChild || children.size > 0) && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation));
   const modelViewEvents = input.modelViewEvents ?? input.events;
   const firstRun = input.events.find((event) => event.type === 'run.started');
   const prefixBindings = firstRun?.type === 'run.started'
     ? requestResourceBindings(firstRun.payload.workspaceBindings, input.events, firstRun.sequence)
     : input.workspaceBindings;
-  const controlNames = {
-    interactionRequest: providerWireName(input.runtime, SESSION_CONTROL_INTERACTION_REQUEST),
-    planPublish: providerWireName(input.runtime, SESSION_CONTROL_PLAN_PUBLISH),
-    todoUpdate: providerWireName(input.runtime, SESSION_CONTROL_TODO_UPDATE),
-    pluginActivate: providerWireName(input.runtime, SESSION_CONTROL_PLUGIN_ACTIVATE),
-    artifactPresent: providerWireName(input.runtime, SESSION_CONTROL_ARTIFACT_PRESENT),
-  };
   const surface = input.toolStage ?? input.runtime;
   const readScope = surface.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')
     ? sessionReadScope(input.sessionId, modelViewEvents) : undefined;
@@ -139,45 +118,37 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = surface.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: surface.webSearch.providerToolType }]
     : [];
-  const controlTools = input.runtime.toolSelection?.controls?.length === 0 ? [] : sessionControlToolDefinitions(input.runtime.agentCapabilities, canDelegate)
-    .filter(tool => input.runtime.toolSelection?.controls === undefined || input.runtime.toolSelection.controls.includes(tool.name))
-    .filter(tool => !input.toolStage?.controls || input.toolStage.controls.includes(tool.name))
-    .filter(tool => planEnabled || tool.name !== SESSION_CONTROL_PLAN_PUBLISH).filter(tool => tool.name === SESSION_CONTROL_AGENT
-    ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
-      ? hasPluginDiscovery : (hasWorkspaceBindings || input.toolStage?.controls?.includes(tool.name) || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
-    .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
-      || input.optionalControlTools.includes(tool.name));
+  const controlTools = activeSessionControls(input.runtime, input.events, input.toolStage, input.optionalControlTools, hasWorkspaceBindings, hasPluginDiscovery);
+  const productUsage = input.toolGuidance?.flatMap(contribute => contribute({ runtime: input.runtime, runId: input.runId, events: input.events, tools: runtimeTools })) ?? [];
+  const skillEntries = mountedSkillEntries(input.runtime.selectedPlugins.plugins, runtimeTools);
+  if (skillEntries.length) productUsage.push({ toolName: 'fs.read', text: `Selected Skill files (read on demand): ${JSON.stringify(skillEntries)}` });
+  const shellView = hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings);
   const toolCodec = createProviderToolCodec(
-    extensionToolGuidance(hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings),
-      input.runtime.toolPromptContributions),
+    applyToolGuidance(input.runtime.codingTools ? codingToolView(shellView) : shellView,
+      input.runtime.toolPromptContributions, surface.tools, productUsage),
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
     readScope,
+    input.runtime.codingTools,
   );
   const fixedViews = journalModelViews(modelViewEvents).contributions;
   const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
   const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId);
-  const canMutate = runtimeTools.some(tool => tool.possibleEffects.some(effect => effect === 'workspaceMutation' || effect === 'process' || effect === 'external'));
-  const needsPermissionGuidance = canMutate && (planEnabled || input.runtime.planMode === 'manual'
-    || toolCodec.canonicalByWire.has(controlNames.interactionRequest)
-    || input.runtime.permissions['agent.permissions.engineeringDecisions'] !== 'delegate');
-  const instructions = input.runtime.instructions
-    .filter(instruction => instruction.id !== 'achbit.workspace-autonomy' || needsPermissionGuidance)
-    .map(instruction => {
-      if (instruction.id === 'achbit.session-environment') {
-        return environmentInstruction(input.runtime.environment, [...runtimeTools, ...controlTools].map(tool => tool.name));
-      }
-      if (instruction.id === 'achbit.workspace-autonomy' && (
-        !toolCodec.canonicalByWire.has(controlNames.interactionRequest)
-        || planEnabled && !toolCodec.canonicalByWire.has(controlNames.planPublish)
-      )) {
-        return { ...instruction, text: permissionInstructionText(input.runtime.permissions,
-          toolCodec.canonicalByWire.has(controlNames.interactionRequest) ? controlNames.interactionRequest : null,
-          toolCodec.canonicalByWire.has(controlNames.planPublish) ? controlNames.planPublish : null, input.runtime.planMode === 'manual') };
-      }
-      return instruction;
-    })
+  const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
+  const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
+  const primaryId = input.workspaceBindings[0]?.workspaceId;
+  const coding = input.runtime.codingTools ? {
+    cwd: toolCodec.workspaceToolNames.size ? primaryWorkingDirectory(input.runtime, primaryId) : undefined,
+  } : undefined;
+  // Older snapshots contain policy text from preparation. Its only live owner is the current stage.
+  const activeInstructions = input.runtime.instructions.filter(instruction => instruction.id !== 'achbit.workspace-autonomy')
+    .map(instruction => instruction.id === 'achbit.session-environment'
+      ? environmentInstruction(input.runtime.environment, [...runtimeTools, ...controlTools].map(tool => tool.name), coding) : instruction);
+  const codingGuide = codingToolInstruction(runtimeTools, toolCodec.wireByCanonical);
+  if (codingGuide) activeInstructions.push(codingGuide);
+  if (policy) activeInstructions.push(policy);
+  const instructions = activeInstructions
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
@@ -185,10 +156,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       label: instruction.id,
       message: { role: 'system', content: instruction.text },
     }));
-  const toolGuidance = renderActiveToolGuidance(
-    input.runtime.toolPromptContributions.filter(item => item.origin === 'coreBuiltin'),
-    input.runtime.providerToolAliases, runtimeTools, hostedTools,
-  );
+  const toolGuidance = hostedToolGuidance(hostedTools);
   if (toolGuidance) {
     const stableCoreIndex = instructions.findIndex((instruction) => (
       instruction.contributionId === 'instruction:achbit.coding-agent'
@@ -206,29 +174,32 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       message: { role: 'system', content: toolGuidance },
     });
   }
-  if (controlTools.length || input.toolStage?.instruction) instructions.push({
+  if (controlTools.length) instructions.push({
     contributionId: 'session:controls',
     contributionKind: 'sessionControls',
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: input.toolStage?.instruction ?? sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled, controlTools.map(tool => tool.name)),
+      content: RESPONSE_PHASE_INSTRUCTION,
     },
   });
-  if (hasWorkspaceBindings) instructions.push({
+  if (input.toolStage?.instruction) instructions.push({
+    contributionId: 'session:tool-stage',
+    contributionKind: 'sessionControls',
+    label: 'Active tool stage',
+    message: { role: 'system', content: input.toolStage.instruction },
+  });
+  const handles = visibleWorkspaceHandles(prefixBindings, input.runtime, coding?.cwd ? primaryId : undefined);
+  if (hasWorkspaceBindings && handles.length && (!coding || toolCodec.workspaceToolNames.size)) instructions.push({
     contributionId: 'session:workspace-bindings',
     contributionKind: 'workspaceBindings',
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: `Workspace and resource handles (primary is the default working directory). Use the selected handle and workspace-relative paths. Handles identify resources without granting access: ${JSON.stringify(
-        providerWorkspaceBindings(prefixBindings),
-      )}`,
+      content: coding ? `Workspace handles: ${JSON.stringify(handles)}`
+        : `Workspace and resource handles (paths are relative to the selected workspace): ${JSON.stringify(handles)}`,
     },
   });
-  const imageReader = toolCodec.wireByCanonical.get('session.read');
-  if (readScope?.currentViews.includes('images') && imageReader && toolCodec.canonicalByWire.has(imageReader)) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
-    label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
   if (input.purpose === 'contextCompaction') selected.push({
@@ -302,6 +273,18 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
         : []),
     } },
   };
+}
+
+/** Keep the codec's original handle numbers when omitting facts already given or owned by the Host. */
+function visibleWorkspaceHandles(bindings: readonly WorkspaceBindingDisplay[], runtime?: RunRuntimeSnapshot, describedPrimary?: string) {
+  const handles = providerWorkspaceBindings(bindings);
+  if (!runtime?.codingTools) return handles;
+  return handles.flatMap((handle, index) => {
+    const id = bindings[index]!.workspaceId;
+    if (index === 0 && id === describedPrimary) return [];
+    if (id === runtime.environment.sessionWorkdirId) return index === 0 ? [{ ...handle, displayName: 'Session workspace' }] : [];
+    return [handle];
+  });
 }
 
 export function messagesFromJournal(
@@ -479,10 +462,13 @@ export function messagesFromJournal(
         ? providerReasoning(completedTurns.get(event.payload.providerRequestId), event.payload.providerRequestId)
         : {};
       if (changedBindings) {
+        const runtime = (runForInput.get(event.payload.messageId) ?? runs.find(run => run.runId === event.runId))?.payload.runtimeSnapshot;
+        const currentHandles = visibleWorkspaceHandles(messageBindings, runtime);
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(providerWorkspaceBindings(messageBindings))}` },
+            content: runtime?.codingTools ? `Current workspace handles: ${JSON.stringify(currentHandles)}`
+              : `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(currentHandles)}` },
         });
       }
       messages.push({
@@ -573,12 +559,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({
-            response: { kind: 'confirm' },
-            planId: event.payload.planId,
-            revision: event.payload.revision,
-            nextAction: confirmedPlanExecutionInstruction(),
-          }),
+          content: JSON.stringify(confirmedPlanResult(event.payload)),
         },
       });
     } else if (event.type === 'plan.revision.requested') {
@@ -598,25 +579,16 @@ export function messagesFromJournal(
         },
       });
     } else if (event.type === 'plan.cancelled') {
-      const reviewed = events.findLast(item => item.type === 'plan.reviewed'
-        && item.payload.planId === event.payload.planId && item.payload.revision === event.payload.revision);
-      const disabled = events.some(item => item.type === 'session.permissions.updated'
-        && item.payload.commandId === event.payload.commandId && item.payload.patches['agent.permissions.workspaceMutation'] === 'allow');
+      const result = cancelledPlanResult(event, events);
       messages.push({
         contributionId: `plan-cancel-result:${event.payload.planId}:${event.payload.revision}`,
         contributionKind: 'journalMessages',
-        label: '用户取消 Plan',
+        label: result.status === 'disabled' ? 'Plan 模式已关闭' : 'Plan 已取消',
         message: {
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({
-            response: { kind: 'cancel' },
-            ...(reviewed?.type === 'plan.reviewed' ? { review: { decision: reviewed.payload.decision, reason: reviewed.payload.reason } } : {}),
-            ...(disabled ? { nextAction: "Continue within the user's authorized scope." } : {}),
-            planId: event.payload.planId,
-            revision: event.payload.revision,
-          }),
+          content: JSON.stringify(result),
         },
       });
     } else if (event.type === 'plan.invalidated') {
@@ -984,7 +956,7 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     responseConstraint,
     dynamicInstructionBytes: selected.reduce((total, contribution) => (
       contribution.message.role === 'system'
-      && contribution.contributionId !== 'instruction:achbit.coding-agent'
+      && !stableCoreInstructions.some(core => contribution.contributionId === `instruction:${core.id}`)
         ? total + new TextEncoder().encode(contribution.message.content).byteLength
         : total
     ), 0),

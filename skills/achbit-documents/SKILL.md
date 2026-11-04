@@ -1,11 +1,13 @@
 ---
 name: achbit-documents
-description: Create HTML, PDF or Markdown documents and interactive frontend previews with explicit artifact delivery.
+description: Create HTML, PDF or Markdown documents, interactive frontend previews, or an inline diagram in a reply.
 ---
 
 # Document output
 
-Use for a requested document or interactive frontend preview. Preserve the content, language, audience and requested format. Ordinary text replies do not need document generation.
+For an inline diagram in a conversation reply, read [references/inline-diagrams.md](references/inline-diagrams.md). Return the diagram in the reply.
+
+Use the document workflow below for a requested document or interactive frontend preview. Preserve the content, language, audience and requested format. Ordinary text replies do not need document generation.
 
 For an interactive component within a reply, read [references/interactive-previews.md](references/interactive-previews.md) and use the existing file and artifact tools. The document renderer below is for document output.
 

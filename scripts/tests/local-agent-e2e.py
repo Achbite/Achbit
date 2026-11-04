@@ -56,7 +56,6 @@ class ProviderState:
         self._new_wire_name: str | None = None
         self._daemon: fixture.OwnedDaemon | None = None
         self._session_id: str | None = None
-        self.skill_path: Path | None = None
         self._consumed_receipts: set[str] = set()
         self._last_receipt_sequence = 0
         self.first_request_started = threading.Event()
@@ -324,6 +323,14 @@ class MockProviderHandler(fixture.MockProviderHandler):
                 return
             ordinal = self.provider_state.register(body)
             wire_names = self.provider_state.inspect(ordinal, body)
+            if ordinal in (1, 3):
+                read = next(tool["function"] for tool in body["tools"] if tool["function"]["name"] == wire_names["read"])
+                start = read["description"].find("[{")
+                fixture.require(start >= 0, "读取工具没有给出 Skill 文件引用")
+                entries, _ = json.JSONDecoder().raw_decode(read["description"][start:])
+                fixture.require(len(entries) == 1 and entries[0]["uri"].endswith("@skill")
+                                and Path(entries[0]["path"]).name == "SKILL.md", "缺少已选 Skill 正文引用")
+                skill_entry = entries[0]
 
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")
@@ -357,7 +364,7 @@ class MockProviderHandler(fixture.MockProviderHandler):
                         "url": f"http://127.0.0.1:{self.server.server_port}/fixture-resource",
                     }),
                     ("provider-call-skill-one", wire_names["read"], {
-                        "workspace": "primary", "path": str(self.provider_state.skill_path),
+                        "workspace": "primary", "path": skill_entry["path"],
                     }),
                 ])
             elif ordinal == 2:
@@ -373,7 +380,7 @@ class MockProviderHandler(fixture.MockProviderHandler):
                         "url": f"http://127.0.0.1:{self.server.server_port}/fixture-resource",
                     }),
                     ("provider-call-skill-two", wire_names["read"], {
-                        "workspace": "primary", "path": str(self.provider_state.skill_path),
+                        "workspace": "primary", "path": skill_entry["path"],
                     }),
                 ])
             elif ordinal == 4:
@@ -650,20 +657,28 @@ def assert_projection_flow(value: dict[str, Any]) -> None:
 def assert_received_tool_guidance(body: dict[str, Any], receipt: dict[str, Any], runtime: dict[str, Any]) -> None:
     contributions = {item["canonicalToolName"]: item for item in runtime["toolPromptContributions"]}
     required = REQUIRED_CORE_TOOLS | {"bash"} | set(FIRST_PARTY_TOOL_OWNERS)
-    fixture.require(required.issubset(contributions), "必要工具缺少生产端 tool prompt contribution")
+    guided = {"web.search", "web.fetch", *FIRST_PARTY_TOOL_OWNERS}
+    fixture.require(guided.issubset(contributions), "带独立指导的工具缺少生产端 contribution")
     aliases = {item["canonicalName"]: item["wireName"] for item in receipt["tools"]}
     definitions = {item["function"]["name"]: item["function"] for item in body["tools"]}
     system_messages = [fixture.message_text(message.get("content")) for message in body["messages"]
                        if isinstance(message, dict) and message.get("role") == "system"]
     for name in required:
-        contribution = contributions[name]
-        parts = ([contribution["promptSnippet"]] if contribution.get("promptSnippet") else [])
-        parts.extend(contribution["usageGuidelines"])
-        fixture.require(parts and all(isinstance(part, str) and part.strip() for part in parts),
-                        f"必要工具的生产提示为空：{name}")
         fixture.require(name in aliases, f"必要工具没有当前 Provider alias：{name}")
         wire_name = aliases[name]
         fixture.require(wire_name in definitions, f"当前 Provider 请求缺少对应工具定义：{name}")
+        definition = definitions[wire_name]
+        fixture.require(definition.get("description", "").strip(), f"工具缺少可见描述：{name}")
+        if name in ("fs.read", "bash"):
+            parameter, expected = ("startByte", "nextByte") if name == "fs.read" else ("command", "exit status")
+            fixture.require(expected in definition["parameters"]["properties"][parameter]["description"],
+                            f"当前工具声明缺少执行或续页合同：{name}")
+            if name not in contributions:
+                continue
+        contribution = contributions[name]
+        parts = ([contribution["promptSnippet"]] if contribution.get("promptSnippet") else [])
+        parts.extend(contribution["usageGuidelines"])
+        fixture.require(parts and all(isinstance(part, str) and part.strip() for part in parts), f"生产提示为空：{name}")
         # Descriptions already travel with tool definitions; system guidance
         # carries additional instructions without having to duplicate them.
         received_guidance = [definitions[wire_name].get("description", "")]
@@ -672,7 +687,7 @@ def assert_received_tool_guidance(body: dict[str, Any], receipt: dict[str, Any],
                         f"生产端工具提示未完整进入当前 Provider 请求：{name}")
 
 
-def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: str, provider: ProviderState) -> None:
+def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: str, provider: ProviderState, skill_path: Path) -> None:
     runtime_root = config_root / "data" / "agent-runtime"
     with closing(fixture.sqlite_read_only(runtime_root / "session.sqlite3")) as connection:
         started_rows = connection.execute(
@@ -840,7 +855,7 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
         ), "web.fetch 没有真实获取 HTTP 内容")
         skill_records = [record for _, record in run_records
                          if record.get("toolName") == "fs.read"
-                         and record.get("input", {}).get("path") == str(provider.skill_path)]
+                         and record.get("input", {}).get("path") == str(skill_path)]
         fixture.require(len(skill_records) == 1 and skill_records[0].get("outcome") == "completed",
                         "当前 run 必须恰好完成一次真实 Skill 文件读取")
         fixture.require(GENERATION_TWO in json.dumps(skill_records[0].get("output")),
@@ -1062,7 +1077,6 @@ def main() -> None:
             created = fixture.create_session(daemon_one, workspace_root)
             session_id = created["sessionId"]
             provider.bind_session(daemon_one, session_id)
-            provider.skill_path = skill_file
             creation_bindings = created.get("workspaceBindings")
             fixture.require(
                 isinstance(creation_bindings, list) and len(creation_bindings) == 1,
@@ -1191,7 +1205,7 @@ def main() -> None:
             final_revision = int(final["revision"])
 
             daemon_one.shutdown()
-            assert_persisted_tool_bindings_and_release(config_root, session_id, provider)
+            assert_persisted_tool_bindings_and_release(config_root, session_id, provider, skill_file)
 
             daemon_two = fixture.OwnedDaemon(config_root)
             daemon_two.start()

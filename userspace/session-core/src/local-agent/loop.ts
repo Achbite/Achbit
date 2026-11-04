@@ -1,6 +1,5 @@
 import { sessionReadAllowed } from './sessionReading.js';
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
-import { permissionInstructionText } from './skillPlugins.js';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, APPROVAL_HISTORY_VIEWS, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
 import { preparePlanReview } from './planReview.js';
@@ -45,7 +44,7 @@ import {
   SESSION_CONTROL_SESSION,
 } from '@achbit/protocol';
 import type { AgentComposition, SessionCapabilities, RunActivity } from './plugins.js';
-import { createSessionCapabilities, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
+import { createSessionCapabilities, stageForRequest, type SessionCapabilityManager, type SessionCapabilityLease } from './sessionCapabilities.js';
 import {
   pendingContextCompaction,
   scheduledContextCompaction,
@@ -286,6 +285,7 @@ export async function runAgentLoop(
     return finishingResult(runId, settlement);
   }
   let runtime = runRuntimeSnapshot(snapshot, runId);
+  let lastRetainedCatalog: string | undefined;
   try {
     if (command.type === 'fail') throw command.error;
     for (const requestEvent of pendingToolRequests(snapshot.events, runId)) {
@@ -333,106 +333,64 @@ export async function runAgentLoop(
 
     nextTurn: while (true) {
       throwIfAborted(signal);
-      snapshot = await deps.readSnapshot();
-      if (snapshot.state.pendingPlan?.review?.status === 'reviewing') {
-        await reviewPendingPlan(deps, snapshot.state.pendingPlan, signal);
-        snapshot = await deps.readSnapshot();
-      }
-      if (snapshot.state.pendingPlan) {
-        const plan = snapshot.state.pendingPlan;
-        if (snapshot.state.run?.status !== 'waiting') await commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
-          payload: { reason: 'plan', detail: plan.title } });
-        return { status: 'waiting', runId, reason: 'plan', planId: plan.planId };
-      }
-      const waiting = pendingControlWait(snapshot.events, runId);
-      if (waiting) {
-        const wait = controlWait(waiting.payload.result)!;
-        if (waiting.type === 'session.control.completed') {
-          if (!deps.waitForInput) throw new Error('session_operations_unavailable');
-          await deps.waitForInput(runId, wait, signal);
-        } else {
-          if (!deps.agents) throw new Error('agent_manager_missing');
-          const taskIds = waiting.payload.operation.action === 'spawn'
-            ? [waiting.payload.result.taskId as string] : waiting.payload.operation.taskIds as string[] | undefined;
-          await deps.agents.wait(runId, signal, { ...wait, ...(taskIds ? { taskIds } : {}) });
-        }
-        snapshot = await deps.readSnapshot();
-      }
-      const pendingCompaction = pendingContextCompaction(snapshot.events, runId);
-      if (pendingCompaction) {
-        await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
-        continue;
-      }
-      const waitingForTools = await dispatchPendingTools(deps, runId, signal);
-      if (waitingForTools) return waitingForTools;
-      snapshot = await deps.readSnapshot();
-      await deps.activity?.waitPending(snapshot, signal);
-      snapshot = await deps.readSnapshot();
-
-      throwIfAborted(signal);
-      snapshot = await deps.takeQueuedInputs(runId);
-      runtime = runRuntimeSnapshot(snapshot, runId);
-      throwIfAborted(signal);
-      await deps.activity?.sync();
-      snapshot = await deps.readSnapshot();
-      try {
-        await deps.composition.runPreparation.retireToolViews({
-          sessionId: snapshot.state.sessionId, runId,
-          keepKernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
-        });
-      } catch (error) {
-        throw new ToolViewRetirementFailure(error);
-      }
-      deps.activity?.checkpoint(snapshot);
-      const agentEvidenceRevision = latestAgentEvidenceSequence(snapshot.events, runId);
       const lease = acquireCapabilities(deps);
       let requestFailure: { error: unknown } | undefined;
       try {
         const capabilities = lease.implementation;
+        snapshot = await deps.readSnapshot();
+        if (capabilities.controls) {
+          const prepared = await prepareControlTurn(snapshot, deps, runId, signal);
+          if ('status' in prepared) return prepared;
+          snapshot = prepared;
+        }
+        const pendingCompaction = capabilities.compaction && pendingContextCompaction(snapshot.events, runId);
+        if (pendingCompaction) {
+          await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
+          continue;
+        }
+        const waitingForTools = await dispatchPendingTools(deps, runId, signal);
+        if (waitingForTools) return waitingForTools;
+        if (deps.activity) await deps.activity.waitPending(await deps.readSnapshot(), signal);
+
+        throwIfAborted(signal);
+        snapshot = await deps.takeQueuedInputs(runId);
+        if (deps.activity) {
+          await deps.activity.sync();
+          snapshot = await deps.readSnapshot();
+        }
+        runtime = runRuntimeSnapshot(snapshot, runId);
+        throwIfAborted(signal);
+        if (runtime.kernelCatalogSnapshotRef !== lastRetainedCatalog) {
+          try {
+            await deps.composition.runPreparation.retireToolViews({
+              sessionId: snapshot.state.sessionId, runId,
+              keepKernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
+            });
+            lastRetainedCatalog = runtime.kernelCatalogSnapshotRef;
+          } catch (error) {
+            throw new ToolViewRetirementFailure(error);
+          }
+        }
+        deps.activity?.checkpoint(snapshot);
+        const agentEvidenceRevision = capabilities.controls ? latestAgentEvidenceSequence(snapshot.events, runId) : 0;
         const preparedProviderRequest = await capabilities.context.prepare({
           sessionId: snapshot.state.sessionId,
           runId,
           runtime,
           events: snapshot.events,
           responseConstraint: 'normal',
-          toolStage: capabilities.controls.toolStage?.(runtime, snapshot.state),
+          toolGuidance: deps.composition.toolGuidance,
+          toolStage: stageForRequest(capabilities, runtime, snapshot.state),
           ...runWorkspaceContext(snapshot, runId),
           providerRequestId: deps.nextId('provider-request'),
         }, signal);
-        const contextBudget = Math.min(capabilities.context.windowTokens(runtime), runtime.provider.contextWindowTokens);
-        if (!Number.isSafeInteger(contextBudget) || contextBudget <= runtime.provider.maxOutputTokens) {
-          throw new LoopFailure('context_budget_invalid', '上下文预算必须为正整数，并为模型输出保留空间。');
-        }
-        const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, preparedProviderRequest.receipt,
-          capabilities, 'nextRun', deps.nextId);
-        if (boundaryCompaction) {
-          await commit(boundaryCompaction);
-          continue;
-        }
-        const pressureCutoff = capabilities.compaction.pressureCutoff(
-          snapshot,
-          runId,
-          preparedProviderRequest.receipt,
-          runtime,
-          contextBudget,
-        );
-        if (pressureCutoff !== null) {
-          throwIfAborted(signal);
-          await commit({
-            type: 'context.compaction.requested',
-            sessionId: snapshot.state.sessionId,
-            runId,
-            payload: {
-              compactionId: deps.nextId('compaction'),
-              providerRequestId: deps.nextId('provider-request'),
-              trigger: 'pressure',
-              coveredThroughSequence: pressureCutoff,
-            },
-          });
-          continue;
-        }
-        if (capabilities.compaction.estimateInput(snapshot, preparedProviderRequest.receipt, runtime) + runtime.provider.maxOutputTokens >= contextBudget) {
-          throw new LoopFailure('context_input_budget_exceeded', '当前输入与工具定义加上输出预留已达到上下文预算；没有可继续压缩的历史。原始输入与资源保持完整。');
+        if (capabilities.compaction) {
+          const request = compactionBeforeTurn(snapshot, runId, runtime, preparedProviderRequest.receipt, capabilities, deps.nextId);
+          if (request) {
+            throwIfAborted(signal);
+            await commit(request);
+            continue;
+          }
         }
         throwIfAborted(signal);
         await commit({
@@ -505,7 +463,7 @@ export async function runAgentLoop(
           case 'artifactPresent': {
             let fact: NewSessionEvent;
             try {
-              fact = capabilities.controls.presentArtifacts(snapshot.state, runId, turn.callId, turn.providerCallId, turn.items, deps.nextId);
+              fact = installedControls(capabilities.controls).presentArtifacts(snapshot.state, runId, turn.callId, turn.providerCallId, turn.items, deps.nextId);
             } catch (error) {
               fact = controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
                 providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_ARTIFACT_PRESENT,
@@ -517,7 +475,7 @@ export async function runAgentLoop(
           case 'pluginActivate': {
             let prepared: PreparedRunRuntime;
             try {
-              prepared = await capabilities.controls.preparePlugins({
+              prepared = await installedControls(capabilities.controls).preparePlugins({
                 sessionId: snapshot.state.sessionId, runId, runtime, pluginUris: turn.pluginUris,
                 nextId: deps.nextId, preparation: deps.composition.runPreparation,
               });
@@ -590,7 +548,7 @@ export async function runAgentLoop(
               ? { type: 'session.control.rejected', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
                 payload: { providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLAN_PUBLISH, input: { ...turn.draft },
                   error: { code: 'plan_disabled', message: 'Plan is off. Continue authorized work without publishing a Plan; execution permissions remain separate.' } } }
-              : capabilities.controls.publishPlan(
+              : installedControls(capabilities.controls).publishPlan(
                 snapshot.state, runId, turn.callId, turn.providerCallId, turn.draft,
                 runWorkspaceContext(snapshot, runId).workspaceBindings.map((binding) => binding.workspaceId), deps.nextId,
               );
@@ -640,29 +598,32 @@ export async function runAgentLoop(
                 payload: { messageId, role: 'assistant', content: turn.content,
                   providerRequestId: turn.completion.providerRequestId } },
             ];
-            if (preparingRequestedPlan(snapshot, runId)) {
+            if (capabilities.controls && preparingRequestedPlan(snapshot, runId)) {
               await commit(answerFacts);
               throw new LoopFailure('requested_plan_missing', '本次任务缺少可供确认的计划。');
             }
-            await deps.activity?.sync();
-            snapshot = await deps.readSnapshot();
-            if (deps.activity?.needsContinuation(snapshot)) {
-              await commit(answerFacts);
-              await lease.release();
-              await deps.activity?.wait(signal);
-              continue nextTurn;
+            if (deps.activity) {
+              await deps.activity.sync();
+              snapshot = await deps.readSnapshot();
+              if (deps.activity.needsContinuation(snapshot)) {
+                await commit(answerFacts);
+                await lease.release();
+                await deps.activity.wait(signal);
+                continue nextTurn;
+              }
             }
             const settlement = { outcome: 'completed' as const, finalMessageId: messageId };
             await commit(answerFacts);
-            const canCompact = !snapshot.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
+            const canCompact = capabilities.compaction && !snapshot.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
               && latestAgentEvidenceSequence(snapshot.events, runId) === agentEvidenceRevision
               && !snapshot.state.queuedInputs.some(input => input.runId === runId)
               && !snapshot.state.interactions.some(item => item.runId === runId && item.status === 'pending');
-            if (canCompact && (capabilities.compaction.settings(runtime).enabled || scheduledContextCompaction(snapshot.events))) {
+            if (capabilities.compaction && canCompact && (capabilities.compaction.settings(runtime).enabled || scheduledContextCompaction(snapshot.events))) {
               const completedContext = await capabilities.context.prepare({
                 sessionId: snapshot.state.sessionId, runId, runtime, events: snapshot.events,
                 responseConstraint: 'normal', ...runWorkspaceContext(snapshot, runId),
-                toolStage: capabilities.controls.toolStage?.(runtime, snapshot.state),
+                toolGuidance: deps.composition.toolGuidance,
+                toolStage: stageForRequest(capabilities, runtime, snapshot.state),
                 providerRequestId: deps.nextId('provider-request'),
               }, signal);
               const boundaryCompaction = boundaryCompactionEvent(snapshot, runId, runtime, completedContext.receipt,
@@ -674,8 +635,8 @@ export async function runAgentLoop(
             }
             let deferForAgents = false;
             await commit((current) => {
-              deferForAgents = current.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
-                || latestAgentEvidenceSequence(current.events, runId) !== agentEvidenceRevision;
+              deferForAgents = Boolean(capabilities.controls && (current.state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
+                || latestAgentEvidenceSequence(current.events, runId) !== agentEvidenceRevision));
               if (deferForAgents || current.state.queuedInputs.some(input => input.runId === runId)) return [];
               return current.state.interactions.some(item => item.runId === runId && item.status === 'pending') ? [{
                 type: 'run.waiting', sessionId: current.state.sessionId, runId,
@@ -700,7 +661,7 @@ export async function runAgentLoop(
             // Commit reported progress before executing the accompanying ordinary calls.
             if (turn.progress) {
               callFacts.push(turn.progress.kind === 'todoUpdate'
-                ? capabilities.controls.updateTodo(snapshot.state.sessionId, runId, snapshot.state.todoList, turn.progress.items, turn.progress)
+                ? installedControls(capabilities.controls).updateTodo(snapshot.state.sessionId, runId, snapshot.state.todoList, turn.progress.items, turn.progress)
                 : controlRejectionFact(snapshot.state.sessionId, runId, turn.progress.rejection));
             }
             for (const call of turn.calls) {
@@ -860,6 +821,41 @@ export async function runAgentLoop(
   }
 }
 
+async function prepareControlTurn(
+  snapshot: LoopSnapshot, deps: AgentLoopDeps, runId: string, signal: AbortSignal,
+): Promise<LoopSnapshot | Extract<LoopResult, { status: 'waiting' }>> {
+  if (snapshot.state.pendingPlan?.review?.status === 'reviewing') {
+    await reviewPendingPlan(deps, snapshot.state.pendingPlan, signal);
+    snapshot = await deps.readSnapshot();
+  }
+  if (snapshot.state.pendingPlan) {
+    const plan = snapshot.state.pendingPlan;
+    if (snapshot.state.run?.status !== 'waiting') await deps.commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId, runId,
+      payload: { reason: 'plan', detail: plan.title } });
+    return { status: 'waiting', runId, reason: 'plan', planId: plan.planId };
+  }
+  const waiting = pendingControlWait(snapshot.events, runId);
+  if (waiting) {
+    const wait = controlWait(waiting.payload.result)!;
+    if (waiting.type === 'session.control.completed') {
+      if (!deps.waitForInput) throw new Error('session_operations_unavailable');
+      await deps.waitForInput(runId, wait, signal);
+    } else {
+      if (!deps.agents) throw new Error('agent_manager_missing');
+      const taskIds = waiting.payload.operation.action === 'spawn'
+        ? [waiting.payload.result.taskId as string] : waiting.payload.operation.taskIds as string[] | undefined;
+      await deps.agents.wait(runId, signal, { ...wait, ...(taskIds ? { taskIds } : {}) });
+    }
+    return deps.readSnapshot();
+  }
+  return snapshot;
+}
+
+function installedControls<T>(controls: T | undefined): T {
+  if (!controls) throw new LoopFailure('session_control_unavailable', 'This session has no control component.');
+  return controls;
+}
+
 function acquireCapabilities(deps: AgentLoopDeps): SessionCapabilityLease {
   if (deps.capabilities) return deps.capabilities.acquire();
   // Direct Loop callers own their composition. Actors always provide the manager.
@@ -894,10 +890,32 @@ class ToolViewRetirementFailure extends AggregateError {
   }
 }
 
+function compactionBeforeTurn(
+  snapshot: LoopSnapshot, runId: string, runtime: RunRuntimeSnapshot, receipt: ContextCompositionReceipt,
+  capabilities: SessionCapabilities, nextId: (kind: string) => string,
+): Extract<NewSessionEvent, { type: 'context.compaction.requested' }> | null {
+  const compaction = capabilities.compaction;
+  if (!compaction) return null;
+  const budget = Math.min(capabilities.context.windowTokens(runtime), runtime.provider.contextWindowTokens);
+  if (!Number.isSafeInteger(budget) || budget <= runtime.provider.maxOutputTokens) {
+    throw new LoopFailure('context_budget_invalid', '上下文预算必须为正整数，并为模型输出保留空间。');
+  }
+  const boundary = boundaryCompactionEvent(snapshot, runId, runtime, receipt, capabilities, 'nextRun', nextId);
+  if (boundary) return boundary;
+  const cutoff = compaction.pressureCutoff(snapshot, runId, receipt, runtime, budget);
+  if (cutoff !== null) return { type: 'context.compaction.requested', sessionId: snapshot.state.sessionId, runId,
+    payload: { compactionId: nextId('compaction'), providerRequestId: nextId('provider-request'), trigger: 'pressure', coveredThroughSequence: cutoff } };
+  if (compaction.estimateInput(snapshot, receipt, runtime) + runtime.provider.maxOutputTokens >= budget) {
+    throw new LoopFailure('context_input_budget_exceeded', '当前输入与工具定义加上输出预留已达到上下文预算；没有可继续压缩的历史。原始输入与资源保持完整。');
+  }
+  return null;
+}
+
 function boundaryCompactionEvent(
   snapshot: LoopSnapshot, runId: string, runtime: RunRuntimeSnapshot, receipt: ContextCompositionReceipt,
   capabilities: SessionCapabilities, boundary: 'nextRun' | 'idle', nextId: (kind: string) => string,
 ): Extract<NewSessionEvent, { type: 'context.compaction.requested' }> | null {
+  if (!capabilities.compaction) return null;
   const scheduled = scheduledContextCompaction(snapshot.events);
   const input = runInputMessageEvent(snapshot.events, runId);
   if (!input) return null;
@@ -927,8 +945,10 @@ async function performContextCompaction(
   try {
     const cutoff = requestEvent.payload.coveredThroughSequence;
     const runtime = runRuntimeSnapshot(snapshot, runId);
+    if (!lease.implementation.compaction) throw new LoopFailure('compaction_unavailable', 'This session has no context compaction component.');
     const prepared = await lease.implementation.compaction.prepare({
-      toolStage: lease.implementation.controls.toolStage?.(runtime, snapshot.state),
+      toolStage: stageForRequest(lease.implementation, runtime, snapshot.state),
+      toolGuidance: deps.composition.toolGuidance,
       sessionId: snapshot.state.sessionId,
       runId,
       runtime,
@@ -1142,7 +1162,7 @@ async function consumeProvider(
   runId: string,
   deps: AgentLoopDeps,
   signal: AbortSignal,
-  controls: Pick<SessionCapabilities['controls'], 'decode'>,
+  controls: Pick<NonNullable<SessionCapabilities['controls']>, 'decode'> | undefined,
 ): Promise<ProviderTurn> {
   return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
     consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls, onEvent)
@@ -1156,7 +1176,7 @@ async function consumeProviderOutput(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   onCompleted: () => void,
-  controls: Pick<SessionCapabilities['controls'], 'decode'>,
+  controls: Pick<NonNullable<SessionCapabilities['controls']>, 'decode'> | undefined,
   onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
@@ -1659,7 +1679,7 @@ async function consumeProviderOutput(
   for (const call of calls) {
     try {
       const isControl = toolCodec.controlDefinitions.some(tool => toolCodec.canonicalByWire.get(tool.name) === call.name);
-      const control = isControl ? controls.decode(call.callId, call.name, call.input) : null;
+      const control = isControl ? installedControls(controls).decode(call.callId, call.name, call.input) : null;
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
       else if (control?.kind === 'agent' && (agentBatch || agentTurnPolicy(call.input) === 'tools')) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
@@ -2936,10 +2956,7 @@ function runRuntimeSnapshot(snapshot: LoopSnapshot, runId: string): RunRuntimeSn
   }
   const sessionPermissions = snapshot.state.publishedPermissions ?? permissionSettings({ ...runtime.permissions, ...snapshot.state.permissionOverrides });
   const permissions = runtime.planMode === 'manual' ? { ...sessionPermissions, 'agent.permissions.workspaceMutation': 'plan' } : sessionPermissions;
-  return { ...view, permissions, instructions: view.instructions.map(instruction => instruction.id === 'achbit.workspace-autonomy'
-    ? { ...instruction, text: permissionInstructionText(permissions,
-      view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_INTERACTION_REQUEST)?.wireName,
-      view.providerToolAliases.find(alias => alias.canonicalName === SESSION_CONTROL_PLAN_PUBLISH)?.wireName, runtime.planMode === 'manual') } : instruction) };
+  return { ...view, permissions };
 }
 
 function contextForToolRequest(snapshot: LoopSnapshot, request: Extract<SessionEvent, { type: 'tool.requested' }>) {

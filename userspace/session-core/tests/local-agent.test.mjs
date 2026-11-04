@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   decodeToolPromptProviderSnapshots,
   prepareToolPromptContributions,
-  renderActiveToolGuidance,
+  applyToolGuidance,
   SessionService,
   SessionActor,
   emptySessionState,
@@ -27,7 +27,7 @@ import { publishPlan } from '../dist/local-agent/planStage.js';
 import { HttpProviderPort, HttpCommandJournal } from '../dist/local-agent/httpPorts.js';
 import { responseFrames } from '../dist/responseFrames.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
-import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
+import { createProviderToolAliases, createProviderToolCodec } from '../dist/local-agent/providerToolCodec.js';
 import { LoopFailure } from '../dist/local-agent/loopFailure.js';
 import { AgentManager } from '../dist/local-agent/agentManager.js';
 
@@ -1536,33 +1536,11 @@ test('new runs refresh execution facts while restart and compaction retain each 
   const codingText = environmentInstruction(observed, ['bash']).text;
   assert.match(codingText, /Command environment/u);
   assert.doesNotMatch(codingText, /productDocsPath|achbitCli|hostDataDirectory|--host-data-dir|commandPaths|developerCommands/u);
-  const agentText = environmentInstruction(observed, ['bash', 'agent']).text;
-  assert.match(agentText, /productDocsPath/u);
-  assert.doesNotMatch(agentText, /achbitCli|--host-data-dir/u);
-  const shellText = environmentInstruction(observed, ['bash', 'skill.read']).text;
-  const modelEnvironment = JSON.parse(shellText.slice('Command environment: '.length, shellText.indexOf('}. For Achbit') + 1));
-  for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox', 'executionPath', 'agentComposition', 'executionTarget']) {
-    assert.equal(modelEnvironment[field], undefined);
-  }
-  assert.equal(modelEnvironment.achbitCli, '/opt/achbit/achbit-cli');
-  assert.equal(modelEnvironment.achbitCliExecutionScope, 'host');
-  assert.equal(modelEnvironment.hostDataDirectory, '/actual-host/data');
-  assert.match(shellText, /--host-data-dir/u);
-  assert.match(shellText, /requires Host execution/u);
-  for (const recipe of [
-    { permissionPolicy: { id: 'workspace-only' }, workspaceSandbox: { backendId: 'platform' } },
-    { permissionPolicy: { id: 'local-standard' }, workspaceSandbox: { backendId: 'platform', requireIsolatedProcesses: true } },
-  ]) {
-    const restricted = { ...observed, agentComposition: { ...recipe,
-      policyConstraints: { allowHostExecution: false, allowExternalTools: false }, sandboxCoverage: 'workspaceShell' } };
-    const before = structuredClone(restricted);
-    const text = environmentInstruction(restricted, ['bash', 'skill.read']).text;
-    assert.doesNotMatch(text, /achbitCli|--host-data-dir|Host execution is disabled/u,
-      'a restricted run does not advertise the Host-only CLI or ask the model to evaluate its availability');
-    assert.deepEqual(restricted, before, 'describing CLI availability must not alter permissions');
-  }
-  for (const field of ['os', 'arch', 'shell', 'productDocsPath']) {
-    assert.deepEqual(modelEnvironment[field], observed[field]);
+  for (const tools of [['bash', 'agent'], ['bash', 'skill.read']]) {
+    const text = environmentInstruction(observed, tools).text;
+    const modelEnvironment = JSON.parse(text.slice('Command environment: '.length, text.indexOf('}. Use') + 1));
+    assert.deepEqual(modelEnvironment, { os: observed.os, arch: observed.arch, shell: observed.shell });
+    assert.doesNotMatch(text, /productDocsPath|achbitCli|hostDataDirectory|--host-data-dir|commandPaths|developerCommands/u);
   }
   assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
   assert.deepEqual(observed.workspaceSandbox, { available: false, reason: 'fixture sandbox probe diagnostic' });
@@ -1698,11 +1676,10 @@ test('run binding exposes hosted search once and replays its Provider item uncha
       }]);
       assert.equal(request.tools.some((tool) => tool.name === 'web_search'), false);
       assert.ok(request.tools.some((tool) => tool.name === 'web_fetch'));
-      const searchGuidance = request.messages.filter((message) => (
-        message.role === 'system' && message.content.includes('Read URLs supplied by the user or earlier results.')
-      ));
+      const searchGuidance = request.messages.filter(message => message.role === 'system' && message.content.includes('web_search'));
       assert.equal(searchGuidance.length, 1);
-      assert.match(searchGuidance[0].content, /\bweb_fetch\b/u);
+      assert.ok(!searchGuidance[0].content.includes('Read URLs supplied by the user or earlier results.'));
+      assert.match(request.tools.find(tool => tool.name === 'web_fetch').description, /Read URLs supplied by the user or earlier results\./u);
       assert.equal(searchGuidance[0].content.match(/\bweb_search\b/gu)?.length, 1);
       if (providerRequests.length === 1) {
         for (const item of hostedItems) {
@@ -2476,20 +2453,14 @@ test('tool prompt preparation binds exact callable tools and rejects invalid own
     prepareToolPromptContributions(providers, [bashTool, readTool], selectedPlugins),
     prepared,
   );
-  const rendered = renderActiveToolGuidance(prepared, [{
-    canonicalName: 'fs.read',
-    wireName: 'fs_read',
-  }, {
-    canonicalName: 'bash',
-    wireName: 'bash',
-  }], [readTool, bashTool], []);
-  assert.ok(rendered);
-  for (const [wireName, contribution] of [['fs_read', prepared[0]], ['bash', prepared[1]]]) {
-    assert.ok(rendered.includes(wireName));
-    assert.ok(rendered.includes(contribution.promptSnippet));
-    for (const guideline of contribution.usageGuidelines) assert.ok(rendered.includes(guideline));
+  const aliases = [{ canonicalName: 'fs.read', wireName: 'fs_read' }, { canonicalName: 'bash', wireName: 'bash' }];
+  const definitions = createProviderToolCodec(applyToolGuidance([readTool, bashTool], prepared), [], aliases, [workspaceBinding]).definitions;
+  for (const [name, contribution] of [['fs_read', prepared[0]], ['bash', prepared[1]]]) {
+    const tool = definitions.find(tool => tool.name === name);
+    assert.ok(tool);
+    assert.ok(tool.description.includes(contribution.promptSnippet));
+    for (const guideline of contribution.usageGuidelines) assert.ok(tool.description.includes(guideline));
   }
-  assert.doesNotMatch(rendered, /fs\.read/u);
 
   const readOnlyProviders = decodeToolPromptProviderSnapshots([{
     providerRef: 'tool-prompt-provider:read',
@@ -2625,22 +2596,15 @@ test('tool prompt preparation binds exact callable tools and rejects invalid own
   );
   const collidingAliases = createProviderToolAliases(collidingTools.map((tool) => tool.name));
   assert.equal(new Set(collidingAliases.map((alias) => alias.wireName)).size, 2);
-  const collidingGuidance = renderActiveToolGuidance(
-    collidingPrepared,
-    collidingAliases,
-    collidingTools,
-    [],
-  );
-  assert.ok(collidingGuidance);
-  const collidingLines = new Set(collidingGuidance.split('\n'));
+  const collision = createProviderToolCodec(applyToolGuidance(collidingTools, collidingPrepared), [], collidingAliases, [workspaceBinding]);
   for (const [index, tool] of collidingTools.entries()) {
-    const wireName = collidingAliases.find((alias) => alias.canonicalName === tool.name)?.wireName;
-    assert.ok(wireName);
-    assert.ok(collidingLines.has(`- ${wireName}: Route ${index}.`));
+    const alias = collision.wireByCanonical.get(tool.name);
+    assert.ok(alias);
+    assert.ok(collision.definitions.find(item => item.name === alias)?.description.includes(`Route ${index}.`));
   }
 });
 
-test('Session renders one run-scoped tool guidance message with Provider aliases', async () => {
+test('Session attaches each bound usage contribution once to its actual wire declaration', async () => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:tool-guidance';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -2710,38 +2674,21 @@ test('Session renders one run-scoped tool guidance message with Provider aliases
   await actor.submit(messageCommand(sessionId, 'command:tool-guidance', 'Inspect one known file.'));
   await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.equal(requests.length, 1);
-  const systemMessages = requests[0].messages.filter((message) => message.role === 'system');
-  const guidanceMessages = systemMessages.filter((message) => (
-    message.content.startsWith('Active tool guidance:')
-  ));
-  assert.equal(guidanceMessages.length, 1);
-  assert.equal(systemMessages.indexOf(guidanceMessages[0]), 1);
+  const aliases = new Map(preparation.snapshots[0].providerToolAliases.map(alias => [alias.canonicalName, alias.wireName]));
+  const descriptionFor = name => requests[0].tools.find(tool => tool.name === aliases.get(name)).description;
+  const system = requests[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
   assert.deepEqual(requests[0].hostedTools, []);
-  assert.doesNotMatch(guidanceMessages[0].content, /API's native search tool/u);
-  const aliases = new Map(preparation.snapshots[0].providerToolAliases.map((alias) => (
-    [alias.canonicalName, alias.wireName]
-  )));
-  const providerToolNames = new Set(requests[0].tools.map((tool) => tool.name));
-  const guidanceLines = new Set(guidanceMessages[0].content.split('\n'));
   for (const contribution of toolPromptContributions) {
-    const alias = aliases.get(contribution.canonicalToolName);
-    assert.ok(alias);
-    assert.ok(providerToolNames.has(alias));
-    assert.ok(guidanceLines.has(`- ${alias}: ${contribution.promptSnippet}`));
-    for (const guideline of contribution.usageGuidelines) {
-      assert.ok(guidanceLines.has(`- ${alias}: ${guideline}`));
+    const description = descriptionFor(contribution.canonicalToolName);
+    for (const text of [contribution.promptSnippet, ...contribution.usageGuidelines]) {
+      assert.equal(description.split(text).length, 2);
+      assert.ok(!system.includes(text));
     }
   }
-  assert.equal(guidanceMessages[0].content.match(/^- /gmu)?.length, 4);
   const events = await readEvents(journal, sessionId);
-  const composition = singleEvent(events, 'context.composed');
-  const guidanceReceipts = composition.payload.messages.filter((message) => (
-    message.contributionId === 'instruction:achbit.tool-guidance'
-  ));
-  assert.equal(guidanceReceipts.length, 1);
-  assert.equal(guidanceReceipts[0].contributionKind, 'instructions');
-  assert.equal(guidanceReceipts[0].role, 'system');
-  assert.deepEqual(guidanceReceipts[0].blocks.map((block) => block.kind), ['text']);
+  const receipt = singleEvent(events, 'context.composed').payload;
+  assert.ok(!receipt.messages.some(message => message.contributionId === 'instruction:achbit.tool-guidance'));
+  for (const name of ['fs.read', 'bash']) assert.ok(receipt.tools.some(tool => tool.canonicalName === name && tool.wireName === aliases.get(name)));
   await actor.dispose();
 });
 
@@ -3808,7 +3755,8 @@ test('one Plan confirmation resumes the same run while progress remains an expli
           .find((payload) => payload?.type === 'todo.current');
         assert.ok(confirmation, 'confirmed Plan must be projected as the plan call result');
         assert.equal('todoSeeded' in confirmation, false);
-        assert.ok(typeof confirmation.nextAction === 'string' && confirmation.nextAction.trim());
+        assert.equal(confirmation.response.kind, 'confirm');
+        assert.match(confirmation.nextAction, /continue.*approved scope.*this run/i);
         assert.equal(todo, undefined, 'Plan confirmation does not generate Todo');
         assert.ok(writeDefinition, 'confirmed execution tool must remain available');
         assert.equal(
@@ -4494,7 +4442,6 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     assert.equal(request.responseConstraint, 'normal');
     const payloads = request.messages.map(jsonMessagePayload);
     const todo = (await actor.snapshot()).todoList;
-    const record = payloads.find((payload) => payload?.recordId);
     const planTool = request.tools.find((tool) => tool.inputSchema.properties?.mutationManifest);
     const progressTool = request.tools.find((tool) => tool.name === 'todo_update');
     const writeTool = request.tools.find((tool) => tool.inputSchema.properties?.content);
@@ -4570,46 +4517,12 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   assert.equal(preparation.released.length, 1);
 });
 
-test('runtime instructions use configured aliases and plugin input while control schemas preserve permission boundaries', () => {
+test('prepared instructions contain installed static slices and leave permission routes to the current request', () => {
   const stableCore = [{ id: 'achbit.coding-agent', text: 'Stable core instruction.' }];
-  const baseConfig = {
-    extensionGenerationRef: 'extension-generation:g1',
-    selectedPlugins: [{
-      uri: 'plugin://fixture@skill',
-      displayName: 'Fixture',
-      capabilitySummary: 'Read the explicitly selected fixture instructions.',
-    }],
-  };
-  const planAsk = runtimeInstructions(stableCore, {
-    ...baseConfig,
-    permissions: { 'agent.permissions.workspaceMutation': 'plan', 'agent.permissions.engineeringDecisions': 'ask' },
-  }, {
-    interactionRequest: 'ask_user_wire',
-    planPublish: 'publish_plan_wire',
-  });
-  const allowDelegate = runtimeInstructions(stableCore, {
-    ...baseConfig,
-    permissions: { 'agent.permissions.workspaceMutation': 'allow', 'agent.permissions.engineeringDecisions': 'delegate' },
-  });
-
-  const planInstruction = planAsk.find((instruction) => (
-    instruction.id === 'achbit.workspace-autonomy'
-  ))?.text ?? '';
-  assert.ok(planInstruction.includes('publish_plan_wire'));
-  assert.ok(planInstruction.includes('ask_user_wire'));
-  const allowInstruction = allowDelegate.find((instruction) => (
-    instruction.id === 'achbit.workspace-autonomy'
-  ))?.text ?? '';
-  assert.ok(allowInstruction.includes('interaction_request'));
-  assert.equal(allowInstruction.includes('plan_publish'), false);
-  const pluginInstruction = planAsk.find((instruction) => (
-    instruction.id === 'plugin.fixture.skill'
-  ))?.text ?? '';
-  assert.equal(pluginInstruction, '', 'plugin registration is not model guidance');
-  assert.doesNotMatch(JSON.stringify(planAsk), /Loaded plugin|Fixture/u);
-  for (const instructions of [planAsk, allowDelegate]) {
-    assert.deepEqual(instructions.find(instruction => instruction.id === stableCore[0].id), stableCore[0]);
-  }
+  const instructions = runtimeInstructions(stableCore);
+  assert.deepEqual(instructions, stableCore);
+  assert.ok(Object.isFrozen(instructions) && Object.isFrozen(instructions[0]));
+  assert.doesNotMatch(JSON.stringify(instructions), /plan_publish|interaction_request|Loaded plugin/u);
   const controls = sessionControlToolDefinitions();
   const publish = controls.find((tool) => tool.name === 'plan.publish');
   const progress = controls.find((tool) => tool.name === 'todo.update');

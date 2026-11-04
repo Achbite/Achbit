@@ -1,9 +1,11 @@
 import type { RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
-import { decodeAgentRecipe, permissionPolicyConstraints, SESSION_CONTROL_AGENT } from '@achbit/protocol';
+import { decodeAgentRecipe, permissionPolicyConstraints } from '@achbit/protocol';
+import { codingToolNames } from './codingTools.js';
 
 const ENVIRONMENT_ID = 'achbit.session-environment';
 
-export function environmentInstruction(value: unknown, toolNames: readonly string[] = []): RunRuntimeSnapshot['instructions'][number] {
+
+export function decodeSessionEnvironment(value: unknown): { data: Record<string, unknown>; hostExecutionAllowed: boolean } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('session_environment_invalid');
   }
@@ -21,7 +23,15 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
       throw new Error('session_environment_invalid');
     }
   }
-  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'hostDataDirectory', 'productDocsPath', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition'];
+  const fields = ['os', 'arch', 'locale', 'responseLanguage', 'userShell', 'configuration', 'executionTarget', 'shellAvailable', 'shell', 'developerCommands', 'commandPaths', 'runtimeExecutables', 'hostDataDirectory', 'productDocsPath', 'executionPath', 'workspaceShellSupported', 'workspaceSandbox', 'hostBinding', 'agentComposition', 'primaryWorkspaceDirectory', 'sessionWorkdirId'];
+  if (data.sessionWorkdirId !== undefined && (typeof data.sessionWorkdirId !== 'string' || !data.sessionWorkdirId)) {
+    throw new Error('session_environment_invalid');
+  }
+  if (data.primaryWorkspaceDirectory !== undefined) {
+    const directory = data.primaryWorkspaceDirectory as Record<string, unknown> | null;
+    if (!directory || typeof directory.workspaceId !== 'string' || !directory.workspaceId
+      || typeof directory.path !== 'string' || !directory.path) throw new Error('session_environment_invalid');
+  }
   if (data.agentComposition !== undefined) {
     const composition = data.agentComposition as Record<string, unknown>;
     if (!composition || typeof composition !== 'object' || Array.isArray(composition)
@@ -63,28 +73,38 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
     || ['locale', 'responseLanguage', 'userShell'].some((key) => data[key] !== null && typeof data[key] !== 'string')) {
     throw new Error('session_environment_invalid');
   }
-  const hasProductSkills = toolNames.includes('skill.read');
-  const needsProductDocs = hasProductSkills || toolNames.includes(SESSION_CONTROL_AGENT);
-  const hasLocalCli = hasProductSkills && hostExecutionAllowed && (data.executionTarget as Record<string, unknown>).kind === 'native'
-    && typeof (data.runtimeExecutables as Record<string, unknown> | undefined)?.cli === 'string'
-    && typeof data.hostDataDirectory === 'string';
-  const hasShell = toolNames.some(name => name === 'bash' || name === 'powershell');
-  const execution = hasShell ? `Command environment: ${JSON.stringify({
-    os: data.os, arch: data.arch, shell: data.shell,
-    ...(hasLocalCli ? {
-      achbitCli: (data.runtimeExecutables as Record<string, string>).cli,
-      achbitCliExecutionScope: 'host',
-      hostDataDirectory: data.hostDataDirectory,
-    } : {}),
-    ...(needsProductDocs && (data.commandPaths ? { commandPaths: data.commandPaths } : { developerCommands: data.developerCommands })),
-    ...(needsProductDocs && typeof data.productDocsPath === 'string' ? { productDocsPath: data.productDocsPath } : {}),
-  })}. ` : '';
-  const cli = hasShell && hasLocalCli
-    ? 'For Achbit configuration, achbitCli requires Host execution with --host-data-dir hostDataDirectory. ' : '';
-  return {
-    id: ENVIRONMENT_ID,
-    text: `${execution}${cli}Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`,
-  };
+  return { data, hostExecutionAllowed };
+}
+
+export function environmentInstruction(value: unknown, toolNames: readonly string[] = [], coding?: { cwd?: string }): RunRuntimeSnapshot['instructions'][number] {
+  const { data } = decodeSessionEnvironment(value);
+  const shell = data.shell as { tool: string; dialect: string };
+  const target = data.executionTarget as { kind: string; distribution?: string };
+  const hasShell = data.shellAvailable === true && toolNames.includes(shell.tool);
+  const language = `Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`;
+  const commands = data.developerCommands as string[];
+  const available = hasShell && commands.length ? `Detected commands on PATH: ${commands.join(', ')}.` : '';
+  if (coding) {
+    const platform = target.kind === 'wsl' ? `${data.os} (WSL, ${target.distribution})` : data.os;
+    const lines = [hasShell && `Shell: ${shell.dialect} on ${platform} (${data.arch}).`, available,
+      toolNames.some(name => codingToolNames.has(name))
+        && `Use paths relative to the selected workspace${target.kind === 'wsl' ? ' in WSL' : ''}.`, language];
+    const sections = ['<environment>', ...lines.filter(Boolean), '</environment>'];
+    if (coding.cwd) sections.push('', '<cwd>', JSON.stringify(coding.cwd), '</cwd>');
+    return { id: ENVIRONMENT_ID, text: sections.join('\n') };
+  }
+  const facts = { os: data.os, arch: data.arch, shell: data.shell,
+    ...(target.kind === 'wsl' ? { wslDistribution: target.distribution } : {}) };
+  const command = hasShell ? `Command environment: ${JSON.stringify(facts)}. ` : '';
+  return { id: ENVIRONMENT_ID, text: [command + language, available].filter(Boolean).join('\n') };
+}
+
+export function primaryWorkingDirectory(runtime: RunRuntimeSnapshot, primaryId: string | undefined): string | undefined {
+  const directory = runtime.environment.primaryWorkspaceDirectory;
+  if (primaryId && directory && typeof directory === 'object'
+    && 'workspaceId' in directory && directory.workspaceId === primaryId
+    && 'path' in directory && typeof directory.path === 'string') return directory.path;
+  return undefined;
 }
 
 export function savedSessionEnvironment(events: readonly SessionEvent[]): RunRuntimeSnapshot['environment'] | undefined {

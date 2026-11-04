@@ -85,9 +85,7 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
         ),
         KernelToolKind::FsRead => (
             "Read a UTF-8 file or list a directory's immediate entries in name order. Use path='.' for the workspace root.",
-            &[
-                "Continue a partial file with startByte=nextByte, or a directory with startLine=nextStartLine."
-            ],
+            &[],
         ),
         KernelToolKind::FsWrite => (
             "Write the complete contents of a new or existing file. Missing parent directories are created.",
@@ -106,12 +104,12 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             ],
         ),
         KernelToolKind::ProcessPowerShell => (
-            "Run PowerShell from the selected workspace. List, search and inspect files here. Project writes are limited to authorized output directories. The session working directory is writable. Longer commands return a running job.",
-            &["Preserve the target program's exit code when printing diagnostics."],
+            "Run PowerShell from the selected workspace. List, search and inspect files here. Project writes are limited to authorized output directories. The session working directory is writable.",
+            &[],
         ),
         KernelToolKind::ProcessShell => (
-            "Run Bash from the selected workspace. Use ls, rg or find to discover files. Project writes are limited to authorized output directories. The session working directory is writable. Longer commands return a running job.",
-            &["Preserve the target command's exit status through pipelines and trailing diagnostics."],
+            "Run Bash from the selected workspace. Use ls, rg or find to discover files. Project writes are limited to authorized output directories. The session working directory is writable.",
+            &[],
         ),
     }
 }

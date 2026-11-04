@@ -10,14 +10,14 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "File or bound directory path. Use '.' to list the selected workspace. External files require permission."
+                    "description": "File or directory path in the selected workspace, or an authorized absolute path."
                 },
                 "startByte": { "type": "integer", "minimum": 0, "maximum": 9007199254740991u64, "description": "Files only. Resume at nextByte, including within long lines. Takes precedence over startLine." },
                 "startLine": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": u32::MAX,
-                    "description": "First one-based line or directory entry. Defaults to 1."
+                    "description": "First one-based line or directory entry; resume listings at nextStartLine. Defaults to 1."
                 },
                 "maxLines": {
                     "type": "integer",
@@ -100,7 +100,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 16384,
-                    "description": "Bash script. Each call starts at the selected workspace root. In the sandbox, HOME is the session home directory; TMPDIR is removed after this call. Use an explicit template for temporary files, e.g. mktemp -d \"$TMPDIR/build.XXXXXX\". Preserve the target command exit status."
+                    "description": "Bash script. Each call starts at the selected workspace root. In the sandbox, HOME is the session home directory; TMPDIR is removed after this call. Use an explicit template for temporary files, e.g. mktemp -d \"$TMPDIR/build.XXXXXX\". Preserve the target command's exit status through pipelines and trailing diagnostics."
                 },
                 "requestNetworkPermission": {
                     "type": "string", "minLength": 1, "maxLength": 1024,

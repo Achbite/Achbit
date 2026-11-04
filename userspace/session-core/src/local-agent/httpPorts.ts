@@ -43,17 +43,13 @@ import {
   decodeAgentToolSelection,
   KERNEL_REPLY_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
-  SESSION_CONTROL_INTERACTION_REQUEST,
-  SESSION_CONTROL_PLAN_PUBLISH,
-  SESSION_CONTROL_TODO_UPDATE,
-  SESSION_CONTROL_PLUGIN_ACTIVATE,
-  SESSION_CONTROL_ARTIFACT_PRESENT,
 } from '@achbit/protocol';
 import { createProviderToolAliases } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
 import { environmentInstruction } from './sessionEnvironment.js';
+import type { ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import {
   decodeRunPluginConfig,
   runtimeInstructions,
@@ -467,15 +463,21 @@ export class HttpProviderPort extends LocalAgentHttpPort implements ProviderPort
 }
 
 interface HttpRunPreparationPortOptions extends HttpPortOptions {
+  codingTools?: boolean;
   stableCoreInstructions: readonly InstructionContribution[];
   promptContributions?: readonly InstructionContribution[];
+  environmentInstructions?: ProductEnvironmentInstructions;
 }
 
 export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPreparationPort {
   readonly #instructions: readonly InstructionContribution[];
+  readonly #environmentInstructions?: ProductEnvironmentInstructions;
+  readonly #codingTools: boolean;
 
   constructor(options: HttpRunPreparationPortOptions) {
     super(options);
+    this.#codingTools = options.codingTools === true;
+    this.#environmentInstructions = options.environmentInstructions;
     this.#instructions = Object.freeze([...options.stableCoreInstructions, ...(options.promptContributions ?? [])]
       .map((instruction) => Object.freeze({ ...instruction })));
   }
@@ -555,17 +557,11 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         ...tools
           .filter((tool) => tool.availability === 'callable')
           .map((tool) => tool.name),
-        ...sessionControlToolDefinitions().map((tool) => tool.name),
-      ], previousProviderToolAliases);
-      const wireName = (canonicalName: string): string => {
-        const alias = providerToolAliases.find((candidate) => (
-          candidate.canonicalName === canonicalName
-        ));
-        if (!alias) throw new Error(`run_runtime_provider_tool_alias_missing:${canonicalName}`);
-        return alias.wireName;
-      };
+        ...(toolSelection?.controls ?? sessionControlToolDefinitions().map(tool => tool.name)),
+      ], previousProviderToolAliases, this.#codingTools);
       return {
         runtimeSnapshot: Object.freeze({
+          ...(this.#codingTools ? { codingTools: true as const } : {}),
           contextManagement: decodeContextManagementSettings(value.contextManagement),
           agentCapabilities,
           ...(toolSelection ? { toolSelection } : {}),
@@ -580,15 +576,9 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           environment: value.environment as JsonObject,
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
-            ...this.#instructions,
-            environmentInstruction(value.environment, tools.filter(tool => tool.availability === 'callable').map(tool => tool.name)),
-          ], pluginConfig, {
-            interactionRequest: wireName(SESSION_CONTROL_INTERACTION_REQUEST),
-            planPublish: wireName(SESSION_CONTROL_PLAN_PUBLISH),
-            todoUpdate: wireName(SESSION_CONTROL_TODO_UPDATE),
-            pluginActivate: wireName(SESSION_CONTROL_PLUGIN_ACTIVATE),
-            artifactPresent: wireName(SESSION_CONTROL_ARTIFACT_PRESENT),
-          })],
+            ...this.#instructions, environmentInstruction(value.environment),
+            ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
+          ])],
           tools,
           toolPromptContributions: toolPromptContributions as PreparedToolPromptContribution[],
           providerToolAliases,

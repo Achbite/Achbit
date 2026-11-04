@@ -78,11 +78,11 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
     configurations: new SessionConfigurationRegistry(undefined, achbitProductComponents),
     agentHost: new HttpAgentHostPort({ apiBase, serviceToken }),
     compositions: {
-      create: async ({ promptContributions }) => ({
+      create: async ({ promptContributions, environmentInstructions, codingTools }) => ({
         composition: {
           provider, kernel,
           runPreparation: new HttpRunPreparationPort({
-            apiBase, serviceToken, stableCoreInstructions, promptContributions,
+            apiBase, serviceToken, stableCoreInstructions, promptContributions, environmentInstructions, codingTools,
           }),
           async dispose() {},
         },

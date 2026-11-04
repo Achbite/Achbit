@@ -156,8 +156,7 @@ impl ProductTools {
                 }
             })),
             ("session.read", "Read the specified conversation history. Start with summary, then read the relevant messages, tools or plans. Use nextBefore for older entries and nextOffset for longer fields.".into(), session_read_schema()),
-            ("skill.read", format!("Read a Achbit product Skill or its reference when guidance is needed. Read only content relevant to the current question. Available: {}. Omit path to read SKILL.md.",
-                SKILLS.iter().map(|skill| format!("{} — {}", skill.id, skill.description())).collect::<Vec<_>>().join("; ")), json!({
+            ("skill.read", "Read a named bundled Skill or a reference within it. Omit path to read SKILL.md.".into(), json!({
                 "type":"object", "additionalProperties":false, "required":["name"],
                 "properties": {
                     "name":{"type":"string","enum": SKILLS.iter().map(|skill| skill.id).collect::<Vec<_>>()},
@@ -284,6 +283,10 @@ const SKILLS: &[ProductSkill] = &[
             (
                 "references/design.md",
                 include_str!("../../../skills/achbit-documents/references/design.md"),
+            ),
+            (
+                "references/inline-diagrams.md",
+                include_str!("../../../skills/achbit-documents/references/inline-diagrams.md"),
             ),
             (
                 "references/formats.md",
@@ -537,6 +540,7 @@ mod tests {
         for path in [
             "SKILL.md",
             "references/design.md",
+            "references/inline-diagrams.md",
             "references/formats.md",
             "references/interactive-previews.md",
             "assets/document.html",

@@ -5,9 +5,11 @@ import { publishPlan, requestedPlanToolStage } from './planStage.js';
 import { preparePluginActivation } from './pluginActivation.js';
 import { decodeSessionControlCall } from './sessionControls.js';
 import { todoUpdateFact } from './todoState.js';
-import type { SessionCapabilities } from './plugins.js';
+import type { SessionCapabilities, SessionToolStage } from './plugins.js';
+import type { RunRuntimeSnapshot } from '@achbit/protocol';
+import type { SessionState } from './reducer.js';
 
-export function createSessionCapabilities(): SessionCapabilities {
+export function createSessionCapabilities(): Required<SessionCapabilities> {
   return {
     context: { prepare: buildAgentProviderRequest, windowTokens: runtime => runtime.provider.contextWindowTokens },
     compaction: {
@@ -26,6 +28,11 @@ export function createSessionCapabilities(): SessionCapabilities {
     },
     async dispose() {},
   };
+}
+
+export function stageForRequest(capabilities: SessionCapabilities, runtime: RunRuntimeSnapshot, state: SessionState): SessionToolStage | undefined {
+  return capabilities.controls ? capabilities.controls.toolStage?.(runtime, state)
+    : { tools: runtime.tools, webSearch: runtime.webSearch, controls: [] };
 }
 
 export interface SessionCapabilityLease {

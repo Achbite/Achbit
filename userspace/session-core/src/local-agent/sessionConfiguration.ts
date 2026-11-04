@@ -4,6 +4,7 @@ import type { SessionCapabilities } from './plugins.js';
 import { createSessionCapabilities } from './sessionCapabilities.js';
 import { buildAgentProviderRequest } from './contextComposer.js';
 import { DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
+import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 import type { InstructionContribution } from './skillPlugins.js';
 
 type Kind = keyof AgentConfiguration;
@@ -18,12 +19,17 @@ export interface SessionContribution<K extends Kind = Kind> {
   create(parameters: JsonObject): { implementation: SessionCapabilities[K]; dispose?(): Promise<void> };
 }
 
+export type ProductEnvironmentInstructions = (environment: JsonObject) => readonly InstructionContribution[];
+
 export interface SessionProductComponent {
   id: string;
   /** An installed component contributes only when selected by the recipe or the product's defaults. */
   enabledByDefault?: boolean;
   /** Host metadata components run outside the model context. */
   text?: string;
+  /** Resolve installed resources from the target environment when preparing a run. */
+  environmentInstructions?: ProductEnvironmentInstructions;
+  toolGuidance?: ToolGuidanceContributor;
 }
 
 const OPTIONAL_CONTROLS = [SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT];
@@ -45,17 +51,24 @@ export class SessionConfigurationRegistry {
     }
   }
 
-  productInstructions(recipe?: Pick<AgentRecipe, 'productComponents' | 'tools'>): InstructionContribution[] {
+  private selectedProducts(recipe?: Pick<AgentRecipe, 'productComponents' | 'tools'>): SessionProductComponent[] {
     const ids = recipe?.productComponents;
-    for (const id of ids ?? []) {
-      if (!this.#products.has(id)) throw new Error(`session_product_component_unavailable:${id}`);
-    }
-    const result: InstructionContribution[] = [];
-    for (const product of this.#products.values()) {
-      const active = ids ? ids.includes(product.id) : product.enabledByDefault && recipe?.tools?.plugins !== false;
-      if (active && product.text !== undefined) result.push({ id: product.id, text: product.text });
-    }
-    return result;
+    for (const id of ids ?? []) if (!this.#products.has(id)) throw new Error(`session_product_component_unavailable:${id}`);
+    return [...this.#products.values()].filter(product => ids ? ids.includes(product.id)
+      : product.enabledByDefault && recipe?.tools?.plugins !== false);
+  }
+
+  productInstructions(recipe?: Pick<AgentRecipe, 'productComponents' | 'tools'>): InstructionContribution[] {
+    return this.selectedProducts(recipe).flatMap(product => product.text !== undefined ? [{ id: product.id, text: product.text }] : []);
+  }
+
+  productEnvironmentInstructions(recipe?: Pick<AgentRecipe, 'productComponents' | 'tools'>): ProductEnvironmentInstructions | undefined {
+    const contributors = this.selectedProducts(recipe).flatMap(product => product.environmentInstructions ?? []);
+    return contributors.length ? environment => contributors.flatMap(contribute => contribute(environment)) : undefined;
+  }
+
+  productToolGuidance(recipe?: Pick<AgentRecipe, 'productComponents' | 'tools'>): ToolGuidanceContributor[] {
+    return this.selectedProducts(recipe).flatMap(product => product.toolGuidance ? [product.toolGuidance] : []);
   }
 
   describe(fullConfiguration: boolean): JsonObject {
@@ -109,9 +122,9 @@ export class SessionConfigurationRegistry {
       const controls = build('controls');
       const context = build('context');
       const compaction = build('compaction');
-      return { controls, compaction: { ...compaction,
-          prepare: (input, signal) => compaction.prepare({ ...input, optionalControlTools: controls.optionalTools }, signal) },
-        context: { ...context, prepare: (input, signal) => context.prepare({ ...input, optionalControlTools: controls.optionalTools }, signal) }, dispose };
+      return { controls, compaction: compaction && { ...compaction,
+          prepare: (input, signal) => compaction.prepare({ ...input, optionalControlTools: controls?.optionalTools }, signal) },
+        context: { ...context, prepare: (input, signal) => context.prepare({ ...input, optionalControlTools: controls?.optionalTools }, signal) }, dispose };
     } catch (error) {
       try { await dispose(); }
       catch (cleanup) { throw new AggregateError([error, cleanup], 'session_contributions_initialization_failed'); }
@@ -127,7 +140,20 @@ export class SessionConfigurationRegistry {
 }
 
 export function builtinSessionContributions(): SessionContribution[] {
+  const noParameters = {
+    parametersSchema: { type: 'object', additionalProperties: false, properties: {} },
+    validate(parameters: JsonObject) {
+      if (Object.keys(parameters).length) throw new Error('agent_contribution_parameters_invalid');
+    },
+  };
   return [
+    { kind: 'context', id: 'coding', description: 'Journal context with the read, shell, edit and write coding interface.',
+      ...noParameters, create: () => ({ implementation: { prepare: buildAgentProviderRequest,
+        windowTokens: runtime => runtime.provider.contextWindowTokens } }) },
+    { kind: 'controls', id: 'none', description: 'No Session control tools or turn hooks.',
+      ...noParameters, create: () => ({ implementation: undefined }) },
+    { kind: 'compaction', id: 'none', description: 'No automatic or scheduled summary requests.',
+      ...noParameters, create: () => ({ implementation: undefined }) },
     { kind: 'context', id: 'journal', description: 'The Session journal and its stable recorded model views.',
       parametersSchema: { type: 'object', additionalProperties: false, properties: {
         maxTokens: { type: 'integer', minimum: 1, description: 'Optional context budget including output reserve; capped by the selected model window. Omit to inherit.' },

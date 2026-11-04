@@ -11,7 +11,7 @@ Preserve the requested scope: analysis, implementation, Debug verification or re
 
 ## Choose the entrypoint
 
-- To control a Debug product, read `debug-control.md` in `productDocsPath` with the shell. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
+- To control a Debug product, read `debug-control.md` under the `productDocsPath` supplied by the Shell tool description. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
 - To develop, install or update a plugin, read [references/plugin-development.md](references/plugin-development.md). Use the current Host CLI for discovery and management.
 - To locate code for a change, read [references/implementation-map.md](references/implementation-map.md), then inspect the relevant producer and consumer.
 - To load edited code, use [references/update-modes.md](references/update-modes.md). A successful build does not update an existing process.

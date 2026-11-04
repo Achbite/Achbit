@@ -1,6 +1,6 @@
 # Execution environments
 
-Use the run's recorded target, shell and PATH, plus the project's build instructions. `commandPaths` lists commands found on that PATH, not every installed program. Command-not-found, access denial and an unreachable service are different failures. Host permission changes access, not the selected execution target or shell.
+Use the run's recorded target, shell and PATH, plus the project's build instructions. The product operations Skill supplies `commandPaths` for commands found on that PATH. Command-not-found, access denial and an unreachable service are different failures. Host permission changes access, not the selected execution target or shell.
 
 ## Workspace Shell
 
@@ -15,7 +15,7 @@ Use the run's recorded target, shell and PATH, plus the project's build instruct
 
 Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session owns its working directory outside the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
-Workspace Shell HOME is session-managed; it is not the application configuration root. When the shell and product Skills are selected, the reported `achbitCli` is a Host administration command (`achbitCliExecutionScope: host`). Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
+Workspace Shell HOME is session-managed; it is not the application configuration root. After selection or use of the product or iteration Skill, the Shell declaration reports `achbitCli` as a Host administration command when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
 Workspace Shell is offline by default, including loopback access. Network grants can be per call, task or conversation as offered by the decision. Explicit command deny/ask rules still apply. Host execution uses real host-user permissions, including network and writes outside the sandbox; a working directory is not isolation. With Plan approval enabled or an active Plan, each Host call requires separate approval. An approval or a failed command does not authorize an automatic broader retry.
 
@@ -66,6 +66,6 @@ New runs capture runtime settings. On macOS the Host prepares PATH from the logi
 
 Command-not-found describes the prepared PATH, not all installed software. Denied filesystem access and an unreachable socket do not prove a service is stopped. Check the actual error and required scope. Keep files needed by later calls in workspace paths; per-call temporary resources are cleaned.
 
-Use PowerShell syntax on Windows; Windows PowerShell 5.1 lacks && and ||. Preserve $LASTEXITCODE for native commands and pipeline failures in Bash. The shell output tail is bounded to 2000 lines or 50 KiB. The model receives stdout, stderr, the exit code and execution scope. Clipped, failed and cancelled results retain available fullOutput log paths for recovery. The Kernel retains the full record. A terminal supplies bounded stdin once to a temporary PTY and must terminate; omitted terminal closes stdin.
+Use PowerShell syntax on Windows; Windows PowerShell 5.1 lacks && and ||. Preserve $LASTEXITCODE for native commands and pipeline failures in Bash. The shell output tail is bounded to 2000 lines or 50 KiB. The model receives command output and its exit code. Timeouts, truncation and recoverable log paths are reported when applicable. Log paths accompany clipped output or a failed command whose archived streams contain additional bytes. The Kernel retains the full record. A terminal supplies bounded stdin once to a temporary PTY and must terminate; omitted terminal closes stdin.
 
 For long commands, dependency waits, one-time review and cancellation, read [managed processes](managed-processes.md).

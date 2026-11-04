@@ -525,6 +525,10 @@ test('turning Plan off closes a pending Plan and resumes without a review or Pla
     else {
       assert.equal(turns, 2);
       assert.equal(request.tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+      const outcome = JSON.parse(request.messages.find(message => message.role === 'tool' && message.providerCallId === 'provider:plan').content);
+      assert.equal(outcome.status, 'disabled');
+      assert.equal(outcome.response, undefined, 'a permission setting is not a user rejection');
+      assert.match(outcome.nextAction, /continue.*current task/i);
       yield providerEvent(request.requestId, 'assistant.message', { content: 'Continuing without Plan.' });
     }
     yield providerEvent(request.requestId, 'completed', {});

@@ -7,7 +7,7 @@ description: Find Achbit operation, configuration and troubleshooting guidance w
 
 Achbit is the current product name. Built-in Skill IDs and product commands use the `achbit-*` prefix.
 
-Use current tool schemas and availability. Product docs are Markdown files in `productDocsPath` from the execution context. Use the shell to search with `grep`/`rg` and read the relevant file with `cat`, `sed` or PowerShell equivalents:
+The Shell tool description supplies `productDocsPath` for the bundled Markdown guides. Use the shell to search with `grep`/`rg` and read the relevant file with `cat`, `sed` or PowerShell equivalents:
 
 | Need | File |
 | --- | --- |

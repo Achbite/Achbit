@@ -192,10 +192,15 @@ impl AgentRecipe {
                         .map(String::from)
                         .into(),
                 ),
-                controls: Some(Vec::new()),
+                controls: Some(vec!["plan.publish".into()]),
                 plugins: false,
             },
             product_components: Some(Vec::new()),
+            configuration: Some(json!({
+                "context": { "id": "coding" },
+                "compaction": { "id": "none" },
+                "controls": { "id": "standard", "parameters": { "optionalTools": [] } }
+            })),
             permissions: Some(json!({
                 "agent.permissions.workspaceMutation": "allow",
                 "agent.permissions.engineeringDecisions": "delegate",
@@ -426,6 +431,22 @@ mod tests {
         ] {
             assert!(AgentRecipe::decode(&json!({"tools":tools})).is_err());
         }
+    }
+
+    #[test]
+    fn minimal_preset_admits_only_the_plan_control_under_the_normal_stage_policy() {
+        let recipe = AgentRecipe::minimal_coding();
+        assert_eq!(recipe.tools.controls, Some(vec!["plan.publish".into()]));
+        assert!(!recipe.tools.plugins);
+        assert_eq!(recipe.product_components, Some(Vec::new()));
+        assert_eq!(
+            recipe.configuration.unwrap()["controls"],
+            json!({"id":"standard","parameters":{"optionalTools":[]}})
+        );
+        assert_eq!(
+            recipe.permissions.unwrap()["agent.permissions.workspaceMutation"],
+            "allow"
+        );
     }
 
     #[test]

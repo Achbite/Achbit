@@ -10,6 +10,7 @@ import {
   buildConversationProviderRequest,
   runInputMessageEvent,
 } from './contextComposer.js';
+import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 import type { SessionState } from './reducer.js';
 
 export type ContextCompactionRequestEvent = Extract<
@@ -36,6 +37,7 @@ export function prepareContextCompaction(input: {
   requestEvent: ContextCompactionRequestEvent;
   toolStage?: import('./plugins.js').SessionToolStage;
   optionalControlTools?: readonly string[];
+  toolGuidance?: readonly ToolGuidanceContributor[];
 }, signal?: AbortSignal): PreparedContextCompaction {
   signal?.throwIfAborted();
   const cutoff = input.requestEvent.payload.coveredThroughSequence;
@@ -56,6 +58,7 @@ export function prepareContextCompaction(input: {
     responseConstraint: 'answerOnly',
     toolStage: input.toolStage,
     optionalControlTools: input.optionalControlTools,
+    toolGuidance: input.toolGuidance,
     summaryInstruction: COMPACTION_INSTRUCTIONS + (focus
       ? `\n\nPrioritize existing facts relevant to the following future-work focus, but do not answer it:\n${focus}` : ''),
   });
