@@ -16,7 +16,7 @@ A yielded ordinary command is still an ordering barrier. Later calls in the same
 
 Shell and container progress stays available in the activity view and execution logs while the model works on something else. The model receives the start receipt, actual tool results, errors and terminal job results. Requesting `status` explicitly also returns the current output.
 
-The first dependency wait without a deadline offers one review after 120 seconds of waiting. A wait with `waitSeconds` uses the chosen deadline instead. When the deadline arrives, Session first checks for completion and new input. If the dependency is still pending, the same Loop receives its job identity, wait timing, last output time and bounded output tails. The model can continue waiting, inspect the job, cancel it, or do other work.
+The first dependency wait without a deadline offers one review after 120 seconds of waiting. A wait with `waitSeconds` uses the chosen deadline instead. When the deadline arrives, Session first checks for completion and new input. If the dependency is still pending, the same Loop receives the active job handle and bounded output tails. Terminal notifications and explicit status calls give the command result or error. Wait identifiers, scheduling timestamps and internal execution records stay in the journal. The model can continue waiting, inspect the job, cancel it, or do other work.
 
 Waiting again without a deadline continues on events after the one review. An explicit subsequent deadline offers another decision at the chosen time. A wait deadline leaves the command running. The execution tool’s optional `timeout` limits the lifetime of the command itself.
 

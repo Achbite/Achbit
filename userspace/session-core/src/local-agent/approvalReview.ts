@@ -104,8 +104,8 @@ export function prepareApprovalReview(snapshot: LoopSnapshot, runtime: RunRuntim
     [], runtime.providerToolAliases, workspaceBindings);
   const readsEnabled = !final && !correctFormat && toolCodec.definitions.length > 0;
   const responseConstraint = readsEnabled ? 'normal' as const : 'answerOnly' as const;
-  const replay = messagesFromJournal(evidenceEvents, approval.runId, workspaceBindings, [], true);
   const journalCodecs = evidenceEvents.length ? providerMessageCodecsByCallId([...snapshot.events, ...evidenceEvents]) : new Map();
+  const replay = messagesFromJournal(evidenceEvents, approval.runId, workspaceBindings, [], true, journalCodecs);
   const compose = () => {
     const content = JSON.stringify(packet);
     const contributions: ContextMessageContribution[] = [

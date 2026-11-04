@@ -7,6 +7,7 @@ Quick directions for using Achbit. Read only the section needed for the task; cu
 - Use CLI/MCP for program operations and GUI tools for interface actions or visual confirmation. A program having a GUI does not make all its operations GUI tasks.
 - File tools operate on bound workspaces. Use `fs.read` for UTF-8 files or the immediate contents of a bound directory (`.` lists its root). Use the returned cursor for the next page; use file tools for project edits and deletion. Use the project's declared environment for commands.
 - Preserve actual results: rejected input was not executed; approval is not execution; a dispatched action with a failed observation is not a fully verified action. Correct the reported cause instead of repeating an unchanged failure.
+- A complete file or Skill read returns its text as-is (including an empty file). Directory listings and partial reads return entries or text with the continuation cursor. Successful tool replies contain the operation result; errors retain the cause and any known partial effect. Permission decisions remain in the journal. The working agent receives denial reasons and newly granted scopes when relevant.
 - Live output is bounded. Inspect the returned full-output paths when needed; do not rerun a command just to recover its log.
 - For Achbit Debug control, read [Debug control](debug-control.md). Direct tool/UI operations do not need an Agent task.
 

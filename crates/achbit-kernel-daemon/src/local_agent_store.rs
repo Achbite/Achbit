@@ -5066,8 +5066,18 @@ fn validate_run_runtime_snapshot(
             "agentToolsEnabled",
             "planMode",
             "toolSelection",
+            "codingTools",
         ],
     )?;
+    if value
+        .get("codingTools")
+        .is_some_and(|selected| selected != true)
+    {
+        return Err(LocalAgentStoreError::new(
+            "coding_tools_invalid",
+            "Invalid coding tool interface selection.",
+        ));
+    }
     if value.get("planMode").is_some_and(|mode| mode != "manual") {
         return Err(LocalAgentStoreError::new(
             "run_plan_mode_invalid",

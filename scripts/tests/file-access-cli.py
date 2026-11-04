@@ -60,7 +60,7 @@ class Provider(fixture.MockProviderHandler):
             if ordinal == 1:
                 self._send_tool_calls([('read-external', names['read'], {'path': str(state.external)})])
             elif ordinal == 2:
-                require(results['read-external']['outcome'] == 'completed', results['read-external'])
+                require(results['read-external'] == {'result': 'external-ok', 'grantedScope': 'runFiles'}, results['read-external'])
                 self._send_tool_calls([
                     ('shell-same-file', names['bash'], {'command': child_read_command(state.external)}),
                     ('shell-sibling', names['bash'], {'command': child_read_command(state.sibling)}),
@@ -68,31 +68,37 @@ class Provider(fixture.MockProviderHandler):
                     ('private-temp', names['bash'], {'command': "$ErrorActionPreference = 'Stop'; $owned = Join-Path $env:TMPDIR 'owned'; [IO.File]::WriteAllText($owned, 'temp'); [Console]::Write([IO.File]::ReadAllText($owned) + ':' + $env:HOME)" if WINDOWS else 'printf temp > "$TMPDIR/owned"; cat "$TMPDIR/owned"; printf ":%s\\n" "$HOME"'}),
                 ])
             elif ordinal == 3:
-                require(results['shell-same-file']['outcome'] == 'completed', results['shell-same-file'])
-                require(results['shell-same-file']['output']['stdout'] == 'external-ok', results['shell-same-file'])
+                require(results['shell-same-file']['exitCode'] == 0, results['shell-same-file'])
+                require(results['shell-same-file']['stdout'] == 'external-ok', results['shell-same-file'])
                 for call in ('shell-sibling', 'git-denied'):
-                    require(results[call]['outcome'] == 'failed' and results[call]['output']['exitCode'] != 0, results[call])
-                require(results['private-temp']['outcome'] == 'completed', results['private-temp'])
-                temporary_output = results['private-temp']['output']['stdout']
+                    require('error' in results[call] and results[call]['result']['exitCode'] != 0, results[call])
+                require(results['private-temp']['exitCode'] == 0, results['private-temp'])
+                temporary_output = results['private-temp']['stdout']
                 require(temporary_output.startswith('temp:') and temporary_output[5:].strip(), results['private-temp'])
                 self._send_tool_calls([('external-write', names['write'], {
                     'path': str(state.external), 'content': 'updated',
                 })])
             elif ordinal == 4:
-                require(results['external-write']['outcome'] == 'completed', results['external-write'])
+                require(results['external-write']['changed'] is True, results['external-write'])
                 self._send_tool_calls([('git-approved', names['write'], {
                     'path': '.git/HEAD', 'content': 'approved',
                     'requestFileAccess': {'write': [str(state.workspace / '.git/HEAD')]},
                 })])
             elif ordinal == 5:
-                require(results['git-approved']['outcome'] == 'completed', results['git-approved'])
+                require(results['git-approved']['changed'] is True, results['git-approved'])
                 self._send_text('file-scope-complete')
             else:
                 require(ordinal % 2 == 0 or f'read-{ordinal-1}' in results, results)
                 if ordinal % 2 == 0:
                     self._send_tool_calls([(f'read-{ordinal}', names['read'], {'path': str(state.external)})])
                 else:
-                    require(results[f'read-{ordinal-1}']['outcome'] == ('denied' if ordinal == 11 else 'completed'), results)
+                    result = results[f'read-{ordinal-1}']
+                    if ordinal == 11:
+                        require(result['status'] == 'denied' and result['error'], result)
+                    elif ordinal == 7:
+                        require(result == {'result': 'updated', 'grantedScope': 'sessionFiles'}, result)
+                    else:
+                        require(result == 'updated', result)
                     self._send_text('file-scope-complete')
         except BaseException as error:
             state.record_failure(error)
@@ -108,7 +114,7 @@ class Provider(fixture.MockProviderHandler):
         step = ordinal - (1 if state.workspace_mode == 'project' else 0)
         if step == 1:
             if state.workspace_mode == 'project':
-                require(results['old-project-read']['outcome'] == 'completed', results)
+                require(results['old-project-read'] == (state.workspace / '.git/HEAD').read_text(), results)
             self._send_tool_calls([('workspace-plan', names['plan'], {
                 'title': 'Write supplied workspace result', 'summary': 'Modify only the declared file.',
                 'steps': [{'stepId': 'write', 'title': 'Write', 'details': 'Write after the workspace and Plan are admitted.'}],
@@ -117,7 +123,7 @@ class Provider(fixture.MockProviderHandler):
         elif step == 2:
             self._send_tool_calls([('workspace-write', names['write'], {'workspace': 'workspace3', 'path': state.workspace_file, 'content': 'workspace-authorized'})])
         elif step == 3:
-            require(results['workspace-write']['outcome'] == 'completed', results)
+            require(results['workspace-write']['changed'] is True, results)
             self._send_text('workspace-permission-complete')
         else:
             raise AssertionError(f'Unexpected workspace request {ordinal}')
@@ -143,7 +149,7 @@ class Provider(fixture.MockProviderHandler):
             require(directory['workspace'] == state.external_reference['workspace'], 'File and parent directory lost their shared address identity')
             self._send_tool_calls([('reference-read', names['read'], {'workspace': directory['workspace'], 'path': 'target.txt'})])
         elif ordinal == 3:
-            require(results['reference-read']['outcome'] == 'completed' and results['reference-read']['output']['content'] == 'original-reference', results)
+            require(results['reference-read'] == 'original-reference', results)
             ref, inside = state.external_reference, state.project_reference
             self._send_tool_calls([('reference-plan', names['plan'], {
                 'title': 'Update the added projects', 'summary': 'Write only the two requested results after approval.',
@@ -160,8 +166,8 @@ class Provider(fixture.MockProviderHandler):
                 ('project-reference-write', names['write'], {'workspace': inside['workspace'], 'path': 'result.txt', 'content': 'project-write'}),
             ])
         elif ordinal == 5:
-            require(results['reference-write']['outcome'] == 'completed', results)
-            require(results['project-reference-write']['outcome'] == 'completed', results)
+            require(results['reference-write']['changed'] is True, results)
+            require(results['project-reference-write']['changed'] is True, results)
             self._send_text('reference-targets-complete')
         elif ordinal == 6:
             self._send_text('reference-bindings-retained')

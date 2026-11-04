@@ -153,7 +153,7 @@ test('yielded Shell leaves later calls honestly unexecuted and readable after ca
       wake = done; signal?.addEventListener('abort', done, { once: true }); if (signal?.aborted) done();
     });
     return changed() ? [structuredClone(job)] : [];
-  } }), preparation([shell]), 'yielded-shell');
+  } }), preparation([shell, tool('process', { action: { type: 'string' } }, ['process'])]), 'yielded-shell');
   t.after(async () => { finish(); wake(); await actor.dispose(); });
   await actor.submit(messageCommand(sessionId, 'command:start', 'Run the two commands in order.'));
   const active = await waitForProjection(actor, p => p.activities.some(a => a.notExecuted));

@@ -2053,6 +2053,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  /** Model-facing coding interface selected by the Session context contribution. */
+  codingTools?: true;
   /** Explicit confirmation requested for this run only. */
   planMode?: 'manual';
   /** Execution selection from the Kernel; not model-facing framework metadata. */

@@ -62,6 +62,14 @@ def provider_usage() -> dict[str, Any]:
     }
 
 
+def tool_content(content: str) -> Any:
+    """Decode a structured fixture reply or retain literal file/Skill text."""
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return content
+
+
 def message_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -426,7 +434,7 @@ class ProviderState:
                 call_id = message["tool_call_id"]
                 require(call_id in pending, "工具结果没有对应调用")
                 pending.remove(call_id)
-                results[call_id] = json.loads(message["content"])
+                results[call_id] = tool_content(message["content"])
             else:
                 require(not pending, "工具结果之前插入了下一条消息")
         require(not pending, "Provider 收到了缺失工具结果的历史")

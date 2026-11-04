@@ -13,6 +13,7 @@ import type {
 import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 import type { SessionReadScope } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
+import { codingToolNames, decodeCodingRead, encodeCodingRead } from './codingTools.js';
 
 const PROVIDER_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CANONICAL_TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/u;
@@ -36,6 +37,7 @@ export const CORE_TOOL_ORDER = [
 ] as const;
 
 export interface ProviderToolCodec {
+  readonly codingTools?: boolean;
   readonly sessionReadScope?: SessionReadScope;
   definitions: readonly ProviderToolDefinition[];
   kernelDefinitions: readonly ProviderToolDefinition[];
@@ -49,6 +51,7 @@ export interface ProviderToolCodec {
 }
 
 interface ProviderMessageToolCodec {
+  readonly codingTools?: boolean;
   /** A rejected model name is replay data, never an executable alias. */
   rejectedWireName?: string;
   wireByCanonical: ReadonlyMap<string, string>;
@@ -60,6 +63,7 @@ interface ProviderMessageToolCodec {
 export function createProviderToolAliases(
   canonicalNames: readonly string[],
   previous: readonly ProviderToolAlias[] = [],
+  codingTools = false,
 ): ProviderToolAlias[] {
   const names = [...new Set(canonicalNames)]
     .sort((left, right) => left.localeCompare(right, 'en'));
@@ -69,9 +73,10 @@ export function createProviderToolAliases(
     }
   }
 
+  const bases = new Map(names.map(name => [name, codingTools && codingToolNames.get(name) || readableWireBase(name)]));
   const baseGroups = new Map<string, string[]>();
   for (const name of names) {
-    const base = readableWireBase(name);
+    const base = bases.get(name)!;
     baseGroups.set(base, [...(baseGroups.get(base) ?? []), name]);
   }
 
@@ -90,8 +95,8 @@ export function createProviderToolAliases(
   // Keep existing names and declaration order. New registrations cannot rename
   // existing tools, even when their readable names collide with a new plugin.
   return [...retained, ...names.filter(name => !previousNames.has(name)).map((canonicalName) => {
-    const base = readableWireBase(canonicalName);
-    const collides = (baseGroups.get(base)?.length ?? 0) > 1;
+    const base = bases.get(canonicalName)!;
+    const collides = (baseGroups.get(base)?.length ?? 0) > 1 && !(codingTools && codingToolNames.has(canonicalName));
     const needsSuffix = collides || base.length > 64 || seenWireNames.has(base);
     const wireName = needsSuffix
       ? `${base.slice(0, 64 - HASH_SUFFIX_LENGTH - 1)}_${shortNameHash(canonicalName)}`
@@ -154,14 +159,14 @@ export function hostShellToolView(
       delete properties.requestNetworkPermission;
     }
     if (tool.name === 'bash' && isRecord(properties.command)) {
-      properties.command.description = 'Bash script. Each call starts at the selected workspace root. Preserve the target command exit status.';
+      properties.command.description = 'Bash script in the selected workspace. Preserve the target command\'s exit status through pipelines and trailing diagnostics.';
     }
     const shell = tool.name === 'bash' ? 'Bash' : 'PowerShell';
     const discovery = tool.name === 'bash' ? ' Use ls, rg or find to discover files.' : ' List, search and inspect files here.';
     const access = resourceHandles.length
       ? `Project and session directories use host-user filesystem permissions. File references (${resourceHandles.join(', ')}) retain their own access permissions.`
       : "Commands run as the host user and can write files writable by that user.";
-    return { ...tool, inputSchema, description: `Run ${shell} from the selected workspace. ${access}${discovery} Longer commands return a running job.` };
+    return { ...tool, inputSchema, description: `Run ${shell} from the selected workspace. ${access}${discovery}` };
   });
 }
 
@@ -171,17 +176,19 @@ export function createProviderToolCodec(
   aliases: readonly ProviderToolAlias[],
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   sessionReadScope?: SessionReadScope,
+  codingTools = false,
 ): ProviderToolCodec {
   const workspaceToolNames = new Set(runtimeTools
     .filter(isWorkspaceScopedTool)
     .map((tool) => tool.name));
   const callableKernel = runtimeTools.filter((tool) => tool.availability === 'callable');
   const byName = new Map(callableKernel.map((tool) => [tool.name, tool]));
+  const order: readonly string[] = codingTools ? [...codingToolNames.keys(), ...CORE_TOOL_ORDER] : CORE_TOOL_ORDER;
   const core = callableKernel.filter((tool) => tool.origin === 'coreBuiltin')
     .sort((left, right) => {
       const position = (name: string) => {
-        const index = CORE_TOOL_ORDER.indexOf(name as typeof CORE_TOOL_ORDER[number]);
-        return index < 0 ? CORE_TOOL_ORDER.length : index;
+        const index = order.indexOf(name);
+        return index < 0 ? order.length : index;
       };
       return position(left.name) - position(right.name) || left.name.localeCompare(right.name, 'en');
     })
@@ -272,6 +279,7 @@ export function createProviderToolCodec(
   }));
   return Object.freeze({
     definitions: encodedFor(canonical),
+    codingTools,
     kernelDefinitions: encodedFor(kernel),
     controlDefinitions: encodedFor(control),
     canonicalByWire,
@@ -297,12 +305,16 @@ export function providerWorkspaceBindings(
   }));
 }
 
+export function workspaceHandleMap(bindings: readonly WorkspaceBindingDisplay[]): Map<string, string> {
+  return new Map(bindings.map((binding, index) => [binding.workspaceId, workspaceHandle(index)]));
+}
+
 /** Project user-selected resources into the same handles as the tool inputs. */
 export function providerFilesystemReferences(
   references: readonly FilesystemReference[],
   bindings: readonly WorkspaceBindingDisplay[],
 ) {
-  const handleById = new Map(bindings.map((binding, index) => [binding.workspaceId, workspaceHandle(index)]));
+  const handleById = workspaceHandleMap(bindings);
   return references.map((reference) => ({
     referenceId: reference.referenceId,
     workspace: handleById.get(reference.workspaceId) ?? 'unavailable',
@@ -320,7 +332,7 @@ export function decodeProviderToolInput(
   canonicalName: string,
   input: JsonObject,
 ): JsonObject {
-  const decoded = structuredClone(input);
+  const decoded = codec.codingTools && canonicalName === 'fs.read' ? decodeCodingRead(structuredClone(input)) : structuredClone(input);
   if (codec.workspaceToolNames.has(canonicalName)) {
     return decodeWorkspaceHandle(codec, decoded);
   }
@@ -342,17 +354,6 @@ export function encodeProviderMessage(
 ): ModelMessage {
   // Each rewritten tool input is cloned by encodeProviderToolInput below.
   const encoded = { ...message };
-  if (encoded.role === 'tool' && encoded.toolCallId) {
-    const callCodec = journalCodecsByCallId.get(encoded.toolCallId) ?? codec;
-    // These are structured Session results, not model-authored JSON to repair.
-    const result: unknown = JSON.parse(encoded.content);
-    if (isRecord(result)) {
-      for (const key of ['output', 'error']) {
-        if (isRecord(result[key])) result[key] = encodeWorkspaceIdentity(callCodec, result[key] as JsonObject);
-      }
-      encoded.content = JSON.stringify(result);
-    }
-  }
   if (!encoded.toolCalls) return encoded;
   encoded.toolCalls = encoded.toolCalls.map((call) => {
     const callCodec: ProviderMessageToolCodec = journalCodecsByCallId.get(call.callId) ?? codec;
@@ -406,6 +407,7 @@ export function providerMessageCodecsByCallId(
         workspaceHandleById.set(binding.itemId, handle);
       });
       const codec = {
+        codingTools: runtime.codingTools === true,
         wireByCanonical: new Map(runtime.providerToolAliases.map((alias) => [alias.canonicalName, alias.wireName])),
         workspaceIdByHandle, workspaceHandleById,
         workspaceToolNames: new Set(runtime.tools.filter(isWorkspaceScopedTool).map((tool) => tool.name)),
@@ -489,7 +491,7 @@ function providerWorkspaceSchema(toolName: string, schema: JsonObject): JsonObje
   copy.properties.workspace = {
     type: 'string',
     minLength: 1,
-    description: 'Select the workspace for this call. Omitting it always selects primary, independent of earlier calls.',
+    description: 'Workspace handle. Defaults to primary on every call.',
   };
   return copy;
 }
@@ -534,7 +536,7 @@ function encodeProviderToolInput(
   canonicalName: string,
   input: JsonObject,
 ): JsonObject {
-  const encoded = structuredClone(input);
+  const encoded = codec.codingTools && canonicalName === 'fs.read' ? encodeCodingRead(structuredClone(input)) : structuredClone(input);
   if (codec.workspaceToolNames.has(canonicalName)) {
     return encodeWorkspaceIdentity(codec, encoded);
   }
@@ -549,8 +551,8 @@ function encodeProviderToolInput(
   return encoded;
 }
 
-function encodeWorkspaceIdentity(
-  codec: ProviderMessageToolCodec,
+export function encodeWorkspaceIdentity(
+  codec: Pick<ProviderMessageToolCodec, 'workspaceHandleById'>,
   input: JsonObject,
 ): JsonObject {
   const workspaceId = input.workspaceId;

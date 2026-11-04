@@ -48,17 +48,10 @@ for (const withOutput of [false, true]) test(`cancelled Shell preserves its term
         input: { workspace: 'primary', command: 'printf started; sleep 120; printf completed' },
       });
     } else {
-      const result = request.messages.map(jsonMessagePayload).find(value => value?.outcome === 'cancelled');
-      assert.ok(result, 'the next run must see the cancellation fact');
-      assert.equal(result.recordId, record.recordId);
-      assert.equal(result.error, undefined);
-      if (withOutput) {
-        assert.equal(result.output.stdout, 'started');
-        assert.equal(result.output.success, false);
-        assert.equal(result.output.exitCode, null);
-        assert.deepEqual(result.output.fullOutput, record.output.fullOutput);
-        assert.equal(result.output.environment, undefined, 'existing Shell diagnostics filtering still applies');
-      } else assert.equal(result.output, undefined);
+      const result = request.messages.map(jsonMessagePayload).find(value => value?.status === 'cancelled');
+      assert.deepEqual(result, { status: 'cancelled', ...(withOutput ? { result: {
+        stdout: 'started', exitCode: null, fullOutput: record.output.fullOutput,
+      } } : {}) });
       yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:continued', content: 'The Shell was cancelled.' });
     }
     yield providerEvent(request.requestId, 'completed', {});
@@ -855,7 +848,10 @@ test('GUI receives and renders live tool output at the same journal revision bef
   let calls = 0;
   const provider = { async *stream(request) {
     if (calls++ === 0) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:progress', name: request.tools.find((entry) => entry.description === tool.description).name, input: { workspace: 'primary', path: 'output.log' } });
-    else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider-message:done', content: 'Done.' });
+    else {
+      assert.deepEqual(request.messages.filter(message => message.role === 'tool').map(message => message.content), ['finished']);
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider-message:done', content: 'Done.' });
+    }
     yield providerEvent(request.requestId, 'completed', {});
   } };
   const kernel = emptyKernel({ execute: async (request, onProgress) => {
@@ -868,7 +864,7 @@ test('GUI receives and renders live tool output at the same journal revision bef
     await onProgress({ type: 'started', startedAt: String(Date.now()) });
     await publish('first line\n');
     await held;
-    return completedExecutionReply(request, { value: 'finished' });
+    return completedExecutionReply(request, { content: 'finished' });
   } });
   const actor = actorWith(journal, sessionId, provider, kernel, fakeRunPreparation({ tools: [tool] }).port, 'live-output-gui');
   t.after(async () => { finish(); await actor.dispose(); });

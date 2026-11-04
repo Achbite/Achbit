@@ -1245,9 +1245,9 @@ for (const lateRecord of [false, true]) test(`lost Kernel reply closes tool hist
       assert.deepEqual(request.messages.slice(0, requests[0].messages.length), requests[0].messages);
       const results = request.messages.filter((message) => message.role === 'tool');
       assert.deepEqual(results.map((message) => message.providerCallId), ['native:read-0', 'native:read-1']);
-      const last = JSON.parse(results.at(-1).content);
-      if (lateRecord) assert.equal(last.output.content, 'late result');
+      if (lateRecord) assert.equal(results.at(-1).content, 'late result');
       else {
+        const last = JSON.parse(results.at(-1).content);
         assert.equal(last.status, 'indeterminate');
         assert.match(last.error.message, /fetch failed: execution response disconnected/);
         assert.equal(Object.hasOwn(last, 'executed'), false, 'absence of a record is not proof of nonexecution');
@@ -2759,8 +2759,8 @@ test('explicit run approvals are journaled and only accepted for a Kernel candid
     const actor = actorWith(journal, sessionId, { async *stream(request) {
       if (++calls === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:approval', name: request.tools.find((tool) => tool.inputSchema.properties?.url).name, input: { url: 'https://example.test' } });
       else {
-        const result = request.messages.map(jsonMessagePayload).find((value) => value?.outcome === 'completed');
-        assert.deepEqual(result.approval, { decision: 'allow', scope: candidate ? 'runHostShell' : 'call' });
+        const result = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider:approval'));
+        assert.deepEqual(result, candidate ? { result: { content: 'Result' }, grantedScope: 'runHostShell' } : { content: 'Result' });
         yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
       }
       yield providerEvent(request.requestId, 'completed', {});
@@ -2868,18 +2868,8 @@ test('read-only bash result projects its real write scope and continues the Loop
         return;
       }
 
-      const toolResult = request.messages
-        .map(jsonMessagePayload)
-        .find((payload) => payload?.outcome === 'completed');
-      assert.equal(toolResult?.output?.workspaceMode, undefined);
-      assert.equal(toolResult?.output?.executionScope, 'workspace');
-      assert.equal(toolResult?.output?.terminal, false);
-      assert.equal(toolResult?.output?.workspaceId, undefined);
-      assert.equal(toolResult?.output?.environment, undefined);
-      assert.equal(toolResult?.output?.paths, undefined);
-      assert.equal(toolResult?.output?.capturedBytes, undefined);
-      assert.equal(toolResult?.output?.stdout, 'probe-ok');
-      assert.equal(toolResult?.output?.exitCode, 0);
+      const toolResult = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider-call:bash-read'));
+      assert.deepEqual(toolResult, { stdout: 'probe-ok', exitCode: 0 });
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:bash-read-answer',
         content: 'Read-only shell continuation completed.',
@@ -3018,9 +3008,8 @@ for (const output of [null, { stage: 'execution', details: { toolId: toolName } 
         yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:shell-unavailable', name: request.tools[0].name,
           input: { workspace: 'primary', command: 'git status -sb' } });
       } else {
-        const result = request.messages.map(jsonMessagePayload).find((item) => item?.outcome === 'failed');
-        assert.deepEqual(result?.error, error);
-        assert.deepEqual(result?.output, output);
+        const result = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider:shell-unavailable'));
+        assert.deepEqual(result, output ? { error, result: { details: output.details } } : { error });
         yield providerEvent(request.requestId, 'assistant.message', { messageId: `provider:answer:${turns}`, content: 'The shell could not start.' });
       }
       yield providerEvent(request.requestId, 'completed', {});
@@ -4095,15 +4084,11 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
 
       if (providerRequests.length === 3) {
         assert.equal(request.responseConstraint, 'normal');
-        const failedResult = request.messages
-          .map(jsonMessagePayload)
-          .find((payload) => payload?.outcome === 'failed');
-        assert.equal(failedResult?.error?.code, 'bash_exit_nonzero');
-        assert.equal(failedResult?.output?.exitCode, 7);
-        assert.equal(failedResult?.output?.stderr, 'fixture failure');
-        assert.equal(failedResult?.output?.writeScope, 'hostUser');
-        assert.equal(failedResult?.output?.environment, undefined);
-        assert.equal(failedResult?.output?.workspaceId, undefined);
+        const failedResult = request.messages.map(jsonMessagePayload).find(payload => payload?.error?.code === 'bash_exit_nonzero');
+        assert.equal(failedResult.result.exitCode, 7);
+        assert.equal(failedResult.result.stderr, 'fixture failure');
+        assert.equal(failedResult.result.environment, undefined);
+        assert.equal(failedResult.result.workspaceId, undefined);
         const todo = request.messages
           .map(jsonMessagePayload)
           .find((payload) => payload?.type === 'todo.current');
@@ -6166,7 +6151,7 @@ test('a Kernel input rejection can request confirmation and resume the same run'
       yield providerEvent(request.requestId, 'tool.call', { callId: 'native:write', name: 'fs_write', input: { path: 'preview.html', content: 'Draft' } });
     } else if (turns === 2) {
       const result = request.messages.map(jsonMessagePayload).find(value => value?.status === 'inputRejected');
-      assert.deepEqual(result.error, originalError);
+      assert.deepEqual(result.error, { code: originalError.code, message: originalError.message, issues: originalError.issues });
       assert.equal(result.executed, false);
       yield providerEvent(request.requestId, 'tool.call', { callId: 'native:confirm', name: 'interaction_request', input: {
         kind: 'confirmation', prompt: 'Use a session working copy?', options: [{ id: 'draft', label: 'Use a working copy' }], allowFreeform: true,
@@ -6218,8 +6203,8 @@ test('Todo can start before tools without a Plan, preserve a failed record and e
       const read = request.tools.find(tool => tool.inputSchema.properties?.path);
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:read', name: read.name, input: { path: 'missing.txt' } });
     } else if (turn === 2) {
-      const record = request.messages.map(jsonMessagePayload).find(payload => payload?.recordId);
-      assert.equal(record.outcome, 'failed');
+      const record = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider:read'));
+      assert.equal(record.error.code, 'file_missing');
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:todo-blocked', name: tool.name,
         input: { items: [{ text: 'Process input', status: 'blocked' }, { text: 'Investigate input', status: 'completed' }] } });
     } else {
@@ -6250,20 +6235,20 @@ test('Todo can start before tools without a Plan, preserve a failed record and e
 });
 
 
-test('tool results keep the workspace handle of the request that produced the call', async () => {
+test('tool results use the originating handle before encoding and never reinterpret file text', async () => {
+  const { toolResultContent } = await import('../dist/local-agent/modelToolResult.js');
   const { encodeProviderMessage } = await import('../dist/local-agent/providerToolCodec.js');
-  const old = { workspaceHandleById: new Map([['workspace:one', 'primary']]) };
-  const current = { workspaceHandleById: new Map([['workspace:one', 'workspace2']]) };
-  const message = { role: 'tool', toolCallId: 'call:old', content: JSON.stringify({ outcome: 'failed',
-    output: { workspaceId: 'workspace:one', path: 'src/main.cpp', paths: { workspace: '/project', home: '/session/home' } },
-    error: { code: 'plan_scope_required', workspaceId: 'workspace:one', targets: ['src/main.cpp'] },
-  }) };
-  const content = JSON.parse(encodeProviderMessage(message, current, new Map([['call:old', old]])).content);
-  assert.equal(content.output.workspace, 'primary');
-  assert.equal(content.error.workspace, 'primary');
-  assert.equal(content.output.workspaceId, undefined);
-  assert.deepEqual(content.output.paths, { workspace: '/project', home: '/session/home' });
-  assert.equal(JSON.parse(message.content).output.workspaceId, 'workspace:one');
+  const handles = new Map([['workspace:one', 'primary']]);
+  const output = {workspaceId:'workspace:one', path:'src/main.cpp', paths:{workspace:'/project'}};
+  const error = {code:'permission_denied', message:'Outside scope', workspaceId:'workspace:one'};
+  const record = {toolName:'extension.read', input:{}, outcome:'failed', output, error, preparedEffect:{origin:'extension'}};
+  const content = JSON.parse(toolResultContent(record, undefined, handles));
+  assert.deepEqual(content.result, {workspace:'primary', path:'src/main.cpp', paths:{workspace:'/project'}});
+  assert.equal(content.error.workspace, 'primary'); assert.equal(content.error.workspaceId, undefined);
+  assert.equal(output.workspaceId, 'workspace:one');
+  const file = '{"error":{"workspaceId":"literal data"}}';
+  const message = {role:'tool', toolCallId:'call:old', content:file};
+  assert.equal(encodeProviderMessage(message, {workspaceHandleById:new Map([['workspace:one','workspace2']])}).content,file);
 });
 
 test('explicit GUI rebind preserves waiting and uses the new catalog only for subsequent calls', async t => {

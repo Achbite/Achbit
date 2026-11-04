@@ -91,7 +91,7 @@ for (const ending of ['completed', 'cancelled', 'watch-failed']) test(`managed c
       'a process update must append facts without rewriting the previous request');
     const updates = requests[2].messages.slice(requests[1].messages.length)
       .filter(m => m.role === 'user').map(m => JSON.parse(m.content));
-    assert.ok(updates.some(m => m.type === 'process.updated' && m.process.status === 'completed'));
+    assert.ok(updates.some(m => m.process?.status === 'completed'));
   }
   const updates = (await readEvents(journal,sessionId)).filter(e => e.type === 'process.updated');
   assert.equal(updates.filter(e => e.payload.job.status !== 'active').length,1);
@@ -255,13 +255,13 @@ test('a terminal result that arrives before the next model request supersedes it
       startedAt: 1, reviewAt: 120001, reviewed: true, afterSequence: 1}),
   ];
   const atReview = messagesFromJournal(events, runId, []);
-  assert.equal(JSON.parse(atReview[0].message.content).type, 'process.wait.review');
+  assert.deepEqual(JSON.parse(atReview[0].message.content), { jobs: [{ jobId: job.jobId, status: 'active' }] });
   const terminal = {job: {...job, revision: 2, status: 'completed', completedAt: '120002'}};
-  const compose = facts => messagesFromJournal(facts, runId, []).map(item => JSON.parse(item.message.content).type);
-  assert.deepEqual(compose([...events, fact(3, 'process.updated', terminal)]), ['process.updated']);
+  const compose = facts => messagesFromJournal(facts, runId, []).map(item => Object.keys(JSON.parse(item.message.content))[0]);
+  assert.deepEqual(compose([...events, fact(3, 'process.updated', terminal)]), ['process']);
   assert.deepEqual(compose([...events, fact(3, 'context.composed', {purpose: 'agent',
     modelView: {throughSequence: 2, additions: atReview}}), fact(4, 'process.updated', terminal)]),
-  ['process.wait.review', 'process.updated'], 'a review already delivered remains part of model history');
+  ['jobs', 'process'], 'a review already delivered remains part of model history');
 });
 
 test('a background Shell result keeps its recovery path when Session clips the visible tail', () => {
@@ -275,8 +275,8 @@ test('a background Shell result keeps its recovery path when Session clips the v
     return JSON.parse(messagesFromJournal([event], job.runId, [])[0].message.content).process;
   };
   const clipped = result('x'.repeat(2100));
-  assert.equal(clipped.output.truncated, true);
-  assert.equal(clipped.output.stdout.length, 2000);
-  assert.deepEqual(clipped.result.fullOutput, fullOutput);
-  assert.equal(result('done').result.fullOutput, undefined);
+  assert.equal(clipped.truncated, true);
+  assert.equal(clipped.stdout.length, 2000);
+  assert.deepEqual(clipped.fullOutput, fullOutput);
+  assert.equal(result('done').fullOutput, undefined);
 });

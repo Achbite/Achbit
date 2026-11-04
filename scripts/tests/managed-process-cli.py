@@ -33,10 +33,8 @@ def execution_input(command, timeout=None):
     return value
 
 
-def assert_stopped(job):
-    require(job['status'] in ('cancelled', 'failed'), job)
-    result = job['result']
-    require(result['success'] is False, result)
+def assert_stopped(status, result):
+    require(status in ('cancelled', 'failed'), result)
     log = Path(result['fullOutput']['stdout']['path'])
     require(log.is_file() and 'managed-pid:' in log.read_text(), 'Cancelled output archive missing')
     pid = int(next(line.removeprefix('managed-pid:') for line in log.read_text().splitlines()
@@ -108,45 +106,46 @@ class Provider(fixture.MockProviderHandler):
             if ordinal == 1:
                 call('start-long', action='start', tool=SHELL, input=execution_input(LONG_COMMAND))
             elif ordinal == 2:
-                job = results['start-long']['output']['job']
+                start = results['start-long']
+                require(start.get('grantedScope') == ('runContainer' if CONTAINER else 'runHostShell'), start)
+                job = start['result']
                 require(job['status'] == 'active', 'Start receipt was treated as execution success')
                 state.job_id = job['jobId']
                 call('wait-checkpoint', action='wait', jobId=state.job_id, waitSeconds=1)
             elif ordinal == 3:
-                review = next(value for value in fixture.json_payloads(body) if value.get('type') == 'process.wait.review')
+                review = next(value for value in fixture.json_payloads(body) if 'jobs' in value)
                 job = next(item for item in review['jobs'] if item['jobId'] == state.job_id)
-                require(not any(value.get('type') == 'process.updated' and value['process']['status'] == 'active'
+                require(not any(value.get('process', {}).get('status') == 'active'
                                 for value in fixture.json_payloads(body)), 'Passive job progress leaked into model context')
-                require(job['status'] == 'active' and 'managed-pid:' in job['output']['stdout'], job)
+                require(job['status'] == 'active' and 'managed-pid:' in job['stdout'], job)
                 if state.mode == 'user-stop':
                     self._send_text('process-progress')
                 else:
                     call('cancel-long', action='cancel', jobId=state.job_id)
             elif ordinal == 4 and state.mode == 'complete':
-                job = results['cancel-long']['output']['job']
+                job = results['cancel-long']
                 require(job['status'] == 'cancelled', job)
-                assert_stopped(job)
+                assert_stopped(job['status'], job)
                 call('start-timeout', action='start', tool=SHELL, input=execution_input(LONG_COMMAND, timeout=1))
             elif ordinal == 5 and state.mode == 'complete':
-                call('wait-timeout', action='wait', jobId=results['start-timeout']['output']['job']['jobId'])
+                call('wait-timeout', action='wait', jobId=results['start-timeout']['jobId'])
             elif ordinal == 6 and state.mode == 'complete':
-                job_id = results['start-timeout']['output']['job']['jobId']
+                job_id = results['start-timeout']['jobId']
                 job = next(value['process'] for value in reversed(fixture.json_payloads(body))
-                           if value.get('type') == 'process.updated' and value.get('process', {}).get('jobId') == job_id)
-                require(job['status'] == 'failed' and job['result'].get('timedOut') is True, job)
-                assert_stopped(job)
+                           if value.get('process', {}).get('jobId') == job_id)
+                require(job['status'] == 'failed' and job.get('timedOut') is True, job)
+                assert_stopped(job['status'], job)
                 call('start-short', action='start', tool=SHELL, input=execution_input(SHORT_COMMAND))
             elif ordinal == 7 and state.mode == 'complete':
                 self._send_text('process-progress')
             elif ordinal == 8 and state.mode == 'complete':
-                job_id = results['start-short']['output']['job']['jobId']
+                job_id = results['start-short']['jobId']
                 updates = [value['process'] for value in fixture.json_payloads(body)
-                           if value.get('type') == 'process.updated'
-                           and value.get('process', {}).get('jobId') == job_id]
+                           if value.get('process', {}).get('jobId') == job_id]
                 require(updates, 'The completed process must have its own process.updated fact')
                 job = updates[-1]
-                require(job['status'] == 'completed' and 'managed-complete' in job['output']['stdout'], job)
-                require(job['result']['exitCode'] == 0, job)
+                require(job['status'] == 'completed' and 'managed-complete' in job['stdout'], job)
+                require(job['exitCode'] == 0, job)
                 self._send_text('managed-process-cli-complete')
             else:
                 raise AssertionError(f'Unexpected model call {ordinal}: {state.mode}')
@@ -226,7 +225,8 @@ def check(mode):
                     'SELECT event_type,payload_json FROM session_events WHERE session_id=? ORDER BY sequence', (session,))]
             jobs = [payload['job'] for kind, payload in events if kind == 'process.updated']
             if mode == 'user-stop':
-                assert_stopped(jobs[-1])
+                require(jobs[-1]['result']['success'] is False, jobs[-1])
+                assert_stopped(jobs[-1]['status'], jobs[-1]['result'])
             release_indices = [index for index, (kind, _) in enumerate(events) if kind == 'run.runtime.released']
             settlement_indices = [index for index, (kind, _) in enumerate(events) if kind == 'run.settled']
             require(len(release_indices) == len(settlement_indices) == 1, 'Run must release and settle exactly once')

@@ -50,7 +50,7 @@ class Provider(fixture.MockProviderHandler):
             require('todo.update' not in names, 'Recipe controls were not selected')
             require(body['model'] == ('mock-child' if lane == 'COMPOSE_CHILD' or lane.startswith('PERMISSION_CHILD') else 'mock-main'), 'Recipe model binding lost')
             require(set(names.values()) == {tool['function']['name'] for tool in body['tools']}, 'Tool receipt mismatch')
-            results = {message['tool_call_id']: json.loads(message['content']) for message in body['messages'] if message.get('role') == 'tool'}
+            results = {message['tool_call_id']: fixture.tool_content(message['content']) for message in body['messages'] if message.get('role') == 'tool'}
             ordinal = state.ordinals.get(lane, 0) + 1
             state.ordinals[lane] = ordinal
             state.requests.append(body)
@@ -97,7 +97,7 @@ class Provider(fixture.MockProviderHandler):
                 if ordinal == 1:
                     call('write', 'fs.write', dict(path='allowed.txt', content='parent-authorized report\n'))
                 elif ordinal == 2:
-                    require(results['write'].get('outcome') == 'completed', json.dumps(results['write']))
+                    require(results['write']['changed'] is True, json.dumps(results['write']))
                     call('outside', 'fs.write', dict(path='outside.txt', content='must not exist'))
                 elif ordinal == 3:
                     require('plan_scope_required' in json.dumps(results['outside']), 'Out-of-scope write passed Kernel gate')
@@ -129,7 +129,7 @@ class Provider(fixture.MockProviderHandler):
                     require('plan.publish' not in names, 'Plan-off permission exposed a Plan approval tool')
                     call('before-tightening', 'fs.write', dict(path='before-tightening.txt', content='inherited write\n'))
                 elif ordinal == 2:
-                    require(results['before-tightening']['outcome'] == 'completed', json.dumps(results))
+                    require(results['before-tightening']['changed'] is True, json.dumps(results))
                     call('pause', 'interaction.request', dict(mode='wait', kind='question', prompt='Await parent permission change.', allowFreeform=True))
                 elif ordinal == 3:
                     call('after-tightening', 'fs.write', dict(path='after-tightening.txt', content='must not exist'))
@@ -141,7 +141,7 @@ class Provider(fixture.MockProviderHandler):
                 elif ordinal == 5:
                     call('user-authorized', 'fs.write', dict(path='after-user-plan.txt', content='explicit user permission\n'))
                 else:
-                    require(ordinal == 6 and results['user-authorized']['outcome'] == 'completed', json.dumps(results))
+                    require(ordinal == 6 and results['user-authorized']['changed'] is True, json.dumps(results))
                     self._send_text('active-child-restricted')
             elif lane == 'PERMISSION_CHILD_RESUME':
                 if ordinal == 1:

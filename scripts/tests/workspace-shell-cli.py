@@ -53,18 +53,17 @@ class Provider(fixture.MockProviderHandler):
                     shell('read', command(read_command, "$ErrorActionPreference = 'Stop'; Write-Output 'workspace-cli 中文'; Write-Output ('shell-version:' + $PSVersionTable.PSVersion); git branch --show-current; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node --version; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Get-ChildItem -Force; Get-Content -LiteralPath README.txt -Encoding UTF8")),
                 ])
             elif ordinal == 2:
-                require(results['read']['outcome'] == 'completed', results['read'])
-                require('workspace-cli 中文' in results['read']['output']['stdout'], 'Unicode output missing')
-                require('workspace-read-ok' in results['read']['output']['stdout'], 'Workspace file was not read')
-                require('workspace-test' in results['read']['output']['stdout'], 'Git did not read the workspace branch')
+                require(results['read']['exitCode'] == 0, results['read'])
+                require('workspace-cli 中文' in results['read']['stdout'], 'Unicode output missing')
+                require('workspace-read-ok' in results['read']['stdout'], 'Workspace file was not read')
+                require('workspace-test' in results['read']['stdout'], 'Git did not read the workspace branch')
                 if WINDOWS:
-                    require('shell-version:' in results['read']['output']['stdout'], 'Shell version evidence missing')
-                    print('[workspace-shell-cli] shell:', results['read']['output']['environment']['shell'])
-                    print('[workspace-shell-cli] version:', next(line for line in results['read']['output']['stdout'].splitlines() if line.startswith('shell-version:')))
+                    require('shell-version:' in results['read']['stdout'], 'Shell version evidence missing')
+                    print('[workspace-shell-cli] version:', next(line for line in results['read']['stdout'].splitlines() if line.startswith('shell-version:')))
                 if MACOS:
-                    require('git version ' in results['read']['output']['stdout'], 'System Git did not execute')
-                    require(any(line.endswith('/usr/bin/git') for line in results['read']['output']['stdout'].splitlines()), 'xcrun did not resolve the active Git tool')
-                    require(not results['read']['output']['stderr'], results['read']['output']['stderr'])
+                    require('git version ' in results['read']['stdout'], 'System Git did not execute')
+                    require(any(line.endswith('/usr/bin/git') for line in results['read']['stdout'].splitlines()), 'xcrun did not resolve the active Git tool')
+                    require(not results['read'].get('stderr'), results['read'])
                 self._send_tool_calls([('plan', names['plan'], {
                     'title': 'Generate an output file', 'summary': 'Write only within build, then verify command results.',
                     'steps': [{'stepId': 'generate', 'title': 'Generate and verify', 'details': 'Exercise the workspace Shell.', 'verification': ['Output exists; unrelated paths remain unchanged.']}],
@@ -75,22 +74,22 @@ class Provider(fixture.MockProviderHandler):
                     shell('readonly', command('printf unexpected > readonly.txt', "$ErrorActionPreference = 'Stop'; Set-Content readonly.txt unexpected")),
                 ])
             elif ordinal == 4:
-                require(results['write']['outcome'] == 'completed', results['write'])
-                require(results['readonly']['outcome'] == 'failed', results['readonly'])
-                require(results['readonly']['output']['exitCode'] != 0, 'Unapproved workspace path was writable')
+                require(results['write']['exitCode'] == 0, results['write'])
+                require('error' in results['readonly'], results['readonly'])
+                require(results['readonly']['result']['exitCode'] != 0, 'Unapproved workspace path was writable')
                 self._send_tool_calls([
                     shell('outside', command("printf unexpected > ../outside.txt", "$ErrorActionPreference = 'Stop'; Set-Content ../outside.txt unexpected")),
                     *([shell('outside_list', "$ErrorActionPreference = 'Stop'; Get-ChildItem ..")] if WINDOWS else []),
                     shell('outside_read', command("cat ../private.txt", "$ErrorActionPreference = 'Stop'; Get-Content ../private.txt")),
                 ])
             elif ordinal == 5:
-                require(results['outside']['outcome'] == 'failed', results['outside'])
-                require(results['outside']['output']['exitCode'] != 0, 'Outside write reported success')
+                require('error' in results['outside'], results['outside'])
+                require(results['outside']['result']['exitCode'] != 0, 'Outside write reported success')
                 if WINDOWS:
-                    require(results['outside_list']['outcome'] == 'failed' and results['outside_list']['output']['exitCode'] != 0, 'Parent metadata grant allowed directory listing')
-                require(results['outside_read']['outcome'] == 'failed', results['outside_read'])
-                require(results['outside_read']['output']['exitCode'] != 0, 'Unapproved outside file was readable')
-                require('outside-private-data' not in results['outside_read']['output']['stdout'], 'Outside contents were exposed')
+                    require('error' in results['outside_list'] and results['outside_list']['result']['exitCode'] != 0, 'Parent metadata grant allowed directory listing')
+                require('error' in results['outside_read'], results['outside_read'])
+                require(results['outside_read']['result']['exitCode'] != 0, 'Unapproved outside file was readable')
+                require('outside-private-data' not in results['outside_read']['result'].get('stdout', ''), 'Outside contents were exposed')
                 self._send_tool_calls([
                     shell('nonzero', command("printf 'expected-failure\\n'; exit 7", "Write-Output 'expected-failure'; exit 7")),
                     shell('pty', command('read -r value; printf "PTY:%s\\n" "$value"; test -t 0', "$value = [Console]::ReadLine(); Write-Output \"PTY:$value\"; if ([Console]::IsInputRedirected) { exit 9 }"), terminal={'stdin': 'hello-terminal\n'}),
@@ -98,12 +97,12 @@ class Provider(fixture.MockProviderHandler):
                     shell('timeout', command('sleep 30 & wait', 'Start-Sleep -Seconds 30'), timeout=1),
                 ])
             elif ordinal == 6:
-                require(results['nonzero']['output']['exitCode'] == 7, results['nonzero'])
-                require(results['pty']['outcome'] == 'completed' and results['pty']['output']['terminal'] is True, results['pty'])
-                require('PTY:hello-terminal' in results['pty']['output']['stdout'], results['pty'])
-                require(results['network']['outcome'] == 'completed', results['network'])
-                require('offline-workspace' in results['network']['output']['stdout'], results['network'])
-                require(results['timeout']['output']['timedOut'] is True, results['timeout'])
+                require(results['nonzero']['result']['exitCode'] == 7, results['nonzero'])
+                require(results['pty']['exitCode'] == 0, results['pty'])
+                require('PTY:hello-terminal' in results['pty']['stdout'], results['pty'])
+                require(results['network']['exitCode'] == 0, results['network'])
+                require('offline-workspace' in results['network']['stdout'], results['network'])
+                require(results['timeout']['result']['timedOut'] is True, results['timeout'])
                 self._send_tool_calls([('complete-stage', names['progress'], {
                     'items': [{'text': 'Generate and verify', 'status': 'completed'}],
                 })])
@@ -275,6 +274,9 @@ def main():
                     'Projection did not preserve the submitted progress')
             with closing(sqlite3.connect(f'{(daemon.config_root / "data/agent-runtime/session.sqlite3").as_uri()}?mode=ro', uri=True)) as database:
                 require(database.execute("select count(*) from session_events where event_type='approval.requested'").fetchone()[0] == 0, 'Sandboxed reads and Plan-authorized writes must not request Host approval')
+                pty_outputs = [json.loads(row[0])['record']['output'] for row in database.execute(
+                    "SELECT payload_json FROM session_events WHERE event_type='tool.completed' AND json_extract(payload_json, '$.record.input.terminal') IS NOT NULL")]
+                require(any(out.get('terminal') is True for out in pty_outputs), 'Kernel did not run the real PTY')
                 runtime = json.loads(database.execute("select payload_json from session_events where event_type='run.started' order by sequence limit 1").fetchone()[0])['runtimeSnapshot']
                 print('[workspace-shell-cli] selected environment:', json.dumps(runtime['environment']['shell']))
             daemon.shutdown()

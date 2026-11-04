@@ -84,13 +84,17 @@ class Provider(fixture.MockProviderHandler):
             ordinal, names, results = state.inspect(body)
             if ordinal <= 2:
                 if ordinal == 2:
-                    require(results['first']['outcome'] == 'completed', results['first'])
+                    first = results['first']
+                    if state.mode == 'ask':
+                        require(first.get('grantedScope') == 'runCommand', first)
+                        first = first['result']
+                    require(first['exitCode'] == 0, first)
                 self._send_tool_calls([('first' if ordinal == 1 else 'repeat', names['bash'], {
                     'command': COMMAND, 'requestHostPermission': 'Write the file explicitly requested by the user.',
                     'requestNetworkPermission': 'Retain the redundant network request from the original Host approval regression.',
                 })])
             else:
-                require(results['repeat']['outcome'] == 'completed', results['repeat'])
+                require(results['repeat']['exitCode'] == 0, results['repeat'])
                 self._send_text('permission-delegation-complete')
         except BaseException as error:
             state.record_failure(error)
@@ -185,7 +189,7 @@ class ReviewFailureProvider(fixture.MockProviderHandler):
                     'command': COMMAND, 'requestHostPermission': 'Verify human approval before the owned marker write.',
                 })])
             else:
-                require(results['probe']['outcome'] == 'denied', 'The human denial did not reach the model')
+                require(results['probe']['status'] == 'denied', 'The human denial did not reach the model')
                 self._send_text('reviewer-failure-check-complete')
         except BaseException as error:
             state.record_failure(error)
@@ -309,7 +313,7 @@ class PreviousRunGuidanceProvider(fixture.MockProviderHandler):
                     'command': COMMAND, 'requestHostPermission': 'Attempt the owned marker write for this permission regression.',
                 })])
             elif ordinal == 4:
-                require(results['restricted']['outcome'] == 'denied', 'The delegated denial did not reach the model')
+                require(results['restricted']['status'] == 'denied', 'The delegated denial did not reach the model')
                 self._send_text('previous-run-guidance-review-complete')
             else:
                 raise AssertionError(f'Unexpected Provider request after prior-run guidance: {ordinal}')
@@ -508,7 +512,7 @@ class PlanProvider(fixture.MockProviderHandler):
                 if ordinal == 1:
                     self._send_tool_calls([('write', names['write'], {'path': 'result.txt', 'content': 'approved-plan-write'})])
                 else:
-                    require(results['write']['outcome'] == 'completed', results)
+                    require(results['write']['changed'] is True, results)
                     self._send_text('plan-mode-complete')
             elif ordinal == 1:
                 require('plan' in names, 'Enabled Plan tool was missing')
@@ -524,7 +528,7 @@ class PlanProvider(fixture.MockProviderHandler):
                 require(results['plan']['response']['kind'] == 'confirm', 'Write was requested before Plan confirmation')
                 self._send_tool_calls([('write', names['write'], {'path': 'result.txt', 'content': 'approved-plan-write'})])
             else:
-                require(results['write']['outcome'] == 'completed', results)
+                require(results['write']['changed'] is True, results)
                 self._send_text('plan-mode-complete')
         except BaseException as error:
             state.record_failure(error)

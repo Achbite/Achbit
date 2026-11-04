@@ -12,11 +12,9 @@ import type {
   ProviderToolDefinition,
   RunRuntimeSnapshot,
   SessionEvent,
-  ToolExecutionRecord,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import {
-  isManagedProcessSnapshot,
   LOCAL_AGENT_PROTOCOL_VERSION,
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
@@ -29,7 +27,8 @@ import {
 import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
 import { environmentInstruction } from './sessionEnvironment.js';
-import { permissionInstructionText } from './skillPlugins.js';
+import { permissionInstructionText, mountedSkillEntries } from './skillPlugins.js';
+import { managedJobFromRecord, processResult, rejectionContent, toolResultContent } from './modelToolResult.js';
 import { journalModelViews } from './modelView.js';
 import type {
   ContextMessageContribution, SessionToolStage,
@@ -40,7 +39,7 @@ import {
   encodeProviderMessage,
   providerMessageCodecsByCallId,
   providerFilesystemReferences,
-  providerWorkspaceBindings,
+  providerWorkspaceBindings, workspaceHandleMap,
   providerWireName,
   type ProviderToolCodec,
 } from './providerToolCodec.js';
@@ -157,7 +156,8 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     readScope,
   );
   const fixedViews = journalModelViews(modelViewEvents).contributions;
-  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
+  const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
+  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId);
   const canMutate = runtimeTools.some(tool => tool.possibleEffects.some(effect => effect === 'workspaceMutation' || effect === 'process' || effect === 'external'));
   const needsPermissionGuidance = canMutate && (planEnabled || input.runtime.planMode === 'manual'
     || toolCodec.canonicalByWire.has(controlNames.interactionRequest)
@@ -237,7 +237,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     message: { role: 'user', content: input.summaryInstruction },
   });
   assertContextContributions(selected);
-  const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
   const providerSelected = selected.map<ContextMessageContribution>((contribution) => ({
     ...contribution,
     message: fixedViews.has(contribution.contributionId)
@@ -311,7 +310,10 @@ export function messagesFromJournal(
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   modelViewEvents: readonly SessionEvent[] = events,
   includeReviewEvidence = false,
+  callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools'>>,
 ): ContextMessageContribution[] {
+  const handles = workspaceHandleMap(workspaceBindings);
+  const resultHandles = (callId: string) => callCodecs?.get(callId)?.workspaceHandleById ?? handles;
   if (!includeReviewEvidence) {
     // Reviewer reads belong to that independent review, not the working Agent's
     // transcript. Their ordinary Kernel records remain in the Session journal.
@@ -343,13 +345,12 @@ export function messagesFromJournal(
         continue;
       }
       // A result that wins the race to the next request supersedes an unseen review.
-      const { waitId, startedAt, reviewAt, jobIds } = item.payload;
+      const { jobIds } = item.payload;
       if (jobIds.some(id => deliveredProcessResults.has(id))) continue;
       messages.push({
         contributionId: `process-review:${item.eventId}`, contributionKind: 'journalMessages',
         sourceSequence: item.sequence, label: 'Dependency wait review',
         message: {role: 'user', content: JSON.stringify({
-          type: 'process.wait.review', waitId, waitingSince: startedAt, deadline: reviewAt,
           jobs: processReviewJobs(events, item),
         })},
       });
@@ -531,8 +532,7 @@ export function messagesFromJournal(
         contributionId: `interaction-pending:${event.payload.interactionId}`, contributionKind: 'journalMessages',
         sourceSequence: event.sequence,
         label: 'Question awaiting user', message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ interactionId: event.payload.interactionId, status: 'pending',
-            nextAction: 'Continue independent work without assuming an answer or repeating the question. When that work is complete, explain what awaits the user.' }) },
+          content: JSON.stringify({ interactionId: event.payload.interactionId, status: 'pending' }) },
       });
     } else if (event.type === 'interaction.resolved') {
       if (interactions.get(event.payload.interactionId)?.payload.mode === 'continue') continue;
@@ -653,14 +653,16 @@ export function messagesFromJournal(
         contributionId: `artifact-presentation:${event.callId}`, contributionKind: 'journalMessages', label: 'Artifacts presented',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ accepted: true, items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
+          content: JSON.stringify({ items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
     } else if (event.type === 'session.plugins.activated') {
       const prepared = events.find(candidate => candidate.type === 'run.tools.prepared'
         && candidate.runId === event.runId
         && candidate.payload.toolView.kernelCatalogSnapshotRef === event.payload.kernelCatalogSnapshotRef);
       if (prepared?.type !== 'run.tools.prepared') throw new LoopFailure('plugin_activation_tool_view_missing', 'Plugin activation has no matching execution tool view.');
-      const activatedTools = prepared.payload.toolView.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
+      const view = prepared.payload.toolView;
+      const activatedTools = view.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
+      const skillEntries = mountedSkillEntries(view.selectedPlugins.plugins.filter(plugin => event.payload.pluginUris.includes(plugin.uri)), view.tools);
 
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
@@ -670,7 +672,8 @@ export function messagesFromJournal(
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })) }) },
+          content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })),
+            ...(skillEntries.length ? { skillEntries } : {}) }) },
       });
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;
@@ -718,7 +721,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ accepted: false, executed: false, error: event.payload.error }),
+          content: rejectionContent(event.payload.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'control'),
         },
       });
     } else if (event.type === 'tool.requested') {
@@ -738,7 +741,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({ status: 'inputRejected', executed: false, error: event.payload.rejection.error }),
+          content: rejectionContent(event.payload.rejection.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'input'),
         },
       });
     } else if (event.type === 'tool.not-executed') {
@@ -746,8 +749,7 @@ export function messagesFromJournal(
         contributionId: `tool-result:${event.callId}`, contributionKind: 'journalMessages', label: 'Tool not executed',
         message: { role: 'tool', toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason,
-            ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) }) },
+          content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason }) },
       });
     } else if (event.type === 'tool.interrupted') {
       messages.push({
@@ -758,7 +760,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({ status: 'indeterminate', error: event.payload.error }),
+          content: rejectionContent(event.payload.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'indeterminate'),
         },
       });
     } else if (event.type === 'tool.completed') {
@@ -771,11 +773,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({
-            ...toolResultForModel(event.payload.record),
-            ...(approval ? { approval: { decision: approval.decision, scope: approval.authorizationScope ?? 'call',
-              ...(approval.reason ? { reason: approval.reason } : {}) } } : {}),
-          }),
+          content: toolResultContent(event.payload.record, approval, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools),
         },
       });
     } else if (event.type === 'process.updated') {
@@ -784,7 +782,7 @@ export function messagesFromJournal(
         pendingProcessUpdates.set(job.jobId, {
           contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
           sourceSequence: event.sequence, label: 'Managed process result',
-          message: { role: 'user', content: JSON.stringify({type: 'process.updated', process: processContext(job)}) },
+          message: { role: 'user', content: JSON.stringify({ process: processResult(job, 'notification') }) },
         });
       }
     } else if (event.type === 'process.wait.changed' && event.payload.phase === 'review') {
@@ -828,7 +826,7 @@ export function messagesFromJournal(
               role: 'tool',
               toolCallId: call.callId,
               providerCallId: call.providerCallId,
-              content: JSON.stringify({ status: 'inputRejected', executed: false, error: call.error }),
+              content: rejectionContent(call.error, resultHandles(call.callId), callCodecs?.get(call.callId)?.codingTools, 'input'),
             },
           });
         }
@@ -858,7 +856,7 @@ export function messagesFromJournal(
               role: 'tool',
               toolCallId: block.callId,
               providerCallId: block.providerCallId,
-              content: JSON.stringify({ status: 'inputRejected', executed: false, error: block.error }),
+              content: rejectionContent(block.error, resultHandles(block.callId), callCodecs?.get(block.callId)?.codingTools, 'input'),
             },
           });
         }
@@ -1372,119 +1370,17 @@ function messageContentForModel(
   workspaceBindings: readonly WorkspaceBindingDisplay[],
 ): string {
   const sections = [payload.content];
-  if (payload.guidanceReferences?.length) sections.push(`Explicit guidance references for this message. Read relevant supplied content using the named registered tool; these references do not activate an execution plugin:\n${JSON.stringify(payload.guidanceReferences)}`);
+  if (payload.guidanceReferences?.length) sections.push(`Explicit guidance references for this message. Read relevant supplied content using the named tool:\n${JSON.stringify(payload.guidanceReferences)}`);
   if (payload.filesystemReferences?.length) {
-    if (payload.filesystemReferences.some((reference) => reference.kind === 'file' && reference.source === 'pastedText')) {
-      sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request.');
+    const references = payload.filesystemReferences;
+    if (references.some(reference => reference.kind === 'file' && reference.source === 'pastedText')) {
+      sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request. Pasted text snapshots are read-only.');
     }
-    sections.push(`User-attached resources. For work on an attached project, pass its workspace handle on every project call. Handles identify original locations and grant no access. Pasted text snapshots are read-only. Image referenceIds identify supplied visual inputs.\n${JSON.stringify(
-      providerFilesystemReferences(payload.filesystemReferences, workspaceBindings),
-    )}`);
+    const directoryHint = references.some(reference => reference.kind === 'directory')
+      ? ' For work on an attached project, pass its workspace handle on every project call.' : '';
+    sections.push(`User-attached resources.${directoryHint}\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
   }
   return sections.join('\n\n');
-}
-
-function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown> {
-  if (record.outcome === 'completed') {
-    const output = toolOutputForModel(record, record.output);
-    return { recordId: record.recordId, outcome: record.outcome, output };
-  }
-  if (record.outcome === 'cancelled') {
-    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
-    return { recordId: record.recordId, outcome: record.outcome, ...(output === undefined ? {} : { output }) };
-  }
-  if (record.outcome === 'failed') {
-    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
-    return {
-      recordId: record.recordId,
-      outcome: record.outcome,
-      ...(output === undefined ? {} : { output }),
-      error: record.error,
-    };
-  }
-  if (record.outcome === 'indeterminate') {
-    return { outcome: record.outcome, error: record.error };
-  }
-  return {
-    outcome: record.outcome,
-    ...('error' in record && record.error ? { error: record.error } : {}),
-  };
-}
-
-/** Project only known first-party storage fields; extension business output is opaque. */
-function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknown {
-  const output = structuredClone(value);
-  if (!isRecord(output)) return output;
-  const job = managedJobFromRecord(record);
-  if (job?.status === 'active' && !(record.toolName === 'process' && record.input.action === 'status')) {
-    // The tool call already names the command. Starting or waiting only needs its handle.
-    output.job = { jobId: job.jobId, status: job.status, startedAt: job.startedAt };
-  }
-  if (record.preparedEffect.origin === 'coreBuiltin' && record.outcome === 'completed') {
-    if (record.toolName === 'fs.read' && output.binary === false && output.truncated === false
-      && output.startByte === 0 && typeof output.content === 'string') {
-      // A complete text file has no continuation. Keep its identity, lines and file attributes.
-      for (const key of ['maxBytes', 'maxLines', 'startByte', 'endByte', 'sizeBytes', 'binary', 'byteTruncated']) delete output[key];
-      if (isRecord(output.fileClassification)) {
-        const { kind, executable } = output.fileClassification;
-        output.fileClassification = { kind, executable };
-      }
-    }
-    if (record.toolName === 'fs.write' || record.toolName === 'fs.edit') {
-      if (Array.isArray(output.fileChanges)) output.changed = output.fileChanges.length > 0;
-      // The exact replacements are in the call. The diff and byte ranges belong to the journal.
-      delete output.editPreview;
-      delete output.changedRanges;
-    }
-  }
-  if (['fs.write', 'fs.edit', 'fs.delete', 'bash', 'powershell', 'container', 'document.render', 'browser.capture'].includes(record.toolName)) {
-    delete output.fileChanges;
-  }
-  if (['artifact.prepare', 'artifact.preview', 'document.render', 'browser.capture', 'browser.observe', 'computer.control'].includes(record.toolName)
-    && Array.isArray(output.artifacts)) {
-    const archivedPaths = new Set<string>();
-    for (const artifact of output.artifacts) {
-      if (!isRecord(artifact) || typeof artifact.artifactId !== 'string'
-        || artifact.uri !== `artifact://${artifact.artifactId}` || typeof artifact.contentRef !== 'string') continue;
-      archivedPaths.add(artifact.contentRef);
-      delete artifact.contentRef;
-    }
-    if (typeof output.contentRef === 'string' && archivedPaths.has(output.contentRef)) delete output.contentRef;
-  }
-  if ((record.toolName === 'web.search' || record.toolName === 'web.fetch') && isRecord(output.archive)) {
-    delete output.archive.timelinePath;
-    if (Object.keys(output.archive).length === 0) delete output.archive;
-  }
-  if (record.toolName === 'bash' || record.toolName === 'powershell') {
-    stripShellDiagnostics(output, record.input.command, record.outcome === 'completed');
-  }
-  if (record.toolName === 'computer.control' && record.input.action !== 'status'
-    && isRecord(output.diagnostics) && isRecord(output.diagnostics.native)) {
-    delete output.diagnostics.native.executor;
-  }
-  return output;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function stripShellDiagnostics(output: Record<string, unknown>, command: unknown, completeResult: boolean): void {
-  if (output.command === command) delete output.command;
-  if (completeResult && output.truncated === false) delete output.fullOutput;
-  if (isRecord(output.environment) && typeof output.environment.writeScope === 'string') {
-    output.writeScope = output.environment.writeScope;
-  }
-  delete output.environment;
-  delete output.paths;
-  delete output.workspaceMode;
-  delete output.capturedBytes;
-}
-
-function managedJobFromRecord(record: ToolExecutionRecord): ManagedProcessSnapshot | undefined {
-  if (record.outcome !== 'completed' || !['bash', 'powershell', 'container', 'process'].includes(record.toolName)) return;
-  const job = isRecord(record.output) ? record.output.job : undefined;
-  return isManagedProcessSnapshot(job) ? job : undefined;
 }
 
 function processReviewJobs(events: readonly SessionEvent[], review: Extract<SessionEvent, {type: 'process.wait.changed'}>) {
@@ -1501,22 +1397,6 @@ function processReviewJobs(events: readonly SessionEvent[], review: Extract<Sess
   return review.payload.jobIds.map(id => {
     const job = latest.get(id);
     if (!job) throw new LoopFailure('process_review_job_missing', 'Dependency review is missing its recorded job.');
-    return processContext(job);
+    return processResult(job, 'notification');
   });
-}
-
-function processContext(job: ManagedProcessSnapshot): unknown {
-  // Bound each appended snapshot; the complete output remains in Kernel storage.
-  const { result, output } = job;
-  const truncated = output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000;
-  const details = isRecord(result) ? { ...result } : result;
-  if (isRecord(details)) {
-    delete details.stdout; delete details.stderr;
-    if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details, job.command, job.status === 'completed' && !truncated);
-  }
-  return { jobId: job.jobId, command: job.command, status: job.status, startedAt: job.startedAt,
-    ...(job.lastOutputAt ? {lastOutputAt: job.lastOutputAt} : {}), ...(job.completedAt ? {completedAt: job.completedAt} : {}),
-    ...(job.error ? { error: job.error } : {}),
-    output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000), truncated },
-    ...(details !== undefined ? { result: details } : {}) };
 }
