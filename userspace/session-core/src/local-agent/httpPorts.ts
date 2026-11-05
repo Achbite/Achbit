@@ -730,11 +730,12 @@ function decodeSelectedPluginSnapshot(
     };
   });
   const requested = request.pluginSelections ?? [];
+  const admitted = new Set([...requested, ...(request.inheritedPluginSelections ?? [])].map(selection => selection.uri));
   if (
-    requested.length > 0
+    admitted.size > 0
     && (
-      (!request.refreshPlugins && (requested.length !== plugins.length || requested.some((selection) => !seen.has(selection.uri))))
-      || plugins.some((plugin) => !requested.some(selection=>selection.uri===plugin.uri))
+      (!request.refreshPlugins && requested.some(selection => !seen.has(selection.uri)))
+      || plugins.some(plugin => !admitted.has(plugin.uri))
     )
   ) throw new Error('selected_plugin_snapshot_identity_mismatch');
   return {

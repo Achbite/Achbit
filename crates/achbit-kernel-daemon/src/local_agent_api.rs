@@ -148,12 +148,17 @@ impl LocalAgentRuntime {
                     "子 Agent 不绑定 GUI Host 或父会话桌面。",
                 ));
             }
-            if request.plugin_selections.iter().any(|selection| {
-                !crate::local_agent_plugins::plugin_allowed_for_session(
-                    &selection.uri,
-                    agent_context.is_some(),
-                )
-            }) {
+            if request
+                .plugin_selections
+                .iter()
+                .chain(&request.inherited_plugin_selections)
+                .any(|selection| {
+                    !crate::local_agent_plugins::plugin_allowed_for_session(
+                        &selection.uri,
+                        agent_context.is_some(),
+                    )
+                })
+            {
                 return Err(RunPreparationError::new(
                     "agent_computer_use_forbidden",
                     "子 Agent 不支持 Computer Use。",
@@ -212,7 +217,10 @@ impl LocalAgentRuntime {
                     )
                 });
         }
-        if !recipe.tools.plugins && !request.plugin_selections.is_empty() {
+        if !recipe.tools.plugins
+            && (!request.plugin_selections.is_empty()
+                || !request.inherited_plugin_selections.is_empty())
+        {
             return Err(RunPreparationError::new(
                 "agent_tools_not_grantable",
                 "This task does not admit plugin activation.",
@@ -222,6 +230,7 @@ impl LocalAgentRuntime {
             settings,
             &mut request.plugin_selections,
             request.refresh_plugins,
+            &request.inherited_plugin_selections,
         )
         .map_err(|message| {
             RunPreparationError::new("extension_snapshot_prepare_failed", message)
@@ -1008,6 +1017,8 @@ pub(crate) struct PrepareRunRuntimeRequest {
     refresh_plugins: bool,
     #[serde(default)]
     plugin_selections: Vec<crate::local_agent_plugins::PluginSelectionInput>,
+    #[serde(default)]
+    inherited_plugin_selections: Vec<crate::local_agent_plugins::PluginSelectionInput>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

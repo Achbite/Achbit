@@ -866,6 +866,11 @@ export class SessionActor {
       sessionId: this.sessionId,
       runId,
       previousProviderToolAliases: previousView?.providerToolAliases,
+      ...(previousView?.selectedPlugins.plugins.length ? {
+        inheritedPluginSelections: previousView.selectedPlugins.plugins.map(plugin => ({
+          selectionId: this.#nextId('plugin-selection'), uri: plugin.uri, label: plugin.uri.slice(0, 160),
+        })),
+      } : {}),
       environment: savedSessionEnvironment(before.events),
       ...(command.hostBinding ? { hostBinding: { ...command.hostBinding } } : {}),
       ...(profileId ? { profileId } : {}),

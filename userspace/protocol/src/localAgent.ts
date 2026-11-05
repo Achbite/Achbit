@@ -2103,6 +2103,8 @@ export interface PrepareRunRuntimeRequest {
   runId: string;
   profileId?: string;
   reasoningEffortOverride?: LlmReasoningEffort;
+  /** Session-active plugins from the preceding Loop; current disabled/removed sources withdraw. */
+  inheritedPluginSelections?: PluginSelectionInput[];
   pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
 }

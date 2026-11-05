@@ -377,8 +377,9 @@ pub(crate) fn resolve_plugin_selection(
     settings: &Value,
     selections: &mut Vec<PluginSelectionInput>,
     refresh: bool,
+    inherited: &[PluginSelectionInput],
 ) -> Result<ResolvedPluginSelection, String> {
-    if selections.is_empty() {
+    if selections.is_empty() && inherited.is_empty() {
         return Ok(ResolvedPluginSelection {
             catalog_revision: "plugin-catalog:empty".into(),
             plugins: Vec::new(),
@@ -393,6 +394,17 @@ pub(crate) fn resolve_plugin_selection(
                 .get(&selection.uri)
                 .is_some_and(|entry| entry.public().enabled)
         });
+    }
+    for selection in inherited {
+        if !selections
+            .iter()
+            .any(|explicit| explicit.uri == selection.uri)
+            && sources
+                .get(&selection.uri)
+                .is_some_and(|entry| entry.public().enabled)
+        {
+            selections.push(selection.clone());
+        }
     }
     let mut selection_ids = BTreeSet::new();
     let mut uris = BTreeSet::new();
@@ -1055,10 +1067,12 @@ mod tests {
             uri: SESSION_DIAGNOSTICS_URI.into(),
             label: "Diagnostics".into(),
         }];
-        assert!(resolve_plugin_selection(&settings, &mut selections, false)
-            .unwrap()
-            .diagnostics_instance()
-            .is_some());
+        assert!(
+            resolve_plugin_selection(&settings, &mut selections, false, &[])
+                .unwrap()
+                .diagnostics_instance()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1083,7 +1097,7 @@ mod tests {
             uri: "plugin://computer-use@builtin".into(),
             label: "Computer Use".into(),
         }];
-        let selected = resolve_plugin_selection(&json!({}), &mut selections, false).unwrap();
+        let selected = resolve_plugin_selection(&json!({}), &mut selections, false, &[]).unwrap();
         assert!(selected.computer_use_instance().is_some());
         assert!(selected
             .mcp_sources
@@ -1092,7 +1106,8 @@ mod tests {
         assert!(resolve_plugin_selection(
             &json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"}),
             &mut selections,
-            false
+            false,
+            &[]
         )
         .is_err());
         let disabled = json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"});
@@ -1109,10 +1124,12 @@ mod tests {
             .find(|plugin| plugin["uri"] == "plugin://computer-use@builtin")
             .unwrap();
         assert_eq!(item["enabled"], false);
-        assert!(resolve_plugin_selection(&json!({}), &mut vec![], false)
-            .unwrap()
-            .computer_use_instance()
-            .is_none());
+        assert!(
+            resolve_plugin_selection(&json!({}), &mut vec![], false, &[])
+                .unwrap()
+                .computer_use_instance()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1133,11 +1150,69 @@ mod tests {
     }
 
     #[test]
+    fn inherited_plugins_use_current_registration_and_keep_explicit_selection_errors() {
+        let selection = |id: &str, uri: &str| PluginSelectionInput {
+            selection_id: id.into(),
+            uri: uri.into(),
+            label: uri.into(),
+        };
+        let computer = "plugin://computer-use@builtin";
+        let documents = "plugin://documents@builtin";
+        let containers = "plugin://containers@builtin";
+        let inherited = vec![
+            selection("old:computer", computer),
+            selection("old:documents", documents),
+            selection("old:removed", "plugin://removed@local"),
+        ];
+        let settings = json!({"plugins.disabled": format!("[\"{documents}\"]")});
+        let mut explicit = vec![
+            selection("new:computer", computer),
+            selection("new:containers", containers),
+        ];
+        let selected =
+            resolve_plugin_selection(&settings, &mut explicit, false, &inherited).unwrap();
+        assert_eq!(explicit.len(), 2);
+        assert_eq!(explicit[0].selection_id, "new:computer");
+        assert_eq!(
+            selected
+                .plugins
+                .iter()
+                .map(|plugin| plugin.public.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec![computer, containers]
+        );
+        let next = resolve_plugin_selection(&settings, &mut vec![], false, &inherited).unwrap();
+        assert_eq!(next.plugins.len(), 1);
+        assert_ne!(
+            selected.computer_use_instance(),
+            next.computer_use_instance(),
+            "inheriting activation must prepare a new plugin instance"
+        );
+        assert!(resolve_plugin_selection(
+            &settings,
+            &mut vec![selection("new:disabled", documents)],
+            false,
+            &inherited
+        )
+        .unwrap_err()
+        .starts_with("plugin_selection_disabled:"));
+        assert!(resolve_plugin_selection(
+            &settings,
+            &mut vec![selection("new:missing", "plugin://removed@local")],
+            false,
+            &inherited
+        )
+        .unwrap_err()
+        .starts_with("plugin_selection_unavailable:"));
+    }
+
+    #[test]
     fn empty_selection_does_not_load_the_plugin_catalog() {
         let selected = resolve_plugin_selection(
             &json!({"skills.mounts":"not JSON", "mcp.servers":"not JSON"}),
             &mut vec![],
             false,
+            &[],
         )
         .unwrap();
         assert!(selected.plugins.is_empty());
@@ -1229,7 +1304,8 @@ mod tests {
                 inspected["description"]
             );
             let selected =
-                resolve_plugin_selection(&settings, &mut vec![selection(listed)], false).unwrap();
+                resolve_plugin_selection(&settings, &mut vec![selection(listed)], false, &[])
+                    .unwrap();
             let config = local_agent_plugin_config(&settings, &selected).unwrap();
             assert_eq!(
                 config["selectedPlugins"][0]["displayName"],
@@ -1241,7 +1317,7 @@ mod tests {
             );
         }
         let selected =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
+            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
         assert_eq!(selected.plugins.len(), 1);
         assert_eq!(selected.plugins[0].public.uri, good["uri"]);
 
@@ -1261,12 +1337,12 @@ mod tests {
         assert_eq!(found["plugins"], json!([]));
         assert!(found["nextOffset"].is_null());
         let rejected =
-            resolve_plugin_selection(&settings, &mut vec![selection(bad)], false).unwrap_err();
+            resolve_plugin_selection(&settings, &mut vec![selection(bad)], false, &[]).unwrap_err();
         assert!(rejected.contains(&original_error));
 
         fs::write(&unreadable, "# Repaired Skill\nAn unrelated skill changed.").unwrap();
         let selected_after_unrelated_change =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
+            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
         assert_eq!(
             selected_after_unrelated_change.plugins[0].capability_summary,
             selected.plugins[0].capability_summary
@@ -1278,7 +1354,7 @@ mod tests {
         );
         fs::write(directory.0.join("good/SKILL.md"), &revised_instructions).unwrap();
         let selected_after_content_change =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
+            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
         assert_eq!(
             selected_after_content_change.plugins[0].capability_summary,
             revised_instructions
@@ -1293,7 +1369,7 @@ mod tests {
         assert_eq!(disabled["available"], false);
         assert!(disabled.get("error").is_none());
         assert!(
-            resolve_plugin_selection(&settings, &mut vec![selection(disabled)], false)
+            resolve_plugin_selection(&settings, &mut vec![selection(disabled)], false, &[])
                 .unwrap_err()
                 .starts_with("plugin_selection_disabled:")
         );

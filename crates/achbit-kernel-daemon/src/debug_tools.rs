@@ -145,8 +145,12 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         .transpose()
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let plugins =
-        crate::local_agent_plugins::resolve_plugin_selection(&settings, &mut selections, false)?;
+    let plugins = crate::local_agent_plugins::resolve_plugin_selection(
+        &settings,
+        &mut selections,
+        false,
+        &[],
+    )?;
     let environment = crate::session_environment::prepare(&settings, None, false)?;
     config.shell_program =
         serde_json::from_value(environment["shell"].clone()).map_err(|e| e.to_string())?;
