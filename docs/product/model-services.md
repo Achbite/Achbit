@@ -22,7 +22,7 @@ TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects direc
 
 ## Configure through the CLI
 
-The configuration CLI uses Host execution under the current permission policy. The `achbit.product-operations` component supplies its executable and `hostDataDirectory` in the active Shell tool after the product or iteration Skill is selected or read. Both paths follow Host permissions. If the session disables Host execution, this CLI is unavailable in that session. `--host-data-dir` attaches to that existing Host and never starts another instance. It overrides inherited ACHBIT_API_URL/ACHBIT_PORT and selects the actual Host data directory even when Shell HOME is task-local. `ACHBIT_USER_ROOT` remains the way to start/select an independent instance outside a task.
+The configuration CLI uses Host execution under the current permission policy. The `achbit.product-operations` component supplies its executable and `hostDataDirectory` with the originating selection message or successful activation/read result for the product or iteration Skill. These resources remain in the sent conversation history without changing the Shell tool declaration. Both paths follow Host permissions. If the session disables Host execution, this CLI is unavailable in that session. `--host-data-dir` attaches to that existing Host and never starts another instance. It overrides inherited ACHBIT_API_URL/ACHBIT_PORT and selects the actual Host data directory even when Shell HOME is task-local. `ACHBIT_USER_ROOT` remains the way to start/select an independent instance outside a task.
 
 ```sh
 "/absolute/path/achbit-cli" --host-data-dir "/actual/instance/data" instance
