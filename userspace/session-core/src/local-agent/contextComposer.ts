@@ -120,12 +120,10 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     : [];
   const controlTools = activeSessionControls(input.runtime, input.events, input.toolStage, input.optionalControlTools, hasWorkspaceBindings, hasPluginDiscovery);
   const productUsage = input.toolGuidance?.flatMap(contribute => contribute({ runtime: input.runtime, runId: input.runId, events: input.events, tools: runtimeTools })) ?? [];
-  const skillEntries = mountedSkillEntries(input.runtime.selectedPlugins.plugins, runtimeTools);
-  if (skillEntries.length) productUsage.push({ toolName: 'fs.read', text: `Selected Skill files (read on demand): ${JSON.stringify(skillEntries)}` });
   const shellView = hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings);
   const toolCodec = createProviderToolCodec(
     applyToolGuidance(input.runtime.codingTools ? codingToolView(shellView) : shellView,
-      input.runtime.toolPromptContributions, surface.tools, productUsage),
+      input.runtime.toolPromptContributions, surface.tools, productUsage.filter(usage => !usage.contributionId)),
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
@@ -134,7 +132,28 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   );
   const fixedViews = journalModelViews(modelViewEvents).contributions;
   const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
-  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId);
+  const resourceGuidance = new Map<string, string>();
+  for (const usage of productUsage) {
+    if (!usage.contributionId) continue;
+    const previous = resourceGuidance.get(usage.contributionId);
+    resourceGuidance.set(usage.contributionId, [...new Set([previous, usage.text].filter(Boolean))].join('\n\n'));
+  }
+  const inputRuntimes = new Map(input.events.flatMap(event => event.type === 'run.started'
+    ? [[event.payload.inputMessageId, event.payload.runtimeSnapshot] as const] : []));
+  for (const event of input.events) {
+    if (event.type !== 'message.committed' || event.payload.role !== 'user') continue;
+    const initial = inputRuntimes.get(event.payload.messageId);
+    const selected = initial?.selectedPlugins.plugins ?? input.runtime.selectedPlugins.plugins.filter(plugin =>
+      event.payload.pluginSelections?.some(selection => selection.uri === plugin.uri));
+    const entries = mountedSkillEntries(selected, runtimeTools);
+    if (!entries.length) continue;
+    const contributionId = `message:${event.payload.messageId}`;
+    resourceGuidance.set(contributionId, [
+      `Selected Skill files (read on demand): ${JSON.stringify(entries)}`,
+      resourceGuidance.get(contributionId),
+    ].filter(Boolean).join('\n\n'));
+  }
+  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId, resourceGuidance);
   const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
   const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
   const primaryId = input.workspaceBindings[0]?.workspaceId;
@@ -294,6 +313,7 @@ export function messagesFromJournal(
   modelViewEvents: readonly SessionEvent[] = events,
   includeReviewEvidence = false,
   callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools'>>,
+  resourceGuidance: ReadonlyMap<string, string> = new Map(),
 ): ContextMessageContribution[] {
   const handles = workspaceHandleMap(workspaceBindings);
   const resultHandles = (callId: string) => callCodecs?.get(callId)?.workspaceHandleById ?? handles;
@@ -480,7 +500,7 @@ export function messagesFromJournal(
           content: (() => {
             const reply = repliesByMessage.get(event.payload.messageId);
             const question = reply && interactions.get(reply.interactionId);
-            const content = messageContentForModel(event.payload, messageBindings);
+            const content = messageContentForModel(event.payload, messageBindings, resourceGuidance.get(`message:${event.payload.messageId}`));
             return question?.payload.mode === 'continue'
               ? `User response to question ${reply!.interactionId}: ${question.payload.prompt}\n\n${content}` : content;
           })(),
@@ -635,6 +655,7 @@ export function messagesFromJournal(
       const view = prepared.payload.toolView;
       const activatedTools = view.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
       const skillEntries = mountedSkillEntries(view.selectedPlugins.plugins.filter(plugin => event.payload.pluginUris.includes(plugin.uri)), view.tools);
+      const guidance = resourceGuidance.get(`plugin-activation:${event.callId}`);
 
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
@@ -645,7 +666,7 @@ export function messagesFromJournal(
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })),
-            ...(skillEntries.length ? { skillEntries } : {}) }) },
+            ...(skillEntries.length ? { skillEntries } : {}), ...(guidance ? { guidance } : {}) }) },
       });
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;
@@ -745,7 +766,8 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: toolResultContent(event.payload.record, approval, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools),
+          content: toolResultContent(event.payload.record, approval, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools,
+            resourceGuidance.get(`tool-result:${event.callId}`)),
         },
       });
     } else if (event.type === 'process.updated') {
@@ -1340,6 +1362,7 @@ const CONTEXT_MESSAGE_KINDS: readonly ContextCompositionMessage['contributionKin
 function messageContentForModel(
   payload: Extract<SessionEvent, { type: 'message.committed' }>['payload'],
   workspaceBindings: readonly WorkspaceBindingDisplay[],
+  guidance?: string,
 ): string {
   const sections = [payload.content];
   if (payload.guidanceReferences?.length) sections.push(`Explicit guidance references for this message. Read relevant supplied content using the named tool:\n${JSON.stringify(payload.guidanceReferences)}`);
@@ -1352,6 +1375,7 @@ function messageContentForModel(
       ? ' For work on an attached project, pass its workspace handle on every project call.' : '';
     sections.push(`User-attached resources.${directoryHint}\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
   }
+  if (guidance) sections.push(guidance);
   return sections.join('\n\n');
 }
 

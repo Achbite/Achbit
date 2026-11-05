@@ -1,3 +1,4 @@
+import type { SessionEvent } from '@achbit/protocol';
 import type { ProductEnvironmentInstructions, SessionProductComponent } from './sessionConfiguration.js';
 
 import { decodeSessionEnvironment } from './sessionEnvironment.js';
@@ -24,22 +25,31 @@ Achbit reference for questions about the product, its tools or its extension int
 const productShellGuidance: ToolGuidanceContributor = ({ runtime, events, runId, tools }) => {
   const shells = tools.filter(tool => tool.origin === 'coreBuiltin' && (tool.name === 'bash' || tool.name === 'powershell'));
   if (!shells.length) return [];
-  const selected = runtime.selectedPlugins.plugins.some(plugin => operationsPlugins.has(plugin.uri));
-  if (!selected) {
-    const start = events.find(event => event.type === 'run.started' && event.runId === runId);
-    const inputMessageId = start?.type === 'run.started' ? start.payload.inputMessageId : undefined;
-    const used = events.some(event => {
-      if (event.type === 'message.committed' && event.payload.role === 'user'
-        && (event.runId === runId || inputMessageId !== undefined && event.payload.messageId === inputMessageId)) {
-        return event.payload.guidanceReferences?.some(ref => ref.toolName === 'skill.read' && operationsSkills.has(ref.name));
-      }
-      if (event.type !== 'tool.completed' || event.runId !== runId) return false;
-      const { record } = event.payload;
-      return record.preparedEffect.origin === 'coreBuiltin' && record.toolName === 'skill.read'
-        && record.outcome === 'completed' && typeof record.input.name === 'string' && operationsSkills.has(record.input.name);
-    });
-    if (!used) return [];
-  }
+  const start = events.find(event => event.type === 'run.started' && event.runId === runId);
+  const inputMessageId = start?.type === 'run.started' ? start.payload.inputMessageId : undefined;
+  const initiallySelected = start?.type === 'run.started'
+    && start.payload.runtimeSnapshot.selectedPlugins.plugins.some(plugin => operationsPlugins.has(plugin.uri));
+  const source = events.findLast((event): event is Extract<SessionEvent, { type: 'message.committed' | 'session.plugins.activated' | 'tool.completed' }> => {
+    if (event.type === 'message.committed' && event.payload.role === 'user'
+      && (event.runId === runId || event.payload.messageId === inputMessageId)) {
+      return Boolean(initiallySelected && event.payload.messageId === inputMessageId
+        || event.payload.pluginSelections?.some(plugin => operationsPlugins.has(plugin.uri))
+        || event.payload.guidanceReferences?.some(ref => ref.toolName === 'skill.read' && operationsSkills.has(ref.name)));
+    }
+    if (!('runId' in event) || event.runId !== runId) return false;
+    if (event.type === 'session.plugins.activated') {
+      return event.payload.pluginUris.some(uri => operationsPlugins.has(uri));
+    }
+    if (event.type !== 'tool.completed') return false;
+    const { record } = event.payload;
+    return record.preparedEffect.origin === 'coreBuiltin' && record.toolName === 'skill.read'
+      && record.outcome === 'completed' && typeof record.input.name === 'string' && operationsSkills.has(record.input.name);
+  });
+  if (!source) return [];
+  const contributionId = source.type === 'message.committed'
+    ? `message:${source.payload.messageId}`
+    : source.type === 'session.plugins.activated'
+      ? `plugin-activation:${source.callId}` : `tool-result:${source.callId}`;
 
   const { data, hostExecutionAllowed } = decodeSessionEnvironment(runtime.environment);
   const cli = (data.runtimeExecutables as Record<string, unknown> | undefined)?.cli;
@@ -52,7 +62,7 @@ const productShellGuidance: ToolGuidanceContributor = ({ runtime, events, runId,
   };
   const text = `Achbit product resources: ${JSON.stringify(resources)}.`
     + (hasCli ? ' Run achbitCli on the Host with --host-data-dir hostDataDirectory.' : '');
-  return shells.map(tool => ({ toolName: tool.name, text }));
+  return shells.map(tool => ({ toolName: tool.name, text, contributionId }));
 };
 
 /** Installed by the Achbit product. The standalone Session registry has no product defaults. */

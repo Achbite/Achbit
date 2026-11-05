@@ -134,6 +134,8 @@ function assertPromptBinding(tool: PreparedToolDescriptor, contribution: Prepare
 export interface ToolUsage {
   toolName: string;
   text: string;
+  /** On-demand resources belong to their originating journal message or tool result. */
+  contributionId?: string;
 }
 
 /** A product component can describe an active tool; it cannot add a tool or change its inputs. */

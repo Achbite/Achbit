@@ -171,7 +171,7 @@ function body(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
-export function toolResultContent(record: ToolExecutionRecord, approval: Approval | undefined, handles: Handles, codingTools = false): string {
+export function toolResultContent(record: ToolExecutionRecord, approval: Approval | undefined, handles: Handles, codingTools = false, guidance?: string): string {
   if (codingTools && !approval) {
     const text = codingToolText(record);
     if (text !== undefined) return text;
@@ -179,7 +179,9 @@ export function toolResultContent(record: ToolExecutionRecord, approval: Approva
   const output = 'output' in record && record.output !== undefined ? outputForModel(record, record.output, handles) : undefined;
   const grant = approval?.decision === 'allow' && approval.authorizationScope ? { grantedScope: approval.authorizationScope } : undefined;
   if (record.outcome === 'completed') {
-    if (grant) return body({ result: output, ...grant });
+    if (grant) return body({ result: output, ...grant, ...(guidance ? { guidance } : {}) });
+    if (guidance) return typeof output === 'string'
+      ? `${output}\n\n${guidance}` : body({ result: output, guidance });
     return body(output);
   }
   const error = 'error' in record && record.error ? toolError(record.error, handles) : undefined;
