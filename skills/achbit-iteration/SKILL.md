@@ -20,6 +20,12 @@ Session owns the Agent Loop and conversation state; Kernel owns tools, permissio
 
 Obtain the user's approval before adding any model-callable tool, including a Kernel tool. First reuse existing tools, CLI commands, Shell or Skills. Keep the tool set small: shell commands can search and read the bundled documentation directory. Dedicated Kernel tools for writes, edits and network search exist to enforce permission gates and record execution facts, not to wrap every shell operation. When proposing a tool, explain the concrete capability gap, necessary responsibility and permission boundary before implementation.
 
+## Align interfaces during iteration
+
+For tools, plugins, CLI/Debug and Provider-facing interfaces, trace the declaration, input adapter, permission check, executor and returned result together. Compare the relevant local PI implementation when available: keep one execution path for single and multiple calls, and normalize unambiguous equivalent inputs at the boundary. Preserve the original request and errors; permissions, exact targets and effect boundaries still apply. Serialization belongs to the runtime where needed, rather than extra model formatting rules.
+
+Write positive, clear descriptions of capabilities, inputs, outputs and meaningful limits. Include necessary detail without optimizing for word count. Keep discovery, activation, permission, execution and verified completion distinct. PATH discovery establishes a command location; sandbox dependencies and service readiness need evidence from that execution environment. Check the actual packaged entrypoint as well as source, and record unverified interfaces explicitly.
+
 ## Verify only what changed
 
 Use the project's container for dependencies, ordinary builds and tests. Keep native packaging within the authorized platform scope. Debug uses its own workspace and state root; leave the ordinary product alone.
