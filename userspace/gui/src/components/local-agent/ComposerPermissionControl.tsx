@@ -2,6 +2,7 @@ import React, { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { permissionSettings } from '@achbit/protocol';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { CloseButton, IconButton, PanelHeader } from '../../ui-components';
 import { settingText, t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -100,11 +101,11 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
           if (options.length) { event.preventDefault(); options[(index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length].focus(); }
         }
       }}>
-      <header className="local-agent__permission-heading">
-        {page && <button {...identity.action('back', 'click')} type="button" aria-label={t(language, 'agent.permission.back')} onClick={back}><AchbitShellIcon name="chevronLeft" /></button>}
+      <PanelHeader className="local-agent__permission-heading">
+        {page && <IconButton {...identity.action('back', 'click')} icon="chevronLeft" aria-label={t(language, 'agent.permission.back')} onClick={back} />}
         <strong>{t(language, heading)}</strong>
-        <button {...identity.action('close', 'click')} type="button" aria-label={t(language, 'agent.permission.close')} onClick={close}><AchbitShellIcon name="close" /></button>
-      </header>
+        <CloseButton {...identity.action('close', 'click')} aria-label={t(language, 'agent.permission.close')} onClick={close} />
+      </PanelHeader>
       {page === 'grants' ? <div className="local-agent__permission-grants">
         {grants.map(grant => <div key={grant.authorityId}>
           <span title={grant.summary}>{grant.scope === 'runHostShell' || grant.scope === 'sessionHostShell' ? t(language, `agent.permission.scope.${grant.scope}`)

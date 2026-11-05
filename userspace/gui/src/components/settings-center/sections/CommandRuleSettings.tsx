@@ -1,4 +1,4 @@
-import NativeSelect from '../../shared/NativeSelect';
+import { NativeSelect } from '../../../ui-components';
 import { useState } from 'react';
 import { decodeShellCommandRules } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../../i18n';

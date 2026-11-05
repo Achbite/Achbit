@@ -1,4 +1,4 @@
-import NativeSelect from '../../shared/NativeSelect';
+import { NativeSelect } from '../../../ui-components';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
 import '../settingsCenter.css';
 import { useEffect, useRef, useState } from 'react';

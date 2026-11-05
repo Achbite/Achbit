@@ -401,13 +401,17 @@ test('multi-workspace links resolve exact targets and never guess through read e
 });
 
 test('error dismissal clears only its owner and allows the next error to appear', async t => {
-  const { DismissibleError } = await loadGuiModule(t, '/src/components/local-agent/DismissibleError.tsx');
+  const [{ DismissibleError }, { CloseButton, IconButton, Button }] = await loadGuiModules(t, [
+    '/src/components/local-agent/DismissibleError.tsx', '/src/ui-components/index.ts',
+  ]);
   const store = await loadGuiModelStore(t);
   const projection = { retained: 'failed execution facts' };
   store.setState({ sessionId: 'session:error', error: 'command failed', errorSource: 'command', projection });
   const view = DismissibleError({ language: 'zh-CN', children: store.getState().error, onDismiss: store.getState().clearError });
   assert.equal(view.props.role, 'alert');
-  const close = view.props.children.find(child => child.type === 'button');
+  const control = findReactElement(view, child => child.type === CloseButton);
+  const close = Button(IconButton(CloseButton(control.props).props).props);
+  assert.equal(close.type, 'button');
   assert.equal(close.props['aria-label'], '关闭提示');
   close.props.onClick();
   assert.equal(store.getState().error, null);

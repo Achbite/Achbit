@@ -1,6 +1,6 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useState } from 'react';
-import ModalDialog from '../../components/shared/ModalDialog';
+import { ModalDialog } from '../../ui-components';
 import AchbitShellIcon from '../../components/shared/AchbitShellIcon';
 import { t, type UiLanguage } from '../../i18n';
 import useAppStatusStore from '../../state/appStatusStore';

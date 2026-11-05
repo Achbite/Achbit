@@ -208,7 +208,7 @@ textarea {
 }
 .achbit-gui-titlebar .local-agent__header--reading .local-agent__header-preview { grid-column: 3; }
 .achbit-gui-titlebar .reader-tabs { min-height: 30px; padding: 0; background: transparent; }
-.achbit-gui-titlebar .reader-tab button { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 6px; border: 0; background: transparent; color: inherit; font: inherit; font-size: calc(12px * var(--ac-ui-font-scale, 1)); cursor: pointer; }
+.achbit-gui-titlebar .reader-tab button[role=tab] { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 6px; border: 0; background: transparent; color: inherit; font: inherit; font-size: calc(12px * var(--ac-ui-font-scale, 1)); cursor: pointer; }
 .achbit-gui-titlebar .reader-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; padding: 5px; border: 0; border-radius: 6px; color: var(--ac-muted); background: transparent; cursor: pointer; }
 .achbit-gui-titlebar .reader-icon-button:is(:hover,[aria-pressed=true]) { color: var(--ac-accent); background: var(--ac-surface-hover); }
 .achbit-gui-titlebar .reader-icon-button svg { width: 17px; height: 17px; }

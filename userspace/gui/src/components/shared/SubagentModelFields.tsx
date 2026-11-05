@@ -1,6 +1,6 @@
 import { modelReasoningEfforts, type AgentSettings, type LlmProviderProfile, type ModelConnection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import NativeSelect from './NativeSelect';
+import { NativeSelect } from '../../ui-components';
 
 /** The caller owns persistence: Session settings or defaults for future Sessions. */
 export default function SubagentModelFields({ profiles, connections, profileId, reasoningEffort, mainProfileId, language, disabled, onChange }: {

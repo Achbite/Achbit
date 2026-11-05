@@ -46,10 +46,10 @@
 .reader-tab--active button[role=tab] {font-weight:550;}
 .reader-tab--active button[role=tab] > svg {color:var(--ac-muted);}
 .reader-tabs__actions {flex:none;margin-left:auto;}
-.local-agent .reader-tab button {display:flex;align-items:center;gap:6px;min-width:0;padding:6px;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;font-size:calc(12px * var(--ac-ui-font-scale, 1));}
+.local-agent .reader-tab button[role=tab] {display:flex;align-items:center;gap:6px;min-width:0;padding:6px;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;font-size:calc(12px * var(--ac-ui-font-scale, 1));}
 .reader-tab button:first-child span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .reader-tab__kind {flex:none;font:inherit;color:var(--ac-muted);}
-.reader-tab svg {width:15px;height:15px;flex-shrink:0;}
+.reader-tab button[role=tab] svg {width:15px;height:15px;flex-shrink:0;}
 .local-agent .reader-icon-button,.achbit-gui-session-header .reader-icon-button {display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;width:30px;height:30px;padding:5px;border:0;border-radius:6px;background:transparent;color:var(--ac-muted,var(--text-muted));cursor:pointer;}
 .reader-icon-button svg {width:18px;height:18px;flex:none;}
 .local-agent .reader-icon-button:hover,.local-agent .reader-icon-button[aria-pressed=true],.achbit-gui-session-header .reader-icon-button:is(:hover,[aria-pressed=true]) {background:var(--ac-surface,var(--bg-hover,var(--ac-surface-subtle)));color:var(--ac-accent);}

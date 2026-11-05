@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { modelReasoningEfforts, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@achbit/protocol';
 import SubagentModelFields from '../../shared/SubagentModelFields';
-import ToggleSwitch from '../../shared/ToggleSwitch';
+import { ToggleSwitch } from '../../../ui-components';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
 import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { t } from '../../../i18n';

@@ -1,0 +1,50 @@
+/* Primitive geometry and states belong here; consumers own placement, not copied chrome. */
+.ac-button {
+  --ac-button-height: var(--ac-control-size, 30px);
+  --ac-button-glyph: var(--ac-control-icon-size, 16px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: var(--ac-control-gap, 6px);
+  min-width: 0;
+  min-height: var(--ac-button-height);
+  padding: 0 var(--ac-control-padding, 10px);
+  border: 0;
+  border-radius: var(--ac-radius-control, 8px);
+  color: var(--ac-foreground);
+  background: transparent;
+  font: inherit;
+  line-height: var(--ac-line-tight, 1.35);
+  cursor: pointer;
+  transition: background-color var(--ac-motion-feedback, 140ms) ease, color var(--ac-motion-feedback, 140ms) ease;
+}
+.ac-button[data-size='compact'] {
+  --ac-button-height: var(--ac-control-size-compact, 24px);
+  --ac-button-glyph: var(--ac-control-icon-size-compact, 14px);
+}
+.ac-button[data-size='large'] { --ac-button-height: var(--ac-control-size-large, 36px); }
+.ac-button[data-variant='secondary'] { background: var(--ac-surface-subtle); }
+.ac-button[data-variant='primary'] { background: var(--ac-accent); color: var(--ac-accent-contrast); }
+.ac-button[data-variant='danger'] { color: var(--ac-danger); background: var(--ac-danger-soft); }
+.ac-button:is(:hover, :focus-visible):not(:disabled) { background: var(--ac-surface-hover); color: var(--ac-foreground); }
+.ac-button:active:not(:disabled) { background: var(--ac-surface-active); }
+.ac-button[data-variant='primary']:is(:hover, :focus-visible):not(:disabled) {
+  background: color-mix(in srgb, var(--ac-accent) 88%, var(--ac-foreground));
+  color: var(--ac-accent-contrast);
+}
+.ac-button[data-variant='danger']:is(:hover, :focus-visible):not(:disabled) {
+  background: color-mix(in srgb, var(--ac-danger) 18%, transparent);
+  color: var(--ac-danger);
+}
+.ac-button:disabled { opacity: .45; cursor: default; }
+.ac-icon-button {
+  width: var(--ac-button-height);
+  height: var(--ac-button-height);
+  padding: 0;
+  color: var(--ac-muted);
+}
+.ac-icon-button > svg { width: var(--ac-button-glyph); height: var(--ac-button-glyph); flex: none; }
+.ac-panel-header { display: flex; align-items: center; justify-content: space-between; gap: var(--ac-panel-header-gap, 8px); min-width: 0; }
+.ac-panel-header > :is(h1, h2, h3, strong, span) { min-width: 0; }
+@media (prefers-reduced-motion: reduce) { .ac-button { transition: none; } }

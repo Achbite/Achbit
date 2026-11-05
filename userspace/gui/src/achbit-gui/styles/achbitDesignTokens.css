@@ -61,6 +61,13 @@
   --ac-navigation-control-gap: 2px;
   --ac-navigation-title-gap: 8px;
   --ac-control-size: 30px;
+  --ac-control-size-compact: 24px;
+  --ac-control-size-large: 36px;
+  --ac-control-icon-size: 16px;
+  --ac-control-icon-size-compact: 14px;
+  --ac-control-gap: 6px;
+  --ac-control-padding: 10px;
+  --ac-panel-header-gap: 8px;
   --ac-resize-hit-width: 15px;
   --ac-settings-row-height: 52px;
   --ac-usage-handle-width: 18px;

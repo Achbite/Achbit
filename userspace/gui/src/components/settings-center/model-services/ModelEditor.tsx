@@ -1,6 +1,5 @@
-import ToggleSwitch from '../../shared/ToggleSwitch';
+import { NativeSelect, ToggleSwitch } from '../../../ui-components';
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
-import NativeSelect from '../../shared/NativeSelect';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
 import { modelReasoningEfforts, modelThinkingModes } from '@achbit/protocol';
 import { t } from '../../../i18n';

@@ -1,4 +1,4 @@
-import NativeSelect from '../../shared/NativeSelect';
+import { NativeSelect } from '../../../ui-components';
 import { useEffect, useMemo, useState } from 'react';
 import type { ConnectionSummary, UsageQuery, UsageReport, UsageBucket } from '@achbit/protocol';
 import { queryModelUsage } from '../../../services/apiClient';

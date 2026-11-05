@@ -7,6 +7,7 @@ import { acceptPreview, activateDesktopPreview, computerPreviewSources, constrai
   type BrowserPreviewTarget, type ComputerPreview, type DesktopPreviewTarget } from '../../services/computerPreview';
 import { dismissPreview, isPreviewDismissed, type PreviewDismissals, type PreviewSource } from '../../services/computerPreview';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { CloseButton } from '../../ui-components';
 import './computerTargetPreview.css';
 
 const copy = {
@@ -182,9 +183,9 @@ export function FloatingComputerPreview({ view, sessionId, runId, language, read
     <ComputerPreviewTarget identity={identity} view={view} language={language} activating={activating} onActivate={() => void activate()}
       getPosition={() => boundary.current?.getBoundingClientRect() ?? null}
       onMove={position => { manualPosition.current = position; alignPreview.current?.(); }} />
-    <button {...identity.part('close')} type="button" className="computer-target-preview__close" aria-label={label.close} title={label.close}
+    <CloseButton {...identity.part('close')} size="compact" variant="secondary" className="computer-target-preview__close" aria-label={label.close} title={label.close}
       onPointerDown={event => event.stopPropagation()}
-      onClick={event => { event.preventDefault(); event.stopPropagation(); onDismiss(); }}>×</button>
+      onClick={event => { event.preventDefault(); event.stopPropagation(); onDismiss(); }} />
     {(view.reason || view.frameError) && <p className="computer-target-preview__error" role="status">{view.frameError || view.reason}</p>}
     {activationError && <p className="computer-target-preview__error" role="alert">{activationError}</p>}
   </div>;

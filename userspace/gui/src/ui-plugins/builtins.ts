@@ -1,10 +1,8 @@
 import usageSource from './builtinUsage.mjs?raw';
 import regionSource from './builtinRegions.mjs?raw';
-import type { UiPluginFile, UiRegionSlot } from './types';
-export const regionSlots: UiRegionSlot[] = ['workbench.layout', 'navigation', 'conversation.header',
-  'activity.row', 'activity.summary', 'activity.detail', 'composer.layout', 'composer.model',
-  'composer.attachments', 'composer.actions', 'task.panel', 'artifact.panel', 'reader.layout',
-  'reader.toolbar', 'reader.tree', 'settings.navigation'];
+import type { UiPluginFile } from './types';
+import { regionSlots } from './slots';
+export { regionSlots } from './slots';
 export function withBuiltinRegions(files: UiPluginFile[], usageEnabled = true): UiPluginFile[] {
   const selected = new Set(files.filter(file => file.enabled).flatMap(file => file.manifest?.slots ?? []));
   const slots = regionSlots.filter(slot => !selected.has(slot));

@@ -4,7 +4,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { normalizeGuiAccentColor, type GuiResolvedTheme } from '../../theme/achbitGuiTheme';
 import { PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, paletteColor } from '../../theme/palette';
 import { THEME_LIBRARY_SETTING, applyThemePalette, builtinThemes, decodeThemeLibrary, importTheme, selectedThemeId, themeOverrides, type ThemeDocument, type SavedTheme } from '../../theme/themeLibrary';
-import ModalDialog from '../shared/ModalDialog';
+import { ModalDialog } from '../../ui-components';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import ThemePicker, { ThemeBadge } from './ThemePicker';
 import AchbitShellIcon from '../shared/AchbitShellIcon';

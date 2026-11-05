@@ -933,7 +933,6 @@
   font-size: var(--ac-font-body-large);
 }
 
-.achbit-gui-text-dialog header button,
 .achbit-gui-text-dialog footer button {
   min-height: 30px;
   padding: 0 11px;
@@ -950,7 +949,7 @@
   color: var(--ac-foreground);
 }
 
-.achbit-gui-text-dialog :is(header, footer) button:hover:not(:disabled) {
+.achbit-gui-text-dialog footer button:hover:not(:disabled) {
   background: var(--ac-surface-hover);
 }
 

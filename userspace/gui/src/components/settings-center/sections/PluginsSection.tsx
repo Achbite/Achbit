@@ -1,12 +1,11 @@
 import { manageLocalPlugin } from '../../../services/pluginManagement';
 import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
-import ToggleSwitch from '../../shared/ToggleSwitch';
+import { ModalDialog, ToggleSwitch } from '../../../ui-components';
 import { localizePlugin } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
 import { useSettingsSearchEntries } from '../settingsSearch';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
-import ModalDialog from '../../shared/ModalDialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PluginCatalogItem } from '@achbit/protocol';
 import { normalizeUiLanguage, t, activeT } from '../../../i18n';
