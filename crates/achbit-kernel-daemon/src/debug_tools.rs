@@ -158,9 +158,10 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
     #[cfg(target_os = "macos")]
     if let Some(commands) = environment["commandPaths"].as_object() {
         for path in commands.values().filter_map(Value::as_str) {
-            config
-                .file_read_roots
-                .push(Path::new(path).canonicalize().map_err(|e| e.to_string())?);
+            config.file_read_roots.extend(
+                achbit_kernel_runtime::shell_environment::unix_runtime_read_roots(Path::new(path))
+                    .map_err(|error| format!("Resolve command {path}: {error}"))?,
+            );
         }
     }
     #[cfg(windows)]

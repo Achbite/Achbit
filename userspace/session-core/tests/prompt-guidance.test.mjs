@@ -229,6 +229,7 @@ test('coding environment reports the target shell and target path using frozen K
     assert.ok(text.includes(JSON.stringify(platform.cwd)));
     assert.ok(text.includes(`<cwd>\n${JSON.stringify(platform.cwd)}\n</cwd>`));
     assert.match(text,/Detected commands on PATH: git, rg/u);
+    assert.match(text,/executable discovery; runtime dependencies, sandbox access and service readiness/u);
     assert.doesNotMatch(environmentInstruction(env,['fs.read'],{cwd:platform.cwd}).text,/Shell:|Detected commands/u);
   }
   const wsl = {...base, os:'linux', arch:'x86_64', shell:{tool:'bash',dialect:'bash',executable:'/bin/bash'},

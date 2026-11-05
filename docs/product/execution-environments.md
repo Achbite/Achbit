@@ -1,6 +1,6 @@
 # Execution environments
 
-Use the run's recorded target, shell and PATH, plus the project's build instructions. The product operations Skill supplies `commandPaths` for commands found on that PATH. Command-not-found, access denial and an unreachable service are different failures. Host permission changes access, not the selected execution target or shell.
+Use the run's recorded target, shell and PATH, plus the project's build instructions. The product operations Skill supplies `commandPaths` for executables found on that PATH. This is location discovery; actual command results establish runtime dependencies, sandbox access and service readiness. Command-not-found, access denial and an unreachable service are different failures. Host permission changes access, not the selected execution target or shell.
 
 ## Workspace Shell
 
@@ -20,6 +20,8 @@ Project files remain read-only to workspace Shell even when file-tool edits are 
 Workspace Shell HOME is session-managed; it is not the application configuration root. After selection or use of the product or iteration Skill, the Shell declaration reports `achbitCli` as a Host administration command when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
 Workspace Shell is offline by default, including loopback access. Network grants can be per call, task or conversation as offered by the decision. Explicit command deny/ask rules still apply. Host execution uses real host-user permissions, including network and writes outside the sandbox; a working directory is not isolation. With Plan approval enabled or an active Plan, each Host call requires separate approval. An approval or a failed command does not authorize an automatic broader retry.
+
+On macOS, discovered commands contribute read-only access to their executable symlink chain. An entry inside an installed Node package also contributes that package's directory for sibling modules. This does not grant the enclosing `node_modules`, user home, writes or network. Other runtime dependencies retain the normal explicit file-access path. Normal runs and direct Debug tools use the same resolver.
 
 Backends: macOS `sandbox-exec`; Linux/WSL2 Bubblewrap; native Windows LPAC. Backend startup failures retain their actual reason. Bubblewrap requires supported namespaces; WSL1 does not provide them. Do not switch execution scope to work around a denial.
 

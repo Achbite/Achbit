@@ -546,20 +546,21 @@ impl LocalAgentRuntime {
         #[cfg(target_os = "macos")]
         if let Some(commands) = environment["commandPaths"].as_object() {
             for (name, path) in commands {
-                let target = std::fs::canonicalize(path.as_str().ok_or_else(|| {
-                    RunPreparationError::new(
-                        "host_command_path_invalid",
-                        format!("Invalid path for {name}"),
-                    )
-                })?)
+                let roots = achbit_kernel_runtime::shell_environment::unix_runtime_read_roots(
+                    std::path::Path::new(path.as_str().ok_or_else(|| {
+                        RunPreparationError::new(
+                            "host_command_path_invalid",
+                            format!("Invalid path for {name}"),
+                        )
+                    })?),
+                )
                 .map_err(|error| {
                     RunPreparationError::new(
                         "host_command_path_failed",
                         format!("Resolve {name}: {error}"),
                     )
                 })?;
-                // PATH can contain executable symlinks into a separate toolchain directory.
-                executor_config.file_read_roots.push(target);
+                executor_config.file_read_roots.extend(roots);
             }
         }
         #[cfg(windows)]

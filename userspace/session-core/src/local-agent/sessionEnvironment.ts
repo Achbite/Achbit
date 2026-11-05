@@ -83,7 +83,7 @@ export function environmentInstruction(value: unknown, toolNames: readonly strin
   const hasShell = data.shellAvailable === true && toolNames.includes(shell.tool);
   const language = `Use ${data.responseLanguage ?? "the user's language"} for user-facing text unless the user requests another language.`;
   const commands = data.developerCommands as string[];
-  const available = hasShell && commands.length ? `Detected commands on PATH: ${commands.join(', ')}.` : '';
+  const available = hasShell && commands.length ? `Detected commands on PATH: ${commands.join(', ')}. This records executable discovery; runtime dependencies, sandbox access and service readiness are established by the command's actual result.` : '';
   if (coding) {
     const platform = target.kind === 'wsl' ? `${data.os} (WSL, ${target.distribution})` : data.os;
     const lines = [hasShell && `Shell: ${shell.dialect} on ${platform} (${data.arch}).`, available,
