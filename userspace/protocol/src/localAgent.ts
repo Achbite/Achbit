@@ -1883,6 +1883,8 @@ export interface ProviderToolDefinition {
 
 export interface ProviderRuntimeSnapshot {
   providerRuntimeRef: string;
+  /** Stable, credential-free identity for reusing input-token estimates; never a runtime binding. */
+  inputTokenCalibrationKey?: string;
   profileId: string;
   fileInputMediaTypes?: string[];
   reasoningEffort?: LlmReasoningEffort;

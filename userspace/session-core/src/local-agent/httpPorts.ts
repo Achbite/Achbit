@@ -627,8 +627,11 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
       'maxOutputTokens',
       'apiSurface',
       'hostedWebSearch',
-    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes'])
+    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes', 'inputTokenCalibrationKey'])
     || !isNonEmptyText(value.providerRuntimeRef)
+    || value.inputTokenCalibrationKey !== undefined && (typeof value.inputTokenCalibrationKey !== 'string'
+      || value.inputTokenCalibrationKey.length < 1 || value.inputTokenCalibrationKey.length > 128
+      || /[^!-~]/u.test(value.inputTokenCalibrationKey))
     || !isNonEmptyText(value.profileId)
     || !isPositiveSafeInteger(value.contextWindowTokens)
     || !isPositiveSafeInteger(value.maxOutputTokens)
@@ -647,6 +650,7 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
   ) throw new Error('provider_runtime_snapshot_invalid');
   return Object.freeze({
     providerRuntimeRef: value.providerRuntimeRef,
+    ...(value.inputTokenCalibrationKey !== undefined ? { inputTokenCalibrationKey: value.inputTokenCalibrationKey as string } : {}),
     profileId: value.profileId,
     fileInputMediaTypes: [...((value.fileInputMediaTypes ?? []) as string[])],
     contextWindowTokens: value.contextWindowTokens,

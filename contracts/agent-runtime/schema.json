@@ -599,6 +599,7 @@
       "required": ["providerRuntimeRef", "profileId", "contextWindowTokens", "maxOutputTokens", "apiSurface", "hostedWebSearch"],
       "properties": {
         "providerRuntimeRef": {"$ref": "#/$defs/Id"},
+        "inputTokenCalibrationKey": {"type": "string", "minLength": 1, "maxLength": 128, "not": {"pattern": "[^!-~]"}},
         "profileId": {"$ref": "#/$defs/Id"},
         "fileInputMediaTypes": {"type": "array", "uniqueItems": true, "items": {"const": "application/pdf"}},
         "contextWindowTokens": {"type": "integer", "minimum": 1},

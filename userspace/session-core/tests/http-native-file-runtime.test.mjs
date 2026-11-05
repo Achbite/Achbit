@@ -83,6 +83,25 @@ test('HTTP preparation admits enabled inherited plugins while requiring every ne
   }
 });
 
+test('HTTP preparation preserves stable token calibration keys for the provider and reviewer', async t => {
+  const fixture = await httpPreparation(t);
+  fixture.useProvider({ inputTokenCalibrationKey: 'input-token-calibration:main' });
+  fixture.useReviewer({ inputTokenCalibrationKey: 'input-token-calibration:reviewer' });
+  const prepared = await fixture.port.prepare(fixture.request);
+  const restored = JSON.parse(JSON.stringify(prepared.runtimeSnapshot));
+  assert.equal(restored.provider.inputTokenCalibrationKey, 'input-token-calibration:main');
+  assert.equal(restored.approvalReviewer.inputTokenCalibrationKey, 'input-token-calibration:reviewer');
+  assertRuntimeContract('ProviderRuntimeSnapshot', restored.provider);
+  assertRuntimeContract('ProviderRuntimeSnapshot', restored.approvalReviewer);
+  assert.equal(fixture.releases.length, 0);
+  for (const invalid of [null, '', 'invalid key', 'invalid\n', 42]) {
+    assert.throws(() => assertRuntimeContract('ProviderRuntimeSnapshot', { ...restored.provider, inputTokenCalibrationKey: invalid }));
+    fixture.useProvider({ inputTokenCalibrationKey: invalid });
+    await assert.rejects(fixture.port.prepare(fixture.request), /provider_runtime_snapshot_invalid/);
+  }
+  assert.equal(fixture.releases.length, 5, 'invalid calibration metadata must release the prepared runtime');
+});
+
 test('real HTTP run preparation accepts omitted, empty and PDF file capabilities for provider and reviewer', async t => {
   const fixture = await httpPreparation(t);
   for (const capability of [undefined, [], ['application/pdf']]) {

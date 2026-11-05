@@ -173,7 +173,15 @@ export function estimateContextInput(
   const usage = snapshot.state.contextUsage;
   const prior = usage && snapshot.state.contextCompositions.find((item) => item.providerRequestId === usage.providerRequestId);
   const checkpointAfterUsage = usage && snapshot.events.some((event) => event.type === 'context.compacted' && event.sequence > usage.sequence);
-  if (usage && prior && !checkpointAfterUsage && usage.providerRuntimeRef === runtime.provider.providerRuntimeRef
+  const previousProvider = usage && snapshot.state.runRuntimeSnapshots[usage.runId]?.provider;
+  // A runtime ref identifies one execution, not a model's input accounting.
+  // Cross-run calibration needs the matching frozen measurement and a stable
+  // resolved-model key; profile IDs alone can outlive model/endpoint edits.
+  const compatibleProvider = usage && (usage.providerRuntimeRef === runtime.provider.providerRuntimeRef
+    || previousProvider?.providerRuntimeRef === usage.providerRuntimeRef
+      && runtime.provider.inputTokenCalibrationKey !== undefined
+      && previousProvider.inputTokenCalibrationKey === runtime.provider.inputTokenCalibrationKey);
+  if (usage && prior && !checkpointAfterUsage && compatibleProvider
     && usage.contextWindowTokens === runtime.provider.contextWindowTokens) {
     const priorUnits = contextShapeUnits(prior.partitions);
     if (priorUnits > 0) return Math.ceil(usage.inputTokens * units / priorUnits);

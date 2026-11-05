@@ -2412,6 +2412,7 @@ mod tests {
         hosted_web_search: &'static str,
     ) -> ProviderRuntimeSnapshot {
         ProviderRuntimeSnapshot {
+            input_token_calibration_key: None,
             reasoning_effort: None,
             reasoning_effort_override: None,
             thinking: None,

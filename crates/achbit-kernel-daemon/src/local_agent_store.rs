@@ -5647,8 +5647,18 @@ fn validate_provider_runtime_snapshot(
             "reasoningEffortOverride",
             "thinking",
             "fileInputMediaTypes",
+            "inputTokenCalibrationKey",
         ],
     )?;
+    if provider.get("inputTokenCalibrationKey").is_some() {
+        let key = required_string(provider, "inputTokenCalibrationKey")?;
+        if key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(LocalAgentStoreError::new(
+                "session_event_invalid",
+                "inputTokenCalibrationKey 必须为 1 到 128 个非空白 ASCII 字符。",
+            ));
+        }
+    }
     let provider_runtime_ref = required_string(provider, "providerRuntimeRef")?;
     let profile_id = required_string(provider, "profileId")?;
     validate_runtime_identity("providerRuntimeRef", provider_runtime_ref)?;
@@ -5997,6 +6007,35 @@ fn sql_error(code: &'static str) -> impl FnOnce(rusqlite::Error) -> LocalAgentSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_token_calibration_key_is_validated_and_preserved_in_the_run_journal() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        journal
+            .create_session("session:calibration", "Calibration", &json!([]), None, None)
+            .unwrap();
+        let mut runtime = runtime_snapshot();
+        runtime["provider"]["inputTokenCalibrationKey"] = json!("input-token-calibration:fixture");
+        validate_run_runtime_snapshot(&runtime).unwrap();
+        journal.append(&json!({"type":"run.started", "sessionId":"session:calibration", "runId":"run:calibration",
+            "payload":{"inputMessageId":"message:calibration", "workspaceBindings":[], "runtimeSnapshot":runtime}})).unwrap();
+        let events = journal.read_events("session:calibration", 0).unwrap();
+        assert_eq!(
+            events.last().unwrap()["payload"]["runtimeSnapshot"]["provider"]
+                ["inputTokenCalibrationKey"],
+            "input-token-calibration:fixture"
+        );
+        for invalid in [
+            Value::Null,
+            json!(""),
+            json!("invalid key"),
+            json!("invalid\n"),
+            json!(42),
+        ] {
+            runtime["provider"]["inputTokenCalibrationKey"] = invalid;
+            assert!(validate_run_runtime_snapshot(&runtime).is_err());
+        }
+    }
 
     #[test]
     fn native_pdf_capability_is_frozen_in_the_run_journal() {
