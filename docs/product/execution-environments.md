@@ -13,6 +13,8 @@ Use the run's recorded target, shell and PATH, plus the project's build instruct
 | Network in the sandbox | `requestNetworkPermission`; file scope stays unchanged |
 | Host execution | `requestHostPermission`; obtain approval before executing |
 
+Under delegated review, an approved read-only `requestFileAccess` scope can be reused within the current task and file environment. A file grant covers only that file; a directory grant covers its descendants, not siblings or ancestors. Later calls may omit the request or repeat the covered paths without another file approval. Revocation, relevant permission changes and task completion end the grant. Writes, network and Host execution retain their separate gates.
+
 Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session owns its working directory outside the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
 Workspace Shell HOME is session-managed; it is not the application configuration root. After selection or use of the product or iteration Skill, the Shell declaration reports `achbitCli` as a Host administration command when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.

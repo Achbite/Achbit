@@ -2413,7 +2413,9 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
                 ...(reviewFailure ? { error: reviewFailure } : {}) } }];
             if (verdict.decision !== 'ask') events.push({ type: 'approval.resolved', sessionId: current.state.sessionId, runId,
               callId: requestEvent.callId, payload: { approvalId, commandId: deps.nextId('agent-decision'),
-                authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason } });
+                authorityId: deps.nextId('authority'), decision: verdict.decision, source: 'agent', reason: verdict.reason,
+                ...(verdict.decision === 'allow' && reply.preview.reviewPolicy?.reviewGrant === 'runFiles'
+                  ? { authorizationScope: 'runFiles' as const } : {}) } });
             return events;
           });
         }
@@ -2492,7 +2494,9 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
   const onAbort = () => controller.abort(signal.reason);
   signal.addEventListener('abort', onAbort, { once: true });
   if (signal.aborted) onAbort();
-  type Completion = { event: ToolRequestEvent; permissions: string; reply?: ToolExecutionReply; error?: unknown };
+  const fileGrants = (snapshot: LoopSnapshot) => JSON.stringify(snapshot.state.shellAuthorizations
+    .filter(grant => grant.scope === 'runFiles' || grant.scope === 'sessionFiles').map(grant => grant.authorityId));
+  type Completion = { event: ToolRequestEvent; permissions: string; fileGrants: string; reply?: ToolExecutionReply; error?: unknown };
   const active = new Map<string, Promise<Completion>>();
   const approvals = new Map<string, { permissions: string }>();
   let failure: { error: unknown } | undefined;
@@ -2523,8 +2527,10 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         if (active.size >= 4) continue;
         const request = executionRequest(snapshot, event, deps);
         const permissions = JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides);
+        const grantedFiles = fileGrants(snapshot);
         active.set(event.callId, executeUntilAbort(deps, request, controller.signal)
-          .then(reply => ({ event, permissions, reply }), error => ({ event, permissions, error })));
+          .then(reply => ({ event, permissions, fileGrants: grantedFiles, reply }),
+            error => ({ event, permissions, fileGrants: grantedFiles, error })));
       }
       snapshot = await deps.readSnapshot();
       if (!active.size) {
@@ -2564,6 +2570,11 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         continue;
       }
       try {
+        // An approvalRequired reply proves this attempt did not execute. Another
+        // concurrent read may since have granted its files: ask Kernel to admit
+        // it again rather than review a stale request or infer coverage here.
+        if (completed.reply!.status === 'approvalRequired'
+          && completed.fileGrants !== fileGrants(await deps.readSnapshot())) continue;
         const accepted = await acceptToolReply(deps, completed.event, completed.reply!, controller.signal);
         if (accepted === 'approval') {
           approvals.set(completed.event.callId, { permissions: completed.permissions });

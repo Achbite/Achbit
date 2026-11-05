@@ -114,7 +114,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 },
                 "requestFileAccess": {
                     "type": "object",
-                    "description": "Request access to extra absolute paths outside the project. Existing workspace permissions still apply.",
+                    "description": "Request read or write access to the listed external absolute paths. Approved read-only runFiles scopes can be reused in the same task and file environment. File access retains existing workspace bindings; writes, network and Host execution have separate permissions.",
                     "properties": {
                         "reason": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Explain why the external paths are needed." },
                         "read": { "type": "array", "items": { "type": "string", "minLength": 1 } },

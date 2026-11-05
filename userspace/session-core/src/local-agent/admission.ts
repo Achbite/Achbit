@@ -186,9 +186,11 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     }
     case 'approval.resolved':
       if (event.payload.source === 'agent') {
-        if (state.pendingApprovals.find(item => item.callId === event.callId)?.preview.approvalReviewer !== 'agent'
-          || state.pendingApprovals.find(item => item.callId === event.callId)?.preview.review?.decision !== event.payload.decision
-          || event.payload.authorizationScope !== undefined) throw new Error('approval_delegation_missing');
+        const preview = state.pendingApprovals.find(item => item.callId === event.callId)?.preview;
+        const scope = event.payload.decision === 'allow' && preview?.reviewPolicy?.reviewGrant === 'runFiles'
+          ? 'runFiles' : undefined;
+        if (preview?.approvalReviewer !== 'agent' || preview.review?.decision !== event.payload.decision
+          || event.payload.authorizationScope !== scope) throw new Error('approval_delegation_missing');
       }
       break;
     case 'plan.superseded':
