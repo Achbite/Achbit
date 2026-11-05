@@ -5,6 +5,7 @@ import { achbitProductComponents } from '../dist/local-agent/productInstructions
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { requestedPlanToolStage } from '../dist/local-agent/planStage.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
+import { codingToolView } from '../dist/local-agent/codingTools.js';
 import { stableCoreInstructions } from '../dist/local-agent/coreInstructions.js';
 import { agentOperationDefinitions, sessionControlToolDefinitions } from '../dist/local-agent/sessionControls.js';
 import { buildConversationProviderRequest } from '../dist/local-agent/contextComposer.js';
@@ -211,6 +212,22 @@ test('the tool stage owns Plan guidance and only callable basic operations are n
   assert.doesNotMatch(before.get('instruction:achbit.coding-tools'), /oldText|complete rewrites/u);
   delete runtime.planMode;
   assert.equal(compose({}).has('session:tool-stage'), false);
+});
+
+test('coding tool projection retains Kernel-owned operation and scope descriptions', () => {
+  for (const name of ['fs.read', 'fs.edit', 'bash', 'powershell']) {
+    const description = `Observed ${name} operation, file bindings and execution scope.`;
+    const tool = { name, origin: 'coreBuiltin', description, inputSchema: {
+      type: 'object', properties: { path: {type:'string'}, edits: {type:'array'},
+        command: {type:'string'}, timeout: {type:'integer'}, requestFileAccess: {type:'object'} },
+    } };
+    const [projected] = codingToolView([tool]);
+    assert.equal(projected.description, description);
+    if (name === 'bash' || name === 'powershell') {
+      assert.deepEqual(projected.inputSchema.properties.requestFileAccess, tool.inputSchema.properties.requestFileAccess);
+    }
+    assert.deepEqual(codingToolView([{...tool, origin:'extension'}]), [{...tool, origin:'extension'}]);
+  }
 });
 
 test('coding environment reports the target shell and target path using frozen Kernel facts', () => {

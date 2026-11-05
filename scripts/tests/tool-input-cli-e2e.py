@@ -99,8 +99,14 @@ class ProviderHandler(fixture.MockProviderHandler):
                 ]}),
                     ("directory-create", names["write"], {"path": "src/nested/new.txt", "content": "created within approved directory\n"}),
                     ("outside-scope", names["write"], {"path": "extra/new.txt", "content": "expanded scope\n"}),
+                    ("edit-single", names["edit"], {"path": "src/compat-single.txt", "edits": {"oldText": "before", "newText": "after"}}),
+                    ("edit-json", names["edit"], {"path": "src/compat-json.txt", "edits": json.dumps([{"oldText": "before", "newText": "after"}])}),
+                    ("edit-flat", names["edit"], {"path": "src/compat-flat.txt", "oldText": "before", "newText": "after"}),
                 ])
             elif ordinal == 4:
+                for form in ["single", "json", "flat"]:
+                    require(results[f"edit-{form}"]["changed"] is True, f"兼容编辑输入未执行: {form}")
+                    require((self.provider_state.workspace / f"src/compat-{form}.txt").read_text() == "after\n", f"兼容编辑结果不符: {form}")
                 require(results["directory-create"]["changed"] is True, "目录授权未覆盖后代新文件")
                 require((self.provider_state.workspace / "src/nested/new.txt").read_text() == "created within approved directory\n", "目录内文件内容不符")
                 denied = results["outside-scope"]
@@ -323,6 +329,9 @@ def main() -> None:
         workspace = root / "workspace"
         workspace.mkdir()
         (workspace / "probe.txt").write_text("alpha\nbeta\n")
+        (workspace / "src").mkdir()
+        for form in ["single", "json", "flat"]:
+            (workspace / f"src/compat-{form}.txt").write_text("before\n")
         state = fixture.ProviderState(workspace)
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
         server.provider_state = state
@@ -433,9 +442,16 @@ def main() -> None:
                 shell = next(record for record in records if record["toolName"] == "bash" and record["input"]["command"] == SCRIPT)
                 require(shell["input"]["command"] == SCRIPT, "Bash 脚本被改写")
                 require(shell["output"]["executionScope"] == "host", "真实宿主域应记录在 Kernel")
-                edit = next(record for record in records if record["toolName"] == "fs.edit" and record["outcome"] == "completed")
+                edit = next(record for record in records if record["toolName"] == "fs.edit" and record["input"].get("path") == "probe.txt" and record["outcome"] == "completed")
                 preview = edit["output"]["editPreview"]
                 require(preview["hunks"][0]["before"] == "alpha\n" and preview["hunks"][0]["after"] == "ALPHA\n" and not preview["truncated"], "实际编辑 Diff 未保存在 Kernel")
+                for form in ["single", "json", "flat"]:
+                    compatible = next(record for record in records if record["toolName"] == "fs.edit" and record["input"].get("path") == f"src/compat-{form}.txt")
+                    require(compatible["outcome"] == "completed", f"兼容调用终态不符: {form}")
+                    canonical = compatible["preparedEffect"]["canonicalInvocation"]["arguments"]
+                    require(canonical["edits"] == [{"oldText": "before", "newText": "after"}], f"执行输入未统一归一化: {form}")
+                    original = compatible["input"]
+                    require(isinstance(original.get("edits"), dict) if form == "single" else isinstance(original.get("edits"), str) if form == "json" else original.get("oldText") == "before", f"原始输入未保留: {form}")
                 blocked = next(record for record in records if record["input"].get("command") == "printf denylist-probe")
                 require(blocked["outcome"] == "denied" and blocked["error"]["code"] == "command_denied_by_rule"
                         and blocked["authority"]["matchedRule"] == "printf denylist-probe" and "output" not in blocked,

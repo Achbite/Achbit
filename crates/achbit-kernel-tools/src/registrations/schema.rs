@@ -10,7 +10,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "File or directory path in the selected workspace, or an authorized absolute path."
+                    "description": "File path in the selected workspace or an authorized absolute file path. Directory listings use paths within a bound workspace."
                 },
                 "startByte": { "type": "integer", "minimum": 0, "maximum": 9007199254740991u64, "description": "Files only. Resume at nextByte, including within long lines. Takes precedence over startLine." },
                 "startLine": {
@@ -55,7 +55,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
             "type": "object",
             "required": ["path", "edits"],
             "properties": {
-                "path": { "type": "string", "minLength": 1 },
+                "path": { "type": "string", "minLength": 1, "description": "Workspace-relative or absolute file path. External files require permission." },
                 "edits": {
                     "type": "array",
                     "minItems": 1,
@@ -78,7 +78,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
             "type": "object",
             "required": ["path", "targetKind"],
             "properties": {
-                "path": { "type": "string", "minLength": 1 },
+                "path": { "type": "string", "minLength": 1, "description": "Selected file or directory path in the workspace, or an authorized external absolute path." },
                 "targetKind": {
                     "type": "string",
                     "enum": ["file", "directoryTree"],

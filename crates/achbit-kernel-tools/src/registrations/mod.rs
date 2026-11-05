@@ -76,15 +76,15 @@ fn register_tool(spec: ToolSpec) -> KernelToolRegistration {
 fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]) {
     match tool {
         KernelToolKind::FsDelete => (
-            "Delete one explicitly named workspace file or directory tree.",
+            "Delete one explicitly selected file or directory tree within the current file-access scope. targetKind distinguishes a single file from a recursive directory deletion.",
             &[],
         ),
         KernelToolKind::FsEdit => (
-            "Make targeted changes to one text file. All replacements match the original file and apply atomically.",
+            "Apply one or more exact text replacements to one file. Each oldText matches a unique region of the original file; all replacements apply atomically. Use edits for a single replacement or a batch.",
             &[],
         ),
         KernelToolKind::FsRead => (
-            "Read a UTF-8 file or list a directory's immediate entries in name order. Use path='.' for the workspace root.",
+            "Read a UTF-8 file, or list a bound workspace directory's immediate entries in name order. Use path='.' for its root. External files use file-read permission; directory listings require a workspace binding. Continue partial results with the returned cursor.",
             &[],
         ),
         KernelToolKind::FsWrite => (

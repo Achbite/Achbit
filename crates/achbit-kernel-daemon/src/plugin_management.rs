@@ -297,7 +297,7 @@ pub(crate) async fn capabilities(
             {"kind":"cli","manifest":"achbit-tool.json","lifetime":"one process per tool call","activation":"nextRequest, then plugin.activate"},
             {"kind":"service","manifest":"achbit-service.json","lifetime":"Host-owned process","activation":"enable starts; disable/update/remove stops"},
             {"kind":"ui","manifest":"achbit-ui.json","lifetime":"window-owned module and disposers","activation":"connected window applies the installed copy"},
-            {"kind":"guidance","manifest":"SKILL.md","lifetime":"task guidance","activation":"nextRequest discovery; read through skill.read"}
+            {"kind":"guidance","manifest":"SKILL.md","lifetime":"task guidance","activation":"nextRequest discovery; plugin.activate returns skillEntryPath for the file reader"}
         ],
         "uiSlots":achbit_host_connection::plugin_artifact::ui_plugin_slots(),
         "guides": {"plugins":include_str!("../../../docs/plugins/README.md"),"ui":include_str!("../../../docs/product/ui-plugins.md")},

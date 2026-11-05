@@ -70,12 +70,15 @@ pub(super) fn execute(
         }
         // The project command owns listener admission. A Docker port forward can
         // accept TCP before any server exists, so a connection cannot prove an owner.
-        let args = input["args"]
-            .as_array()
-            .ok_or("args must be an array of strings")?
-            .iter()
-            .map(|value| value.as_str().ok_or("args must be an array of strings"))
-            .collect::<Result<Vec<_>, _>>()?;
+        let args = match input.get("args") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .ok_or("args must be an array of strings")?
+                .iter()
+                .map(|value| value.as_str().ok_or("args must be an array of strings"))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
         let id = format!(
             "development-{}",
             super::PAGE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -89,7 +92,7 @@ pub(super) fn execute(
             .map_err(|error| error.to_string())?;
         let mut command = Command::new(executable);
         command
-            .args(args)
+            .args(&args)
             .current_dir(&root)
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|error| error.to_string())?)
@@ -97,7 +100,7 @@ pub(super) fn execute(
         let process = spawn_owned_host_process(&mut command)
             .map_err(|error| format!("Development service start failed: {error}"))?;
         let description = json!({"serviceId":id,"owner":"host","sessionId":session_id,"url":url.as_str(),
-            "directory":root,"command":executable,"args":input["args"],"pid":process.child.id(),"status":"started","logPath":log_path});
+            "directory":root,"command":executable,"args":args,"pid":process.child.id(),"status":"started","logPath":log_path});
         services.insert(
             id,
             DevelopmentService {

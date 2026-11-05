@@ -63,7 +63,7 @@ export function codingToolView(tools: readonly PreparedToolDescriptor[]): readon
         break;
       case 'fs.edit':
         properties = { path: fields.path, edits: fields.edits };
-        description = 'Make targeted edits to one file. Each oldText must match exactly once. Batch non-overlapping edits.';
+        description = tool.description;
         break;
       case 'fs.write':
         properties = { path: fields.path, content: fields.content };
@@ -77,7 +77,7 @@ export function codingToolView(tools: readonly PreparedToolDescriptor[]): readon
         for (const key of ['requestFileAccess', 'requestHostPermission', 'requestNetworkPermission']) {
           if (fields[key] !== undefined) properties[key] = fields[key];
         }
-        description = `Execute a ${tool.name === 'bash' ? 'Bash' : 'PowerShell'} command in the selected workspace.`;
+        description = tool.description;
     }
     return { ...tool, description, inputSchema: { ...schema, properties } };
   });
