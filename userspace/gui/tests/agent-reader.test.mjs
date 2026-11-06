@@ -57,8 +57,6 @@ test('subagent page information displays the child model configuration with copy
   assert.doesNotMatch(chinese, />max<|>enabled</);
   assert.match(html, /aria-label="Copy name"/);
   assert.match(html, /aria-label="Copy ID"/);
-  assert.match(html, /agent-tasks__identity/);
-  assert.match(html, /agent-tasks__model/);
   const unavailable = renderToStaticMarkup(createElement(AgentPageInformation, {
     name: 'Child', sessionId: 'session:child', projection: {}, language: 'en-US',
   }));

@@ -7,8 +7,6 @@ import { DEFAULT_USER_SETTINGS } from '../../protocol/dist/index.js';
 import {
   decodeGuiProjection,
   findReactElement,
-  inputCacheMetric,
-  lastCallInputCacheMetric,
   loadGuiModelStore,
   loadGuiModule,
   loadGuiModules,
@@ -974,6 +972,7 @@ test('scope-only Plan review foregrounds additions and keeps the complete confir
 });
 
 test('last-call, per-run, and Session cache rates use their own input token totals', async (t) => {
+  const { inputCacheMetric, lastCallInputCacheMetric } = await loadGuiModule(t, '/src/utils/providerUsage.ts');
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:cache-scopes';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1035,6 +1034,7 @@ test('last-call, per-run, and Session cache rates use their own input token tota
 });
 
 test('compaction preserves Agent usage and an unreported Agent call clears it without losing Session totals', async (t) => {
+  const { inputCacheMetric, lastCallInputCacheMetric } = await loadGuiModule(t, '/src/utils/providerUsage.ts');
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:cache-latest';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1176,6 +1176,7 @@ test('Provider status separates request elapsed time from the last observed cont
 });
 
 test('snapshot-scoped wire tool resolves to exact Kernel bindings, durable ToolRecord, and continuation', async (t) => {
+  const { inputCacheMetric, lastCallInputCacheMetric } = await loadGuiModule(t, '/src/utils/providerUsage.ts');
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:tool-chain';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -2415,7 +2416,6 @@ test('Markdown table reading preserves streaming cells, source links and GFM ali
   assert.match(settled, /style="text-align:right"/);
   assert.match(settled, /href="https:\/\/example.com\/pool"/);
   assert.match(settled, /<code>create\/<wbr\/>validate\/<wbr\/>destroy<\/code>/);
-  assert.match(settled.replaceAll('<wbr/>', ''), /<code>create\/validate\/destroy<\/code>/);
   assert.match(settled, /<code>Recycler&lt;T,Size,Align&gt;<\/code>/);
   assert.match(settled, /<strong>原始语义<\/strong>/);
   assert.match(settled, /class="katex"/);

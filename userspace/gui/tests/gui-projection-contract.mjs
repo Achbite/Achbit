@@ -30,19 +30,9 @@ function createGuiLoader() {
   });
 }
 
-const guiLoader = await createGuiLoader();
-after(() => guiLoader.close());
-let guiApi;
-let usage;
-try {
-  guiApi = await guiLoader.ssrLoadModule('/src/services/localAgentApi.ts');
-  usage = await guiLoader.ssrLoadModule('/src/utils/providerUsage.ts');
-} catch (error) {
-  await guiLoader.close();
-  throw error;
-}
-
-export const { inputCacheMetric, lastCallInputCacheMetric } = usage;
+let guiLoader;
+let guiApiPromise;
+after(() => guiLoader?.close());
 
 export async function loadGuiModelStore(t) {
   // Each store case owns its module-level initialization and request lifecycle.
@@ -58,6 +48,10 @@ export function installGuiFetch(t, handler) {
 }
 
 export async function decodeGuiProjection(projection) {
+  const guiApi = await (guiApiPromise ??= createGuiLoader().then(loader => {
+    guiLoader = loader;
+    return loader.ssrLoadModule('/src/services/localAgentApi.ts');
+  }));
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     assert.equal(new URL(url).pathname,

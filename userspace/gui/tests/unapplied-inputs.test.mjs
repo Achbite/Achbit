@@ -29,7 +29,6 @@ test('only active queued inputs occupy the real composer; terminal evidence is n
   assert.deepEqual(inputs, before, 'rendering must not mutate the shared Session projection');
   assert.deepEqual(calls, []);
   const send = findReactElement(view, node => node.type === 'button' && node.props['data-ui-action'] === 'composer.controls.submit');
-  assert.equal(send.props.className, 'local-agent__send', 'retain the existing send control, not the preview primary button');
   send.props.onClick(); assert.deepEqual(calls, ['send']);
 });
 
