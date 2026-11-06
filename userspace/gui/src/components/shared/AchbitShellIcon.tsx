@@ -1,2 +1,2 @@
-export { default } from '../../icons/registry';
-export type { UiIconName as AchbitShellIconName } from '../../icons/registry';
+export { UiIcon as default } from '../../ui-components';
+export type { UiIconName as AchbitShellIconName } from '../../ui-components';

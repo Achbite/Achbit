@@ -1,4 +1,4 @@
-import UiIcon from '../../icons/registry';
+import { UiIcon } from '../../ui-components';
 import React from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import {

@@ -39,4 +39,5 @@ export type { IconButtonProps } from './IconButton';
 export type { CloseButtonProps } from './CloseButton';
 export type { PanelHeaderProps } from './PanelHeader';
 export type { UiIconName, UiIconProps } from '../icons/registry';
+export { UI_ICON_ROLES } from '../icons/registry';
 export { UI_REGION_SLOTS } from '../ui-plugins/slots';

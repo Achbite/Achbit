@@ -9,10 +9,10 @@ import ts from 'typescript';
 import { loadGuiModules, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('the catalog and imports expose the same stable implementations, including existing controls', async t => {
-  const [ui, modal, toggle, select, resize, icons] = await loadGuiModules(t, [
+  const [ui, modal, toggle, select, resize, icons, shellIcons] = await loadGuiModules(t, [
     '/src/ui-components/index.ts', '/src/components/shared/ModalDialog.tsx',
     '/src/components/shared/ToggleSwitch.tsx', '/src/components/shared/NativeSelect.tsx',
-    '/src/components/shared/ResizeHandle.tsx', '/src/icons/registry.tsx',
+    '/src/components/shared/ResizeHandle.tsx', '/src/icons/registry.tsx', '/src/components/shared/AchbitShellIcon.tsx',
   ]);
   assert.ok(Object.isFrozen(ui.UI_COMPONENTS));
   for (const [name, entry] of Object.entries(ui.UI_COMPONENTS)) {
@@ -25,6 +25,8 @@ test('the catalog and imports expose the same stable implementations, including 
   assert.equal(ui.NativeSelect, select.default);
   assert.equal(ui.ResizeHandle, resize.default);
   assert.equal(ui.UiIcon, icons.default);
+  assert.equal(shellIcons.default, ui.UiIcon);
+  assert.equal(ui.UI_ICON_ROLES, icons.UI_ICON_ROLES);
 });
 
 test('Button preserves refs, native submission, events and owner identity without adding a wrapper', async t => {
@@ -114,7 +116,7 @@ test('region declarations drive built-ins while external selection replaces only
   assert.deepEqual(usage.manifest.slots, ['usage.widget']);
 });
 
-test('feature imports use the catalog rather than private shared-control implementations', async () => {
+test('feature imports and re-exports use the catalog rather than private shared-control implementations', async () => {
   const root = fileURLToPath(new URL('../src', import.meta.url));
   const privateControls = new Set(['ModalDialog', 'ToggleSwitch', 'NativeSelect', 'ResizeHandle']);
   const violations = [];
@@ -127,9 +129,11 @@ test('feature imports use the catalog rather than private shared-control impleme
       if (local.startsWith('ui-components/')) continue;
       const file = ts.createSourceFile(path, await readFile(path, 'utf8'), ts.ScriptTarget.Latest, true);
       for (const node of file.statements) {
-        if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) continue;
+        if ((!ts.isImportDeclaration(node) && !ts.isExportDeclaration(node))
+          || !node.moduleSpecifier || !ts.isStringLiteral(node.moduleSpecifier)) continue;
         const specifier = node.moduleSpecifier.text;
         const target = relative(root, resolve(dirname(path), specifier)).split('\\').join('/').replace(/\.tsx?$/, '');
+        if (target === 'icons/registry') violations.push(`${local}: use the public UiIcon and icon metadata exports`);
         if (target.startsWith('ui-components/')) violations.push(`${local}: use the public ui-components entrypoint`);
         if (target.startsWith('components/shared/') && privateControls.has(target.slice('components/shared/'.length))) {
           violations.push(`${local}: ${specifier}`);

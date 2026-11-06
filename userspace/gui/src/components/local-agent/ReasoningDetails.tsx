@@ -1,4 +1,4 @@
-import UiIcon from '../../icons/registry';
+import { UiIcon } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
