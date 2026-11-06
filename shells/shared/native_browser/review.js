@@ -30,17 +30,17 @@
   const box = root.querySelector('.box'), editor = root.querySelector('.editor'), input = root.querySelector('textarea');
   const hint = root.querySelector('.hint');
   const events = new AbortController();
-  let selected = null, origin = null, pending = null, pressTimer = null, dragging = false, editingId = null, pointerId = null;
+  let selected = null, origin = null, pending = null, dragging = false, editingId = null, pointerId = null;
+  const dragThreshold = 8;
   const state = { reviewId, active: true, pending: null, dispose, acknowledge };
   window.__achbitReview = state;
-  function clearPress() { clearTimeout(pressTimer); pressTimer = null; }
   function dispose(reason) {
     endGesture(); events.abort(); host.remove(); state.active = false;
     state.exitReason = reason === 'escape' ? 'escape' : null;
   }
   function updateHint() { hint.textContent = labels.hint; }
   function endGesture() {
-    clearPress(); origin = null; dragging = false;
+    origin = null; dragging = false;
     if (pointerId !== null && shield.hasPointerCapture(pointerId)) shield.releasePointerCapture(pointerId);
     pointerId = null;
   }
@@ -100,29 +100,37 @@
   root.prepend(shield);
   shield.addEventListener('pointermove', event => {
     if (!editor.hidden || pending) return;
-    if (origin && dragging) selected = region(event.clientX,event.clientY);
-    else {
-      if (origin && Math.hypot(event.clientX-origin.x,event.clientY-origin.y)>7) clearPress();
-      selected = targetAt(event.clientX,event.clientY);
-    }
+    if (origin) {
+      if (event.pointerId !== pointerId) return;
+      // A deliberate drag starts immediately. Holding first still works, but
+      // early movement cannot cancel selection or turn it into another click.
+      if (Math.hypot(event.clientX-origin.x,event.clientY-origin.y) >= dragThreshold) dragging = true;
+      selected = dragging ? region(event.clientX,event.clientY) : targetAt(origin.x,origin.y);
+    } else selected = targetAt(event.clientX,event.clientY);
     if (selected) paint(selected.rect); else box.hidden = true;
   });
   shield.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || origin || !editor.hidden || pending) return;
+    if (event.button !== 0 || event.isPrimary === false || origin || !editor.hidden || pending) return;
     event.preventDefault(); event.stopPropagation(); document.getSelection()?.removeAllRanges();
     pointerId = event.pointerId; shield.setPointerCapture(pointerId); origin = { x: event.clientX, y: event.clientY }; dragging = false;
     selected = targetAt(event.clientX,event.clientY);
-    clearPress(); pressTimer = setTimeout(() => { if (origin) { dragging = true; selected = region(origin.x, origin.y); paint(selected.rect); } },420);
+    if (selected) paint(selected.rect); else box.hidden = true;
   });
   shield.addEventListener('pointerup', event => {
-    clearPress(); if (!shield.hasPointerCapture(event.pointerId)) return;
+    if (event.pointerId !== pointerId || !shield.hasPointerCapture(event.pointerId)) return;
     event.preventDefault(); event.stopPropagation();
-    if (origin && dragging) selected = region(event.clientX,event.clientY);
+    if (origin && dragging) {
+      const candidate = region(event.clientX,event.clientY);
+      // A hold, small jitter or a degenerate line must still yield an editable
+      // target rather than silently leaving an invisible zero-area selection.
+      selected = candidate.rect.width >= 2 && candidate.rect.height >= 2 ? candidate : targetAt(origin.x,origin.y);
+    }
     endGesture();
     if (selected) { paint(selected.rect); openEditor(); }
   });
-  shield.addEventListener('pointercancel', cancel);
-  shield.addEventListener('lostpointercapture', () => { if (origin) cancel(); });
+  shield.addEventListener('pointercancel', event => { if (event.pointerId === pointerId) cancel(); });
+  shield.addEventListener('contextmenu', event => event.preventDefault());
+  shield.addEventListener('lostpointercapture', event => { if (event.pointerId === pointerId && origin) cancel(); });
   shield.addEventListener('wheel', event => event.preventDefault(), { passive: false });
   root.querySelector('[data-cancel]').addEventListener('click', cancel);
   editor.addEventListener('submit', event => {
@@ -146,6 +154,7 @@
     selected = null; box.hidden = true; editor.hidden = true;
     updateHint();
   }, { signal: events.signal });
+  window.addEventListener('blur', () => { if (origin) cancel(); }, { signal: events.signal });
   window.addEventListener('pagehide', dispose, { signal: events.signal });
   updateHint();
   if (annotation) {
