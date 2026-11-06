@@ -84,8 +84,9 @@
   font-weight: var(--ac-weight-medium);
 }
 
-.achbit-gui-session-entry--active {
-  background: var(--ac-surface-hover);
+.achbit-gui-session-entry--active,
+.achbit-gui-session-entry--active:hover {
+  background: var(--ac-surface-active);
   color: var(--ac-foreground-strong);
 }
 
@@ -226,7 +227,7 @@
 }
 
 .achbit-local-agent-settings {
-  position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:var(--ac-surface);
+  position:relative;width:100%;height:100%;min-height:0;overflow:hidden;border-radius:var(--ac-radius-outer);background:var(--ac-surface);
 }
 .achbit-local-agent-settings__close {
   min-height: 29px; padding: 0 10px; border: 1px solid var(--ac-border); border-radius: var(--ac-radius-control);
@@ -412,7 +413,8 @@
   color: var(--ac-foreground);
   cursor: pointer;
   font-size: var(--ac-font-body);
-  font-weight: var(--ac-weight-medium);
+  font-weight: var(--ac-weight-semibold);
+  font-synthesis-weight: auto;
   text-align: left;
 }
 
@@ -517,7 +519,7 @@
 
 .achbit-gui-session-row--active,
 .achbit-gui-session-row--active:hover {
-  background: var(--ac-selection, var(--ac-surface-active));
+  background: var(--ac-surface-active);
 }
 
 .achbit-gui-session-row > button:first-child {
@@ -608,6 +610,8 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  margin-bottom: 0;
+  border-radius: var(--ac-radius-outer) 0 0 var(--ac-radius-outer);
   background: var(--ac-surface);
 }
 
@@ -623,7 +627,7 @@
   flex-direction: column;
   gap: 24px;
   overflow: auto;
-  padding: 20px 16px;
+  padding: 12px 16px 0;
   border-left: 0;
   background: var(--ac-surface);
 }
@@ -771,7 +775,7 @@
 
 .achbit-gui-output-more svg, .achbit-gui-output-back svg { width: 16px; height: 16px; flex: none; }
 .achbit-gui-context-panel--outputs { overflow: hidden; }
-.achbit-gui-output-page { display: flex; flex-direction: column; min-height: 0; padding: 16px; height: 100%; }
+.achbit-gui-output-page { display: flex; flex-direction: column; min-height: 0; padding: 16px; height: 100%; background:var(--ac-surface); }
 .achbit-gui-output-page > .achbit-gui-task-list-card__title { align-items: center; flex: none; }
 .achbit-gui-output-page > .achbit-gui-task-list-card__title > span { flex: 1; }
 .achbit-gui-output-page > .achbit-gui-output-list { max-height: none; flex: 1; min-height: 0; }

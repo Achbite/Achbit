@@ -1010,7 +1010,7 @@
 .conversation-plan-verification li > .conversation-markdown > :last-child { margin-bottom: 0; }
 .conversation-plan-revision-note { font-size: var(--ac-font-label); color: var(--ac-muted); margin: 14px 22px 0; }
 .conversation-plan-preview-note { display: block; color: var(--ac-muted); padding: 0 22px 18px; }
-.conversation-markdown-inline code { padding: .12em .35em; border-radius: 4px; background: var(--ac-code-background); font: .9em/var(--ac-line-code, 1.6) var(--ac-font-code); }
+.conversation-markdown-inline code { padding: .12em .35em; border-radius: 4px; background: var(--ac-code-background); font: inherit; font-family: var(--ac-font-code); }
 
 .local-agent__plan-manifest {
   margin: 16px 0 0;
@@ -1425,8 +1425,8 @@
   position: relative;
   /* Picker and permission panels belong above transcript floating actions. */
   z-index: 5;
-  padding: 0 20px 13px;
-  background: linear-gradient(to bottom, transparent, var(--ac-surface) 24px);
+  padding: 0 20px;
+  background: transparent;
 }
 
 .local-agent__composer-content {
@@ -1960,6 +1960,10 @@
   margin-inline: auto;
 }
 
+/* Lift only the ordinary conversation input, not either Reader layout. */
+.local-agent--workbench:not(.local-agent--reading) .local-agent__composer-shell { padding-bottom: 12px; }
+.local-agent--workbench.local-agent--empty:not(.local-agent--reading) .local-agent__composer-shell { top: calc(50% - 12px); }
+
 .local-agent--workbench .local-agent__composer {
   width: 100%;
   border-radius: 18px;
@@ -2116,7 +2120,7 @@
 }
 
 .local-agent__composer-hint {
-  padding: 6px 4px 0;
+  padding: 4px 4px 0;
   color: var(--ac-faint);
   font-size: calc(10px * var(--ac-ui-font-scale, 1));
   text-align: center;

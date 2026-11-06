@@ -14,8 +14,8 @@
 .conversation-markdown li > :is(p, ul, ol) { margin-block: 0; }
 .conversation-markdown blockquote { margin-inline: 0; padding-left: 1em; border-left: 2px solid var(--ac-border); color: var(--ac-muted); }
 .conversation-markdown hr { height: 1px; margin: 1.6em 0; border: 0; background: var(--ac-border); }
-.conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--ac-code-background); font: var(--ac-font-code-size, 12px)/var(--ac-line-code, 1.6) var(--ac-font-code); overflow-wrap: anywhere; }
-.conversation-markdown a { color: var(--ac-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--ac-accent) 35%, transparent); text-underline-offset: 3px; }
+.conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--ac-code-background); font: inherit; font-family: var(--ac-font-code); overflow-wrap: anywhere; }
+.conversation-markdown a { color: var(--ac-accent); font-weight: 500; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--ac-accent) 35%, transparent); text-underline-offset: 3px; }
 .conversation-markdown a:hover { text-decoration-color: currentColor; }
 .conversation-markdown > :first-child { margin-top: 0; }
 .conversation-markdown > :last-child { margin-bottom: 0; }
@@ -125,10 +125,10 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .local-agent .conversation-changes-heading { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 6px; border-radius: 8px; }
 .conversation-changes-heading > svg { width: 16px; height: 16px; flex: none; color: var(--ac-muted); }
 .conversation-changes-heading > span:first-of-type { flex: 1; min-width: 0; }
-.conversation-changes-heading strong { font-size: var(--ac-font-label); font-weight: 500; }
+.conversation-changes-heading strong { font-size: var(--ac-font-reading-size, var(--ac-font-body)); font-weight: 500; }
 .conversation-changes-heading small { display: block; font-size: calc(11px * var(--ac-ui-font-scale, 1)); color: var(--ac-muted); margin-top: 3px; }
 .local-agent .conversation-changes button:hover { background: var(--ac-surface-hover); }
-.conversation-change-list { padding: 4px 0 8px 24px; font-size: var(--ac-font-label); }
+.conversation-change-list { padding: 4px 0 8px 24px; font-size: var(--ac-font-reading-size, var(--ac-font-body)); }
 .local-agent .conversation-change-file { display: flex; gap: 12px; align-items: center; width: 100%; text-align: left; padding: 9px 6px; border-radius: 6px; min-width: 0; }
 .conversation-change-file > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-change-file > span:first-child { -webkit-user-select: text; user-select: text; }

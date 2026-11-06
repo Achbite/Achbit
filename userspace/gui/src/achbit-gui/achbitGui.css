@@ -17,6 +17,17 @@ body,
   );
 }
 
+/* Bundled reading faces are Regular-only; synthetic bold closes dense CJK counters.
+ * Keep chrome readable while preserving emphasis inside document/message content. */
+.achbit-gui-titlebar,
+.achbit-gui-left-rail,
+.reader-tabs,
+.resource-tree,
+.local-agent__empty {
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -199,7 +210,7 @@ textarea {
 .achbit-gui-titlebar .local-agent__header-conversation { padding: 0 8px 0 16px; gap: 8px; }
 .achbit-gui-titlebar .local-agent__header-preview { padding: 0 10px 0 8px; gap: 6px; }
 .achbit-gui-titlebar .local-agent__heading-mark { display: none; }
-.achbit-gui-titlebar .local-agent__heading strong { font-size: calc(14px * var(--ac-ui-font-scale, 1)); font-weight: var(--ac-weight-semibold); }
+.achbit-gui-titlebar .local-agent__heading strong { font-size: calc(14px * var(--ac-ui-font-scale, 1)); font-weight: var(--ac-weight-semibold); font-synthesis-weight: auto; }
 .achbit-gui-titlebar .local-agent__run-label { flex: none; padding-inline: 4px; }
 .achbit-gui-titlebar .local-agent__header-actions { flex: none; gap: 4px; }
 .achbit-gui-titlebar .window-controls { margin-left: 0; padding-right: 8px; }
