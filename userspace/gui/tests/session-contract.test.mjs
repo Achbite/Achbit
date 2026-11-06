@@ -1762,7 +1762,7 @@ test('continuous conversation keeps every message anchor while mounting nearby c
   const props = {
     layoutCache: new ConversationLayoutCache(),
     language: 'zh-CN', loading: false, displaySettledRunIds: new Set(), artifacts: [], onDisplayed() {},
-    projection: { sessionId: 'session:long', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts:[] },
+    projection: { sessionId: 'session:long', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts:[], queuedInputs: [] },
     hasConversationContent: true, draftItems: [],
     conversationItems: rows.map((row, index) => ({ ...row.item, sequence: index, streamId: `stream:${index}`, value: { ...row.item.value, messageId: row.key, runId: 'run:long' } })),
     presentation: { content: (id) => id },

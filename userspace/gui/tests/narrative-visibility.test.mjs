@@ -24,7 +24,7 @@ async function transcript(t) {
   const props = {
     layoutCache: new ConversationLayoutCache(), language: 'zh-CN', loading: false,
     showReasoning: false, displaySettledRunIds: new Set(), onDisplayed() {},
-    projection: { sessionId: 'session:progress', run: { runId, status: 'running' },
+    projection: { sessionId: 'session:progress', run: { runId, status: 'running' }, queuedInputs: [],
       plans: [], interactions: [], activities: [before, after], artifacts: [], fileChangeRounds: [], timeline: [],
       pendingApproval: null, terminalError: null, assistantDraft: null },
     hasConversationContent: true, draftItems: [],

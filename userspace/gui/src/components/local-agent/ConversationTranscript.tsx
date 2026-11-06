@@ -29,6 +29,7 @@ import { ConversationVirtualRow, useConversationRowState } from './ConversationV
 import { MessageActions } from './MessageActions';
 import { RunFailureDetails, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { InteractionCard } from './InteractionCard';
+import { UnappliedInputs } from './UnappliedInputs';
 import { messageDisplayText } from './interactionPresentation';
 import { isAutomaticApproval } from './composerDecisions';
 import { PreviewArtifactsScope } from './InteractivePreview';
@@ -439,6 +440,9 @@ export function ConversationTranscript({
         </ConversationRoundView>;
       })}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
+      {projection && <UnappliedInputs sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language}
+        copiedId={copiedMessageId} onCopy={(id, text) => void copyMessage(id, text)}
+        onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
       <div ref={messageEndRef} />
     </div>
     </PreviewArtifactsScope.Provider>

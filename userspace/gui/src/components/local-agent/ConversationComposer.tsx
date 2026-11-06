@@ -223,10 +223,8 @@ export function ConversationComposer({
         {!composer.canRestoreFailedDraft && <small>{language === 'zh-CN' ? '发送或清空当前草稿后可恢复。' : 'Send or clear the current draft to restore this one.'}</small>}
       </details>)}
       <div className="conversation-change-dock" aria-live="polite">{changeBar}</div>
-      {projection?.queuedInputs.map((input) => <div className="local-agent__queued-input" key={input.commandId} role="status">
-        <strong>{input.status === 'queued'
-          ? (language === 'zh-CN' ? '等待加入当前任务' : 'Waiting to join this run')
-          : (language === 'zh-CN' ? '未加入本轮' : 'Not applied to this run')}</strong>
+      {projection?.queuedInputs.filter(input => input.status === 'queued').map((input) => <div className="local-agent__queued-input" key={input.commandId} role="status">
+        <strong>{language === 'zh-CN' ? '等待加入当前任务' : 'Waiting to join this run'}</strong>
         <span>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map((item) => item.displayName).join(', ')}` : ''}</span>
       </div>)}
       {concurrentDecisionKey && <div className="local-agent__decision-switcher" role="group"

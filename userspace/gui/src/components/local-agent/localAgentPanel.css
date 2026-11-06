@@ -2122,6 +2122,16 @@
 .local-agent__failed-draft small { display: block; color: var(--ac-muted); margin-top: 5px; }
 .local-agent__queued-input { display: flex; gap: 8px; padding: 6px 12px; color: var(--ac-muted); }
 .local-agent__queued-input span { white-space: pre-wrap; overflow-wrap: anywhere; }
+.local-agent__unapplied-inputs { margin: 18px 0; color: var(--ac-muted); font-size: var(--ac-font-caption); }
+.local-agent__unapplied-inputs > summary { display: flex; align-items: center; gap: 8px; padding: 10px 0; cursor: pointer; list-style: none; }
+.local-agent__unapplied-inputs > summary::-webkit-details-marker { display: none; }
+.local-agent__unapplied-inputs > summary > svg:last-child { margin-left: auto; transition: transform var(--ac-motion-feedback) ease; }
+.local-agent__unapplied-inputs[open] > summary > svg:last-child { transform: rotate(180deg); }
+.local-agent__unapplied-inputs > p { margin: 0 0 12px; line-height: var(--ac-line-body); }
+.local-agent__unapplied-input { display: flex; align-items: flex-start; gap: 10px; margin-top: 8px; padding: 12px; border-radius: var(--ac-radius-inner); background: var(--ac-surface-subtle); }
+.local-agent__unapplied-input-text { flex: 1; min-width: 0; }
+.local-agent__unapplied-input pre { max-height: 220px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: var(--ac-foreground); }
+.local-agent__unapplied-input-plugins { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 
 @media (max-width: 560px) {
   .local-agent .achbit-session-model__context {
