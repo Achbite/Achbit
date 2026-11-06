@@ -428,10 +428,20 @@
 }
 
 .local-agent__message:hover .local-agent__message-actions,
-.local-agent__message--user .local-agent__message-actions,
 .local-agent__message-actions:has(button:focus-visible) {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Time participates in the same hover/focus disclosure as its message actions. */
+.local-agent__message-time {
+  margin-inline: 6px;
+  color: var(--ac-faint);
+  font-family: var(--ac-font-ui);
+  font-size: var(--ac-font-caption);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--ac-line-tight);
+  white-space: nowrap;
 }
 
 .local-agent .local-agent__message-actions button {
