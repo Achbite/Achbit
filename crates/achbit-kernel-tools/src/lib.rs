@@ -29,15 +29,7 @@ pub mod kernel_internal {
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut output = String::with_capacity(digest.len() * 2 + 7);
-    output.push_str("sha256:");
-    for byte in digest {
-        output.push_str(&format!("{byte:02x}"));
-    }
-    output
+    format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
 pub mod text_range;

@@ -403,9 +403,7 @@ async fn proxy_api(
             .into_response();
         }
     };
-    let reqwest_method =
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-    let mut request = state.client.request(reqwest_method, url).body(body_bytes);
+    let mut request = state.client.request(method, url).body(body_bytes);
     if let Some(content_type) = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

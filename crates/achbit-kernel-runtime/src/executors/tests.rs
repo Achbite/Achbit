@@ -2,14 +2,17 @@ use super::*;
 
 pub(super) fn invocation(id: impl Into<String>, tool: &str, input: Value) -> KernelToolInvocation {
     // Execution mode/scope are prepared Kernel facts, not Provider input.
-    let input: KernelCanonicalInvocation = if matches!(tool, "bash" | "powershell") {
-        serde_json::from_value(serde_json::json!({"toolId": tool, "arguments": input})).unwrap()
+    let input = if matches!(tool, "bash" | "powershell") {
+        let input: KernelCanonicalInvocation =
+            serde_json::from_value(serde_json::json!({"toolId": tool, "arguments": input}))
+                .unwrap();
+        input.validate().unwrap();
+        input
     } else {
         KernelToolRegistry::default()
             .canonicalize(tool, input)
             .unwrap()
     };
-    input.validate().unwrap();
     KernelToolInvocation {
         id: id.into(),
         input,
