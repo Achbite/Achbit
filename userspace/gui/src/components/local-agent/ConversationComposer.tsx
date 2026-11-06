@@ -1,4 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { IconButton } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { BrowserAnnotationDraft } from './browserReview';
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
@@ -18,6 +19,7 @@ import { ImageReview } from './ImageReview';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
+  readerExpanded?: boolean;
   language: UiLanguage;
   composer: AgentComposer;
   uiActionError: string | null;
@@ -27,6 +29,7 @@ interface ConversationComposerProps {
 
 export function ConversationComposer({
   changeBar,
+  readerExpanded = false,
   language,
   composer,
   uiActionError,
@@ -47,6 +50,16 @@ export function ConversationComposer({
     ? { ...composer, pendingPlan: null, pendingScopeAddition: null, pendingInteraction: null }
     : { ...composer, pendingApproval: null };
   const decisionContentId = useId();
+  const inputId = useId();
+  const [readerInputExpanded, setReaderInputExpanded] = useState(false);
+  useLayoutEffect(() => setReaderInputExpanded(false), [readerExpanded, composer.conversationKey]);
+  const lastModelRequest = useRef(composer.modelPanelRequest);
+  useLayoutEffect(() => {
+    if (lastModelRequest.current !== composer.modelPanelRequest) {
+      lastModelRequest.current = composer.modelPanelRequest;
+      if (readerExpanded && composer.modelPanelRequest) setReaderInputExpanded(true);
+    }
+  }, [readerExpanded, composer.modelPanelRequest]);
   const {
     pendingPlan,
     pendingInteraction,
@@ -120,8 +133,9 @@ export function ConversationComposer({
   const editedDraft = useRef<string | null>(null);
   // Alternating names restarts the surface pulse, including rapid repeat clicks.
   const playPressFeedback = () => setPressFeedback(current => current === 'a' ? 'b' : 'a');
-  const draftEmpty = !draft && !pendingFilesystemPaths.length
-    && !composer.pastedTexts.length && !composer.pastedImages.length && !pluginSelections.length;
+  const hasDraftAttachments = Boolean(pendingFilesystemPaths.length
+    || composer.pastedTexts.length || composer.pastedImages.length || pluginSelections.length);
+  const draftEmpty = !draft && !hasDraftAttachments;
   useLayoutEffect(() => {
     // Sending clears the draft; deleting the last character is still editing.
     if (draftEmpty && editedDraft.current !== draft) setPressFeedback(null);
@@ -136,6 +150,9 @@ export function ConversationComposer({
   const previousAttachments = useRef(new Set<string>());
   const inputMode = pendingApproval ? 'approval' : pendingPlan ? 'plan' : pendingInteraction ? 'interaction' : 'message';
   const compactInput = inputMode !== 'message';
+  // Decisions, message edits and attachments keep their complete existing controls visible.
+  const canCollapseInput = readerExpanded && !compactInput && !composer.editingMessage && !hasDraftAttachments;
+  const readerInputCollapsed = canCollapseInput && !readerInputExpanded;
   const currentRequest = projection?.contextCompositions.filter((item)=>item.runId===projection.run?.runId).at(-1);
   const readyPlugins = new Set(currentRequest?.tools.filter((tool)=>tool.availability==='callable').map((tool)=>tool.pluginUri));
 
@@ -153,7 +170,7 @@ export function ConversationComposer({
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
-  }, [draft, inputMode, textareaRef]);
+  }, [draft, inputMode, readerInputCollapsed, textareaRef]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -176,7 +193,7 @@ export function ConversationComposer({
   return (
     <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
       ? ' local-agent__composer-shell--decision'
-      : ''}`} onKeyDown={(event) => {
+      : ''}${canCollapseInput ? ' local-agent__composer-shell--reader' : ''}${readerInputCollapsed ? ' local-agent__composer-shell--collapsed' : ''}`} onKeyDown={(event) => {
           if (composer.editingMessage && event.key === 'Escape' && !event.repeat
             && !event.nativeEvent.isComposing && !event.defaultPrevented) {
             event.preventDefault();
@@ -228,7 +245,7 @@ export function ConversationComposer({
       <div id={decisionContentId} className="local-agent__composer-content">
       <ComposerQuestionPrompt language={language} composer={visibleComposer} />
       <div
-        className={`local-agent__composer local-agent__composer--${inputMode}`}
+        className={`local-agent__composer local-agent__composer--${inputMode}${readerInputCollapsed ? ' local-agent__composer--collapsed' : ''}`}
         data-press-feedback={pressFeedback ?? undefined}
         onMouseDown={(event) => {
           const textarea = textareaRef.current;
@@ -244,6 +261,21 @@ export function ConversationComposer({
           playPressFeedback();
         }}
       >
+        {canCollapseInput && <IconButton
+          {...identity.action('toggle-expanded', 'click')}
+          className="local-agent__composer-disclosure"
+          icon="chevronDown"
+          size="compact"
+          aria-label={t(language, readerInputCollapsed ? 'agent.composer.expandInput' : 'agent.composer.collapseInput')}
+          aria-expanded={!readerInputCollapsed}
+          aria-controls={inputId}
+          onMouseDown={event => { if (event.button === 0) event.preventDefault(); }}
+          onClick={() => {
+            setAttachmentMenuOpen(false);
+            setPermissionMenuOpen(false);
+            setReaderInputExpanded(value => !value);
+          }}
+        />}
         <ComposerDecisionPanels language={language} composer={visibleComposer} />
         {!pendingApproval && <>
         {composer.editingMessage && !composer.textDecision && <>
@@ -415,11 +447,13 @@ export function ConversationComposer({
         {composer.textDecision && <span className="local-agent__decision-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>}
         <textarea
           {...identity.action('input', 'type')}
+          id={inputId}
           ref={textareaRef}
           value={draft}
           aria-controls={commandSuggestions.length ? commandMenuId : undefined}
           aria-activedescendant={commandSuggestions.length && commandActiveIndex >= 0 ? `${commandMenuId}-${commandActiveIndex}` : undefined}
-          rows={compactInput ? 1 : 3}
+          rows={compactInput || readerInputCollapsed ? 1 : 3}
+          wrap={readerInputCollapsed ? 'off' : 'soft'}
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'
             : pendingInteraction ? 'agent.composer.placeholder.interaction' : 'agent.composer.placeholder.task')}
           disabled={Boolean(!pendingPlan && pendingInteraction && !pendingInteraction.allowFreeform || composer.editingMessage && submitting)}

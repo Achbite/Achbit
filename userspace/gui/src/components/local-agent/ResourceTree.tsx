@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ResourceTreeMenu, type AttachTreeResource } from './ResourceTreeMenu';
 import { asyncDataLoaderFeature, hotkeysCoreFeature, type ItemInstance } from '@headless-tree/core';
 import { useTree } from '@headless-tree/react';
@@ -184,6 +184,8 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   }
   const displayed = visibleItems.filter(item => !filter || matched.has(item.getId()));
   displayedItems.current = displayed;
+  const selectedItem = displayed.find(item => item.getId() === selected);
+  const selectedParentId = selectedItem && selectedItem.getItemMeta().level > 0 ? selectedItem.getParent()?.getId() : undefined;
   const watched = displayed.filter(item => item.isExpanded() && item.getItemData().entry?.kind === 'directory');
   const watchKey = JSON.stringify(watched.map(item => item.getId()).sort());
   useEffect(() => {
@@ -231,7 +233,8 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
     }}>
     <label className="resource-tree__filter"><AchbitShellIcon name="search" /><input value={filter} onChange={event => setFilter(event.target.value)} placeholder={chinese ? '筛选已加载文件…' : 'Filter loaded files…'} aria-label={chinese ? '筛选文件' : 'Filter files'} /></label>
     {watchError && <p className="local-agent__resource-error" role="alert">{watchError}</p>}
-    <div className="resource-tree__items" {...tree.getContainerProps(chinese ? '文件' : 'Files')}>
+    <div className="resource-tree__items" {...tree.getContainerProps(chinese ? '文件' : 'Files')}
+      style={{ '--resource-tree-active-depth': selectedItem?.getItemMeta().level ?? 0 } as CSSProperties}>
       {displayed.map(item => {
         const data = item.getItemData();
         return <button key={item.getId()} {...item.getProps()} aria-current={item.getId() === selected ? 'true' : undefined} type="button" title={data.error ?? data.entry?.resource.logicalPath ?? data.name}
@@ -242,8 +245,9 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
               openMenu(data.entry, event.currentTarget, rect.left, rect.bottom);
             }
           }}
+          data-current-branch={selectedParentId && item.isDescendentOf(selectedParentId) ? '' : undefined}
           className={`resource-tree__item${item.getId() === selected ? ' is-selected' : ''}${data.entry?.category ? ' is-root' : ''}`}
-          style={{ paddingLeft: 8 + item.getItemMeta().level * 12 }}>
+          style={{ '--resource-tree-depth': item.getItemMeta().level } as CSSProperties}>
           <AchbitShellIcon name={item.isFolder() ? (item.isExpanded() ? 'chevronDown' : 'chevronRight') : 'artifact'} />
           <span ref={element => { if (element?.parentElement) rows.current.set(item.getId(), element.parentElement as HTMLButtonElement); else rows.current.delete(item.getId()); }} className={data.error ? 'local-agent__resource-error' : ''}>{data.name}</span>
         </button>;

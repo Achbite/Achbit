@@ -656,6 +656,8 @@
     "agent.composer.stop": "停止",
     "agent.composer.sendEnter": "发送（Enter）",
     "agent.composer.hint": "Enter 发送 · Shift+Enter 换行",
+    "agent.composer.expandInput": "展开输入框",
+    "agent.composer.collapseInput": "收起输入框",
     "agent.attachment.error.maxFiles": "单次消息最多附加 8 个文件。",
     "agent.attachment.error.notText": "“{name}”不是可直接附加的文本文件。",
     "agent.attachment.error.totalSize": "附件文本总计不能超过 512 KiB。",

@@ -2405,3 +2405,16 @@
 
 .local-agent__pasted-image-preview .conversation-image-review__open { width: 48px; height: 48px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
 .local-agent__pasted-image-preview .conversation-image-review__open > img { width: 100%; height: 100%; object-fit: contain; }
+
+
+/* Reader expansion reuses the mounted input and send controls in a one-line capsule. */
+.local-agent.local-agent--expanded .local-agent__composer-shell--reader { padding-top: 24px; padding-bottom: 8px; }
+.local-agent__composer-disclosure { position: absolute; z-index: 1; top: -24px; left: 50%; transform: translateX(-50%); }
+.local-agent__composer-disclosure[aria-expanded='false'] { transform: translateX(-50%) rotate(180deg); }
+.local-agent__composer-shell--collapsed .conversation-change-dock:empty,
+.local-agent__composer-shell--collapsed .local-agent__composer-hint { display: none; }
+.local-agent .local-agent__composer--collapsed { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 18px; border-radius: 999px; }
+.local-agent__composer--collapsed > textarea { flex: 1 1 auto; min-width: 0; width: 0; min-height: 1lh; max-height: 1lh; padding: 0; }
+.local-agent__composer--collapsed .local-agent__composer-footer { flex: 0 0 auto; flex-wrap: nowrap; min-height: 0; padding: 0; }
+.local-agent__composer--collapsed .local-agent__composer-actions { flex: 0 0 auto; flex-wrap: nowrap; }
+.local-agent__composer--collapsed :is(.local-agent__composer-tools, .achbit-session-model) { display: none; }

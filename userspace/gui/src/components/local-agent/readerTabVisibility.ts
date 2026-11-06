@@ -6,7 +6,11 @@ export function revealActiveReaderTab(list: HTMLElement | null): void {
   const bounds = list.getBoundingClientRect();
   const rect = tab.getBoundingClientRect();
   if (bounds.width <= 0 || rect.width <= 0) return;
-  const delta = rect.left < bounds.left || rect.width > bounds.width
-    ? rect.left - bounds.left : Math.max(0, rect.right - bounds.right);
+  const style = getComputedStyle(list);
+  // CSS scroll padding includes the selected tab's decorative feet. 'auto' is zero.
+  const left = bounds.left + (Number.parseFloat(style.scrollPaddingLeft) || 0);
+  const right = bounds.right - (Number.parseFloat(style.scrollPaddingRight) || 0);
+  const delta = rect.left < left || rect.width > right - left
+    ? rect.left - left : Math.max(0, rect.right - right);
   if (delta) list.scrollLeft += delta;
 }

@@ -321,6 +321,7 @@ export function ResourcePreview({
   language,
   preview,
   tabsTarget,
+  onTreeWidthChange,
   onReview,
   onAttach,
 }: {
@@ -328,6 +329,7 @@ export function ResourcePreview({
   preview: ReturnType<typeof useResourcePreview>;
   ready?: boolean;
   tabsTarget?: HTMLElement | null;
+  onTreeWidthChange?: (width: number) => void;
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
   onAttach?: AttachTreeResource;
 }) {
@@ -358,6 +360,8 @@ export function ResourcePreview({
   }, [preview.activeId, preview.visible, preview.expanded, tabsTarget]);
   const workspace = useRef<HTMLDivElement>(null);
   const treeWidth = usePaneWidth('fileTreeWidth', PANE_GEOMETRY.fileTree, workspace);
+  const visibleTreeWidth = ready && activeSessionId && activeTarget?.kind !== 'agent' && preview.visible && preview.treeVisible ? treeWidth.width : 0;
+  useLayoutEffect(() => { onTreeWidthChange?.(visibleTreeWidth); }, [onTreeWidthChange, visibleTreeWidth]);
   const tabs = (
         <header className="reader-tabs">
           <div

@@ -656,6 +656,8 @@
     "agent.composer.stop": "Stop",
     "agent.composer.sendEnter": "Send (Enter)",
     "agent.composer.hint": "Enter to send · Shift+Enter for a new line",
+    "agent.composer.expandInput": "Expand input",
+    "agent.composer.collapseInput": "Collapse input",
     "agent.attachment.error.maxFiles": "Attach at most 8 files per message.",
     "agent.attachment.error.notText": "“{name}” is not a text attachment.",
     "agent.attachment.error.totalSize": "Attachment text cannot exceed 512 KiB in total.",
