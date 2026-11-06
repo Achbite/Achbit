@@ -6,7 +6,9 @@ Quick directions for using Achbit. Read only the section needed for the task; cu
 
 - Use CLI/MCP for program operations and GUI tools for interface actions or visual confirmation. A program having a GUI does not make all its operations GUI tasks.
 - File tools operate on bound workspaces. Use `fs.read` for UTF-8 files or the immediate contents of a bound directory (`.` lists its root). Use the returned cursor for the next page; use file tools for project edits and deletion. Use the project's declared environment for commands.
+- Ordinary tools support a single call or multiple calls in a Provider response; each retains its own input, permission check and result. Use one `fs.edit` call for related replacements in the same file. Its input adapter accepts an edits array, a single edit object, JSON-encoded edit data, or a top-level `oldText`/`newText` pair and normalizes them before execution. Exact matching, atomicity and access checks stay the same.
 - Preserve actual results: rejected input was not executed; approval is not execution; a dispatched action with a failed observation is not a fully verified action. Correct the reported cause instead of repeating an unchanged failure.
+- A complete file or Skill read returns its text as-is (including an empty file). Directory listings and partial reads return entries or text with the continuation cursor. Successful tool replies contain the operation result; errors retain the cause and any known partial effect. Permission decisions remain in the journal. The working agent receives denial reasons and newly granted scopes when relevant.
 - Live output is bounded. Inspect the returned full-output paths when needed; do not rerun a command just to recover its log.
 - For Achbit Debug control, read [Debug control](debug-control.md). Direct tool/UI operations do not need an Agent task.
 
@@ -46,11 +48,11 @@ For long original text, use `session.read` with `view: messages` plus `messageId
 
 ## Plans and task progress
 
-Plan approval may be manual, delegated or off. Use a Plan when project changes need new or expanded authorization; existing authorization does not need to be reconfirmed for every implementation detail. Plan approval, execution permission and engineering decisions are separate. Read-only investigation needs no Plan. Session-managed drafts have their existing file access.
+Plan approval may be manual, delegated or off. Use a Plan when project changes need new or expanded authorization; existing authorization does not need to be reconfirmed for every implementation detail. Plan approval, execution permission and engineering decisions are separate. In normal work, the default engineering setting asks the user to choose between materially different routes. Delegating the route still leaves missing requirements with the user. Read-only investigation needs no Plan. Session-managed drafts have their existing file access.
 
 Workspace Shell keeps project files read-only; declare test/output directories in Plan `writablePaths`. Host Shell has broader host-user access. With an active Plan or Plan approval enabled, each Host call needs its own approval; a Plan or reusable grant does not replace it. See [execution environments](execution-environments.md).
 
-Delegated execution review uses the original authorization, exact operation and bounded evidence. It approves only that call, not a Plan or an answer to a question. Preserve review errors; unavailable or uncertain review requires human handling. Mandatory user constraints and the complete operation take priority over optional history. A preparation failure means the review model was not called.
+Delegated execution review uses the original authorization, exact operation and bounded evidence. The Kernel may offer `runFiles` for an additional read-only file scope: approval then permits that exact scope in the same task and file environment, including later file reads or Workspace Shell commands, until revoked or the task ends. It does not authorize sibling paths, writes, network or Host execution. Other delegated approvals remain call-only. Neither kind approves a Plan or answers a question. Preserve review errors; unavailable or uncertain review requires human handling. Mandatory user constraints and the complete operation take priority over optional history. A preparation failure means the review model was not called.
 
 For meaningful multi-step progress, `todo.update` replaces the complete list of `pending`, `inProgress`, `completed` or `blocked` items. Skip trivial or unchanged updates. Todo grants no permission and does not gate completion; retain unfinished items honestly.
 
@@ -120,6 +122,8 @@ The execution disclosure opens intermediate text/tools and shows measured respon
 File-tool arrows open the preview in one step. Edits show changed lines with nearby context; large changes use a bounded preview. Read tools preview the current file, labeled as such. Click the filename in the tool heading or preview header to open it in the right-hand Reader; deleted files open their recorded comparison. Expanding or collapsing keeps the clicked heading in place, and scrolling past a preview's top or bottom continues through the conversation.
 
 ## Document output
+
+Mermaid diagrams and Markdown tables can appear directly in replies. For frontend pages, components and interactive previews, search for `frontend`, activate the Frontend Design Skill, then read its returned entry with the file reader. Apply the target project's existing design first. For an inline component, use the interactive preview contract above.
 
 For requested HTML/PDF/Markdown delivery, read `achbit-documents`. Use `document.render` (activate `plugin://documents@builtin` first) with the requested format and workspace destination. PDF content is self-contained Typst source rendered by the bundled Rust renderer; HTML content remains complete HTML, and Markdown content remains Markdown. No Python environment is needed. Renderer errors remain errors, not a different-format delivery.
 

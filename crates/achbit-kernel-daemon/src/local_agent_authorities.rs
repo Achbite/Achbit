@@ -10,6 +10,36 @@ type RunKey = (String, String);
 type ApprovalKey = (String, String, String);
 type ScopeKey = (String, String, String);
 
+/// Only the Kernel's exact, read-only resource boundary can outlive an automatic
+/// execution review. This grants files, never the command, network or Host access.
+pub(crate) fn allows_delegated_read_grant(preview: &Value) -> bool {
+    let context = &preview["authorizationContext"];
+    let files = &context["fileAccess"];
+    let operation = &preview["operation"];
+    preview["approvalReviewer"] == "agent"
+        && preview["reviewPolicy"]["mode"] == "review"
+        && !matches!(
+            preview["reviewPolicy"]["commandRule"].as_str(),
+            Some("ask" | "deny")
+        )
+        && preview["authorizationScopes"]
+            .as_array()
+            .is_some_and(|scopes| scopes.iter().any(|scope| scope == "runFiles"))
+        && (operation["toolName"] == "fs.read"
+            || (matches!(operation["toolName"].as_str(), Some("bash" | "powershell"))
+                && operation["executionScope"] == "workspace"))
+        && context["fileEnvironment"].is_object()
+        && context.get("networkEnvironment").is_none()
+        && preview["fileAccess"] == *files
+        && files["read"].as_array().is_some_and(|paths| {
+            !paths.is_empty()
+                && paths
+                    .iter()
+                    .all(|path| path.as_str().is_some_and(|path| !path.is_empty()))
+        })
+        && files["write"].as_array().is_some_and(Vec::is_empty)
+}
+
 #[derive(Clone, Default)]
 struct Task {
     child: String,
@@ -169,14 +199,22 @@ impl KernelAuthorityModel {
                     session.browser =
                         (grant.payload["decision"] == "allow").then(|| authority.clone());
                 }
-                if grant.payload["decision"] != "allow"
-                    || grant.payload["source"].as_str().unwrap_or("user") != "user"
-                {
+                if grant.payload["decision"] != "allow" {
                     continue;
                 }
                 let Some(scope) = grant.payload["authorizationScope"].as_str() else {
                     continue;
                 };
+                match grant.payload["source"].as_str().unwrap_or("user") {
+                    "user" => {}
+                    "agent"
+                        if scope == "runFiles"
+                            && grant.review.as_deref() == Some("allow")
+                            && preview["reviewPolicy"]["reviewGrant"] == "runFiles"
+                            && allows_delegated_read_grant(preview)
+                            && session.runs.get(&grant.run) == Some(&true) => {}
+                    _ => continue,
+                }
                 if !preview["authorizationScopes"]
                     .as_array()
                     .is_some_and(|scopes| scopes.iter().any(|offered| offered == scope))
@@ -458,7 +496,14 @@ impl Session {
                 let review = self
                     .reviews
                     .get(&approval_key)
-                    .filter(|_| payload.get("authorizationScope").is_none())
+                    .filter(|review| {
+                        review.get("error").is_none()
+                            && (payload.get("authorizationScope").is_none()
+                                || (payload["authorizationScope"] == "runFiles"
+                                    && requested["preview"]["reviewPolicy"]["reviewGrant"]
+                                        == "runFiles"
+                                    && allows_delegated_read_grant(&requested["preview"])))
+                    })
                     .map(|review| text(review, "decision"));
                 self.grants.insert(
                     text(payload, "authorityId"),

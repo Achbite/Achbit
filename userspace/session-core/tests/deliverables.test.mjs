@@ -26,7 +26,7 @@ test('observations remain resources; explicit delivery survives replay, updates 
     if ([1,2,4].includes(turn)) yield providerEvent(request.requestId,'tool.call',{callId:`native:${turn}`,name:'browser_observe',input:{}});
     else if (turn===3 || turn===5) {
       if (turn===5) {
-        const result=request.messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content)).find(v=>v.accepted&&v.items);
+        const result=request.messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content)).find(v=>Array.isArray(v.items));
         deliveryId=result.items[0].deliveryId;
         assert.equal(result.items[0].uri,'artifact://artifact:v1');
       }

@@ -73,6 +73,35 @@ impl Drop for OwnedFixture {
 }
 
 #[test]
+fn development_service_start_accepts_an_executable_without_arguments() {
+    // This command has no descendants; it must not change the process-wide
+    // subreaper used by the independent descendant-cleanup test.
+    let root = std::env::temp_dir().join(format!("achbit-service-no-args-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut owned = HashMap::new();
+    let started = services::execute(
+        &mut owned,
+        root.join("logs"),
+        Some("session:service-no-args"),
+        &json!({"action":"serviceStart", "command":"/bin/true", "directory":root,
+            "url":"http://127.0.0.1:8080"}),
+    )
+    .unwrap();
+    assert_eq!(started["args"], json!([]));
+    assert_eq!(started["status"], "started");
+    let stopped = services::execute(
+        &mut owned,
+        root.join("logs"),
+        Some("session:service-no-args"),
+        &json!({"action":"serviceStop", "serviceId":started["serviceId"]}),
+    )
+    .unwrap();
+    assert_eq!(stopped["status"], "stopped");
+    assert!(owned.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exited_development_leader_releases_its_term_ignoring_descendant() {
     let mut fixture = OwnedFixture::new();
     let descendant_path = fixture.root.join("descendant.pid");

@@ -16,7 +16,7 @@
     {
       "remoteName": "read",
       "canonicalName": "pdf.read",
-      "description": "Extract text from a bounded page range of a PDF in the current workspace binding.",
+      "description": "Extract text from a PDF in the current workspace binding. Pages are 1-indexed; each call returns up to 50 pages and 128 KiB of text from a file up to 16 MiB. Use the returned page range and truncation flags to continue with a smaller range when needed. Scanned page images require a separate visual or OCR workflow.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -32,7 +32,8 @@
           },
           "endPage": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "description": "Inclusive last page. Omit to read toward the end within the per-call page and output limits."
           }
         },
         "required": [

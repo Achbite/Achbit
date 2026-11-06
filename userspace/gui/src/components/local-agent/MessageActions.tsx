@@ -20,7 +20,14 @@ export function MessageActions({ message, language, copied, busy, canEdit, onCop
   });
   const copyLabel = t(language, copied ? 'agent.message.copied'
     : message.role === 'user' ? 'agent.message.copyMessage' : 'agent.message.copyResponse');
+  const createdAt = new Date(/^\d+$/.test(message.createdAt) ? Number(message.createdAt) : message.createdAt);
+  // Display the journal's message time; never substitute render time for missing data.
+  const timestamp = Number.isNaN(createdAt.getTime()) ? null : <time
+    className="local-agent__message-time" dateTime={createdAt.toISOString()} title={createdAt.toLocaleString(language)}>
+    {createdAt.toLocaleTimeString(language, { hour: 'numeric', minute: '2-digit', hourCycle: 'h23' })}
+  </time>;
   return <div className="local-agent__message-actions" role="group" aria-label={t(language, 'agent.message.actions')}>
+    {message.role === 'user' && timestamp}
     <button {...identity.action('copy', 'click')} type="button" className="conversation-copy-button" aria-label={copyLabel} title={copyLabel} onClick={onCopy}>
       <AchbitShellIcon name={copied ? 'check' : 'copy'} />
       <span className="conversation-copy-hint" role="status">{t(language, copied ? 'agent.message.copied' : 'agent.message.copy')}</span>
@@ -38,5 +45,6 @@ export function MessageActions({ message, language, copied, busy, canEdit, onCop
         <AchbitShellIcon name={feedback === 'up' ? 'thumbUp' : 'thumbDown'} />
       </button>;
     })}
+    {message.role === 'assistant' && timestamp}
   </div>;
 }

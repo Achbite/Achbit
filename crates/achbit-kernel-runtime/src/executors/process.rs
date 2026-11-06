@@ -1,4 +1,5 @@
 use super::*;
+mod exit_wait;
 #[cfg(windows)]
 mod windows_workspace;
 use crate::shell_environment::{prepare_script_arguments, ShellProgram};
@@ -587,6 +588,7 @@ fn invoke_terminal_shell(
         )
         .map(|_| ());
         stop_capture.store(true, AtomicOrdering::Release);
+        stdout_reader.thread().unpark();
         if let Err(cleanup) = process_cleanup {
             return shell_cleanup_failure(wait_result, cleanup);
         }
@@ -1775,7 +1777,7 @@ fn spawn_output_reader(
                     if stop.load(AtomicOrdering::Acquire) {
                         break;
                     }
-                    thread::sleep(PROCESS_POLL_INTERVAL);
+                    thread::park_timeout(PROCESS_POLL_INTERVAL);
                     continue;
                 }
                 #[cfg(windows)]
@@ -1946,6 +1948,11 @@ pub(super) fn wait_for_bounded_child(
     cancellation: &KernelCancellationToken,
 ) -> KernelResult<(ExitStatus, bool, bool)> {
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let wait_error = |error| KernelError::Other(format!("wait for bash exit: {error}"));
+    if let Some(status) = child.try_wait().map_err(wait_error)? {
+        return Ok((status, false, false));
+    }
+    let exit = exit_wait::ChildExit::new(child).map_err(wait_error)?;
     loop {
         if let Some(status) = child
             .try_wait()
@@ -1959,7 +1966,11 @@ pub(super) fn wait_for_bounded_child(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return terminate_child(child).map(|status| (status, true, false));
         }
-        thread::sleep(PROCESS_POLL_INTERVAL);
+        // Wake on exit, but keep checking cancellation while the child is running.
+        let interval = deadline.map_or(PROCESS_POLL_INTERVAL, |end| {
+            PROCESS_POLL_INTERVAL.min(end.saturating_duration_since(Instant::now()))
+        });
+        exit.wait(interval).map_err(wait_error)?;
     }
 }
 
@@ -2038,7 +2049,13 @@ fn terminate_child(child: &mut Child) -> KernelResult<ExitStatus> {
 #[cfg(unix)]
 fn terminate_remaining_process_group(process_id: u32) -> KernelResult<()> {
     let hangup = signal_process_group(process_id, UNIX_SIGHUP);
+    if matches!(hangup, Ok(false)) {
+        return Ok(());
+    }
     let terminate = signal_process_group(process_id, UNIX_SIGTERM);
+    if matches!(terminate, Ok(false)) {
+        return hangup.map(|_| ());
+    }
     thread::sleep(Duration::from_millis(10));
     let kill = signal_process_group(process_id, UNIX_SIGKILL);
     combine_shell_results(combine_shell_results(hangup, terminate), kill).map(|_| ())
@@ -2256,7 +2273,8 @@ fn signal_scoped_processes(
 }
 
 #[cfg(unix)]
-fn signal_process_group(process_id: u32, signal: i32) -> KernelResult<()> {
+/// False means the group is gone or Darwin confirmed it has no live members.
+fn signal_process_group(process_id: u32, signal: i32) -> KernelResult<bool> {
     let process_group_id = i32::try_from(process_id)
         .map_err(|_| KernelError::Other(format!("bash process id exceeds i32: {process_id}")))?;
     if unsafe { achbit_process_kill(-process_group_id, signal) } < 0 {
@@ -2267,15 +2285,16 @@ fn signal_process_group(process_id: u32, signal: i32) -> KernelResult<()> {
         if error.raw_os_error() == Some(libc::EPERM)
             && macos_process_group_has_no_live_members(process_group_id)
         {
-            return Ok(());
+            return Ok(false);
         }
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(KernelError::Other(format!(
-                "signal bash process group {process_id}: {error}"
-            )));
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(false);
         }
+        return Err(KernelError::Other(format!(
+            "signal bash process group {process_id}: {error}"
+        )));
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
@@ -2478,6 +2497,8 @@ pub fn execute_cli_command(
     );
     let process_cleanup = stop_process(&mut child);
     stop_capture.store(true, AtomicOrdering::Release);
+    stdout_reader.thread().unpark();
+    stderr_reader.thread().unpark();
     if let Err(cleanup) = process_cleanup {
         return shell_cleanup_failure(wait_result, cleanup);
     }

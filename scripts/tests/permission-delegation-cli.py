@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import shlex
+import time
 
 spec = importlib.util.spec_from_file_location('achbit_test_support', Path(__file__).with_name('support.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -84,13 +86,17 @@ class Provider(fixture.MockProviderHandler):
             ordinal, names, results = state.inspect(body)
             if ordinal <= 2:
                 if ordinal == 2:
-                    require(results['first']['outcome'] == 'completed', results['first'])
+                    first = results['first']
+                    if state.mode == 'ask':
+                        require(first.get('grantedScope') == 'runCommand', first)
+                        first = first['result']
+                    require(first['exitCode'] == 0, first)
                 self._send_tool_calls([('first' if ordinal == 1 else 'repeat', names['bash'], {
                     'command': COMMAND, 'requestHostPermission': 'Write the file explicitly requested by the user.',
                     'requestNetworkPermission': 'Retain the redundant network request from the original Host approval regression.',
                 })])
             else:
-                require(results['repeat']['outcome'] == 'completed', results['repeat'])
+                require(results['repeat']['exitCode'] == 0, results['repeat'])
                 self._send_text('permission-delegation-complete')
         except BaseException as error:
             state.record_failure(error)
@@ -159,6 +165,179 @@ def check_mode(mode):
                 require(not thread.is_alive(), 'Provider fixture did not exit')
 
 
+class ReadScopeProvider(fixture.MockProviderHandler):
+    """Fixed operations; the real Kernel decides whether each needs a review."""
+    def do_POST(self):
+        state = self.provider_state
+        try:
+            body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            self.send_response(200)
+            self.send_header('content-type', 'text/event-stream')
+            self.send_header('connection', 'close')
+            self.end_headers()
+            if title_request(body):
+                self._send_text('Read-scope validation')
+                return
+            if execution_review_request(body):
+                packet = json.loads(body['messages'][1]['content'])
+                kind = state.active_kind
+                read_scope = kind.startswith('repeat-') or kind in ('sibling', 'after-revoke', 'repeat-after-revoke', 'next-run')
+                expected = 'runFiles' if state.reuse and read_scope else 'thisCallOnly'
+                require(packet['grant'] == expected, f'{kind}: unexpected grant {packet["grant"]}')
+                state.read_reviews.append(kind)
+                decision = 'deny' if kind in ('sibling', 'write', 'host', 'network') else 'allow'
+                self._send_text(json.dumps({'decision': decision, 'reason':
+                    'Only the supplied read-only reference directory is authorized for this task.'}))
+                return
+            _, names, results = state.inspect(body)
+            if state.active_call is not None:
+                result = results[state.active_call]
+                kind = state.active_kind
+                if kind in ('sibling', 'write', 'host', 'network'):
+                    require(result.get('status') == 'denied', f'{kind} crossed its separate gate: {result}')
+                elif kind == 'without-request' and not state.reuse:
+                    require(result.get('error') and result['result']['exitCode'] != 0,
+                            f'Baseline unexpectedly retained a call-only grant: {result}')
+                else:
+                    if isinstance(result, dict) and result.get('grantedScope'):
+                        require(state.reuse and result['grantedScope'] == 'runFiles', result)
+                        result = result['result']
+                    if state.active_tool == 'read':
+                        require(result == 'reference-ok', result)
+                    else:
+                        require(result['exitCode'] == 0 and result['stdout'] == 'reference-ok', result)
+                state.active_call = None
+            if state.read_index == len(state.read_calls):
+                self._send_text('delegated-read-scope-complete')
+                return
+            kind, tool, args = state.read_calls[state.read_index]
+            if kind == 'after-revoke':
+                grants = fixture.projection(state.daemon, state.session)['shellAuthorizations']
+                require(len(grants) == (1 if state.reuse else 0), grants)
+                if grants:
+                    grant = grants[0]
+                    require(grant['scope'] == 'runFiles' and grant['context']['fileAccess']['write'] == [], grant)
+                    response = fixture.api_json(state.daemon.base_url, f'/api/conversation/sessions/{state.session}/commands',
+                        token=state.daemon.token, method='POST', body={
+                            'schemaVersion': fixture.COMMAND_VERSION, 'type': 'approval.revoke', 'sessionId': state.session,
+                            'commandId': 'command:revoke-read', 'runId': grant['runId'], 'authorityId': grant['authorityId'],
+                        })
+                    require(response['status'] == 'accepted', response)
+                    require(not fixture.projection(state.daemon, state.session)['shellAuthorizations'], 'Revocation retained the grant')
+            state.read_index += 1
+            state.active_call = f'read-scope-{state.read_index}'
+            state.active_kind, state.active_tool = kind, tool
+            self._send_tool_calls([(state.active_call, names[tool], args)])
+        except BaseException as error:
+            state.record_failure(error)
+            self.close_connection = True
+
+
+def check_delegated_reads(*, reuse=True, daemon_factory=None, result_file=None, root_path=None):
+    """Default is the current contract; an isolated baseline comparison may select call-only."""
+    with ExitStack() as stack:
+        root = Path(root_path) if root_path else Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='achbit-read-scope-')))
+        root.mkdir(parents=True, exist_ok=True)
+        workspace, outside, sibling = (root / name for name in ('workspace', 'references', 'sibling'))
+        for directory in (workspace, outside, sibling):
+            directory.mkdir()
+        files = [outside / f'reference-{index}.txt' for index in range(3)]
+        for path in files:
+            path.write_text('reference-ok', encoding='utf-8')
+        sibling_file = sibling / 'private.txt'
+        sibling_file.write_text('not-authorized', encoding='utf-8')
+        def read_command(path):
+            if os.name == 'nt':
+                quoted = str(path).replace("'", "''")
+                return f"$ErrorActionPreference = 'Stop'; [Console]::Write([IO.File]::ReadAllText('{quoted}'))"
+            return 'cat ' + shlex.quote(str(path))
+        state = fixture.ProviderState(workspace)
+        state.reuse, state.read_reviews = reuse, []
+        state.active_call, state.active_kind, state.active_tool, state.read_index = None, None, None, 0
+        request = {'read': [str(outside)], 'reason': 'Read the reference directory supplied for this task.'}
+        state.read_calls = []
+        for index in range(10):
+            tool = 'read' if index % 3 == 1 else 'bash'
+            args = {'path': str(files[index % 3])} if tool == 'read' else {'command': read_command(files[index % 3])}
+            state.read_calls.append((f'repeat-{index}', tool, dict(args, requestFileAccess=request)))
+        state.read_calls.extend([
+            ('without-request', 'bash', {'command': read_command(files[0])}),
+            ('sibling', 'read', {'path': str(sibling_file)}),
+            ('write', 'write', {'path': str(files[0]), 'content': 'not authorized'}),
+            ('host', 'bash', {'command': 'echo host-boundary', 'requestHostPermission': 'Check the independent Host gate.'}),
+            ('network', 'bash', {'command': 'echo network-boundary', 'requestNetworkPermission': 'Check the independent network gate.'}),
+            ('after-revoke', 'bash', {'command': read_command(files[1]), 'requestFileAccess': request}),
+            ('repeat-after-revoke', 'read', {'path': str(files[2]), 'requestFileAccess': request}),
+        ])
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), ReadScopeProvider)
+        server.provider_state = state
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        daemon = (daemon_factory or fixture.OwnedDaemon)(root / 'config')
+        state.daemon = daemon
+        try:
+            configure_review(daemon, server, 'e2e-reviewer')
+            daemon.start()
+            state.session = fixture.create_session(daemon, workspace)['sessionId']
+            fixture.cli(daemon, state.session, '/permissions ' + json.dumps({
+                'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'workspace',
+                'agent.permissions.workspaceMutation': 'allow',
+            }))
+            start = time.monotonic()
+            first = fixture.cli(daemon, state.session,
+                'Read only the supplied reference directory. Do not modify files or use sibling files, Host execution or network.',
+                run_timeout_seconds=45)
+            state.assert_healthy()
+            require('delegated-read-scope-complete' in first.stdout, first.stdout)
+            first_projection = fixture.projection(daemon, state.session)
+            require(first_projection['run']['status'] == 'completed' and not first_projection['shellAuthorizations'],
+                    'Settled task retained a read grant')
+            state.read_calls.append(('next-run', 'read', {'path': str(files[0])}))
+            next_result = fixture.cli(daemon, state.session, 'Read the same supplied reference again in this new task.', run_timeout_seconds=45)
+            state.assert_healthy()
+            require('delegated-read-scope-complete' in next_result.stdout, next_result.stdout)
+            final = fixture.projection(daemon, state.session)
+            require(final['run']['status'] == 'completed' and final['run']['runId'] != first_projection['run']['runId'], 'No new task boundary')
+            require(not final['shellAuthorizations'], 'Read grant survived the second task')
+            require(all(path.read_text(encoding='utf-8') == 'reference-ok' for path in files), 'Read permission allowed writes')
+            events = stored_events(daemon, state.session)
+            resolutions = [payload for kind, payload in events if kind == 'approval.resolved']
+            repeat_reviews = sum(kind.startswith('repeat-') and kind != 'repeat-after-revoke' for kind in state.read_reviews)
+            require(repeat_reviews == (1 if reuse else 10), state.read_reviews)
+            require(len(resolutions) == len(state.read_reviews) == (7 if reuse else 17), state.read_reviews)
+            require(sum(item['decision'] == 'deny' for item in resolutions) == 4, resolutions)
+            require(state.read_reviews.count('after-revoke') == 1 and state.read_reviews.count('next-run') == 1, state.read_reviews)
+            require(all(item['source'] == 'agent' for item in resolutions), 'Unexpected manual authorization')
+            require(all(item.get('authorizationScope') == ('runFiles' if reuse and item['decision'] == 'allow' else None)
+                        for item in resolutions), 'Unexpected grant lifetime')
+            require(sum(kind == 'run.runtime.released' for kind, _ in events) == 2, 'Tasks did not release runtimes')
+            records = [payload['record'] for kind, payload in events if kind == 'tool.completed']
+            summary = {'sessionId': state.session, 'reusableReads': reuse, 'repeatedReads': 10,
+                'repeatedReadReviews': repeat_reviews, 'totalReviews': len(resolutions), 'toolCalls': len(records),
+                'toolFailures': sum(record['outcome'] == 'failed' for record in records),
+                'boundaryDenials': 4, 'revocationRechecked': True if reuse else None, 'nextRunRechecked': True,
+                'remainingGrants': len(final['shellAuthorizations']), 'elapsedSeconds': round(time.monotonic() - start, 3),
+                'provider': 'deterministic fixture; no real-model cost measurement'}
+            daemon.shutdown()
+            summary['cleanupComplete'] = True
+            if result_file:
+                Path(result_file).write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+            print('[permission-delegation-cli] PASS: ' + json.dumps(summary))
+            return summary
+        except BaseException:
+            print(daemon.log_tail())
+            state.assert_healthy()
+            raise
+        finally:
+            try:
+                daemon.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+                require(not thread.is_alive(), 'Read-scope Provider fixture did not exit')
+
+
 class ReviewFailureProvider(fixture.MockProviderHandler):
     def do_POST(self):
         state = self.provider_state
@@ -185,7 +364,7 @@ class ReviewFailureProvider(fixture.MockProviderHandler):
                     'command': COMMAND, 'requestHostPermission': 'Verify human approval before the owned marker write.',
                 })])
             else:
-                require(results['probe']['outcome'] == 'denied', 'The human denial did not reach the model')
+                require(results['probe']['status'] == 'denied', 'The human denial did not reach the model')
                 self._send_text('reviewer-failure-check-complete')
         except BaseException as error:
             state.record_failure(error)
@@ -309,7 +488,7 @@ class PreviousRunGuidanceProvider(fixture.MockProviderHandler):
                     'command': COMMAND, 'requestHostPermission': 'Attempt the owned marker write for this permission regression.',
                 })])
             elif ordinal == 4:
-                require(results['restricted']['outcome'] == 'denied', 'The delegated denial did not reach the model')
+                require(results['restricted']['status'] == 'denied', 'The delegated denial did not reach the model')
                 self._send_text('previous-run-guidance-review-complete')
             else:
                 raise AssertionError(f'Unexpected Provider request after prior-run guidance: {ordinal}')
@@ -508,7 +687,7 @@ class PlanProvider(fixture.MockProviderHandler):
                 if ordinal == 1:
                     self._send_tool_calls([('write', names['write'], {'path': 'result.txt', 'content': 'approved-plan-write'})])
                 else:
-                    require(results['write']['outcome'] == 'completed', results)
+                    require(results['write']['changed'] is True, results)
                     self._send_text('plan-mode-complete')
             elif ordinal == 1:
                 require('plan' in names, 'Enabled Plan tool was missing')
@@ -524,7 +703,7 @@ class PlanProvider(fixture.MockProviderHandler):
                 require(results['plan']['response']['kind'] == 'confirm', 'Write was requested before Plan confirmation')
                 self._send_tool_calls([('write', names['write'], {'path': 'result.txt', 'content': 'approved-plan-write'})])
             else:
-                require(results['write']['outcome'] == 'completed', results)
+                require(results['write']['changed'] is True, results)
                 self._send_text('plan-mode-complete')
         except BaseException as error:
             state.record_failure(error)
@@ -624,3 +803,4 @@ if __name__ == '__main__':
         check_review_failure(mode, 'unavailable')
     check_review_failure('review', 'invalid-decision')
     check_previous_run_guidance()
+    check_delegated_reads()

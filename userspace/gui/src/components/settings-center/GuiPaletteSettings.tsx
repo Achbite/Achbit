@@ -7,7 +7,7 @@ import {
   PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, isPaletteColor,
   paletteColor, paletteToken, type PaletteOverrides,
 } from '../../theme/palette';
-import UiIcon from '../../icons/registry';
+import { UiIcon } from '../../ui-components';
 import { reconcileSettingDraft, reconcileJsonSettingDraft } from './settingDraft';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
 

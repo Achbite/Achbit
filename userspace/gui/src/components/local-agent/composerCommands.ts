@@ -1,4 +1,4 @@
-import type { UiIconName } from '../../icons/registry';
+import type { UiIconName } from '../../ui-components';
 
 // These are shortcuts to existing GUI actions. Session commands still use the
 // same store and Host API as the corresponding buttons.

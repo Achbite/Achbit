@@ -2,6 +2,8 @@ import type { ConversationProject, ConversationSessionSummary, SessionProjection
 
 import type { UsageWidgetLabels } from './usageWidgetLabels';
 import type { UsageCostDisplay } from './usageCost';
+import type { UiRegionSlot } from './slots';
+export type { UiRegionSlot } from './slots';
 
 export interface UsageReadPort {
   query(query: UsageQuery, signal: AbortSignal): Promise<UsageReport>;
@@ -13,10 +15,6 @@ export interface ConnectionSettingsPort {
   logout(): Promise<void>;
   readQuota(signal: AbortSignal): Promise<QuotaSnapshot>;
 }
-export type UiRegionSlot = 'workbench.layout' | 'navigation' | 'conversation.header'
-  | 'activity.row' | 'activity.summary' | 'activity.detail' | 'composer.layout'
-  | 'composer.model' | 'composer.attachments' | 'composer.actions' | 'task.panel'
-  | 'artifact.panel' | 'reader.layout' | 'reader.toolbar' | 'reader.tree' | 'settings.navigation';
 /** Read-only values from the existing Session projection or Host view state. */
 export type UiRegionData =
   | { kind: 'activities'; activities: readonly ActivityProjection[]; expanded: boolean }

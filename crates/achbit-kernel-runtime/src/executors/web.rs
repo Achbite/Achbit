@@ -353,7 +353,6 @@ async fn http_get_complete_async(
     request_headers: Vec<(String, String)>,
     archive: &mut ExecutionArchive,
 ) -> KernelResult<HttpGetComplete> {
-    validate_http_url(url)?;
     archive
         .record("request.started", json!({"method": "GET", "url": url}))
         .map_err(archive_error)?;

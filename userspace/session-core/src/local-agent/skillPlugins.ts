@@ -1,6 +1,11 @@
 import { permissionSettings, validatePermissionPatches } from '@achbit/protocol';
 import type { UserSettings, RunRuntimeSnapshot } from '@achbit/protocol';
-import type { SessionControlWireNames } from './sessionControls.js';
+
+/** A selected entry is a location, not a file grant. Advertise it only with a callable reader. */
+export function mountedSkillEntries(plugins: RunRuntimeSnapshot['selectedPlugins']['plugins'], tools: RunRuntimeSnapshot['tools']) {
+  if (!plugins.length || !tools.some(tool => tool.name === 'fs.read' && tool.availability === 'callable')) return [];
+  return plugins.flatMap(plugin => plugin.skillEntryPath ? [{ uri: plugin.uri, path: plugin.skillEntryPath }] : []);
+}
 
 export type InstructionContribution = RunRuntimeSnapshot['instructions'][number];
 
@@ -58,24 +63,7 @@ export function decodeRunPluginConfig(value: unknown): RunPluginConfig {
   };
 }
 
-export function runtimeInstructions(
-  stableCore: readonly InstructionContribution[],
-  config: RunPluginConfig,
-  controlNames: SessionControlWireNames = {
-    interactionRequest: 'interaction_request',
-    planPublish: 'plan_publish',
-    todoUpdate: 'todo_update',
-    pluginActivate: 'plugin_activate',
-    artifactPresent: 'artifact_present',
-  },
-): readonly InstructionContribution[] {
-  const instructions: InstructionContribution[] = [
-    ...stableCore.map((instruction) => ({ ...instruction })),
-    {
-      id: 'achbit.workspace-autonomy',
-      text: permissionInstructionText(config.permissions, controlNames.interactionRequest, controlNames.planPublish),
-    },
-  ];
+export function runtimeInstructions(instructions: readonly InstructionContribution[]): readonly InstructionContribution[] {
   const seen = new Set<string>();
   for (const instruction of instructions) {
     if (!isIdentifier(instruction.id) || !instruction.text.trim() || seen.has(instruction.id)) {
@@ -83,7 +71,7 @@ export function runtimeInstructions(
     }
     seen.add(instruction.id);
   }
-  return Object.freeze(instructions
+  return Object.freeze([...instructions]
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map((instruction) => Object.freeze({ ...instruction })));
 }
@@ -102,20 +90,4 @@ function isIdentifier(value: unknown): value is string {
     && Boolean(value)
     && value.trim() === value
     && /^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$/u.test(value);
-}
-
-export function permissionInstructionText(settings: UserSettings, interactionRequest: string | null = 'interaction_request', planPublish: string | null = 'plan_publish', requestedPlan = false): string {
-  const workspaceAutonomyInstruction = requestedPlan
-    ? (planPublish ? `Propose scope changes with ${planPublish}.` : 'Work within the agreed scope.')
-    : settings['agent.permissions.workspaceMutation'] === 'allow'
-    ? "Work within the bound workspaces and the user's authorized scope."
-    : !planPublish ? 'Work within confirmed scope.'
-    : settings['agent.permissions.workspaceMutation'] === 'review'
-      ? `Submit a Plan with ${planPublish} for project changes outside confirmed scope. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope and submit again only when new or expanded authorization is needed. Project reads need no Plan.`
-    : `Investigate as needed and propose a clearly scoped change. Before making project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Then carry out related work within that scope autonomously, including delegated parent scope, without seeking approval again for ordinary implementation details. Request additional scope only when needed. Project reads need no Plan.`;
-  const engineeringDecisionInstruction = settings['agent.permissions.engineeringDecisions'] === 'delegate'
-    ? 'Engineering decisions are delegated. Choose the smallest sound approach.'
-    : 'Choose local implementation details within the agreed approach. Material changes to requirements, public contracts or that approach need the user’s decision.';
-  const interaction = interactionRequest ? ` Use ${interactionRequest} for missing facts or decisions that belong to the user.` : '';
-  return `${workspaceAutonomyInstruction}\nFile and shell paths resolve from the workspace selected for that call. The Session working directory is available for temporary scripts, logs, and other intermediate files needed across calls.\n${engineeringDecisionInstruction}${interaction}`;
 }

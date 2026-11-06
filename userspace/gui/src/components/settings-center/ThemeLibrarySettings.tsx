@@ -4,7 +4,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { normalizeGuiAccentColor, type GuiResolvedTheme } from '../../theme/achbitGuiTheme';
 import { PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, paletteColor } from '../../theme/palette';
 import { THEME_LIBRARY_SETTING, applyThemePalette, builtinThemes, decodeThemeLibrary, importTheme, selectedThemeId, themeOverrides, type ThemeDocument, type SavedTheme } from '../../theme/themeLibrary';
-import ModalDialog from '../shared/ModalDialog';
+import { ModalDialog } from '../../ui-components';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import ThemePicker, { ThemeBadge } from './ThemePicker';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -23,7 +23,7 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
   useInterfaceReloadGuard(importing && text.trim().length > 0, t(language, 'settings.themes.importTitle'), busy);
   const file = useRef<HTMLInputElement>(null);
   const target = useSettingsSearchTarget(THEME_LIBRARY_SETTING);
-  useSettingsSearchEntries('themes', [{ id: THEME_LIBRARY_SETTING, category: 'gui', title: t(language, 'settings.themes.title'), keywords: '主题 配色 导入 浅色 深色 轻量工作台 温润阅读 theme colors import presets Light Workbench Warm Reading Catppuccin Gruvbox Nord' }]);
+  useSettingsSearchEntries('themes', [{ id: THEME_LIBRARY_SETTING, category: 'gui', title: t(language, 'settings.themes.title'), keywords: '主题 配色 导入 浅色 深色 轻量工作台 温润阅读 雾银 theme colors import presets Light Workbench Warm Reading Mist Silver Catppuccin Gruvbox Nord' }]);
   const accent = normalizeGuiAccentColor(settings['gui.accentColor']);
   let library: SavedTheme[] = [];
   let colors = {};
@@ -83,7 +83,8 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
           { id: 'default', name: t(language, 'settings.themes.default'), colors: {} },
           ...allThemes.filter((theme) => Object.keys(theme[mode] ?? {}).length).map((theme) => ({
             id: theme.id,
-            name: theme.id === 'builtin:Warm Reading' ? t(language, 'settings.themes.warmReading') : theme.name,
+            name: theme.id === 'builtin:Warm Reading' ? t(language, 'settings.themes.warmReading')
+              : theme.id === 'builtin:Mist Silver' ? t(language, 'settings.themes.mistSilver') : theme.name,
             colors: themeOverrides(theme),
           })),
           ...(selected === 'custom' ? [{ id: 'custom', name: t(language, 'settings.themes.custom'), colors }] : []),

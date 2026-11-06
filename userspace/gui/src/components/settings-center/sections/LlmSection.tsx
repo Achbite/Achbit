@@ -1,6 +1,6 @@
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus } from '../../shared/interactionFocus';
-import NativeSelect from '../../shared/NativeSelect';
+import { NativeSelect } from '../../../ui-components';
 import { modelReasoningEfforts, type UserSettings } from '@achbit/protocol';
 import { t } from '../../../i18n';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';

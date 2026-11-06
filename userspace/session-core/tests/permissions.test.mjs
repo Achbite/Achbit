@@ -137,6 +137,125 @@ test('review reasons survive canonical permission metadata removal without chang
   assert.deepEqual(request.tools, []);
 });
 
+test('read-scope review declares the Kernel-selected lifetime without expanding its paths', () => {
+  const runId = 'run:read-scope', sessionId = 'session:read-scope';
+  const snapshot = { events: [], state: { ...emptySessionState(sessionId), run: { runId, workspaceBindings: [workspaceBinding] } } };
+  const fileAccess = { read: ['/references/public'], write: [] };
+  const approval = { approvalId: 'approval:read-scope', runId, callId: 'call:read-scope', preview: {
+    summary: 'Read the supplied reference directory', effects: ['workspaceRead'], logicalTargets: ['/references/public/one.txt'],
+    authorizationScope: 'runFiles', authorizationScopes: ['runFiles', 'sessionFiles'],
+    reviewPolicy: { subject: 'files', mode: 'review', reviewGrant: 'runFiles' }, fileAccess,
+    authorizationContext: { fileEnvironment: { workspaceId: workspaceBinding.workspaceId }, fileAccess },
+  } };
+  const { request } = prepareApprovalReview(snapshot, runtimeSnapshot(runId), approval, 'provider:read-scope');
+  const packet = JSON.parse(request.messages[1].content);
+  assert.equal(packet.grant, 'runFiles');
+  assert.deepEqual(packet.requestedAccess.fileAccess, fileAccess);
+  assert.match(request.messages[0].content, /exact requested read-only file scope reusable within this run and file environment/);
+  assert.match(request.messages[0].content, /until revoked or the run ends/);
+});
+
+for (const decision of ['allow', 'deny', 'ask']) test(`delegated read-scope ${decision} preserves grant, receipt and settlement facts`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:read-grant-${decision}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const fileAccess = { read: ['/references/public'], write: [] };
+  const fileContext = { ...context, environment: { shell: '/bin/bash', executionScope: 'workspace' }, fileAccess,
+    fileEnvironment: { workspaceId: workspaceBinding.workspaceId, shell: '/bin/bash' } };
+  let turns = 0, reviews = 0;
+  const preparation = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.shell': 'review' } });
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      assert.equal(JSON.parse(request.messages[1].content).grant, 'runFiles');
+      yield providerEvent(request.requestId, 'assistant.message', { content: JSON.stringify({ decision, reason: 'Review the exact read scope.' }) });
+    } else if (++turns === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:read', name: 'bash', input: { command: 'cat /references/public/one.txt' } });
+    } else {
+      const current = await actor.snapshot();
+      const [grant] = current.shellAuthorizations;
+      if (decision === 'allow') {
+        assert.equal(grant.scope, 'runFiles');
+        assert.deepEqual(grant.context.fileAccess, fileAccess);
+        const result = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+        assert.equal(result.grantedScope, 'runFiles');
+      } else assert.equal(grant, undefined);
+      yield providerEvent(request.requestId, 'assistant.message', { content: 'Read-scope check complete.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    if (request.nonWorkspaceAuthority) {
+      const reply = completedExecutionReply(request, { stdout: 'reference', stderr: '', exitCode: 0, executionScope: 'workspace' });
+      if (request.nonWorkspaceAuthority.decision === 'deny') {
+        reply.status = reply.record.outcome = 'denied';
+        reply.record.error = { code: 'tool_effect_denied', message: 'Read scope denied.' };
+        delete reply.record.output;
+      }
+      return reply;
+    }
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      status: 'approvalRequired', preview: { summary: 'Read reference files', effects: ['process'], logicalTargets: ['.'],
+        approvalReviewer: 'agent', authorizationScope: 'runFiles', authorizationScopes: ['runFiles', 'sessionFiles'],
+        authorizationContext: fileContext, fileAccess, reviewPolicy: { subject: 'shell', mode: 'review', reviewGrant: 'runFiles' } } };
+  } }), preparation.port, `read-grant-${decision}`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Read the supplied reference directory.'));
+  if (decision === 'ask') {
+    const state = await waitForProjection(actor, value => value.run?.status === 'waiting');
+    assert.deepEqual(state.shellAuthorizations, []);
+    assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'approval.resolved'), false);
+    const approval = state.pendingApproval;
+    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', sessionId, commandId: 'command:deny',
+      runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'deny' });
+  }
+  const done = await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.equal(reviews, 1);
+  assert.deepEqual(done.shellAuthorizations, []);
+  const events = await readEvents(journal, sessionId);
+  const resolved = events.find(event => event.type === 'approval.resolved');
+  assert.equal(resolved.payload.authorizationScope, decision === 'allow' ? 'runFiles' : undefined);
+  assert.equal(resolved.payload.source, decision === 'ask' ? 'user' : 'agent');
+  assert.deepEqual(projectSession(loopSnapshot(sessionId, events).state).shellAuthorizations, []);
+});
+
+test('concurrent read approvals are re-admitted after another call grants their files', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:parallel-read-grants';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const read = { ...shell, toolBindingRef: 'binding:read', name: 'fs.read', possibleEffects: ['workspaceRead'],
+    inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } } };
+  const fileAccess = { read: ['/references'], write: [] };
+  let turns = 0, reviews = 0, executions = 0, deniedAdmissions = 0;
+  const preparation = reviewerPreparation({ tools: [read], permissions: { 'agent.permissions.shell': 'review' } });
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"Read this directory during the task."}' });
+    } else if (++turns === 1) {
+      for (const file of ['one', 'two']) yield providerEvent(request.requestId, 'tool.call', {
+        callId: `provider:${file}`, name: 'fs_read', input: { path: `/references/${file}.txt` } });
+    } else yield providerEvent(request.requestId, 'assistant.message', { content: 'Both references read.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    if ((await actor.snapshot()).shellAuthorizations.length) {
+      executions++;
+      return completedExecutionReply(request, { content: 'reference', truncated: false });
+    }
+    deniedAdmissions++;
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      status: 'approvalRequired', preview: { summary: 'Read reference directory', effects: ['workspaceRead'], logicalTargets: [request.input.path],
+        approvalReviewer: 'agent', authorizationScope: 'runFiles', authorizationScopes: ['runFiles', 'sessionFiles'], fileAccess,
+        authorizationContext: { fileEnvironment: { workspaceId: workspaceBinding.workspaceId }, fileAccess },
+        reviewPolicy: { subject: 'files', mode: 'review', reviewGrant: 'runFiles' } } };
+  } }), preparation.port, 'parallel-read-grants');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Read both supplied references.'));
+  const done = await waitForProjection(actor, value => value.run?.status === 'completed');
+  assert.equal(deniedAdmissions, 2, 'both initial calls reached Kernel before the first scope grant');
+  assert.equal(reviews, 1, 'a stale concurrent approval must not start another review');
+  assert.equal(executions, 2, 're-admission must not repeat an executed read');
+  assert.deepEqual(done.shellAuthorizations, []);
+  assert.equal((await readEvents(journal, sessionId)).filter(event => event.type === 'approval.requested').length, 1);
+});
+
 test('file resources preserve external targets without assigning a workspace logical path', () => {
   const sessionId = 'session:file-resources', runId = 'run:file-resources', callId = 'call:read';
   const base = { schemaVersion: 'achbit.session-event.v5', sessionId, runId, callId, occurredAt: '2026-09-20T00:00:00.000Z' };
@@ -394,7 +513,8 @@ test('Plan and Shell use distinct independent review contexts and distinct autho
         assert.equal(packet.operation.arguments.command, 'make check');
         assert.equal(packet.plan.confirmed, true, 'confirmed scope is evidence, not a Shell grant');
         assert.doesNotMatch(JSON.stringify(request.messages), /PLAN_REVIEW_PRIVATE_REASON/);
-        assert.match(request.messages[0].content, /neither future access nor Plan approval/);
+        assert.match(request.messages[0].content, /thisCallOnly grant authorizes only this execution/);
+        assert.match(request.messages[0].content, /Never widen paths or grant writes, network, Host access, future runs or Plans through runFiles/);
         yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"SHELL_REVIEW_PRIVATE_REASON"}' });
       }
     } else if (++turns === 1) {
@@ -525,6 +645,10 @@ test('turning Plan off closes a pending Plan and resumes without a review or Pla
     else {
       assert.equal(turns, 2);
       assert.equal(request.tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+      const outcome = JSON.parse(request.messages.find(message => message.role === 'tool' && message.providerCallId === 'provider:plan').content);
+      assert.equal(outcome.status, 'disabled');
+      assert.equal(outcome.response, undefined, 'a permission setting is not a user rejection');
+      assert.match(outcome.nextAction, /continue.*current task/i);
       yield providerEvent(request.requestId, 'assistant.message', { content: 'Continuing without Plan.' });
     }
     yield providerEvent(request.requestId, 'completed', {});

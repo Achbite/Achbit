@@ -2,8 +2,7 @@ import type {
   PluginUri,
   PreparedToolDescriptor,
   PreparedToolPromptContribution,
-  ProviderRequest,
-  ProviderToolAlias,
+  ProviderRequest, RunRuntimeSnapshot, SessionEvent,
   SelectedPluginSnapshot,
   ToolPromptContribution,
   ToolPromptProviderSnapshot,
@@ -132,64 +131,43 @@ function assertPromptBinding(tool: PreparedToolDescriptor, contribution: Prepare
   }
 }
 
-/** An extension's current guidance travels with its declaration when the tool is activated or replaced. */
-export function extensionToolGuidance(
+export interface ToolUsage {
+  toolName: string;
+  text: string;
+  /** On-demand resources belong to their originating journal message or tool result. */
+  contributionId?: string;
+}
+
+/** A product component can describe an active tool; it cannot add a tool or change its inputs. */
+export type ToolGuidanceContributor = (input: {
+  runtime: RunRuntimeSnapshot; events: readonly SessionEvent[]; runId: string; tools: readonly PreparedToolDescriptor[];
+}) => readonly ToolUsage[];
+
+/** Attach guidance to the selected declaration, including when the Host route changes its description. */
+export function applyToolGuidance(
   tools: readonly PreparedToolDescriptor[], contributions: readonly PreparedToolPromptContribution[],
+  sourceTools: readonly PreparedToolDescriptor[] = tools, productUsage: readonly ToolUsage[] = [],
 ): readonly PreparedToolDescriptor[] {
-  const byName = new Map(contributions.filter(item => item.origin === 'extension').map(item => [item.canonicalToolName, item]));
-  if (!byName.size) return tools;
+  if (!contributions.length && !productUsage.length) return tools;
+  const byName = new Map(contributions.map(item => [item.canonicalToolName, item]));
+  const originals = new Map(sourceTools.map(tool => [tool.toolBindingRef, tool.description]));
   return tools.map(tool => {
-    const guidance = byName.get(tool.name);
-    if (!guidance || tool.origin !== 'extension') return tool;
-    assertPromptBinding(tool, guidance);
-    const lines = [tool.description];
-    if (guidance.promptSnippet && guidance.promptSnippet !== tool.description) lines.push(guidance.promptSnippet);
-    lines.push(...guidance.usageGuidelines);
-    return { ...tool, description: lines.join('\n') };
+    const item = byName.get(tool.name);
+    const lines = new Set([tool.description]);
+    if (item && item.origin === tool.origin) {
+      assertPromptBinding(tool, item);
+      // A copy of the original description is not an extra instruction for a projected route.
+      if (item.promptSnippet && item.promptSnippet !== originals.get(tool.toolBindingRef)) lines.add(item.promptSnippet);
+      for (const guideline of item.usageGuidelines) lines.add(guideline);
+    }
+    for (const usage of productUsage) if (usage.toolName === tool.name) lines.add(usage.text);
+    return lines.size === 1 ? tool : { ...tool, description: [...lines].join('\n') };
   });
 }
 
-export function renderActiveToolGuidance(
-  contributions: readonly PreparedToolPromptContribution[],
-  aliases: readonly ProviderToolAlias[],
-  effectiveTools: readonly PreparedToolDescriptor[],
-  hostedTools: ProviderRequest['hostedTools'],
-): string | null {
-  const toolsByName = new Map(effectiveTools
-    .filter((tool) => tool.availability === 'callable')
-    .map((tool) => [tool.name, tool]));
-  const aliasesByCanonical = new Map(aliases.map((alias) => [alias.canonicalName, alias.wireName]));
-  const snippets: string[] = [];
-  const guidelines: string[] = [];
-
-  for (const contribution of contributions) {
-    const tool = toolsByName.get(contribution.canonicalToolName);
-    if (!tool) continue;
-    assertPromptBinding(tool, contribution);
-    const wireName = aliasesByCanonical.get(contribution.canonicalToolName);
-    if (!wireName) {
-      throw new LoopFailure(
-        'tool_prompt_alias_missing',
-        `工具指导缺少 Provider alias：${contribution.canonicalToolName}`,
-      );
-    }
-    // The tool definition already carries its description in the same request.
-    if (contribution.promptSnippet && contribution.promptSnippet !== tool.description) {
-      snippets.push(`- ${wireName}: ${contribution.promptSnippet}`);
-    }
-    for (const guideline of contribution.usageGuidelines) {
-      guidelines.push(`- ${wireName}: ${guideline}`);
-    }
-  }
-
-  for (const tool of hostedTools) {
-    snippets.push(`- ${tool.providerToolType}: Search by keyword; fetch reads known URLs. Cite sources and report search errors.`);
-  }
-
-  const sections: string[] = [];
-  if (snippets.length > 0) sections.push(`Active tool guidance:\n${snippets.join('\n')}`);
-  if (guidelines.length > 0) sections.push(`Guidelines:\n${guidelines.join('\n')}`);
-  return sections.length > 0 ? sections.join('\n\n') : null;
+/** Provider-hosted search has no local function description to carry its usage contract. */
+export function hostedToolGuidance(tools: ProviderRequest['hostedTools']): string | null {
+  return tools.length ? tools.map(tool => `${tool.providerToolType}: Search by keyword. Cite returned sources and report search errors.`).join('\n') : null;
 }
 
 function decodeToolPromptContribution(value: unknown): Readonly<ToolPromptContribution> {

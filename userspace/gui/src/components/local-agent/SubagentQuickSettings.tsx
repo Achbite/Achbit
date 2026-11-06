@@ -4,7 +4,7 @@ import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import SubagentModelFields from '../shared/SubagentModelFields';
-import ToggleSwitch from '../shared/ToggleSwitch';
+import { ToggleSwitch } from '../../ui-components';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 
 export default function SubagentQuickSettings({ profiles, connections, mainProfileId, language }: {

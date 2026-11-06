@@ -52,7 +52,7 @@ class Provider(fixture.MockProviderHandler):
             else:
                 self.end_headers()
                 require(set(results) == {'approved-command'}, 'Incomplete attempts entered tool history')
-                require(results['approved-command']['outcome'] == 'completed', results)
+                require(results['approved-command']['exitCode'] == 0, results)
                 self._send_text('retry-approval-complete')
         except BaseException as error:
             state.record_failure(error)

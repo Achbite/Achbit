@@ -1,7 +1,7 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { takeRestoredInterfaceView, useInterfaceReloadView, registerInterfaceReloadView } from '../../services/interfaceReload';
 import { createPortal } from 'react-dom';
-import { UI_ICON_ROLES } from '../../icons/registry';
+import { UI_ICON_ROLES } from '../../ui-components';
 import { SettingsSearchContext, SettingsSearchTargets, matchesSettingsQuery, type SettingsSearchEntry } from './settingsSearch';
 import { settingsSearchDefinitions } from './sections/CategorizedSettingsSections';
 import React, { useCallback, useEffect, useRef, useState } from 'react';

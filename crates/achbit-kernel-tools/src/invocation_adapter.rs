@@ -1,6 +1,6 @@
 use crate::invocation_types::{
     KernelCanonicalInvocation, KernelDeleteTarget, KernelExecutionScope, KernelTerminalInput,
-    KernelToolKind, KernelWorkspaceMode,
+    KernelTextEdit, KernelToolKind, KernelWorkspaceMode,
 };
 use crate::types::{ToolInputIssue, ToolValidationError};
 use serde::{de::value::MapDeserializer, Deserialize};
@@ -56,6 +56,23 @@ pub fn canonicalize_invocation(
                 execution_scope: KernelExecutionScope::Workspace,
             },
         }
+    } else if tool_id == KernelToolKind::FsEdit {
+        let EditInput {
+            path,
+            mut edits,
+            old_text,
+            new_text,
+        } = EditInput::deserialize(arguments).map_err(invalid)?;
+        match (old_text, new_text) {
+            (Some(old_text), Some(new_text)) => edits.push(KernelTextEdit { old_text, new_text }),
+            (None, None) => {}
+            _ => {
+                return Err(invalid(<serde_json::Error as serde::de::Error>::custom(
+                    "A single replacement requires both oldText and newText",
+                )))
+            }
+        }
+        KernelCanonicalInvocation::FsEdit { path, edits }
     } else {
         let kind = Value::String(tool_id.as_str().into());
         let fields = [("toolId", &kind), ("arguments", arguments)];
@@ -73,6 +90,31 @@ struct ShellInput {
     timeout: Option<u32>,
     terminal: Option<KernelTerminalInput>,
     request_host_permission: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EditInput {
+    path: String,
+    #[serde(default, deserialize_with = "deserialize_edits")]
+    edits: Vec<KernelTextEdit>,
+    old_text: Option<String>,
+    new_text: Option<String>,
+}
+
+// Accept equivalent single/multiple replacement forms at the input boundary.
+// The executor and permission reviewer still receive one canonical edits array.
+fn deserialize_edits<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<KernelTextEdit>, D::Error> {
+    let mut value = Value::deserialize(deserializer)?;
+    if let Value::String(text) = value {
+        value = serde_json::from_str(&text).map_err(serde::de::Error::custom)?;
+    }
+    if value.is_object() {
+        value = Value::Array(vec![value]);
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 fn normalize_invocation(

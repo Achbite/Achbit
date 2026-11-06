@@ -123,13 +123,12 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
   await until(async () => (await actor.snapshot()).run?.status === 'completed');
   const reviewed = !['completion-race','user-cancel','user-input'].includes(scenario);
   assert.equal((await waits()).filter(e => e.payload.phase === 'review').length, reviewed ? 1 : 0);
-  const reviewEvidence = requests[3].messages.map(m => m.content).filter(c => c.includes('process.wait.review')).map(c => JSON.parse(c));
+  const reviewEvidence = requests[3].messages.filter(m => m.role === 'user' && m.content.startsWith('{')).map(m => JSON.parse(m.content)).filter(m => Array.isArray(m.jobs));
   assert.equal(reviewEvidence.length, reviewed ? 1 : 0);
   if (reviewed) {
     const [review] = reviewEvidence;
-    assert.equal(review.waitId, first.waitId);
-    assert.equal(review.deadline - review.waitingSince, first.reviewAt - first.startedAt);
-    assert.deepEqual(review.jobs.map(job => [job.jobId,job.status,job.output.stdout]), [['job:1','active','background-progress-only']]);
+    assert.deepEqual(Object.keys(review), ['jobs'], 'the scheduler deadline stays in the journal');
+    assert.deepEqual(review.jobs.map(job => [job.jobId,job.status,job.stdout]), [['job:1','active','background-progress-only']]);
   }
   assert.equal(requests.length, scenario === 'repair' ? 7 : ['user-cancel','completion-race'].includes(scenario) ? 4 : 5);
   if (['explicit-timeout','long-explicit'].includes(scenario)) assert.equal(jobs.get('job:1').status, 'cancelled', 'a waited-for job was cancelled by a model decision');

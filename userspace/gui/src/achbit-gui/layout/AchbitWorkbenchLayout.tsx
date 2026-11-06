@@ -6,12 +6,11 @@ import { UiRegion } from '../../ui-plugins/UiRegion';
 import ProjectEnvironmentSettings from '../../components/settings-center/sections/ProjectEnvironmentSettings';
 import { restoredInterfaceView, useInterfaceReloadView } from '../../services/interfaceReload';
 import AchbitNavigationBox from './AchbitNavigationBox';
-import ResizeHandle from '../../components/shared/ResizeHandle';
 import { usePaneWidth } from '../../components/shared/usePaneWidth';
 import { PANE_GEOMETRY } from '../../components/shared/paneGeometry';
 import { InterfaceLoadBoundary } from '../../components/shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
-import ModalDialog from '../../components/shared/ModalDialog';
+import { CloseButton, ModalDialog, PanelHeader, ResizeHandle } from '../../ui-components';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../components/shared/interactionFocus';
 import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
@@ -629,14 +628,10 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
             onSubmit={(event) => void submitTextDialog(event)}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <header>
+            <PanelHeader>
               <h2>{textDialog.title}</h2>
-              <button
-                type="button"
-                aria-label={t(language, 'window.close')}
-                onClick={() => setTextDialog(null)}
-              ><AchbitShellIcon name="close" size={14} /></button>
-            </header>
+              <CloseButton aria-label={t(language, 'window.close')} onClick={() => setTextDialog(null)} />
+            </PanelHeader>
             <label>
               <span>{t(language, 'achbitGui.nameLabel')}</span>
               <input
@@ -661,15 +656,11 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       {deleteSessionCandidate && (
         <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-labelledby="achbit-delete-session-title" busy={catalogBusy} onClose={() => setDeleteSessionCandidate(null)}>
           <div className="achbit-gui-text-dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
+            <PanelHeader>
               <h2 id="achbit-delete-session-title">{t(language, 'agent.session.delete')}</h2>
-              <button
-                type="button"
-                aria-label={t(language, 'agent.session.cancel')}
-                disabled={catalogBusy}
-                onClick={() => setDeleteSessionCandidate(null)}
-              ><AchbitShellIcon name="close" size={14} /></button>
-            </header>
+              <CloseButton aria-label={t(language, 'agent.session.cancel')} disabled={catalogBusy}
+                onClick={() => setDeleteSessionCandidate(null)} />
+            </PanelHeader>
             <p className="achbit-gui-text-dialog__message">
               {t(language, 'achbitGui.session.deleteConfirm', {
                 title: deleteSessionCandidate.title || t(language, 'agent.session.newTitle'),
@@ -712,15 +703,11 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       {workspaceManager && (
         <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-label={t(language, 'achbitGui.project.workspacesTitle')} busy={workspaceManager.loading} onClose={() => setWorkspaceManager(null)}>
           <div className="achbit-gui-text-dialog achbit-gui-workspace-manager" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
+            <PanelHeader>
               <h2>{workspaceManager.project.title} · {t(language, 'achbitGui.project.workspacesTitle')}</h2>
-              <button
-                type="button"
-                aria-label={t(language, 'window.close')}
-                disabled={workspaceManager.loading}
-                onClick={() => setWorkspaceManager(null)}
-              ><AchbitShellIcon name="close" size={14} /></button>
-            </header>
+              <CloseButton aria-label={t(language, 'window.close')} disabled={workspaceManager.loading}
+                onClick={() => setWorkspaceManager(null)} />
+            </PanelHeader>
             <h3 className="achbit-gui-workspace-manager__heading">{language === 'zh-CN' ? '源文件夹' : 'Source folders'}</h3>
             <div className="achbit-gui-workspace-manager__list" onMouseDown={(event) => event.stopPropagation()}>
               {!workspaceManager.loading && workspaceManager.records.length === 0 && (

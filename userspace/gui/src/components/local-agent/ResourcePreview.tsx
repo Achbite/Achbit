@@ -1,5 +1,5 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
-import ResizeHandle from '../shared/ResizeHandle';
+import { CloseButton, ResizeHandle } from '../../ui-components';
 import { usePaneWidth } from '../shared/usePaneWidth';
 import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
 import { readDocumentText } from './documentResources';
@@ -321,6 +321,7 @@ export function ResourcePreview({
   language,
   preview,
   tabsTarget,
+  onTreeWidthChange,
   onReview,
   onAttach,
 }: {
@@ -328,6 +329,7 @@ export function ResourcePreview({
   preview: ReturnType<typeof useResourcePreview>;
   ready?: boolean;
   tabsTarget?: HTMLElement | null;
+  onTreeWidthChange?: (width: number) => void;
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
   onAttach?: AttachTreeResource;
 }) {
@@ -358,6 +360,8 @@ export function ResourcePreview({
   }, [preview.activeId, preview.visible, preview.expanded, tabsTarget]);
   const workspace = useRef<HTMLDivElement>(null);
   const treeWidth = usePaneWidth('fileTreeWidth', PANE_GEOMETRY.fileTree, workspace);
+  const visibleTreeWidth = ready && activeSessionId && activeTarget?.kind !== 'agent' && preview.visible && preview.treeVisible ? treeWidth.width : 0;
+  useLayoutEffect(() => { onTreeWidthChange?.(visibleTreeWidth); }, [onTreeWidthChange, visibleTreeWidth]);
   const tabs = (
         <header className="reader-tabs">
           <div
@@ -394,13 +398,10 @@ export function ResourcePreview({
                   <span>{tab.target.kind === 'diff' ? readerFilename(tab.target.file.path) : tabName(tab, language)}</span>
                   {tab.target.kind === 'diff' && <small className="reader-tab__kind">· diff</small>}
                 </button>
-                <button
-                  type="button"
+                <CloseButton size="compact"
                   onClick={() => void preview.closeTab(tab.id)}
                   aria-label={(chinese ? '关闭 ' : 'Close ') + tabName(tab, language)}
-                >
-                  <AchbitShellIcon name="close" />
-                </button>
+                />
               </div>
             ))}
           </div>

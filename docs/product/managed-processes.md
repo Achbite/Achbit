@@ -4,7 +4,7 @@ Shell, PowerShell, managed commands, long-running tasks, dependency waiting, and
 
 ## Choose execution and waiting
 
-A normal `bash`, `powershell` or container create/exec call keeps its native result if it finishes within the foreground window (currently two seconds). Otherwise the **same execution** continues and returns `output.job`. An active job is a start receipt, not successful command completion. Its jobId belongs to the current run. The task’s tool selection determines whether the model can call `process`.
+When a task includes `process`, a normal `bash`, `powershell` or container create/exec call keeps its native result if it finishes within the foreground window (currently two seconds). Longer commands continue as the **same execution** and return `output.job` with the current run's job ID. Without the process component, the call waits for the command, cancellation or its timeout and returns the result directly.
 
 For a known long task, use `process` with `action: start`, the available `tool`, and that tool's exact `input`. Choose `workspace` on the outer call. Example: `{"action":"start","tool":"bash","input":{"command":"make build"}}`. Container create and exec are supported when the containers capability is available. A create job completes when its result contains the prepared container; that is different from the container's lifetime.
 
@@ -16,7 +16,7 @@ A yielded ordinary command is still an ordering barrier. Later calls in the same
 
 Shell and container progress stays available in the activity view and execution logs while the model works on something else. The model receives the start receipt, actual tool results, errors and terminal job results. Requesting `status` explicitly also returns the current output.
 
-The first dependency wait without a deadline offers one review after 120 seconds of waiting. A wait with `waitSeconds` uses the chosen deadline instead. When the deadline arrives, Session first checks for completion and new input. If the dependency is still pending, the same Loop receives its job identity, wait timing, last output time and bounded output tails. The model can continue waiting, inspect the job, cancel it, or do other work.
+The first dependency wait without a deadline offers one review after 120 seconds of waiting. A wait with `waitSeconds` uses the chosen deadline instead. When the deadline arrives, Session first checks for completion and new input. If the dependency is still pending, the same Loop receives the active job handle and bounded output tails. Terminal notifications and explicit status calls give the command result or error. Wait identifiers, scheduling timestamps and internal execution records stay in the journal. The model can continue waiting, inspect the job, cancel it, or do other work.
 
 Waiting again without a deadline continues on events after the one review. An explicit subsequent deadline offers another decision at the chosen time. A wait deadline leaves the command running. The execution tool’s optional `timeout` limits the lifetime of the command itself.
 

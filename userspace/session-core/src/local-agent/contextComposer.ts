@@ -12,11 +12,9 @@ import type {
   ProviderToolDefinition,
   RunRuntimeSnapshot,
   SessionEvent,
-  ToolExecutionRecord,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
 import {
-  isManagedProcessSnapshot,
   LOCAL_AGENT_PROTOCOL_VERSION,
   SESSION_CONTROL_INTERACTION_REQUEST,
   SESSION_CONTROL_PLAN_PUBLISH,
@@ -28,8 +26,13 @@ import {
 } from '@achbit/protocol';
 import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
-import { environmentInstruction } from './sessionEnvironment.js';
-import { permissionInstructionText } from './skillPlugins.js';
+import { managedJobFromRecord, processResult, rejectionContent, toolResultContent } from './modelToolResult.js';
+import { environmentInstruction, primaryWorkingDirectory } from './sessionEnvironment.js';
+import { stableCoreInstructions } from './coreInstructions.js';
+import { codingToolInstruction, codingToolView } from './codingTools.js';
+import { mountedSkillEntries } from './skillPlugins.js';
+import { cancelledPlanResult, confirmedPlanResult } from './planStage.js';
+import { workspacePermissionInstruction } from './workspaceInstructions.js';
 import { journalModelViews } from './modelView.js';
 import type {
   ContextMessageContribution, SessionToolStage,
@@ -40,17 +43,12 @@ import {
   encodeProviderMessage,
   providerMessageCodecsByCallId,
   providerFilesystemReferences,
-  providerWorkspaceBindings,
-  providerWireName,
+  providerWorkspaceBindings, workspaceHandleMap,
   type ProviderToolCodec,
 } from './providerToolCodec.js';
-import {
-  confirmedPlanExecutionInstruction,
-  sessionControlInstructions,
-  sessionControlToolDefinitions,
-} from './sessionControls.js';
-import { extensionToolGuidance, renderActiveToolGuidance } from './toolPromptContributions.js';
-import { visualContextInstruction, visualContextMessages } from './visualContext.js';
+import { activeSessionControls, RESPONSE_PHASE_INSTRUCTION } from './sessionControls.js';
+import { applyToolGuidance, hostedToolGuidance, type ToolGuidanceContributor } from './toolPromptContributions.js';
+import { visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
 
 
@@ -78,6 +76,7 @@ type ConversationRequestInput = {
   providerRequestId: string;
   toolStage?: SessionToolStage;
   optionalControlTools?: readonly string[];
+  toolGuidance?: readonly ToolGuidanceContributor[];
 };
 
 export async function buildAgentProviderRequest(input: ConversationRequestInput & {
@@ -103,32 +102,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     throw new LoopFailure('tool_result_missing', `调用 ${openCall.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
-  const planEnabled = input.runtime.permissions['agent.permissions.workspaceMutation'] !== 'allow';
-  const settingsEvent = input.events.findLast(event => event.type === 'session.subagent-settings.updated'
-    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
-  const settings = settingsEvent?.type === 'session.subagent-settings.updated' ? settingsEvent.payload.settings
-    : settingsEvent?.type === 'session.created' ? settingsEvent.payload.subagentSettings : undefined;
-  const isChild = input.events.some(event => event.type === 'session.created' && event.payload.agentContext !== undefined);
-  const children = new Set<string>();
-  for (const event of input.events) {
-    if (event.type === 'agent.task.created' && event.payload.createsAgent) children.add(event.payload.agentSessionId);
-    if (event.type === 'agent.closed') children.delete(event.payload.agentSessionId);
-  }
-  const canDelegate = settings?.enabled === true && input.runtime.agentCapabilities.delegation;
-  const hasAgentTools = input.runtime.agentToolsEnabled === true
-    && (canDelegate || (isChild || children.size > 0) && (input.runtime.agentCapabilities.messaging || input.runtime.agentCapabilities.delegation));
   const modelViewEvents = input.modelViewEvents ?? input.events;
   const firstRun = input.events.find((event) => event.type === 'run.started');
   const prefixBindings = firstRun?.type === 'run.started'
     ? requestResourceBindings(firstRun.payload.workspaceBindings, input.events, firstRun.sequence)
     : input.workspaceBindings;
-  const controlNames = {
-    interactionRequest: providerWireName(input.runtime, SESSION_CONTROL_INTERACTION_REQUEST),
-    planPublish: providerWireName(input.runtime, SESSION_CONTROL_PLAN_PUBLISH),
-    todoUpdate: providerWireName(input.runtime, SESSION_CONTROL_TODO_UPDATE),
-    pluginActivate: providerWireName(input.runtime, SESSION_CONTROL_PLUGIN_ACTIVATE),
-    artifactPresent: providerWireName(input.runtime, SESSION_CONTROL_ARTIFACT_PRESENT),
-  };
   const surface = input.toolStage ?? input.runtime;
   const readScope = surface.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')
     ? sessionReadScope(input.sessionId, modelViewEvents) : undefined;
@@ -140,44 +118,56 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const hostedTools: ProviderRequest['hostedTools'] = surface.webSearch.owner === 'providerHosted'
     ? [{ type: 'webSearch', providerToolType: surface.webSearch.providerToolType }]
     : [];
-  const controlTools = input.runtime.toolSelection?.controls?.length === 0 ? [] : sessionControlToolDefinitions(input.runtime.agentCapabilities, canDelegate)
-    .filter(tool => input.runtime.toolSelection?.controls === undefined || input.runtime.toolSelection.controls.includes(tool.name))
-    .filter(tool => !input.toolStage?.controls || input.toolStage.controls.includes(tool.name))
-    .filter(tool => planEnabled || tool.name !== SESSION_CONTROL_PLAN_PUBLISH).filter(tool => tool.name === SESSION_CONTROL_AGENT
-    ? hasAgentTools : tool.name === SESSION_CONTROL_PLUGIN_ACTIVATE
-      ? hasPluginDiscovery : (hasWorkspaceBindings || input.toolStage?.controls?.includes(tool.name) || tool.name === SESSION_CONTROL_INTERACTION_REQUEST || tool.name === SESSION_CONTROL_ARTIFACT_PRESENT || tool.name === SESSION_CONTROL_SESSION))
-    .filter(tool => input.optionalControlTools === undefined || ![SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT].includes(tool.name as never)
-      || input.optionalControlTools.includes(tool.name));
+  const controlTools = activeSessionControls(input.runtime, input.events, input.toolStage, input.optionalControlTools, hasWorkspaceBindings, hasPluginDiscovery);
+  const productUsage = input.toolGuidance?.flatMap(contribute => contribute({ runtime: input.runtime, runId: input.runId, events: input.events, tools: runtimeTools })) ?? [];
+  const shellView = hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings);
   const toolCodec = createProviderToolCodec(
-    extensionToolGuidance(hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings),
-      input.runtime.toolPromptContributions),
+    applyToolGuidance(input.runtime.codingTools ? codingToolView(shellView) : shellView,
+      input.runtime.toolPromptContributions, surface.tools, productUsage.filter(usage => !usage.contributionId)),
     controlTools,
     input.runtime.providerToolAliases,
     input.workspaceBindings,
     readScope,
+    input.runtime.codingTools,
   );
   const fixedViews = journalModelViews(modelViewEvents).contributions;
-  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents);
-  const canMutate = runtimeTools.some(tool => tool.possibleEffects.some(effect => effect === 'workspaceMutation' || effect === 'process' || effect === 'external'));
-  const needsPermissionGuidance = canMutate && (planEnabled || input.runtime.planMode === 'manual'
-    || toolCodec.canonicalByWire.has(controlNames.interactionRequest)
-    || input.runtime.permissions['agent.permissions.engineeringDecisions'] !== 'delegate');
-  const instructions = input.runtime.instructions
-    .filter(instruction => instruction.id !== 'achbit.workspace-autonomy' || needsPermissionGuidance)
-    .map(instruction => {
-      if (instruction.id === 'achbit.session-environment') {
-        return environmentInstruction(input.runtime.environment, [...runtimeTools, ...controlTools].map(tool => tool.name));
-      }
-      if (instruction.id === 'achbit.workspace-autonomy' && (
-        !toolCodec.canonicalByWire.has(controlNames.interactionRequest)
-        || planEnabled && !toolCodec.canonicalByWire.has(controlNames.planPublish)
-      )) {
-        return { ...instruction, text: permissionInstructionText(input.runtime.permissions,
-          toolCodec.canonicalByWire.has(controlNames.interactionRequest) ? controlNames.interactionRequest : null,
-          toolCodec.canonicalByWire.has(controlNames.planPublish) ? controlNames.planPublish : null, input.runtime.planMode === 'manual') };
-      }
-      return instruction;
-    })
+  const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
+  const resourceGuidance = new Map<string, string>();
+  for (const usage of productUsage) {
+    if (!usage.contributionId) continue;
+    const previous = resourceGuidance.get(usage.contributionId);
+    resourceGuidance.set(usage.contributionId, [...new Set([previous, usage.text].filter(Boolean))].join('\n\n'));
+  }
+  const inputRuntimes = new Map(input.events.flatMap(event => event.type === 'run.started'
+    ? [[event.payload.inputMessageId, event.payload.runtimeSnapshot] as const] : []));
+  for (const event of input.events) {
+    if (event.type !== 'message.committed' || event.payload.role !== 'user') continue;
+    const initial = inputRuntimes.get(event.payload.messageId);
+    const selected = initial?.selectedPlugins.plugins ?? input.runtime.selectedPlugins.plugins.filter(plugin =>
+      event.payload.pluginSelections?.some(selection => selection.uri === plugin.uri));
+    const entries = mountedSkillEntries(selected, runtimeTools);
+    if (!entries.length) continue;
+    const contributionId = `message:${event.payload.messageId}`;
+    resourceGuidance.set(contributionId, [
+      `Selected Skill files (read on demand): ${JSON.stringify(entries)}`,
+      resourceGuidance.get(contributionId),
+    ].filter(Boolean).join('\n\n'));
+  }
+  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId, resourceGuidance);
+  const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
+  const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
+  const primaryId = input.workspaceBindings[0]?.workspaceId;
+  const coding = input.runtime.codingTools ? {
+    cwd: toolCodec.workspaceToolNames.size ? primaryWorkingDirectory(input.runtime, primaryId) : undefined,
+  } : undefined;
+  // Older snapshots contain policy text from preparation. Its only live owner is the current stage.
+  const activeInstructions = input.runtime.instructions.filter(instruction => instruction.id !== 'achbit.workspace-autonomy')
+    .map(instruction => instruction.id === 'achbit.session-environment'
+      ? environmentInstruction(input.runtime.environment, [...runtimeTools, ...controlTools].map(tool => tool.name), coding) : instruction);
+  const codingGuide = codingToolInstruction(runtimeTools, toolCodec.wireByCanonical);
+  if (codingGuide) activeInstructions.push(codingGuide);
+  if (policy) activeInstructions.push(policy);
+  const instructions = activeInstructions
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
@@ -185,10 +175,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       label: instruction.id,
       message: { role: 'system', content: instruction.text },
     }));
-  const toolGuidance = renderActiveToolGuidance(
-    input.runtime.toolPromptContributions.filter(item => item.origin === 'coreBuiltin'),
-    input.runtime.providerToolAliases, runtimeTools, hostedTools,
-  );
+  const toolGuidance = hostedToolGuidance(hostedTools);
   if (toolGuidance) {
     const stableCoreIndex = instructions.findIndex((instruction) => (
       instruction.contributionId === 'instruction:achbit.coding-agent'
@@ -206,29 +193,32 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       message: { role: 'system', content: toolGuidance },
     });
   }
-  if (controlTools.length || input.toolStage?.instruction) instructions.push({
+  if (controlTools.length) instructions.push({
     contributionId: 'session:controls',
     contributionKind: 'sessionControls',
     label: 'Session control contract',
     message: {
       role: 'system',
-      content: input.toolStage?.instruction ?? sessionControlInstructions(controlNames, hasWorkspaceBindings, hasPluginDiscovery, input.optionalControlTools, planEnabled, controlTools.map(tool => tool.name)),
+      content: RESPONSE_PHASE_INSTRUCTION,
     },
   });
-  if (hasWorkspaceBindings) instructions.push({
+  if (input.toolStage?.instruction) instructions.push({
+    contributionId: 'session:tool-stage',
+    contributionKind: 'sessionControls',
+    label: 'Active tool stage',
+    message: { role: 'system', content: input.toolStage.instruction },
+  });
+  const handles = visibleWorkspaceHandles(prefixBindings, input.runtime, coding?.cwd ? primaryId : undefined);
+  if (hasWorkspaceBindings && handles.length && (!coding || toolCodec.workspaceToolNames.size)) instructions.push({
     contributionId: 'session:workspace-bindings',
     contributionKind: 'workspaceBindings',
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: `Workspace and resource handles (primary is the default working directory). Use the selected handle and workspace-relative paths. Handles identify resources without granting access: ${JSON.stringify(
-        providerWorkspaceBindings(prefixBindings),
-      )}`,
+      content: coding ? `Workspace handles: ${JSON.stringify(handles)}`
+        : `Workspace and resource handles (paths are relative to the selected workspace): ${JSON.stringify(handles)}`,
     },
   });
-  const imageReader = toolCodec.wireByCanonical.get('session.read');
-  if (readScope?.currentViews.includes('images') && imageReader && toolCodec.canonicalByWire.has(imageReader)) instructions.push({ contributionId: 'session:images', contributionKind: 'sessionControls',
-    label: 'Image context', message: { role: 'system', content: visualContextInstruction(input.sessionId, imageReader) } });
   const selected = [...instructions, ...journalMessages,
     ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
   if (input.purpose === 'contextCompaction') selected.push({
@@ -237,7 +227,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     message: { role: 'user', content: input.summaryInstruction },
   });
   assertContextContributions(selected);
-  const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
   const providerSelected = selected.map<ContextMessageContribution>((contribution) => ({
     ...contribution,
     message: fixedViews.has(contribution.contributionId)
@@ -290,7 +279,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       toolCodec.kernelDefinitions,
       toolCodec.controlDefinitions,
       request.hostedTools,
-      toolCodec.canonicalByWire,
       [...toolCodec.receiptTools, ...hostedReceiptTools],
       input.runtime,
       input.workspaceBindings,
@@ -305,13 +293,29 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   };
 }
 
+/** Keep the codec's original handle numbers when omitting facts already given or owned by the Host. */
+function visibleWorkspaceHandles(bindings: readonly WorkspaceBindingDisplay[], runtime?: RunRuntimeSnapshot, describedPrimary?: string) {
+  const handles = providerWorkspaceBindings(bindings);
+  if (!runtime?.codingTools) return handles;
+  return handles.flatMap((handle, index) => {
+    const id = bindings[index]!.workspaceId;
+    if (index === 0 && id === describedPrimary) return [];
+    if (id === runtime.environment.sessionWorkdirId) return index === 0 ? [{ ...handle, displayName: 'Session workspace' }] : [];
+    return [handle];
+  });
+}
+
 export function messagesFromJournal(
   events: readonly SessionEvent[],
   runId: string,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   modelViewEvents: readonly SessionEvent[] = events,
   includeReviewEvidence = false,
+  callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools'>>,
+  resourceGuidance: ReadonlyMap<string, string> = new Map(),
 ): ContextMessageContribution[] {
+  const handles = workspaceHandleMap(workspaceBindings);
+  const resultHandles = (callId: string) => callCodecs?.get(callId)?.workspaceHandleById ?? handles;
   if (!includeReviewEvidence) {
     // Reviewer reads belong to that independent review, not the working Agent's
     // transcript. Their ordinary Kernel records remain in the Session journal.
@@ -343,13 +347,12 @@ export function messagesFromJournal(
         continue;
       }
       // A result that wins the race to the next request supersedes an unseen review.
-      const { waitId, startedAt, reviewAt, jobIds } = item.payload;
+      const { jobIds } = item.payload;
       if (jobIds.some(id => deliveredProcessResults.has(id))) continue;
       messages.push({
         contributionId: `process-review:${item.eventId}`, contributionKind: 'journalMessages',
         sourceSequence: item.sequence, label: 'Dependency wait review',
         message: {role: 'user', content: JSON.stringify({
-          type: 'process.wait.review', waitId, waitingSince: startedAt, deadline: reviewAt,
           jobs: processReviewJobs(events, item),
         })},
       });
@@ -478,10 +481,13 @@ export function messagesFromJournal(
         ? providerReasoning(completedTurns.get(event.payload.providerRequestId), event.payload.providerRequestId)
         : {};
       if (changedBindings) {
+        const runtime = (runForInput.get(event.payload.messageId) ?? runs.find(run => run.runId === event.runId))?.payload.runtimeSnapshot;
+        const currentHandles = visibleWorkspaceHandles(messageBindings, runtime);
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(providerWorkspaceBindings(messageBindings))}` },
+            content: runtime?.codingTools ? `Current workspace handles: ${JSON.stringify(currentHandles)}`
+              : `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(currentHandles)}` },
         });
       }
       messages.push({
@@ -493,7 +499,7 @@ export function messagesFromJournal(
           content: (() => {
             const reply = repliesByMessage.get(event.payload.messageId);
             const question = reply && interactions.get(reply.interactionId);
-            const content = messageContentForModel(event.payload, messageBindings);
+            const content = messageContentForModel(event.payload, messageBindings, resourceGuidance.get(`message:${event.payload.messageId}`));
             return question?.payload.mode === 'continue'
               ? `User response to question ${reply!.interactionId}: ${question.payload.prompt}\n\n${content}` : content;
           })(),
@@ -531,8 +537,7 @@ export function messagesFromJournal(
         contributionId: `interaction-pending:${event.payload.interactionId}`, contributionKind: 'journalMessages',
         sourceSequence: event.sequence,
         label: 'Question awaiting user', message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ interactionId: event.payload.interactionId, status: 'pending',
-            nextAction: 'Continue independent work without assuming an answer or repeating the question. When that work is complete, explain what awaits the user.' }) },
+          content: JSON.stringify({ interactionId: event.payload.interactionId, status: 'pending' }) },
       });
     } else if (event.type === 'interaction.resolved') {
       if (interactions.get(event.payload.interactionId)?.payload.mode === 'continue') continue;
@@ -573,12 +578,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({
-            response: { kind: 'confirm' },
-            planId: event.payload.planId,
-            revision: event.payload.revision,
-            nextAction: confirmedPlanExecutionInstruction(),
-          }),
+          content: JSON.stringify(confirmedPlanResult(event.payload)),
         },
       });
     } else if (event.type === 'plan.revision.requested') {
@@ -598,25 +598,16 @@ export function messagesFromJournal(
         },
       });
     } else if (event.type === 'plan.cancelled') {
-      const reviewed = events.findLast(item => item.type === 'plan.reviewed'
-        && item.payload.planId === event.payload.planId && item.payload.revision === event.payload.revision);
-      const disabled = events.some(item => item.type === 'session.permissions.updated'
-        && item.payload.commandId === event.payload.commandId && item.payload.patches['agent.permissions.workspaceMutation'] === 'allow');
+      const result = cancelledPlanResult(event, events);
       messages.push({
         contributionId: `plan-cancel-result:${event.payload.planId}:${event.payload.revision}`,
         contributionKind: 'journalMessages',
-        label: '用户取消 Plan',
+        label: result.status === 'disabled' ? 'Plan 模式已关闭' : 'Plan 已取消',
         message: {
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({
-            response: { kind: 'cancel' },
-            ...(reviewed?.type === 'plan.reviewed' ? { review: { decision: reviewed.payload.decision, reason: reviewed.payload.reason } } : {}),
-            ...(disabled ? { nextAction: "Continue within the user's authorized scope." } : {}),
-            planId: event.payload.planId,
-            revision: event.payload.revision,
-          }),
+          content: JSON.stringify(result),
         },
       });
     } else if (event.type === 'plan.invalidated') {
@@ -653,14 +644,17 @@ export function messagesFromJournal(
         contributionId: `artifact-presentation:${event.callId}`, contributionKind: 'journalMessages', label: 'Artifacts presented',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ accepted: true, items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
+          content: JSON.stringify({ items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
     } else if (event.type === 'session.plugins.activated') {
       const prepared = events.find(candidate => candidate.type === 'run.tools.prepared'
         && candidate.runId === event.runId
         && candidate.payload.toolView.kernelCatalogSnapshotRef === event.payload.kernelCatalogSnapshotRef);
       if (prepared?.type !== 'run.tools.prepared') throw new LoopFailure('plugin_activation_tool_view_missing', 'Plugin activation has no matching execution tool view.');
-      const activatedTools = prepared.payload.toolView.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
+      const view = prepared.payload.toolView;
+      const activatedTools = view.tools.filter(tool => tool.pluginUri && event.payload.pluginUris.includes(tool.pluginUri));
+      const skillEntries = mountedSkillEntries(view.selectedPlugins.plugins.filter(plugin => event.payload.pluginUris.includes(plugin.uri)), view.tools);
+      const guidance = resourceGuidance.get(`plugin-activation:${event.callId}`);
 
       if (!orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
@@ -670,7 +664,8 @@ export function messagesFromJournal(
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })) }) },
+          content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })),
+            ...(skillEntries.length ? { skillEntries } : {}), ...(guidance ? { guidance } : {}) }) },
       });
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;
@@ -718,7 +713,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: event.payload.providerCallId,
-          content: JSON.stringify({ accepted: false, executed: false, error: event.payload.error }),
+          content: rejectionContent(event.payload.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'control'),
         },
       });
     } else if (event.type === 'tool.requested') {
@@ -738,7 +733,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({ status: 'inputRejected', executed: false, error: event.payload.rejection.error }),
+          content: rejectionContent(event.payload.rejection.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'input'),
         },
       });
     } else if (event.type === 'tool.not-executed') {
@@ -746,8 +741,7 @@ export function messagesFromJournal(
         contributionId: `tool-result:${event.callId}`, contributionKind: 'journalMessages', label: 'Tool not executed',
         message: { role: 'tool', toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason,
-            ...(event.payload.predecessorCallId ? { predecessorCallId: event.payload.predecessorCallId } : {}) }) },
+          content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason }) },
       });
     } else if (event.type === 'tool.interrupted') {
       messages.push({
@@ -758,7 +752,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({ status: 'indeterminate', error: event.payload.error }),
+          content: rejectionContent(event.payload.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'indeterminate'),
         },
       });
     } else if (event.type === 'tool.completed') {
@@ -771,11 +765,8 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
-          content: JSON.stringify({
-            ...toolResultForModel(event.payload.record),
-            ...(approval ? { approval: { decision: approval.decision, scope: approval.authorizationScope ?? 'call',
-              ...(approval.reason ? { reason: approval.reason } : {}) } } : {}),
-          }),
+          content: toolResultContent(event.payload.record, approval, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools,
+            resourceGuidance.get(`tool-result:${event.callId}`)),
         },
       });
     } else if (event.type === 'process.updated') {
@@ -784,7 +775,7 @@ export function messagesFromJournal(
         pendingProcessUpdates.set(job.jobId, {
           contributionId: `process-update:${event.eventId}`, contributionKind: 'journalMessages',
           sourceSequence: event.sequence, label: 'Managed process result',
-          message: { role: 'user', content: JSON.stringify({type: 'process.updated', process: processContext(job)}) },
+          message: { role: 'user', content: JSON.stringify({ process: processResult(job, 'notification') }) },
         });
       }
     } else if (event.type === 'process.wait.changed' && event.payload.phase === 'review') {
@@ -828,7 +819,7 @@ export function messagesFromJournal(
               role: 'tool',
               toolCallId: call.callId,
               providerCallId: call.providerCallId,
-              content: JSON.stringify({ status: 'inputRejected', executed: false, error: call.error }),
+              content: rejectionContent(call.error, resultHandles(call.callId), callCodecs?.get(call.callId)?.codingTools, 'input'),
             },
           });
         }
@@ -858,7 +849,7 @@ export function messagesFromJournal(
               role: 'tool',
               toolCallId: block.callId,
               providerCallId: block.providerCallId,
-              content: JSON.stringify({ status: 'inputRejected', executed: false, error: block.error }),
+              content: rejectionContent(block.error, resultHandles(block.callId), callCodecs?.get(block.callId)?.codingTools, 'input'),
             },
           });
         }
@@ -917,7 +908,6 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
   kernelTools: readonly ProviderToolDefinition[],
   controlTools: readonly ProviderToolDefinition[],
   hostedTools: readonly ProviderRequest['hostedTools'][number][],
-  canonicalByWire: ReadonlyMap<string, string>,
   receiptTools: readonly ContextCompositionTool[],
   runtime: RunRuntimeSnapshot,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
@@ -945,26 +935,6 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     label: binding.displayName,
   }));
   const toolItems = receiptTools.map((tool) => ({ ...tool }));
-  if (toolItems.length !== kernelTools.length + controlTools.length + hostedTools.length) {
-    throw new LoopFailure('provider_tool_receipt_incomplete', 'Context receipt 工具数量不完整。');
-  }
-  for (const tool of toolItems) {
-    if (tool.origin === 'providerHosted') {
-      if (tool.canonicalName !== 'web.search' || tool.wireName !== 'web_search') {
-        throw new LoopFailure(
-          'provider_hosted_tool_receipt_invalid',
-          'Context receipt 的 Provider hosted search 工具无效。',
-        );
-      }
-      continue;
-    }
-    if (canonicalByWire.get(tool.wireName) !== tool.canonicalName) {
-      throw new LoopFailure(
-        'provider_tool_alias_receipt_missing',
-        `Context receipt 缺少 Provider tool alias：${tool.canonicalName}`,
-      );
-    }
-  }
   const messages = selected.map((item, messageIndex) => ({
     messageIndex,
     contributionId: item.contributionId,
@@ -986,7 +956,7 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     responseConstraint,
     dynamicInstructionBytes: selected.reduce((total, contribution) => (
       contribution.message.role === 'system'
-      && contribution.contributionId !== 'instruction:achbit.coding-agent'
+      && !stableCoreInstructions.some(core => contribution.contributionId === `instruction:${core.id}`)
         ? total + new TextEncoder().encode(contribution.message.content).byteLength
         : total
     ), 0),
@@ -1370,121 +1340,21 @@ const CONTEXT_MESSAGE_KINDS: readonly ContextCompositionMessage['contributionKin
 function messageContentForModel(
   payload: Extract<SessionEvent, { type: 'message.committed' }>['payload'],
   workspaceBindings: readonly WorkspaceBindingDisplay[],
+  guidance?: string,
 ): string {
   const sections = [payload.content];
-  if (payload.guidanceReferences?.length) sections.push(`Explicit guidance references for this message. Read relevant supplied content using the named registered tool; these references do not activate an execution plugin:\n${JSON.stringify(payload.guidanceReferences)}`);
+  if (payload.guidanceReferences?.length) sections.push(`Explicit guidance references for this message. Read relevant supplied content using the named tool:\n${JSON.stringify(payload.guidanceReferences)}`);
   if (payload.filesystemReferences?.length) {
-    if (payload.filesystemReferences.some((reference) => reference.kind === 'file' && reference.source === 'pastedText')) {
-      sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request.');
+    const references = payload.filesystemReferences;
+    if (references.some(reference => reference.kind === 'file' && reference.source === 'pastedText')) {
+      sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request. Pasted text snapshots are read-only.');
     }
-    sections.push(`User-attached resources. For work on an attached project, pass its workspace handle on every project call. Handles identify original locations and grant no access. Pasted text snapshots are read-only. Image referenceIds identify supplied visual inputs.\n${JSON.stringify(
-      providerFilesystemReferences(payload.filesystemReferences, workspaceBindings),
-    )}`);
+    const directoryHint = references.some(reference => reference.kind === 'directory')
+      ? ' For work on an attached project, pass its workspace handle on every project call.' : '';
+    sections.push(`User-attached resources.${directoryHint}\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
   }
+  if (guidance) sections.push(guidance);
   return sections.join('\n\n');
-}
-
-function toolResultForModel(record: ToolExecutionRecord): Record<string, unknown> {
-  if (record.outcome === 'completed') {
-    const output = toolOutputForModel(record, record.output);
-    return { recordId: record.recordId, outcome: record.outcome, output };
-  }
-  if (record.outcome === 'cancelled') {
-    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
-    return { recordId: record.recordId, outcome: record.outcome, ...(output === undefined ? {} : { output }) };
-  }
-  if (record.outcome === 'failed') {
-    const output = record.output === undefined ? undefined : toolOutputForModel(record, record.output);
-    return {
-      recordId: record.recordId,
-      outcome: record.outcome,
-      ...(output === undefined ? {} : { output }),
-      error: record.error,
-    };
-  }
-  if (record.outcome === 'indeterminate') {
-    return { outcome: record.outcome, error: record.error };
-  }
-  return {
-    outcome: record.outcome,
-    ...('error' in record && record.error ? { error: record.error } : {}),
-  };
-}
-
-/** Project only known first-party storage fields; extension business output is opaque. */
-function toolOutputForModel(record: ToolExecutionRecord, value: unknown): unknown {
-  const output = structuredClone(value);
-  if (!isRecord(output)) return output;
-  const job = managedJobFromRecord(record);
-  if (job?.status === 'active' && !(record.toolName === 'process' && record.input.action === 'status')) {
-    // The tool call already names the command. Starting or waiting only needs its handle.
-    output.job = { jobId: job.jobId, status: job.status, startedAt: job.startedAt };
-  }
-  if (record.preparedEffect.origin === 'coreBuiltin' && record.outcome === 'completed') {
-    if (record.toolName === 'fs.read' && output.binary === false && output.truncated === false
-      && output.startByte === 0 && typeof output.content === 'string') {
-      // A complete text file has no continuation. Keep its identity, lines and file attributes.
-      for (const key of ['maxBytes', 'maxLines', 'startByte', 'endByte', 'sizeBytes', 'binary', 'byteTruncated']) delete output[key];
-      if (isRecord(output.fileClassification)) {
-        const { kind, executable } = output.fileClassification;
-        output.fileClassification = { kind, executable };
-      }
-    }
-    if (record.toolName === 'fs.write' || record.toolName === 'fs.edit') {
-      if (Array.isArray(output.fileChanges)) output.changed = output.fileChanges.length > 0;
-      // The exact replacements are in the call. The diff and byte ranges belong to the journal.
-      delete output.editPreview;
-      delete output.changedRanges;
-    }
-  }
-  if (['fs.write', 'fs.edit', 'fs.delete', 'bash', 'powershell', 'container', 'document.render', 'browser.capture'].includes(record.toolName)) {
-    delete output.fileChanges;
-  }
-  if (['artifact.prepare', 'artifact.preview', 'document.render', 'browser.capture', 'browser.observe', 'computer.control'].includes(record.toolName)
-    && Array.isArray(output.artifacts)) {
-    const archivedPaths = new Set<string>();
-    for (const artifact of output.artifacts) {
-      if (!isRecord(artifact) || typeof artifact.artifactId !== 'string'
-        || artifact.uri !== `artifact://${artifact.artifactId}` || typeof artifact.contentRef !== 'string') continue;
-      archivedPaths.add(artifact.contentRef);
-      delete artifact.contentRef;
-    }
-    if (typeof output.contentRef === 'string' && archivedPaths.has(output.contentRef)) delete output.contentRef;
-  }
-  if ((record.toolName === 'web.search' || record.toolName === 'web.fetch') && isRecord(output.archive)) {
-    delete output.archive.timelinePath;
-    if (Object.keys(output.archive).length === 0) delete output.archive;
-  }
-  if (record.toolName === 'bash' || record.toolName === 'powershell') {
-    stripShellDiagnostics(output, record.input.command, record.outcome === 'completed');
-  }
-  if (record.toolName === 'computer.control' && record.input.action !== 'status'
-    && isRecord(output.diagnostics) && isRecord(output.diagnostics.native)) {
-    delete output.diagnostics.native.executor;
-  }
-  return output;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function stripShellDiagnostics(output: Record<string, unknown>, command: unknown, completeResult: boolean): void {
-  if (output.command === command) delete output.command;
-  if (completeResult && output.truncated === false) delete output.fullOutput;
-  if (isRecord(output.environment) && typeof output.environment.writeScope === 'string') {
-    output.writeScope = output.environment.writeScope;
-  }
-  delete output.environment;
-  delete output.paths;
-  delete output.workspaceMode;
-  delete output.capturedBytes;
-}
-
-function managedJobFromRecord(record: ToolExecutionRecord): ManagedProcessSnapshot | undefined {
-  if (record.outcome !== 'completed' || !['bash', 'powershell', 'container', 'process'].includes(record.toolName)) return;
-  const job = isRecord(record.output) ? record.output.job : undefined;
-  return isManagedProcessSnapshot(job) ? job : undefined;
 }
 
 function processReviewJobs(events: readonly SessionEvent[], review: Extract<SessionEvent, {type: 'process.wait.changed'}>) {
@@ -1501,22 +1371,6 @@ function processReviewJobs(events: readonly SessionEvent[], review: Extract<Sess
   return review.payload.jobIds.map(id => {
     const job = latest.get(id);
     if (!job) throw new LoopFailure('process_review_job_missing', 'Dependency review is missing its recorded job.');
-    return processContext(job);
+    return processResult(job, 'notification');
   });
-}
-
-function processContext(job: ManagedProcessSnapshot): unknown {
-  // Bound each appended snapshot; the complete output remains in Kernel storage.
-  const { result, output } = job;
-  const truncated = output.truncated || output.stdout.length > 2000 || output.stderr.length > 2000;
-  const details = isRecord(result) ? { ...result } : result;
-  if (isRecord(details)) {
-    delete details.stdout; delete details.stderr;
-    if (job.toolName === 'bash' || job.toolName === 'powershell') stripShellDiagnostics(details, job.command, job.status === 'completed' && !truncated);
-  }
-  return { jobId: job.jobId, command: job.command, status: job.status, startedAt: job.startedAt,
-    ...(job.lastOutputAt ? {lastOutputAt: job.lastOutputAt} : {}), ...(job.completedAt ? {completedAt: job.completedAt} : {}),
-    ...(job.error ? { error: job.error } : {}),
-    output: { ...output, stdout: output.stdout.slice(-2000), stderr: output.stderr.slice(-2000), truncated },
-    ...(details !== undefined ? { result: details } : {}) };
 }

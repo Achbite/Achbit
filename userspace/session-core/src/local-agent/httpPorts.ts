@@ -43,17 +43,13 @@ import {
   decodeAgentToolSelection,
   KERNEL_REPLY_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
-  SESSION_CONTROL_INTERACTION_REQUEST,
-  SESSION_CONTROL_PLAN_PUBLISH,
-  SESSION_CONTROL_TODO_UPDATE,
-  SESSION_CONTROL_PLUGIN_ACTIVATE,
-  SESSION_CONTROL_ARTIFACT_PRESENT,
 } from '@achbit/protocol';
 import { createProviderToolAliases } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
 import { environmentInstruction } from './sessionEnvironment.js';
+import type { ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import {
   decodeRunPluginConfig,
   runtimeInstructions,
@@ -467,15 +463,21 @@ export class HttpProviderPort extends LocalAgentHttpPort implements ProviderPort
 }
 
 interface HttpRunPreparationPortOptions extends HttpPortOptions {
+  codingTools?: boolean;
   stableCoreInstructions: readonly InstructionContribution[];
   promptContributions?: readonly InstructionContribution[];
+  environmentInstructions?: ProductEnvironmentInstructions;
 }
 
 export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPreparationPort {
   readonly #instructions: readonly InstructionContribution[];
+  readonly #environmentInstructions?: ProductEnvironmentInstructions;
+  readonly #codingTools: boolean;
 
   constructor(options: HttpRunPreparationPortOptions) {
     super(options);
+    this.#codingTools = options.codingTools === true;
+    this.#environmentInstructions = options.environmentInstructions;
     this.#instructions = Object.freeze([...options.stableCoreInstructions, ...(options.promptContributions ?? [])]
       .map((instruction) => Object.freeze({ ...instruction })));
   }
@@ -555,17 +557,11 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         ...tools
           .filter((tool) => tool.availability === 'callable')
           .map((tool) => tool.name),
-        ...sessionControlToolDefinitions().map((tool) => tool.name),
-      ], previousProviderToolAliases);
-      const wireName = (canonicalName: string): string => {
-        const alias = providerToolAliases.find((candidate) => (
-          candidate.canonicalName === canonicalName
-        ));
-        if (!alias) throw new Error(`run_runtime_provider_tool_alias_missing:${canonicalName}`);
-        return alias.wireName;
-      };
+        ...(toolSelection?.controls ?? sessionControlToolDefinitions().map(tool => tool.name)),
+      ], previousProviderToolAliases, this.#codingTools);
       return {
         runtimeSnapshot: Object.freeze({
+          ...(this.#codingTools ? { codingTools: true as const } : {}),
           contextManagement: decodeContextManagementSettings(value.contextManagement),
           agentCapabilities,
           ...(toolSelection ? { toolSelection } : {}),
@@ -580,15 +576,9 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           environment: value.environment as JsonObject,
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
-            ...this.#instructions,
-            environmentInstruction(value.environment, tools.filter(tool => tool.availability === 'callable').map(tool => tool.name)),
-          ], pluginConfig, {
-            interactionRequest: wireName(SESSION_CONTROL_INTERACTION_REQUEST),
-            planPublish: wireName(SESSION_CONTROL_PLAN_PUBLISH),
-            todoUpdate: wireName(SESSION_CONTROL_TODO_UPDATE),
-            pluginActivate: wireName(SESSION_CONTROL_PLUGIN_ACTIVATE),
-            artifactPresent: wireName(SESSION_CONTROL_ARTIFACT_PRESENT),
-          })],
+            ...this.#instructions, environmentInstruction(value.environment),
+            ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
+          ])],
           tools,
           toolPromptContributions: toolPromptContributions as PreparedToolPromptContribution[],
           providerToolAliases,
@@ -637,8 +627,11 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
       'maxOutputTokens',
       'apiSurface',
       'hostedWebSearch',
-    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes'])
+    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes', 'inputTokenCalibrationKey'])
     || !isNonEmptyText(value.providerRuntimeRef)
+    || value.inputTokenCalibrationKey !== undefined && (typeof value.inputTokenCalibrationKey !== 'string'
+      || value.inputTokenCalibrationKey.length < 1 || value.inputTokenCalibrationKey.length > 128
+      || /[^!-~]/u.test(value.inputTokenCalibrationKey))
     || !isNonEmptyText(value.profileId)
     || !isPositiveSafeInteger(value.contextWindowTokens)
     || !isPositiveSafeInteger(value.maxOutputTokens)
@@ -657,6 +650,7 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
   ) throw new Error('provider_runtime_snapshot_invalid');
   return Object.freeze({
     providerRuntimeRef: value.providerRuntimeRef,
+    ...(value.inputTokenCalibrationKey !== undefined ? { inputTokenCalibrationKey: value.inputTokenCalibrationKey as string } : {}),
     profileId: value.profileId,
     fileInputMediaTypes: [...((value.fileInputMediaTypes ?? []) as string[])],
     contextWindowTokens: value.contextWindowTokens,
@@ -718,7 +712,8 @@ function decodeSelectedPluginSnapshot(
         'pluginInstanceRef',
         'extensionGenerationRef',
         'capabilityRefs',
-      ])
+      ], ['skillEntryPath'])
+      || plugin.skillEntryPath !== undefined && !isNonEmptyText(plugin.skillEntryPath)
       || typeof plugin.uri !== 'string'
       || !/^plugin:\/\/[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(plugin.uri)
       || seen.has(plugin.uri)
@@ -735,14 +730,16 @@ function decodeSelectedPluginSnapshot(
       pluginInstanceRef: plugin.pluginInstanceRef,
       extensionGenerationRef,
       capabilityRefs: [...plugin.capabilityRefs] as string[],
+      ...(plugin.skillEntryPath === undefined ? {} : { skillEntryPath: plugin.skillEntryPath }),
     };
   });
   const requested = request.pluginSelections ?? [];
+  const admitted = new Set([...requested, ...(request.inheritedPluginSelections ?? [])].map(selection => selection.uri));
   if (
-    requested.length > 0
+    admitted.size > 0
     && (
-      (!request.refreshPlugins && (requested.length !== plugins.length || requested.some((selection) => !seen.has(selection.uri))))
-      || plugins.some((plugin) => !requested.some(selection=>selection.uri===plugin.uri))
+      (!request.refreshPlugins && requested.some(selection => !seen.has(selection.uri)))
+      || plugins.some(plugin => !admitted.has(plugin.uri))
     )
   ) throw new Error('selected_plugin_snapshot_identity_mismatch');
   return {

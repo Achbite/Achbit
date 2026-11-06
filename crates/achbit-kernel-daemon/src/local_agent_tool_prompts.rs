@@ -8,7 +8,6 @@ pub(crate) fn core_tool_prompt_providers() -> Value {
             json!({
                 "contributionRef": format!("tool-prompt-contribution:core:{}", descriptor.name),
                 "canonicalToolName": descriptor.name,
-                "promptSnippet": descriptor.description,
                 "usageGuidelines": guidelines,
             })
         })
@@ -58,7 +57,22 @@ mod tests {
         let contributions = providers[0]["contributions"]
             .as_array()
             .expect("contributions");
-        for required in ["fs.read", "bash", "web.fetch", "web.search", "powershell"] {
+        for (tool, field, guidance) in [
+            ("fs.read", "startByte", "nextByte"),
+            ("fs.read", "startLine", "nextStartLine"),
+            ("bash", "command", "exit status"),
+            ("powershell", "command", "$LASTEXITCODE"),
+        ] {
+            let descriptor = registry.descriptor(tool).expect("registered tool");
+            let text = descriptor.input_schema["properties"][field]["description"]
+                .as_str()
+                .expect("parameter description");
+            assert!(text.contains(guidance), "{tool}.{field} lost {guidance}");
+            assert!(!contributions
+                .iter()
+                .any(|item| item["canonicalToolName"] == tool));
+        }
+        for required in ["web.fetch", "web.search"] {
             assert!(
                 contributions
                     .iter()
@@ -71,7 +85,7 @@ mod tests {
                 .as_str()
                 .expect("tool name");
             let descriptor = registry.descriptor(name).expect("registered tool");
-            assert_eq!(contribution["promptSnippet"], descriptor.description);
+            assert!(contribution.get("promptSnippet").is_none());
             assert!(descriptor.description.chars().count() <= 512);
             let guidelines = contribution["usageGuidelines"]
                 .as_array()

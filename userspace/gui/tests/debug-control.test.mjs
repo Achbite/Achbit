@@ -97,7 +97,7 @@ test('run duration accompanies the existing process toggle without adding a foot
   const items = [messages[0], tools, narrative, ...messages.slice(1)];
   const html = renderToStaticMarkup(createElement(ConversationTranscript, {
     layoutCache: new ConversationLayoutCache(), language: 'zh-CN', loading: false, displaySettledRunIds: new Set(['run:timing']), onDisplayed() {},
-    projection: { sessionId: 'session:timing', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts: [],
+    projection: { sessionId: 'session:timing', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts: [], queuedInputs: [],
       runTimings: [{ runId: 'run:timing', clockDomain: 'session', acceptedAt: '1', firstResponseAt: '2', firstResponseKind: 'text', responseElapsedMs: 689000, coverage: 'complete' }] },
     hasConversationContent: true, draftItems: [], conversationItems: items,
     presentation: { content: id => id },

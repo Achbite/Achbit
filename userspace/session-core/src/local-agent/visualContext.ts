@@ -50,8 +50,8 @@ export function readImageReferences(events: readonly SessionEvent[], imageIds: r
   });
 }
 
-export function visualContextInstruction(sessionId: string, readerName: string): string {
-  return `Historical image references contain no pixels. The final Current visual inputs messages identify the images attached to this request. User attachments, GUI observations and explicitly reopened images are attached for one successful model request, then archived references remain without pixels. Use ${readerName} with view=images, sessionId=${sessionId} and imageIds to reopen exact references or compare images; do not infer omitted visual details. Fresh tool images replace the preceding batch. Release unneeded pixels with imageIds=[].`;
+export function visualContextInstruction(sessionId: string): string {
+  return `Only current visual inputs supply pixels for this request. Reopen archived images with view=images, sessionId=${sessionId} and imageIds; pass [] to release them. A fresh tool image batch replaces previous observations.`;
 }
 
 /** Selection is replayed from existing input and tool facts; retries reuse the prepared request. */

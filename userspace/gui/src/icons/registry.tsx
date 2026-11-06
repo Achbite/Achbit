@@ -1,5 +1,5 @@
 
-/** Built-in UI glyphs: one grid, optical weight and currentColor across every surface.
+/** Built-in UI glyphs: shared grid, optical weights and currentColor across every surface.
  * Change glyphs or semantic role mappings here; consumers never define SVG paths.
  * These are application vectors, not a dependency on platform SF Symbols fonts.
  */
@@ -13,13 +13,13 @@ export const UI_ICON_GLYPHS = {
   code: <><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></>,
   download: <><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></>,
   info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7" r="1" fill="currentColor" stroke="none"/></>,
-  close: <><path d="m6 6 12 12M18 6 6 18" /></>,
+  close: <><path d="m6 6 12 12M18 6 6 18" strokeWidth="2" /></>,
   terminal: <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7 9 3 3-3 3M13 15h4" /></>,
   compose: <><path d="M4 20h4l11-11-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></>,
   folder: <><path d="M3 7.5h7l2-2h9v13H3v-11Z" /></>,
   browser: <><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></>,
   paperclip: <><path d="m8.4 12.8 6.9-6.9a3.25 3.25 0 0 1 4.6 4.6l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.2-8.2" /><path d="m7.1 14.1 8.2-8.2" /></>,
-  plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
+  plus: <><path d="M12 5v14M5 12h14" strokeWidth="2" /></>,
   more: <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" /></>,
   chevronRight: <><path d="m9 6 6 6-6 6" /></>,
   chevronDown: <><path d="m6 9 6 6 6-6" /></>,

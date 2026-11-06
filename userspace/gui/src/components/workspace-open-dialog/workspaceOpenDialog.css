@@ -38,17 +38,6 @@
   font-weight: 600;
   letter-spacing: 0.3px;
 }
-.ws-open-dialog__close {
-  background: none;
-  border: none;
-  color: var(--ac-muted);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 0 4px;
-}
-.ws-open-dialog__close:hover {
-  color: var(--ac-foreground-strong);
-}
 
 .ws-open-dialog__addressbar {
   display: flex;
@@ -279,25 +268,6 @@
   color: var(--ac-faint);
   font-size: var(--ac-font-micro);
   font-weight: var(--ac-weight-regular);
-}
-
-:root[data-product='achbit-gui'] .ws-open-dialog__close {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ac-faint);
-  font-family: var(--ac-font-ui);
-  font-size: 18px;
-}
-
-:root[data-product='achbit-gui'] .ws-open-dialog__close:hover {
-  background: var(--ac-surface-hover);
-  color: var(--ac-foreground);
 }
 
 :root[data-product='achbit-gui'] .ws-open-dialog__addressbar {

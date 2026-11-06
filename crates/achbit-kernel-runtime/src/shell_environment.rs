@@ -53,6 +53,80 @@ pub fn find_command_in(name: &str, directories: &[PathBuf]) -> Option<PathBuf> {
     command_candidates_in(name, directories.iter()).find(|path| executable_file(path))
 }
 
+/// Read-only resources for a Unix command discovered on PATH. Keep every file
+/// in its symlink chain and, for a Node package entry, that package's runtime.
+/// This is filesystem discovery, not an execution or service-readiness probe.
+#[cfg(unix)]
+pub fn unix_runtime_read_roots(executable: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let canonical = executable.canonicalize()?;
+    if !std::fs::metadata(&canonical)?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Command target must be a file",
+        ));
+    }
+    let mut roots = std::collections::BTreeSet::from([canonical.clone()]);
+    if executable.is_absolute() {
+        roots.insert(executable.to_path_buf());
+    }
+    let mut current = executable.to_path_buf();
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        let parent = current.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Command parent is missing",
+            )
+        })?;
+        let name = current.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Command filename is missing",
+            )
+        })?;
+        // Resolve directory aliases without granting their whole contents.
+        let path = parent.canonicalize()?.join(name);
+        if !visited.insert(path.clone()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Command symlink chain contains a cycle",
+            ));
+        }
+        roots.insert(path.clone());
+        if !std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+            break;
+        }
+        let target = std::fs::read_link(&path)?;
+        current = if target.is_absolute() {
+            target
+        } else {
+            path.parent().expect("resolved command parent").join(target)
+        };
+    }
+    // Package entry scripts load sibling modules. The nearest installed package
+    // is the scope, not node_modules, the toolchain prefix or the user's home.
+    for directory in canonical.ancestors().skip(1) {
+        let Some(parent) = directory.parent() else {
+            continue;
+        };
+        let package = parent
+            .file_name()
+            .is_some_and(|name| name == "node_modules")
+            || (parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('@'))
+                && parent
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == "node_modules"));
+        if package && directory.join("package.json").is_file() {
+            roots.insert(directory.to_path_buf());
+            break;
+        }
+    }
+    Ok(roots.into_iter().collect())
+}
+
 fn command_candidates(name: &str) -> impl Iterator<Item = PathBuf> + '_ {
     let directories = std::env::split_paths(
         std::env::var_os("PATH")
@@ -293,6 +367,70 @@ pub(crate) fn prepare_script_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn command_runtime_reads_cover_symlink_chains_and_only_the_installed_package() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "achbit-command-roots-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let package = root.join("runtime/lib/node_modules/@example/cli");
+        for directory in [
+            root.join("path"),
+            root.join("runtime/bin"),
+            package.join("bin"),
+            package.join("lib"),
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+        std::fs::write(package.join("bin/main.js"), "require('../lib/cli.js')").unwrap();
+        std::fs::write(package.join("lib/cli.js"), "console.log('ready')").unwrap();
+        symlink(
+            "../lib/node_modules/@example/cli/bin/main.js",
+            root.join("runtime/bin/cli"),
+        )
+        .unwrap();
+        symlink("../runtime/bin/cli", root.join("path/cli")).unwrap();
+        let reads = unix_runtime_read_roots(&root.join("path/cli")).unwrap();
+        for file in [
+            root.join("path/cli"),
+            root.join("runtime/bin/cli"),
+            package.join("bin/main.js"),
+        ] {
+            let normalized = file
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join(file.file_name().unwrap());
+            assert!(
+                reads.contains(&normalized),
+                "missing {}",
+                normalized.display()
+            );
+        }
+        assert!(reads.contains(&package.canonicalize().unwrap()));
+        assert_eq!(reads.iter().filter(|path| path.is_dir()).count(), 1);
+        std::fs::write(root.join("runtime/bin/plain"), "#!/bin/sh\nexit 0\n").unwrap();
+        symlink("../runtime/bin/plain", root.join("path/plain")).unwrap();
+        assert!(unix_runtime_read_roots(&root.join("path/plain"))
+            .unwrap()
+            .iter()
+            .all(|path| !path.is_dir()));
+        symlink("missing", root.join("path/broken")).unwrap();
+        assert!(unix_runtime_read_roots(&root.join("path/broken")).is_err());
+        symlink("cycle", root.join("path/cycle")).unwrap();
+        assert!(unix_runtime_read_roots(&root.join("path/cycle")).is_err());
+        assert!(unix_runtime_read_roots(&package).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn regular_powershell7_is_preferred_over_the_store_package() {

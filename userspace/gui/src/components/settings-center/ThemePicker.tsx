@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import UiIcon from '../../icons/registry';
+import { UiIcon } from '../../ui-components';
 import type { GuiAccentColor, GuiResolvedTheme } from '../../theme/achbitGuiTheme';
 import { paletteColor, type PaletteOverrides } from '../../theme/palette';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';

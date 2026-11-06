@@ -77,19 +77,44 @@ class State(fixture.ProviderState):
             action = definition['properties']['action']
             require(action.get('type') == 'string' and 'enum' not in action and 'const' not in action,
                     'Agent control schema must not change with discovery')
+        # The child task names its sender. Parents can read their children's resources.
+        history = [event for event in journal if event['sessionId'] == sid and event['sequence'] < receipts[-1]['sequence']]
+        children = {event['payload']['agentSessionId'] for event in history
+                    if event['type'] == 'agent.task.created' and event['payload'].get('createsAgent')}
+        parent = next((event['payload'].get('agentContext', {}).get('parentSessionId') for event in history
+                       if event['type'] == 'session.created'), None)
+        expected_targets = children | ({sid} if children else set())
+        if parent and any(event['type'] == 'message.committed' and event['payload']['role'] == 'user'
+                          and parent in event['payload']['content'] for event in history):
+            expected_targets.add(parent)
+        snapshot = next(event['payload']['runtimeSnapshot'] for event in reversed(history) if event['type'] == 'run.started')
+        if not any(tool['name'] == 'session.read' and tool['availability'] == 'callable' for tool in snapshot['tools']):
+            expected_targets.clear()
+        reader = names.get('session.read')
+        require(bool(reader) == bool(expected_targets), f'{lane}: history availability differs from {expected_targets}')
+        if reader:
+            schema = next(tool['function']['parameters'] for tool in body['tools'] if tool['function']['name'] == reader)
+            require(set(schema['properties']['sessionId']['enum']) == expected_targets,
+                    f'{lane}: history exposes the wrong Session targets')
         with self.lock:
             previous = self.lanes.setdefault(lane, [])
             if previous:
                 prefix = previous[-1]['messages']
                 require(body['messages'][:len(prefix)] == prefix, f'{lane}: already-sent prefix changed')
-                require(body['tools'] == previous[-1]['tools'], f'{lane}: tool directory changed between requests')
+                current_fixed = [tool for tool in body['tools'] if tool['function']['name'] != reader]
+                previous_fixed = [tool for tool in previous[-1]['tools'] if tool['function']['name'] != reader]
+                require(current_fixed == previous_fixed, f'{lane}: unrelated tool directory changed between requests')
+                if body['tools'] != previous[-1]['tools'] and reader:
+                    old_reader = next((tool for tool in previous[-1]['tools'] if tool['function']['name'] == reader), None)
+                    require(not old_reader or set(old_reader['function']['parameters']['properties']['sessionId']['enum']) != expected_targets,
+                            f'{lane}: history definition changed without a change of scope')
             previous.append(body)
             ordinal = len(previous)
             self.requests.append(dict(lane=lane, ordinal=ordinal, sessionId=sid, receipt=receipt, body=body))
-        results = {message['tool_call_id']: json.loads(message['content']) for message in body['messages']
+        results = {message['tool_call_id']: fixture.tool_content(message['content']) for message in body['messages']
                    if message.get('role') == 'tool'}
         for call_id, result in results.items():
-            require(call_id == 'over-limit' or result.get('accepted') is not False,
+            require(call_id == 'over-limit' or not isinstance(result, dict) or result.get('accepted') is not False,
                     f'{lane}: tool {call_id} was rejected: {json.dumps(result, ensure_ascii=False)}')
         if 'models' in results:
             operations = {operation['action'] for operation in results['models']['operations']}
@@ -176,7 +201,7 @@ class Provider(fixture.MockProviderHandler):
                         require(state.async_acknowledged.wait(timeout=15), 'Parent did not continue after asynchronous delegation')
                     self._send_tool_calls([('read', names['fs.read'], {'path': 'probe.txt'})])
                 else:
-                    require(ordinal == 2 and results['read']['outcome'] == 'completed' and MARKER in json.dumps(results['read']), 'Child did not execute the actual read')
+                    require(ordinal == 2 and isinstance(results['read'], str) and MARKER in results['read'], 'Child did not execute the actual read')
                     self._send_text('analysis-read-complete' if lane == 'ANALYSIS_READ' else 'nested-read-complete')
             elif lane == 'MEMBER_INITIAL':
                 if ordinal == 1:
@@ -200,7 +225,7 @@ class Provider(fixture.MockProviderHandler):
                 elif ordinal == 3:
                     self._send_tool_calls([('write-first', names['fs.write'], {'path': TRACKED_PATH, 'content': FIRST_CONTENT})])
                 elif ordinal == 4:
-                    require(results['write-first']['outcome'] == 'completed', 'Child file creation failed')
+                    require(results['write-first']['changed'] is True, 'Child file creation failed')
                     child = fixture.projection(state.daemon, sid)
                     private_id = child['sessionDirectoryIndexes'][0]['workspaceId']
                     bindings = child['run']['workspaceBindings']
@@ -209,7 +234,7 @@ class Provider(fixture.MockProviderHandler):
                     self._send_tool_calls([('write-private', names['fs.write'],
                         {'workspace': handle, 'path': PRIVATE_PATH, 'content': PRIVATE_CONTENT})])
                 else:
-                    require(ordinal == 5 and results['write-private']['outcome'] == 'completed', 'Child private file creation failed')
+                    require(ordinal == 5 and results['write-private']['changed'] is True, 'Child private file creation failed')
                     self._send_text('member-initial-complete')
             elif lane == 'MEMBER_FOLLOWUP':
                 require(any(message.get('content') == 'member-initial-complete'
@@ -223,7 +248,7 @@ class Provider(fixture.MockProviderHandler):
                 elif ordinal == 2:
                     self._send_tool_calls([('write-second', names['fs.write'], {'path': TRACKED_PATH, 'content': SECOND_CONTENT})])
                 else:
-                    require(ordinal == 3 and results['write-second']['outcome'] == 'completed', 'Child file update failed')
+                    require(ordinal == 3 and results['write-second']['changed'] is True, 'Child file update failed')
                     self._send_text('member-followup-complete')
             elif lane == 'MAIN_CANCEL':
                 if ordinal == 1:

@@ -1,5 +1,5 @@
 import type {
-  NewSessionEvent, PlanAuthority, RunRuntimeSnapshot, SessionProjection,
+  NewSessionEvent, PlanAuthority, RunRuntimeSnapshot, SessionEvent, SessionProjection,
 } from '@achbit/protocol';
 import { SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 import { canonicalJsonValue, providerWireName } from './providerToolCodec.js';
@@ -13,13 +13,42 @@ const planReaders = new Set(['fs.read', 'session.read', 'skill.read']);
 
 export function requestedPlanToolStage(runtime: RunRuntimeSnapshot, state: SessionState): SessionToolStage | undefined {
   if (runtime.planMode !== 'manual') return undefined;
-  if (state.activePlanRef) return { tools: runtime.tools, webSearch: runtime.webSearch };
+  if (state.activePlanRef) return {
+    tools: runtime.tools, webSearch: runtime.webSearch,
+    instruction: 'The Plan is confirmed. Carry out and verify the approved work. Propose an extension only if the work needs additional scope.',
+  };
   return {
     tools: runtime.tools.filter(tool => (tool.origin === 'extension' || planReaders.has(tool.name))
       && tool.possibleEffects.every(effect => effect === 'workspaceRead' || effect === 'localRead')),
     webSearch: { owner: 'unavailable' },
     controls: [SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH],
-    instruction: `Gather the information needed for the plan, then submit it with ${providerWireName(runtime, SESSION_CONTROL_PLAN_PUBLISH)}.`,
+    instruction: `Use the available readers to prepare the plan. Submit it with ${providerWireName(runtime, SESSION_CONTROL_PLAN_PUBLISH)} and wait for confirmation. Publishing requests scope; you execute the steps with tools after confirmation. For shell steps, list only project directories the command must write; use writablePaths: [] when there are none.`,
+  };
+}
+
+/** The confirmation is the result of this Plan call, scoped to its owning run. */
+export function confirmedPlanResult(plan: { planId: string; revision: number }) {
+  return {
+    response: { kind: 'confirm' }, planId: plan.planId, revision: plan.revision,
+    nextAction: 'The Plan is confirmed. Continue the task now within its approved scope for this run.',
+  };
+}
+
+export function cancelledPlanResult(event: Extract<SessionEvent, { type: 'plan.cancelled' }>, events: readonly SessionEvent[]) {
+  const { commandId, planId, revision } = event.payload;
+  // A policy change closes the proposal in the same command, without cancelling the task.
+  const disabled = events.some(fact => fact.type === 'session.permissions.updated'
+    && fact.payload.commandId === commandId && fact.payload.patches['agent.permissions.workspaceMutation'] === 'allow');
+  if (disabled) return {
+    planId, revision, status: 'disabled',
+    nextAction: 'Plan mode was turned off. Continue the current task using the available tools under the current permissions.',
+  };
+  const reviewed = events.findLast(fact => fact.type === 'plan.reviewed' && fact.runId === event.runId
+    && fact.payload.planId === planId && fact.payload.revision === revision);
+  return {
+    response: { kind: 'cancel' },
+    ...(reviewed?.type === 'plan.reviewed' ? { review: { decision: reviewed.payload.decision, reason: reviewed.payload.reason } } : {}),
+    planId, revision,
   };
 }
 

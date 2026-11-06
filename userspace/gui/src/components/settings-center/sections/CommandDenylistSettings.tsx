@@ -2,7 +2,7 @@ import React, { useId, useState } from 'react';
 import { t, type UiLanguage } from '../../../i18n';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
-import ModalDialog from '../../shared/ModalDialog';
+import { ModalDialog } from '../../../ui-components';
 import { useSettingsHelp } from '../SettingsHelp';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from '../settingsSearch';
 

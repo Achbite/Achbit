@@ -31,7 +31,7 @@ async function httpPreparation(t, promptContributions) {
           sessionId: input.sessionId, runId: input.runId, provider, approvalReviewer: reviewer,
           webSearch: seed.webSearch, extensionGenerationRef: seed.extensionGenerationRef,
           kernelCatalogSnapshotRef: seed.kernelCatalogSnapshotRef, tools: [], toolPromptProviders: [],
-          toolSelection: { kernel: [], controls: [], plugins: false },
+          toolSelection: { kernel: [], controls: [], plugins: seed.selectedPlugins.plugins.length > 0 },
           pluginConfig: { extensionGenerationRef: seed.extensionGenerationRef, permissions: seed.permissions, selectedPlugins: [] },
           selectedPlugins: seed.selectedPlugins, environment: seed.environment,
           agentCapabilities: seed.agentCapabilities, agentToolsEnabled: true, contextManagement: seed.contextManagement };
@@ -58,9 +58,49 @@ async function httpPreparation(t, promptContributions) {
   const request = { sessionId: 'session:http-native', runId: 'run:http-native', profileId: seed.provider.profileId,
     workspaceBindings: [] };
   return { port, request, requests, releases,
+    usePlugins(uris) { seed.selectedPlugins.plugins = uris.map(uri => ({ uri,
+      pluginArtifactRef: `artifact:${uri}`, pluginInstanceRef: `instance:${uri}`,
+      extensionGenerationRef: seed.extensionGenerationRef, capabilityRefs: [] })); },
     useProvider(extra) { provider = { ...seed.provider, ...extra }; },
     useReviewer(extra) { reviewer = { ...seed.provider, ...extra }; } };
 }
+
+test('HTTP preparation admits enabled inherited plugins while requiring every new explicit selection', async t => {
+  const fixture = await httpPreparation(t);
+  const selected = uri => ({ selectionId: uri, uri, label: uri });
+  const explicit = 'plugin://explicit@local', retained = 'plugin://retained@local';
+  const request = { ...fixture.request, pluginSelections: [selected(explicit)],
+    inheritedPluginSelections: [selected(retained)] };
+  for (const available of [[explicit, retained], [explicit]]) {
+    fixture.usePlugins(available);
+    const prepared = await fixture.port.prepare(request);
+    assert.deepEqual(prepared.runtimeSnapshot.selectedPlugins.plugins.map(plugin => plugin.uri), available);
+    assert.deepEqual(fixture.requests.at(-1).inheritedPluginSelections, request.inheritedPluginSelections);
+  }
+  for (const unavailable of [[retained], [explicit, 'plugin://unrequested@local']]) {
+    fixture.usePlugins(unavailable);
+    await assert.rejects(fixture.port.prepare(request), /selected_plugin_snapshot_identity_mismatch/);
+  }
+});
+
+test('HTTP preparation preserves stable token calibration keys for the provider and reviewer', async t => {
+  const fixture = await httpPreparation(t);
+  fixture.useProvider({ inputTokenCalibrationKey: 'input-token-calibration:main' });
+  fixture.useReviewer({ inputTokenCalibrationKey: 'input-token-calibration:reviewer' });
+  const prepared = await fixture.port.prepare(fixture.request);
+  const restored = JSON.parse(JSON.stringify(prepared.runtimeSnapshot));
+  assert.equal(restored.provider.inputTokenCalibrationKey, 'input-token-calibration:main');
+  assert.equal(restored.approvalReviewer.inputTokenCalibrationKey, 'input-token-calibration:reviewer');
+  assertRuntimeContract('ProviderRuntimeSnapshot', restored.provider);
+  assertRuntimeContract('ProviderRuntimeSnapshot', restored.approvalReviewer);
+  assert.equal(fixture.releases.length, 0);
+  for (const invalid of [null, '', 'invalid key', 'invalid\n', 42]) {
+    assert.throws(() => assertRuntimeContract('ProviderRuntimeSnapshot', { ...restored.provider, inputTokenCalibrationKey: invalid }));
+    fixture.useProvider({ inputTokenCalibrationKey: invalid });
+    await assert.rejects(fixture.port.prepare(fixture.request), /provider_runtime_snapshot_invalid/);
+  }
+  assert.equal(fixture.releases.length, 5, 'invalid calibration metadata must release the prepared runtime');
+});
 
 test('real HTTP run preparation accepts omitted, empty and PDF file capabilities for provider and reviewer', async t => {
   const fixture = await httpPreparation(t);

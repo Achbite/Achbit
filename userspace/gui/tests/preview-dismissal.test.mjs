@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModule, findReactElement } from './gui-projection-contract.mjs';
+import { loadGuiModule, loadGuiModules, findReactElement } from './gui-projection-contract.mjs';
 
 test('preview dismissal belongs to session, run and source rather than target or refresh', async t => {
   const { dismissPreview, isPreviewDismissed, acceptPreview } = await loadGuiModule(t, '/src/services/computerPreview.ts');
@@ -29,13 +29,21 @@ test('preview dismissal belongs to session, run and source rather than target or
 });
 
 test('close is a sibling control; Escape is scoped to the card and composition is respected', async t => {
-  const { FloatingComputerPreview } = await loadGuiModule(t, '/src/achbit-gui/layout/ComputerTargetPreview.tsx');
+  const [{ FloatingComputerPreview }, { CloseButton, IconButton, Button }] = await loadGuiModules(t, [
+    '/src/achbit-gui/layout/ComputerTargetPreview.tsx', '/src/ui-components/index.ts',
+  ]);
   let dismissed = 0, stopped = 0;
   function Probe() {
     const card = FloatingComputerPreview({ view: { state: 'failed', reason: 'real preview error' },
       sessionId: 's', runId: 'r', language: 'zh-CN', readerLayout: { visible: false, expanded: false },
       concealed: true, index: 0, overlay: { current: null }, raised: false, onRaise() {}, onDismiss() { dismissed++; } });
-    const close = findReactElement(card, node => node.type === 'button' && node.props['data-ui-part'] === 'close');
+    const control = findReactElement(card, node => node.type === CloseButton && node.props['data-ui-part'] === 'close');
+    const icon = CloseButton(control.props);
+    assert.equal(icon.type, IconButton);
+    const base = IconButton(icon.props);
+    assert.equal(base.type, Button);
+    const close = Button(base.props);
+    assert.equal(close.type, 'button', 'the registered composition still exposes the native control');
     close.props.onPointerDown({ stopPropagation() { stopped++; } });
     assert.equal(dismissed, 0, 'pointerdown does not close or start dragging');
     close.props.onClick({ preventDefault() {}, stopPropagation() { stopped++; } });

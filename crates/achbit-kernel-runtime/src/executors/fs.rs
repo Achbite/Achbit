@@ -1,7 +1,9 @@
 use super::file_changes::{capture_side, change_fact, delete_tree};
 use super::*;
 
-pub(super) struct FsReadExecutor;
+pub(super) struct FsReadExecutor {
+    pub(super) images: bool,
+}
 pub(super) struct FsWriteExecutor;
 pub(super) struct FsEditExecutor;
 pub(super) struct FsDeleteExecutor;
@@ -48,6 +50,13 @@ impl KernelToolExecutor for FsReadExecutor {
                 details: serde_json::json!({"path":path}),
             });
         }
+        if self.images {
+            if let Some(mut image) = read_image(&target)? {
+                image["workspaceId"] = serde_json::json!(workspace_id(&context)?);
+                image["path"] = serde_json::json!(normalize_relative_path(&path));
+                return Ok(ok(invocation.id, image));
+            }
+        }
         let mut output = achbit_kernel_tools::text_range::read_text_range(
             &target,
             u64::from(start_line),
@@ -60,6 +69,34 @@ impl KernelToolExecutor for FsReadExecutor {
         output["path"] = serde_json::json!(normalize_relative_path(&path));
         Ok(ok(invocation.id, output))
     }
+}
+
+fn read_image(path: &Path) -> KernelResult<Option<Value>> {
+    use achbit_kernel_tools::file_content::{image_type_from_header, MAX_IMAGE_INPUT_BYTES};
+    use base64::Engine;
+    let io_error =
+        |error: std::io::Error| KernelError::Other(format!("read {}: {error}", path.display()));
+    let mut file = fs::File::open(path).map_err(io_error)?;
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(12)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    let Some(mime) = image_type_from_header(&bytes) else {
+        return Ok(None);
+    };
+    file.take((MAX_IMAGE_INPUT_BYTES + 1 - bytes.len()) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if bytes.len() > MAX_IMAGE_INPUT_BYTES {
+        return Err(KernelError::InvalidCommand(
+            "Image exceeds the 8 MiB input limit.".into(),
+        ));
+    }
+    Ok(Some(serde_json::json!({ "content": [{
+        "type": "image", "mimeType": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+        "_meta": {"achbit":{"purpose":"observation"}}
+    }]})))
 }
 
 fn read_directory_page(path: &Path, start: u32, limit: u32, max_bytes: u32) -> KernelResult<Value> {

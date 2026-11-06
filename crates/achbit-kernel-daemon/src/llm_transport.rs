@@ -239,12 +239,37 @@ pub(crate) fn openai_compatible_request_body(
     stream: bool,
 ) -> Value {
     let compatibility = provider_thinking_compatibility(profile);
+    // Older frozen Kimi search receipts used an envelope. Only the originating
+    // search call owns that encoding; arbitrary file text is always literal.
+    let mut searches = std::collections::HashSet::new();
+    let wire_messages: Vec<_> = messages
+        .iter()
+        .map(|message| {
+            let mut wire = openai_compatible_message(message, compatibility);
+            if compatibility == ProviderThinkingCompatibility::Moonshot {
+                if let Some(calls) = &message.tool_calls {
+                    searches.extend(
+                        calls
+                            .iter()
+                            .filter(|call| call.name == "web_search")
+                            .map(|call| call.provider_call_id.as_str()),
+                    );
+                }
+                if message.role == "tool"
+                    && message
+                        .provider_call_id
+                        .as_deref()
+                        .is_some_and(|id| searches.remove(id))
+                {
+                    wire["content"] = json!(provider_tool_content(&message.content, compatibility));
+                }
+            }
+            wire
+        })
+        .collect();
     let mut body = json!({
         "model": profile.model,
-        "messages": messages
-            .iter()
-            .map(|message| openai_compatible_message(message, compatibility))
-            .collect::<Vec<_>>(),
+        "messages": wire_messages,
         "stream": stream,
         "max_tokens": profile
             .max_output_tokens
@@ -334,9 +359,15 @@ fn responses_request_body(
         }
         provider_tools.push(json!({ "type": "web_search" }));
     }
+    let mut input = responses_input(messages)?;
+    if profile.connection.adapter_id == "deepseek"
+        || provider_thinking_compatibility(profile) == ProviderThinkingCompatibility::DeepSeek
+    {
+        join_leading_system_text(&mut input);
+    }
     let mut body = json!({
         "model": profile.model,
-        "input": responses_input(messages)?,
+        "input": input,
         "stream": stream,
         "max_output_tokens": profile
             .max_output_tokens
@@ -410,6 +441,28 @@ fn responses_request_body(
         body["include"] = json!(include);
     }
     Ok(body)
+}
+
+// Session retains one receipt per slice. Only the leading plain-text instructions share a wire item.
+fn join_leading_system_text(input: &mut Vec<Value>) {
+    let sections: Vec<_> = input
+        .iter()
+        .map_while(|item| {
+            let [part] = item["content"].as_array()?.as_slice() else {
+                return None;
+            };
+            if item["role"] == "system" && part["type"] == "input_text" {
+                part["text"].as_str()
+            } else {
+                None
+            }
+        })
+        .collect();
+    let count = sections.len();
+    if count > 1 {
+        input[0]["content"][0]["text"] = json!(sections.join("\n\n"));
+        input.drain(1..count);
+    }
 }
 
 fn responses_input(
@@ -593,7 +646,7 @@ fn openai_compatible_message(
             "role": "tool",
             "tool_call_id": message.provider_call_id.as_deref()
                 .expect("validated tool message has providerCallId"),
-            "content": provider_tool_content(&message.content, compatibility)
+            "content": message.content
         }),
         "user" if !message.image_data.is_empty() || !message.file_data.is_empty() => {
             let mut parts = vec![json!({"type":"text","text":message.content})];
@@ -2825,6 +2878,45 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_responses_joins_only_leading_system_text() {
+        let mut envelope = provider_input(json!({"messages":[
+            {"role":"system","content":"Identity."},
+            {"role":"system","content":"Active tools."},
+            {"role":"user","content":"Inspect the project."},
+            {"role":"assistant","content":"","toolCalls":[{"callId":"c1","providerCallId":"p1","name":"read","input":{"path":"README.md"}}]},
+            {"role":"tool","content":"File contents.","toolCallId":"c1","providerCallId":"p1"},
+            {"role":"system","content":"New workspace."},
+            {"role":"user","content":"Continue."}
+        ],"tools":[],"hostedTools":[]}));
+        let generic = test_profile("responses");
+        let plain = responses_input(&envelope.messages).unwrap();
+        let encode = |profile: &ResolvedLlmProfile, messages: &[LocalProviderMessage]| {
+            responses_request_body(profile, messages, &[], &[], true).unwrap()["input"].clone()
+        };
+        assert_eq!(encode(&generic, &envelope.messages), json!(plain));
+        let mut deepseek = generic;
+        deepseek.provider_flavor = Some("deepseek".into());
+        let grouped = encode(&deepseek, &envelope.messages);
+        assert_eq!(
+            grouped[0],
+            json!({"type":"message","role":"system","content":[
+                {"type":"input_text","text":"Identity.\n\nActive tools."}
+            ]})
+        );
+        assert_eq!(&grouped.as_array().unwrap()[1..], &plain[2..]);
+        envelope.messages[1]
+            .image_data
+            .push(crate::local_agent_api::LocalProviderImage {
+                media_type: "image/png".into(),
+                base64: "abc".into(),
+            });
+        assert_eq!(
+            encode(&deepseek, &envelope.messages),
+            encode(&test_profile("responses"), &envelope.messages)
+        );
+    }
+
+    #[test]
     fn deepseek_function_summary_preserves_normal_request_rendering() {
         let mut profile = test_profile("responses");
         profile.connection.adapter_id = "deepseek".into();
@@ -3169,6 +3261,26 @@ mod tests {
             ),
             content.as_str().unwrap()
         );
+    }
+
+    #[test]
+    fn moonshot_keeps_literal_file_text_even_if_it_looks_like_a_frozen_search_result() {
+        let mut profile = test_profile("openaiCompatible");
+        profile.provider_flavor = Some("moonshot".into());
+        profile.model = "kimi-k3".into();
+        let envelope = json!({"outcome":"completed","output":{"provider":"kimi-formula","providerContent":"opaque"}}).to_string();
+        let messages = serde_json::from_value::<Vec<LocalProviderMessage>>(json!([
+            {"role":"assistant","content":"","toolCalls":[
+                {"callId":"read","providerCallId":"read","name":"fs_read","input":{}},
+                {"callId":"search","providerCallId":"search","name":"web_search","input":{}}
+            ]},
+            {"role":"tool","toolCallId":"read","providerCallId":"read","content":envelope},
+            {"role":"tool","toolCallId":"search","providerCallId":"search","content":envelope},
+        ]))
+        .unwrap();
+        let body = openai_compatible_request_body(&profile, &messages, &[], false);
+        assert_eq!(body["messages"][1]["content"], envelope);
+        assert_eq!(body["messages"][2]["content"], "opaque");
     }
 
     #[test]

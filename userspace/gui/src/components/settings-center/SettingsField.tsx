@@ -1,5 +1,4 @@
-import ToggleSwitch from '../shared/ToggleSwitch';
-import NativeSelect from '../shared/NativeSelect';
+import { NativeSelect, ToggleSwitch } from '../../ui-components';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { useSettingsSearchTarget } from './settingsSearch';
 import { useSettingsHelp } from './SettingsHelp';

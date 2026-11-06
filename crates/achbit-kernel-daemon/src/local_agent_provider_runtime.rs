@@ -2,6 +2,7 @@ use crate::llm_transport::{resolve_llm_profile, ResolvedLlmProfile};
 use crate::prelude::*;
 use crate::GuiState;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -9,6 +10,8 @@ use std::sync::{Arc, Mutex};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderRuntimeSnapshot {
     pub(crate) provider_runtime_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) input_token_calibration_key: Option<String>,
     pub(crate) profile_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reasoning_effort: Option<String>,
@@ -72,6 +75,8 @@ impl ProviderRuntimeBinding {
         binding.snapshot.provider_runtime_ref = crate::utils::new_runtime_ref("provider-runtime")?;
         binding.snapshot.hosted_web_search = "none";
         binding.profile.hosted_web_search = None;
+        binding.snapshot.input_token_calibration_key =
+            Some(input_token_calibration_key(&binding.profile));
         Ok(binding)
     }
 }
@@ -222,6 +227,7 @@ fn capture_binding(
 
     let snapshot = ProviderRuntimeSnapshot {
         provider_runtime_ref: crate::utils::new_runtime_ref("provider-runtime")?,
+        input_token_calibration_key: Some(input_token_calibration_key(&profile)),
         profile_id,
         reasoning_effort: profile.reasoning_effort.clone(),
         reasoning_effort_override: reasoning_effort_override.map(str::to_string),
@@ -252,6 +258,29 @@ fn capture_binding(
         profile,
         codex_turn_state: Default::default(),
     })
+}
+
+// Input accounting identity is independent of execution leases and credentials.
+// Hash only the resolved model/service and input-shaping configuration, not the
+// editable profile ID: the same profile can point to a different model later.
+fn input_token_calibration_key(profile: &ResolvedLlmProfile) -> String {
+    let identity = json!({
+        "connectionId": profile.connection.id,
+        "adapterId": profile.connection.adapter_id,
+        "baseUrl": profile.base_url.as_deref().unwrap_or(&profile.connection.base_url),
+        "kind": profile.kind,
+        "providerFlavor": profile.provider_flavor,
+        "model": profile.model,
+        "thinking": profile.thinking,
+        "reasoningEffort": profile.reasoning_effort,
+        "imageInput": profile.image_input,
+        "fileInputMediaTypes": profile.file_input_media_types,
+        "hostedWebSearch": profile.hosted_web_search,
+    });
+    format!(
+        "input-token-calibration:{:x}",
+        Sha256::digest(identity.to_string().as_bytes())
+    )
 }
 
 fn selected_profile_id(gui: &GuiState, requested: Option<&str>) -> Result<String, String> {
@@ -397,6 +426,47 @@ mod tests {
     }
 
     #[test]
+    fn input_token_calibration_key_is_stable_and_excludes_credentials_and_output_settings() {
+        let profile = configured_profile();
+        let expected = input_token_calibration_key(&profile);
+        assert_eq!(expected, input_token_calibration_key(&profile.clone()));
+        let mut changed = profile.clone();
+        changed.api_key = Some("rotated-secret-not-part-of-calibration".into());
+        changed.account_id = Some("another-account".into());
+        changed.connection.credential_ref = Some("local-secret:rotated".into());
+        changed.connection.name = "Renamed service".into();
+        changed.max_output_tokens = Some(1024);
+        changed.temperature = Some(0.5);
+        assert_eq!(expected, input_token_calibration_key(&changed));
+    }
+
+    #[test]
+    fn input_token_calibration_key_changes_with_resolved_model_service_and_input_handling() {
+        let profile = configured_profile();
+        let expected = input_token_calibration_key(&profile);
+        let changes: [fn(&mut ResolvedLlmProfile); 9] = [
+            |profile| profile.model = "other-model".into(),
+            |profile| profile.connection.base_url = "https://other.example/v1".into(),
+            |profile| profile.base_url = Some("https://override.example/v1".into()),
+            |profile| profile.kind = "responses".into(),
+            |profile| profile.provider_flavor = Some("other-provider".into()),
+            |profile| profile.reasoning_effort = Some("low".into()),
+            |profile| profile.thinking = Some("disabled".into()),
+            |profile| profile.image_input = true,
+            |profile| profile.file_input_media_types = vec!["application/pdf".into()],
+        ];
+        for (index, change) in changes.into_iter().enumerate() {
+            let mut changed = profile.clone();
+            change(&mut changed);
+            assert_ne!(
+                expected,
+                input_token_calibration_key(&changed),
+                "change {index}"
+            );
+        }
+    }
+
+    #[test]
     fn dormant_instance_keeps_model_budget_and_capabilities_after_profile_edits() {
         let mut profile = configured_profile();
         profile.context_window_tokens = Some(900000);
@@ -423,6 +493,7 @@ mod tests {
         let main = ProviderRuntimeBinding {
             snapshot: ProviderRuntimeSnapshot {
                 provider_runtime_ref: "provider-runtime:main".into(),
+                input_token_calibration_key: Some(input_token_calibration_key(&profile)),
                 profile_id: "profile:main".into(),
                 reasoning_effort: profile.reasoning_effort.clone(),
                 reasoning_effort_override: None,
@@ -437,6 +508,14 @@ mod tests {
             codex_turn_state: Default::default(),
         };
         let reviewer = main.approval_reviewer(Some("low")).unwrap();
+        assert_ne!(
+            main.snapshot.input_token_calibration_key,
+            reviewer.snapshot.input_token_calibration_key
+        );
+        assert_eq!(
+            reviewer.snapshot.input_token_calibration_key,
+            Some(input_token_calibration_key(&reviewer.profile))
+        );
         let plan_review = reviewer.review_request_context("session:model", "request:plan-review");
         let shell_review = reviewer.review_request_context("session:model", "request:shell-review");
         assert_ne!(plan_review.session_id, shell_review.session_id);

@@ -7,8 +7,6 @@ import { DEFAULT_USER_SETTINGS } from '../../protocol/dist/index.js';
 import {
   decodeGuiProjection,
   findReactElement,
-  inputCacheMetric,
-  lastCallInputCacheMetric,
   loadGuiModelStore,
   loadGuiModule,
   loadGuiModules,
@@ -48,17 +46,10 @@ for (const withOutput of [false, true]) test(`cancelled Shell preserves its term
         input: { workspace: 'primary', command: 'printf started; sleep 120; printf completed' },
       });
     } else {
-      const result = request.messages.map(jsonMessagePayload).find(value => value?.outcome === 'cancelled');
-      assert.ok(result, 'the next run must see the cancellation fact');
-      assert.equal(result.recordId, record.recordId);
-      assert.equal(result.error, undefined);
-      if (withOutput) {
-        assert.equal(result.output.stdout, 'started');
-        assert.equal(result.output.success, false);
-        assert.equal(result.output.exitCode, null);
-        assert.deepEqual(result.output.fullOutput, record.output.fullOutput);
-        assert.equal(result.output.environment, undefined, 'existing Shell diagnostics filtering still applies');
-      } else assert.equal(result.output, undefined);
+      const result = request.messages.map(jsonMessagePayload).find(value => value?.status === 'cancelled');
+      assert.deepEqual(result, { status: 'cancelled', ...(withOutput ? { result: {
+        stdout: 'started', exitCode: null, fullOutput: record.output.fullOutput,
+      } } : {}) });
       yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:continued', content: 'The Shell was cancelled.' });
     }
     yield providerEvent(request.requestId, 'completed', {});
@@ -408,13 +399,17 @@ test('multi-workspace links resolve exact targets and never guess through read e
 });
 
 test('error dismissal clears only its owner and allows the next error to appear', async t => {
-  const { DismissibleError } = await loadGuiModule(t, '/src/components/local-agent/DismissibleError.tsx');
+  const [{ DismissibleError }, { CloseButton, IconButton, Button }] = await loadGuiModules(t, [
+    '/src/components/local-agent/DismissibleError.tsx', '/src/ui-components/index.ts',
+  ]);
   const store = await loadGuiModelStore(t);
   const projection = { retained: 'failed execution facts' };
   store.setState({ sessionId: 'session:error', error: 'command failed', errorSource: 'command', projection });
   const view = DismissibleError({ language: 'zh-CN', children: store.getState().error, onDismiss: store.getState().clearError });
   assert.equal(view.props.role, 'alert');
-  const close = view.props.children.find(child => child.type === 'button');
+  const control = findReactElement(view, child => child.type === CloseButton);
+  const close = Button(IconButton(CloseButton(control.props).props).props);
+  assert.equal(close.type, 'button');
   assert.equal(close.props['aria-label'], '关闭提示');
   close.props.onClick();
   assert.equal(store.getState().error, null);
@@ -855,7 +850,10 @@ test('GUI receives and renders live tool output at the same journal revision bef
   let calls = 0;
   const provider = { async *stream(request) {
     if (calls++ === 0) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider-call:progress', name: request.tools.find((entry) => entry.description === tool.description).name, input: { workspace: 'primary', path: 'output.log' } });
-    else yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider-message:done', content: 'Done.' });
+    else {
+      assert.deepEqual(request.messages.filter(message => message.role === 'tool').map(message => message.content), ['finished']);
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider-message:done', content: 'Done.' });
+    }
     yield providerEvent(request.requestId, 'completed', {});
   } };
   const kernel = emptyKernel({ execute: async (request, onProgress) => {
@@ -868,7 +866,7 @@ test('GUI receives and renders live tool output at the same journal revision bef
     await onProgress({ type: 'started', startedAt: String(Date.now()) });
     await publish('first line\n');
     await held;
-    return completedExecutionReply(request, { value: 'finished' });
+    return completedExecutionReply(request, { content: 'finished' });
   } });
   const actor = actorWith(journal, sessionId, provider, kernel, fakeRunPreparation({ tools: [tool] }).port, 'live-output-gui');
   t.after(async () => { finish(); await actor.dispose(); });
@@ -974,6 +972,7 @@ test('scope-only Plan review foregrounds additions and keeps the complete confir
 });
 
 test('last-call, per-run, and Session cache rates use their own input token totals', async (t) => {
+  const { inputCacheMetric, lastCallInputCacheMetric } = await loadGuiModule(t, '/src/utils/providerUsage.ts');
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:cache-scopes';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1035,6 +1034,7 @@ test('last-call, per-run, and Session cache rates use their own input token tota
 });
 
 test('compaction preserves Agent usage and an unreported Agent call clears it without losing Session totals', async (t) => {
+  const { inputCacheMetric, lastCallInputCacheMetric } = await loadGuiModule(t, '/src/utils/providerUsage.ts');
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:cache-latest';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1176,6 +1176,7 @@ test('Provider status separates request elapsed time from the last observed cont
 });
 
 test('snapshot-scoped wire tool resolves to exact Kernel bindings, durable ToolRecord, and continuation', async (t) => {
+  const { inputCacheMetric, lastCallInputCacheMetric } = await loadGuiModule(t, '/src/utils/providerUsage.ts');
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:tool-chain';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1762,7 +1763,7 @@ test('continuous conversation keeps every message anchor while mounting nearby c
   const props = {
     layoutCache: new ConversationLayoutCache(),
     language: 'zh-CN', loading: false, displaySettledRunIds: new Set(), artifacts: [], onDisplayed() {},
-    projection: { sessionId: 'session:long', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts:[] },
+    projection: { sessionId: 'session:long', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts:[], queuedInputs: [] },
     hasConversationContent: true, draftItems: [],
     conversationItems: rows.map((row, index) => ({ ...row.item, sequence: index, streamId: `stream:${index}`, value: { ...row.item.value, messageId: row.key, runId: 'run:long' } })),
     presentation: { content: (id) => id },
@@ -2415,7 +2416,6 @@ test('Markdown table reading preserves streaming cells, source links and GFM ali
   assert.match(settled, /style="text-align:right"/);
   assert.match(settled, /href="https:\/\/example.com\/pool"/);
   assert.match(settled, /<code>create\/<wbr\/>validate\/<wbr\/>destroy<\/code>/);
-  assert.match(settled.replaceAll('<wbr/>', ''), /<code>create\/validate\/destroy<\/code>/);
   assert.match(settled, /<code>Recycler&lt;T,Size,Align&gt;<\/code>/);
   assert.match(settled, /<strong>原始语义<\/strong>/);
   assert.match(settled, /class="katex"/);

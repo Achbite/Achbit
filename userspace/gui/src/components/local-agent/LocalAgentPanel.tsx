@@ -112,7 +112,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const activeAgent = resourcePreview.visible && activeReader?.kind === 'agent' ? activeReader : null;
   const [readerHeader, setReaderHeader] = useState<HTMLDivElement | null>(null);
   const [conversationBounds, setConversationBounds] = useState<HTMLDivElement | null>(null);
-  const readerLayout = { '--reader-width': `${resourcePreview.width}%` } as React.CSSProperties;
+  const [readerTreeWidth, setReaderTreeWidth] = useState(0);
+  const readerLayout = { '--reader-width': `${resourcePreview.width}%`, '--reader-tree-width': `${readerTreeWidth}px` } as React.CSSProperties;
   useLayoutEffect(() => {
     onReaderLayoutChange?.({ visible: resourcePreview.visible, expanded: resourcePreview.expanded, conversationBounds });
   }, [onReaderLayoutChange, resourcePreview.visible, resourcePreview.expanded, conversationBounds]);
@@ -196,6 +197,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         <button type="button" onClick={updates.retry}>{t(language, 'achbitGui.statusAction.retry')}</button>
       </DismissibleError>}
       <ConversationComposer
+        readerExpanded={resourcePreview.visible && resourcePreview.expanded}
         onEditBrowserReview={resourcePreview.editBrowserReview}
         changeBar={showChangeBar && <FileChanges key={`${sessionId}:${projection.run!.runId}`} activities={roundChangeActivities(projection, projection.run!.runId)} compact />}
         language={language}
@@ -204,6 +206,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         onDismissUiActionError={() => setUiActionError(null)}
       />
       <ResourcePreview ready={runtimeReady} language={language} preview={resourcePreview} tabsTarget={readerHeader} onReview={composer.appendBrowserReview}
+        onTreeWidthChange={setReaderTreeWidth}
         onAttach={async selections => {
           if (useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
           await composer.selectMessageAttachments(selections);

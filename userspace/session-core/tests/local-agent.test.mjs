@@ -1,4 +1,5 @@
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
+import { assertRuntimeContract } from './support/runtimeContract.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
@@ -10,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   decodeToolPromptProviderSnapshots,
   prepareToolPromptContributions,
-  renderActiveToolGuidance,
+  applyToolGuidance,
   SessionService,
   SessionActor,
   emptySessionState,
@@ -27,7 +28,7 @@ import { publishPlan } from '../dist/local-agent/planStage.js';
 import { HttpProviderPort, HttpCommandJournal } from '../dist/local-agent/httpPorts.js';
 import { responseFrames } from '../dist/responseFrames.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
-import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
+import { createProviderToolAliases, createProviderToolCodec } from '../dist/local-agent/providerToolCodec.js';
 import { LoopFailure } from '../dist/local-agent/loopFailure.js';
 import { AgentManager } from '../dist/local-agent/agentManager.js';
 
@@ -379,13 +380,9 @@ test('cancellation during delegation admission is observed without starting a ch
 });
 
 test('subagent model command overrides agree with the public schema', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const { default: Ajv } = await import('ajv/dist/2020.js');
-  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
-  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/AgentOperation' });
   const definition = agentOperationDefinitions(ALL_AGENT_CAPS, { fullConfiguration: true }).find(operation => operation.action === 'spawn');
   assert.equal(agentOperationDefinitions(ALL_AGENT_CAPS).find(operation => operation.action === 'spawn').inputSchema.properties.reasoningEffort, undefined);
-  assert.equal(validate({ action: 'models' }), true);
+  assertRuntimeContract('AgentOperation', { action: 'models' });
   assert.deepEqual(decodeSessionControlCall('call:models', 'agent', { action: 'models' }).operation, { action: 'models' });
   assert.equal(definition.inputSchema.properties.profileId.type, 'string');
   assert.deepEqual(definition.inputSchema.properties.reasoningEffort.enum, ['low', 'medium', 'high', 'xhigh', 'max']);
@@ -393,24 +390,25 @@ test('subagent model command overrides agree with the public schema', async () =
     const operation = { action: 'spawn', preset, capabilities: { messaging: false, continuation: true },
       task: 'Inspect the task evidence.', name: 'Researcher', delivery: 'async',
       profileId: 'profile:selected', reasoningEffort: 'high' };
-    assert.equal(validate(operation), true, JSON.stringify(validate.errors));
+    assertRuntimeContract('AgentOperation', operation);
     assert.deepEqual(decodeSessionControlCall('call:model-selection', 'agent', operation).operation, operation);
     for (const invalid of [{ ...operation, profileId: '' }, { ...operation, reasoningEffort: '' },
       { ...operation, action: 'analyze' }, { ...operation, capabilities: { messaging: 'yes' } },
       { ...operation, capabilities: { computerUse: true } }]) {
-      assert.equal(validate(invalid), false);
+      assert.throws(() => assertRuntimeContract('AgentOperation', invalid));
       assert.throws(() => decodeSessionControlCall('call:model-selection', 'agent', invalid));
     }
   }
   const assignment = { action: 'assign', agentId: 'session:member', task: 'Follow up in the original Session.' };
-  assert.equal(validate(assignment), true, JSON.stringify(validate.errors));
+  assertRuntimeContract('AgentOperation', assignment);
   assert.deepEqual(decodeSessionControlCall('call:assign', 'agent', assignment).operation, assignment);
   for (const invalid of [{ ...assignment, task: '' }, { ...assignment, profileId: 'profile:other' },
     { action: 'assign', agentId: 'session:member', text: 'Not the task field.' }]) {
-    assert.equal(validate(invalid), false);
+    assert.throws(() => assertRuntimeContract('AgentOperation', invalid));
     assert.throws(() => decodeSessionControlCall('call:invalid-assign', 'agent', invalid));
   }
-  assert.equal(validate({ action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }), false);
+  assert.throws(() => assertRuntimeContract('AgentOperation',
+    { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
   assert.throws(() => decodeSessionControlCall('call:send-model', 'agent',
     { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
 });
@@ -1245,9 +1243,9 @@ for (const lateRecord of [false, true]) test(`lost Kernel reply closes tool hist
       assert.deepEqual(request.messages.slice(0, requests[0].messages.length), requests[0].messages);
       const results = request.messages.filter((message) => message.role === 'tool');
       assert.deepEqual(results.map((message) => message.providerCallId), ['native:read-0', 'native:read-1']);
-      const last = JSON.parse(results.at(-1).content);
-      if (lateRecord) assert.equal(last.output.content, 'late result');
+      if (lateRecord) assert.equal(results.at(-1).content, 'late result');
       else {
+        const last = JSON.parse(results.at(-1).content);
         assert.equal(last.status, 'indeterminate');
         assert.match(last.error.message, /fetch failed: execution response disconnected/);
         assert.equal(Object.hasOwn(last, 'executed'), false, 'absence of a record is not proof of nonexecution');
@@ -1536,33 +1534,11 @@ test('new runs refresh execution facts while restart and compaction retain each 
   const codingText = environmentInstruction(observed, ['bash']).text;
   assert.match(codingText, /Command environment/u);
   assert.doesNotMatch(codingText, /productDocsPath|achbitCli|hostDataDirectory|--host-data-dir|commandPaths|developerCommands/u);
-  const agentText = environmentInstruction(observed, ['bash', 'agent']).text;
-  assert.match(agentText, /productDocsPath/u);
-  assert.doesNotMatch(agentText, /achbitCli|--host-data-dir/u);
-  const shellText = environmentInstruction(observed, ['bash', 'skill.read']).text;
-  const modelEnvironment = JSON.parse(shellText.slice('Command environment: '.length, shellText.indexOf('}. For Achbit') + 1));
-  for (const field of ['runtimeExecutables', 'shellAvailable', 'workspaceShellSupported', 'workspaceSandbox', 'executionPath', 'agentComposition', 'executionTarget']) {
-    assert.equal(modelEnvironment[field], undefined);
-  }
-  assert.equal(modelEnvironment.achbitCli, '/opt/achbit/achbit-cli');
-  assert.equal(modelEnvironment.achbitCliExecutionScope, 'host');
-  assert.equal(modelEnvironment.hostDataDirectory, '/actual-host/data');
-  assert.match(shellText, /--host-data-dir/u);
-  assert.match(shellText, /requires Host execution/u);
-  for (const recipe of [
-    { permissionPolicy: { id: 'workspace-only' }, workspaceSandbox: { backendId: 'platform' } },
-    { permissionPolicy: { id: 'local-standard' }, workspaceSandbox: { backendId: 'platform', requireIsolatedProcesses: true } },
-  ]) {
-    const restricted = { ...observed, agentComposition: { ...recipe,
-      policyConstraints: { allowHostExecution: false, allowExternalTools: false }, sandboxCoverage: 'workspaceShell' } };
-    const before = structuredClone(restricted);
-    const text = environmentInstruction(restricted, ['bash', 'skill.read']).text;
-    assert.doesNotMatch(text, /achbitCli|--host-data-dir|Host execution is disabled/u,
-      'a restricted run does not advertise the Host-only CLI or ask the model to evaluate its availability');
-    assert.deepEqual(restricted, before, 'describing CLI availability must not alter permissions');
-  }
-  for (const field of ['os', 'arch', 'shell', 'productDocsPath']) {
-    assert.deepEqual(modelEnvironment[field], observed[field]);
+  for (const tools of [['bash', 'agent'], ['bash', 'skill.read']]) {
+    const text = environmentInstruction(observed, tools).text;
+    const modelEnvironment = JSON.parse(text.slice('Command environment: '.length, text.indexOf('}. Use') + 1));
+    assert.deepEqual(modelEnvironment, { os: observed.os, arch: observed.arch, shell: observed.shell });
+    assert.doesNotMatch(text, /productDocsPath|achbitCli|hostDataDirectory|--host-data-dir|commandPaths|developerCommands/u);
   }
   assert.doesNotMatch(saved.text, /Service readiness|fixture sandbox probe diagnostic/u);
   assert.deepEqual(observed.workspaceSandbox, { available: false, reason: 'fixture sandbox probe diagnostic' });
@@ -1698,11 +1674,10 @@ test('run binding exposes hosted search once and replays its Provider item uncha
       }]);
       assert.equal(request.tools.some((tool) => tool.name === 'web_search'), false);
       assert.ok(request.tools.some((tool) => tool.name === 'web_fetch'));
-      const searchGuidance = request.messages.filter((message) => (
-        message.role === 'system' && message.content.includes('Read URLs supplied by the user or earlier results.')
-      ));
+      const searchGuidance = request.messages.filter(message => message.role === 'system' && message.content.includes('web_search'));
       assert.equal(searchGuidance.length, 1);
-      assert.match(searchGuidance[0].content, /\bweb_fetch\b/u);
+      assert.ok(!searchGuidance[0].content.includes('Read URLs supplied by the user or earlier results.'));
+      assert.match(request.tools.find(tool => tool.name === 'web_fetch').description, /Read URLs supplied by the user or earlier results\./u);
       assert.equal(searchGuidance[0].content.match(/\bweb_search\b/gu)?.length, 1);
       if (providerRequests.length === 1) {
         for (const item of hostedItems) {
@@ -2476,20 +2451,14 @@ test('tool prompt preparation binds exact callable tools and rejects invalid own
     prepareToolPromptContributions(providers, [bashTool, readTool], selectedPlugins),
     prepared,
   );
-  const rendered = renderActiveToolGuidance(prepared, [{
-    canonicalName: 'fs.read',
-    wireName: 'fs_read',
-  }, {
-    canonicalName: 'bash',
-    wireName: 'bash',
-  }], [readTool, bashTool], []);
-  assert.ok(rendered);
-  for (const [wireName, contribution] of [['fs_read', prepared[0]], ['bash', prepared[1]]]) {
-    assert.ok(rendered.includes(wireName));
-    assert.ok(rendered.includes(contribution.promptSnippet));
-    for (const guideline of contribution.usageGuidelines) assert.ok(rendered.includes(guideline));
+  const aliases = [{ canonicalName: 'fs.read', wireName: 'fs_read' }, { canonicalName: 'bash', wireName: 'bash' }];
+  const definitions = createProviderToolCodec(applyToolGuidance([readTool, bashTool], prepared), [], aliases, [workspaceBinding]).definitions;
+  for (const [name, contribution] of [['fs_read', prepared[0]], ['bash', prepared[1]]]) {
+    const tool = definitions.find(tool => tool.name === name);
+    assert.ok(tool);
+    assert.ok(tool.description.includes(contribution.promptSnippet));
+    for (const guideline of contribution.usageGuidelines) assert.ok(tool.description.includes(guideline));
   }
-  assert.doesNotMatch(rendered, /fs\.read/u);
 
   const readOnlyProviders = decodeToolPromptProviderSnapshots([{
     providerRef: 'tool-prompt-provider:read',
@@ -2625,22 +2594,15 @@ test('tool prompt preparation binds exact callable tools and rejects invalid own
   );
   const collidingAliases = createProviderToolAliases(collidingTools.map((tool) => tool.name));
   assert.equal(new Set(collidingAliases.map((alias) => alias.wireName)).size, 2);
-  const collidingGuidance = renderActiveToolGuidance(
-    collidingPrepared,
-    collidingAliases,
-    collidingTools,
-    [],
-  );
-  assert.ok(collidingGuidance);
-  const collidingLines = new Set(collidingGuidance.split('\n'));
+  const collision = createProviderToolCodec(applyToolGuidance(collidingTools, collidingPrepared), [], collidingAliases, [workspaceBinding]);
   for (const [index, tool] of collidingTools.entries()) {
-    const wireName = collidingAliases.find((alias) => alias.canonicalName === tool.name)?.wireName;
-    assert.ok(wireName);
-    assert.ok(collidingLines.has(`- ${wireName}: Route ${index}.`));
+    const alias = collision.wireByCanonical.get(tool.name);
+    assert.ok(alias);
+    assert.ok(collision.definitions.find(item => item.name === alias)?.description.includes(`Route ${index}.`));
   }
 });
 
-test('Session renders one run-scoped tool guidance message with Provider aliases', async () => {
+test('Session attaches each bound usage contribution once to its actual wire declaration', async () => {
   const journal = new InMemoryCommandJournal();
   const sessionId = 'session:tool-guidance';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -2710,38 +2672,21 @@ test('Session renders one run-scoped tool guidance message with Provider aliases
   await actor.submit(messageCommand(sessionId, 'command:tool-guidance', 'Inspect one known file.'));
   await waitForProjection(actor, (value) => value.run?.status === 'completed');
   assert.equal(requests.length, 1);
-  const systemMessages = requests[0].messages.filter((message) => message.role === 'system');
-  const guidanceMessages = systemMessages.filter((message) => (
-    message.content.startsWith('Active tool guidance:')
-  ));
-  assert.equal(guidanceMessages.length, 1);
-  assert.equal(systemMessages.indexOf(guidanceMessages[0]), 1);
+  const aliases = new Map(preparation.snapshots[0].providerToolAliases.map(alias => [alias.canonicalName, alias.wireName]));
+  const descriptionFor = name => requests[0].tools.find(tool => tool.name === aliases.get(name)).description;
+  const system = requests[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
   assert.deepEqual(requests[0].hostedTools, []);
-  assert.doesNotMatch(guidanceMessages[0].content, /API's native search tool/u);
-  const aliases = new Map(preparation.snapshots[0].providerToolAliases.map((alias) => (
-    [alias.canonicalName, alias.wireName]
-  )));
-  const providerToolNames = new Set(requests[0].tools.map((tool) => tool.name));
-  const guidanceLines = new Set(guidanceMessages[0].content.split('\n'));
   for (const contribution of toolPromptContributions) {
-    const alias = aliases.get(contribution.canonicalToolName);
-    assert.ok(alias);
-    assert.ok(providerToolNames.has(alias));
-    assert.ok(guidanceLines.has(`- ${alias}: ${contribution.promptSnippet}`));
-    for (const guideline of contribution.usageGuidelines) {
-      assert.ok(guidanceLines.has(`- ${alias}: ${guideline}`));
+    const description = descriptionFor(contribution.canonicalToolName);
+    for (const text of [contribution.promptSnippet, ...contribution.usageGuidelines]) {
+      assert.equal(description.split(text).length, 2);
+      assert.ok(!system.includes(text));
     }
   }
-  assert.equal(guidanceMessages[0].content.match(/^- /gmu)?.length, 4);
   const events = await readEvents(journal, sessionId);
-  const composition = singleEvent(events, 'context.composed');
-  const guidanceReceipts = composition.payload.messages.filter((message) => (
-    message.contributionId === 'instruction:achbit.tool-guidance'
-  ));
-  assert.equal(guidanceReceipts.length, 1);
-  assert.equal(guidanceReceipts[0].contributionKind, 'instructions');
-  assert.equal(guidanceReceipts[0].role, 'system');
-  assert.deepEqual(guidanceReceipts[0].blocks.map((block) => block.kind), ['text']);
+  const receipt = singleEvent(events, 'context.composed').payload;
+  assert.ok(!receipt.messages.some(message => message.contributionId === 'instruction:achbit.tool-guidance'));
+  for (const name of ['fs.read', 'bash']) assert.ok(receipt.tools.some(tool => tool.canonicalName === name && tool.wireName === aliases.get(name)));
   await actor.dispose();
 });
 
@@ -2759,8 +2704,8 @@ test('explicit run approvals are journaled and only accepted for a Kernel candid
     const actor = actorWith(journal, sessionId, { async *stream(request) {
       if (++calls === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:approval', name: request.tools.find((tool) => tool.inputSchema.properties?.url).name, input: { url: 'https://example.test' } });
       else {
-        const result = request.messages.map(jsonMessagePayload).find((value) => value?.outcome === 'completed');
-        assert.deepEqual(result.approval, { decision: 'allow', scope: candidate ? 'runHostShell' : 'call' });
+        const result = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider:approval'));
+        assert.deepEqual(result, candidate ? { result: { content: 'Result' }, grantedScope: 'runHostShell' } : { content: 'Result' });
         yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:done', content: 'Done.' });
       }
       yield providerEvent(request.requestId, 'completed', {});
@@ -2868,18 +2813,8 @@ test('read-only bash result projects its real write scope and continues the Loop
         return;
       }
 
-      const toolResult = request.messages
-        .map(jsonMessagePayload)
-        .find((payload) => payload?.outcome === 'completed');
-      assert.equal(toolResult?.output?.workspaceMode, undefined);
-      assert.equal(toolResult?.output?.executionScope, 'workspace');
-      assert.equal(toolResult?.output?.terminal, false);
-      assert.equal(toolResult?.output?.workspaceId, undefined);
-      assert.equal(toolResult?.output?.environment, undefined);
-      assert.equal(toolResult?.output?.paths, undefined);
-      assert.equal(toolResult?.output?.capturedBytes, undefined);
-      assert.equal(toolResult?.output?.stdout, 'probe-ok');
-      assert.equal(toolResult?.output?.exitCode, 0);
+      const toolResult = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider-call:bash-read'));
+      assert.deepEqual(toolResult, { stdout: 'probe-ok', exitCode: 0 });
       yield providerEvent(request.requestId, 'assistant.message', {
         messageId: 'provider-message:bash-read-answer',
         content: 'Read-only shell continuation completed.',
@@ -3018,9 +2953,8 @@ for (const output of [null, { stage: 'execution', details: { toolId: toolName } 
         yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:shell-unavailable', name: request.tools[0].name,
           input: { workspace: 'primary', command: 'git status -sb' } });
       } else {
-        const result = request.messages.map(jsonMessagePayload).find((item) => item?.outcome === 'failed');
-        assert.deepEqual(result?.error, error);
-        assert.deepEqual(result?.output, output);
+        const result = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider:shell-unavailable'));
+        assert.deepEqual(result, output ? { error, result: { details: output.details } } : { error });
         yield providerEvent(request.requestId, 'assistant.message', { messageId: `provider:answer:${turns}`, content: 'The shell could not start.' });
       }
       yield providerEvent(request.requestId, 'completed', {});
@@ -3323,12 +3257,9 @@ test('stopping an active Provider cancels its turn and Run without executing inc
   assert.equal(events.some(event => event.type === 'run.failure.snapshot'), false);
   assert.ok(singleEvent(events, 'run.runtime.released').sequence < singleEvent(events, 'run.settled').sequence);
   assert.equal(preparation.released.length, 1);
-  const { readFile } = await import('node:fs/promises');
-  const { default: Ajv } = await import('ajv/dist/2020.js');
-  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
-  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/ProviderTurnSettledPayload' });
-  assert.equal(validate(terminal.payload), true, JSON.stringify(validate.errors));
-  assert.equal(validate({ ...terminal.payload, error: { code: 'not-an-error', message: 'A normal stop has no error.' } }), false);
+  assertRuntimeContract('ProviderTurnSettledPayload', terminal.payload);
+  assert.throws(() => assertRuntimeContract('ProviderTurnSettledPayload',
+    { ...terminal.payload, error: { code: 'not-an-error', message: 'A normal stop has no error.' } }));
 });
 
 test('Provider HTTP cancellation does not replace an independent error or secondary cleanup failure', async () => {
@@ -3819,7 +3750,8 @@ test('one Plan confirmation resumes the same run while progress remains an expli
           .find((payload) => payload?.type === 'todo.current');
         assert.ok(confirmation, 'confirmed Plan must be projected as the plan call result');
         assert.equal('todoSeeded' in confirmation, false);
-        assert.ok(typeof confirmation.nextAction === 'string' && confirmation.nextAction.trim());
+        assert.equal(confirmation.response.kind, 'confirm');
+        assert.match(confirmation.nextAction, /continue.*approved scope.*this run/i);
         assert.equal(todo, undefined, 'Plan confirmation does not generate Todo');
         assert.ok(writeDefinition, 'confirmed execution tool must remain available');
         assert.equal(
@@ -4095,15 +4027,11 @@ test('confirmed Host Bash preserves failed execution and reports later Todo prog
 
       if (providerRequests.length === 3) {
         assert.equal(request.responseConstraint, 'normal');
-        const failedResult = request.messages
-          .map(jsonMessagePayload)
-          .find((payload) => payload?.outcome === 'failed');
-        assert.equal(failedResult?.error?.code, 'bash_exit_nonzero');
-        assert.equal(failedResult?.output?.exitCode, 7);
-        assert.equal(failedResult?.output?.stderr, 'fixture failure');
-        assert.equal(failedResult?.output?.writeScope, 'hostUser');
-        assert.equal(failedResult?.output?.environment, undefined);
-        assert.equal(failedResult?.output?.workspaceId, undefined);
+        const failedResult = request.messages.map(jsonMessagePayload).find(payload => payload?.error?.code === 'bash_exit_nonzero');
+        assert.equal(failedResult.result.exitCode, 7);
+        assert.equal(failedResult.result.stderr, 'fixture failure');
+        assert.equal(failedResult.result.environment, undefined);
+        assert.equal(failedResult.result.workspaceId, undefined);
         const todo = request.messages
           .map(jsonMessagePayload)
           .find((payload) => payload?.type === 'todo.current');
@@ -4509,7 +4437,6 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
     assert.equal(request.responseConstraint, 'normal');
     const payloads = request.messages.map(jsonMessagePayload);
     const todo = (await actor.snapshot()).todoList;
-    const record = payloads.find((payload) => payload?.recordId);
     const planTool = request.tools.find((tool) => tool.inputSchema.properties?.mutationManifest);
     const progressTool = request.tools.find((tool) => tool.name === 'todo_update');
     const writeTool = request.tools.find((tool) => tool.inputSchema.properties?.content);
@@ -4585,46 +4512,12 @@ test('Plan revisions preserve independent Todo and completed Todo does not revok
   assert.equal(preparation.released.length, 1);
 });
 
-test('runtime instructions use configured aliases and plugin input while control schemas preserve permission boundaries', () => {
+test('prepared instructions contain installed static slices and leave permission routes to the current request', () => {
   const stableCore = [{ id: 'achbit.coding-agent', text: 'Stable core instruction.' }];
-  const baseConfig = {
-    extensionGenerationRef: 'extension-generation:g1',
-    selectedPlugins: [{
-      uri: 'plugin://fixture@skill',
-      displayName: 'Fixture',
-      capabilitySummary: 'Read the explicitly selected fixture instructions.',
-    }],
-  };
-  const planAsk = runtimeInstructions(stableCore, {
-    ...baseConfig,
-    permissions: { 'agent.permissions.workspaceMutation': 'plan', 'agent.permissions.engineeringDecisions': 'ask' },
-  }, {
-    interactionRequest: 'ask_user_wire',
-    planPublish: 'publish_plan_wire',
-  });
-  const allowDelegate = runtimeInstructions(stableCore, {
-    ...baseConfig,
-    permissions: { 'agent.permissions.workspaceMutation': 'allow', 'agent.permissions.engineeringDecisions': 'delegate' },
-  });
-
-  const planInstruction = planAsk.find((instruction) => (
-    instruction.id === 'achbit.workspace-autonomy'
-  ))?.text ?? '';
-  assert.ok(planInstruction.includes('publish_plan_wire'));
-  assert.ok(planInstruction.includes('ask_user_wire'));
-  const allowInstruction = allowDelegate.find((instruction) => (
-    instruction.id === 'achbit.workspace-autonomy'
-  ))?.text ?? '';
-  assert.ok(allowInstruction.includes('interaction_request'));
-  assert.equal(allowInstruction.includes('plan_publish'), false);
-  const pluginInstruction = planAsk.find((instruction) => (
-    instruction.id === 'plugin.fixture.skill'
-  ))?.text ?? '';
-  assert.equal(pluginInstruction, '', 'plugin registration is not model guidance');
-  assert.doesNotMatch(JSON.stringify(planAsk), /Loaded plugin|Fixture/u);
-  for (const instructions of [planAsk, allowDelegate]) {
-    assert.deepEqual(instructions.find(instruction => instruction.id === stableCore[0].id), stableCore[0]);
-  }
+  const instructions = runtimeInstructions(stableCore);
+  assert.deepEqual(instructions, stableCore);
+  assert.ok(Object.isFrozen(instructions) && Object.isFrozen(instructions[0]));
+  assert.doesNotMatch(JSON.stringify(instructions), /plan_publish|interaction_request|Loaded plugin/u);
   const controls = sessionControlToolDefinitions();
   const publish = controls.find((tool) => tool.name === 'plan.publish');
   const progress = controls.find((tool) => tool.name === 'todo.update');
@@ -6166,7 +6059,7 @@ test('a Kernel input rejection can request confirmation and resume the same run'
       yield providerEvent(request.requestId, 'tool.call', { callId: 'native:write', name: 'fs_write', input: { path: 'preview.html', content: 'Draft' } });
     } else if (turns === 2) {
       const result = request.messages.map(jsonMessagePayload).find(value => value?.status === 'inputRejected');
-      assert.deepEqual(result.error, originalError);
+      assert.deepEqual(result.error, { code: originalError.code, message: originalError.message, issues: originalError.issues });
       assert.equal(result.executed, false);
       yield providerEvent(request.requestId, 'tool.call', { callId: 'native:confirm', name: 'interaction_request', input: {
         kind: 'confirmation', prompt: 'Use a session working copy?', options: [{ id: 'draft', label: 'Use a working copy' }], allowFreeform: true,
@@ -6218,8 +6111,8 @@ test('Todo can start before tools without a Plan, preserve a failed record and e
       const read = request.tools.find(tool => tool.inputSchema.properties?.path);
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:read', name: read.name, input: { path: 'missing.txt' } });
     } else if (turn === 2) {
-      const record = request.messages.map(jsonMessagePayload).find(payload => payload?.recordId);
-      assert.equal(record.outcome, 'failed');
+      const record = jsonMessagePayload(request.messages.find(message => message.providerCallId === 'provider:read'));
+      assert.equal(record.error.code, 'file_missing');
       yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:todo-blocked', name: tool.name,
         input: { items: [{ text: 'Process input', status: 'blocked' }, { text: 'Investigate input', status: 'completed' }] } });
     } else {
@@ -6250,20 +6143,20 @@ test('Todo can start before tools without a Plan, preserve a failed record and e
 });
 
 
-test('tool results keep the workspace handle of the request that produced the call', async () => {
+test('tool results use the originating handle before encoding and never reinterpret file text', async () => {
+  const { toolResultContent } = await import('../dist/local-agent/modelToolResult.js');
   const { encodeProviderMessage } = await import('../dist/local-agent/providerToolCodec.js');
-  const old = { workspaceHandleById: new Map([['workspace:one', 'primary']]) };
-  const current = { workspaceHandleById: new Map([['workspace:one', 'workspace2']]) };
-  const message = { role: 'tool', toolCallId: 'call:old', content: JSON.stringify({ outcome: 'failed',
-    output: { workspaceId: 'workspace:one', path: 'src/main.cpp', paths: { workspace: '/project', home: '/session/home' } },
-    error: { code: 'plan_scope_required', workspaceId: 'workspace:one', targets: ['src/main.cpp'] },
-  }) };
-  const content = JSON.parse(encodeProviderMessage(message, current, new Map([['call:old', old]])).content);
-  assert.equal(content.output.workspace, 'primary');
-  assert.equal(content.error.workspace, 'primary');
-  assert.equal(content.output.workspaceId, undefined);
-  assert.deepEqual(content.output.paths, { workspace: '/project', home: '/session/home' });
-  assert.equal(JSON.parse(message.content).output.workspaceId, 'workspace:one');
+  const handles = new Map([['workspace:one', 'primary']]);
+  const output = {workspaceId:'workspace:one', path:'src/main.cpp', paths:{workspace:'/project'}};
+  const error = {code:'permission_denied', message:'Outside scope', workspaceId:'workspace:one'};
+  const record = {toolName:'extension.read', input:{}, outcome:'failed', output, error, preparedEffect:{origin:'extension'}};
+  const content = JSON.parse(toolResultContent(record, undefined, handles));
+  assert.deepEqual(content.result, {workspace:'primary', path:'src/main.cpp', paths:{workspace:'/project'}});
+  assert.equal(content.error.workspace, 'primary'); assert.equal(content.error.workspaceId, undefined);
+  assert.equal(output.workspaceId, 'workspace:one');
+  const file = '{"error":{"workspaceId":"literal data"}}';
+  const message = {role:'tool', toolCallId:'call:old', content:file};
+  assert.equal(encodeProviderMessage(message, {workspaceHandleById:new Map([['workspace:one','workspace2']])}).content,file);
 });
 
 test('explicit GUI rebind preserves waiting and uses the new catalog only for subsequent calls', async t => {

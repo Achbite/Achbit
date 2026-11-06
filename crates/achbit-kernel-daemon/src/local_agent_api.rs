@@ -148,12 +148,17 @@ impl LocalAgentRuntime {
                     "子 Agent 不绑定 GUI Host 或父会话桌面。",
                 ));
             }
-            if request.plugin_selections.iter().any(|selection| {
-                !crate::local_agent_plugins::plugin_allowed_for_session(
-                    &selection.uri,
-                    agent_context.is_some(),
-                )
-            }) {
+            if request
+                .plugin_selections
+                .iter()
+                .chain(&request.inherited_plugin_selections)
+                .any(|selection| {
+                    !crate::local_agent_plugins::plugin_allowed_for_session(
+                        &selection.uri,
+                        agent_context.is_some(),
+                    )
+                })
+            {
                 return Err(RunPreparationError::new(
                     "agent_computer_use_forbidden",
                     "子 Agent 不支持 Computer Use。",
@@ -212,7 +217,10 @@ impl LocalAgentRuntime {
                     )
                 });
         }
-        if !recipe.tools.plugins && !request.plugin_selections.is_empty() {
+        if !recipe.tools.plugins
+            && (!request.plugin_selections.is_empty()
+                || !request.inherited_plugin_selections.is_empty())
+        {
             return Err(RunPreparationError::new(
                 "agent_tools_not_grantable",
                 "This task does not admit plugin activation.",
@@ -222,6 +230,7 @@ impl LocalAgentRuntime {
             settings,
             &mut request.plugin_selections,
             request.refresh_plugins,
+            &request.inherited_plugin_selections,
         )
         .map_err(|message| {
             RunPreparationError::new("extension_snapshot_prepare_failed", message)
@@ -445,6 +454,49 @@ impl LocalAgentRuntime {
                 RunPreparationError::new("kernel_runtime_config_prepare_failed", message)
             })?
         };
+        let context = recipe.configuration.as_ref().or_else(|| {
+            agent_context
+                .as_ref()
+                .and_then(|agent| agent.get("configuration"))
+        });
+        let coding_context = context
+            .and_then(|config| config.pointer("/context/id"))
+            .and_then(Value::as_str)
+            == Some("coding");
+        executor_config.read_images = provider_binding.profile().image_input && coding_context;
+        if previous.is_none() && !request.restore_environment {
+            let facts = environment.as_object_mut().expect("prepared environment");
+            facts.remove("primaryWorkspaceDirectory");
+            facts.remove("sessionWorkdirId");
+            if coding_context {
+                let catalog = &gui.conversation_catalog;
+                let bindings = catalog
+                    .session(&request.session_id)
+                    .map_or(&[][..], |session| session.workspace_bindings.as_slice());
+                let workdir = catalog.session_workdir(&request.session_id);
+                if let Some(implicit) = workdir.filter(|dir| {
+                    !bindings
+                        .iter()
+                        .any(|binding| binding.workspace_id == dir.workspace_id)
+                }) {
+                    environment["sessionWorkdirId"] = json!(implicit.workspace_id);
+                }
+                let primary = bindings
+                    .first()
+                    .and_then(|binding| catalog.workspace(&binding.workspace_id))
+                    .or(workdir);
+                if let Some(workspace) =
+                    primary.filter(|_| environment["executionTarget"]["kind"] == "native")
+                {
+                    let path = achbit_kernel_runtime::file_access::process_visible_path(
+                        std::path::Path::new(&workspace.canonical_root),
+                    );
+                    environment["primaryWorkspaceDirectory"] = json!({
+                        "workspaceId": workspace.workspace_id, "path": path,
+                    });
+                }
+            }
+        }
         executor_config.sandbox_backend =
             if recipe.workspace_sandbox.backend_id == "platform-default" {
                 None
@@ -503,20 +555,21 @@ impl LocalAgentRuntime {
         #[cfg(target_os = "macos")]
         if let Some(commands) = environment["commandPaths"].as_object() {
             for (name, path) in commands {
-                let target = std::fs::canonicalize(path.as_str().ok_or_else(|| {
-                    RunPreparationError::new(
-                        "host_command_path_invalid",
-                        format!("Invalid path for {name}"),
-                    )
-                })?)
+                let roots = achbit_kernel_runtime::shell_environment::unix_runtime_read_roots(
+                    std::path::Path::new(path.as_str().ok_or_else(|| {
+                        RunPreparationError::new(
+                            "host_command_path_invalid",
+                            format!("Invalid path for {name}"),
+                        )
+                    })?),
+                )
                 .map_err(|error| {
                     RunPreparationError::new(
                         "host_command_path_failed",
                         format!("Resolve {name}: {error}"),
                     )
                 })?;
-                // PATH can contain executable symlinks into a separate toolchain directory.
-                executor_config.file_read_roots.push(target);
+                executor_config.file_read_roots.extend(roots);
             }
         }
         #[cfg(windows)]
@@ -964,6 +1017,8 @@ pub(crate) struct PrepareRunRuntimeRequest {
     refresh_plugins: bool,
     #[serde(default)]
     plugin_selections: Vec<crate::local_agent_plugins::PluginSelectionInput>,
+    #[serde(default)]
+    inherited_plugin_selections: Vec<crate::local_agent_plugins::PluginSelectionInput>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2357,6 +2412,7 @@ mod tests {
         hosted_web_search: &'static str,
     ) -> ProviderRuntimeSnapshot {
         ProviderRuntimeSnapshot {
+            input_token_calibration_key: None,
             reasoning_effort: None,
             reasoning_effort_override: None,
             thinking: None,

@@ -449,6 +449,8 @@ export interface SelectedPluginSnapshot {
     pluginInstanceRef: string;
     extensionGenerationRef: string;
     capabilityRefs: string[];
+    /** Mounted Skill entry for an ordinary permission-checked fs.read. */
+    skillEntryPath?: string;
   }>;
 }
 
@@ -1881,6 +1883,8 @@ export interface ProviderToolDefinition {
 
 export interface ProviderRuntimeSnapshot {
   providerRuntimeRef: string;
+  /** Stable, credential-free identity for reusing input-token estimates; never a runtime binding. */
+  inputTokenCalibrationKey?: string;
   profileId: string;
   fileInputMediaTypes?: string[];
   reasoningEffort?: LlmReasoningEffort;
@@ -2051,6 +2055,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  /** Model-facing coding interface selected by the Session context contribution. */
+  codingTools?: true;
   /** Explicit confirmation requested for this run only. */
   planMode?: 'manual';
   /** Execution selection from the Kernel; not model-facing framework metadata. */
@@ -2099,6 +2105,8 @@ export interface PrepareRunRuntimeRequest {
   runId: string;
   profileId?: string;
   reasoningEffortOverride?: LlmReasoningEffort;
+  /** Session-active plugins from the preceding Loop; current disabled/removed sources withdraw. */
+  inheritedPluginSelections?: PluginSelectionInput[];
   pluginSelections?: PluginSelectionInput[];
       guidanceReferences?: GuidanceReference[];
 }

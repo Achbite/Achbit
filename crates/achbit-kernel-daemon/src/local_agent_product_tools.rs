@@ -148,7 +148,7 @@ impl ProductTools {
 
     pub(crate) fn definitions() -> Vec<(&'static str, String, Value)> {
         vec![
-            ("plugin.search", "Discover callable capabilities needed for the task. Search uses case-insensitive literal keywords separated by whitespace; EVERY keyword must match a plugin's name, URI or capability description. Use a short product name or capability, not a sentence. Zero matches means this query did not match: shorten it or omit query to browse when useful. total counts all matches; nextOffset continues the same query. Discovery does not load tools or start external programs. Activate relevant results with the Session plugin activation tool, then use their declared tools. User mentions are optional.".into(), json!({
+            ("plugin.search", "Discover enabled tools and Skills by capability. Use a short product or capability query; all whitespace-separated keywords match case-insensitively against a plugin's name, URI or description. Omit query to browse. total counts all matches and nextOffset continues the same query. A zero-match query can be shortened or omitted. Discovery returns references; activation loads the selected tools or Skill entry for the next request. User mentions are optional. For standalone documents use Documents; for frontend pages or interactive previews use Frontend Design and read its Skill. Host-managed service and display plugin status is available through the product CLI.".into(), json!({
                 "type":"object", "additionalProperties":false, "properties":{
                     "query":{"type":"string","maxLength":240,"description":"Short literal keywords; all must match. Omit to browse the catalog."},
                     "limit":{"type":"integer","minimum":1,"description":"Page size; defaults to 20. More results remain accessible through nextOffset."},
@@ -156,8 +156,7 @@ impl ProductTools {
                 }
             })),
             ("session.read", "Read the specified conversation history. Start with summary, then read the relevant messages, tools or plans. Use nextBefore for older entries and nextOffset for longer fields.".into(), session_read_schema()),
-            ("skill.read", format!("Read a Achbit product Skill or its reference when guidance is needed. Read only content relevant to the current question. Available: {}. Omit path to read SKILL.md.",
-                SKILLS.iter().map(|skill| format!("{} — {}", skill.id, skill.description())).collect::<Vec<_>>().join("; ")), json!({
+            ("skill.read", "Read a named bundled Skill or a reference within it. Omit path to read SKILL.md.".into(), json!({
                 "type":"object", "additionalProperties":false, "required":["name"],
                 "properties": {
                     "name":{"type":"string","enum": SKILLS.iter().map(|skill| skill.id).collect::<Vec<_>>()},
@@ -284,6 +283,10 @@ const SKILLS: &[ProductSkill] = &[
             (
                 "references/design.md",
                 include_str!("../../../skills/achbit-documents/references/design.md"),
+            ),
+            (
+                "references/inline-diagrams.md",
+                include_str!("../../../skills/achbit-documents/references/inline-diagrams.md"),
             ),
             (
                 "references/formats.md",
@@ -537,6 +540,7 @@ mod tests {
         for path in [
             "SKILL.md",
             "references/design.md",
+            "references/inline-diagrams.md",
             "references/formats.md",
             "references/interactive-previews.md",
             "assets/document.html",

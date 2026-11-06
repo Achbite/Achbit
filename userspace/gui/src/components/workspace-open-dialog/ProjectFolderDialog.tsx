@@ -1,5 +1,5 @@
 import AchbitShellIcon from '../shared/AchbitShellIcon';
-import ModalDialog from '../shared/ModalDialog';
+import { CloseButton, ModalDialog, PanelHeader } from '../../ui-components';
 import React, { useEffect, useMemo, useState } from 'react';
 import type { BrowseEntry, BrowsePathResult, InitialLocation } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
@@ -97,7 +97,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
           : 'achbitGui.project.folderDialogTitle')}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="ws-open-dialog__header">
+        <PanelHeader className="ws-open-dialog__header">
           <span>
             <strong>{title ?? t(language, isAttachmentSelection
               ? 'agent.attachment.pickerTitle'
@@ -106,13 +106,8 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
               <small>{t(language, 'agent.attachment.pickerDescription')}</small>
             )}
           </span>
-          <button
-            type="button"
-            className="ws-open-dialog__close"
-            aria-label={t(language, 'workspaceDialog.cancel')}
-            onClick={onCancel}
-          ><AchbitShellIcon name="close" size={14} /></button>
-        </div>
+          <CloseButton aria-label={t(language, 'workspaceDialog.cancel')} onClick={onCancel} />
+        </PanelHeader>
         <div className="ws-open-dialog__addressbar">
           <button
             type="button"

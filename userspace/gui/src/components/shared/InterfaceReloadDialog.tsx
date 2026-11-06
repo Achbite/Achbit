@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { interfaceReloadGuards, reloadInterface } from '../../services/interfaceReload';
 import { useUiLanguage } from '../../useUiLanguage';
-import ModalDialog from './ModalDialog';
+import { ModalDialog } from '../../ui-components';
 
 export default function InterfaceReloadDialog() {
   const chinese = useUiLanguage() === 'zh-CN';

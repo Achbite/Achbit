@@ -7,6 +7,7 @@ export default defineConfig({
   build: { outDir: '../../.task-artifacts/manual-preview', emptyOutDir: true,
     rollupOptions: { input: {
       typography: fileURLToPath(new URL('./typography.html', import.meta.url)),
+      uiComponents: fileURLToPath(new URL('./ui-components.html', import.meta.url)),
       reader: fileURLToPath(new URL('./reader.html', import.meta.url)),
       approvalModel: fileURLToPath(new URL('./approval-model.html', import.meta.url)),
       contextSettings: fileURLToPath(new URL('./context-settings.html', import.meta.url)),

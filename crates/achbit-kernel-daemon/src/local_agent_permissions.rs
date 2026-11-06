@@ -89,6 +89,8 @@ impl KernelPermissionModel {
                     | "session.permissions.updated"
                     | "approval.resolved"
                     | "approval.revoked"
+                    | "run.finishing"
+                    | "run.settled"
                     | "conversation.revised"
             )
         ) {
@@ -672,6 +674,74 @@ mod tests {
     ) {
         model.apply(&json!({"type":"session.created","sessionId":id,
             "payload":{"agentContext":{"parentSessionId":parent},"recipe":{"permissions":permissions}}})).unwrap();
+    }
+
+    #[test]
+    fn delegated_read_grants_expire_on_revocation_policy_change_and_run_end() {
+        let mut model = KernelPermissionModel::default();
+        let permissions = json!({"agent.permissions.shell":"review"});
+        create(&mut model, "s", None, permissions.clone());
+        let environment = json!({"workspaceId":"workspace:test","shell":"bash"});
+        let files = json!({"read":["/references"],"write":[]});
+        let preview = json!({"approvalReviewer":"agent","authorizationScopes":["runFiles","sessionFiles"],
+            "reviewPolicy":{"mode":"review","reviewGrant":"runFiles","commandRule":null},
+            "operation":{"toolName":"fs.read"},"fileAccess":files,
+            "authorizationContext":{"fileEnvironment":environment,"fileAccess":files}});
+        let event = |kind: &str, payload: Value| json!({"type":kind,"sessionId":"s","runId":"r","callId":"c","payload":payload});
+        model
+            .apply(&event(
+                "run.started",
+                json!({"runtimeSnapshot":{"permissions":permissions}}),
+            ))
+            .unwrap();
+        model
+            .apply(&event(
+                "approval.requested",
+                json!({"approvalId":"a","preview":preview}),
+            ))
+            .unwrap();
+        model
+            .apply(&event(
+                "provider.turn.settled",
+                json!({"providerRequestId":"p","purpose":"approvalReview","outcome":"completed"}),
+            ))
+            .unwrap();
+        model
+            .apply(&event(
+                "approval.reviewed",
+                json!({"approvalId":"a","providerRequestId":"p","decision":"allow"}),
+            ))
+            .unwrap();
+        let before_resolution = model.clone();
+        model.apply(&event("approval.resolved", json!({"approvalId":"a","authorityId":"grant","source":"agent","decision":"allow","authorizationScope":"runFiles"}))).unwrap();
+        assert_eq!(model.authorities.files("s", "r", &environment), vec![files]);
+        for (kind, payload) in [
+            ("approval.revoked", json!({"authorityId":"grant"})),
+            (
+                "session.permissions.updated",
+                json!({"patches":{"agent.permissions.shell":"ask"}}),
+            ),
+            ("run.finishing", json!({"outcome":"completed"})),
+            ("run.settled", json!({"outcome":"completed"})),
+        ] {
+            let mut ended = model.clone();
+            ended.apply(&event(kind, payload)).unwrap();
+            assert!(
+                ended.authorities.files("s", "r", &environment).is_empty(),
+                "{kind} retained a task read grant"
+            );
+        }
+        for scope in ["sessionFiles", "runHostShell", "runNetwork"] {
+            let mut wider = before_resolution.clone();
+            wider.apply(&event("approval.resolved", json!({"approvalId":"a","authorityId":"wider","source":"agent","decision":"allow","authorizationScope":scope}))).unwrap();
+            assert!(wider.authorities.files("s", "r", &environment).is_empty());
+            assert!(wider
+                .authorities
+                .grant("s", "wider")
+                .unwrap()
+                .review
+                .is_none());
+        }
     }
 
     #[test]

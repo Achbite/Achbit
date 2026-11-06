@@ -58,14 +58,14 @@ class Handler(fixture.MockProviderHandler):
             renderer = renderers[0] if renderers else None
             activate = next(entry["name"] for entry in functions if "pluginUris" in entry["parameters"].get("properties", {}))
             reader = next(entry["name"] for entry in functions if "startByte" in entry["parameters"].get("properties", {}))
-            results = {message["tool_call_id"]: json.loads(message["content"]) for message in body["messages"] if message["role"] == "tool"}
+            results = {message["tool_call_id"]: fixture.tool_content(message["content"]) for message in body["messages"] if message["role"] == "tool"}
             if state.calls == 3:
-                require(results["skill"]["outcome"] == "completed", "Built-in document Skill failed")
-                require("document.render" in results["skill"]["output"]["content"], "Skill content missing")
+                require(isinstance(results["skill"], str), "Built-in document Skill failed")
+                require("document.render" in results["skill"], "Skill content missing")
             elif state.calls == 4:
                 for name in ["html", "pdf", "markdown"]:
-                    require(results[name]["outcome"] == "completed", f"Document export failed: {results[name]}")
-                require(results["missing"]["outcome"] == "failed", "Read failure was not preserved")
+                    require(bool(results[name]["artifacts"]), f"Document export failed: {results[name]}")
+                require(bool(results["missing"]["error"]["message"]), "Read failure was not preserved")
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")
             self.send_header("connection", "close")

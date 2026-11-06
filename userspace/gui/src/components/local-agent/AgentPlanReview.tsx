@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PendingAgentDecision, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import ModalDialog from '../shared/ModalDialog';
+import { ModalDialog } from '../../ui-components';
 import { ChildDecisions } from './AgentTasksPanel';
 import { ConversationSessionScope } from './ConversationSessionScope';
 import { useAgentChildConversation } from './useAgentChildConversation';

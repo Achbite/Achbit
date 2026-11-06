@@ -1,5 +1,5 @@
 import type { JsonObject, PreparedToolDescriptor, SessionEvent } from '@achbit/protocol';
-import { eventImages } from './visualContext.js';
+import { eventImages, visualContextInstruction } from './visualContext.js';
 
 export const SESSION_DIAGNOSTICS_URI = 'plugin://session-diagnostics@builtin';
 
@@ -51,7 +51,8 @@ export function sessionReadTool(tool: PreparedToolDescriptor, scope: SessionRead
   if (childWorkdirs.length) groups.push({ properties: { sessionId: { enum: childWorkdirs }, view: { const: 'resources' } }, required: ['view'] });
   if (currentViews.length) groups.push({ properties: { sessionId: { const: currentId }, view: { enum: currentViews } }, required: ['view'] });
   if (groups.length > 1) schema.oneOf = groups;
-  if (history.length) return [{ ...tool, inputSchema: schema }];
+  const imageGuidance = currentViews.includes('images') ? ' ' + visualContextInstruction(currentId) : '';
+  if (history.length) return [{ ...tool, description: tool.description + imageGuidance, inputSchema: schema }];
 
   const views = [...new Set([...currentViews, ...(childWorkdirs.length ? ['resources'] : [])])];
   const fields = new Set(['sessionId', 'view', 'before', 'limit']);
@@ -60,5 +61,6 @@ export function sessionReadTool(tool: PreparedToolDescriptor, scope: SessionRead
   schema.required = ['sessionId', 'view'];
   schema.properties = { ...Object.fromEntries(Object.entries(properties).filter(([name]) => fields.has(name))),
     view: { type: 'string', enum: views } };
-  return [{ ...tool, description: 'Read the selected session resources or archived image references.', inputSchema: schema }];
+  const description = views.includes('resources') ? 'Read selected session resources.' : 'Read archived image references.';
+  return [{ ...tool, description: description + imageGuidance, inputSchema: schema }];
 }

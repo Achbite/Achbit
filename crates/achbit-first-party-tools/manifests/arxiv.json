@@ -21,7 +21,8 @@
         "properties": {
           "query": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Search expression passed to arXiv with the selected field prefix. Include double quotes around a phrase when phrase matching is intended."
           },
           "field": {
             "type": "string",

@@ -3,7 +3,7 @@ import { useInteractionFocus } from '../shared/interactionFocus';
 
 type HelpAnchor = { kind: 'pointer'; x: number; y: number } | { kind: 'focus'; rect: DOMRect };
 
-/** Pointer help follows the cursor; keyboard help stays anchored to its control. */
+/** Pointer help keeps its opening position; keyboard help stays anchored to its control. */
 export function useSettingsHelp(description: string | undefined) {
   const interaction = useInteractionFocus();
   const id = useId();
@@ -53,12 +53,6 @@ export function useSettingsHelp(description: string | undefined) {
     helpEvents: {
       'data-escape-layer': open ? 'open' : undefined,
       onMouseEnter: showPointer,
-      onMouseMove: (event: React.MouseEvent<HTMLElement>) => {
-        if (open && anchor.current?.kind === 'pointer') {
-          anchor.current = { kind: 'pointer', x: event.clientX, y: event.clientY };
-          position();
-        }
-      },
       onMouseLeave: () => setOpen(false),
       onPointerDown: () => setOpen(false),
       onFocus: (event: React.FocusEvent<HTMLElement>) => {

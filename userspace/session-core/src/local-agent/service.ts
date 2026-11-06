@@ -28,7 +28,7 @@ import { combineTokenUsage, projectSession, projectResourceTool, providerUsageFr
 import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
-import { SessionConfigurationRegistry } from './sessionConfiguration.js';
+import { SessionConfigurationRegistry, type ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import type { InstructionContribution } from './skillPlugins.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
 import { LoopFailure } from './loopFailure.js';
@@ -44,6 +44,8 @@ export interface SessionCompositionFactory {
     sessionId: string;
     workspaceBindings: readonly WorkspaceBindingDisplay[];
     promptContributions: readonly InstructionContribution[];
+    environmentInstructions?: ProductEnvironmentInstructions;
+    codingTools: boolean;
   }): Promise<{
     composition: AgentComposition;
   }>;
@@ -547,8 +549,14 @@ export class SessionService implements ConversationPort {
       sessionId,
       workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
       promptContributions: this.configurations.productInstructions(first.payload.recipe),
+      environmentInstructions: this.configurations.productEnvironmentInstructions(first.payload.recipe),
+      codingTools: configuration?.context.id === 'coding',
     });
     try {
+      const productToolGuidance = this.configurations.productToolGuidance(first.payload.recipe);
+      if (productToolGuidance.length) {
+        installed.composition.toolGuidance = [...(installed.composition.toolGuidance ?? []), ...productToolGuidance];
+      }
       if (configuration) {
         if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');
         installed.composition.capabilities = await this.configurations.create(configuration);

@@ -16,6 +16,10 @@ test('change statistics select only displayed rows, retaining the entire archive
 
 test('selected Reader tabs scroll only their strip and do not steal focus',async t=>{
   const {revealActiveReaderTab}=await loadGuiModule(t,'/src/components/local-agent/readerTabVisibility.ts');
+  const previousStyle=globalThis.getComputedStyle;
+  const style={scrollPaddingLeft:'0px',scrollPaddingRight:'0px'};
+  globalThis.getComputedStyle=()=>style;
+  t.after(()=>{if(previousStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=previousStyle;});
   let rect={left:150,right:195,width:45};
   const active={closest:()=>({getBoundingClientRect:()=>rect}),focus:()=>assert.fail('revealing a tab must not focus it')};
   const list={scrollLeft:0,querySelector:selector=>{assert.equal(selector,'[role="tab"][aria-selected="true"]');return active;},getBoundingClientRect:()=>({left:10,right:110,width:100})};
@@ -24,6 +28,13 @@ test('selected Reader tabs scroll only their strip and do not steal focus',async
   rect={left:20,right:65,width:45};revealActiveReaderTab(list);assert.equal(list.scrollLeft,65);
   revealActiveReaderTab(null);
   list.querySelector=()=>null;revealActiveReaderTab(list);assert.equal(list.scrollLeft,65);
+  // Preserve both curved ends when the first/last tab reaches the strip edge.
+  list.querySelector=()=>active;list.scrollLeft=0;
+  style.scrollPaddingLeft='12px';style.scrollPaddingRight='12px';
+  rect={left:80,right:110,width:30};revealActiveReaderTab(list);assert.equal(list.scrollLeft,12);
+  rect={left:10,right:40,width:30};revealActiveReaderTab(list);assert.equal(list.scrollLeft,0);
+  rect={left:25,right:55,width:30};revealActiveReaderTab(list);assert.equal(list.scrollLeft,0);
+  rect={left:35,right:135,width:100};revealActiveReaderTab(list);assert.equal(list.scrollLeft,13);
 });
 
 test('hidden never-opened Reader does not mount its tree loader',async t=>{

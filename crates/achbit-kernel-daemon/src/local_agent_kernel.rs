@@ -2301,8 +2301,9 @@ impl LocalAgentKernel {
         lease: PhysicalAttemptLease,
     ) -> Result<KernelToolExecutionResult, String> {
         if prepared.source_binding.is_some()
-            || is_shell_tool(&prepared.operation)
-            || matches!(&prepared.input, PreparedToolInput::Container { input, .. } if input.action != "inspect")
+            || (prepared.generation.catalog.has_process_control()
+                && (is_shell_tool(&prepared.operation)
+                    || matches!(&prepared.input, PreparedToolInput::Container { input, .. } if input.action != "inspect")))
         {
             let kernel = self.clone();
             let mut inner = prepared.clone();
@@ -3813,6 +3814,11 @@ fn approval_reply(
     } else {
         "user"
     });
+    if prepared.file_authority_required
+        && crate::local_agent_authorities::allows_delegated_read_grant(&preview)
+    {
+        preview["reviewPolicy"]["reviewGrant"] = json!("runFiles");
+    }
     Ok(json!({
         "schemaVersion": KERNEL_REPLY_VERSION,
         "type": "tool.execution",
@@ -4704,7 +4710,7 @@ mod attempt_control_tests {
                 .file_authorizations(&request.session_id, &request.run_id, &environment)
                 .unwrap(),
             vec![user_files],
-            "Only a user-granted file scope can be reused"
+            "An Agent file grant without an eligible Kernel preview and completed review cannot be reused"
         );
         kernel.journal.append(&json!({"type":"session.permissions.updated","sessionId":request.session_id,
             "payload":{"commandId":"command:delegate","patches":{"agent.permissions.shell":"review","agent.permissions.shellAccess":"full"}}})).unwrap();

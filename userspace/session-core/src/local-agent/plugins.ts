@@ -16,6 +16,7 @@ import type { publishPlan } from './planStage.js';
 import type { presentArtifacts } from './deliverables.js';
 import type { todoUpdateFact } from './todoState.js';
 import type { AgentLoopDriver } from './loopRegistry.js';
+import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 import type { LoopSnapshot } from './loop.js';
 
 export interface ContextMessageContribution {
@@ -59,7 +60,7 @@ export interface SessionCapabilities {
       input: Parameters<typeof buildAgentProviderRequest>[0], signal: AbortSignal,
     ) => ReturnType<typeof buildAgentProviderRequest>;
   };
-  readonly compaction: {
+  readonly compaction?: {
     readonly settings: (runtime: RunRuntimeSnapshot) => ContextManagementSettings;
     readonly prepare: (
       input: Parameters<typeof prepareContextCompaction>[0], signal: AbortSignal,
@@ -67,7 +68,7 @@ export interface SessionCapabilities {
     readonly pressureCutoff: typeof pressureCompactionCutoff;
     readonly estimateInput: typeof estimateContextInput;
   };
-  readonly controls: {
+  readonly controls?: {
     readonly toolStage?: (runtime: RunRuntimeSnapshot, state: LoopSnapshot['state']) => SessionToolStage | undefined;
     readonly optionalTools?: readonly string[];
     readonly decode: typeof decodeSessionControlCall;
@@ -81,6 +82,7 @@ export interface SessionCapabilities {
 
 /** Trusted ports assembled by the Host; extension activation remains in Kernel. */
 export interface AgentComposition {
+  toolGuidance?: readonly ToolGuidanceContributor[];
   provider: ProviderPort;
   kernel: KernelPort;
   runPreparation: RunPreparationPort;

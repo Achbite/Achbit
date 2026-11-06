@@ -60,24 +60,24 @@ class ProviderHandler(fixture.MockProviderHandler):
                     ("blocked-command", names["bash"], {"command": "printf denylist-probe"}),
                 ])
             elif ordinal == 2:
-                require(results["read-default"]["outcome"] == "completed", "默认 workspace 文件读取失败")
+                require(results["read-default"] == "alpha\nbeta\n", "默认 workspace 文件读取失败")
                 rejected = results["unknown-tool"]
                 require(rejected["status"] == "inputRejected" and rejected["executed"] is False
                         and rejected["error"]["code"] == "provider_tool_alias_unknown", "未知工具未明确拒绝")
                 missing = results["missing-file"]
-                require(missing["outcome"] == "failed" and missing["error"]["code"] == "fs_read_metadata_failed"
+                require(missing["error"]["code"] == "fs_read_metadata_failed"
                         and "does-not-exist.txt" in missing["error"]["message"], "文件不存在的原始错误丢失")
                 for call_id, path, rule in [("bad-timeout", "$.timeout", "minimum"), ("bad-field", "$.workspaceMode", "additionalProperties")]:
                     rejected = results[call_id]
                     require(rejected["status"] == "inputRejected" and rejected["executed"] is False, "非法输入被执行")
                     require(any(issue["path"] == path and issue["rule"] == rule for issue in rejected["error"]["issues"]), "字段诊断没有到达 Provider")
                 require("primary" in results["bad-workspace"]["error"]["message"], "句柄拒绝未列出合法值")
-                require(results["shell-format"]["outcome"] == "completed", "合法多行命令未执行")
+                require(results["shell-format"]["exitCode"] == 0, "合法多行命令未执行")
                 blocked = results["blocked-command"]
-                require(blocked["outcome"] == "denied" and blocked["error"]["code"] == "command_denied_by_rule"
+                require(blocked["status"] == "denied" and blocked["error"]["code"] == "command_denied_by_rule"
                         and 'printf denylist-probe' in blocked["error"]["message"], "全部允许模式未在执行前阻止自定义黑名单命令")
-                shell_output = results["shell-format"]["output"]
-                require(shell_output["executionScope"] == "host", "Kernel 未在用户批准后选择真实 Host 执行")
+                shell_output = results["shell-format"]
+                require("executionScope" not in shell_output, "Shell 成功回执不需要执行诊断")
                 require(shell_output["stdout"].startswith("hello world\nliteral $value\n"), "多行脚本原始输出不符")
                 temporary_lines = [line for line in shell_output["stdout"].splitlines() if line.startswith("kernel-temp:")]
                 require(len(temporary_lines) == 1, "Shell 未返回本次 Kernel 临时目录")
@@ -99,24 +99,29 @@ class ProviderHandler(fixture.MockProviderHandler):
                 ]}),
                     ("directory-create", names["write"], {"path": "src/nested/new.txt", "content": "created within approved directory\n"}),
                     ("outside-scope", names["write"], {"path": "extra/new.txt", "content": "expanded scope\n"}),
+                    ("edit-single", names["edit"], {"path": "src/compat-single.txt", "edits": {"oldText": "before", "newText": "after"}}),
+                    ("edit-json", names["edit"], {"path": "src/compat-json.txt", "edits": json.dumps([{"oldText": "before", "newText": "after"}])}),
+                    ("edit-flat", names["edit"], {"path": "src/compat-flat.txt", "oldText": "before", "newText": "after"}),
                 ])
             elif ordinal == 4:
-                require(results["directory-create"]["outcome"] == "completed", "目录授权未覆盖后代新文件")
+                for form in ["single", "json", "flat"]:
+                    require(results[f"edit-{form}"]["changed"] is True, f"兼容编辑输入未执行: {form}")
+                    require((self.provider_state.workspace / f"src/compat-{form}.txt").read_text() == "after\n", f"兼容编辑结果不符: {form}")
+                require(results["directory-create"]["changed"] is True, "目录授权未覆盖后代新文件")
                 require((self.provider_state.workspace / "src/nested/new.txt").read_text() == "created within approved directory\n", "目录内文件内容不符")
                 denied = results["outside-scope"]
-                require(denied["outcome"] == "denied" and denied["error"]["code"] == "plan_scope_required", "范围外写入未返回 Plan 范围拒绝")
+                require(denied["status"] == "denied" and denied["error"]["code"] == "plan_scope_required", "范围外写入未返回 Plan 范围拒绝")
                 require(bool(denied["error"]["message"]), "范围拒绝的原始说明丢失")
                 require(not (self.provider_state.workspace / "extra/new.txt").exists(), "未确认的范围已执行")
                 failed = results["edit-mismatch"]
-                require(failed["outcome"] == "failed" and failed["error"]["code"] == "patch_match_not_found", "编辑原始错误码丢失")
-                require(failed["output"]["details"]["editIndex"] == 1, "编辑诊断没有失败索引")
+                require(failed["error"]["code"] == "patch_match_not_found", "编辑原始错误码丢失")
+                require(failed["result"]["details"]["editIndex"] == 1, "编辑诊断没有失败索引")
                 require((self.provider_state.workspace / "probe.txt").read_text() == "alpha\nbeta\n", "失败批次部分修改了文件")
                 self._send_tool_calls([("edit-corrected", names["edit"], {"path": "probe.txt", "edits": [{"oldText": "alpha", "newText": "ALPHA"}]})])
             elif ordinal == 5:
-                require(results["edit-corrected"]["outcome"] == "completed", "纠正后编辑失败")
+                require(results["edit-corrected"]["changed"] is True, "纠正后编辑失败")
                 require((self.provider_state.workspace / "probe.txt").read_text() == "ALPHA\nbeta\n", "修改内容不正确")
-                preview = results["edit-corrected"]["output"]["editPreview"]
-                require(preview["hunks"][0]["before"] == "alpha\n" and preview["hunks"][0]["after"] == "ALPHA\n" and not preview["truncated"], "实际编辑摘要未到达模型")
+                require(results["edit-corrected"] == {"path":"probe.txt", "editCount":1, "changed":True}, "模型应收到实际修改而非审计 Diff")
                 self._send_tool_calls([("progress", names["progress"], {
                     "items": [{"text": phase["title"], "status": "completed" if index == 0 else "inProgress"} for index, phase in enumerate(PHASES)],
                 })])
@@ -133,11 +138,11 @@ class ProviderHandler(fixture.MockProviderHandler):
                     ("expected-nonzero", names["bash"], {"requestHostPermission": "Verify a separate Host approval for expected nonzero handling.", "command": "if (exit 7); then rc=0; else rc=$?; fi\ntest \"$rc\" -eq 7"}),
                 ])
             elif ordinal == 8:
-                require(results["expanded-create"]["outcome"] == "completed", "确认范围补充后未执行")
+                require(results["expanded-create"]["changed"] is True, "确认范围补充后未执行")
                 require((self.provider_state.workspace / "extra/new.txt").read_text() == "expanded scope\n", "补范围后内容不符")
-                require(results["pipeline-status"]["outcome"] == "failed" and results["pipeline-status"]["output"]["exitCode"] == 7,
+                require(results["pipeline-status"]["error"]["code"] == "bash_exit_nonzero" and results["pipeline-status"]["result"]["exitCode"] == 7,
                         "管道原始失败退出码丢失: " + json.dumps(results["pipeline-status"], ensure_ascii=False))
-                require(results["expected-nonzero"]["outcome"] == "completed",
+                require(results["expected-nonzero"]["exitCode"] == 0,
                         "预期非零处理失败: " + json.dumps(results["expected-nonzero"], ensure_ascii=False))
                 self._send_tool_calls([("progress-final", names["progress"], {
                     "items": [{"text": phase["title"], "status": "completed"} for phase in PHASES],
@@ -149,12 +154,18 @@ class ProviderHandler(fixture.MockProviderHandler):
                 message = next(message for message in reversed(body["messages"]) if message["role"] == "user")
                 content = message["content"]
                 require(LONG_INPUT not in content, "原文被重复塞入 Provider 文本")
-                require("nextByte" in content, "模型未收到原文读取指导")
+                schema = next(tool["function"]["parameters"] for tool in body["tools"] if tool["function"]["name"] == names["read"])
+                require("nextByte" in schema["properties"]["startByte"]["description"], "读取工具缺少字节续页合同")
                 references = json.loads(content[content.index("[{\"referenceId\""):])
                 reference = next(item for item in references if item.get("source") == "pastedText")
-                self._send_tool_calls([("read-pasted", names["read"], {"workspace": reference["workspace"], "path": reference["path"], "maxLines": 5000})])
+                self.provider_state.pasted_reference = {"workspace": reference["workspace"], "path": reference["path"]}
+                self._send_tool_calls([("read-pasted", names["read"], {**self.provider_state.pasted_reference, "maxBytes": 4096})])
             elif ordinal == 11:
-                require(results["read-pasted"]["output"]["content"] == LONG_INPUT, "读取到的粘贴文本不完整")
+                page = results["read-pasted"]
+                require(0 < page["nextByte"] == len(page["content"].encode()), "续页游标与返回的原文边界不符")
+                self._send_tool_calls([("read-rest", names["read"], {**self.provider_state.pasted_reference, "startByte": page["nextByte"], "maxLines": 5000})])
+            elif ordinal == 12:
+                require(results["read-pasted"]["content"] + results["read-rest"] == LONG_INPUT, "两页未精确恢复粘贴原文")
                 self._send_text("pasted-text-cli-complete")
             else:
                 raise AssertionError(f"多余 Provider 请求：{ordinal}")
@@ -191,8 +202,8 @@ class ProviderHandler(fixture.MockProviderHandler):
                 reference = next(item for item in references if item["path"] == "notes.txt")
                 self._send_tool_calls([("queued-file-read", read_name, {"workspace": reference["workspace"], "path": reference["path"]})])
             elif ordinal == 3:
-                result = next(json.loads(message["content"]) for message in body["messages"] if message.get("tool_call_id") == "queued-file-read")
-                require(result["outcome"] == "completed" and result["output"]["content"] == "queued notes\n", "Kernel 未读取本轮新接纳的原文件")
+                result = next(message["content"] for message in body["messages"] if message.get("tool_call_id") == "queued-file-read")
+                require(result == "queued notes\n", "Kernel 未读取本轮新接纳的原文件")
                 self._send_text("queued-attachments-complete")
             else:
                 raise AssertionError(f"多余附件请求：{ordinal}")
@@ -227,8 +238,8 @@ class ProviderHandler(fixture.MockProviderHandler):
                         "arguments": json.dumps({"path": "probe.txt"}), "status": "completed"}
             elif ordinal == 4:
                 output = next(item for item in body["input"] if item.get("type") == "function_call_output" and item.get("call_id") == "call_cli_read")
-                result = json.loads(output["output"])
-                require(result["outcome"] == "completed" and result["output"]["content"] == "ALPHA\nbeta\n", "续跑中的真实工具结果缺失")
+                result = output["output"]
+                require(result == "ALPHA\nbeta\n", "续跑中的真实工具结果缺失")
                 item = {**INTRO, "id": "msg_cli_final", "phase": "final_answer",
                         "content": [{"type": "output_text", "text": "commentary-cli-complete"}]}
             else:
@@ -318,6 +329,9 @@ def main() -> None:
         workspace = root / "workspace"
         workspace.mkdir()
         (workspace / "probe.txt").write_text("alpha\nbeta\n")
+        (workspace / "src").mkdir()
+        for form in ["single", "json", "flat"]:
+            (workspace / f"src/compat-{form}.txt").write_text("before\n")
         state = fixture.ProviderState(workspace)
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
         server.provider_state = state
@@ -427,6 +441,17 @@ def main() -> None:
                 records = [json.loads(row[0]) for row in connection.execute("SELECT record_json FROM tool_records WHERE session_id=?", (session_id,))]
                 shell = next(record for record in records if record["toolName"] == "bash" and record["input"]["command"] == SCRIPT)
                 require(shell["input"]["command"] == SCRIPT, "Bash 脚本被改写")
+                require(shell["output"]["executionScope"] == "host", "真实宿主域应记录在 Kernel")
+                edit = next(record for record in records if record["toolName"] == "fs.edit" and record["input"].get("path") == "probe.txt" and record["outcome"] == "completed")
+                preview = edit["output"]["editPreview"]
+                require(preview["hunks"][0]["before"] == "alpha\n" and preview["hunks"][0]["after"] == "ALPHA\n" and not preview["truncated"], "实际编辑 Diff 未保存在 Kernel")
+                for form in ["single", "json", "flat"]:
+                    compatible = next(record for record in records if record["toolName"] == "fs.edit" and record["input"].get("path") == f"src/compat-{form}.txt")
+                    require(compatible["outcome"] == "completed", f"兼容调用终态不符: {form}")
+                    canonical = compatible["preparedEffect"]["canonicalInvocation"]["arguments"]
+                    require(canonical["edits"] == [{"oldText": "before", "newText": "after"}], f"执行输入未统一归一化: {form}")
+                    original = compatible["input"]
+                    require(isinstance(original.get("edits"), dict) if form == "single" else isinstance(original.get("edits"), str) if form == "json" else original.get("oldText") == "before", f"原始输入未保留: {form}")
                 blocked = next(record for record in records if record["input"].get("command") == "printf denylist-probe")
                 require(blocked["outcome"] == "denied" and blocked["error"]["code"] == "command_denied_by_rule"
                         and blocked["authority"]["matchedRule"] == "printf denylist-probe" and "output" not in blocked,
@@ -437,7 +462,7 @@ def main() -> None:
                 outside = next(record for record in records if record.get("error", {}).get("code") == "plan_scope_required")
                 require(not any(kind == "tool.started" and call_id == outside["callId"] for kind, call_id, _ in rows),
                         "范围外编辑不应进入执行边界")
-            require(len(state.requests) == 11, "Provider 调用次数不符")
+            require(len(state.requests) == 12, "包含一次真实续页的 Provider 调用次数不符")
             require(len(state.responses_requests) == 4, "Responses 续跑调用次数不符")
             print("[cli-e2e] PASS: unknown tools rejected in aggregate/Responses, missing-file errors preserved, explicit call approval before Host execution, configured command rule denied before spawn, Kernel TMPDIR write and cleanup, directory scope, Kernel Plan-scope denial before execution, confirmed scope extension preserving phases, edit preview and shell exit status; 13 phases/129 initial targets, pasted text, native commentary/rejection/tool/final continuation, paired history and 3 runtime releases (fixture Provider; no GUI)")
         except BaseException:

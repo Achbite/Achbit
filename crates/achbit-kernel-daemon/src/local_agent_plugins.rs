@@ -76,6 +76,7 @@ impl PluginCatalogEntry {
 
     fn into_public(self) -> PublicPluginCatalogItem {
         match self {
+            Self::Skill(locator) if !locator.public.enabled => locator.public,
             Self::Skill(locator) => match skill_plugin(&locator) {
                 Ok(source) => source.public,
                 Err(message) => PublicPluginCatalogItem {
@@ -116,6 +117,10 @@ struct PluginSource {
 }
 
 impl PluginSource {
+    fn file_entry(&self) -> Option<&Path> {
+        self.implementation.get("path")?.as_str().map(Path::new)
+    }
+
     fn same_input(&self, other: &Self) -> bool {
         self.public == other.public
             && self.implementation == other.implementation
@@ -135,14 +140,7 @@ impl ResolvedPluginSelection {
     pub(crate) fn file_read_roots(&self) -> Vec<PathBuf> {
         self.plugins
             .iter()
-            .filter_map(|plugin| {
-                plugin
-                    .implementation
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .and_then(|path| Path::new(path).parent())
-                    .map(Path::to_path_buf)
-            })
+            .filter_map(|plugin| plugin.file_entry()?.parent().map(Path::to_path_buf))
             .collect()
     }
     pub(crate) fn same_inputs(&self, other: &Self) -> bool {
@@ -239,9 +237,10 @@ pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, Strin
                 }
                 _ => "mcp",
             };
+            let builtin = source.public().uri.ends_with("@builtin");
             let mut item =
                 serde_json::to_value(source.into_public()).expect("catalog item serializes");
-            item["source"] = json!(if kind == "host" { "builtin" } else { "mounted" });
+            item["source"] = json!(if builtin { "builtin" } else { "mounted" });
             item["category"] = json!("functional");
             item["discovery"] = json!("default");
             item["contributionKind"] = json!(kind);
@@ -310,13 +309,14 @@ pub(crate) fn search_plugins(
 /// It does not activate an MCP server or a binary plugin while opening the page.
 pub(crate) fn skill_settings_projection(settings: &Value) -> Result<Value, String> {
     let mut skills = crate::local_agent_product_tools::bundled_skill_settings();
-    for entry in skill_catalog_entries(settings)? {
+    for entry in skill_catalog_entries(settings, &disabled_plugin_ids(settings)?)? {
         let source = entry.into_public();
+        let builtin = source.uri.ends_with("@builtin");
         skills.push(json!({
             "id": source.uri,
             "displayName": source.display_name,
             "description": source.short_description,
-            "source": "mounted",
+            "source": if builtin { "builtin" } else { "mounted" },
         }));
     }
     Ok(json!({ "skills": skills }))
@@ -377,8 +377,9 @@ pub(crate) fn resolve_plugin_selection(
     settings: &Value,
     selections: &mut Vec<PluginSelectionInput>,
     refresh: bool,
+    inherited: &[PluginSelectionInput],
 ) -> Result<ResolvedPluginSelection, String> {
-    if selections.is_empty() {
+    if selections.is_empty() && inherited.is_empty() {
         return Ok(ResolvedPluginSelection {
             catalog_revision: "plugin-catalog:empty".into(),
             plugins: Vec::new(),
@@ -393,6 +394,17 @@ pub(crate) fn resolve_plugin_selection(
                 .get(&selection.uri)
                 .is_some_and(|entry| entry.public().enabled)
         });
+    }
+    for selection in inherited {
+        if !selections
+            .iter()
+            .any(|explicit| explicit.uri == selection.uri)
+            && sources
+                .get(&selection.uri)
+                .is_some_and(|entry| entry.public().enabled)
+        {
+            selections.push(selection.clone());
+        }
     }
     let mut selection_ids = BTreeSet::new();
     let mut uris = BTreeSet::new();
@@ -466,13 +478,19 @@ pub(crate) fn selected_plugin_snapshot(
 ) -> Value {
     json!({
         "catalogRevision": selection.catalog_revision,
-        "plugins": selection.plugins.iter().map(|plugin| json!({
-            "uri": plugin.public.uri,
-            "pluginArtifactRef": plugin.plugin_artifact_ref,
-            "pluginInstanceRef": plugin.plugin_instance_ref,
-            "extensionGenerationRef": extension_generation_ref,
-            "capabilityRefs": plugin.capability_refs,
-        })).collect::<Vec<_>>(),
+        "plugins": selection.plugins.iter().map(|plugin| {
+            let mut item = json!({
+                "uri": plugin.public.uri,
+                "pluginArtifactRef": plugin.plugin_artifact_ref,
+                "pluginInstanceRef": plugin.plugin_instance_ref,
+                "extensionGenerationRef": extension_generation_ref,
+                "capabilityRefs": plugin.capability_refs,
+            });
+            if let (PluginContribution::Skill, Some(entry)) = (&plugin.contribution, plugin.file_entry()) {
+                item["skillEntryPath"] = json!(achbit_kernel_runtime::file_access::process_visible_path(entry));
+            }
+            item
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -488,9 +506,7 @@ fn plugin_catalog(
 > {
     let mut sources = BTreeMap::new();
     let uri = "plugin://computer-use@builtin";
-    let disabled_plugins: Vec<String> =
-        serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
-            .map_err(|error| format!("plugin_config_invalid: {error}"))?;
+    let disabled_plugins = disabled_plugin_ids(settings)?;
     let disabled = disabled_plugins.iter().any(|value| value == uri);
     // Shared guidance plus this Kernel platform's desktop identifiers and actions.
     #[cfg(windows)]
@@ -606,7 +622,7 @@ fn plugin_catalog(
             content: Arc::from(description.as_bytes()),
         }),
     )?;
-    for source in skill_catalog_entries(settings)? {
+    for source in skill_catalog_entries(settings, &disabled_plugins)? {
         insert_plugin_source(&mut sources, source)?;
     }
     let mcp_sources = crate::local_agent_mcp::available_server_sources(settings)
@@ -678,7 +694,42 @@ fn insert_plugin_source(
     Ok(())
 }
 
-fn skill_catalog_entries(settings: &Value) -> Result<Vec<PluginCatalogEntry>, String> {
+fn disabled_plugin_ids(settings: &Value) -> Result<Vec<String>, String> {
+    serde_json::from_str(settings["plugins.disabled"].as_str().unwrap_or("[]"))
+        .map_err(|error| format!("plugin_config_invalid: {error}"))
+}
+
+fn frontend_design_skill(disabled: &[String]) -> Result<PluginCatalogEntry, String> {
+    let id = "achbit-frontend-design";
+    let uri = format!("plugin://{id}@builtin");
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let runtime = achbit_host_connection::runtime_root(
+        executable
+            .parent()
+            .ok_or("Kernel executable has no directory")?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(PluginCatalogEntry::Skill(SkillLocator {
+        public: PublicPluginCatalogItem {
+            enabled: !disabled.contains(&uri),
+            management: Some(json!({"key":"plugins.disabled","id":uri})),
+            uri,
+            display_name: "Frontend Design".into(),
+            short_description: "前端页面、组件与交互预览的设计指导。".into(),
+            icon_ref: None,
+            activation_media_types: vec![],
+            available: false,
+            error: None,
+        },
+        id: id.into(),
+        path: runtime.join("docs/plugins").join(id).join("SKILL.md"),
+    }))
+}
+
+fn skill_catalog_entries(
+    settings: &Value,
+    disabled: &[String],
+) -> Result<Vec<PluginCatalogEntry>, String> {
     let encoded = settings
         .get("skills.mounts")
         .and_then(Value::as_str)
@@ -686,7 +737,7 @@ fn skill_catalog_entries(settings: &Value) -> Result<Vec<PluginCatalogEntry>, St
     let mounts: Vec<SkillMountSetting> = serde_json::from_str(encoded)
         .map_err(|error| format!("解析 skills.mounts 失败：{error}"))?;
     let mut files = BTreeMap::new();
-    let mut entries = Vec::new();
+    let mut entries = vec![frontend_design_skill(disabled)?];
     for mount in mounts {
         let mut public = PublicPluginCatalogItem {
             uri: format!("plugin://{}@skill-mount", plugin_slug(&mount.id)),
@@ -1016,10 +1067,12 @@ mod tests {
             uri: SESSION_DIAGNOSTICS_URI.into(),
             label: "Diagnostics".into(),
         }];
-        assert!(resolve_plugin_selection(&settings, &mut selections, false)
-            .unwrap()
-            .diagnostics_instance()
-            .is_some());
+        assert!(
+            resolve_plugin_selection(&settings, &mut selections, false, &[])
+                .unwrap()
+                .diagnostics_instance()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1044,7 +1097,7 @@ mod tests {
             uri: "plugin://computer-use@builtin".into(),
             label: "Computer Use".into(),
         }];
-        let selected = resolve_plugin_selection(&json!({}), &mut selections, false).unwrap();
+        let selected = resolve_plugin_selection(&json!({}), &mut selections, false, &[]).unwrap();
         assert!(selected.computer_use_instance().is_some());
         assert!(selected
             .mcp_sources
@@ -1053,7 +1106,8 @@ mod tests {
         assert!(resolve_plugin_selection(
             &json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"}),
             &mut selections,
-            false
+            false,
+            &[]
         )
         .is_err());
         let disabled = json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"});
@@ -1070,10 +1124,12 @@ mod tests {
             .find(|plugin| plugin["uri"] == "plugin://computer-use@builtin")
             .unwrap();
         assert_eq!(item["enabled"], false);
-        assert!(resolve_plugin_selection(&json!({}), &mut vec![], false)
-            .unwrap()
-            .computer_use_instance()
-            .is_none());
+        assert!(
+            resolve_plugin_selection(&json!({}), &mut vec![], false, &[])
+                .unwrap()
+                .computer_use_instance()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1094,11 +1150,69 @@ mod tests {
     }
 
     #[test]
+    fn inherited_plugins_use_current_registration_and_keep_explicit_selection_errors() {
+        let selection = |id: &str, uri: &str| PluginSelectionInput {
+            selection_id: id.into(),
+            uri: uri.into(),
+            label: uri.into(),
+        };
+        let computer = "plugin://computer-use@builtin";
+        let documents = "plugin://documents@builtin";
+        let containers = "plugin://containers@builtin";
+        let inherited = vec![
+            selection("old:computer", computer),
+            selection("old:documents", documents),
+            selection("old:removed", "plugin://removed@local"),
+        ];
+        let settings = json!({"plugins.disabled": format!("[\"{documents}\"]")});
+        let mut explicit = vec![
+            selection("new:computer", computer),
+            selection("new:containers", containers),
+        ];
+        let selected =
+            resolve_plugin_selection(&settings, &mut explicit, false, &inherited).unwrap();
+        assert_eq!(explicit.len(), 2);
+        assert_eq!(explicit[0].selection_id, "new:computer");
+        assert_eq!(
+            selected
+                .plugins
+                .iter()
+                .map(|plugin| plugin.public.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec![computer, containers]
+        );
+        let next = resolve_plugin_selection(&settings, &mut vec![], false, &inherited).unwrap();
+        assert_eq!(next.plugins.len(), 1);
+        assert_ne!(
+            selected.computer_use_instance(),
+            next.computer_use_instance(),
+            "inheriting activation must prepare a new plugin instance"
+        );
+        assert!(resolve_plugin_selection(
+            &settings,
+            &mut vec![selection("new:disabled", documents)],
+            false,
+            &inherited
+        )
+        .unwrap_err()
+        .starts_with("plugin_selection_disabled:"));
+        assert!(resolve_plugin_selection(
+            &settings,
+            &mut vec![selection("new:missing", "plugin://removed@local")],
+            false,
+            &inherited
+        )
+        .unwrap_err()
+        .starts_with("plugin_selection_unavailable:"));
+    }
+
+    #[test]
     fn empty_selection_does_not_load_the_plugin_catalog() {
         let selected = resolve_plugin_selection(
             &json!({"skills.mounts":"not JSON", "mcp.servers":"not JSON"}),
             &mut vec![],
             false,
+            &[],
         )
         .unwrap();
         assert!(selected.plugins.is_empty());
@@ -1190,7 +1304,8 @@ mod tests {
                 inspected["description"]
             );
             let selected =
-                resolve_plugin_selection(&settings, &mut vec![selection(listed)], false).unwrap();
+                resolve_plugin_selection(&settings, &mut vec![selection(listed)], false, &[])
+                    .unwrap();
             let config = local_agent_plugin_config(&settings, &selected).unwrap();
             assert_eq!(
                 config["selectedPlugins"][0]["displayName"],
@@ -1202,13 +1317,15 @@ mod tests {
             );
         }
         let selected =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
+            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
         assert_eq!(selected.plugins.len(), 1);
         assert_eq!(selected.plugins[0].public.uri, good["uri"]);
 
         let bad = plugins
             .iter()
-            .find(|plugin| plugin["error"]["code"] == "skill_load_failed")
+            .find(|plugin| {
+                plugin["displayName"] == "bad" && plugin["error"]["code"] == "skill_load_failed"
+            })
             .unwrap();
         assert_eq!(bad["available"], false);
         assert!(bad["error"]["message"]
@@ -1220,12 +1337,12 @@ mod tests {
         assert_eq!(found["plugins"], json!([]));
         assert!(found["nextOffset"].is_null());
         let rejected =
-            resolve_plugin_selection(&settings, &mut vec![selection(bad)], false).unwrap_err();
+            resolve_plugin_selection(&settings, &mut vec![selection(bad)], false, &[]).unwrap_err();
         assert!(rejected.contains(&original_error));
 
         fs::write(&unreadable, "# Repaired Skill\nAn unrelated skill changed.").unwrap();
         let selected_after_unrelated_change =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
+            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
         assert_eq!(
             selected_after_unrelated_change.plugins[0].capability_summary,
             selected.plugins[0].capability_summary
@@ -1237,7 +1354,7 @@ mod tests {
         );
         fs::write(directory.0.join("good/SKILL.md"), &revised_instructions).unwrap();
         let selected_after_content_change =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false).unwrap();
+            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
         assert_eq!(
             selected_after_content_change.plugins[0].capability_summary,
             revised_instructions
@@ -1252,7 +1369,7 @@ mod tests {
         assert_eq!(disabled["available"], false);
         assert!(disabled.get("error").is_none());
         assert!(
-            resolve_plugin_selection(&settings, &mut vec![selection(disabled)], false)
+            resolve_plugin_selection(&settings, &mut vec![selection(disabled)], false, &[])
                 .unwrap_err()
                 .starts_with("plugin_selection_disabled:")
         );

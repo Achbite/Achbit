@@ -8,6 +8,8 @@ import type {
   ModelInteractionRequest,
   PlanOperation,
   ProviderToolDefinition,
+  RunRuntimeSnapshot,
+  SessionEvent,
   TodoItem,
 } from '@achbit/protocol';
 import {
@@ -25,36 +27,48 @@ import {
   SESSION_CONTROL_SESSION,
 } from '@achbit/protocol';
 
-export interface SessionControlWireNames {
-  interactionRequest: string;
-  planPublish: string;
-  todoUpdate: string;
-  pluginActivate: string;
-  artifactPresent: string;
+import type { SessionToolStage } from './plugins.js';
+
+/** Resolve Session controls for this stage before their schemas and instructions are exposed. */
+export function activeSessionControls(
+  runtime: RunRuntimeSnapshot, events: readonly SessionEvent[], stage: SessionToolStage | undefined,
+  optional: readonly string[] | undefined, hasWorkspace: boolean, hasPluginDiscovery: boolean,
+): ProviderToolDefinition[] {
+  const selected = runtime.toolSelection?.controls;
+  if (selected?.length === 0 || stage?.controls?.length === 0) return [];
+  const supportsAgent = runtime.agentToolsEnabled === true && (!selected || selected.includes(SESSION_CONTROL_AGENT))
+    && (!stage?.controls || stage.controls.includes(SESSION_CONTROL_AGENT));
+  const { hasAgent, canDelegate } = supportsAgent ? agentControlAccess(runtime, events) : { hasAgent: false, canDelegate: false };
+  return sessionControlToolDefinitions(runtime.agentCapabilities, canDelegate).filter(({ name }) => {
+    if (selected && !selected.includes(name) || stage?.controls && !stage.controls.includes(name)) return false;
+    if (optional && optionalControlNames.has(name) && !optional.includes(name)) return false;
+    if (name === SESSION_CONTROL_AGENT) return hasAgent;
+    if (name === SESSION_CONTROL_PLUGIN_ACTIVATE) return hasPluginDiscovery;
+    if (name === SESSION_CONTROL_PLAN_PUBLISH && runtime.permissions['agent.permissions.workspaceMutation'] === 'allow') return false;
+    return hasWorkspace || !!stage?.controls?.includes(name) || name === SESSION_CONTROL_INTERACTION_REQUEST
+      || name === SESSION_CONTROL_ARTIFACT_PRESENT || name === SESSION_CONTROL_SESSION;
+  });
 }
 
-export function confirmedPlanExecutionInstruction(): string {
-  return 'The Plan is confirmed. Proceed within its approved scope, which remains valid for this run.';
+function agentControlAccess(runtime: RunRuntimeSnapshot, events: readonly SessionEvent[]) {
+  const setting = events.findLast(event => event.type === 'session.subagent-settings.updated'
+    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
+  const settings = setting?.type === 'session.subagent-settings.updated' ? setting.payload.settings
+    : setting?.type === 'session.created' ? setting.payload.subagentSettings : undefined;
+  const canDelegate = settings?.enabled === true && runtime.agentCapabilities.delegation;
+  let isChild = false;
+  const children = new Set<string>();
+  for (const event of events) {
+    if (event.type === 'session.created') isChild = event.payload.agentContext !== undefined;
+    if (event.type === 'agent.task.created' && event.payload.createsAgent) children.add(event.payload.agentSessionId);
+    if (event.type === 'agent.closed') children.delete(event.payload.agentSessionId);
+  }
+  const hasAgent = canDelegate || (isChild || children.size > 0) && (runtime.agentCapabilities.messaging || runtime.agentCapabilities.delegation);
+  return { hasAgent, canDelegate };
 }
 
-export function sessionControlInstructions(
-  names: SessionControlWireNames,
-  hasWorkspaceBindings = true,
-  hasPluginDiscovery = false,
-  optionalTools?: readonly string[],
-  planEnabled = true,
-  availableControls?: readonly string[],
-): string {
-  const available = (name: string) => availableControls === undefined || availableControls.includes(name);
-  const controls = [...(available(SESSION_CONTROL_INTERACTION_REQUEST) ? [names.interactionRequest] : []),
-    ...(hasWorkspaceBindings && planEnabled && available(SESSION_CONTROL_PLAN_PUBLISH) ? [names.planPublish] : [])];
-  const routes = [
-    ...(hasPluginDiscovery && available(SESSION_CONTROL_PLUGIN_ACTIVATE) ? [`Discover optional capabilities with plugin.search, then ${names.pluginActivate}.`] : []),
-    ...(available(SESSION_CONTROL_TODO_UPDATE) && (!optionalTools || optionalTools.includes(SESSION_CONTROL_TODO_UPDATE)) ? [`Track useful progress with ${names.todoUpdate}.`] : []),
-    ...(available(SESSION_CONTROL_ARTIFACT_PRESENT) && (!optionalTools || optionalTools.includes(SESSION_CONTROL_ARTIFACT_PRESENT)) ? [`Deliver requested resources with ${names.artifactPresent}.`] : []),
-  ];
-  return `Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer. ${controls.length ? `${controls.join(' and ')} must each be the only call in their turn.` : ''} ${routes.join(' ')}`;
-}
+const optionalControlNames = new Set<string>([SESSION_CONTROL_TODO_UPDATE, SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT]);
+export const RESPONSE_PHASE_INSTRUCTION = 'Explicit commentary is progress and may continue without calls; unphased text without calls is the final answer.';
 
 const INTERACTION_SCHEMA: JsonObject = {
   type: 'object',
@@ -120,7 +134,7 @@ const PLAN_OPERATION_SCHEMA: JsonObject = {
         command: { type: 'string', minLength: 1, maxLength: 16_384 },
         writablePaths: {
           type: 'array',
-          description: 'Workspace-relative test or output directories this command may write. Use [] for a command needing no project writes.',
+          description: 'Normalized workspace-relative directories this command may write. Use [] when no project writes are needed. The workspace root (.) is not a write target.',
           items: { type: 'object', additionalProperties: false, required: ['path', 'kind'], properties: {
             path: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['directory'] },
           } },
@@ -306,7 +320,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
       description: (capabilities && (!capabilities.delegation || !canDelegate)
         ? capabilities.messaging === 'parent' ? 'Contact your current task owner. Call action=models for contacts and operations. Send findings, questions or scope needs; messages do not grant permissions or start tasks. Use session wait for a needed reply; return a final answer when done. Retaining the Session needs no active wait.'
           : 'Coordinate directly with teammates. Agree on shared interfaces and one writer per shared file; send unresolved disagreements or scope needs to the coordinator. Messages are not agreement or permission. Use session wait for needed replies; finish with a final answer and evidence, not an indefinite wait. Call action=models for contacts and operations. Multiple messages may share a turn.'
-        : 'Proactively delegate useful independent work; keep coupled work local. Supply context, scope and expected evidence; coordinate shared edits and verify final results. Use analysis for reading specified files and reporting findings; use collaboration for edits or ongoing communication. Completed tasks release execution without close. Call action=models for operations and configuration; operations.md in productDocsPath explains coordination.') + agentTurnInstruction,
+        : 'Proactively delegate useful independent work; keep coupled work local. Supply context, scope and expected evidence; coordinate shared edits and verify final results. Use analysis for reading specified files and reporting findings; use collaboration for edits or ongoing communication. Completed tasks release execution without close. Call action=models for operations and configuration.') + agentTurnInstruction,
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
@@ -323,7 +337,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate enabled plugins by exact URIs from plugin.search. Tools become available next request; permissions stay unchanged. Submit alone.',
+      description: 'Activate discovered plugins by exact URI. Their tools appear on the next request. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -331,12 +345,12 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_INTERACTION_REQUEST,
-      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. mode=continue allows independent work. Confirmations always wait. Tool execution approval is separate.',
+      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. mode=continue allows independent work. Confirmations wait for a response. Submit alone.',
       inputSchema: structuredClone(INTERACTION_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Submit a plan for confirmation. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Submit alone.',
+      description: 'Submit scope for confirmation. You execute the steps after approval. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Submit alone.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {

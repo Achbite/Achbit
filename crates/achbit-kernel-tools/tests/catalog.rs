@@ -195,6 +195,52 @@ fn shell_authority_fields_are_internal_and_commands_reach_kernel_admission() {
 }
 
 #[test]
+fn edit_input_accepts_equivalent_single_and_multiple_replacement_forms() {
+    let registry = KernelToolRegistry::new();
+    let edit = json!({"oldText":"alpha", "newText":"ALPHA"});
+    let expected = registry
+        .canonicalize(
+            "fs.edit",
+            json!({"path":"file.txt", "edits":[edit.clone()]}),
+        )
+        .unwrap();
+    for input in [
+        json!({"path":"file.txt", "oldText":"alpha", "newText":"ALPHA"}),
+        json!({"path":"file.txt", "edits":edit}),
+        json!({"path":"file.txt", "edits":edit.to_string()}),
+        json!({"path":"file.txt", "edits":json!([edit]).to_string()}),
+    ] {
+        assert_eq!(registry.canonicalize("fs.edit", input).unwrap(), expected);
+    }
+    let combined = registry
+        .canonicalize(
+            "fs.edit",
+            json!({"path":"file.txt",
+        "edits":[edit], "oldText":"beta", "newText":"BETA"}),
+        )
+        .unwrap()
+        .executor_arguments();
+    assert_eq!(
+        combined["edits"],
+        json!([edit, {"oldText":"beta", "newText":"BETA"}])
+    );
+    for input in [
+        json!({"path":"file.txt", "oldText":"alpha"}),
+        json!({"path":"file.txt", "edits":"not json"}),
+        json!({"path":"file.txt", "edits":{"oldText":"alpha"}}),
+        json!({"path":"file.txt", "edits":null}),
+        json!({"path":"file.txt", "edits":[edit], "oldText":"alpha", "newText":"duplicate"}),
+        json!({"path":"file.txt", "edits":edit, "executionScope":"host"}),
+        json!({"path":"file.txt", "edits":{"oldText":"alpha", "newText":"ALPHA", "extra":true}}),
+    ] {
+        assert!(
+            registry.canonicalize("fs.edit", input.clone()).is_err(),
+            "{input}"
+        );
+    }
+}
+
+#[test]
 fn file_invocations_keep_bounds_and_distinct_unicode_spelling() {
     let registry = KernelToolRegistry::new();
     let KernelCanonicalInvocation::FsRead {

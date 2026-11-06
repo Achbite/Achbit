@@ -49,6 +49,46 @@ test('context settings default off at 500k; optional child overrides preserve un
   assert.equal(decodeSessionControlCall('call:compact', 'agent', { action: 'compact', agentId: 'session:child' }).operation.focus, undefined);
 });
 
+test('a new run and journal replay keep sub-500k calibration without issuing a summary request', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:calibrated-next-run', requests = [];
+  await createSession(journal, sessionId);
+  const preparation = fakeRunPreparation({ contextWindowTokens: 1_050_000, maxOutputTokens: 128_000,
+    contextManagement: { enabled: true, thresholdTokens: 500_000 } });
+  const port = { ...preparation.port, async prepare(input) {
+    const prepared = await preparation.port.prepare(input);
+    prepared.runtimeSnapshot.provider.providerRuntimeRef = `provider-runtime:${input.runId}`;
+    prepared.runtimeSnapshot.provider.inputTokenCalibrationKey = 'input-token-calibration:same-model';
+    return prepared;
+  } };
+  const provider = { async *stream(request) {
+    requests.push(request);
+    assert.equal(request.purpose, 'agent', 'neither run is allowed to request a summary');
+    yield answer(request, 'Fixture answer.');
+    yield providerEvent(request.requestId, 'completed', { usage: {
+      inputTokens: 286_771, outputTokens: 10, contextWindowTokens: 1_050_000,
+      cacheReadInputTokens: 280_000, cacheMissInputTokens: 6_771,
+    } });
+  } };
+  let actor = actorWith(journal, sessionId, provider, emptyKernel(), port, 'calibrated-first');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:calibrated-first', oldText.repeat(18)));
+  const first = await completed(actor);
+  const firstShape = first.contextCompositions.find(item => item.providerRequestId === first.contextUsage.providerRequestId)
+    .partitions.reduce((sum, item) => sum + item.requestShapeUnits, 0);
+  assert.ok(Math.ceil(firstShape / 3) > 500_000, 'fixture must reproduce the conservative estimate above the threshold');
+  await actor.dispose();
+  actor = actorWith(journal, sessionId, provider, emptyKernel(), port, 'calibrated-restored');
+  await actor.submit(messageCommand(sessionId, 'command:calibrated-next', 'Continue the next fixture task.'));
+  await completed(actor);
+  const events = await readEvents(journal, sessionId);
+  const runs = events.filter(event => event.type === 'run.started');
+  assert.equal(runs.length, 2);
+  assert.notEqual(runs[0].payload.runtimeSnapshot.provider.providerRuntimeRef, runs[1].payload.runtimeSnapshot.provider.providerRuntimeRef);
+  assert.equal(runs[0].payload.runtimeSnapshot.provider.inputTokenCalibrationKey, runs[1].payload.runtimeSnapshot.provider.inputTokenCalibrationKey);
+  assert.equal(events.filter(event => event.type === 'context.compaction.requested').length, 0);
+  assert.deepEqual(requests.map(request => request.purpose), ['agent', 'agent']);
+});
+
 test('soft threshold never interrupts a tool trajectory; task-end compaction preserves journal and later cacheable history', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:auto-tail', requests = [];
   await createSession(journal, sessionId, [workspaceBinding]);

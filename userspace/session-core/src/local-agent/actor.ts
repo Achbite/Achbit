@@ -11,12 +11,12 @@ import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/pr
 import { confirmationFacts } from './planStage.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
-import { errorFact } from './loopFailure.js';
+import { errorFact, LoopFailure } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
-import { appendResourceBindings, directoryBindingEvents } from './workspaceBindings.js';
+import { appendResourceBindings, directoryBindingEvents, validLogicalPath } from './workspaceBindings.js';
 import type {
   AssistantDraftProjection,
   AgentTaskResult,
@@ -158,7 +158,7 @@ export class SessionActor {
       if (configuration.context.id === 'journal') configuration.context.parameters = {
         ...configuration.context.parameters, maxTokens: lease.implementation.context.windowTokens(runtime),
       };
-      if (configuration.compaction.id === 'summary') configuration.compaction.parameters = {
+      if (configuration.compaction.id === 'summary' && lease.implementation.compaction) configuration.compaction.parameters = {
         ...configuration.compaction.parameters, ...lease.implementation.compaction.settings(runtime),
       };
       return configuration;
@@ -169,6 +169,10 @@ export class SessionActor {
     return this.withWrite(async () => {
       this.assertOperational();
       const snapshot = await this.loadSnapshot();
+      const lease = this.#capabilities.acquire();
+      try {
+        if (!lease.implementation.compaction) throw new LoopFailure('compaction_unavailable', 'This session has no context compaction component.');
+      } finally { await lease.release(); }
       const compactionId = this.#nextId('compaction');
       await this.appendEvents([{ type: 'context.compaction.scheduled', sessionId: this.sessionId,
         payload: { compactionId, requestedBySessionId, ...(focus ? { focus } : {}) } }], snapshot);
@@ -843,7 +847,8 @@ export class SessionActor {
       return await this.recordRejection(command, 'run_release_pending', '当前运行尚未完成资源释放。');
     }
     const controls = before.state.recipe?.tools?.controls;
-    if (manualPlan && controls && !controls.includes('plan.publish')) {
+    if (manualPlan && ((controls && !controls.includes('plan.publish'))
+      || (before.state.recipe?.configuration ?? before.state.agentContext?.configuration)?.controls.id === 'none')) {
       return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
     }
     const messageId = this.#nextId('message');
@@ -861,6 +866,11 @@ export class SessionActor {
       sessionId: this.sessionId,
       runId,
       previousProviderToolAliases: previousView?.providerToolAliases,
+      ...(previousView?.selectedPlugins.plugins.length ? {
+        inheritedPluginSelections: previousView.selectedPlugins.plugins.map(plugin => ({
+          selectionId: this.#nextId('plugin-selection'), uri: plugin.uri, label: plugin.uri.slice(0, 160),
+        })),
+      } : {}),
       environment: savedSessionEnvironment(before.events),
       ...(command.hostBinding ? { hostBinding: { ...command.hostBinding } } : {}),
       ...(profileId ? { profileId } : {}),
@@ -1268,7 +1278,10 @@ export class SessionActor {
       if (timing) await this.appendEvents([timing], current);
     });
     const snapshot = await this.loadSnapshot();
-    await this.ensureProcesses(command.runId);
+    const view = snapshot.state.runToolViews[command.runId] ?? snapshot.state.runRuntimeSnapshots[command.runId];
+    const hasProcessActivity = view?.tools.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'process' && tool.availability === 'callable')
+      || Object.values(snapshot.state.processes).some(job => job.runId === command.runId);
+    if (hasProcessActivity) await this.ensureProcesses(command.runId);
     const runner = this.#composition.runner ?? { run: runAgentLoop };
     const result = await runner.run(
       snapshot,
@@ -1279,6 +1292,7 @@ export class SessionActor {
         ...(this.#agents ? { agents: this.#agents } : {}),
         sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
         waitForInput: async (runId, wait, signal) => {
+          if (!hasProcessActivity) return this.waitForInput(runId, signal, undefined, undefined, wait);
           await this.ensureProcesses(runId);
           await this.#processes?.sync();
           const current = await this.loadSnapshot();
@@ -1288,9 +1302,7 @@ export class SessionActor {
           }
           return this.waitForInput(runId, signal, undefined, undefined, wait);
         },
-        ...((snapshot.state.runRuntimeSnapshots[command.runId]?.tools.some(tool => tool.possibleEffects.includes('process'))
-          || snapshot.state.runRuntimeSnapshots[command.runId]?.toolSelection?.plugins !== false
-          || Object.values(snapshot.state.processes).some(job => job.runId === command.runId)) ? {
+        ...(hasProcessActivity ? {
           activity: createProcessActivity(command.runId,
             async () => { await this.ensureProcesses(command.runId); await this.#processes?.sync(); },
             (signal, jobIds, timeoutSeconds) => this.waitForProcesses(command.runId, signal, jobIds, timeoutSeconds)),
@@ -1978,13 +1990,6 @@ function validateFilesystemReferences(
     targets.add(`${reference.workspaceId}\0${reference.logicalPath}`);
   }
   return null;
-}
-
-function validLogicalPath(value: string): boolean {
-  if (!value || value.length > 4_096 || value.includes('\0') || value.includes('\\')) return false;
-  if (value === '.') return true;
-  if (value.startsWith('/') || value.endsWith('/')) return false;
-  return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
 function defaultIdFactory(sessionId: string): (kind: string) => string {

@@ -424,6 +424,160 @@ mod tests {
     }
 
     #[test]
+    fn delegated_reads_reuse_only_the_reviewed_run_scope_and_keep_other_gates() {
+        let resources = resources();
+        let outside = resources.0.join("outside");
+        let target = outside.join("target.txt");
+        let (kernel, mut request, catalog) = kernel_with_request(
+            resources.clone(),
+            "bash",
+            json!({"workspaceId":"workspace:test", "command":"cat reference",
+                "requestFileAccess":{"read":[outside]}}),
+        );
+        kernel.journal.append(&json!({"type":"session.permissions.updated","sessionId":request.session_id,
+            "payload":{"commandId":"command:review","patches":{"agent.permissions.shell":"review","agent.permissions.workspaceMutation":"allow"}}})).unwrap();
+        let original = request.clone();
+        let effect = kernel.prepare_tool(&request).unwrap();
+        assert!(matches!(
+            kernel.admit(&request, &effect).unwrap(),
+            Admission::ApprovalRequired
+        ));
+        let preview = approval_reply(&kernel, &request, &effect).unwrap()["preview"].clone();
+        assert_eq!(preview["reviewPolicy"]["reviewGrant"], "runFiles");
+        let environment = effect.file_environment();
+        kernel.journal.append(&json!({"type":"tool.requested","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+            "payload":{"providerCallId":"provider:read","attemptId":request.attempt_id,"toolName":request.tool_name,"input":request.input}})).unwrap();
+        kernel.journal.append(&json!({"type":"approval.requested","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+            "payload":{"approvalId":"approval:read","preview":preview}})).unwrap();
+        kernel.journal.append(&json!({"type":"provider.turn.settled","sessionId":request.session_id,"runId":request.run_id,
+            "payload":{"providerRequestId":"provider:read-review","purpose":"approvalReview","providerRuntimeRef":"runtime:review","outcome":"completed","orderedCallIds":[]}})).unwrap();
+        kernel.journal.append(&json!({"type":"approval.reviewed","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+            "payload":{"approvalId":"approval:read","providerRequestId":"provider:read-review","decision":"allow","reason":"The supplied directory is needed throughout this task."}})).unwrap();
+        kernel.journal.append(&json!({"type":"approval.resolved","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+            "payload":{"approvalId":"approval:read","commandId":"decision:read","authorityId":"authority:read","decision":"allow","source":"agent","authorizationScope":"runFiles"}})).unwrap();
+        let authorized = kernel
+            .journal
+            .file_authorizations(&request.session_id, &request.run_id, &environment)
+            .unwrap();
+        assert_eq!(authorized, vec![json!({"read":[outside],"write":[]})]);
+        assert!(kernel
+            .journal
+            .file_authorizations(&request.session_id, "run:other", &environment)
+            .unwrap()
+            .is_empty());
+        assert!(kernel
+            .journal
+            .file_authorizations("session:other", &request.run_id, &environment)
+            .unwrap()
+            .is_empty());
+        let mut other_environment = environment.clone();
+        other_environment["executionPath"] = json!("other-toolchain");
+        assert!(kernel
+            .journal
+            .file_authorizations(&request.session_id, &request.run_id, &other_environment)
+            .unwrap()
+            .is_empty());
+        request.non_workspace_authority = Some(NonWorkspaceAuthority {
+            authority_id: "authority:read".into(),
+            decision: "allow".into(),
+        });
+        let resumed = kernel.prepare_tool(&request).unwrap();
+        assert!(matches!(
+            kernel.admit(&request, &resumed).unwrap(),
+            Admission::Allowed(_)
+        ));
+        request = original.clone();
+        request.call_id = "call:repeat".into();
+        for input in [
+            json!({"workspaceId":"workspace:test","command":"read another reference","requestFileAccess":{"read":[outside]}}),
+            json!({"workspaceId":"workspace:test","command":"read a reference without another permission request"}),
+        ] {
+            request.input = input;
+            let repeated = kernel.prepare_tool(&request).unwrap();
+            assert!(!repeated.file_authority_required);
+            assert!(repeated
+                .execution_file_access()
+                .read
+                .iter()
+                .any(|root| covers(root, &target)));
+            assert!(matches!(
+                kernel.admit(&request, &repeated).unwrap(),
+                Admission::Allowed(_)
+            ));
+        }
+        let set_tool = |request: &mut LocalToolExecutionRequest, name: &str| {
+            request.tool_name = name.into();
+            request.tool_binding_ref = catalog["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap()["toolBindingRef"]
+                .as_str()
+                .unwrap()
+                .into();
+        };
+        set_tool(&mut request, "fs.read");
+        request.input = json!({"workspaceId":"workspace:test","path":target});
+        let read = kernel.prepare_tool(&request).unwrap();
+        assert!(!read.file_authority_required);
+        assert!(matches!(
+            kernel.admit(&request, &read).unwrap(),
+            Admission::Allowed(_)
+        ));
+        let repeat_read = request.clone();
+        std::fs::create_dir(resources.0.join("sibling")).unwrap();
+        let sibling = resources.0.join("sibling/target.txt");
+        std::fs::write(&sibling, "not granted").unwrap();
+        request.input["path"] = json!(sibling);
+        let other = kernel.prepare_tool(&request).unwrap();
+        assert!(matches!(
+            kernel.admit(&request, &other).unwrap(),
+            Admission::ApprovalRequired
+        ));
+        for (name, input) in [
+            (
+                "fs.write",
+                json!({"workspaceId":"workspace:test","path":target,"content":"not authorized"}),
+            ),
+            (
+                "bash",
+                json!({"workspaceId":"workspace:test","command":"host check","requestHostPermission":"Need Host"}),
+            ),
+            (
+                "bash",
+                json!({"workspaceId":"workspace:test","command":"network check","requestNetworkPermission":"Need network"}),
+            ),
+            (
+                "bash",
+                json!({"workspaceId":"workspace:test","command":"mixed file access","requestFileAccess":{"read":[outside],"write":[outside]}}),
+            ),
+        ] {
+            set_tool(&mut request, name);
+            request.input = input;
+            let other = kernel.prepare_tool(&request).unwrap();
+            assert!(matches!(
+                kernel.admit(&request, &other).unwrap(),
+                Admission::ApprovalRequired
+            ));
+            assert_eq!(
+                approval_reply(&kernel, &request, &other).unwrap()["preview"]["reviewPolicy"]
+                    ["reviewGrant"],
+                "thisCallOnly"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        kernel.journal.append(&json!({"type":"approval.revoked","sessionId":request.session_id,"runId":request.run_id,
+            "payload":{"authorityId":"authority:read","commandId":"command:revoke"}})).unwrap();
+        let revoked = kernel.prepare_tool(&repeat_read).unwrap();
+        assert!(revoked.file_authority_required);
+        assert!(matches!(
+            kernel.admit(&repeat_read, &revoked).unwrap(),
+            Admission::ApprovalRequired
+        ));
+    }
+
+    #[test]
     fn referenced_subdirectory_uses_its_project_read_scope_and_plan() {
         let resources = resources();
         let (mut kernel, mut read, _) = kernel_with_request(

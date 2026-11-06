@@ -1,5 +1,5 @@
 import { t, type UiLanguage } from '../../i18n';
-import ModalDialog from '../shared/ModalDialog';
+import { ModalDialog } from '../../ui-components';
 import type { ResolvedLocalTarget } from './resourceLinks';
 
 export function ResourceLinkChoices({ targets, language, onSelect, onClose }: {

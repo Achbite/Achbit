@@ -18,25 +18,3 @@ achbit_source_git_available() {
 achbit_source_commit() {
   achbit_source_git "$1" rev-parse HEAD
 }
-
-achbit_source_status() {
-  local root="$1"
-  if ! achbit_source_git_available "$root"; then
-    # Docker compile snapshots can contain a linked-worktree .git file whose
-    # host-only absolute gitdir is intentionally unavailable in the container.
-    # Keep that state explicit and dirty instead of emitting a Git fatal or
-    # accidentally certifying the snapshot as clean.
-    printf 'git-metadata=unavailable\n'
-    return 0
-  fi
-  achbit_source_git "$root" status --porcelain=v1 --untracked-files=all
-}
-
-achbit_source_dirty() {
-  local root="$1"
-  if [ -n "$(achbit_source_status "$root")" ]; then
-    printf '1\n'
-  else
-    printf '0\n'
-  fi
-}

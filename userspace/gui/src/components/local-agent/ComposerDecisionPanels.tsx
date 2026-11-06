@@ -4,6 +4,7 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { CloseButton, IconButton, PanelHeader } from '../../ui-components';
 import type { AgentComposer } from './useAgentComposer';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { planOperationDetail } from './planReview';
@@ -31,7 +32,7 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
       {(pendingPlan || pendingInteraction) && (
         <section id={pendingPlan ? undefined : 'conversation-interaction'} tabIndex={-1}
           className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
-            <header className="local-agent__interaction-panel-heading">
+            <PanelHeader className="local-agent__interaction-panel-heading">
               <span className="local-agent__interaction-caption">
                 <AchbitShellIcon name={pendingPlan ? 'artifact' : 'question'} size={17} />
                 {pendingPlan
@@ -41,27 +42,26 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
               <div className="local-agent__interaction-controls">
               {!pendingPlan && interactionNavigation && <div className="local-agent__interaction-navigation" role="group"
                 aria-label={t(language, 'agent.interaction.navigation')}>
-                <button {...identity.action('previous', 'click')} type="button" aria-label={t(language, 'agent.interaction.previous')}
+                <IconButton {...identity.action('previous', 'click')} icon="chevronLeft" size="compact" aria-label={t(language, 'agent.interaction.previous')}
                   title={t(language, 'agent.interaction.previous')} disabled={submitting || interactionNavigation.index === 0}
-                  onClick={interactionNavigation.previous}><AchbitShellIcon name="chevronLeft" size={15} /></button>
+                  onClick={interactionNavigation.previous} />
                 <span aria-live="polite">{interactionNavigation.index + 1}/{interactionNavigation.count}</span>
-                <button {...identity.action('next', 'click')} type="button" aria-label={t(language, 'agent.interaction.next')}
+                <IconButton {...identity.action('next', 'click')} icon="chevronRight" size="compact" aria-label={t(language, 'agent.interaction.next')}
                   title={t(language, 'agent.interaction.next')} disabled={submitting || interactionNavigation.index === interactionNavigation.count - 1}
-                  onClick={interactionNavigation.next}><AchbitShellIcon name="chevronRight" size={15} /></button>
+                  onClick={interactionNavigation.next} />
               </div>}
-              {(pendingPlan || pendingInteraction?.allowFreeform) && <button
+              {(pendingPlan || pendingInteraction?.allowFreeform) && <CloseButton
                 {...identity.action('close', 'click')}
-                type="button"
-                className="local-agent__interaction-close"
+                size="compact"
                 aria-label={t(language, pendingPlan ? 'agent.plan.closeReview' : confirmation ? 'agent.interaction.closeConfirmation' : 'agent.interaction.closeQuestion')}
                 title={t(language, pendingPlan ? 'agent.plan.ignoreAndStop' : 'agent.interaction.skip')}
                 disabled={submitting}
                 onClick={() => pendingPlan
                   ? void submitPlanDecision({ kind: 'cancel' })
                   : void sendDecision(t(language, 'agent.interaction.skip'))}
-              ><AchbitShellIcon name="close" size={15} /></button>}
+              />}
               </div>
-            </header>
+            </PanelHeader>
           <div
             key={pendingInteraction?.interactionId}
             className="local-agent__interaction-document-scroll"

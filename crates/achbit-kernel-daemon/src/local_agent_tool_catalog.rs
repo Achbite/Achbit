@@ -161,7 +161,7 @@ impl ToolProvider for DocumentToolProvider {
                 plugin_instance_ref: Some(self.instance.clone()),
                 contribution_ref: format!("{}/document.render", self.instance),
                 name: "document.render".into(),
-                description: "Create a document artifact in the workspace. Write complete HTML or Markdown, or render self-contained Typst source to PDF. For PDF, images use inline bytes; external files and imports are not supported. Source limit: 1 MiB; PDF limit: 32 MiB.".into(),
+                description: "Create and archive a document in the selected workspace. Supply complete HTML or Markdown, or self-contained Typst source for PDF. PDF images use inline bytes; its renderer reads the supplied source rather than external files or imports. Returns the file result and artifactId; use artifact.present to deliver it. Source limit: 1 MiB; PDF limit: 32 MiB.".into(),
                 input_schema: documents::input_schema(),
                 effect_class: None,
                 effect_scope: CatalogEffectScope::WorkspaceMutation,
@@ -211,7 +211,7 @@ impl ToolProvider for ProductToolProvider {
             });
         }
         for (name, field, description, scope) in [
-            ("artifact.prepare", "path", "Archive a workspace file as an immutable resource version. Re-prepare after modifying it; its logical identity stays stable.", CatalogEffectScope::WorkspaceRead),
+            ("artifact.prepare", "path", "Archive an existing file in the selected workspace, including an HTML interactive preview, as an immutable version. For a new standalone HTML, PDF or Markdown document, prefer the Documents plugin when available; its renderer writes the file and archives it. Re-prepare changed files to update their version.", CatalogEffectScope::WorkspaceRead),
             ("artifact.preview", "url", "Register an HTTP(S) live preview reference without fetching or verifying it. Call after updating the preview to record its latest presentation version.", CatalogEffectScope::LocalRead),
         ] {
             tools.push(PendingToolContribution {
@@ -329,6 +329,7 @@ struct BuiltinToolProvider {
     registry: Arc<KernelToolRegistry>,
     executors: Arc<KernelExecutorRegistry>,
     web_search_availability: ToolAvailability,
+    read_images: bool,
     shell_tool: String,
 }
 
@@ -348,6 +349,7 @@ impl BuiltinToolProvider {
             .as_ref()
             .map(|shell| shell.tool.clone())
             .unwrap_or_else(|| if cfg!(windows) { "powershell" } else { "bash" }.into());
+        let read_images = executor_config.read_images;
         let registry = Arc::new(KernelToolRegistry::new());
         let executors = Arc::new(KernelExecutorRegistry::from_executors(builtin_executors(
             registry.as_ref(),
@@ -358,6 +360,7 @@ impl BuiltinToolProvider {
             registry,
             executors,
             web_search_availability,
+            read_images,
             shell_tool,
         })
     }
@@ -375,7 +378,14 @@ impl ToolProvider for BuiltinToolProvider {
                 plugin_instance_ref: None,
                 contribution_ref: format!("tool-contribution:builtin:{}", descriptor.name),
                 name: descriptor.name.clone(),
-                description: descriptor.description.clone(),
+                description: if descriptor.name == "fs.read" && self.read_images {
+                    format!(
+                        "{} PNG, JPEG, GIF and WebP files are returned as model images.",
+                        descriptor.description
+                    )
+                } else {
+                    descriptor.description.clone()
+                },
                 input_schema: descriptor.input_schema.clone(),
                 effect_class: Some(descriptor.effect_class),
                 effect_scope: match descriptor.effect_scope {
@@ -731,7 +741,7 @@ impl ToolCatalogSnapshot {
             .collect();
         if let Some(process) = contributions.get_mut("process") {
             process.input_schema = crate::managed_processes::schema(&process_targets);
-            process.description = format!("{}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically; do not poll.",
+            process.description = format!("{}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically. Use status when a current snapshot is needed.",
                 if process_targets.is_empty() { "Manage existing commands: " } else { "Start independent long commands with action=start so later calls can proceed. An ordinary command that returns a running job defers later calls in its batch. " });
         }
 
@@ -828,6 +838,13 @@ impl ToolCatalogSnapshot {
                 })
                 .collect(),
         )
+    }
+
+    pub(crate) fn has_process_control(&self) -> bool {
+        self.tools.get("process").is_some_and(|tool| {
+            tool.availability == ToolAvailability::Callable
+                && matches!(&tool.binding, ToolExecutorBinding::Process)
+        })
     }
 
     pub(crate) fn binding_for_name(
@@ -1268,6 +1285,8 @@ impl PreparedCatalogBinding {
                 })
             }
             (ToolExecutorBinding::Builtin { executors, .. }, PreparedToolInput::Builtin(input)) => {
+                let read_context = matches!(&input, KernelCanonicalInvocation::FsRead { .. })
+                    .then(|| context.clone());
                 executors
                     .invoke(
                         KernelToolInvocation {
@@ -1276,6 +1295,12 @@ impl PreparedCatalogBinding {
                         },
                         context,
                     )
+                    .map(|result| match read_context {
+                        Some(context) if result.output["content"].is_array() => {
+                            crate::tool_images::archive_result_images(result, &context)
+                        }
+                        _ => result,
+                    })
                     .or_else(|error| {
                         let (code, output) = match &error {
                             achbit_kernel_abi::KernelError::Structured {
@@ -1443,10 +1468,11 @@ fn browser_targets(name: &str, input: &Value) -> Result<Vec<String>, ToolCatalog
             text("command")?;
             text("directory")?;
             text("url")?;
-            if !input["args"]
-                .as_array()
-                .is_some_and(|args| args.iter().all(Value::is_string))
-            {
+            if input.get("args").is_some_and(|value| {
+                !value
+                    .as_array()
+                    .is_some_and(|args| args.iter().all(Value::is_string))
+            }) {
                 return Err(ToolCatalogError::new(
                     "tool_input_invalid",
                     "args must be an array of strings.",
@@ -1652,6 +1678,54 @@ fn validate_ref(field: &str, value: &str) -> Result<(), ToolCatalogError> {
 mod tests {
     use super::*;
     use achbit_kernel_runtime::executors::EmptySecretProvider;
+
+    #[test]
+    fn image_read_description_retains_the_same_directory_and_file_access_contract() {
+        for read_images in [false, true] {
+            let installed = Box::new(
+                BuiltinToolProvider::prepare(
+                    KernelExecutorConfig {
+                        read_images,
+                        ..Default::default()
+                    },
+                    Arc::new(EmptySecretProvider),
+                    false,
+                )
+                .unwrap(),
+            )
+            .install()
+            .unwrap();
+            let read = installed
+                .tools
+                .iter()
+                .find(|tool| tool.name == "fs.read")
+                .unwrap();
+            assert!(read.description.contains("bound workspace directory"));
+            assert!(read
+                .description
+                .contains("External files use file-read permission"));
+            assert_eq!(
+                read.description.contains("returned as model images"),
+                read_images
+            );
+        }
+    }
+
+    #[test]
+    fn browser_service_arguments_are_optional_but_supplied_values_are_validated() {
+        let input = json!({"action":"start", "command":"example-server", "directory":"/project", "url":"http://127.0.0.1:8080"});
+        assert!(browser_targets("browser.service", &input).is_ok());
+        for args in [json!([]), json!(["--port", "8080"])] {
+            let mut input = input.clone();
+            input["args"] = args;
+            assert!(browser_targets("browser.service", &input).is_ok());
+        }
+        for args in [json!(null), json!("--port 8080"), json!([1])] {
+            let mut input = input.clone();
+            input["args"] = args;
+            assert!(browser_targets("browser.service", &input).is_err());
+        }
+    }
 
     #[test]
     fn task_selection_removes_dispatch_bindings_and_can_run_without_extensions_or_shell() {

@@ -1,5 +1,12 @@
 import type { FilesystemReference, NewSessionEvent, SessionEvent, WorkspaceBindingDisplay } from '@achbit/protocol';
 
+export function validLogicalPath(value: string): boolean {
+  if (!value || value.length > 4_096 || value.includes('\0') || value.includes('\\')) return false;
+  if (value === '.') return true;
+  if (value.startsWith('/') || value.endsWith('/')) return false;
+  return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
 /** Address lookup does not itself grant workspace or file authority. */
 export function appendResourceBindings(
   bindings: readonly WorkspaceBindingDisplay[],

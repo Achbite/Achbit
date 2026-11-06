@@ -23,6 +23,8 @@ pub enum WorkerRequest {
         settings: Value,
     },
     Execute {
+        #[serde(default)]
+        read_images: bool,
         invocation: KernelToolInvocation,
         context: KernelToolExecutionContext,
         distribution: String,
@@ -222,6 +224,7 @@ mod progress_tests {
 }
 
 pub(crate) struct WslExecutor {
+    pub read_images: bool,
     pub target: WslExecution,
     pub shell: Option<ShellProgram>,
     pub execution_path: Option<String>,
@@ -246,6 +249,7 @@ impl KernelToolExecutor for WslExecutor {
             .ok_or_else(|| failure("The prepared WSL shell is missing."))?;
         let result = self.target.request(
             &WorkerRequest::Execute {
+                read_images: self.read_images,
                 invocation,
                 context,
                 distribution: self.target.distribution.clone(),
