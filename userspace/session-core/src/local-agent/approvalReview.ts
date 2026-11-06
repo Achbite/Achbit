@@ -126,7 +126,7 @@ export function prepareApprovalReview(snapshot: LoopSnapshot, runtime: RunRuntim
       messages: contributions.map(item => item.message), tools: readsEnabled ? toolCodec.definitions : [], hostedTools: [],
     };
     const receipt = { ...buildContextCompositionReceipt(requestId, 'approvalReview', responseConstraint, contributions,
-      request.tools, [], [], toolCodec.canonicalByWire, readsEnabled ? toolCodec.receiptTools : [], runtime, workspaceBindings, snapshot.events),
+      request.tools, [], [], readsEnabled ? toolCodec.receiptTools : [], runtime, workspaceBindings, snapshot.events),
       reviewInput: { instructions: contributions[0]!.message.content, content: evidenceEvents.length
         ? JSON.stringify({ packet, evidenceMessages: request.messages.slice(2) }) : content } };
     return { request, receipt, toolCodec };

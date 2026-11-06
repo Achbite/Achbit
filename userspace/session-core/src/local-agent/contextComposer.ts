@@ -279,7 +279,6 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       toolCodec.kernelDefinitions,
       toolCodec.controlDefinitions,
       request.hostedTools,
-      toolCodec.canonicalByWire,
       [...toolCodec.receiptTools, ...hostedReceiptTools],
       input.runtime,
       input.workspaceBindings,
@@ -909,7 +908,6 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
   kernelTools: readonly ProviderToolDefinition[],
   controlTools: readonly ProviderToolDefinition[],
   hostedTools: readonly ProviderRequest['hostedTools'][number][],
-  canonicalByWire: ReadonlyMap<string, string>,
   receiptTools: readonly ContextCompositionTool[],
   runtime: RunRuntimeSnapshot,
   workspaceBindings: readonly WorkspaceBindingDisplay[],
@@ -937,26 +935,6 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     label: binding.displayName,
   }));
   const toolItems = receiptTools.map((tool) => ({ ...tool }));
-  if (toolItems.length !== kernelTools.length + controlTools.length + hostedTools.length) {
-    throw new LoopFailure('provider_tool_receipt_incomplete', 'Context receipt 工具数量不完整。');
-  }
-  for (const tool of toolItems) {
-    if (tool.origin === 'providerHosted') {
-      if (tool.canonicalName !== 'web.search' || tool.wireName !== 'web_search') {
-        throw new LoopFailure(
-          'provider_hosted_tool_receipt_invalid',
-          'Context receipt 的 Provider hosted search 工具无效。',
-        );
-      }
-      continue;
-    }
-    if (canonicalByWire.get(tool.wireName) !== tool.canonicalName) {
-      throw new LoopFailure(
-        'provider_tool_alias_receipt_missing',
-        `Context receipt 缺少 Provider tool alias：${tool.canonicalName}`,
-      );
-    }
-  }
   const messages = selected.map((item, messageIndex) => ({
     messageIndex,
     contributionId: item.contributionId,

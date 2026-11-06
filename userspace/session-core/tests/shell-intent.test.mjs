@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { shellCommandIntents } from '../dist/local-agent/shellIntent.js';
-import { emptySessionState, reduceSession, projectSession } from '../dist/local-agent/reducer.js';
+import { emptySessionState, reduceSession } from '../dist/local-agent/reducer.js';
 
 test('literal searches distinguish query from file, directory and pipeline targets', () => {
   assert.deepEqual(shellCommandIntents(`rg -n -g '*.ts' 'read file' src tests; grep -n -e TODO README.md`), [

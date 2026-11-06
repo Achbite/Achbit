@@ -16,7 +16,7 @@ import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
-import { appendResourceBindings, directoryBindingEvents } from './workspaceBindings.js';
+import { appendResourceBindings, directoryBindingEvents, validLogicalPath } from './workspaceBindings.js';
 import type {
   AssistantDraftProjection,
   AgentTaskResult,
@@ -1990,13 +1990,6 @@ function validateFilesystemReferences(
     targets.add(`${reference.workspaceId}\0${reference.logicalPath}`);
   }
   return null;
-}
-
-function validLogicalPath(value: string): boolean {
-  if (!value || value.length > 4_096 || value.includes('\0') || value.includes('\\')) return false;
-  if (value === '.') return true;
-  if (value.startsWith('/') || value.endsWith('/')) return false;
-  return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
 function defaultIdFactory(sessionId: string): (kind: string) => string {

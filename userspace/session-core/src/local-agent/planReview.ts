@@ -53,7 +53,7 @@ export function preparePlanReview(snapshot: LoopSnapshot, runtime: RunRuntimeSna
     messages: contributions.map(item => item.message), tools: [], hostedTools: [],
   };
   const receipt = { ...buildContextCompositionReceipt(requestId, 'approvalReview', 'answerOnly', contributions,
-    [], [], [], new Map(), [], runtime, request.workspaceBindings, snapshot.events),
+    [], [], [], [], runtime, request.workspaceBindings, snapshot.events),
     reviewInput: { instructions: PLAN_REVIEW_INSTRUCTIONS, content } };
   if (estimateContextInput(snapshot, receipt, { ...runtime, provider: reviewer }) + reviewer.maxOutputTokens >= reviewer.contextWindowTokens) {
     throw new LoopFailure('plan_review_context_too_large', '计划或原始用户约束超过审批模型上下文预算，未截断授权依据，需要人工确认。');

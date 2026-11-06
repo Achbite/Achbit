@@ -1,4 +1,5 @@
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
+import { assertRuntimeContract } from './support/runtimeContract.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
@@ -379,13 +380,9 @@ test('cancellation during delegation admission is observed without starting a ch
 });
 
 test('subagent model command overrides agree with the public schema', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const { default: Ajv } = await import('ajv/dist/2020.js');
-  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
-  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/AgentOperation' });
   const definition = agentOperationDefinitions(ALL_AGENT_CAPS, { fullConfiguration: true }).find(operation => operation.action === 'spawn');
   assert.equal(agentOperationDefinitions(ALL_AGENT_CAPS).find(operation => operation.action === 'spawn').inputSchema.properties.reasoningEffort, undefined);
-  assert.equal(validate({ action: 'models' }), true);
+  assertRuntimeContract('AgentOperation', { action: 'models' });
   assert.deepEqual(decodeSessionControlCall('call:models', 'agent', { action: 'models' }).operation, { action: 'models' });
   assert.equal(definition.inputSchema.properties.profileId.type, 'string');
   assert.deepEqual(definition.inputSchema.properties.reasoningEffort.enum, ['low', 'medium', 'high', 'xhigh', 'max']);
@@ -393,24 +390,25 @@ test('subagent model command overrides agree with the public schema', async () =
     const operation = { action: 'spawn', preset, capabilities: { messaging: false, continuation: true },
       task: 'Inspect the task evidence.', name: 'Researcher', delivery: 'async',
       profileId: 'profile:selected', reasoningEffort: 'high' };
-    assert.equal(validate(operation), true, JSON.stringify(validate.errors));
+    assertRuntimeContract('AgentOperation', operation);
     assert.deepEqual(decodeSessionControlCall('call:model-selection', 'agent', operation).operation, operation);
     for (const invalid of [{ ...operation, profileId: '' }, { ...operation, reasoningEffort: '' },
       { ...operation, action: 'analyze' }, { ...operation, capabilities: { messaging: 'yes' } },
       { ...operation, capabilities: { computerUse: true } }]) {
-      assert.equal(validate(invalid), false);
+      assert.throws(() => assertRuntimeContract('AgentOperation', invalid));
       assert.throws(() => decodeSessionControlCall('call:model-selection', 'agent', invalid));
     }
   }
   const assignment = { action: 'assign', agentId: 'session:member', task: 'Follow up in the original Session.' };
-  assert.equal(validate(assignment), true, JSON.stringify(validate.errors));
+  assertRuntimeContract('AgentOperation', assignment);
   assert.deepEqual(decodeSessionControlCall('call:assign', 'agent', assignment).operation, assignment);
   for (const invalid of [{ ...assignment, task: '' }, { ...assignment, profileId: 'profile:other' },
     { action: 'assign', agentId: 'session:member', text: 'Not the task field.' }]) {
-    assert.equal(validate(invalid), false);
+    assert.throws(() => assertRuntimeContract('AgentOperation', invalid));
     assert.throws(() => decodeSessionControlCall('call:invalid-assign', 'agent', invalid));
   }
-  assert.equal(validate({ action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }), false);
+  assert.throws(() => assertRuntimeContract('AgentOperation',
+    { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
   assert.throws(() => decodeSessionControlCall('call:send-model', 'agent',
     { action: 'send', agentId: 'session:member', text: 'Follow up.', profileId: 'profile:selected' }));
 });
@@ -3259,12 +3257,9 @@ test('stopping an active Provider cancels its turn and Run without executing inc
   assert.equal(events.some(event => event.type === 'run.failure.snapshot'), false);
   assert.ok(singleEvent(events, 'run.runtime.released').sequence < singleEvent(events, 'run.settled').sequence);
   assert.equal(preparation.released.length, 1);
-  const { readFile } = await import('node:fs/promises');
-  const { default: Ajv } = await import('ajv/dist/2020.js');
-  const schema = JSON.parse(await readFile(new URL('../../../contracts/agent-runtime/schema.json', import.meta.url), 'utf8'));
-  const validate = new Ajv({ strict: false }).compile({ $defs: schema.$defs, $ref: '#/$defs/ProviderTurnSettledPayload' });
-  assert.equal(validate(terminal.payload), true, JSON.stringify(validate.errors));
-  assert.equal(validate({ ...terminal.payload, error: { code: 'not-an-error', message: 'A normal stop has no error.' } }), false);
+  assertRuntimeContract('ProviderTurnSettledPayload', terminal.payload);
+  assert.throws(() => assertRuntimeContract('ProviderTurnSettledPayload',
+    { ...terminal.payload, error: { code: 'not-an-error', message: 'A normal stop has no error.' } }));
 });
 
 test('Provider HTTP cancellation does not replace an independent error or secondary cleanup failure', async () => {

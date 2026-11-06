@@ -1,6 +1,7 @@
 import { SessionNotifications } from './sessionNotifications.js';
 import type { SessionObservationSink } from './local-agent/observation.js';
 import { LoopFailure } from './local-agent/loopFailure.js';
+import { validLogicalPath } from './local-agent/workspaceBindings.js';
 import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { isShellAuthorizationScope } from '@achbit/protocol';
 import { stableCoreInstructions } from './local-agent/coreInstructions.js';
@@ -455,13 +456,6 @@ function isFilesystemReferenceArray(value: unknown): boolean {
     targets.add(target);
     return true;
   });
-}
-
-function validLogicalPath(value: string): boolean {
-  if (!value || value.length > 4_096 || value.includes('\0') || value.includes('\\')) return false;
-  if (value === '.') return true;
-  if (value.startsWith('/') || value.endsWith('/')) return false;
-  return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
 function validHostBinding(value:unknown):boolean {
