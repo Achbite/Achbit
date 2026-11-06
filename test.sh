@@ -94,6 +94,22 @@ run_workspace_shell() {
   esac
 }
 
+run_cli_e2e() {
+  python3 -I -S ./scripts/tests/owned-daemon.py
+  if [ "$profile" = full ]; then
+    printf '[test] 本地 Agent 真实链路与共享投影壳\n'
+  fi
+  python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
+  python3 -I -S ./scripts/tests/provider-retry-cli.py
+  python3 -I -S ./scripts/tests/permission-delegation-cli.py
+  python3 -I -S ./scripts/tests/agent-composition-cli.py
+  python3 -I -S ./scripts/tests/file-access-cli.py
+  run_workspace_shell
+  python3 -I -S ./scripts/tests/managed-process-cli.py
+  python3 -I -S ./scripts/tests/subagent-cli.py
+  python3 -I -S ./scripts/tests/conversation-storage.py
+}
+
 # E2E scripts consume the outputs selected here; direct calls must supply these paths.
 if [ "$profile" = cli ] || [ "$profile" = full ]; then
   test_target_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
@@ -110,33 +126,14 @@ case "$profile" in
     run_required
     printf '[test] CLI 与 daemon 正式入口\n'
     cargo build -p achbit-first-party-tools -p achbit-kernel-daemon -p achbit-cli -p achbit-tui
-    python3 -I -S ./scripts/tests/owned-daemon.py
-    python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
-    python3 -I -S ./scripts/tests/provider-retry-cli.py
-    python3 -I -S ./scripts/tests/permission-delegation-cli.py
-    python3 -I -S ./scripts/tests/agent-composition-cli.py
-    python3 -I -S ./scripts/tests/file-access-cli.py
-    run_workspace_shell
-    python3 -I -S ./scripts/tests/managed-process-cli.py
-    python3 -I -S ./scripts/tests/subagent-cli.py
-    python3 -I -S ./scripts/tests/conversation-storage.py
+    run_cli_e2e
     ;;
   full)
     run_required
     printf '[test] CLI、TUI 与 GUI 正式包入口\n'
     cargo build -p achbit-first-party-tools -p achbit-kernel-daemon -p achbit-cli -p achbit-tui -p achbit-host-web
     pnpm --filter @achbit/client build:web
-    python3 -I -S ./scripts/tests/owned-daemon.py
-    printf '[test] 本地 Agent 真实链路与共享投影壳\n'
-    python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
-    python3 -I -S ./scripts/tests/provider-retry-cli.py
-    python3 -I -S ./scripts/tests/permission-delegation-cli.py
-    python3 -I -S ./scripts/tests/agent-composition-cli.py
-    python3 -I -S ./scripts/tests/file-access-cli.py
-    run_workspace_shell
-    python3 -I -S ./scripts/tests/managed-process-cli.py
-    python3 -I -S ./scripts/tests/subagent-cli.py
-    python3 -I -S ./scripts/tests/conversation-storage.py
+    run_cli_e2e
     python3 -I -S ./scripts/tests/local-agent-e2e.py
     python3 -I -S ./scripts/tests/document-render-e2e.py
     ;;
