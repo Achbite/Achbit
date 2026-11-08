@@ -69,6 +69,11 @@ export function managedJobFromRecord(record: ToolExecutionRecord): ManagedProces
 export function processResult(job: ManagedProcessSnapshot, view: 'start' | 'requested' | 'notification'): JsonObject {
   const result: JsonObject = { jobId: job.jobId, status: job.status };
   if (view === 'start' && job.status === 'active') return result;
+  if (!['bash', 'powershell', 'container'].includes(job.toolName)) {
+    return { ...result, tool: job.toolName,
+      ...(job.result === undefined ? {} : { result: object(job.result) ? extensionOutput(job.toolName, job.result) : job.result }),
+      ...(job.error ? { error: errorDetails(job.error) } : {}) };
+  }
   const out = job.output;
   const tail = view === 'notification';
   const native = object(job.result) ? job.result : {};
@@ -160,7 +165,7 @@ function outputForModel(record: ToolExecutionRecord, out: unknown, handles: Hand
       return { ...(Array.isArray(out.artifacts) ? { artifacts: resourceList(out.artifacts) } : {}), ...fields(out, 'contentVerified', 'details') };
     case 'session.read': {
       const { revision: _revision, ...requestedView } = out;
-      return requestedView;
+      return encodeWorkspaceIdentity({ workspaceHandleById: handles }, requestedView);
     }
     default: return encodeWorkspaceIdentity({ workspaceHandleById: handles }, { ...out });
   }

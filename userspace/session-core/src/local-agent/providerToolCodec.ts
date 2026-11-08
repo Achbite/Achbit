@@ -333,6 +333,10 @@ export function decodeProviderToolInput(
   input: JsonObject,
 ): JsonObject {
   const decoded = codec.codingTools && canonicalName === 'fs.read' ? decodeCodingRead(structuredClone(input)) : structuredClone(input);
+  if (canonicalName === 'session.read' && codec.sessionReadScope?.historyThroughSequence !== undefined
+    && decoded.sessionId === codec.sessionReadScope.currentId && !['images', 'resources'].includes(String(decoded.view))) {
+    decoded.throughSequence = codec.sessionReadScope.historyThroughSequence;
+  }
   if (codec.workspaceToolNames.has(canonicalName)) {
     return decodeWorkspaceHandle(codec, decoded);
   }

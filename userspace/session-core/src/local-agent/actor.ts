@@ -1,4 +1,5 @@
 import { RunTiming } from './runTiming.js';
+import { sameModelContext } from './modelContext.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
 import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
@@ -75,6 +76,8 @@ export class SessionActor {
   #mailbox = Promise.resolve();
   #writes = Promise.resolve();
   #active?: ActiveRun;
+  #pendingPreparations = 0;
+  readonly #inputWaits = new Set<{ runId: string; timed: boolean }>();
   #disposed = false;
   readonly #wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #disposeTask?: Promise<void>;
@@ -227,33 +230,41 @@ export class SessionActor {
     const boundary = acceptedWait?.afterSequence ?? (composition?.type === 'context.composed'
       ? composition.payload.modelView?.throughSequence ?? composition.sequence : initial.state.revision);
     const deadline = acceptedWait?.deadline ?? (timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000);
-    for (;;) {
-      signal?.throwIfAborted();
-      // Subscribe before reading the published snapshot to avoid losing an arriving input.
-      let wake!: () => void;
-      const changed = new Promise<void>(resolve => { wake = resolve; });
-      this.#changes.add(wake);
-      signal?.addEventListener('abort', wake, { once: true });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        // A restored or delayed timer may not have run yet. Publish already-due
-        // inputs before deciding this wait expired, using the same clock boundary.
-        const { snapshot, now } = await this.withWrite(async () => {
-          const now = Date.now();
-          return { snapshot: await this.triggerDueWakeups(runId, now), now };
-        });
-        if (this.#disposed) throw new Error('session_actor_disposed');
-        if (this.#loopFailure) throw this.#loopFailure;
-        if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
-        if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
-        if (now >= deadline) return { timedOut: true };
-        if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
-        await changed;
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-        this.#changes.delete(wake);
-        signal?.removeEventListener('abort', wake);
+    const waiting = { runId, timed: Number.isFinite(deadline) };
+    this.#inputWaits.add(waiting);
+    this.notifyActivityChanged();
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        // Subscribe before reading the published snapshot to avoid losing an arriving input.
+        let wake!: () => void;
+        const changed = new Promise<void>(resolve => { wake = resolve; });
+        this.#changes.add(wake);
+        signal?.addEventListener('abort', wake, { once: true });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          // A restored or delayed timer may not have run yet. Publish already-due
+          // inputs before deciding this wait expired, using the same clock boundary.
+          const { snapshot, now } = await this.withWrite(async () => {
+            const now = Date.now();
+            return { snapshot: await this.triggerDueWakeups(runId, now), now };
+          });
+          if (this.#disposed) throw new Error('session_actor_disposed');
+          if (this.#loopFailure) throw this.#loopFailure;
+          if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
+          if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
+          if (now >= deadline) return { timedOut: true };
+          if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
+          await changed;
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+          this.#changes.delete(wake);
+          signal?.removeEventListener('abort', wake);
+        }
       }
+    } finally {
+      this.#inputWaits.delete(waiting);
+      this.notifyActivityChanged();
     }
   }
 
@@ -295,7 +306,7 @@ export class SessionActor {
         void this.withWrite(async () => {
           const current = await this.triggerDueWakeups(runId, Date.now());
           this.restoreWakeTimers(current);
-        }).catch(error => { this.#loopFailure = error; for (const wake of this.#changes) wake(); });
+        }).catch(error => { this.#loopFailure = error; this.notifyActivityChanged(); for (const wake of this.#changes) wake(); });
       }, Math.max(0, event.payload.dueAt - Date.now())));
     }
   }
@@ -348,11 +359,42 @@ export class SessionActor {
   }
 
   async hasActiveWork(): Promise<boolean> {
-    if (this.#loopFailure) return false;
-    const run = (await this.loadSnapshot()).state.run;
-    // Waiting releases the Provider turn, not the in-memory run bindings owned by this Host.
-    return this.#active !== undefined
-      || (run != null && !isTerminal(run.status));
+    return (await this.activity()).active;
+  }
+
+  async activity(): Promise<{ active: boolean; keepAwake: boolean }> {
+    if (this.#pendingPreparations) return { active: true, keepAwake: true };
+    if (this.#loopFailure) return { active: false, keepAwake: false };
+    const snapshot = await this.loadSnapshot();
+    const run = snapshot.state.run;
+    // Waiting retains the run bindings, but only execution and timers need the system awake.
+    const active = this.#active !== undefined || (run != null && !isTerminal(run.status));
+    if (!active || !run || isTerminal(run.status)) return { active, keepAwake: false };
+    const executing = this.#active?.runId === run.runId;
+    const waits = [...this.#inputWaits].filter(wait => wait.runId === run.runId);
+    const attempts = new Map<string, (typeof snapshot.state.providerAttempts)[string]>();
+    for (const attempt of Object.values(snapshot.state.providerAttempts)) {
+      if (attempt.runId === run.runId && attempt.attempt > (attempts.get(attempt.providerRequestId)?.attempt ?? 0)) {
+        attempts.set(attempt.providerRequestId, attempt);
+      }
+    }
+    const providerBusy = executing && [...attempts.values()].some(attempt =>
+      attempt.phase === 'started' || attempt.phase === 'retryWaiting');
+    return { active, keepAwake: pendingWakeups(snapshot.events, run.runId).size > 0
+      || waits.some(wait => wait.timed)
+      || Boolean(executing && (providerBusy || run.status === 'releasing' || run.status === 'running' && !waits.length)) };
+  }
+
+  private async prepareRun(...args: Parameters<AgentComposition['runPreparation']['prepare']>): ReturnType<AgentComposition['runPreparation']['prepare']> {
+    this.#pendingPreparations++;
+    this.notifyActivityChanged();
+    try { return await this.#composition.runPreparation.prepare(...args); }
+    finally { this.#pendingPreparations--; this.notifyActivityChanged(); }
+  }
+
+  private notifyActivityChanged(): void {
+    try { this.#observation?.activityChanged?.(this.sessionId); }
+    catch (error) { try { this.#observation?.failed(this.sessionId, error); } catch { /* Observers do not own execution. */ } }
   }
 
   dispose(): Promise<void> {
@@ -401,11 +443,17 @@ export class SessionActor {
     if (errors.length > 0) throw new AggregateError(errors, 'session_actor_dispose_failed');
   }
 
-  /** Trusted operator entry; never exposed through the model's callable catalog. */
+  /** Trusted idle-Session entry; an admitted run keeps its Loop policy until settlement. */
   async replaceCapabilities(implementation: SessionCapabilities): Promise<void> {
-    if (this.#disposed) throw new Error('session_actor_disposed');
-    this.assertOperational();
-    await this.#capabilities.replace(implementation);
+    await this.enqueue(async () => {
+      if (this.#disposed) throw new Error('session_actor_disposed');
+      this.assertOperational();
+      const { state } = await this.loadSnapshot();
+      if (this.#active || state.run && !isTerminal(state.run.status)) {
+        throw new Error('session_capabilities_run_active');
+      }
+      await this.#capabilities.replace(implementation);
+    });
   }
 
   private async handleCommand(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
@@ -482,7 +530,7 @@ export class SessionActor {
     const runtime = snapshot.state.runRuntimeSnapshots[command.runId];
     let prepared;
     try {
-      prepared = await this.#composition.runPreparation.prepare({
+      prepared = await this.prepareRun({
         sessionId: this.sessionId, runId: command.runId, profileId: runtime.provider.profileId,
         environment: runtime.environment,
         ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
@@ -862,7 +910,7 @@ export class SessionActor {
     const runWorkspaceBindings = appendResourceBindings(before.state.workspaceBindings, directoryReferences);
     const previousRun = before.state.run?.runId;
     const previousView = previousRun ? before.state.runToolViews[previousRun] ?? before.state.runRuntimeSnapshots[previousRun] : undefined;
-    const prepared = await this.#composition.runPreparation.prepare({
+    const prepared = await this.prepareRun({
       sessionId: this.sessionId,
       runId,
       previousProviderToolAliases: previousView?.providerToolAliases,
@@ -883,6 +931,15 @@ export class SessionActor {
       ...(manualPlan ? { planMode: 'manual' as const } : {}),
       ...(!this.#agents && prepared.runtimeSnapshot.agentToolsEnabled ? { agentToolsEnabled: false } : {}),
     };
+    const previousProvider = previousRun ? before.state.runRuntimeSnapshots[previousRun]?.provider : undefined;
+    const contextStart = previousProvider && !sameModelContext(previousProvider, runtimeSnapshot.provider)
+      ? { historyThroughSequence: before.state.revision, previousProfileId: previousProvider.profileId } : undefined;
+    if ((contextStart || before.state.contextHandoff?.status === 'reading')
+      && !runtimeSnapshot.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')) {
+      await this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
+        kernelCatalogSnapshotRef: runtimeSnapshot.kernelCatalogSnapshotRef });
+      return this.recordRejection(journalCommand, 'model_handoff_reader_unavailable', '当前 Agent 的工具范围不支持读取会话历史，不能接手。');
+    }
     const events: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
       {
@@ -933,10 +990,11 @@ export class SessionActor {
           inputMessageId: messageId,
           workspaceBindings: runWorkspaceBindings,
           runtimeSnapshot,
+          ...(contextStart ? { contextStart } : {}),
         },
       },
     ];
-    if (focusTask !== null) {
+    if (focusTask !== null && !contextStart && before.state.contextHandoff?.status !== 'reading') {
       events.push({
         type: 'context.compaction.requested',
         sessionId: this.sessionId,
@@ -1263,9 +1321,11 @@ export class SessionActor {
       })
       .finally(() => {
         if (this.#active === active) this.#active = undefined;
+        this.notifyActivityChanged();
         for (const wake of this.#changes) wake();
       });
     this.#active = active;
+    this.notifyActivityChanged();
   }
 
   private async runLoop(
@@ -1315,54 +1375,79 @@ export class SessionActor {
           await this.appendEvents(batch, current);
           return await this.loadSnapshot();
         }),
-        takeQueuedInputs: (runId) => this.withWrite(async () => {
-          const current = await this.loadSnapshot();
-          if (signal.aborted) return current;
-          const queued = current.state.queuedInputs.filter((input) => input.runId === runId);
-          const runtime = current.state.runRuntimeSnapshots[runId];
-          if (!runtime) throw new Error('run_runtime_snapshot_missing');
-          const activeView = current.state.runToolViews[runId] ?? runtime;
-          const initialSelections = recoveryPluginSelection(current, runId, runtime).pluginSelections ?? [];
-          const selections = [...new Map([...initialSelections, ...queued.flatMap((input) => input.pluginSelections)]
-            .map((selection) => [selection.uri, selection])).values()];
-          const events: NewSessionEvent[] = [];
-          if (selections.length || activeView.selectedPlugins.plugins.length
-            || activeView.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable')) {
-            const prepared = await this.#composition.runPreparation.prepare({
+        takeQueuedInputs: async (runId) => {
+          signal.throwIfAborted();
+          // A newly admitted job must publish completion while tool preparation waits.
+          await this.ensureProcesses(runId);
+          const captured = await this.withWrite(async () => {
+            signal.throwIfAborted();
+            const current = await this.loadSnapshot();
+            const queued = current.state.queuedInputs.filter((input) => input.runId === runId);
+            const runtime = current.state.runRuntimeSnapshots[runId];
+            if (!runtime) throw new Error('run_runtime_snapshot_missing');
+            const activeView = current.state.runToolViews[runId] ?? runtime;
+            const initialSelections = recoveryPluginSelection(current, runId, runtime).pluginSelections ?? [];
+            const selections = [...new Map([...initialSelections, ...queued.flatMap((input) => input.pluginSelections)]
+              .map((selection) => [selection.uri, selection])).values()];
+            return { queued, runtime, activeView, selections };
+          });
+          const { runtime, activeView, selections } = captured;
+          signal.throwIfAborted();
+          // Preparation owns run resources. Drain admitted I/O before cancellation
+          // releases the run; never hold the Actor write queue while it is pending.
+          const prepared = selections.length || activeView.selectedPlugins.plugins.length
+            || activeView.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable')
+            ? await this.prepareRun({
               sessionId: this.sessionId, runId, profileId: runtime.provider.profileId,
               environment: runtime.environment,
               ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
               pluginSelections: selections,
               previousProviderToolAliases: activeView.providerToolAliases,
-              refreshPlugins: !queued.some(input=>input.pluginSelections.length),
-            });
-            const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools, toolPromptContributions,
-              providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
-            if (kernelCatalogSnapshotRef !== activeView.kernelCatalogSnapshotRef) events.push({ type: 'run.tools.prepared', sessionId: this.sessionId, runId,
-              payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-                toolPromptContributions, providerToolAliases, selectedPlugins } } });
-          }
-          events.push(...queued.flatMap<NewSessionEvent>((input) => [{
-            type: 'input.accepted', sessionId: this.sessionId,
-            payload: { commandId: input.commandId, messageId: input.messageId, text: input.text,
-              ...(input.guidanceReferences?.length ? {guidanceReferences:structuredClone(input.guidanceReferences)} : {}),
-              ...(input.pluginSelections.length ? { pluginSelections: input.pluginSelections } : {}) },
-          }, {
-            type: 'message.committed', sessionId: this.sessionId, runId,
-            payload: { messageId: input.messageId, role: 'user', content: input.text,
-              ...(input.guidanceReferences?.length ? {guidanceReferences:structuredClone(input.guidanceReferences)} : {}),
-              ...(input.filesystemReferences.length ? { filesystemReferences: input.filesystemReferences } : {}),
-              ...(input.pluginSelections.length ? { pluginSelections: input.pluginSelections } : {}) },
-          }]));
-          let bindings = current.state.workspaceBindings;
-          for (const input of queued) {
-            const directories = input.filesystemReferences.filter(reference => reference.kind === 'directory');
-            events.push(...directoryBindingEvents(this.sessionId, input.commandId, bindings, directories));
-            bindings = appendResourceBindings(bindings, directories);
-          }
-          if (events.length) await this.appendEvents(events, current);
-          return await this.loadSnapshot();
-        }),
+              refreshPlugins: !captured.queued.some(input => input.pluginSelections.length),
+            }) : undefined;
+          signal.throwIfAborted();
+          return this.withWrite(async () => {
+            const current = await this.loadSnapshot();
+            signal.throwIfAborted();
+            const currentView = current.state.runToolViews[runId] ?? current.state.runRuntimeSnapshots[runId];
+            if (current.state.run?.runId !== runId || isTerminal(current.state.run.status)
+              || currentView?.kernelCatalogSnapshotRef !== activeView.kernelCatalogSnapshotRef) {
+              throw new Error('run_runtime_preparation_stale');
+            }
+            // Inputs arriving during preparation belong to a later request boundary.
+            const capturedIds = new Set(captured.queued.map(input => input.commandId));
+            const queued = current.state.queuedInputs.filter(input => input.runId === runId && capturedIds.has(input.commandId));
+            if (queued.length !== captured.queued.length) throw new Error('run_runtime_preparation_stale');
+            const events: NewSessionEvent[] = [];
+            if (prepared) {
+              const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools, toolPromptContributions,
+                providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
+              if (kernelCatalogSnapshotRef !== activeView.kernelCatalogSnapshotRef) events.push({ type: 'run.tools.prepared', sessionId: this.sessionId, runId,
+                payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
+                  toolPromptContributions, providerToolAliases, selectedPlugins } } });
+            }
+            events.push(...queued.flatMap<NewSessionEvent>((input) => [{
+              type: 'input.accepted', sessionId: this.sessionId,
+              payload: { commandId: input.commandId, messageId: input.messageId, text: input.text,
+                ...(input.guidanceReferences?.length ? {guidanceReferences:structuredClone(input.guidanceReferences)} : {}),
+                ...(input.pluginSelections.length ? { pluginSelections: input.pluginSelections } : {}) },
+            }, {
+              type: 'message.committed', sessionId: this.sessionId, runId,
+              payload: { messageId: input.messageId, role: 'user', content: input.text,
+                ...(input.guidanceReferences?.length ? {guidanceReferences:structuredClone(input.guidanceReferences)} : {}),
+                ...(input.filesystemReferences.length ? { filesystemReferences: input.filesystemReferences } : {}),
+                ...(input.pluginSelections.length ? { pluginSelections: input.pluginSelections } : {}) },
+            }]));
+            let bindings = current.state.workspaceBindings;
+            for (const input of queued) {
+              const directories = input.filesystemReferences.filter(reference => reference.kind === 'directory');
+              events.push(...directoryBindingEvents(this.sessionId, input.commandId, bindings, directories));
+              bindings = appendResourceBindings(bindings, directories);
+            }
+            if (events.length) await this.appendEvents(events, current);
+            return await this.loadSnapshot();
+          });
+        },
         updateAssistantDraft: (draft) => {
           if (draft && draft.runId !== command.runId) {
             throw new Error('assistant_draft_run_identity_mismatch');
@@ -1435,7 +1520,7 @@ export class SessionActor {
     decodeAgentCapabilities(runtime.agentCapabilities);
     let prepared;
     try {
-      prepared = await this.#composition.runPreparation.prepare({
+      prepared = await this.prepareRun({
         sessionId: this.sessionId,
         runId,
         profileId: runtime.provider.profileId,

@@ -62,6 +62,14 @@ enum ToolExecutorBinding {
     },
 }
 
+fn supports_background(name: &str, binding: &ToolExecutorBinding) -> bool {
+    matches!(
+        binding,
+        ToolExecutorBinding::Mcp(_) | ToolExecutorBinding::Container(_)
+    ) || matches!(binding, ToolExecutorBinding::Builtin { .. })
+        && matches!(name, "bash" | "powershell")
+}
+
 struct PendingToolContribution {
     origin: &'static str,
     provider_ref: String,
@@ -300,28 +308,21 @@ impl ToolProvider for ProductToolProvider {
 struct ContainerToolProvider {
     instance: String,
     adapter: Arc<crate::container_tools::Containers>,
-}
-impl ContainerToolProvider {
-    fn new(instance: &str, path: &str) -> Result<Self, ToolCatalogError> {
-        Ok(Self {
-            instance: instance.into(),
-            adapter: Arc::new(
-                crate::container_tools::Containers::new(path)
-                    .map_err(|e| ToolCatalogError::new("container_plugin_unavailable", e))?,
-            ),
-        })
-    }
+    run_owned: bool,
 }
 impl ToolProvider for ContainerToolProvider {
     fn install(self: Box<Self>) -> Result<InstalledToolProvider, ToolCatalogError> {
-        let adapter = self.adapter.clone();
+        // Temporary containers belong to the run, not this replaceable tool view.
+        // Standalone Debug controls keep their existing catalog-owned cleanup.
+        let cleanup = (!self.run_owned).then(|| Arc::clone(&self.adapter));
         Ok(InstalledToolProvider { tools:vec![PendingToolContribution {
             origin:"extension" , provider_ref:"achbit:containers".into(), plugin_uri:Some("plugin://containers@builtin".into()),
             plugin_instance_ref:Some(self.instance.clone()), contribution_ref:format!("{}/container",self.instance),
             name:"container".into(), description:"Run Shell commands in an approved Docker container, inspect it, or create an independent temporary test container. Creation mounts the selected project read-only at /project and writable session test files at /work. Approval can cover this task or conversation; temporary containers are cleaned at task end. Existing containers keep their mounts and network. Linux images need sh and setsid.".into(),
             input_schema:crate::container_tools::input_schema(), effect_class:None,effect_scope:CatalogEffectScope::Process,
             availability:ToolAvailability::Callable,availability_reason:None,runtime_status:None,logical_target:None,binding:ToolExecutorBinding::Container(self.adapter),
-        }], dispose:Box::new(move || adapter.dispose().map_err(|e| ToolCatalogError::new("container_cleanup_failed",e))) })
+        }], dispose:Box::new(move || cleanup.map_or(Ok(()), |adapter|
+            adapter.dispose().map_err(|e| ToolCatalogError::new("container_cleanup_failed",e)))) })
     }
 }
 
@@ -639,6 +640,13 @@ pub(crate) struct ToolCatalogSnapshot {
 }
 
 impl ToolCatalogSnapshot {
+    pub(crate) fn container_runtime(&self) -> Option<Arc<crate::container_tools::Containers>> {
+        match &self.tools.get("container")?.binding {
+            ToolExecutorBinding::Container(adapter) => Some(Arc::clone(adapter)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn prepare(
         extension_generation_ref: &str,
         executor_config: KernelExecutorConfig,
@@ -653,10 +661,22 @@ impl ToolCatalogSnapshot {
             .container_instance
             .as_ref()
             .map(|instance| {
-                ContainerToolProvider::new(
-                    instance,
-                    executor_config.execution_path.as_deref().unwrap_or(""),
-                )
+                let adapter = match &product.container_runtime {
+                    Some(adapter) => Arc::clone(adapter),
+                    None => Arc::new(
+                        crate::container_tools::Containers::new(
+                            executor_config.execution_path.as_deref().unwrap_or(""),
+                        )
+                        .map_err(|error| {
+                            ToolCatalogError::new("container_plugin_unavailable", error)
+                        })?,
+                    ),
+                };
+                Ok::<_, ToolCatalogError>(ContainerToolProvider {
+                    instance: instance.clone(),
+                    adapter,
+                    run_owned: product.container_runtime.is_some(),
+                })
             })
             .transpose()?;
         let document_provider =
@@ -731,18 +751,23 @@ impl ToolCatalogSnapshot {
             }
         }
 
-        let process_targets: Vec<&str> = ["bash", "powershell", "container"]
-            .into_iter()
-            .filter(|name| {
-                contributions
-                    .get(*name)
-                    .is_some_and(|tool| matches!(tool.availability, ToolAvailability::Callable))
+        let process_targets: Vec<String> = contributions
+            .values()
+            .filter(|tool| {
+                tool.availability == ToolAvailability::Callable
+                    && supports_background(&tool.name, &tool.binding)
             })
+            .map(|tool| tool.name.clone())
             .collect();
+        let process_target_names: Vec<&str> = process_targets.iter().map(String::as_str).collect();
         if let Some(process) = contributions.get_mut("process") {
-            process.input_schema = crate::managed_processes::schema(&process_targets);
-            process.description = format!("{}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically. Use status when a current snapshot is needed.",
-                if process_targets.is_empty() { "Manage existing commands: " } else { "Start independent long commands with action=start so later calls can proceed. An ordinary command that returns a running job defers later calls in its batch. " });
+            process.input_schema = crate::managed_processes::schema(&process_target_names);
+            let start_description = if process_targets.is_empty() {
+                "Manage existing commands: ".to_string()
+            } else {
+                format!("Start independent long tasks with action=start so later calls can proceed. Each run admits up to {} active jobs; completed jobs release capacity. Ordinary calls retain their result dependencies. ", crate::managed_processes::MAX_ACTIVE_JOBS_PER_RUN)
+            };
+            process.description = format!("{start_description}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically. Use status when a current snapshot is needed.");
         }
 
         if let Some(names) = &selection.kernel {
@@ -945,6 +970,10 @@ impl PreparedCatalogBinding {
 
     pub(crate) fn is_process(&self) -> bool {
         matches!(&self.entry().binding, ToolExecutorBinding::Process)
+    }
+
+    pub(crate) fn supports_background(&self) -> bool {
+        supports_background(self.tool_name(), &self.entry().binding)
     }
 
     pub(crate) fn uses_external_runtime(&self) -> bool {
@@ -1376,7 +1405,21 @@ impl PreparedCatalogBinding {
                         &context,
                     )
                 })
-                .map_err(|error| ToolCatalogError::new(error.code, error.message)),
+                .or_else(|error| {
+                    if error.code != "mcp_tool_cancelled" {
+                        return Err(ToolCatalogError::new(error.code, error.message));
+                    }
+                    // MCP emits this code only before dispatch or after confirmed cleanup.
+                    Ok(KernelToolExecutionResult {
+                        invocation_id: invocation_id.into(),
+                        outcome: KernelToolExecutionOutcome::Failed,
+                        output: Value::Null,
+                        error: Some(KernelToolExecutionFailure {
+                            code: "tool_execution_cancelled".into(),
+                            message: error.message,
+                        }),
+                    })
+                }),
             _ => Err(ToolCatalogError::new(
                 "tool_binding_mismatch",
                 "Prepared input does not match its executor binding.",
@@ -1813,6 +1856,226 @@ mod tests {
             }
             catalog.dispose().unwrap();
         }
+    }
+
+    #[test]
+    fn process_targets_follow_selected_plugin_bindings() {
+        let root = std::env::temp_dir().join(format!("background-catalog-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("server.py");
+        std::fs::write(&script, r#"import json,sys
+for line in sys.stdin:
+    r=json.loads(line)
+    if 'id' not in r: continue
+    if r['method']=='initialize': out={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'background','version':'1'}}
+    elif r['method']=='tools/list': out={'tools':[{'name':'work','description':'Independent work','inputSchema':{'type':'object','properties':{}}}]}
+    else: out={'content':[{'type':'text','text':'done'}]}
+    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':out}),flush=True)
+"#).unwrap();
+        let settings = json!({"mcp.servers":serde_json::to_string(&json!([{
+            "id":"background", "name":"Background", "transport":"stdio", "command":"python3",
+            "args":script, "enabled":true
+        }])).unwrap()});
+        let runtime = McpRuntime::from_selected_sources(
+            &crate::local_agent_mcp::available_server_sources(&settings).unwrap(),
+            &BTreeMap::from([(
+                "plugin://background@mcp".into(),
+                "instance:background".into(),
+            )]),
+            None,
+        )
+        .unwrap();
+        let catalog = ToolCatalogSnapshot::prepare(
+            "extension:background",
+            KernelExecutorConfig::default(),
+            Arc::new(EmptySecretProvider),
+            runtime,
+            false,
+            crate::local_agent_product_tools::test_product_tools(),
+            &ToolSelection {
+                kernel: Some(vec!["process".into(), "fs.read".into()]),
+                plugins: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let view = catalog.provider_view();
+        let process = view
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "process")
+            .unwrap();
+        assert_eq!(
+            process["inputSchema"]["properties"]["tool"]["enum"],
+            json!(["mcp.background.work"])
+        );
+        assert!(catalog
+            .binding_for_name("mcp.background.work")
+            .unwrap()
+            .supports_background());
+        assert!(!catalog
+            .binding_for_name("fs.read")
+            .unwrap()
+            .supports_background());
+        assert!(!catalog
+            .binding_for_name("process")
+            .unwrap()
+            .supports_background());
+        catalog.dispose().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_mcp_cancellation_preserves_cancelled_and_business_failure_outcomes() {
+        use achbit_kernel_runtime::executors::KernelCancellationToken;
+        use std::net::{TcpListener, TcpStream};
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        struct Fixture {
+            root: std::path::PathBuf,
+            jobs: crate::managed_processes::Jobs,
+            catalog: Option<Arc<ToolCatalogSnapshot>>,
+            ready: std::net::SocketAddr,
+            ready_thread: Option<std::thread::JoinHandle<()>>,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self
+                    .jobs
+                    .release_run("session:mcp-cancel", "run:mcp-cancel");
+                if let Some(catalog) = &self.catalog {
+                    let _ = catalog.dispose();
+                }
+                let _ = TcpStream::connect(self.ready);
+                if let Some(thread) = self.ready_thread.take() {
+                    let _ = thread.join();
+                }
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let ready = listener.local_addr().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let ready_thread = std::thread::spawn(move || {
+            if listener.accept().is_ok() {
+                let _ = sent.send(());
+            }
+        });
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut fixture = Fixture {
+            root: std::env::temp_dir()
+                .join(format!("managed-mcp-cancel-{}-{stamp}", std::process::id())),
+            jobs: Default::default(),
+            catalog: None,
+            ready,
+            ready_thread: Some(ready_thread),
+        };
+        std::fs::create_dir(&fixture.root).unwrap();
+        let script = fixture.root.join("server.py");
+        std::fs::write(&script, r#"import json,socket,sys
+for line in sys.stdin:
+    request=json.loads(line)
+    if 'id' not in request: continue
+    method=request['method']
+    if method=='initialize':
+        result={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'cancel','version':'1'}}
+    elif method=='tools/list':
+        result={'tools':[{'name':'work','description':'Background work','inputSchema':{'type':'object','properties':{'behavior':{'type':'string','enum':['failure','wait']}}}}]}
+    elif request['params']['arguments']['behavior']=='failure':
+        result={'isError':True,'content':[{'type':'text','text':'original business failure'}],'structuredContent':{'error':{'code':'fixture_business_failure','message':'original business failure'}}}
+    else:
+        socket.create_connection(('127.0.0.1',int(sys.argv[1]))).close()
+        sys.stdin.read()
+        break
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+"#).unwrap();
+        let settings = json!({"mcp.servers":serde_json::to_string(&json!([{
+            "id":"cancel", "name":"Cancel", "transport":"stdio", "command":"python3",
+            "args":format!("{} {}", script.display(), ready.port()), "enabled":true
+        }])).unwrap()});
+        let runtime = McpRuntime::from_selected_sources(
+            &crate::local_agent_mcp::available_server_sources(&settings).unwrap(),
+            &BTreeMap::from([("plugin://cancel@mcp".into(), "instance:cancel".into())]),
+            None,
+        )
+        .unwrap();
+        let catalog = ToolCatalogSnapshot::prepare(
+            "extension:cancel",
+            KernelExecutorConfig::default(),
+            Arc::new(EmptySecretProvider),
+            runtime,
+            false,
+            crate::local_agent_product_tools::test_product_tools(),
+            &ToolSelection {
+                kernel: Some(vec!["process".into()]),
+                plugins: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fixture.catalog = Some(Arc::clone(&catalog));
+        let start = |job: &str, behavior: &str| {
+            let binding = catalog.binding_for_name("mcp.cancel.work").unwrap();
+            let input = binding.canonicalize(json!({"behavior":behavior})).unwrap();
+            let lease = binding.begin_attempt().unwrap();
+            let invocation_id = format!("attempt:{job}");
+            fixture.jobs.start(json!({"jobId":job, "sessionId":"session:mcp-cancel", "runId":"run:mcp-cancel",
+                "callId":format!("call:{job}"), "attemptId":invocation_id, "toolName":"mcp.cancel.work",
+                "command":"mcp.cancel.work", "targets":[]}), move |cancellation, progress| {
+                let _lease = lease;
+                binding.invoke(&invocation_id, input, KernelToolExecutionContext {
+                    output_directory: None, workspace_root: None, workspace_id: None,
+                    private_resolved_targets: vec![], workspace_write_targets: None,
+                    file_access: Default::default(), cancellation, progress,
+                }).map_err(|error| format!("{}: {}", error.code, error.message))
+            }).unwrap()
+        };
+        start("job:failure", "failure");
+        let failed = fixture
+            .jobs
+            .control(
+                "session:mcp-cancel",
+                "run:mcp-cancel",
+                "job:failure",
+                "wait",
+                Some(5),
+                &KernelCancellationToken::default(),
+            )
+            .unwrap();
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["error"]["code"], "fixture_business_failure");
+        assert_eq!(failed["error"]["message"], "original business failure");
+        start("job:cancel", "wait");
+        received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("MCP tool reached its blocking execution");
+        let cancelled = fixture
+            .jobs
+            .control(
+                "session:mcp-cancel",
+                "run:mcp-cancel",
+                "job:cancel",
+                "cancel",
+                Some(5),
+                &KernelCancellationToken::default(),
+            )
+            .unwrap();
+        assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+        assert_eq!(cancelled["error"]["code"], "tool_execution_cancelled");
+        assert!(cancelled["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("request was cancelled"));
+        assert!(!fixture.jobs.has_active_work().unwrap());
+        fixture
+            .jobs
+            .release_run("session:mcp-cancel", "run:mcp-cancel")
+            .unwrap();
+        catalog.dispose().unwrap();
     }
 
     #[test]

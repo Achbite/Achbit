@@ -55,7 +55,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   'agent.subagents.maxCallsPerRun': 16,
   'agent.subagents.maxMembersPerSession': 4,
   'agent.subagents.allowMemberAnalysis': true,
-  'agent.subagents.allowFullConfiguration': true,
+  'agent.subagents.allowFullConfiguration': false,
   'agent.subagents.presets': '[]',
   'agent.minimalMode': false,
   'agent.contextManagement.enabled': false,

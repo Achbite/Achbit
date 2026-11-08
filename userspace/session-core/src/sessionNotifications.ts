@@ -25,6 +25,10 @@ export class SessionNotifications implements SessionObservationSink {
     }
   }
 
+  activityChanged(sessionId: string): void {
+    this.enqueue(`change:${sessionId}`, { kind: 'change', sessionId });
+  }
+
   failed(_sessionId: string, error: unknown): void {
     this.enqueue('error', { kind: 'error', code: 'session_observation_failed',
       message: error instanceof Error ? error.message : String(error) });

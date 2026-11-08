@@ -34,6 +34,7 @@ import { mountedSkillEntries } from './skillPlugins.js';
 import { cancelledPlanResult, confirmedPlanResult } from './planStage.js';
 import { workspacePermissionInstruction } from './workspaceInstructions.js';
 import { journalModelViews } from './modelView.js';
+import { modelContextStart } from './modelContext.js';
 import type {
   ContextMessageContribution, SessionToolStage,
 } from './plugins.js';
@@ -68,6 +69,8 @@ type ConversationRequestInput = {
   runId: string;
   runtime: RunRuntimeSnapshot;
   events: readonly SessionEvent[];
+  /** Full facts for explicitly requested archive images only; never native message replay. */
+  historyEvents?: readonly SessionEvent[];
   /** Compaction selects a prefix but reuses views already recorded by later receipts. */
   modelViewEvents?: readonly SessionEvent[];
   workspaceBindings: readonly WorkspaceBindingDisplay[];
@@ -93,6 +96,12 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   | { purpose: 'agent'; responseConstraint: 'normal' }
   | { purpose: 'contextCompaction'; responseConstraint: 'answerOnly'; summaryInstruction: string }
 )): PreparedProviderRequest {
+  const boundary = modelContextStart(input.modelViewEvents ?? input.events)?.payload.contextStart?.historyThroughSequence;
+  if (boundary !== undefined) input = { ...input,
+    historyEvents: input.historyEvents ?? input.events,
+    events: input.events.filter(event => event.sequence > boundary),
+    modelViewEvents: (input.modelViewEvents ?? input.events).filter(event => event.sequence > boundary),
+  };
   const toolTerminals = new Set(input.events.flatMap((event) => (
     event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted' || event.type === 'tool.not-executed'
       ? [event.callId] : []
@@ -109,7 +118,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     : input.workspaceBindings;
   const surface = input.toolStage ?? input.runtime;
   const readScope = surface.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')
-    ? sessionReadScope(input.sessionId, modelViewEvents) : undefined;
+    ? sessionReadScope(input.sessionId, input.historyEvents ?? modelViewEvents) : undefined;
   const runtimeTools = surface.tools.filter(tool => tool.availability === 'callable'
     && (hasWorkspaceBindings || !tool.possibleEffects.some(effect =>
       effect === 'workspaceRead' || effect === 'workspaceMutation' || effect === 'process')))
@@ -220,7 +229,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     },
   });
   const selected = [...instructions, ...journalMessages,
-    ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId) : [])];
+    ...(input.purpose === 'agent' ? visualContextMessages(input.events, input.runId, input.historyEvents) : [])];
   if (input.purpose === 'contextCompaction') selected.push({
     contributionId: `context-compaction:${input.providerRequestId}:instructions`,
     contributionKind: 'sessionControls', label: '上下文压缩指令',

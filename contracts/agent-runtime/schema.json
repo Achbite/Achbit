@@ -69,6 +69,7 @@
             "permissionPolicy": {"$ref": "#/$defs/AgentContributionSelection"},
             "workspaceSandbox": {"$ref": "#/$defs/AgentRecipe/properties/workspaceSandbox"},
             "tools": {"$ref": "#/$defs/AgentToolSelection"},
+            "productComponents": {"$ref": "#/$defs/AgentRecipe/properties/productComponents"},
             "loop": {"type": "object", "additionalProperties": false, "properties": {
               "compaction": {"$ref": "#/$defs/AgentContributionSelection"},
               "controls": {"$ref": "#/$defs/AgentContributionSelection"}
@@ -600,6 +601,7 @@
       "properties": {
         "providerRuntimeRef": {"$ref": "#/$defs/Id"},
         "inputTokenCalibrationKey": {"type": "string", "minLength": 1, "maxLength": 128, "not": {"pattern": "[^!-~]"}},
+        "continuationKey": {"type": "string", "minLength": 1, "maxLength": 128, "not": {"pattern": "[^!-~]"}},
         "profileId": {"$ref": "#/$defs/Id"},
         "fileInputMediaTypes": {"type": "array", "uniqueItems": true, "items": {"const": "application/pdf"}},
         "contextWindowTokens": {"type": "integer", "minimum": 1},
@@ -1655,7 +1657,12 @@
           "type": "array",
           "items": { "$ref": "#/$defs/WorkspaceBinding" }
         },
-        "runtimeSnapshot": { "$ref": "#/$defs/RunRuntimeSnapshot" }
+        "runtimeSnapshot": { "$ref": "#/$defs/RunRuntimeSnapshot" },
+        "contextStart": {"type": "object", "additionalProperties": false,
+          "required": ["historyThroughSequence", "previousProfileId"], "properties": {
+            "historyThroughSequence": {"type": "integer", "minimum": 1},
+            "previousProfileId": {"$ref": "#/$defs/Id"}
+          }}
       }
     },
     "InputAcceptedPayload": {
@@ -3483,6 +3490,10 @@
         "agentChildren": {"type": "array", "items": {"$ref": "#/$defs/AgentChildProjection"}},
         "pendingAgentDecisions": {"type": "array", "items": {"$ref": "#/$defs/PendingAgentDecision"}},
         "runTimings": {"type": "array", "items": {"$ref": "#/$defs/RunTimingProjection"}},
+        "contextHandoff": {"type": "object", "additionalProperties": false,
+          "required": ["runId", "historyThroughSequence", "previousProfileId", "profileId", "status"],
+          "properties": {"runId": {"$ref": "#/$defs/Id"}, "historyThroughSequence": {"type": "integer", "minimum": 1},
+            "previousProfileId": {"$ref": "#/$defs/Id"}, "profileId": {"$ref": "#/$defs/Id"}, "status": {"enum": ["reading", "ready"]}}},
         "schemaVersion": {"const": "achbit.session-projection.v6"},
         "sessionId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 0},
@@ -4452,7 +4463,7 @@
         "runId": {"$ref": "#/$defs/Id"},
         "callId": {"$ref": "#/$defs/Id"},
         "revision": {"type": "integer", "minimum": 1},
-        "toolName": {"enum": ["bash", "powershell", "container"]},
+        "toolName": {"$ref": "#/$defs/Id"},
         "command": {"$ref": "#/$defs/Id"},
         "targets": {"type": "array", "items": {"$ref": "#/$defs/Id"}},
         "status": {"enum": ["active", "completed", "failed", "cancelled"]},

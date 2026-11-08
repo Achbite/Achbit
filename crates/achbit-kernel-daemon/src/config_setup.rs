@@ -160,7 +160,7 @@ mod tests {
             let gui = crate::GuiState::open_at(&root.0).unwrap();
             assert_eq!(
                 gui.user_settings["agent.subagents.allowFullConfiguration"],
-                true
+                false
             );
             assert_eq!(gui.user_settings["agent.subagents.presets"], "[]");
             assert_eq!(gui.user_settings["agent.subagents.enabled"], true);
@@ -169,13 +169,13 @@ mod tests {
         assert_eq!(fs::read(&paths.settings_path).unwrap(), original);
         atomic_write_json(
             &paths.settings_path,
-            &json!({"agent.subagents.allowFullConfiguration":false}),
+            &json!({"agent.subagents.allowFullConfiguration":true}),
         )
         .unwrap();
         assert_eq!(
             crate::GuiState::open_at(&root.0).unwrap().user_settings
                 ["agent.subagents.allowFullConfiguration"],
-            false
+            true
         );
         atomic_write_json(
             &paths.settings_path,

@@ -91,6 +91,7 @@ export function runtimeSnapshot(runId, options = {}) {
   const tools = (options.tools ?? []).map((tool) => structuredClone(tool));
   const provider = {
     providerRuntimeRef: 'provider-runtime:g1',
+    continuationKey: `fixture-native:${options.profileId ?? 'profile:default'}:${options.apiSurface ?? 'chatCompletions'}`,
     profileId: options.profileId ?? 'profile:default',
     contextWindowTokens: options.contextWindowTokens ?? 4_096,
     maxOutputTokens: options.maxOutputTokens ?? 512,

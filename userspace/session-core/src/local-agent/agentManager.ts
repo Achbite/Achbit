@@ -8,7 +8,7 @@ import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js'
 import { agentOperationDefinitions } from './sessionControls.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
 import type { ControlWait } from './sessionWake.js';
-import { agentPresets, agentPermissionPatches, resolveAgentCapabilities } from './agentConfiguration.js';
+import { agentPresets, agentPermissionPatches, allowedAgentProfiles, canSpawnAgent, resolveAgentCapabilities } from './agentConfiguration.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
 
@@ -80,12 +80,12 @@ export class AgentManager {
         const fullConfiguration = !caller.agentContext && settings.allowFullConfiguration === true;
         const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
         const owner = await this.snapshot(ownerId);
-        const profileIds = [...new Set([settings.profileId || owner.run?.profileId,
-          ...presets.map(preset => preset.profileId)].filter((id): id is string => Boolean(id)))];
-        const canSpawn = settings.enabled && capabilities.delegation && (!caller.agentContext || settings.allowMemberAnalysis);
+        const profileIds = allowedAgentProfiles(settings, presets, owner.run?.profileId);
+        const canSpawn = canSpawnAgent(settings, capabilities, !!caller.agentContext);
         const operations = agentOperationDefinitions(capabilities, { fullConfiguration, canSpawn, coordinator: !caller.agentContext,
           allowChildDelegation: settings.allowMemberAnalysis,
-          presetIds: presets.map(preset => preset.id), ...(!fullConfiguration ? { profileIds } : {}) });
+          presetIds: presets.map(preset => preset.id), productComponentIds: this.configurations.productComponents().map(item => item.id as string),
+          ...(!fullConfiguration ? { profileIds } : {}) });
         const models = canSpawn ? (await abortable(this.host.models(), signal))
           .filter(model => fullConfiguration || profileIds.includes(model.profileId)) : [];
         const family = await this.family(owner);
@@ -112,7 +112,7 @@ export class AgentManager {
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
             defaultProfileId: settings.profileId || owner.run?.profileId,
-            ...(fullConfiguration ? { runners: this.loops.describe(),
+            ...(fullConfiguration ? { runners: this.loops.describe(), productComponents: this.configurations.productComponents(),
             permissionPolicies: [
               { id: 'local-standard', description: 'Keep Kernel admission and automatic Plan/file gates. Parameters can only restrict the inherited policy.',
                 parametersSchema: { type: 'object', additionalProperties: false, properties: {
@@ -199,9 +199,13 @@ export class AgentManager {
     if (!caller.subagentSettings) throw new Error('agent_settings_missing');
     const settings = caller.subagentSettings;
     if (!settings.enabled) throw new Error('agent_disabled');
-    if (!existingChild && caller.agentContext && [operation.capabilities, operation.permissions, operation.runner,
-      operation.permissionPolicy, operation.workspaceSandbox, operation.tools, operation.context, operation.loop, operation.reasoningEffort]
-      .some(value => value !== undefined)) throw new Error('agent_coordinator_configuration_required');
+    const customConfiguration = [operation.capabilities, operation.permissions, operation.runner,
+      operation.permissionPolicy, operation.workspaceSandbox, operation.tools, operation.productComponents,
+      operation.context, operation.loop, operation.reasoningEffort].some(value => value !== undefined);
+    if (!existingChild && customConfiguration) {
+      if (caller.agentContext) throw new Error('agent_coordinator_configuration_required');
+      if (!settings.allowFullConfiguration) throw new Error('agent_full_configuration_required');
+    }
     const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
     if (this.#blockedOwners.has(ownerId)) throw new Error('agent_owner_deleting');
     const owner = await this.snapshot(ownerId);
@@ -223,7 +227,7 @@ export class AgentManager {
       const profileId = operation.profileId ?? ruleProfileId;
       if (!profileId) throw new Error('agent_model_unavailable');
       if ((caller.agentContext || !settings.allowFullConfiguration) && (operation.reasoningEffort !== undefined
-        || ![ruleProfileId, ...presets.map(item => item.profileId)].includes(profileId))) throw new Error('agent_full_configuration_required');
+        || !allowedAgentProfiles(settings, presets, owner.run?.profileId).includes(profileId))) throw new Error('agent_full_configuration_required');
       const modelRule = profileId === ruleProfileId ? preset : presets.find(item => item.profileId === profileId) ?? preset;
       const model = (await this.host.models()).find(item => item.profileId === profileId);
       if (!model) throw new Error('agent_model_unavailable');
@@ -238,14 +242,14 @@ export class AgentManager {
     const recipe = !existingChild ? inheritAgentRecipe(caller.recipe, {
       configuration, runner: this.loops.validate(operation.runner ?? preset.runner ?? caller.recipe?.runner),
       tools: operation.tools ?? preset.tools,
-      productComponents: preset.productComponents,
+      productComponents: operation.productComponents ?? preset.productComponents,
       permissionPolicy: operation.permissionPolicy ?? preset.permissionPolicy,
       workspaceSandbox: operation.workspaceSandbox ?? preset.workspaceSandbox,
       profileId: modelSelection!.profileId, ...(modelSelection!.reasoningEffortOverride ? { reasoningEffort: modelSelection!.reasoningEffortOverride } : {}),
       permissions,
     }) : undefined;
     const callerCapabilities = await this.sessions.withActor(caller.sessionId, actor => actor.agentCapabilities(runId));
-    if (!existingChild && (!callerCapabilities.delegation || caller.agentContext && !settings.allowMemberAnalysis)) {
+    if (!existingChild && !canSpawnAgent(settings, callerCapabilities, !!caller.agentContext)) {
       throw new Error('agent_delegation_disabled');
     }
     const capabilities = existingChild?.capabilities ?? resolveAgentCapabilities(preset, operation.capabilities, callerCapabilities, settings.allowMemberAnalysis);

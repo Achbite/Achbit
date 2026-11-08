@@ -28,6 +28,7 @@ import {
 } from '@achbit/protocol';
 
 import type { SessionToolStage } from './plugins.js';
+import { canSpawnAgent } from './agentConfiguration.js';
 
 /** Resolve Session controls for this stage before their schemas and instructions are exposed. */
 export function activeSessionControls(
@@ -55,7 +56,6 @@ function agentControlAccess(runtime: RunRuntimeSnapshot, events: readonly Sessio
     || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
   const settings = setting?.type === 'session.subagent-settings.updated' ? setting.payload.settings
     : setting?.type === 'session.created' ? setting.payload.subagentSettings : undefined;
-  const canDelegate = settings?.enabled === true && runtime.agentCapabilities.delegation;
   let isChild = false;
   const children = new Set<string>();
   for (const event of events) {
@@ -63,6 +63,7 @@ function agentControlAccess(runtime: RunRuntimeSnapshot, events: readonly Sessio
     if (event.type === 'agent.task.created' && event.payload.createsAgent) children.add(event.payload.agentSessionId);
     if (event.type === 'agent.closed') children.delete(event.payload.agentSessionId);
   }
+  const canDelegate = canSpawnAgent(settings, runtime.agentCapabilities, isChild);
   const hasAgent = canDelegate || (isChild || children.size > 0) && (runtime.agentCapabilities.messaging || runtime.agentCapabilities.delegation);
   return { hasAgent, canDelegate };
 }
@@ -245,26 +246,22 @@ export function agentTurnPolicy(input: Record<string, unknown>): 'tools' | 'agen
   return agentTurnPolicies[input.action as AgentOperation['action']];
 }
 
-const agentTurnGuidance = Object.entries(agentTurnPolicies).reduce<Record<string, string[]>>((groups, [action, policy]) => {
-  (groups[policy] ??= []).push(action === 'spawn' ? 'spawn(delivery=async)' : action);
-  return groups;
-}, {});
-const agentTurnInstruction = ` ${agentTurnGuidance.tools!.join(', ')} may share a turn with independent ordinary tools and at most one todo.update. Available ${agentTurnGuidance.agents!.join(', ')} operations may share a turn only with other agent calls and at most one todo.update. Submit ${agentTurnGuidance.exclusive!.join(', ')} and spawn(delivery=wait) alone.`;
-
 /** Detailed contracts are returned by discovery, leaving the provider tool prefix stable. */
 export function agentOperationDefinitions({ messaging, delegation, continuation }: AgentCapabilities,
-  options: { fullConfiguration?: boolean; presetIds?: string[]; profileIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean; coordinator?: boolean } = {}): JsonObject[] {
+  options: { fullConfiguration?: boolean; presetIds?: string[]; profileIds?: string[]; productComponentIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean; coordinator?: boolean } = {}): JsonObject[] {
   const operation = (action: string, description: string, properties: JsonObject = {}, required: string[] = []): JsonObject => ({
-    action, description, inputSchema: { type: 'object', additionalProperties: false,
+    action, description, turn: action === 'spawn' ? { async: 'agentCalls', wait: 'singleCall' }
+      : agentTurnPolicies[action as AgentOperation['action']] === 'tools' ? 'independentTools'
+        : agentTurnPolicies[action as AgentOperation['action']] === 'agents' ? 'agentCalls' : 'singleCall', inputSchema: { type: 'object', additionalProperties: false,
       required: ['action', ...required], properties: { action: { type: 'string', const: action }, ...properties } },
   });
   const id = { type: 'string', minLength: 1 };
   return [
     operation('models', 'Discover available operations and model profiles.'),
-    ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Permissions and configuration inherit from the parent. Select a template; the coordinator may customize it. model-services.md in productDocsPath has examples.', {
+    ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Permissions and configuration inherit from the parent. Select a template using the returned fields. model-services.md in productDocsPath has examples.', {
       task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
-      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'analysis contacts its task owner; collaboration also contacts teammates. Neither delegates further by default. Both retain the instance. The coordinator can customize these defaults; a preset does not define a fixed agent type.' },
-      ...(options.coordinator !== false ? { capabilities: { type: 'object', additionalProperties: false, properties: {
+      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'analysis reads referenced files and contacts its task owner; collaboration also works with teammates. Both retain their Session for follow-up tasks.' },
+      ...(options.coordinator !== false && options.fullConfiguration ? { capabilities: { type: 'object', additionalProperties: false, properties: {
         messaging: { enum: messaging === true ? [false, 'parent', true] : messaging === 'parent' ? [false, 'parent'] : [false], description: 'false: no messages; parent: only the parent; true: the related team.' },
         continuation: { type: 'boolean', ...(!continuation ? { const: false } : {}), description: 'Accept follow-up tasks in the same Session.' },
         delegation: { type: 'boolean', ...(options.allowChildDelegation === false ? { const: false } : {}), description: 'Create child agents.' },
@@ -272,7 +269,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
       profileId: { ...id, ...(options.profileIds ? { enum: options.profileIds } : {}), description: 'Use a model allowed by the returned preset rules; omit to follow the selected preset.' },
       ...(options.coordinator !== false && options.fullConfiguration ? { reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Override using an effort supported by the selected model.' },
         context: { type: 'object', description: 'Optional context override. journal.parameters.maxTokens caps context including output reserve; omit to inherit.' } } : {}),
-      ...(options.coordinator !== false ? { loop: { type: 'object', additionalProperties: false, properties: {
+      ...(options.coordinator !== false && options.fullConfiguration ? { loop: { type: 'object', additionalProperties: false, properties: {
         controls: { type: 'object', description: 'A returned controls contribution id and its supported parameters.' },
         compaction: { type: 'object', description: 'Optional compaction override. summary.parameters supports enabled, thresholdTokens and pressureRatio; omitted values inherit.' },
       } },
@@ -281,12 +278,15 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         controls: { type: 'array', uniqueItems: true, items: { type: 'string' } },
         plugins: { type: 'boolean' },
       }, description: 'Select task tools by canonical name; omitted groups inherit. Empty lists install none. Selection may only narrow the parent.' },
-      permissions: { type: 'object', description: 'Optional restrictions of inherited agent.permissions settings. Cannot grant new authority or approve a Plan.' },
+      productComponents: { type: 'array', uniqueItems: true,
+        items: { type: 'string', ...(options.productComponentIds ? { enum: options.productComponentIds } : {}) },
+        description: 'Select installed product prompt components by id. Omit to inherit; an empty list keeps the task core.' },
+      permissions: { type: 'object', description: 'Restrict inherited agent.permissions settings for this task.' },
       runner: { type: 'object', description: 'Select an installed Loop driver from runners by id and parameters. Presets are defaults, not fixed agent types.' },
       permissionPolicy: { type: 'object', description: 'Select a returned policy by id and parameters; only narrow parent authority.' },
       workspaceSandbox: { type: 'object', additionalProperties: false, required: ['backendId'], properties: {
         backendId: { type: 'string', description: 'platform-default or the observed available backend.' },
-        requireIsolatedProcesses: { type: 'boolean', description: 'Require usable Shell isolation and prohibit Host/external execution routes.' },
+        requireIsolatedProcesses: { type: 'boolean', description: 'Run Shell commands through the selected isolation backend.' },
       } } } : {}),
     }, ['task', 'name', 'delivery'])] : []),
     ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
@@ -317,10 +317,11 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_AGENT,
-      description: (capabilities && (!capabilities.delegation || !canDelegate)
-        ? capabilities.messaging === 'parent' ? 'Contact your current task owner. Call action=models for contacts and operations. Send findings, questions or scope needs; messages do not grant permissions or start tasks. Use session wait for a needed reply; return a final answer when done. Retaining the Session needs no active wait.'
-          : 'Coordinate directly with teammates. Agree on shared interfaces and one writer per shared file; send unresolved disagreements or scope needs to the coordinator. Messages are not agreement or permission. Use session wait for needed replies; finish with a final answer and evidence, not an indefinite wait. Call action=models for contacts and operations. Multiple messages may share a turn.'
-        : 'Proactively delegate useful independent work; keep coupled work local. Supply context, scope and expected evidence; coordinate shared edits and verify final results. Use analysis for reading specified files and reporting findings; use collaboration for edits or ongoing communication. Completed tasks release execution without close. Call action=models for operations and configuration.') + agentTurnInstruction,
+      description: capabilities && (!capabilities.delegation || !canDelegate)
+        ? capabilities.messaging === 'parent'
+          ? 'Contact your task owner with findings, questions or scope needs. Return a final answer with evidence when the task is complete. Call action=models for contacts and operations.'
+          : 'Coordinate with available teammates, agree on shared interfaces and one writer per shared file. Return a final answer with evidence when the task is complete. Call action=models for contacts and operations.'
+        : 'Proactively delegate useful independent work using available templates. Supply context, scope and expected evidence; coordinate shared edits and integrate results. Call action=models for operations and configuration.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
@@ -466,8 +467,8 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       assertExactKeys(input, ['action']);
       return { action: 'models' };
     case 'spawn': {
-      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools'],
-        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools']);
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents'],
+        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents']);
       if (input.preset !== undefined) requiredText(input.preset, 'preset');
       if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
         || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key)
@@ -488,7 +489,7 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
         loop = Object.fromEntries(Object.entries(input.loop).map(([key, value]) => [key, decodeAgentContribution(value)]));
       }
       if (input.permissions !== undefined) validatePermissionPatches(input.permissions);
-      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools']
+      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents']
         .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
         ...components,

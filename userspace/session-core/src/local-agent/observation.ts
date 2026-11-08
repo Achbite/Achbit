@@ -7,6 +7,8 @@ export type SessionObservationInput = (
   | { kind: 'toolProgress'; sessionId: string; runId: string; callId: string; progress: ToolExecutionProgress }
 ) & { /** Canonical creation lineage supplied by SessionService, never inferred by the UI. */ parentSessionId?: string | null };
 export interface SessionObservationSink {
+  /** Invalidate runtime activity after an in-memory wait/Loop transition; never a journal fact. */
+  activityChanged?(sessionId: string): void;
   accept(input: SessionObservationInput): void;
   failed(sessionId: string, error: unknown): void;
 }

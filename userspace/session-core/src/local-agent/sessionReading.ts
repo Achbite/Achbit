@@ -1,5 +1,6 @@
 import type { JsonObject, PreparedToolDescriptor, SessionEvent } from '@achbit/protocol';
 import { eventImages, visualContextInstruction } from './visualContext.js';
+import { modelContextStart, isHandoffRead } from './modelContext.js';
 
 export const SESSION_DIAGNOSTICS_URI = 'plugin://session-diagnostics@builtin';
 
@@ -8,6 +9,8 @@ export interface SessionReadScope {
   history: string[];
   currentViews: string[];
   childWorkdirs: string[];
+  historyThroughSequence?: number;
+  handoffPending?: boolean;
 }
 
 /** Only user messages name historical targets. Tool output, summaries and assistant text do not. */
@@ -28,12 +31,20 @@ export function sessionReadScope(currentId: string, events: readonly SessionEven
     if (event.type === 'agent.task.created' && event.payload.createsAgent) children.add(event.payload.agentSessionId);
   }
   const namedCurrent = named.delete(currentId);
-  return { currentId, history: [...named], childWorkdirs: [...children].filter(id => !named.has(id)), currentViews: [
+  const boundary = modelContextStart(events)?.payload.contextStart?.historyThroughSequence;
+  const handoffPending = boundary !== undefined && !events.some(event => event.type === 'tool.completed'
+    && event.sequence > boundary && isHandoffRead(event.payload.record, currentId, boundary));
+  return { currentId, history: [...named], childWorkdirs: [...children].filter(id => !named.has(id)),
+    ...(boundary === undefined ? {} : { historyThroughSequence: boundary, handoffPending }), currentViews: [
+    ...(boundary === undefined ? [] : ['summary', 'messages', 'tools', 'plans', 'context', 'reasoning']),
     ...(images ? ['images'] : []), ...(children.size || namedCurrent ? ['resources'] : []),
   ] };
 }
 
 export function sessionReadAllowed(scope: SessionReadScope, input: JsonObject): boolean {
+  if (scope.handoffPending && (input.sessionId !== scope.currentId || (input.view ?? 'summary') !== 'summary')) return false;
+  if (input.sessionId === scope.currentId && scope.historyThroughSequence !== undefined
+    && input.throughSequence !== undefined && input.throughSequence !== scope.historyThroughSequence) return false;
   return typeof input.sessionId === 'string' && (scope.history.includes(input.sessionId)
     || input.view === 'resources' && scope.childWorkdirs.includes(input.sessionId)
     || input.sessionId === scope.currentId && scope.currentViews.includes(String(input.view ?? 'summary')));
@@ -41,6 +52,12 @@ export function sessionReadAllowed(scope: SessionReadScope, input: JsonObject): 
 
 export function sessionReadTool(tool: PreparedToolDescriptor, scope: SessionReadScope): PreparedToolDescriptor[] {
   const { currentId, currentViews, history, childWorkdirs } = scope;
+  if (scope.handoffPending) return [{ ...tool,
+    description: 'Read the previous work before continuing. This read is fixed to the history before the model switch. It does not send pending user messages or repeat previous actions.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['sessionId', 'view'], properties: {
+      sessionId: { type: 'string', const: currentId }, view: { type: 'string', const: 'summary' },
+    } },
+  }];
   const targets = [...history, ...childWorkdirs, ...(currentViews.length ? [currentId] : [])];
   if (!targets.length) return [];
   const schema = structuredClone(tool.inputSchema);
@@ -52,7 +69,9 @@ export function sessionReadTool(tool: PreparedToolDescriptor, scope: SessionRead
   if (currentViews.length) groups.push({ properties: { sessionId: { const: currentId }, view: { enum: currentViews } }, required: ['view'] });
   if (groups.length > 1) schema.oneOf = groups;
   const imageGuidance = currentViews.includes('images') ? ' ' + visualContextInstruction(currentId) : '';
-  if (history.length) return [{ ...tool, description: tool.description + imageGuidance, inputSchema: schema }];
+  // The inclusive handoff cutoff is applied by the Session decoder, not chosen by the model.
+  delete properties.throughSequence;
+  if (history.length || scope.historyThroughSequence !== undefined) return [{ ...tool, description: tool.description + imageGuidance, inputSchema: schema }];
 
   const views = [...new Set([...currentViews, ...(childWorkdirs.length ? ['resources'] : [])])];
   const fields = new Set(['sessionId', 'view', 'before', 'limit']);

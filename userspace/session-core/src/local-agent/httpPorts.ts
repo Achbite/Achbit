@@ -627,11 +627,13 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
       'maxOutputTokens',
       'apiSurface',
       'hostedWebSearch',
-    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes', 'inputTokenCalibrationKey'])
+    ], ['reasoningEffort', 'reasoningEffortOverride', 'thinking', 'fileInputMediaTypes', 'inputTokenCalibrationKey', 'continuationKey'])
     || !isNonEmptyText(value.providerRuntimeRef)
     || value.inputTokenCalibrationKey !== undefined && (typeof value.inputTokenCalibrationKey !== 'string'
       || value.inputTokenCalibrationKey.length < 1 || value.inputTokenCalibrationKey.length > 128
       || /[^!-~]/u.test(value.inputTokenCalibrationKey))
+    || value.continuationKey !== undefined && (typeof value.continuationKey !== 'string'
+      || value.continuationKey.length < 1 || value.continuationKey.length > 128 || /[^!-~]/u.test(value.continuationKey))
     || !isNonEmptyText(value.profileId)
     || !isPositiveSafeInteger(value.contextWindowTokens)
     || !isPositiveSafeInteger(value.maxOutputTokens)
@@ -651,6 +653,7 @@ function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {
   return Object.freeze({
     providerRuntimeRef: value.providerRuntimeRef,
     ...(value.inputTokenCalibrationKey !== undefined ? { inputTokenCalibrationKey: value.inputTokenCalibrationKey as string } : {}),
+    ...(value.continuationKey !== undefined ? { continuationKey: value.continuationKey as string } : {}),
     profileId: value.profileId,
     fileInputMediaTypes: [...((value.fileInputMediaTypes ?? []) as string[])],
     contextWindowTokens: value.contextWindowTokens,

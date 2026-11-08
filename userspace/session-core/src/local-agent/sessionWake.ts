@@ -47,8 +47,10 @@ export function pendingWakeups(events: readonly SessionEvent[], runId: string): 
   return pending;
 }
 
+/** Dependency waits resume on new input or owned completion, never process progress. */
 export function inputAfter(events: readonly SessionEvent[], runId: string, sequence: number): boolean {
   return events.some(event => event.sequence > sequence && 'runId' in event && event.runId === runId
     && (event.type === 'agent.message.received' || event.type === 'agent.task.completed'
+      || event.type === 'process.updated' && event.payload.job.status !== 'active'
       || event.type === 'wake.triggered' || event.type === 'input.queued'));
 }

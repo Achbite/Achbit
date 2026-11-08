@@ -1,4 +1,5 @@
 import { sessionReadAllowed } from './sessionReading.js';
+import { modelContextEvents } from './modelContext.js';
 import { permissionSettings, providerRuntimeForPurpose } from '@achbit/protocol';
 import { prepareApprovalReview, decodeApprovalReview, ApprovalReviewFormatFailure, APPROVAL_HISTORY_VIEWS, MAX_APPROVAL_EVIDENCE_ROUNDS } from './approvalReview.js';
 import { withProviderAttempts } from './providerAttempts.js';
@@ -359,6 +360,12 @@ export async function runAgentLoop(
           snapshot = await deps.readSnapshot();
         }
         runtime = runRuntimeSnapshot(snapshot, runId);
+        if (snapshot.state.contextHandoff?.status === 'reading') {
+          const failedRead = snapshot.events.findLast(event => event.type === 'tool.completed' && event.runId === runId
+            && event.payload.record.toolName === 'session.read');
+          if (failedRead?.type === 'tool.completed') throw new LoopFailure('model_handoff_read_failed',
+            'error' in failedRead.payload.record ? (failedRead.payload.record.error?.message ?? '未获得完整的历史读取结果，接手未完成。') : '未获得完整的历史读取结果，接手未完成。');
+        }
         throwIfAborted(signal);
         if (runtime.kernelCatalogSnapshotRef !== lastRetainedCatalog) {
           try {
@@ -377,7 +384,8 @@ export async function runAgentLoop(
           sessionId: snapshot.state.sessionId,
           runId,
           runtime,
-          events: snapshot.events,
+          events: modelContextEvents(snapshot.events),
+          historyEvents: snapshot.events,
           responseConstraint: 'normal',
           toolGuidance: deps.composition.toolGuidance,
           toolStage: stageForRequest(capabilities, runtime, snapshot.state),
@@ -434,6 +442,10 @@ export async function runAgentLoop(
             payload: turn.contextUsage,
           });
         }
+        if (snapshot.state.contextHandoff?.status === 'reading' && turn.kind === 'answer') {
+          await commit([providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
+          throw new LoopFailure('model_handoff_read_required', '模型未读取此前工作，接手未完成。');
+        }
         switch (turn.kind) {
           case 'session': {
             let fact: NewSessionEvent;
@@ -475,11 +487,15 @@ export async function runAgentLoop(
           case 'pluginActivate': {
             let prepared: PreparedRunRuntime;
             try {
+              throwIfAborted(signal);
               prepared = await installedControls(capabilities.controls).preparePlugins({
                 sessionId: snapshot.state.sessionId, runId, runtime, pluginUris: turn.pluginUris,
                 nextId: deps.nextId, preparation: deps.composition.runPreparation,
               });
+              // An admitted preparation must drain before the run releases its resources.
+              throwIfAborted(signal);
             } catch (error) {
+              throwIfAborted(signal);
               await commit([
                 controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
                   providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLUGIN_ACTIVATE,
@@ -620,7 +636,7 @@ export async function runAgentLoop(
               && !snapshot.state.interactions.some(item => item.runId === runId && item.status === 'pending');
             if (capabilities.compaction && canCompact && (capabilities.compaction.settings(runtime).enabled || scheduledContextCompaction(snapshot.events))) {
               const completedContext = await capabilities.context.prepare({
-                sessionId: snapshot.state.sessionId, runId, runtime, events: snapshot.events,
+                sessionId: snapshot.state.sessionId, runId, runtime, events: modelContextEvents(snapshot.events), historyEvents: snapshot.events,
                 responseConstraint: 'normal', ...runWorkspaceContext(snapshot, runId),
                 toolGuidance: deps.composition.toolGuidance,
                 toolStage: stageForRequest(capabilities, runtime, snapshot.state),
@@ -895,7 +911,8 @@ function compactionBeforeTurn(
   capabilities: SessionCapabilities, nextId: (kind: string) => string,
 ): Extract<NewSessionEvent, { type: 'context.compaction.requested' }> | null {
   const compaction = capabilities.compaction;
-  if (!compaction) return null;
+  if (!compaction || snapshot.state.contextHandoff?.status === 'reading') return null;
+  snapshot = { ...snapshot, events: modelContextEvents(snapshot.events) };
   const budget = Math.min(capabilities.context.windowTokens(runtime), runtime.provider.contextWindowTokens);
   if (!Number.isSafeInteger(budget) || budget <= runtime.provider.maxOutputTokens) {
     throw new LoopFailure('context_budget_invalid', '上下文预算必须为正整数，并为模型输出保留空间。');
@@ -915,7 +932,8 @@ function boundaryCompactionEvent(
   snapshot: LoopSnapshot, runId: string, runtime: RunRuntimeSnapshot, receipt: ContextCompositionReceipt,
   capabilities: SessionCapabilities, boundary: 'nextRun' | 'idle', nextId: (kind: string) => string,
 ): Extract<NewSessionEvent, { type: 'context.compaction.requested' }> | null {
-  if (!capabilities.compaction) return null;
+  if (!capabilities.compaction || snapshot.state.contextHandoff?.status === 'reading') return null;
+  snapshot = { ...snapshot, events: modelContextEvents(snapshot.events) };
   const scheduled = scheduledContextCompaction(snapshot.events);
   const input = runInputMessageEvent(snapshot.events, runId);
   if (!input) return null;
@@ -953,7 +971,7 @@ async function performContextCompaction(
       runId,
       runtime,
       ...runWorkspaceContext(snapshot, runId),
-      events: snapshot.events,
+      events: modelContextEvents(snapshot.events),
       requestEvent,
     }, signal);
     throwIfAborted(signal);

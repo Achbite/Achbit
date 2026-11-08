@@ -10,7 +10,7 @@ export function isProcessOutput(v: unknown): v is ToolOutputProjection {
 }
 export function isManagedProcessSnapshot(v: unknown): v is ManagedProcessSnapshot {
   return object(v) && ['jobId', 'sessionId', 'runId', 'callId', 'command'].every(k => text(v[k]))
-    && natural(v.revision) && v.revision > 0 && ['bash', 'powershell', 'container'].includes(String(v.toolName))
+    && natural(v.revision) && v.revision > 0 && text(v.toolName)
     && ['active', 'completed', 'failed', 'cancelled'].includes(String(v.status))
     && Array.isArray(v.targets) && v.targets.every(text) && timestamp(v.startedAt)
     && (v.lastOutputAt === undefined || timestamp(v.lastOutputAt))

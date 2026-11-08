@@ -409,7 +409,12 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['fileChangeRounds', 'providerAttempts', 'runTimings', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    ], ['contextHandoff', 'fileChangeRounds', 'providerAttempts', 'runTimings', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    || (value.contextHandoff !== undefined && !(isExactRecord(value.contextHandoff,
+      ['runId', 'historyThroughSequence', 'previousProfileId', 'profileId', 'status'])
+      && isIdentifier(value.contextHandoff.runId) && isPositiveNaturalNumber(value.contextHandoff.historyThroughSequence)
+      && isIdentifier(value.contextHandoff.previousProfileId) && isIdentifier(value.contextHandoff.profileId)
+      && ['reading', 'ready'].includes(String(value.contextHandoff.status))))
     || (value.subagentSettings !== undefined && !isAgentSettings(value.subagentSettings))
     || (value.recipe !== undefined && !isAgentRecipe(value.recipe))
     || (value.agentContext !== undefined && !isAgentContext(value.agentContext))

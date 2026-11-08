@@ -294,7 +294,9 @@ impl LocalAgentRuntime {
             }
             if let Some(existing) = prepared_runs.get(&key).and_then(|views| {
                 views.iter().rev().take(1).find(|view| {
-                    view.mcp.is_some()
+                    view.mcp
+                        .as_ref()
+                        .is_some_and(|mcp| !mcp.has_catalog_changes())
                         && crate::local_agent_plugins::same_registration_settings(
                             &view.runtime_settings,
                             settings,
@@ -602,6 +604,17 @@ impl LocalAgentRuntime {
         };
         let enable_kernel_web_search =
             web_search.get("owner").and_then(Value::as_str) == Some("kernelAdapter");
+        let container_runtime = plugin_selection
+            .container_instance()
+            .map(|_| {
+                self.kernel.prepare_run_containers(
+                    &request.session_id,
+                    &request.run_id,
+                    executor_config.execution_path.as_deref().unwrap_or(""),
+                )
+            })
+            .transpose()
+            .map_err(RunPreparationError::from)?;
         let prepared = LocalAgentKernel::prepare_generation(
             &extension_generation_ref,
             executor_config.clone(),
@@ -629,6 +642,7 @@ impl LocalAgentRuntime {
                         plugin_selection.diagnostics_instance(),
                     )
                     .with_containers(plugin_selection.container_instance())
+                    .with_container_runtime(container_runtime)
                     .with_documents(plugin_selection.document_instance())
                     .with_browser_binding(environment.get("hostBinding").cloned().map(
                         |mut binding| {
@@ -2413,6 +2427,7 @@ mod tests {
     ) -> ProviderRuntimeSnapshot {
         ProviderRuntimeSnapshot {
             input_token_calibration_key: None,
+            continuation_key: None,
             reasoning_effort: None,
             reasoning_effort_override: None,
             thinking: None,

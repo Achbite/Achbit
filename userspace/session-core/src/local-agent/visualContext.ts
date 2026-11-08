@@ -55,7 +55,7 @@ export function visualContextInstruction(sessionId: string): string {
 }
 
 /** Selection is replayed from existing input and tool facts; retries reuse the prepared request. */
-export function visualContextMessages(events: readonly SessionEvent[], runId: string): ContextMessageContribution[] {
+export function visualContextMessages(events: readonly SessionEvent[], runId: string, historyEvents: readonly SessionEvent[] = events): ContextMessageContribution[] {
   const input = events.find(event => event.type === 'run.started' && event.runId === runId);
   const inputMessageId = input?.type === 'run.started' ? input.payload.inputMessageId : undefined;
   let attachments: ImageReference[] = [];
@@ -86,7 +86,7 @@ export function visualContextMessages(events: readonly SessionEvent[], runId: st
       const record = event.payload.record;
       if (record.toolName === 'session.read' && record.input.view === 'images' && record.input.sessionId === event.sessionId && Array.isArray(record.input.imageIds)) {
         attachments = [];
-        observations = readImageReferences(events, record.input.imageIds as string[]).map(image => ({ ...image, transient: true }));
+        observations = readImageReferences(historyEvents, record.input.imageIds as string[]).map(image => ({ ...image, transient: true }));
         nextObservationBatch = true;
       } else {
         const images = eventImages(event);

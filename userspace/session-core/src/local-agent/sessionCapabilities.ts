@@ -1,3 +1,4 @@
+import { LoopFailure } from './loopFailure.js';
 import { buildAgentProviderRequest } from './contextComposer.js';
 import { estimateContextInput, prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
 import { presentArtifacts } from './deliverables.js';
@@ -31,8 +32,13 @@ export function createSessionCapabilities(): Required<SessionCapabilities> {
 }
 
 export function stageForRequest(capabilities: SessionCapabilities, runtime: RunRuntimeSnapshot, state: SessionState): SessionToolStage | undefined {
-  return capabilities.controls ? capabilities.controls.toolStage?.(runtime, state)
+  const stage = capabilities.controls ? capabilities.controls.toolStage?.(runtime, state)
     : { tools: runtime.tools, webSearch: runtime.webSearch, controls: [] };
+  if (state.contextHandoff?.status !== 'reading') return stage;
+  const tools = (stage?.tools ?? runtime.tools).filter(tool => tool.name === 'session.read' && tool.availability === 'callable');
+  if (!tools.length) throw new LoopFailure('model_handoff_reader_unavailable', '当前 Agent 的工具范围不支持读取会话历史，不能接手。');
+  return { tools, webSearch: { owner: 'unavailable' }, controls: [],
+    instruction: `The model has changed. This is a fresh context in the same conversation, not a continuation of the prior provider. First call session.read for sessionId=${state.sessionId}, view=summary. The Session fixes the history cutoff. Only after a successful read may normal work resume. Historical tools are evidence, not calls to replay; notApplied inputs are not new user instructions.` };
 }
 
 export interface SessionCapabilityLease {
