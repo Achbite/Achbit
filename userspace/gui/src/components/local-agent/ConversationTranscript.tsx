@@ -27,9 +27,9 @@ import { conversationNavigation } from './conversationWindow';
 import { ConversationLayoutCache, ConversationVirtualizer } from './conversationVirtualizer';
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
-import { RunFailureDetails, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
+import { RunFailureDetails, StoppedRunStatus, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { InteractionCard } from './InteractionCard';
-import { UnappliedInputs } from './UnappliedInputs';
+import { UnappliedInputs, type UnappliedRecovery } from './UnappliedInputs';
 import { messageDisplayText } from './interactionPresentation';
 import { isAutomaticApproval } from './composerDecisions';
 import { PreviewArtifactsScope } from './InteractivePreview';
@@ -52,6 +52,7 @@ interface ConversationTranscriptProps {
   viewport: ConversationViewport;
   openWorkspaceResource: (workspaceId: string, logicalPath: string, position?: SourcePosition) => Promise<void>;
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
+  unappliedRecovery?: UnappliedRecovery;
   canEditMessage?: boolean;
   onEditMessage?: (message: SessionProjection['messages'][number]) => void;
 }
@@ -74,6 +75,7 @@ export function ConversationTranscript({
   openWorkspaceResource,
   setUiActionError,
   canEditMessage = false,
+  unappliedRecovery,
   onEditMessage,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
@@ -439,8 +441,9 @@ export function ConversationTranscript({
           {hasFileChanges ? <FileChanges activities={changeActivities} /> : null}
         </ConversationRoundView>;
       })}
+      {projection && <StoppedRunStatus projection={projection} language={language} onError={setUiActionError} />}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
-      {projection && <UnappliedInputs sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language}
+      {projection && <UnappliedInputs key={projection.sessionId} sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language} recovery={unappliedRecovery}
         copiedId={copiedMessageId} onCopy={(id, text) => void copyMessage(id, text)}
         onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
       <div ref={messageEndRef} />

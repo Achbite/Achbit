@@ -1,5 +1,5 @@
 import type { PastedImageInput } from '../services/pastedImage';
-import type { UserSettings, ShellAuthorizationScope } from '@achbit/protocol';
+import type { UserSettings, ShellAuthorizationScope, FilesystemReference, GuidanceReference } from '@achbit/protocol';
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
 import { create } from 'zustand';
 import type {
@@ -50,6 +50,11 @@ let retryCatalogObservation: (() => void) | null = null;
 
 const EMPTY_CATALOG: ConversationCatalog = { projects: [], sessions: [] };
 const EMPTY_PLUGIN_CATALOG: PluginCatalogProjection = { revision: 'plugin-catalog:empty', plugins: [] };
+
+interface RetainedMessageResources {
+  filesystemReferences?: FilesystemReference[];
+  guidanceReferences?: GuidanceReference[];
+}
 
 interface PendingFilesystemPath {
   path: string;
@@ -110,6 +115,7 @@ export interface LocalAgentState {
     onSessionCreated?: (sessionId: string) => void,
     pastedImages?: PastedImageInput[],
     planMode?: 'manual',
+    retained?: RetainedMessageResources,
   ): Promise<CommandReply>;
   focusContext(
     task: string,
@@ -118,6 +124,7 @@ export interface LocalAgentState {
     pastedTexts?: PastedTextInput[],
     onSessionCreated?: (sessionId: string) => void,
     pastedImages?: PastedImageInput[],
+    retained?: RetainedMessageResources,
   ): Promise<CommandReply>;
   setMessageFeedback(messageId: string, feedback: MessageFeedback | null): Promise<CommandReply>;
   editMessage(messageId: string, text: string, expectedRevision: number): Promise<CommandReply>;
@@ -632,9 +639,10 @@ const store = create<LocalAgentState>((set, get) => ({
     onSessionCreated,
     pastedImages = [],
     planMode,
+    retained = {},
   ) => {
     const trimmed = text.trim();
-    const inputError = !trimmed && !pastedTexts.length && !pastedImages.length && !filesystemPaths.length
+    const inputError = !trimmed && !pastedTexts.length && !pastedImages.length && !filesystemPaths.length && !retained.filesystemReferences?.length
       ? 'message_empty'
       : null;
     if (inputError) {
@@ -652,6 +660,7 @@ const store = create<LocalAgentState>((set, get) => ({
       onSessionCreated,
       pastedImages,
       planMode,
+      retained,
     );
   },
 
@@ -662,6 +671,7 @@ const store = create<LocalAgentState>((set, get) => ({
     pastedTexts = [],
     onSessionCreated,
     pastedImages = [],
+    retained = {},
   ) => {
     if (!task.trim()) throw new Error('context_focus_task_empty');
     const { projection } = get();
@@ -678,6 +688,8 @@ const store = create<LocalAgentState>((set, get) => ({
       pastedTexts,
       onSessionCreated,
       pastedImages,
+      undefined,
+      retained,
     );
   },
 
@@ -946,10 +958,11 @@ async function submitNewRun(
   onSessionCreated?: (sessionId: string) => void,
   pastedImages: PastedImageInput[] = [],
   planMode?: 'manual',
+  retained: RetainedMessageResources = {},
 ): Promise<CommandReply> {
   const submissionGeneration = beginSubmission(set);
   try {
-    if (filesystemPaths.length + pastedTexts.length + pastedImages.length > 8) throw new Error('message_filesystem_reference_limit');
+    if (filesystemPaths.length + pastedTexts.length + pastedImages.length + (retained.filesystemReferences?.length ?? 0) > 8) throw new Error('message_filesystem_reference_limit');
     const messageProfileId = get().selectedProfileId;
     const reasoningEffortOverride = get().reasoningEffortOverride;
     const activeRun = get().projection?.run;
@@ -983,9 +996,9 @@ async function submitNewRun(
       set({ sessionId, projection: created, draftProjectId: null, draftSubagentSettings: null });
       await get().refreshCatalog();
     }
-    const filesystemReferences = filesystemPaths.length
+    const filesystemReferences = [...(retained.filesystemReferences ?? []), ...(filesystemPaths.length
       ? await resolveConversationFilesystemReferences(sessionId, filesystemPaths)
-      : [];
+      : [])];
     for (const paste of pastedTexts) {
       filesystemReferences.push(await uploadConversationPastedText(sessionId, paste.inputId, paste.text));
     }
@@ -993,10 +1006,10 @@ async function submitNewRun(
       filesystemReferences.push(await uploadConversationPastedImage(sessionId, image));
     }
     if (generation !== submissionGeneration || get().sessionId !== sessionId) throw new Error('conversation_session_changed');
-    const guidanceReferences = effectivePluginSelections.flatMap((selection) => {
+    const guidanceReferences = [...(retained.guidanceReferences ?? []), ...effectivePluginSelections.flatMap((selection) => {
       const reference = pluginCatalog.plugins.find((item)=>item.uri===selection.uri)?.reference;
       return reference ? [{referenceId:selection.selectionId,uri:selection.uri,label:selection.label,...reference}] : [];
-    });
+    })];
     const executionSelections = effectivePluginSelections.filter((selection)=>!pluginCatalog.plugins.find((item)=>item.uri===selection.uri)?.reference);
     const common = {
       schemaVersion: CONVERSATION_COMMAND_VERSION,

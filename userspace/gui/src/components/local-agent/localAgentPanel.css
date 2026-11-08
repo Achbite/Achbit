@@ -873,16 +873,17 @@
 }
 
 .local-agent__terminal-error {
-  display: grid;
-  gap: 10px;
-  margin: 8px 0 24px;
-  padding: 16px 18px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--ac-surface-subtle);
-  color: var(--ac-foreground);
+  margin: 8px 0;
+  color: var(--ac-muted);
   font-size: var(--ac-font-caption);
 }
+.local-agent__continuity-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.local-agent__continuity-line > svg { flex: none; }
+.local-agent__continuity-line > span { min-width: 0; overflow-wrap: anywhere; }
+.local-agent__continuity-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.local-agent__continuity-details { margin-top: 8px; max-width: 100%; overflow-wrap: anywhere; }
+.local-agent__continuity-details > p { margin: 4px 0; white-space: pre-wrap; }
+.local-agent__continuity-details summary { cursor: pointer; }
 
 .local-agent__plan-card {
   width: 100%;
@@ -1526,10 +1527,12 @@
   background: color-mix(in srgb, var(--ac-surface-raised) 85%, var(--ac-surface-hover));
 }
 
-/* Engagement can end after a send while keyboard focus remains in the editor. */
+/* Engagement can end after a send while keyboard focus remains in the editor.
+   Keep vertical feedback bounded: tall attachments must not lift the surface
+   into the change/disclosure row above it. */
 .local-agent__composer[data-press-feedback]:has(> textarea:focus)::before {
   background: var(--ac-surface-raised);
-  transform: translateY(-3px) scale(1.012, 1.025);
+  transform: translateY(-3px) scaleX(1.012);
 }
 
 /* Click feedback is separate from the sustained lift, so every click responds. */
@@ -1548,12 +1551,12 @@
 
 @keyframes local-agent-composer-press-a {
   0%, 100% { scale: 1; }
-  35% { scale: 1.01 1.02; }
+  35% { scale: 1.01 1; }
 }
 
 @keyframes local-agent-composer-press-b {
   0%, 100% { scale: 1; }
-  35% { scale: 1.01 1.02; }
+  35% { scale: 1.01 1; }
 }
 
 /* Composer chrome is not prose; editable fields and decision details remain selectable. */
@@ -2122,13 +2125,11 @@
 .local-agent__failed-draft small { display: block; color: var(--ac-muted); margin-top: 5px; }
 .local-agent__queued-input { display: flex; gap: 8px; padding: 6px 12px; color: var(--ac-muted); }
 .local-agent__queued-input span { white-space: pre-wrap; overflow-wrap: anywhere; }
-.local-agent__unapplied-inputs { margin: 18px 0; color: var(--ac-muted); font-size: var(--ac-font-caption); }
-.local-agent__unapplied-inputs > summary { display: flex; align-items: center; gap: 8px; padding: 10px 0; cursor: pointer; list-style: none; }
+.local-agent__unapplied-inputs { margin: 8px 0; color: var(--ac-muted); font-size: var(--ac-font-caption); }
+.local-agent__unapplied-inputs > summary { cursor: pointer; list-style: none; }
 .local-agent__unapplied-inputs > summary::-webkit-details-marker { display: none; }
-.local-agent__unapplied-inputs > summary > svg:last-child { margin-left: auto; transition: transform var(--ac-motion-feedback) ease; }
-.local-agent__unapplied-inputs[open] > summary > svg:last-child { transform: rotate(180deg); }
-.local-agent__unapplied-inputs > p { margin: 0 0 12px; line-height: var(--ac-line-body); }
-.local-agent__unapplied-input { display: flex; align-items: flex-start; gap: 10px; margin-top: 8px; padding: 12px; border-radius: var(--ac-radius-inner); background: var(--ac-surface-subtle); }
+.local-agent__unapplied-inputs p { margin: 8px 0; line-height: var(--ac-line-body); }
+.local-agent__unapplied-input { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 8px 0; border-top: 1px solid var(--ac-border); }
 .local-agent__unapplied-input-text { flex: 1; min-width: 0; }
 .local-agent__unapplied-input pre { max-height: 220px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: var(--ac-foreground); }
 .local-agent__unapplied-input-plugins { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -2269,9 +2270,6 @@
 .local-agent__error-details dd { margin:0; }
 .local-agent__retry-status { padding:12px 0; color:var(--ac-muted); }
 .local-agent__retry-status > p { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--ac-font-body); }
-.local-agent__recovery-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-.local-agent__recovery-actions button { font:inherit; color:inherit; background:var(--ac-surface-raised); border:1px solid transparent; border-radius:8px; padding:6px 12px; cursor:pointer; }
-.local-agent__recovery-actions button:disabled { opacity:0.5; cursor:default; }
 
 .local-agent__draft-attachments { flex-wrap: nowrap; align-items: flex-start; min-width: 0; overflow-x: auto; overflow-y: hidden; overflow-anchor: none; overscroll-behavior-x: contain; }
 .local-agent__draft-attachments > * { flex-shrink: 0; }
@@ -2416,21 +2414,17 @@
 .local-agent__question > [role='alert'] { color: var(--ac-danger); }
 @media (max-width: 480px) { .local-agent__question { padding: 16px; } }
 
-.local-agent__terminal-error > p { margin:0; color:var(--ac-danger); font-weight:var(--ac-weight-medium); line-height:1.6; overflow-wrap:anywhere; }
-.local-agent__terminal-error > details { color:var(--ac-muted); line-height:1.6; }
-.local-agent__terminal-error summary { cursor:pointer; }
 .local-agent__terminal-error details[open] { min-width:0; overflow-wrap:anywhere; }
-.local-agent__terminal-error .local-agent__recovery-actions { margin-top:4px; }
-.local-agent__recovery-actions button:hover:not(:disabled) { background:var(--ac-surface-hover); }
 
 .local-agent__pasted-image-preview .conversation-image-review__open { width: 48px; height: 48px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
 .local-agent__pasted-image-preview .conversation-image-review__open > img { width: 100%; height: 100%; object-fit: contain; }
 
 
 /* Reader expansion reuses the mounted input and send controls in a one-line capsule. */
-.local-agent.local-agent--expanded .local-agent__composer-shell--reader { padding-top: 24px; padding-bottom: 8px; }
-.local-agent__composer-disclosure { position: absolute; z-index: 1; top: -24px; left: 50%; transform: translateX(-50%); }
-.local-agent__composer-disclosure[aria-expanded='false'] { transform: translateX(-50%) rotate(180deg); }
+.local-agent.local-agent--expanded .local-agent__composer-shell--reader { padding-top: 4px; padding-bottom: 8px; }
+/* The disclosure shares the existing accessory row rather than covering it. */
+.local-agent__composer-disclosure { flex: none; }
+.local-agent__composer-disclosure[aria-expanded='false'] { transform: rotate(180deg); }
 .local-agent__composer-shell--collapsed .conversation-change-dock:empty,
 .local-agent__composer-shell--collapsed .local-agent__composer-hint { display: none; }
 .local-agent .local-agent__composer--collapsed { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 18px; border-radius: 999px; }

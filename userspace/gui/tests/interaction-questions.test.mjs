@@ -157,6 +157,7 @@ test('concurrent approval and text decisions expose separate views without mixin
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
   const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
   const base = {
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'Keep the existing configuration', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     textDecision: true, canSend: true, showStopAction: false,
@@ -205,6 +206,7 @@ test('question replies keep stop available and skip identifies the displayed que
   const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
   const answers = [], actions = [];
   const composer = {
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'Inspect the current window', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     textDecision: true, canSend: true, showStopAction: true, submitting: false,

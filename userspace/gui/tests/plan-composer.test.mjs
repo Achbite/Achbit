@@ -12,6 +12,7 @@ const plan = { planId: 'plan:review', runId: 'run:review', revision: 2, status: 
 
 function composerFor(pendingPlan) {
   return { pendingPlan, pendingScopeAddition: null, pendingApproval: null, pendingInteraction: null,
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: '保留现有报告', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     submitting: false, canSend: true, showStopAction: false, textDecision: true,

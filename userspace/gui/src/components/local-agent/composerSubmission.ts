@@ -1,4 +1,4 @@
-import type { PluginSelectionInput } from '@achbit/protocol';
+import type { FilesystemReference, GuidanceReference, PluginSelectionInput } from '@achbit/protocol';
 import type { BrowserAnnotationDraft } from './browserReview';
 import type { PastedImageInput } from '../../services/pastedImage';
 import type { PastedTextInput } from '../../services/pastedText';
@@ -9,6 +9,10 @@ export interface ComposerState {
   pastedImages: PastedImageInput[];
   filesystemPaths: Array<{ path: string; kind: 'file' | 'directory' }>;
   pluginSelections: PluginSelectionInput[];
+  /** Accepted resource handles stay handles; never reinterpret them as host paths. */
+  filesystemReferences?: FilesystemReference[];
+  guidanceReferences?: GuidanceReference[];
+  restoredInputIds?: string[];
   selectionStart: number;
   selectionEnd: number;
   focused: boolean;
@@ -19,11 +23,15 @@ export function emptyComposerState(): ComposerState {
 }
 
 export function composerStateIsEmpty(state: ComposerState): boolean {
-  return !state.draft && !state.pastedTexts.length && !state.pastedImages.length && !state.filesystemPaths.length && !state.pluginSelections.length;
+  return !state.draft && !state.pastedTexts.length && !state.pastedImages.length && !state.filesystemPaths.length && !state.pluginSelections.length && !state.filesystemReferences?.length && !state.guidanceReferences?.length;
 }
 
 export function cloneComposerState(state: ComposerState): ComposerState {
-  return { ...state, pastedImages: (state.pastedImages ?? []).map((item) => ({ ...item })), pastedTexts: state.pastedTexts.map((item) => ({ ...item })),
+  return { ...state,
+    ...(state.filesystemReferences ? { filesystemReferences: structuredClone(state.filesystemReferences) } : {}),
+    ...(state.guidanceReferences ? { guidanceReferences: structuredClone(state.guidanceReferences) } : {}),
+    ...(state.restoredInputIds ? { restoredInputIds: [...state.restoredInputIds] } : {}),
+    pastedImages: (state.pastedImages ?? []).map((item) => ({ ...item })), pastedTexts: state.pastedTexts.map((item) => ({ ...item })),
     filesystemPaths: state.filesystemPaths.map((item) => ({ ...item })),
     pluginSelections: state.pluginSelections.map((item) => ({ ...item })) };
 }

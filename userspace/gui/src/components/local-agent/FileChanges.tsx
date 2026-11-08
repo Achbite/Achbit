@@ -8,6 +8,7 @@ import { useConversationHost, useConversationTheme } from './ConversationHost';
 import { useConversationSessionId } from './ConversationSessionScope';
 import { useConversationRowState } from './ConversationVirtualRow';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { useViewportBounds } from '../shared/useViewportBounds';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
 import { changedFiles, displayedChangedFiles, readRoundChange, readChangeStatistics, previewChangedLines, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
@@ -28,6 +29,8 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
     previousView.current = { sessionId, compact };
   }, [sessionId, compact, setShowAll, setExpanded]);
   const all = useMemo(() => changedFiles(activities), [activities]);
+  const listRef = useRef<HTMLDivElement>(null);
+  useViewportBounds(listRef, compact && !inlineDiff && all.length > 0);
   const signature = JSON.stringify([sessionId, all.map((file) => [file.key, file.changes.map((entry) => [entry.recordId, entry.index])])]);
   const [statistics, setStatistics] = useState<{ signature: string; files: Map<string, FileChangeStatistics>; errors: Map<string, string> }>({ signature: '', files: new Map(), errors: new Map() });
   const displayed = displayedChangedFiles(all, compact, expanded, showAll);
@@ -76,7 +79,7 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
       {binaryCount > 0 && <small className="conversation-change-binary-count">{t(language, 'changes.binaryCount', { count: binaryCount })}</small>}
       <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
-    {(compact || expanded) && <div className="conversation-change-list">{entries}
+    {(compact || expanded) && <div ref={listRef} className="conversation-change-list" data-native-overlay={compact || undefined}>{entries}
       {!compact && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
       {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><summary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</summary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
     </div>}

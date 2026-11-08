@@ -134,7 +134,8 @@ export function ConversationComposer({
   // Alternating names restarts the surface pulse, including rapid repeat clicks.
   const playPressFeedback = () => setPressFeedback(current => current === 'a' ? 'b' : 'a');
   const hasDraftAttachments = Boolean(pendingFilesystemPaths.length
-    || composer.pastedTexts.length || composer.pastedImages.length || pluginSelections.length);
+    || composer.pastedTexts.length || composer.pastedImages.length || pluginSelections.length
+    || composer.recoveredContent.filesystemReferences.length || composer.recoveredContent.guidanceReferences.length);
   const draftEmpty = !draft && !hasDraftAttachments;
   useLayoutEffect(() => {
     // Sending clears the draft; deleting the last character is still editing.
@@ -166,7 +167,7 @@ export function ConversationComposer({
     const bounds = rail.getBoundingClientRect(), item = latest.getBoundingClientRect();
     if (item.left < bounds.left) rail.scrollLeft -= bounds.left - item.left + 13;
     else if (item.right > bounds.right) rail.scrollLeft += item.right - bounds.right + 13;
-  }, [composer.pastedTexts, composer.pastedImages, pendingFilesystemPaths, pluginSelections]);
+  }, [composer.pastedTexts, composer.pastedImages, pendingFilesystemPaths, pluginSelections, composer.recoveredContent]);
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
@@ -216,13 +217,32 @@ export function ConversationComposer({
         <pre>{[failed.draft, ...failed.pastedTexts.map((item) => item.text)].filter(Boolean).join('\n\n')}</pre>
         {failed.pastedImages.map((image) => <div key={image.inputId}>{image.name}</div>)}
         {failed.filesystemPaths.map((item) => <div key={item.path}>{item.path}</div>)}
+        {failed.filesystemReferences?.map(item => <div key={item.referenceId}>{item.displayName}</div>)}
+        {failed.guidanceReferences?.map(item => <div key={item.referenceId}>{item.label}</div>)}
         {failed.pluginSelections.map((item) => <div key={item.selectionId}>@{item.label}</div>)}
         <button type="button" disabled={!composer.canRestoreFailedDraft} onClick={() => composer.restoreFailedDraft(index)}>
           {language === 'zh-CN' ? '恢复到输入框' : 'Restore draft'}
         </button>
         {!composer.canRestoreFailedDraft && <small>{language === 'zh-CN' ? '发送或清空当前草稿后可恢复。' : 'Send or clear the current draft to restore this one.'}</small>}
       </details>)}
-      <div className="conversation-change-dock" aria-live="polite">{changeBar}</div>
+      <div className="conversation-change-dock" aria-live="polite">
+        {changeBar}
+        {canCollapseInput && <IconButton
+          {...identity.action('toggle-expanded', 'click')}
+          className="local-agent__composer-disclosure"
+          icon="chevronDown"
+          size="compact"
+          aria-label={t(language, readerInputCollapsed ? 'agent.composer.expandInput' : 'agent.composer.collapseInput')}
+          aria-expanded={!readerInputCollapsed}
+          aria-controls={inputId}
+          onMouseDown={event => { if (event.button === 0) event.preventDefault(); }}
+          onClick={() => {
+            setAttachmentMenuOpen(false);
+            setPermissionMenuOpen(false);
+            setReaderInputExpanded(value => !value);
+          }}
+        />}
+      </div>
       {projection?.queuedInputs.filter(input => input.status === 'queued').map((input) => <div className="local-agent__queued-input" key={input.commandId} role="status">
         <strong>{language === 'zh-CN' ? '等待加入当前任务' : 'Waiting to join this run'}</strong>
         <span>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map((item) => item.displayName).join(', ')}` : ''}</span>
@@ -259,21 +279,6 @@ export function ConversationComposer({
           playPressFeedback();
         }}
       >
-        {canCollapseInput && <IconButton
-          {...identity.action('toggle-expanded', 'click')}
-          className="local-agent__composer-disclosure"
-          icon="chevronDown"
-          size="compact"
-          aria-label={t(language, readerInputCollapsed ? 'agent.composer.expandInput' : 'agent.composer.collapseInput')}
-          aria-expanded={!readerInputCollapsed}
-          aria-controls={inputId}
-          onMouseDown={event => { if (event.button === 0) event.preventDefault(); }}
-          onClick={() => {
-            setAttachmentMenuOpen(false);
-            setPermissionMenuOpen(false);
-            setReaderInputExpanded(value => !value);
-          }}
-        />}
         <ComposerDecisionPanels language={language} composer={visibleComposer} />
         {!pendingApproval && <>
         {composer.editingMessage && !composer.textDecision && <>
@@ -361,7 +366,7 @@ export function ConversationComposer({
         {selectedProfileId && !profiles.some((profile) => profile.id === selectedProfileId && profile.enabled) && (
           <p className="local-agent__profile-notice" role="status">{t(language, 'agent.profile.boundUnavailable')}</p>
         )}
-        {(composer.pastedImages.length > 0 || composer.pastedTexts.length > 0 || pendingFilesystemPaths.length > 0 || pluginSelections.length > 0) && (
+        {hasDraftAttachments && (
           <div ref={attachmentRail} className="local-agent__draft-attachments" role="group" tabIndex={0}
             aria-label={language === 'zh-CN' ? '消息附件，可左右滚动查看' : 'Message attachments, scroll horizontally to browse'}>
             {composer.pastedTexts.map(paste => paste.browserReview ? (
@@ -414,6 +419,17 @@ export function ConversationComposer({
                 ><AchbitShellIcon name="close" size={14} /></button>
               </span>
             ))}
+            {composer.recoveredContent.filesystemReferences.map(reference => <span key={reference.referenceId} data-attachment-id={reference.referenceId}>
+              <AchbitShellIcon name={reference.kind === 'directory' ? 'folder' : 'file'} />
+              <span className="local-agent__attachment-name" title={reference.logicalPath}>{reference.displayName}</span>
+              <IconButton size="compact" icon="close" aria-label={t(language, 'agent.attachment.remove', { name: reference.displayName })}
+                onClick={() => composer.removeRecoveredReference(reference.referenceId)} />
+            </span>)}
+            {composer.recoveredContent.guidanceReferences.map(reference => <span key={reference.referenceId} data-attachment-id={reference.referenceId}>
+              <AchbitShellIcon name="extension" /><span className="local-agent__attachment-name">{reference.label}</span>
+              <IconButton size="compact" icon="close" aria-label={t(language, 'agent.attachment.remove', { name: reference.label })}
+                onClick={() => composer.removeRecoveredGuidance(reference.referenceId)} />
+            </span>)}
             {pendingFilesystemPaths.filter(reference => !composer.pastedTexts.some(paste => paste.browserReview?.screenshot === reference.path)).map((reference) => (
               <span
                 className={reference.kind === 'directory'

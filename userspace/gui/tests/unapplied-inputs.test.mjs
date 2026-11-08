@@ -18,6 +18,7 @@ test('only active queued inputs occupy the real composer; terminal evidence is n
   const calls = [];
   let view;
   const composer = { conversationKey: 'session:queue', projection: { queuedInputs: inputs, contextCompositions: [] },
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'New draft', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     canSend: true, showStopAction: false, textDecision: false, submitDraft: () => calls.push('send'), cancelRun: () => calls.push('stop') };
