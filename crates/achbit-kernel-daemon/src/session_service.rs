@@ -239,12 +239,12 @@ impl SessionServiceProcess {
         session_id: &str,
         run_id: Option<&str>,
         input_budget_tokens: Option<u64>,
-    ) -> Result<(String, tokio::sync::mpsc::Receiver<Value>), SessionServiceError> {
+    ) -> Result<(String, DebugObservationReceiver), SessionServiceError> {
         let id = format!(
             "observation:{}",
             self.next_request.fetch_add(1, Ordering::Relaxed)
         );
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (sender, receiver) = debug_observation_channel(MAX_DEBUG_OBSERVATION_QUEUE_BYTES);
         let responses = Arc::clone(
             &self
                 .process
@@ -426,9 +426,79 @@ struct PendingResponses {
     debug_observers: HashMap<String, DebugObserver>,
 }
 
+// Match the Debug observer's existing capture/delivery byte budget. A frame
+// count would reject legitimate small-fragment bursts before this budget is used.
+#[cfg(feature = "debug-control")]
+const MAX_DEBUG_OBSERVATION_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+
+#[cfg(feature = "debug-control")]
+struct QueuedDebugObservation {
+    value: Value,
+    _capacity: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[cfg(feature = "debug-control")]
+struct DebugObservationSender {
+    sender: tokio::sync::mpsc::UnboundedSender<QueuedDebugObservation>,
+    capacity: Arc<tokio::sync::Semaphore>,
+}
+
+#[cfg(feature = "debug-control")]
+pub(crate) struct DebugObservationReceiver {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<QueuedDebugObservation>,
+}
+
+#[cfg(feature = "debug-control")]
+fn debug_observation_channel(bytes: usize) -> (DebugObservationSender, DebugObservationReceiver) {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    (
+        DebugObservationSender {
+            sender,
+            capacity: Arc::new(tokio::sync::Semaphore::new(bytes)),
+        },
+        DebugObservationReceiver { receiver },
+    )
+}
+
+#[cfg(feature = "debug-control")]
+impl DebugObservationSender {
+    fn try_send(&self, value: Value) -> Result<(), tokio::sync::mpsc::error::TrySendError<Value>> {
+        use tokio::sync::mpsc::error::TrySendError;
+        if self.sender.is_closed() {
+            return Err(TrySendError::Closed(value));
+        }
+        let Ok(bytes) = u32::try_from(value.to_string().len()) else {
+            return Err(TrySendError::Full(value));
+        };
+        let Ok(capacity) = Arc::clone(&self.capacity).try_acquire_many_owned(bytes) else {
+            return Err(TrySendError::Full(value));
+        };
+        // This enqueue never waits on the HTTP consumer or the shared Session reader.
+        self.sender
+            .send(QueuedDebugObservation {
+                value,
+                _capacity: capacity,
+            })
+            .map_err(|error| TrySendError::Closed(error.0.value))
+    }
+}
+
+#[cfg(feature = "debug-control")]
+impl DebugObservationReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<Value> {
+        // Moving the Value drops its byte permit when the consumer takes the frame.
+        self.receiver.recv().await.map(|queued| queued.value)
+    }
+
+    #[cfg(test)]
+    fn blocking_recv(&mut self) -> Option<Value> {
+        self.receiver.blocking_recv().map(|queued| queued.value)
+    }
+}
+
 #[cfg(feature = "debug-control")]
 struct DebugObserver {
-    sender: Option<tokio::sync::mpsc::Sender<Value>>,
+    sender: Option<DebugObservationSender>,
     status: Value,
 }
 
@@ -473,7 +543,18 @@ impl PendingResponses {
             Err(error) => {
                 observer.status["status"] = json!("failed");
                 observer.status["coverage"] = json!("partial");
-                observer.status["error"] = json!({"code":"observation_receiver_unavailable","message":error.to_string(),
+                let (code, message) = match error {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => (
+                        "observation_receiver_backpressure",
+                        "Observation delivery queue exceeded its bounded byte capacity."
+                            .to_string(),
+                    ),
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => (
+                        "observation_receiver_unavailable",
+                        "Observation receiver is closed.".to_string(),
+                    ),
+                };
+                observer.status["error"] = json!({"code":code,"message":message,
                     "missingRange":{"fromObservationSequence":sequence,"through":"unknown"},"notificationDelivered":false});
                 observer.sender = None;
             }
@@ -1061,9 +1142,50 @@ input.on('line', line => {
 
     #[cfg(feature = "debug-control")]
     #[test]
+    fn observation_burst_preserves_order_without_blocking_shared_rpc() {
+        let child = spawn_owned_host_process(Command::new("node").arg("-e").arg(r#"
+const input = require('node:readline').createInterface({ input: process.stdin });
+function reply(request, data) { process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', requestId: request.requestId, ok: true, data }) + '\n'); }
+input.on('line', line => {
+  const request = JSON.parse(line);
+  if (request.operation === 'health') reply(request, { state: 'ready' });
+  else if (request.operation === 'debug.subscribe') {
+    for (let sequence = 1; sequence <= 32; sequence++) process.stdout.write(JSON.stringify({ protocolVersion: 'achbit.local-agent', type: 'debug.observation', subscriptionId: request.data.subscriptionId, sequence, status: sequence === 32 ? 'settled' : 'active', items: [{kind:'text',text:'One fragment.'}] }) + '\n');
+    reply(request, { status: 'active' });
+  } else if (request.operation === 'debug.unsubscribe') reply(request, { status: 'closed' });
+  else if (request.operation === 'shutdown') { reply(request, {}); input.close(); process.stdin.destroy(); }
+});
+"#).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())).unwrap();
+        let service = SessionServiceProcess::from_process(child).unwrap();
+        let (id, mut receiver) = service
+            .debug_subscribe("session:test", None, Some(256))
+            .unwrap();
+        // Subscribe and health replies share the same stdout reader as this burst.
+        assert_eq!(
+            service.request("health", json!({})).unwrap()["state"],
+            "ready"
+        );
+        for sequence in 1..=32 {
+            let observed = receiver
+                .blocking_recv()
+                .expect("all accepted observation frames remain available");
+            assert_eq!(observed["sequence"], sequence);
+            assert_eq!(
+                observed["status"],
+                if sequence == 32 { "settled" } else { "active" }
+            );
+        }
+        assert!(receiver.blocking_recv().is_none());
+        service.debug_unsubscribe(&id).unwrap();
+        service.shutdown().unwrap();
+    }
+
+    #[cfg(feature = "debug-control")]
+    #[test]
     fn slow_observation_consumers_fail_only_their_subscription() {
         let mut pending = PendingResponses::default();
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let first = json!({"protocolVersion":PROTOCOL_VERSION,"type":"debug.observation","subscriptionId":"sub","sequence":1});
+        let (sender, mut receiver) = debug_observation_channel(first.to_string().len());
         pending.debug_observers.insert(
             "sub".into(),
             DebugObserver {
@@ -1077,12 +1199,72 @@ input.on('line', line => {
         assert!(pending.terminal_error.is_none());
         let status = &pending.debug_observers["sub"].status;
         assert_eq!(status["status"], "failed");
+        assert_eq!(status["error"]["code"], "observation_receiver_backpressure");
         assert_eq!(
             status["error"]["missingRange"]["fromObservationSequence"],
             2
         );
         assert_eq!(receiver.blocking_recv().unwrap()["sequence"], 1);
         assert!(receiver.blocking_recv().is_none());
+    }
+
+    #[cfg(feature = "debug-control")]
+    #[test]
+    fn observation_consumption_releases_its_byte_capacity() {
+        let value = json!({"sequence":1,"items":[{"text":"retained"}]});
+        let bytes = value.to_string().len();
+        let (sender, mut receiver) = debug_observation_channel(bytes);
+        sender.try_send(value.clone()).unwrap();
+        assert_eq!(sender.capacity.available_permits(), 0);
+        assert_eq!(receiver.blocking_recv().unwrap(), value);
+        assert_eq!(sender.capacity.available_permits(), bytes);
+        sender.try_send(value.clone()).unwrap();
+        assert_eq!(receiver.blocking_recv().unwrap(), value);
+    }
+
+    #[cfg(feature = "debug-control")]
+    #[test]
+    fn closed_observation_consumer_preserves_failure_and_other_subscriptions() {
+        let mut pending = PendingResponses::default();
+        let (sender, receiver) = debug_observation_channel(MAX_DEBUG_OBSERVATION_QUEUE_BYTES);
+        pending.debug_observers.insert(
+            "closed".into(),
+            DebugObserver {
+                sender: Some(sender),
+                status: json!({"status":"active"}),
+            },
+        );
+        drop(receiver);
+        let (sender, mut healthy) = debug_observation_channel(MAX_DEBUG_OBSERVATION_QUEUE_BYTES);
+        pending.debug_observers.insert(
+            "healthy".into(),
+            DebugObserver {
+                sender: Some(sender),
+                status: json!({"status":"active"}),
+            },
+        );
+        for subscription in ["closed", "healthy"] {
+            pending.deliver_debug_observation(json!({"protocolVersion":PROTOCOL_VERSION,"type":"debug.observation","subscriptionId":subscription,"sequence":1,"status":"active"}));
+        }
+        assert!(pending.terminal_error.is_none());
+        assert_eq!(
+            pending.debug_observers["closed"].status["error"]["code"],
+            "observation_receiver_unavailable"
+        );
+        assert_eq!(
+            pending.debug_observers["closed"].status["coverage"],
+            "partial"
+        );
+        assert_eq!(
+            pending.debug_observers["closed"].status["error"]["missingRange"]
+                ["fromObservationSequence"],
+            1
+        );
+        assert_eq!(healthy.blocking_recv().unwrap()["sequence"], 1);
+        assert_eq!(
+            pending.debug_observers["healthy"].status["status"],
+            "active"
+        );
     }
 
     #[test]

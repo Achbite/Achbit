@@ -14,7 +14,6 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 struct Control {
@@ -25,7 +24,7 @@ struct Control {
 struct Subscription {
     control_id: String,
     session_id: String,
-    receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<Value>>>,
+    receiver: Arc<tokio::sync::Mutex<crate::session_service::DebugObservationReceiver>>,
 }
 static CONTROL: LazyLock<Mutex<Option<Control>>> = LazyLock::new(|| Mutex::new(None));
 static SUBSCRIPTIONS: LazyLock<Mutex<HashMap<String, Subscription>>> =
