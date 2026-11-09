@@ -160,12 +160,13 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-diff-editor { flex: 1; min-height: 0; }
 
 /* A fixed composer slot owns the live capsule; transcript growth cannot move it. */
-.conversation-change-dock { display: flex; align-items: center; justify-content: center; height: 40px; flex: none; position: relative; z-index: 5; width: min(760px, 100%); margin-inline: auto; }
+.conversation-change-dock { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px 8px; min-height: 40px; padding-block: 4px 8px; flex: none; position: relative; z-index: 5; width: min(760px, 100%); margin-inline: auto; }
 .conversation-change-dock:empty { pointer-events: none; }
-.local-agent--empty .conversation-change-dock { display: none; }
+.local-agent--empty .conversation-change-dock:empty { display: none; }
 .conversation-change-dock .conversation-changes--compact { margin: 0; border: 1px solid var(--ac-border); border-radius: 18px; background: var(--ac-surface); }
 .conversation-change-dock .conversation-changes-heading { min-height: 28px; padding: 4px 11px; gap: 7px; border-radius: 18px; }
-.conversation-change-dock .conversation-changes-heading strong { font-weight: 400; white-space: nowrap; }
+.conversation-change-dock .conversation-changes-heading strong { display: block; overflow: hidden; text-overflow: ellipsis; font-weight: 400; white-space: nowrap; }
+.conversation-change-dock:has(.local-agent__composer-disclosure) .conversation-changes--compact { max-width: calc(100% - 32px); }
 .conversation-change-dock .conversation-changes-heading > svg { display: none; }
 .conversation-change-dock .conversation-change-list { top: auto; bottom: 100%; left: 50%; transform: translateX(-50%); width: min(480px, 80vw); }
 .conversation-diff-counts { display: inline-flex; flex: none; align-items: center; gap: 5px; font-size: calc(12px * var(--ac-ui-font-scale, 1)); font-variant-numeric: tabular-nums; white-space: nowrap; }

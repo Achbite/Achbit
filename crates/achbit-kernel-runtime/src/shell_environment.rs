@@ -334,6 +334,7 @@ pub(crate) fn prepare_script_arguments(
     program: &ShellProgram,
     script: &str,
     temporary: &Path,
+    terminal: bool,
 ) -> KernelResult<Vec<String>> {
     if program.tool != "powershell" {
         return Ok(vec!["-c".into(), script.into()]);
@@ -351,17 +352,22 @@ pub(crate) fn prepare_script_arguments(
         .and_then(|_| file.write_all(b"$env:TEMP = $env:TMPDIR\n$env:TMP = $env:TMPDIR\n"))
         .and_then(|_| file.write_all(script.as_bytes()))
         .map_err(|error| KernelError::Other(format!("write PowerShell script: {error}")))?;
-    Ok(vec![
+    let mut arguments = vec![
         "-NoLogo".into(),
         "-NoProfile".into(),
-        "-NonInteractive".into(),
         "-ExecutionPolicy".into(),
         "Bypass".into(),
         "-File".into(),
         crate::file_access::process_visible_path(&path)
             .to_string_lossy()
             .into_owned(),
-    ])
+    ];
+    // A bounded PTY call supplies stdin for Read-Host and other prompts.
+    // Ordinary calls still fail promptly if the script tries to prompt.
+    if !terminal {
+        arguments.insert(2, "-NonInteractive".into());
+    }
+    Ok(arguments)
 }
 
 #[cfg(test)]
@@ -533,7 +539,7 @@ mod tests {
         let temporary =
             std::env::temp_dir().join(format!("achbit-script-test-{}", std::process::id()));
         std::fs::create_dir(&temporary).unwrap();
-        let arguments = prepare_script_arguments(&program, &text, &temporary).unwrap();
+        let arguments = prepare_script_arguments(&program, &text, &temporary, false).unwrap();
         let path = PathBuf::from(arguments.last().unwrap());
         assert_eq!(path.parent(), Some(temporary.as_path()));
         let contents = std::fs::read(&path).unwrap();

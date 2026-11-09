@@ -34,6 +34,16 @@ export interface ReaderViewState {
   expanded: boolean;
 }
 
+/** Restoring a selection is not an explicit request to reveal the Reader. */
+export function readReaderViewState(sessionId: string | null): ReaderViewState {
+  const selected = sessionId ? readViewState<ReaderTarget | null>(sessionId + ':selection', null) : null;
+  // Native pages are restored by their owning Host's page catalogue.
+  const tabs: ReaderTab[] = selected && selected.kind !== 'browser'
+    ? [{ id: readerTargetKey(selected), target: selected }] : [];
+  return { sessionId, tabs, activeId: tabs[0]?.id ?? null,
+    visible: sessionId ? readViewState(sessionId + ':visible', tabs.length > 0) : false, expanded: false };
+}
+
 export function reconcileReaderPages(state: ReaderViewState, pages: NativePage[], savedSelection?: ReaderTarget | null): ReaderViewState {
   const available = new Map(pages.filter(page => page.sessionId === state.sessionId && page.status !== 'closed').map(page => [page.previewId, page]));
   const tabs = state.tabs.flatMap(tab => {

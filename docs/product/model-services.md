@@ -35,7 +35,7 @@ achbit-cli models default PROFILE_ID
 achbit-cli models probe PROFILE_ID
 ```
 
-`achbit-cli --help` and `achbit-cli models --help` show commands and input shapes without connecting to a Host. Apply the same `--host-data-dir` to subsequent commands when using a task Shell. `instance` reports the connected process, API address and actual config/data/profile/secret paths without secret contents. `services` lists installed service plugins and their current status, endpoint and state directory; `plugin.search` searches callable tools and is not this service inventory.
+`achbit-cli --help` and `achbit-cli models --help` show commands and input shapes without connecting to a Host. The packaged CLI still acquires its installation lease at startup. Submit task Shell calls with `requestHostPermission` and a specific reason, including read-only management queries. Apply the same `--host-data-dir` to subsequent commands. `instance` reports the connected process, API address and actual config/data/profile/secret paths without secret contents. `services` lists installed service plugins and their current status, endpoint and state directory; `plugin.search` searches callable tools and is not this service inventory.
 
 `connection.json` is `{ "connection": { "id": "local-web", "name": "Local Web", "adapterId": "custom", "billingMode": "metered", "baseUrl": "http://127.0.0.1:17632/v1", "credentialKind": "apiKey" } }`. Use the actual endpoint returned by `services`. Optional `profile` in the same file creates the first profile atomically with a new connection. Updating an existing connection preserves its credential unless `--api-key-file` is supplied; adapter and authentication kind follow the Host's existing edit rules.
 
@@ -126,7 +126,7 @@ Prices are local per-call estimates from the configured catalog, not invoices. U
 
 ## Diagnose requests
 
-Use `session.read` → `context` with an exact `providerRequestId` for recorded request/usage or review details. Inspect the original attempt/error before retrying. A long request is not evidence that the Loop stopped. The product retries classified transient network failures; protocol errors, tool errors and cancellations are different outcomes.
+Use `session.read` → `context` with an exact `providerRequestId` for recorded request/usage or review details. Inspect the original attempt/error before retrying. A long request is not evidence that the Loop stopped. The Provider transport limits connection setup to 10 seconds and each idle read to 120 seconds, including response headers. Incoming data resets the read wait; there is no total generation deadline. The Session retries classified transient network failures with at most five sends for the same logical request; each attempt and retry wait is recorded. Repeated silent attempts can therefore still take several minutes, and cancellation stops the pending request or retry wait. Protocol errors, tool errors and cancellations are different outcomes.
 
 Hosted search citations need a source-to-URL mapping. An unresolved `[?]` cannot be repaired by inventing a URL; obtain source evidence if needed. Original Provider output remains in the recorded history.
 
@@ -150,6 +150,8 @@ Ordinary requests project the current tool contracts directly. Run status, wait 
 
 The Host installs product contributions in the Session configuration registry. The Session freezes their selected text in the run snapshot and continues to compose the same stage-specific tool contracts and journal. Internal compaction uses the shared prefix and accepts only text. The Host checks the creation recipe before scheduling a model-generated title. Ordinary first-message and manual titles use the catalog directly.
 
-The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":[],"plugins":false}`. Give it a reading task and exact file references. Use `collaboration` when the work needs editing, messaging or other installed capabilities; explicit task selections can narrow that preset as well. `fs.read` does not search unknown paths.
+The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":["agent","session"],"plugins":false}`. Give it a reading task and exact file references; it can send findings or questions to its task owner and wait for replies. Use `collaboration` for editing and teamwork with inherited installed capabilities. `fs.read` reads known paths.
+
+Full subagent configuration is off by default. The model selects a template and an allowed profile. Enabling **Full configuration** exposes per-task model effort, context, controls, compaction, tools, capabilities, installed runner, product components, permission policy and sandbox choices to the coordinator through `agent` → `models`. Children retain the parent tool and permission limits. Explicit saved settings are preserved. Configuration catalogs and current contacts stay in discovery results; tool declarations remain stable while task progress changes.
 
 Kernel prepares only the selected callable bindings. Session sends those tools, the task, relevant file addresses and active usage guidance to the model. Unstarted modules, disabled tools, plugin registration lists and internal policy/runtime configuration remain diagnostic facts, not model instructions. Enabled delegation retains proactive delegation guidance. Managed process activity and plugin activation are optional Session contributions over the same Loop and journal; container and other extension tools use the existing Kernel catalog disposal lifecycle.

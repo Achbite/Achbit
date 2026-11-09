@@ -187,6 +187,7 @@ export type AgentOperation =
       permissionPolicy?: AgentContributionSelection;
       workspaceSandbox?: AgentRecipe['workspaceSandbox'];
       tools?: AgentRecipe['tools'];
+      productComponents?: AgentRecipe['productComponents'];
       context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
   | { action: 'compact'; agentId: string; focus?: string }
@@ -1086,6 +1087,8 @@ export type SessionEvent =
         inputMessageId: string;
         workspaceBindings: WorkspaceBindingDisplay[];
         runtimeSnapshot: RunRuntimeSnapshot;
+        /** New model context only; earlier conversation facts remain in this Session. */
+        contextStart?: { historyThroughSequence: number; previousProfileId: string };
       };
     })
   | (SessionEventBase & {
@@ -1763,6 +1766,7 @@ export interface QueuedInputProjection {
 }
 
 export interface SessionProjection {
+  contextHandoff?: { runId: string; historyThroughSequence: number; previousProfileId: string; profileId: string; status: 'reading' | 'ready' };
   subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
@@ -1829,6 +1833,8 @@ export interface ConversationPort {
 
 export interface ConversationReadQuery {
   sessionId: string;
+  /** Inclusive snapshot boundary, applied before revisions and semantic reduction; not a page cursor. */
+  throughSequence?: number;
   view?: 'summary' | 'messages' | 'tools' | 'plans' | 'context' | 'reasoning' | 'images';
   imageIds?: string[];
   offset?: number;
@@ -1885,6 +1891,8 @@ export interface ProviderRuntimeSnapshot {
   providerRuntimeRef: string;
   /** Stable, credential-free identity for reusing input-token estimates; never a runtime binding. */
   inputTokenCalibrationKey?: string;
+  /** Credential-free, resolved service/account/model identity for native continuation. */
+  continuationKey?: string;
   profileId: string;
   fileInputMediaTypes?: string[];
   reasoningEffort?: LlmReasoningEffort;
@@ -2098,6 +2106,8 @@ export interface PrepareRunRuntimeRequest {
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;
+  /** Initial run project bindings; omitted means no project bindings. */
+  workspaceBindingIds?: readonly string[];
   environment?: JsonObject;
   hostBinding?: { hostInstanceId: string; windowLabel: string };
   restoreEnvironment?: boolean;
@@ -2344,7 +2354,8 @@ export interface ManagedProcessSnapshot {
   runId: string;
   callId: string;
   revision: number;
-  toolName: 'bash' | 'powershell' | 'container';
+  /** Captured canonical execution tool, including installed plugin tools. */
+  toolName: string;
   command: string;
   targets: string[];
   status: 'active' | 'completed' | 'failed' | 'cancelled';

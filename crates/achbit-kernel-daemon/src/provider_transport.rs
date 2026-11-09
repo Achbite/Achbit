@@ -26,6 +26,9 @@ impl ProviderTransport {
             client: reqwest::Client::builder()
                 .retry(reqwest::retry::never())
                 .connect_timeout(Duration::from_secs(10))
+                // Bound a silent connection, not the total time spent reasoning or streaming.
+                // Session alone decides whether the resulting network failure is retried.
+                .read_timeout(Duration::from_secs(120))
                 .build()?,
         })
     }
@@ -234,6 +237,117 @@ pub(crate) fn valid_diagnostics(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stalled_provider_reads_time_out_in_the_transport() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for phase in ["send", "responseBody"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (received, request_received) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            let peer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                if phase == "responseBody" {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n").await.unwrap();
+                }
+                received.send(()).unwrap();
+                let _ = released.await;
+            });
+            let client = ProviderTransport::new().unwrap().client;
+            let send = tokio::spawn(async move {
+                client
+                    .get(format!("http://{address}/responses"))
+                    .send()
+                    .await
+            });
+            request_received.await.unwrap();
+            let error = if phase == "send" {
+                tokio::time::pause();
+                tokio::time::timeout(Duration::from_secs(121), send)
+                    .await
+                    .expect("response headers must have a transport-owned idle timeout")
+                    .unwrap()
+                    .unwrap_err()
+            } else {
+                let mut response = send.await.unwrap().unwrap();
+                assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"x");
+                tokio::time::pause();
+                tokio::time::timeout(Duration::from_secs(121), response.chunk())
+                    .await
+                    .expect("response body must have a transport-owned idle timeout")
+                    .unwrap_err()
+            };
+            tokio::time::resume();
+            release.send(()).unwrap();
+            peer.await.unwrap();
+            let failure = network_failure(error, phase, None);
+            assert!(valid_diagnostics(&failure["diagnostics"]));
+            assert_eq!(failure["diagnostics"]["phase"], phase);
+            assert_eq!(failure["diagnostics"]["isTimeout"], true);
+            assert_eq!(failure["diagnostics"]["retryable"], true);
+            assert_eq!(failure["diagnostics"]["category"], "network");
+        }
+    }
+
+    #[tokio::test]
+    async fn active_provider_reads_reset_idle_timeout_without_a_total_deadline() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (next, mut chunks) = tokio::sync::mpsc::channel::<()>(1);
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n").await.unwrap();
+            while chunks.recv().await.is_some() {
+                socket.write_all(b"1\r\nx\r\n").await.unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+        let mut response = ProviderTransport::new()
+            .unwrap()
+            .client
+            .get(format!("http://{address}/responses"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"x");
+        for _ in 0..3 {
+            tokio::time::pause();
+            let mut read = Box::pin(response.chunk());
+            // Start the idle timer before time advances while the peer withholds data.
+            poll_fn(|cx| {
+                assert!(read.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            tokio::time::advance(Duration::from_secs(90)).await;
+            tokio::time::resume();
+            next.send(()).await.unwrap();
+            assert_eq!(read.await.unwrap().unwrap().as_ref(), b"x");
+        }
+        drop(next);
+        assert!(response.chunk().await.unwrap().is_none());
+        peer.await.unwrap();
+    }
 
     #[tokio::test]
     async fn chunked_body_eof_is_transient_but_invalid_framing_is_not() {

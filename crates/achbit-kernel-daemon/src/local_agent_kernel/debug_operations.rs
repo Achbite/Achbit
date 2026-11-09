@@ -210,6 +210,7 @@ impl LocalAgentKernel {
             .lock()
             .map_err(|_| lock_error())?
             .insert(id, op.clone());
+        self.jobs.notify_activity_changed();
         drop(controls);
         self.debug_schedule(op, None);
         Ok(record)
@@ -597,6 +598,7 @@ impl LocalAgentKernel {
         op.control.finish();
         drop(current);
         drop(active);
+        self.jobs.notify_activity_changed();
         op.changed.notify_waiters();
         Ok(())
     }

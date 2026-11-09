@@ -14,6 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Physical jobs are admitted per run; completion releases capacity through the existing feed.
+pub(crate) const MAX_ACTIVE_JOBS_PER_RUN: usize = 4;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Input {
@@ -28,8 +31,8 @@ pub(crate) struct Input {
 pub(crate) fn schema(targets: &[&str]) -> Value {
     let mut schema = json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
         "action":{"type":"string","enum":["start","wait","status","cancel"]},
-        "tool":{"type":"string","enum":targets,"description":"The execution tool to start."},
-        "input":{"type":"object","description":"For start: the chosen tool's exact input, excluding workspace and workspaceId; select workspace on this process call. Include any permission request. Omit timeout for no runtime limit."},
+        "tool":{"type":"string","enum":targets,"description":"An installed execution tool to run independently."},
+        "input":{"type":"object","description":"For start: the chosen tool's input. Select an Achbit workspace on this process call; plugin-specific arguments retain their original names. Include any permission request."},
         "jobId":{"type":"string","description":"For wait/status/cancel: the jobId returned by start."},
         "waitSeconds":{"type":"integer","minimum":1,"maximum":4294967295u64,"description":"Optional dependency decision deadline in seconds. The job keeps running. Without a deadline the first dependency wait offers one review after 120 seconds."}
     }});
@@ -40,7 +43,7 @@ pub(crate) fn schema(targets: &[&str]) -> Value {
         properties.remove("input");
     } else if targets.contains(&"container") {
         schema["properties"]["tool"]["description"] =
-            json!("The execution tool to start. Container jobs accept create or exec.");
+            json!("An installed execution tool to run independently. Container jobs accept create or exec.");
     }
     schema
 }
@@ -52,10 +55,11 @@ pub(crate) fn parse(raw: Value) -> Result<Input, String> {
     }
     match value.action.as_str() {
         "start"
-            if matches!(
-                value.tool.as_deref(),
-                Some("bash" | "powershell" | "container")
-            ) && value.input.as_ref().is_some_and(Value::is_object)
+            if value
+                .tool
+                .as_deref()
+                .is_some_and(|tool| !tool.trim().is_empty())
+                && value.input.as_ref().is_some_and(Value::is_object)
                 && value.job_id.is_none() =>
         {
             if value.tool.as_deref() == Some("container")
@@ -108,6 +112,7 @@ struct Entry {
 struct Registry {
     entries: Mutex<BTreeMap<String, Entry>>,
     updated: Condvar,
+    activity_changed: Arc<tokio::sync::Notify>,
     released: AtomicU64,
 }
 
@@ -115,6 +120,14 @@ struct Registry {
 pub(crate) struct Jobs(Arc<Registry>);
 
 impl Jobs {
+    pub(crate) fn activity_changed(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.0.activity_changed)
+    }
+
+    pub(crate) fn notify_activity_changed(&self) {
+        self.0.activity_changed.notify_waiters();
+    }
+
     pub(crate) fn has_active_work(&self) -> Result<bool, String> {
         Ok(self
             .0
@@ -176,6 +189,17 @@ impl Jobs {
             .map_err(|_| "Process registry lock failed")?;
         if entries.contains_key(&id) {
             return Err("Job already started".into());
+        }
+        let active = entries
+            .values()
+            .filter(|entry| {
+                entry.snapshot["sessionId"] == snapshot["sessionId"]
+                    && entry.snapshot["runId"] == snapshot["runId"]
+                    && entry.snapshot["status"] == "active"
+            })
+            .count();
+        if active >= MAX_ACTIVE_JOBS_PER_RUN {
+            return Err(format!("managed_process_capacity_exceeded: this run has {active} active jobs (limit {MAX_ACTIVE_JOBS_PER_RUN}); no job was started. Resume after a job completes."));
         }
         entries.insert(
             id.clone(),
@@ -270,6 +294,7 @@ impl Jobs {
                 entry.snapshot["revision"] =
                     json!(entry.snapshot["revision"].as_u64().unwrap() + 1);
                 jobs.0.updated.notify_all();
+                jobs.notify_activity_changed();
             })
             .map_err(|error| {
                 entries.remove(&id);
@@ -277,6 +302,7 @@ impl Jobs {
             })?;
         entries.get_mut(&id).unwrap().thread = Some(handle);
         self.0.updated.notify_all();
+        self.notify_activity_changed();
         Ok(initial)
     }
 
@@ -516,6 +542,89 @@ mod tests {
             error,
         }
     }
+    #[test]
+    fn job_capacity_is_atomic_per_run_and_released_by_completion() {
+        let jobs = Jobs::default();
+        let mut gates = Vec::new();
+        for i in 0..MAX_ACTIVE_JOBS_PER_RUN {
+            let (send, receive) = std::sync::mpsc::channel();
+            let mut input = snapshot();
+            input["jobId"] = json!(format!("job:{i}"));
+            jobs.start(input, move |_, _| {
+                receive.recv().map_err(|error| error.to_string())?;
+                Ok(result(None))
+            })
+            .unwrap();
+            gates.push(send);
+        }
+        let executed = Arc::new(AtomicU64::new(0));
+        let capture = executed.clone();
+        let error = jobs
+            .start(snapshot(), move |_, _| {
+                capture.fetch_add(1, Ordering::SeqCst);
+                Ok(result(None))
+            })
+            .unwrap_err();
+        assert!(
+            error.starts_with("managed_process_capacity_exceeded:"),
+            "{error}"
+        );
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            jobs.snapshots("session:test", "run:test", &Default::default(), 0)
+                .unwrap()
+                .len(),
+            MAX_ACTIVE_JOBS_PER_RUN
+        );
+
+        let mut other = snapshot();
+        other["jobId"] = json!("job:other");
+        other["sessionId"] = json!("session:other");
+        jobs.start(other, |_, _| Ok(result(None))).unwrap();
+        assert_eq!(
+            jobs.control(
+                "session:other",
+                "run:test",
+                "job:other",
+                "wait",
+                Some(2),
+                &Default::default()
+            )
+            .unwrap()["status"],
+            "completed"
+        );
+
+        gates.remove(0).send(()).unwrap();
+        assert_eq!(
+            jobs.control(
+                "session:test",
+                "run:test",
+                "job:0",
+                "wait",
+                Some(2),
+                &Default::default()
+            )
+            .unwrap()["status"],
+            "completed"
+        );
+        jobs.start(snapshot(), |_, _| Ok(result(None))).unwrap();
+        assert_eq!(
+            jobs.control(
+                "session:test",
+                "run:test",
+                "job:test",
+                "wait",
+                Some(2),
+                &Default::default()
+            )
+            .unwrap()["status"],
+            "completed"
+        );
+        drop(gates);
+        jobs.release_run("session:test", "run:test").unwrap();
+        jobs.release_run("session:other", "run:test").unwrap();
+    }
+
     #[test]
     fn foreground_short_keeps_original_result_without_publishing_a_job() {
         let jobs = Jobs::default();

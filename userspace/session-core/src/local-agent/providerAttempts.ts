@@ -72,6 +72,8 @@ export async function withProviderAttempts<T>(
       ? new ProviderCompletedFailure(error) : error;
     let result: T;
     try {
+      // Registration may await the journal while the Actor accepts cancellation.
+      signal.throwIfAborted();
       result = await consume({ ...request, providerAttemptId, attempt }, () => { completed = true; }, onEvent);
     } catch (error) {
       finish('interrupted');

@@ -1,3 +1,4 @@
+import { isHandoffRead } from './modelContext.js';
 import { shellCommandIntents } from './shellIntent.js';
 import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
 import { isManagedProcessSnapshot, providerRuntimeForPurpose } from '@achbit/protocol';
@@ -40,6 +41,7 @@ import {
 } from '@achbit/protocol';
 
 export interface SessionState {
+  contextHandoff?: SessionProjection['contextHandoff'];
   subagentSettings?: SessionProjection['subagentSettings'];
   recipe?: SessionProjection['recipe'];
   agentContext?: SessionProjection['agentContext'];
@@ -338,6 +340,11 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'run.started':
+      if (event.payload.contextStart) {
+        next.contextHandoff = { ...event.payload.contextStart, runId: event.runId,
+          profileId: event.payload.runtimeSnapshot.provider.profileId, status: 'reading' };
+        next.contextUsage = null;
+      }
       writableRecord(next, 'activities');
       writableRecord(next, 'tokenUsageHistory');
       next.runRuntimeSnapshots = { ...next.runRuntimeSnapshots };
@@ -775,6 +782,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         tool,
       };
       const record = event.payload.record;
+      if (next.contextHandoff?.status === 'reading'
+        && isHandoffRead(record, next.sessionId, next.contextHandoff.historyThroughSequence)) {
+        next.contextHandoff = { ...next.contextHandoff, status: 'ready' };
+      }
       if (['process', 'bash', 'powershell', 'container'].includes(record.toolName)
         && record.outcome === 'completed' && isRecord(record.output)) {
         const initial = record.output.job;
@@ -1390,6 +1401,7 @@ export function projectSession(
     activePlanRef: state.activePlanRef ? { ...state.activePlanRef } : null,
     pendingPlan: state.pendingPlan ? clonePlanProjection(state.pendingPlan) : null,
     todoList: cloneTodoList(state.todoList),
+    ...(state.contextHandoff ? { contextHandoff: { ...state.contextHandoff } } : {}),
     contextUsage: state.contextUsage ? { ...state.contextUsage } : null,
     // Keep the latest Agent usage receipt and the pending call composition.
     contextCompositions: state.contextCompositions.filter((receipt, index) => (
@@ -2173,7 +2185,8 @@ function projectProcess(state: SessionState, job: ManagedProcessSnapshot): void 
       ...(job.error ? { error: structuredClone(job.error) } : {}) } };
   delete activity.liveOutput;
   if (job.status === 'active') activity.liveOutput = structuredClone(job.output);
-  if (job.result != null && !(job.toolName === 'container' && isRecord(job.result) && job.result.exitCode === undefined)) {
+  if (job.result != null && (job.toolName === 'bash' || job.toolName === 'powershell'
+    || job.toolName === 'container' && isRecord(job.result) && job.result.exitCode !== undefined)) {
     const result = job.result;
     if (isRecord(result) && (result.exitCode === null || Number.isSafeInteger(result.exitCode))
       && isNaturalSafeInteger(result.durationMs) && typeof result.timedOut === 'boolean') {

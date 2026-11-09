@@ -242,6 +242,75 @@ mod tests {
     }
 
     #[test]
+    fn support_check_executes_the_selected_shell_and_refreshes_when_it_changes() {
+        let fixture = Fixture::new();
+        let invalid = fixture.0.join("invalid-shell.exe");
+        fs::write(&invalid, "not a Windows executable").unwrap();
+        let mut shell = ShellProgram {
+            tool: "powershell".into(),
+            executable: invalid,
+            dialect: "windowsPowerShell".into(),
+        };
+        let path = crate::shell_environment::resolved_agent_shell_path()
+            .unwrap()
+            .into_string()
+            .unwrap();
+        let unavailable = crate::workspace_sandbox::probe_for_revision(0, &shell, &path);
+        assert!(
+            !unavailable.available,
+            "an installed file is not proof of startup"
+        );
+        assert!(unavailable.reason.unwrap().contains("Start LPAC Shell"));
+        shell.executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let available = crate::workspace_sandbox::probe_for_revision(0, &shell, &path);
+        assert!(available.available, "{:?}", available.reason);
+    }
+
+    #[test]
+    fn windows_powershell_terminal_reads_supplied_stdin() {
+        let fixture = Fixture::new();
+        let program = crate::shell_environment::discover("powershell").unwrap();
+        let path = crate::shell_environment::resolved_agent_shell_path()
+            .unwrap()
+            .into_string()
+            .unwrap();
+        let invocation = crate::executors::tests::invocation(
+            "native-powershell-terminal-test",
+            "powershell",
+            serde_json::json!({
+                "command":"$ErrorActionPreference='Stop'; $value=Read-Host; Write-Output ('PTY:' + $value)",
+                "workspaceMode":"read", "executionScope":"workspace", "timeout":10,
+                "terminal":{"stdin":"hello\n"}
+            }),
+        );
+        let mut context = fixture.context();
+        context.private_resolved_targets = vec![context.workspace_root.clone().unwrap()];
+        context
+            .file_access
+            .read
+            .push(program.executable.parent().unwrap().to_path_buf());
+        let result = invoke_shell(
+            invocation,
+            context,
+            Some(&program),
+            Some(&path),
+            Some(&fixture.0.join("scratch")),
+        )
+        .unwrap();
+        assert_eq!(result.output["success"], true, "{}", result.output);
+        assert!(
+            result.output["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("PTY:hello"),
+            "{}",
+            result.output
+        );
+        assert!(!Path::new(result.output["paths"]["scratch"].as_str().unwrap()).exists());
+    }
+
+    #[test]
     fn windows_powershell_uses_and_cleans_the_kernel_scratch_directory() {
         let fixture = Fixture::new();
         let program = crate::shell_environment::discover("powershell").unwrap();

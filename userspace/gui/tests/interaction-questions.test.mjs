@@ -128,8 +128,11 @@ test('answering during independent work uses the original question and leaves th
   renderToStaticMarkup(createElement(Probe));
   assert.equal(composer.draft, 'Inspect the current window');
   assert.equal(composer.canSend, true);
+  const submissionUuid = '00000000-0000-4000-8000-000000000086';
+  const nextSubmission = t.mock.method(globalThis.crypto, 'randomUUID', () => submissionUuid);
   await composer.submitDraft();
-  assert.deepEqual(answers, [['Inspect the current window', 'question:scope']]);
+  assert.deepEqual(answers, [['Inspect the current window', 'question:scope', `submission:${submissionUuid}`]]);
+  assert.equal(nextSubmission.mock.callCount(), 1, 'the reply carries the identity generated for this draft submission');
   assert.equal(JSON.parse(saved.get(ordinaryKey)).draft, 'Keep this unrelated follow-up');
   assert.equal(JSON.parse(saved.get(answerKey)).draft, '');
   assert.deepEqual(projection, before, 'only the Session response may change question/run facts');
@@ -157,6 +160,7 @@ test('concurrent approval and text decisions expose separate views without mixin
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
   const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
   const base = {
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'Keep the existing configuration', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     textDecision: true, canSend: true, showStopAction: false,
@@ -205,6 +209,7 @@ test('question replies keep stop available and skip identifies the displayed que
   const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
   const answers = [], actions = [];
   const composer = {
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'Inspect the current window', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     textDecision: true, canSend: true, showStopAction: true, submitting: false,

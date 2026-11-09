@@ -155,7 +155,7 @@
     "settings.subagents.maxMembersPerSession": "Continuing agents per conversation",
     "settings.subagents.allowMemberAnalysis": "Allow subagents to delegate tasks",
     "settings.subagents.allowFullConfiguration": "Allow agents to fully configure subagents",
-    "settings.subagents.fullConfigurationHelp": "Allow agents to choose models, reasoning effort and context parameters. Execution permissions and Plan confirmation stay unchanged.",
+    "settings.subagents.fullConfigurationHelp": "Let the coordinator customize subagent models, tools, Loop components and task capabilities within inherited permissions. Off uses configured templates.",
     "settings.subagents.activation": "Changes in a conversation apply to that conversation and future conversations, without changing other existing conversations. Turning subagents off leaves started tasks running.",
     "settings.subagents.defaultsHelp": "These settings apply to new conversations. Changes within a conversation also become the new defaults; other existing conversations keep their own settings.",
     "settings.subagents.unconfigured": "Subagents have not been configured for this conversation.",

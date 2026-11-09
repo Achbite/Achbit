@@ -18,7 +18,7 @@ test('Session production observations retain canonical lineage, idle child updat
   const notifications = new SessionNotifications(async frame => { frames.push(frame); });
   const changesFor = sessionId => frames.filter(frame => frame.notification.kind === 'change' && frame.notification.sessionId === sessionId).length;
   const settings = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
-    maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' };
+    maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: true, presets: '[]' };
   service = new SessionService(journal, { async create({ sessionId }) {
     const preparation = fakeRunPreparation({ contextWindowTokens: 100_000 });
     return { composition: {

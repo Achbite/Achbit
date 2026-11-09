@@ -13,7 +13,7 @@ export interface AgentPreset extends AgentRecipe {
 
 export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const builtins: AgentPreset[] = [
-    { id: 'analysis', name: 'Read files and analyze', tools: { kernel: ['fs.read'], controls: [], plugins: false },
+    { id: 'analysis', name: 'Read files and analyze', tools: { kernel: ['fs.read'], controls: ['agent', 'session'], plugins: false },
       capabilities: { messaging: 'parent', continuation: true, delegation: false } },
     { id: 'collaboration', name: 'Collaboration', capabilities: { messaging: true, continuation: true, delegation: false } },
   ];
@@ -33,6 +33,18 @@ export function agentPresets(settings: AgentSettings): AgentPreset[] {
     builtins.push({ id: item.id, name: item.name, ...decodedRecipe, capabilities: decodeAgentCapabilities(item.capabilities) });
   }
   return builtins;
+}
+
+/** Discovery and admission use the same configured model choices. */
+export function allowedAgentProfiles(settings: Pick<AgentSettings, 'profileId'>,
+  presets: readonly Pick<AgentPreset, 'profileId'>[], ownerProfileId?: string): string[] {
+  return [...new Set([settings.profileId || ownerProfileId, ...presets.map(preset => preset.profileId)]
+    .filter((id): id is string => Boolean(id)))];
+}
+
+export function canSpawnAgent(settings: Pick<AgentSettings, 'enabled' | 'allowMemberAnalysis'> | undefined,
+  capabilities: Pick<AgentCapabilities, 'delegation'>, isChild: boolean): boolean {
+  return settings?.enabled === true && capabilities.delegation && (!isChild || settings.allowMemberAnalysis);
 }
 
 export function resolveAgentCapabilities(preset: AgentPreset, overrides: Partial<AgentCapabilities> | undefined,

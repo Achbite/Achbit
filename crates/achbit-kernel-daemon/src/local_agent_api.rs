@@ -20,6 +20,7 @@ pub(crate) struct LocalAgentRuntime {
     provider_runtimes: ProviderRuntimeRegistry,
     pub(crate) provider_transport: crate::provider_transport::ProviderTransport,
     runtime_transition: Arc<Mutex<()>>,
+    run_transitions: Arc<Mutex<HashMap<PreparedRunKey, std::sync::Weak<Mutex<()>>>>>,
     prepared_runs: Arc<Mutex<HashMap<PreparedRunKey, Vec<PreparedRunRecord>>>>,
     active_runtime_settings: Arc<Mutex<Value>>,
     session_store_path: Arc<std::path::PathBuf>,
@@ -52,6 +53,7 @@ impl LocalAgentRuntime {
             provider_transport: crate::provider_transport::ProviderTransport::new()
                 .map_err(|error| format!("provider_client_init_failed: {error}"))?,
             runtime_transition: Arc::new(Mutex::new(())),
+            run_transitions: Arc::new(Mutex::new(HashMap::new())),
             prepared_runs: Arc::new(Mutex::new(HashMap::new())),
             active_runtime_settings: Arc::new(Mutex::new(settings.clone())),
             session_store_path: Arc::new(session_store_path.to_path_buf()),
@@ -74,6 +76,24 @@ impl LocalAgentRuntime {
         self.runtime_transition
             .lock()
             .map_err(|_| "Agent runtime transition 锁已损坏。".to_string())
+    }
+
+    // Wait for a run only before acquiring shared state. Independent runs must not
+    // inherit external preparation latency; the same run still drains admitted work.
+    fn run_transition(&self, key: &PreparedRunKey) -> Result<Arc<Mutex<()>>, RunPreparationError> {
+        let mut transitions = self.run_transitions.lock().map_err(|_| {
+            RunPreparationError::new(
+                "run_transition_lock_failed",
+                "Run transition registry 锁已损坏。",
+            )
+        })?;
+        transitions.retain(|_, transition| transition.strong_count() > 0);
+        if let Some(transition) = transitions.get(key).and_then(std::sync::Weak::upgrade) {
+            return Ok(transition);
+        }
+        let transition = Arc::new(Mutex::new(()));
+        transitions.insert(key.clone(), Arc::downgrade(&transition));
+        Ok(transition)
     }
 
     pub(crate) fn active_runtime_settings(&self) -> Result<Value, String> {
@@ -104,7 +124,7 @@ impl LocalAgentRuntime {
     fn prepare_run_runtime(
         &self,
         gui: &Arc<Mutex<GuiState>>,
-        session_service: SessionServiceProcess,
+        session_service: Arc<dyn crate::local_agent_product_tools::SessionReadPort>,
         mut request: PrepareRunRuntimeRequest,
     ) -> Result<Value, RunPreparationError> {
         for (field, value) in [
@@ -165,18 +185,22 @@ impl LocalAgentRuntime {
                 ));
             }
         }
-        let _transition = self.runtime_transition().map_err(|message| {
-            RunPreparationError::new("runtime_transition_lock_failed", message)
-        })?;
         let key = PreparedRunKey {
             session_id: request.session_id.clone(),
             run_id: request.run_id.clone(),
         };
+        let run_transition = self.run_transition(&key)?;
+        let _run_transition = run_transition.lock().map_err(|_| {
+            RunPreparationError::new("run_transition_lock_failed", "Run transition 锁已损坏。")
+        })?;
+        let _transition = self.runtime_transition().map_err(|message| {
+            RunPreparationError::new("runtime_transition_lock_failed", message)
+        })?;
         let resource_catalog = gui.clone();
         let gui = gui.lock().map_err(|_| {
             RunPreparationError::new("gui_state_lock_failed", "GUI state 锁已损坏。")
         })?;
-        let mut prepared_runs = self.prepared_runs.lock().map_err(|_| {
+        let prepared_runs = self.prepared_runs.lock().map_err(|_| {
             RunPreparationError::new(
                 "prepared_run_registry_lock_failed",
                 "Prepared run registry 锁已损坏。",
@@ -294,7 +318,9 @@ impl LocalAgentRuntime {
             }
             if let Some(existing) = prepared_runs.get(&key).and_then(|views| {
                 views.iter().rev().take(1).find(|view| {
-                    view.mcp.is_some()
+                    view.mcp
+                        .as_ref()
+                        .is_some_and(|mcp| !mcp.has_catalog_changes())
                         && crate::local_agent_plugins::same_registration_settings(
                             &view.runtime_settings,
                             settings,
@@ -422,27 +448,6 @@ impl LocalAgentRuntime {
                 .map_err(|message| {
                     RunPreparationError::new("extension_snapshot_prepare_failed", message)
                 })?;
-        let mcp = if let Some(previous) = &previous {
-            previous
-                .mcp
-                .as_ref()
-                .expect("live prepared view")
-                .extend_selected_sources(
-                    &plugin_selection.mcp_sources,
-                    plugin_selection.mcp_plugin_instances(),
-                )
-        } else {
-            crate::local_agent_mcp::McpRuntime::from_selected_sources(
-                &plugin_selection.mcp_sources,
-                plugin_selection.mcp_plugin_instances(),
-                crate::local_agent_mcp::session_workdir_for_run(
-                    &gui.conversation_catalog,
-                    &request.session_id,
-                )
-                .map_err(|error| RunPreparationError::new(error.code, error.message))?,
-            )
-        }
-        .map_err(|error| RunPreparationError::new(error.code, error.message))?;
         let extension_generation_ref = crate::utils::new_runtime_ref("extension-generation")
             .map_err(|message| {
                 RunPreparationError::new("extension_identity_prepare_failed", message)
@@ -602,6 +607,66 @@ impl LocalAgentRuntime {
         };
         let enable_kernel_web_search =
             web_search.get("owner").and_then(Value::as_str) == Some("kernelAdapter");
+        let session_workdir = if previous.is_none() {
+            crate::local_agent_mcp::session_workdir_for_run(
+                &gui.conversation_catalog,
+                &request.session_id,
+            )
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?
+        } else {
+            None
+        };
+        let captured_active_settings = self.active_runtime_settings().map_err(|message| {
+            RunPreparationError::new("active_runtime_settings_lock_failed", message)
+        })?;
+        // Provider, permissions, environment and registrations are now captured.
+        // Keep only this run's lifecycle gate across out-of-process preparation.
+        drop(prepared_runs);
+        drop(gui);
+        drop(_transition);
+        // Project instructions are run-owned, independent of request-time plugin changes.
+        // Resolve/read them before creating external resources, without shared locks.
+        let project_instructions = if let Some(previous) = &previous {
+            previous.response.get("projectInstructions").cloned()
+        } else {
+            let roots = self
+                .kernel
+                .project_instruction_roots(&request.workspace_binding_ids)
+                .map_err(RunPreparationError::from)?;
+            Some(json!(crate::project_instructions::read_projects(&roots)
+                .map_err(|message| RunPreparationError::new(
+                    "project_instructions_read_failed",
+                    message
+                ),)?))
+        };
+        let mcp = if let Some(previous) = &previous {
+            previous
+                .mcp
+                .as_ref()
+                .expect("live prepared view")
+                .extend_selected_sources(
+                    &plugin_selection.mcp_sources,
+                    plugin_selection.mcp_plugin_instances(),
+                )
+        } else {
+            crate::local_agent_mcp::McpRuntime::from_selected_sources(
+                &plugin_selection.mcp_sources,
+                plugin_selection.mcp_plugin_instances(),
+                session_workdir,
+            )
+        }
+        .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let container_runtime = plugin_selection
+            .container_instance()
+            .map(|_| {
+                self.kernel.prepare_run_containers(
+                    &request.session_id,
+                    &request.run_id,
+                    executor_config.execution_path.as_deref().unwrap_or(""),
+                )
+            })
+            .transpose()
+            .map_err(RunPreparationError::from)?;
         let prepared = LocalAgentKernel::prepare_generation(
             &extension_generation_ref,
             executor_config.clone(),
@@ -611,7 +676,7 @@ impl LocalAgentRuntime {
             &recipe.tools,
             enable_kernel_web_search,
             Arc::new(
-                crate::local_agent_product_tools::ProductTools::new(Arc::new(session_service))
+                crate::local_agent_product_tools::ProductTools::new(session_service)
                     .with_resources(crate::local_agent_resources::SessionResources::new(
                         request.session_id.clone(),
                         self.journal.clone(),
@@ -629,6 +694,7 @@ impl LocalAgentRuntime {
                         plugin_selection.diagnostics_instance(),
                     )
                     .with_containers(plugin_selection.container_instance())
+                    .with_container_runtime(container_runtime)
                     .with_documents(plugin_selection.document_instance())
                     .with_browser_binding(environment.get("hostBinding").cloned().map(
                         |mut binding| {
@@ -640,13 +706,47 @@ impl LocalAgentRuntime {
             ),
         )
         .map_err(RunPreparationError::from)?;
+        // The run gate keeps the captured view current through publication. Settings
+        // changed during preparation belong to a subsequent request, never this view.
+        let _transition = self.runtime_transition().map_err(|message| {
+            RunPreparationError::new("runtime_transition_lock_failed", message)
+        })?;
+        let mut prepared_runs = self.prepared_runs.lock().map_err(|_| {
+            RunPreparationError::new(
+                "prepared_run_registry_lock_failed",
+                "Prepared run registry 锁已损坏。",
+            )
+        })?;
         if previous.is_none() {
-            *self.active_runtime_settings.lock().map_err(|_| {
+            let mut active_settings = self.active_runtime_settings.lock().map_err(|_| {
                 RunPreparationError::new(
                     "active_runtime_settings_lock_failed",
                     "Agent active runtime settings 锁已损坏。",
                 )
-            })? = settings.clone();
+            })?;
+            // Preserve settings published while this preparation was outside shared
+            // locks. This aggregate is for settings display, not a request input.
+            let mut next = settings.clone();
+            for (key, value) in active_settings
+                .as_object()
+                .expect("runtime settings object")
+            {
+                if captured_active_settings.get(key) != Some(value) {
+                    next[key] = value.clone();
+                }
+            }
+            for key in captured_active_settings
+                .as_object()
+                .expect("runtime settings object")
+                .keys()
+            {
+                if active_settings.get(key).is_none() {
+                    next.as_object_mut()
+                        .expect("runtime settings object")
+                        .remove(key);
+                }
+            }
+            *active_settings = next;
         }
 
         let catalog = self
@@ -725,6 +825,9 @@ impl LocalAgentRuntime {
                 "thresholdTokens": settings.get("agent.contextManagement.thresholdTokens").and_then(Value::as_u64).unwrap_or(500_000),
             },
         });
+        if let Some(instructions) = project_instructions {
+            response["projectInstructions"] = instructions;
+        }
         // Handler availability is stable; delegation settings belong to Session.
         response["agentToolsEnabled"] = json!(true);
         match &approval_reviewer_binding {
@@ -756,13 +859,17 @@ impl LocalAgentRuntime {
         &self,
         request: RetireToolViewsRequest,
     ) -> Result<Value, RunPreparationError> {
-        let _transition = self.runtime_transition().map_err(|message| {
-            RunPreparationError::new("runtime_transition_lock_failed", message)
-        })?;
         let key = PreparedRunKey {
             session_id: request.session_id.clone(),
             run_id: request.run_id.clone(),
         };
+        let run_transition = self.run_transition(&key)?;
+        let _run_transition = run_transition.lock().map_err(|_| {
+            RunPreparationError::new("run_transition_lock_failed", "Run transition 锁已损坏。")
+        })?;
+        let _transition = self.runtime_transition().map_err(|message| {
+            RunPreparationError::new("runtime_transition_lock_failed", message)
+        })?;
         let mut prepared_runs = self.prepared_runs.lock().map_err(|_| {
             RunPreparationError::new(
                 "prepared_run_registry_lock_failed",
@@ -838,13 +945,17 @@ impl LocalAgentRuntime {
         &self,
         request: ReleaseToolCatalogRequest,
     ) -> Result<Value, RunPreparationError> {
-        let _transition = self.runtime_transition().map_err(|message| {
-            RunPreparationError::new("runtime_transition_lock_failed", message)
-        })?;
         let key = PreparedRunKey {
             session_id: request.session_id().to_string(),
             run_id: request.run_id().to_string(),
         };
+        let run_transition = self.run_transition(&key)?;
+        let _run_transition = run_transition.lock().map_err(|_| {
+            RunPreparationError::new("run_transition_lock_failed", "Run transition 锁已损坏。")
+        })?;
+        let _transition = self.runtime_transition().map_err(|message| {
+            RunPreparationError::new("runtime_transition_lock_failed", message)
+        })?;
         let mut prepared_runs = self.prepared_runs.lock().map_err(|_| {
             RunPreparationError::new(
                 "prepared_run_registry_lock_failed",
@@ -1006,6 +1117,8 @@ pub(crate) struct CancelLocalToolRequest {
 pub(crate) struct PrepareRunRuntimeRequest {
     session_id: String,
     run_id: String,
+    #[serde(default)]
+    workspace_binding_ids: Vec<String>,
     profile_id: Option<String>,
     reasoning_effort_override: Option<String>,
     environment: Option<Value>,
@@ -1526,12 +1639,15 @@ pub(crate) async fn local_agent_run_runtime_prepare(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state
-        .local_agent
-        .prepare_run_runtime(&state.gui, state.session_service.clone(), body)
+    let runtime = state.local_agent.clone();
+    let gui = state.gui.clone();
+    let service = Arc::new(state.session_service.clone());
+    match tokio::task::spawn_blocking(move || runtime.prepare_run_runtime(&gui, service, body))
+        .await
     {
-        Ok(runtime) => ApiResponse::ok(runtime),
-        Err(error) => ApiResponse::error(error.code, error.message),
+        Ok(Ok(prepared)) => ApiResponse::ok(prepared),
+        Ok(Err(error)) => ApiResponse::error(error.code, error.message),
+        Err(error) => ApiResponse::error("run_runtime_prepare_failed", error.to_string()),
     }
 }
 
@@ -1543,9 +1659,11 @@ pub(crate) async fn local_agent_tool_views_retire(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.retire_tool_views(body) {
-        Ok(retired) => ApiResponse::ok(retired),
-        Err(error) => ApiResponse::error(error.code, error.message),
+    let runtime = state.local_agent.clone();
+    match tokio::task::spawn_blocking(move || runtime.retire_tool_views(body)).await {
+        Ok(Ok(reply)) => ApiResponse::ok(reply),
+        Ok(Err(error)) => ApiResponse::error(error.code, error.message),
+        Err(error) => ApiResponse::error("tool_views_retire_failed", error.to_string()),
     }
 }
 
@@ -1557,9 +1675,11 @@ pub(crate) async fn local_agent_run_runtime_release(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.release_run_runtime(body) {
-        Ok(release) => ApiResponse::ok(release),
-        Err(error) => ApiResponse::error(error.code, error.message),
+    let runtime = state.local_agent.clone();
+    match tokio::task::spawn_blocking(move || runtime.release_run_runtime(body)).await {
+        Ok(Ok(reply)) => ApiResponse::ok(reply),
+        Ok(Err(error)) => ApiResponse::error(error.code, error.message),
+        Err(error) => ApiResponse::error("run_runtime_release_failed", error.to_string()),
     }
 }
 
@@ -2413,6 +2533,7 @@ mod tests {
     ) -> ProviderRuntimeSnapshot {
         ProviderRuntimeSnapshot {
             input_token_calibration_key: None,
+            continuation_key: None,
             reasoning_effort: None,
             reasoning_effort_override: None,
             thinking: None,
@@ -2554,3 +2675,7 @@ mod tests {
         assert!(validate(request).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "local_agent_runtime_tests.rs"]
+mod runtime_tests;

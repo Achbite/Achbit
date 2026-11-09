@@ -17,7 +17,7 @@ Under delegated review, an approved read-only `requestFileAccess` scope can be r
 
 Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session owns its working directory outside the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
-Workspace Shell HOME is session-managed; it is not the application configuration root. After selection or use of the product or iteration Skill, the Shell declaration reports `achbitCli` as a Host administration command when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then `services`, `connections` or `models`, with Host execution under the current permission policy. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
+Workspace Shell HOME is session-managed; it is not the application configuration root. After selection or use of the product or iteration Skill, `Achbit product resources` supplies `achbitCli` and `hostDataDirectory` with the originating message or successful activation/read result when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then the required management command. Submit the Shell call with `requestHostPermission` and a specific reason, including read-only commands such as `plugins status`; the current permission policy handles authorization. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
 Workspace Shell is offline by default, including loopback access. Network grants can be per call, task or conversation as offered by the decision. Explicit command deny/ask rules still apply. Host execution uses real host-user permissions, including network and writes outside the sandbox; a working directory is not isolation. With Plan approval enabled or an active Plan, each Host call requires separate approval. An approval or a failed command does not authorize an automatic broader retry.
 
@@ -33,7 +33,9 @@ In automatic mode, the selector shows the detected shell name. After installing 
 
 Use the recorded shell dialect. PowerShell 5.1 has no `&&` / `||`; after a native command, capture `$LASTEXITCODE` and explicitly return it. Achbit runs PowerShell scripts as temporary UTF-8 files without changing machine execution policy.
 
-For `*_workspace_sandbox_unavailable`, inspect `workspaceSandbox.reason` or use **Check Windows support** in settings. This tests LPAC support, not service readiness. An installed Docker command does not prove daemon access. Preserve startup errors, including nested Store PowerShell failures, rather than treating them as syntax errors or reinstalling automatically.
+The recorded `workspaceSandbox` status checks basic startup of the selected Windows shell inside LPAC. Changing the selected shell or refreshing the environment repeats the check. **Check Windows support** also checks the platform's LPAC launch support. Neither check establishes that every child tool or service is compatible. For `*_workspace_sandbox_unavailable`, inspect `workspaceSandbox.reason` and the command's actual error.
+
+Some native tools require Windows object namespaces that LPAC does not expose. Stock Git Bash/MSYS can fail before executing a script with `NtCreateDirectoryObject` access denied. Native Git can fail resolving its current directory even when that directory is readable. Granting more project files does not resolve these namespace failures. Use an explicitly configured WSL project for Linux Bash/toolchains when needed; the application does not change targets or retry on the Host automatically. An installed Docker command likewise does not prove daemon access.
 
 ## Explicit WSL projects
 

@@ -12,6 +12,8 @@ pub(crate) struct ProviderRuntimeSnapshot {
     pub(crate) provider_runtime_ref: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) input_token_calibration_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation_key: Option<String>,
     pub(crate) profile_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reasoning_effort: Option<String>,
@@ -228,6 +230,7 @@ fn capture_binding(
     let snapshot = ProviderRuntimeSnapshot {
         provider_runtime_ref: crate::utils::new_runtime_ref("provider-runtime")?,
         input_token_calibration_key: Some(input_token_calibration_key(&profile)),
+        continuation_key: Some(continuation_key(&profile)),
         profile_id,
         reasoning_effort: profile.reasoning_effort.clone(),
         reasoning_effort_override: reasoning_effort_override.map(str::to_string),
@@ -258,6 +261,29 @@ fn capture_binding(
         profile,
         codex_turn_state: Default::default(),
     })
+}
+
+// Native objects belong to a resolved service/account/model, not merely an API surface.
+// No credential is serialized into the snapshot. API-key replacement may change
+// accounts under the same connection/ref; use its opaque digest only. OAuth uses
+// account identity instead of short-lived access/refresh tokens.
+fn continuation_key(profile: &ResolvedLlmProfile) -> String {
+    let identity = json!({
+        "connectionId": profile.connection.id,
+        "adapterId": profile.connection.adapter_id,
+        "credentialKind": profile.connection.credential_kind,
+        "credentialRef": profile.connection.credential_ref,
+        "accountId": profile.account_id,
+        "credentialBinding": profile.api_key.as_ref().map(|key| format!("{:x}", Sha256::digest(key.as_bytes()))),
+        "baseUrl": profile.base_url.as_deref().unwrap_or(&profile.connection.base_url).trim_end_matches('/'),
+        "kind": profile.kind, "providerFlavor": profile.provider_flavor,
+        "model": profile.model, "thinking": profile.thinking,
+        "reasoningEffort": profile.reasoning_effort,
+    });
+    format!(
+        "model-context:{:x}",
+        Sha256::digest(identity.to_string().as_bytes())
+    )
 }
 
 // Input accounting identity is independent of execution leases and credentials.
@@ -380,6 +406,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_continuation_identity_tracks_service_account_and_model_not_display_or_budget() {
+        let base = configured_profile();
+        let key = continuation_key(&base);
+        let mut renamed = base.clone();
+        renamed.connection.name = "Renamed".into();
+        renamed.max_output_tokens = Some(256);
+        assert_eq!(key, continuation_key(&renamed));
+        for change in 0..7 {
+            let mut other = base.clone();
+            match change {
+                0 => other.model = "other-model".into(),
+                1 => other.base_url = Some("https://other.example/v1".into()),
+                2 => other.connection.id = "other-connection".into(),
+                3 => other.account_id = Some("other-account".into()),
+                4 => other.kind = "responses".into(),
+                5 => other.connection.credential_ref = Some("local-secret:other".into()),
+                _ => other.api_key = Some("fixture-secret-only".into()),
+            }
+            let changed = continuation_key(&other);
+            assert_ne!(key, changed);
+            assert!(!changed.contains("fixture-secret-only"));
+        }
+    }
+
+    #[test]
     fn dormant_instance_preserves_its_native_pdf_capability() {
         let mut profile = configured_profile();
         let mut parameters = json!({"adapterId":"openai", "kind":"openaiCompatible", "providerFlavor":"deepseek",
@@ -494,6 +545,7 @@ mod tests {
             snapshot: ProviderRuntimeSnapshot {
                 provider_runtime_ref: "provider-runtime:main".into(),
                 input_token_calibration_key: Some(input_token_calibration_key(&profile)),
+                continuation_key: Some(continuation_key(&profile)),
                 profile_id: "profile:main".into(),
                 reasoning_effort: profile.reasoning_effort.clone(),
                 reasoning_effort_override: None,

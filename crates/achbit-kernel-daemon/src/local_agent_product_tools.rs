@@ -23,6 +23,7 @@ pub(crate) struct ProductTools {
     pub(crate) desktop: Option<crate::desktop_tools::DesktopRun>,
     pub(crate) computer_use_instance: Option<String>,
     pub(crate) container_instance: Option<String>,
+    pub(crate) container_runtime: Option<Arc<crate::container_tools::Containers>>,
     pub(crate) document_instance: Option<String>,
     pub(crate) diagnostics: Option<(String, String)>,
 }
@@ -38,6 +39,7 @@ impl ProductTools {
             desktop: None,
             computer_use_instance: None,
             container_instance: None,
+            container_runtime: None,
             document_instance: None,
             diagnostics: None,
         }
@@ -77,6 +79,14 @@ impl ProductTools {
 
     pub(crate) fn with_containers(mut self, instance: Option<String>) -> Self {
         self.container_instance = instance;
+        self
+    }
+
+    pub(crate) fn with_container_runtime(
+        mut self,
+        runtime: Option<Arc<crate::container_tools::Containers>>,
+    ) -> Self {
+        self.container_runtime = runtime;
         self
     }
 
@@ -181,6 +191,7 @@ fn session_read_schema() -> Value {
             "startByte":{"type":"integer","minimum":0},
             "imageIds":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1},"description":"Requires view=images. Exact current-session image references to inspect together. Select only images needed for the current comparison. Omit to list references; [] releases pixels. Do not combine with before or limit."},
             "before":{"type":"integer","minimum":1},
+            "throughSequence":{"type":"integer","minimum":1,"description":"Inclusive history snapshot boundary, independent of the page cursor."},
             "limit":{"type":"integer","minimum":1,"maximum":50},
             "recordId":{"type":"string","description":"Exact ToolRecord ID; requires view=tools. Input/output/error return separately bounded chunks; continue each field using its nextOffset."},
             "messageId":{"type":"string","description":"Exact committed message ID returned by view=messages; returns a bounded content chunk. Continue with its nextOffset."},

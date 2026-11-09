@@ -4,6 +4,8 @@ import type {
   SessionEvent,
 } from '@achbit/protocol';
 
+import { modelContextEvents } from './modelContext.js';
+
 /** Read derived views from the same journal; execution facts remain authoritative. */
 export function journalModelViews(events: readonly SessionEvent[]): {
   throughSequence: number;
@@ -11,7 +13,7 @@ export function journalModelViews(events: readonly SessionEvent[]): {
 } {
   let throughSequence = 0;
   const contributions = new Map<string, ContextModelViewContribution>();
-  for (const event of events) {
+  for (const event of modelContextEvents(events)) {
     if (event.type !== 'context.composed' || !event.payload.modelView) continue;
     throughSequence = Math.max(throughSequence, event.payload.modelView.throughSequence);
     for (const contribution of event.payload.modelView.additions) {
@@ -29,7 +31,7 @@ export function admitModelView(receipt: ContextCompositionReceipt, events: reado
   }
   if (!receipt.modelView) throw new Error('context_model_view_missing');
   const { throughSequence, additions } = receipt.modelView;
-  const factSequences = new Set(events.map(event => event.sequence));
+  const factSequences = new Set(modelContextEvents(events).map(event => event.sequence));
   if (!Number.isSafeInteger(throughSequence) || !factSequences.has(throughSequence)) {
     throw new Error('context_model_view_boundary_invalid');
   }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSessionCapabilities, SessionService } from '../dist/index.js';
+import { runAgentLoop } from '../dist/local-agent/loop.js';
+import { SessionCapabilityManager } from '../dist/local-agent/sessionCapabilities.js';
 import { messagesFromJournal } from '../dist/local-agent/contextComposer.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import {
@@ -29,6 +31,7 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
     return { composition: {
       kernel: options.kernel?.({ sessionId, journal }) ?? emptyKernel(),
       ...(options.capabilities ? { capabilities: options.capabilities } : {}),
+      ...(options.runner ? { runner: options.runner } : {}),
       runPreparation: { ...preparation.port, async release(input) {
         await options.beforeRelease?.(input);
         const receipt = await preparation.port.release(input);
@@ -704,7 +707,7 @@ test('an ancestor continuing a descendant routes its Plan by the current task wi
       else yield answer(request, 'The descendant report is confirmed.');
     }
     yield done(request);
-  });
+  }, { settings: { allowFullConfiguration: true } });
   await fixture.service.submit(messageCommand(ownerId, 'command:descendant', 'Delegate, then continue the reusable descendant.'));
   await waitUntil(async () => (await fixture.service.snapshot(ownerId)).pendingAgentDecisions?.some(item => item.plan), 'continued descendant Plan');
   const root = await fixture.service.snapshot(ownerId);
@@ -785,15 +788,19 @@ test('a child Plan retains the original parent authority reference without inven
   assert.equal(childEvents.some(event => event.type === 'plan.confirmed' && event.payload.source === 'user'), false);
 });
 
-test('a visible Plan confirmation waits for the previous Loop resource lease before resuming', async t => {
+test('a visible Plan confirmation waits for the previous Loop to return before resuming', async t => {
   const ownerId = 'session:plan-release-race';
   let releaseOutput, releaseCleanup, enteredProvider = false, enteredCleanup = false;
   const outputGate = new Promise(resolve => { releaseOutput = resolve; });
   const cleanupGate = new Promise(resolve => { releaseCleanup = resolve; });
   t.after(() => { releaseOutput(); releaseCleanup(); });
-  const capabilities = { ...createSessionCapabilities(), async dispose() {
-    enteredCleanup = true;
-    await cleanupGate;
+  const runner = { async run(...args) {
+    const result = await runAgentLoop(...args);
+    if (result.status === 'waiting' && result.reason === 'plan') {
+      enteredCleanup = true;
+      await cleanupGate;
+    }
+    return result;
   } };
   const fixture = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
     if (turn === 1) {
@@ -802,12 +809,12 @@ test('a visible Plan confirmation waits for the previous Loop resource lease bef
       yield call(request, 'release-race:plan', 'plan_publish', writePlan);
     } else yield answer(request, 'Continued after the confirmed Plan.');
     yield done(request);
-  }, { capabilities });
+  }, { runner });
   await fixture.service.submit(messageCommand(ownerId, 'command:release-race', 'Confirm the report Plan.'));
-  await waitUntil(() => enteredProvider, 'first request holds its Session capability lease');
-  await fixture.service.replaceCapabilities(ownerId, createSessionCapabilities());
+  await waitUntil(() => enteredProvider, 'first request owns the active Loop');
+  await assert.rejects(fixture.service.replaceCapabilities(ownerId, createSessionCapabilities()), /session_capabilities_run_active/u);
   releaseOutput();
-  await waitUntil(() => enteredCleanup, 'retired capability cleanup starts after publishing the Plan');
+  await waitUntil(() => enteredCleanup, 'previous Loop is returning after publishing the Plan');
   const waiting = await fixture.service.snapshot(ownerId);
   assert.equal(waiting.run.status, 'waiting');
   const plan = waiting.pendingPlan;
@@ -907,14 +914,18 @@ for (const overdue of [false, true]) test('an accepted session wait reloads with
   // Reload may happen after both persisted deadlines. Advance only the clock;
   // do not run timer callbacks before recovery has reconciled the durable facts.
   if (overdue) t.mock.timers.enable({ apis: ['Date'], now: wait.payload.result.wait.deadline + 1 });
+  const resumeRecovered = Promise.withResolvers();
+  t.after(() => resumeRecovered.resolve());
   const reopened = await serviceFixture(t, ownerId, async function* ({ request }) {
+    await resumeRecovered.promise;
     assert.deepEqual(request.messages.slice(0, sentPrefix.length), sentPrefix);
     assert.equal(request.messages.filter(message => message.role === 'user' && message.content === reminder).length, 1);
     assert.doesNotMatch(textOf(request), /"afterSequence"|"deadline"|provider_turn_outcome_unknown/u);
     yield answer(request, 'The scheduled review survived reloading.');
     yield done(request);
   }, { journal, reopen: true });
-  await reopened.service.replaceCapabilities(ownerId, createSessionCapabilities());
+  await assert.rejects(reopened.service.replaceCapabilities(ownerId, createSessionCapabilities()), /session_capabilities_run_active/u);
+  resumeRecovered.resolve();
   await completed(reopened.service, ownerId);
   const events = await readEvents(journal, ownerId);
   assert.equal(events.filter(event => event.type === 'wake.scheduled').length, 1);
@@ -950,7 +961,10 @@ for (const delivery of ['async', 'wait']) test(`reloading an accepted ${delivery
   assert.equal(parentEvents.some(event => event.type === 'agent.task.completed'), false);
   const journal = await copyCommittedJournal([parentEvents, childEvents]);
   await original.service.dispose();
+  const resumeRecovered = Promise.withResolvers();
+  t.after(() => resumeRecovered.resolve());
   const reopened = await serviceFixture(t, ownerId, async function* ({ sessionId, request }) {
+    await resumeRecovered.promise;
     assert.doesNotMatch(textOf(request), /"afterSequence"|"deadline"|provider_turn_outcome_unknown/u);
     if (sessionId === ownerId) {
       assert.equal(occurrences(textOf(request), evidence), 1);
@@ -961,7 +975,8 @@ for (const delivery of ['async', 'wait']) test(`reloading an accepted ${delivery
     }
     yield done(request);
   }, { journal, reopen: true });
-  await reopened.service.replaceCapabilities(ownerId, createSessionCapabilities());
+  await assert.rejects(reopened.service.replaceCapabilities(ownerId, createSessionCapabilities()), /session_capabilities_run_active/u);
+  resumeRecovered.resolve();
   const complete = await completed(reopened.service, ownerId);
   assert.equal(complete.agentTasks.length, 1);
   assert.equal(complete.agentTasks[0].status, 'completed');
@@ -1048,7 +1063,7 @@ test('peer messages never reassign dormant instances; the coordinator explicitly
       }
     }
     yield done(request);
-  });
+  }, { settings: { allowFullConfiguration: true } });
   await fixture.service.submit(messageCommand(ownerId, 'command:peer-wake', 'Perform the peer review.'));
   const parent = await completed(fixture.service, ownerId);
   const child = await fixture.service.snapshot(northId);
@@ -1180,7 +1195,7 @@ test('a creating ancestor cannot cancel or close a descendant now assigned by th
       else yield call(request, `management:child-wait:${turn}`, 'session', { action: 'wait' });
     }
     yield done(request);
-  });
+  }, { settings: { allowFullConfiguration: true } });
   await fixture.service.submit(messageCommand(ownerId, 'command:management', 'Continue retained members under the main coordinator.'));
   const result = await completed(fixture.service, ownerId);
   assert.equal(result.agentTasks.length, 3);
@@ -1232,7 +1247,7 @@ test('close rejects an active member and its idle archival ancestor without impl
       else yield call(request, `idle-close:leaf-wait:${turn}`, 'session', { action: 'wait' });
     }
     yield done(request);
-  });
+  }, { settings: { allowFullConfiguration: true } });
   await fixture.service.submit(messageCommand(ownerId, 'command:idle-close', 'Close retained members only after their actual task results.'));
   const root = await completed(fixture.service, ownerId);
   assert.ok(root.agentTasks.every(task => task.status === 'completed'));
@@ -1453,7 +1468,7 @@ test('unknown drivers and child policy escalation are rejected before child crea
       yield answer(request, 'All invalid compositions were rejected.');
     }
     yield done(request);
-  }, { recipe: { permissionPolicy: { id: 'workspace-only' }, permissions: { 'agent.permissions.workspaceMutation': 'plan' } } });
+  }, { settings: { allowFullConfiguration: true }, recipe: { permissionPolicy: { id: 'workspace-only' }, permissions: { 'agent.permissions.workspaceMutation': 'plan' } } });
   await assert.rejects(fixture.service.createSession({ sessionId: 'session:bad-runner', displayTitle: 'Bad',
     workspaceBindings: [workspaceBinding], recipe: { runner: { id: 'uninstalled' } } }), /agent_loop_unavailable/);
   await assert.rejects(readEvents(fixture.journal, 'session:bad-runner'), /session_not_found/);
@@ -1662,7 +1677,7 @@ test('total usage includes nested and closed Agents once and updates without a p
       }
     }
     yield providerEvent(request.requestId, 'completed', usage ? { usage: { ...usage, contextWindowTokens: 100_000 } } : {});
-  }, { journal: forwardingJournal(journal, journal.read.bind(journal)) });
+  }, { journal: forwardingJournal(journal, journal.read.bind(journal)), settings: { allowFullConfiguration: true } });
   await fixture.service.submit(messageCommand(ownerId, 'command:usage:first', 'Delegate the details.'));
   await waitUntil(() => rootWaiting && childId, 'parent Provider is held while its child runs');
   const before = await fixture.service.snapshot(ownerId);
@@ -1731,4 +1746,46 @@ test('ordinary members select coordinator templates without overriding permissio
   const child = await fixture.service.snapshot(parent.agentTasks[0].agentSessionId);
   assert.deepEqual(child.agentChildren ?? [], []);
   assert.equal(child.run.status, 'completed');
+});
+
+test('capability replacement rejects active runs and transfers ownership only while idle', { timeout: 5_000 }, async t => {
+  const ownerId = 'session:idle-capabilities';
+  const output = Promise.withResolvers(), entered = Promise.withResolvers();
+  t.after(() => output.resolve());
+  let originalDisposed = 0, replacementDisposed = 0;
+  const original = { ...createSessionCapabilities(), async dispose() { originalDisposed += 1; } };
+  const replacement = { ...createSessionCapabilities(), async dispose() { replacementDisposed += 1; } };
+  const fixture = await serviceFixture(t, ownerId, async function* ({ request }) {
+    entered.resolve();
+    await output.promise;
+    yield answer(request, 'The run kept its original configuration.');
+    yield done(request);
+  }, { capabilities: original });
+  await fixture.service.submit(messageCommand(ownerId, 'command:active-policy', 'Keep the admitted policy.'));
+  await entered.promise;
+  await assert.rejects(fixture.service.replaceCapabilities(ownerId, replacement), /session_capabilities_run_active/u);
+  assert.equal(originalDisposed, 0);
+  assert.equal(replacementDisposed, 0, 'rejected ownership stays with the caller');
+  output.resolve();
+  await completed(fixture.service, ownerId);
+  // Drain the settled Loop's final microtasks before the idle operator action.
+  await new Promise(resolve => setImmediate(resolve));
+  await fixture.service.replaceCapabilities(ownerId, replacement);
+  assert.equal(originalDisposed, 1);
+  assert.equal(replacementDisposed, 0);
+  await fixture.service.dispose();
+  assert.equal(replacementDisposed, 1);
+});
+
+test('retiring a capability implementation still waits for its final request lease', async () => {
+  let oldDisposed = 0, nextDisposed = 0;
+  const manager = new SessionCapabilityManager({ ...createSessionCapabilities(), async dispose() { oldDisposed += 1; } });
+  const lease = manager.acquire();
+  await manager.replace({ ...createSessionCapabilities(), async dispose() { nextDisposed += 1; } });
+  assert.equal(oldDisposed, 0);
+  await lease.release();
+  await lease.release();
+  assert.equal(oldDisposed, 1, 'the old request lease releases its implementation once');
+  await manager.dispose();
+  assert.equal(nextDisposed, 1);
 });

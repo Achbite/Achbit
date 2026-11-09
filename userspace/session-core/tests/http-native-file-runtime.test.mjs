@@ -17,6 +17,7 @@ async function httpPreparation(t, promptContributions) {
   const seed = runtimeSnapshot('run:http-native');
   let provider = structuredClone(seed.provider);
   let reviewer = structuredClone(seed.provider);
+  let projectInstructions;
   const requests = [], releases = [];
   const server = createServer(async (request, response) => {
     try {
@@ -29,6 +30,7 @@ async function httpPreparation(t, promptContributions) {
         requests.push(input);
         data = { schemaVersion: LOCAL_AGENT_PROTOCOL_VERSION, type: 'run.runtime.prepared',
           sessionId: input.sessionId, runId: input.runId, provider, approvalReviewer: reviewer,
+          ...(projectInstructions === undefined ? {} : { projectInstructions }),
           webSearch: seed.webSearch, extensionGenerationRef: seed.extensionGenerationRef,
           kernelCatalogSnapshotRef: seed.kernelCatalogSnapshotRef, tools: [], toolPromptProviders: [],
           toolSelection: { kernel: [], controls: [], plugins: seed.selectedPlugins.plugins.length > 0 },
@@ -56,8 +58,9 @@ async function httpPreparation(t, promptContributions) {
   const port = new HttpRunPreparationPort({ apiBase: `http://127.0.0.1:${server.address().port}`,
     serviceToken: 'fixture-http-token', stableCoreInstructions: seed.instructions, promptContributions });
   const request = { sessionId: 'session:http-native', runId: 'run:http-native', profileId: seed.provider.profileId,
-    workspaceBindings: [] };
+    workspaceBindingIds: [] };
   return { port, request, requests, releases,
+    useProjectInstructions(value) { projectInstructions = value; },
     usePlugins(uris) { seed.selectedPlugins.plugins = uris.map(uri => ({ uri,
       pluginArtifactRef: `artifact:${uri}`, pluginInstanceRef: `instance:${uri}`,
       extensionGenerationRef: seed.extensionGenerationRef, capabilityRefs: [] })); },
@@ -125,7 +128,7 @@ test('prepared product instructions survive snapshot replay and share the agent/
     const { runtimeSnapshot } = await fixture.port.prepare(fixture.request);
     const runtime = JSON.parse(JSON.stringify(runtimeSnapshot));
     assert.deepEqual(runtime.instructions.filter(item => item.id === 'achbit.rich-replies'), parts);
-    const input = { ...fixture.request, runtime, events: [], providerRequestId: 'request:main', responseConstraint: 'normal' };
+    const input = { ...fixture.request, workspaceBindings: [], runtime, events: [], providerRequestId: 'request:main', responseConstraint: 'normal' };
     const main = await buildAgentProviderRequest(input);
     const summary = prepareContextCompaction({ ...input, requestEvent: {
       payload: { coveredThroughSequence: 0, providerRequestId: 'request:summary' },
@@ -157,4 +160,54 @@ test('HTTP file capability errors remain strict and release the acquired run run
   assert.equal(fixture.releases.length, 6);
   assert.ok(fixture.releases.every(release => release.sessionId === fixture.request.sessionId
     && release.runId === fixture.request.runId && release.kernelCatalogSnapshotRef));
+});
+
+test('project instruction sources enter system context and replay unchanged until a new prepared snapshot changes them', async t => {
+  const fixture = await httpPreparation(t);
+  const initial = (await fixture.port.prepare(fixture.request)).runtimeSnapshot;
+  for (const sources of [[], [{ path: '/project/AGENTS.md', text: '  \n' }]]) {
+    fixture.useProjectInstructions(sources);
+    assert.deepEqual((await fixture.port.prepare(fixture.request)).runtimeSnapshot.instructions, initial.instructions);
+  }
+  const sources = [{ path: '/project/AGENTS.md', text: 'Keep the project contract.\n' },
+    { path: '/project/nested/AGENTS.md', text: 'Use the nested conventions.\n' }];
+  fixture.useProjectInstructions(sources);
+  const request = { ...fixture.request, workspaceBindingIds: ['workspace:project'] };
+  const first = (await fixture.port.prepare(request)).runtimeSnapshot;
+  const replay = JSON.parse(JSON.stringify(first));
+  const contribution = replay.instructions.filter(item => item.id === 'achbit.project-instructions');
+  assert.equal(contribution.length, 1);
+  for (const source of sources) {
+    assert.ok(contribution[0].text.includes(source.path));
+    assert.ok(contribution[0].text.includes(source.text));
+  }
+  assert.deepEqual(fixture.requests.at(-1).workspaceBindingIds, request.workspaceBindingIds);
+  assert.deepEqual(first.environment, initial.environment);
+  assert.deepEqual(first.tools, initial.tools);
+  const compose = async (runtime, runId = request.runId) => (await buildAgentProviderRequest({ ...request, runId, workspaceBindings: [],
+    runtime, events: [], providerRequestId: 'request:project-instructions', responseConstraint: 'normal' })).request;
+  const firstRequest = await compose(replay);
+  assert.equal(firstRequest.messages.filter(message => message.role === 'system'
+    && message.content.includes('Keep the project contract.')).length, 1);
+  assert.ok(firstRequest.messages.filter(message => message.role !== 'system')
+    .every(message => !message.content.includes('Keep the project contract.')));
+  const same = (await fixture.port.prepare({ ...request, runId: 'run:same-project' })).runtimeSnapshot;
+  assert.deepEqual((await compose(same, 'run:same-project')).messages, firstRequest.messages, 'new run identities do not alter the system prefix');
+  fixture.useProjectInstructions([{ ...sources[0], text: 'The updated project contract.\n' }]);
+  const changed = (await fixture.port.prepare({ ...request, runId: 'run:changed-project' })).runtimeSnapshot;
+  assert.ok((await compose(changed, 'run:changed-project')).messages.some(message => message.role === 'system'
+    && message.content.includes('The updated project contract.')));
+  assert.deepEqual((await compose(replay)).messages, firstRequest.messages, 'recorded snapshots do not reread current sources');
+  assert.deepEqual(replay.instructions, first.instructions);
+});
+
+test('invalid project instruction wire entries reject and release the prepared runtime', async t => {
+  const fixture = await httpPreparation(t);
+  const invalid = [null, {}, [{ path: '/project/AGENTS.md' }], [{ path: '', text: 'Instructions' }],
+    [{ path: '/project/AGENTS.md', text: 5 }], [{ path: '/project/AGENTS.md', text: 'Instructions', count: 1 }]];
+  for (const sources of invalid) {
+    fixture.useProjectInstructions(sources);
+    await assert.rejects(fixture.port.prepare(fixture.request), /run_runtime_project_instructions_invalid/);
+  }
+  assert.equal(fixture.releases.length, invalid.length, 'invalid sources use the existing preparation rollback');
 });

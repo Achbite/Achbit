@@ -109,7 +109,7 @@ test('reading an inactive history does not open a runtime or append recovery eve
   await service.read({ sessionId, view: 'messages' });
   assert.deepEqual(await journal.readCommand(sessionId, 'command:read'), null);
   assert.deepEqual(await readEvents(journal, sessionId), before);
-  assert.deepEqual(await service.activity(), { active: false });
+  assert.deepEqual(await service.activity(), { active: false, keepAwake: false });
 });
 
 test('Todo reports require a current Provider run and an atomic Session revision', async () => {

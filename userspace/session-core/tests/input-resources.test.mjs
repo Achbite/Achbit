@@ -90,6 +90,7 @@ test('initial directories bind before run start and Plan still waits for confirm
     const journal = new InMemoryCommandJournal(), sessionId = `session:initial-${reference.kind}`;
     await createSession(journal, sessionId, [workspaceBinding]);
     let turns = 0, admissions = 0;
+    const preparation = fakeRunPreparation();
     const actor = actorWith(journal, sessionId, { async *stream(request) {
       if (++turns === 1) {
         yield providerEvent(request.requestId, 'tool.call', { callId: 'native:plan', name: 'plan_publish', input: planFor('workspace2') });
@@ -103,10 +104,13 @@ test('initial directories bind before run start and Plan still waits for confirm
       assert.equal(request.mutationManifest[0].workspaceId, reference.workspaceId);
       return { source: 'user', authorities: [], ...(reference.kind === 'file'
         ? { workspaceRequests: [{ workspaceId: reference.workspaceId, rootPath: '/fixture/file-parent' }] } : {}) };
-    } }), fakeRunPreparation().port, `initial-${reference.kind}`);
+    } }), preparation.port, `initial-${reference.kind}`);
     t.after(() => actor.dispose());
     await actor.submit({ ...messageCommand(sessionId, 'command:input', 'Work on this input.'), filesystemReferences: [reference] });
     const waiting = await waitForProjection(actor, value => value.pendingPlan !== null);
+    assert.deepEqual(preparation.prepared[0].workspaceBindingIds, [workspaceBinding.workspaceId,
+      ...(reference.kind === 'directory' ? [directory.workspaceId] : [])],
+    'initial preparation receives the actual run bindings, not file attachment parents');
     if (reference.kind === 'directory') {
       assert.equal(waiting.activePlanRef, null);
       assert.deepEqual(waiting.run.workspaceBindings.map(x => x.workspaceId), [workspaceBinding.workspaceId, directory.workspaceId]);
@@ -193,4 +197,18 @@ test('Kernel Plan binding rejection retains its structured error and does not fa
   assert.equal(rejected.payload.error.code, 'plan_workspace_binding_invalid');
   assert.equal(rejected.payload.error.message, 'Directory was detached before admission.');
   assert.equal(events.some(event => event.type === 'plan.published'), false);
+});
+
+test('initial preparation explicitly reports no project bindings for an unbound Session', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:unbound-instructions';
+  await createSession(journal, sessionId);
+  const preparation = fakeRunPreparation();
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    yield providerEvent(request.requestId, 'text.delta', { text: 'No project is bound.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), preparation.port, 'unbound-instructions');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:unbound', 'Respond without a project.'));
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.deepEqual(preparation.prepared[0].workspaceBindingIds, []);
 });

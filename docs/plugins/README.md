@@ -44,7 +44,7 @@ Package the manifest, compiled entry and required assets/dependencies. Keep logi
 
 ## Agent development and management
 
-The current Host CLI exposes `plugins list`, `plugins status [id|installed-path]`, `plugins inspect <path>`, `plugins install <path>`, `plugins update <id|installed-path> <path>`, and `plugins enable|disable|remove <id|installed-path>`. Paths may name a directory, manifest or ZIP. `--host-data-dir <data-directory>` targets an already running Host, including a separate Debug instance. GUI and CLI share installation and management operations; normal Agent Shell approval applies to CLI effects.
+The current Host CLI exposes `plugins list`, `plugins status [id|installed-path]`, `plugins inspect <path>`, `plugins install <path>`, `plugins update <id|installed-path> <path>`, and `plugins enable|disable|remove <id|installed-path>`. Paths may name a directory, manifest or ZIP. `--host-data-dir <data-directory>` targets an already running Host, including a separate Debug instance. GUI and CLI share installation and management operations. Submit CLI calls through Host Shell with `requestHostPermission` and a specific reason, including read-only `plugins status`; the current permission policy handles authorization.
 
 `plugins capabilities` lists supported kinds, UI slots and development resources. `plugins guide plugins|ui` returns the selected current guide. `plugins template cli|service|ui|guidance` returns a map of workspace filenames and source text. These are read-only discovery operations; templates are not installed automatically and do not extend the built-in catalog.
 

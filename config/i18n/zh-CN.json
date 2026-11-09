@@ -155,7 +155,7 @@
     "settings.subagents.maxMembersPerSession": "可持续交互的子代理数上限",
     "settings.subagents.allowMemberAnalysis": "允许子代理继续委派任务",
     "settings.subagents.allowFullConfiguration": "允许 Agent 完全配置子代理",
-    "settings.subagents.fullConfigurationHelp": "允许 Agent 自选模型、推理强度和上下文参数；执行权限与方案确认保持不变。",
+    "settings.subagents.fullConfigurationHelp": "允许主 Agent 在继承权限内配置子代理的模型、工具、Loop 组件和任务能力；关闭时使用已配置的模板。",
     "settings.subagents.activation": "会话内修改应用于当前会话及以后新建的会话，不影响其他已有会话。关闭不影响已启动的任务。",
     "settings.subagents.defaultsHelp": "这些设置用于新建会话。会话内的修改也会成为新的默认值，其他已有会话保留各自配置。",
     "settings.subagents.unconfigured": "此会话尚未配置子代理。",

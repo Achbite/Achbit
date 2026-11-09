@@ -71,6 +71,10 @@ export class SessionConfigurationRegistry {
     return this.selectedProducts(recipe).flatMap(product => product.toolGuidance ? [product.toolGuidance] : []);
   }
 
+  productComponents(): JsonObject[] {
+    return [...this.#products.values()].map(product => ({ id: product.id, enabledByDefault: product.enabledByDefault === true }));
+  }
+
   describe(fullConfiguration: boolean): JsonObject {
     return Object.fromEntries((['context', 'compaction', 'controls'] as const).filter(kind => fullConfiguration || kind !== 'context')
       .map(kind => [kind, [...this.#entries.values()].filter(item => item.kind === kind).map(item => ({

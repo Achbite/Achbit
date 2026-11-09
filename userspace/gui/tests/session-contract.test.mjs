@@ -957,6 +957,7 @@ test('scope-only Plan review foregrounds additions and keeps the complete confir
   assert.equal(planScopeAddition(previous, { ...current, summary: 'A different objective.' }), null);
   const decision = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', uiActionError: null, composer: {
     pendingPlan: current, pendingScopeAddition: addition, textareaRef: { current: null }, draft: '', submitting: false,
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, pastedTexts: [], pastedImages: [], failedDrafts: [], pendingFilesystemPaths: [],
     pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textDecision: true,
   } }));
@@ -3017,6 +3018,7 @@ test('pending approvals replace ordinary input while preserving its draft for re
   const composer = {
     pendingApproval: { approvalId: 'approval:one', preview: { summary: 'Write the requested file', effects: [], logicalTargets: [] } },
     projection: { contextCompositions:[], queuedInputs: [{ commandId: 'queued:one', text: 'Keep the public API unchanged', status: 'queued', filesystemReferences: [] }] },
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'Second request', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], showStopAction: false, canSend: false, submitting: true,
     textareaRef: { current: null }, respondApproval() {},
@@ -3074,7 +3076,8 @@ test('questions and Plan revisions share the main input and render a single prim
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { ConversationComposer } = await loadGuiModule(t, '/src/components/local-agent/ConversationComposer.tsx');
-  const base = { profiles: [], selectedProfileId: null, draft: '保留构建配置', pastedTexts: [], pastedImages: [], failedDrafts: [],
+  const base = { recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
+    profiles: [], selectedProfileId: null, draft: '保留构建配置', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
     canSend: true, showStopAction: false, textDecision: true };
   for (const decision of [
@@ -3160,6 +3163,7 @@ test('unavailable plugins preserve their source error and cannot be selected in 
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { ConversationComposer } = await loadGuiModule(t, '/src/components/local-agent/ConversationComposer.tsx');
   const html = renderToStaticMarkup(createElement(ConversationComposer, { language: 'zh-CN', uiActionError: null, composer: {
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: '@', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [plugin], commandSuggestions: [], pluginPickerOpen: true,
     textareaRef: { current: null },

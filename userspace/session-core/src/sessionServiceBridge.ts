@@ -63,6 +63,12 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
         catch (error) { try { observer.failed(input.sessionId, error); } catch { /* Observers never own execution. */ } }
       }
     },
+    activityChanged(sessionId) {
+      for (const observer of observers) {
+        try { observer.activityChanged?.(sessionId); }
+        catch (error) { try { observer.failed(sessionId, error); } catch { /* Observers never own execution. */ } }
+      }
+    },
     failed(sessionId, error) {
       for (const observer of observers) { try { observer.failed(sessionId, error); } catch { /* Preserve producer isolation. */ } }
     },

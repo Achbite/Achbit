@@ -11,6 +11,7 @@ import SubagentQuickSettings from './SubagentQuickSettings';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
+import { useViewportBounds } from '../shared/useViewportBounds';
 
 interface SessionModelSelectorProps {
   language: UiLanguage;
@@ -47,6 +48,7 @@ export default function SessionModelSelector({ language, profiles, connections =
   const draftSubagents = useLocalAgentStore(state => state.draftSubagentSettings);
   const defaultSubagentsEnabled = useSettingsStore(state => state.effectiveSettings['agent.subagents.enabled']);
   const rootRef = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null), triggerRef = useRef<HTMLButtonElement>(null);
+  useViewportBounds(menuRef, open);
   const menuId = useId(), theme = useDisplayTheme(), chinese = language === 'zh-CN';
   const selected = profiles.find(profile => profile.id === selectedProfileId);
   const effectiveEffort = selected?.thinking === 'disabled' ? null : reasoningEffortOverride ?? selected?.reasoningEffort ?? null;

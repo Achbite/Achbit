@@ -10,6 +10,7 @@ function draftComposer(overrides = {}) {
     pendingApproval: null, pendingPlan: null, pendingInteraction: null,
     pendingFilesystemPaths: [], pastedTexts: [], pastedImages: [], failedDrafts: [],
     pluginSelections: [], profiles: [], filteredPlugins: [], commandSuggestions: [],
+    recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     textareaRef: { current: null }, canSend: true, showStopAction: false,
     submitDraft: async () => {}, ...overrides,
   };
@@ -27,8 +28,8 @@ async function setup(t) {
   globalThis.self = {};
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
   const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
-  return (composer, readerExpanded = true) => capture(ConversationComposer, {
-    language: 'zh-CN', composer, readerExpanded, uiActionError: null,
+  return (composer, readerExpanded = true, changeBar) => capture(ConversationComposer, {
+    language: 'zh-CN', composer, readerExpanded, changeBar, uiActionError: null,
     onDismissUiActionError() {}, onEditBrowserReview() {},
   });
 }
@@ -48,6 +49,22 @@ test('expanded Reader starts with one editable input and exposes an accessible e
   await findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.submit').props.onClick();
   assert.deepEqual(calls, ['submit'], 'the compact input reuses the existing submit route');
   assert.equal(input.props.value, '保留草稿\n第二行');
+});
+
+test('Reader disclosure and file-change entry coexist without entering the editable surface', async t => {
+  const render = await setup(t), calls = [];
+  const changeBar = createElement('button', { 'aria-label': '查看修改文件' }, '已修改 2 个文件');
+  const composer = draftComposer({ submitDraft: async () => calls.push('submit') });
+  const tree = render(composer, true, changeBar);
+  const accessories = findReactElement(tree, node => node.props.className === 'conversation-change-dock');
+  const input = findReactElement(tree, node => node.type === 'textarea');
+  const toggle = findReactElement(accessories, node => node.props['data-ui-action'] === 'composer.controls.toggle-expanded');
+  assert.equal(findReactElement(accessories, node => node.props['aria-label'] === '查看修改文件'), changeBar);
+  assert.equal(toggle.props['aria-controls'], input.props.id);
+  assert.equal(input.props.value, composer.draft);
+  assert.deepEqual(calls, [], 'accessory rendering never submits a message');
+  await findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.submit').props.onClick();
+  assert.deepEqual(calls, ['submit']);
 });
 
 test('ordinary conversation input keeps its full presentation and existing stop action', async t => {

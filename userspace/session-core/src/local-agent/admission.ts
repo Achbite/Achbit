@@ -82,6 +82,14 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.payload.subagentSettings) decodeAgentSettings(event.payload.subagentSettings);
       break;
     case 'run.started':
+      if (event.payload.contextStart) {
+        const boundary = event.payload.contextStart.historyThroughSequence;
+        const input = events.find(item => item.type === 'message.committed' && item.payload.messageId === event.payload.inputMessageId);
+        if (!Number.isSafeInteger(boundary) || boundary < 1 || !input || boundary >= input.sequence
+          || event.payload.contextStart.previousProfileId !== (state.run ? state.runRuntimeSnapshots[state.run.runId]?.provider.profileId : undefined)) {
+          throw new Error('model_context_boundary_invalid');
+        }
+      }
       decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
       decodeContextManagementSettings(event.payload.runtimeSnapshot.contextManagement);
       if (state.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(state.run.status)) {
@@ -232,6 +240,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'context.composed': {
       if (pendingProvider) throw new Error('provider_turn_still_active');
       admitModelView(event.payload, events);
+      if (state.contextHandoff?.status === 'reading' && event.payload.purpose !== 'approvalReview'
+        && (event.payload.purpose !== 'agent' || event.payload.tools.length !== 1
+          || event.payload.tools[0].canonicalName !== 'session.read')) throw new Error('model_handoff_read_required');
       const compaction = events.some((item) => item.type === 'context.compaction.requested'
         && item.runId === runId && item.payload.providerRequestId === event.payload.providerRequestId);
       const runtime = state.runRuntimeSnapshots[event.runId];
@@ -260,7 +271,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         throw new Error('tool_request_binding_missing');
       }
       const hosted = event.payload.tools.filter((tool) => tool.origin === 'providerHosted').length;
-      if (hosted !== Number(event.payload.purpose !== 'approvalReview' && runtime.webSearch.owner === 'providerHosted')) {
+      if (hosted !== Number(event.payload.purpose !== 'approvalReview' && state.contextHandoff?.status !== 'reading' && runtime.webSearch.owner === 'providerHosted')) {
         throw new Error('context_composition_search_owner_mismatch');
       }
       break;

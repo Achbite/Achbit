@@ -27,7 +27,7 @@ import {
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
 import { documentFormat, type DocumentFormat } from './documentResources';
-import { READER_OPEN_EVENT, readViewState, saveViewState, reconcileReaderPages, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
+import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
 import {
   hasNativeBrowser,
@@ -94,7 +94,7 @@ function tabName(tab: ReaderTab, language: UiLanguage): string {
 /** View state owns open tabs; a collapsed panel keeps their content and native pages mounted. */
 export function useResourcePreview(sessionId: string | null, navigation?: ReaderNavigation) {
   const host = useConversationHost();
-  const [state, setState] = useState<ReaderViewState>({ sessionId, tabs: [], activeId: null, visible: false, expanded: false });
+  const [state, setState] = useState<ReaderViewState>(() => readReaderViewState(sessionId));
   useInterfaceReloadView('reader', { ...state, tabs: state.tabs.map(tab => tab.page ? { ...tab, target: { kind: 'browser', previewId: tab.page.previewId } } : tab) });
   const [treeVisible, setTreeVisible] = useState(() => readViewState('file-tree', true));
   const [width, setWidth] = useState(() => readViewState<number>('panel-width', PANE_GEOMETRY.preview.initial));
@@ -155,14 +155,12 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   }, [sessionId, selectTarget]);
   useEffect(() => {
     bindings.current.clear();
-    setState(current => current.sessionId === sessionId ? current : { sessionId, tabs: [], activeId: null, visible: false, expanded: false });
+    setState(current => current.sessionId === sessionId ? current : readReaderViewState(sessionId));
     setError(null);
     if (!sessionId) return;
-    const saved = readViewState<ReaderTarget | null>(sessionId + ':selection', null);
     const restored = restoredInterfaceView<typeof state | null>('reader', null);
     if (restored?.sessionId === sessionId) takeRestoredInterfaceView('reader', null);
     if (restored?.sessionId === sessionId) setState(restored);
-    else if (saved && saved.kind !== 'browser') openTarget(saved);
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId: string; target: ReaderTarget }>).detail;
       if (detail.sessionId === sessionId) openTarget(detail.target);
@@ -172,6 +170,10 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     window.addEventListener(READER_OPEN_EVENT, listener);
     return () => window.removeEventListener(READER_OPEN_EVENT, listener);
   }, [sessionId, openTarget]);
+  useEffect(() => {
+    // Never save the outgoing session's visibility under the incoming session.
+    if (sessionId && state.sessionId === sessionId) saveViewState(sessionId + ':visible', state.visible);
+  }, [sessionId, state.sessionId, state.visible]);
   const request = navigation?.request;
   useEffect(() => {
     if (!request || request.location.sessionId !== sessionId) return;

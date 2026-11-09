@@ -79,7 +79,8 @@ pub(crate) fn parse(value: Value) -> Result<Input, String> {
 
 pub(crate) struct Containers {
     executable: PathBuf,
-    // Only resources successfully requested through this prepared plugin are owned here.
+    // The Kernel run owns this adapter across replaceable tool catalog views.
+    // Only resources requested through this adapter are owned here.
     owned: Mutex<BTreeMap<String, OwnedContainer>>,
 }
 struct OwnedContainer {

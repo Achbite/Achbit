@@ -6,6 +6,8 @@ use achbit_kernel_tools::kernel_internal::{
 use achbit_kernel_tools::KernelToolRegistry;
 use achbit_kernel_tools::ToolAvailability;
 pub(crate) use process::invoke_workspace_shell as execute_workspace_shell;
+#[cfg(windows)]
+pub(crate) use process::probe_workspace_shell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -16,7 +18,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default)]
@@ -74,18 +76,114 @@ pub struct KernelToolInvocation {
     pub input: KernelCanonicalInvocation,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct KernelCancellationToken {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<KernelCancellationState>,
+}
+
+#[derive(Default)]
+struct KernelCancellationState {
+    cancelled: AtomicBool,
+    callbacks: Mutex<BTreeMap<u64, Box<dyn FnOnce() + Send>>>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl std::fmt::Debug for KernelCancellationToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KernelCancellationToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
+}
+
+/// Removing a subscription prevents a callback that cancellation has not claimed.
+/// A callback already claimed by concurrent cancellation may still finish.
+pub struct KernelCancellationSubscription {
+    state: Weak<KernelCancellationState>,
+    id: Option<u64>,
+}
+
+impl Drop for KernelCancellationSubscription {
+    fn drop(&mut self) {
+        if let (Some(state), Some(id)) = (self.state.upgrade(), self.id) {
+            state
+                .callbacks
+                .lock()
+                .expect("cancellation callbacks")
+                .remove(&id);
+        }
+    }
 }
 
 impl KernelCancellationToken {
     pub fn cancel(&self) {
-        self.cancelled.store(true, AtomicOrdering::Release);
+        if self.state.cancelled.swap(true, AtomicOrdering::AcqRel) {
+            return;
+        }
+        let callbacks =
+            std::mem::take(&mut *self.state.callbacks.lock().expect("cancellation callbacks"));
+        // Never hold the registration lock across callbacks; notification may reenter.
+        for callback in callbacks.into_values() {
+            callback();
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(AtomicOrdering::Acquire)
+        self.state.cancelled.load(AtomicOrdering::Acquire)
+    }
+
+    /// Wake an executor's existing event wait without periodically reading the token.
+    pub fn on_cancel(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> KernelCancellationSubscription {
+        let mut callbacks = self.state.callbacks.lock().expect("cancellation callbacks");
+        if self.is_cancelled() {
+            drop(callbacks);
+            callback();
+            return KernelCancellationSubscription {
+                state: Arc::downgrade(&self.state),
+                id: None,
+            };
+        }
+        let id = self.state.next_id.fetch_add(1, AtomicOrdering::Relaxed);
+        callbacks.insert(id, Box::new(callback));
+        KernelCancellationSubscription {
+            state: Arc::downgrade(&self.state),
+            id: Some(id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_event_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn cancellation_subscriptions_are_once_only_removable_and_reentrant() {
+        let token = KernelCancellationToken::default();
+        let fired = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&fired);
+        let reentrant = token.clone();
+        let _kept = token.on_cancel(move || {
+            count.fetch_add(1, AtomicOrdering::SeqCst);
+            reentrant.cancel();
+            let _immediate = reentrant.on_cancel(|| {});
+        });
+        let removed = token.on_cancel(|| panic!("unsubscribed callback fired"));
+        drop(removed);
+        token.cancel();
+        token.cancel();
+        assert!(token.is_cancelled());
+        assert_eq!(fired.load(AtomicOrdering::SeqCst), 1);
+        let count = Arc::clone(&fired);
+        let _late = token.on_cancel(move || {
+            count.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+        assert_eq!(fired.load(AtomicOrdering::SeqCst), 2);
+        assert!(token.state.callbacks.lock().unwrap().is_empty());
     }
 }
 

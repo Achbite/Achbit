@@ -477,6 +477,7 @@ struct RunCatalogKey {
 struct KernelGenerationState {
     run_bindings: HashMap<RunCatalogKey, Arc<KernelGeneration>>,
     released_run_bindings: HashMap<RunCatalogKey, ReleasedRunBinding>,
+    run_containers: HashMap<(String, String), Arc<crate::container_tools::Containers>>,
 }
 
 struct ReleasedRunBinding {
@@ -602,6 +603,7 @@ impl LocalAgentKernel {
             generations: Arc::new(Mutex::new(KernelGenerationState {
                 run_bindings: HashMap::new(),
                 released_run_bindings: HashMap::new(),
+                run_containers: HashMap::new(),
             })),
             active: Arc::new(Mutex::new(HashMap::new())),
             file_mutations: Arc::default(),
@@ -609,6 +611,41 @@ impl LocalAgentKernel {
             jobs: Default::default(),
             desktop: Arc::new(crate::desktop_tools::DesktopHost::unbound()),
         })
+    }
+
+    pub(crate) fn prepare_run_containers(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        execution_path: &str,
+    ) -> Result<Arc<crate::container_tools::Containers>, LocalAgentKernelError> {
+        let key = (session_id.to_owned(), run_id.to_owned());
+        if let Some(adapter) = self.lock_generations()?.run_containers.get(&key) {
+            return Ok(Arc::clone(adapter));
+        }
+        // Publish ownership only when bind_run_catalog succeeds. A failed preparation
+        // cannot have executed container tools and must not leave a run registry entry.
+        crate::container_tools::Containers::new(execution_path)
+            .map(Arc::new)
+            .map_err(|error| LocalAgentKernelError::new("container_plugin_unavailable", error))
+    }
+
+    fn release_run_containers(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<(), LocalAgentKernelError> {
+        let key = (session_id.to_owned(), run_id.to_owned());
+        let adapter = self.lock_generations()?.run_containers.get(&key).cloned();
+        if let Some(adapter) = adapter {
+            // Docker I/O runs outside the registry lock. Failed cleanup retains the
+            // owner and its remaining containers so release/shutdown can retry.
+            adapter
+                .dispose()
+                .map_err(|error| LocalAgentKernelError::new("container_cleanup_failed", error))?;
+            self.lock_generations()?.run_containers.remove(&key);
+        }
+        Ok(())
     }
 
     pub(crate) fn prepare_generation(
@@ -685,6 +722,19 @@ impl LocalAgentKernel {
                         "extension_generation_identity_conflict",
                         "Prepared generation 与请求的 ExtensionGenerationRef 不一致。",
                     ));
+                }
+                if let Some(adapter) = generation.catalog.container_runtime() {
+                    let run_key = (request.session_id.clone(), request.run_id.clone());
+                    if let Some(existing) = state.run_containers.get(&run_key) {
+                        if !Arc::ptr_eq(existing, &adapter) {
+                            return Err(LocalAgentKernelError::new(
+                                "container_runtime_identity_conflict",
+                                "当前 run 的工具视图必须共享同一个容器 owner。",
+                            ));
+                        }
+                    } else {
+                        state.run_containers.insert(run_key, adapter);
+                    }
                 }
                 state.run_bindings.insert(key, Arc::clone(&generation));
             }
@@ -791,6 +841,7 @@ impl LocalAgentKernel {
         self.jobs
             .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("managed_process_cleanup_failed", e))?;
+        self.release_run_containers(&request.session_id, &request.run_id)?;
         self.desktop
             .release_run(&request.session_id, &request.run_id)
             .map_err(|e| LocalAgentKernelError::new("computer_sharing_cleanup_failed", e))?;
@@ -885,6 +936,7 @@ impl LocalAgentKernel {
                         },
                     );
                 }
+                self.jobs.notify_activity_changed();
 
                 let final_result = (|| {
                     let mut prepared = prepared;
@@ -1061,6 +1113,7 @@ impl LocalAgentKernel {
                     .lock_active()
                     .map(|mut active| active.remove(&request.call_id));
                 control.finish();
+                self.jobs.notify_activity_changed();
                 remove_result?;
                 final_result
             }
@@ -1164,6 +1217,10 @@ impl LocalAgentKernel {
         self.records.read(call_id)
     }
 
+    pub(crate) fn activity_changed(&self) -> Arc<tokio::sync::Notify> {
+        self.jobs.activity_changed()
+    }
+
     pub(crate) fn has_active_work(&self) -> Result<bool, LocalAgentKernelError> {
         if !self.lock_active()?.is_empty()
             || self.jobs.has_active_work().map_err(|error| {
@@ -1198,15 +1255,19 @@ impl LocalAgentKernel {
                     generations.push(Arc::clone(generation));
                 }
             }
-            let runs: std::collections::HashSet<_> = state
+            let mut runs: std::collections::HashSet<_> = state
                 .run_bindings
                 .keys()
                 .map(|key| (key.session_id.clone(), key.run_id.clone()))
                 .collect();
+            runs.extend(state.run_containers.keys().cloned());
             (generations, runs)
         };
         let mut errors = Vec::new();
         for (session_id, run_id) in runs {
+            if let Err(error) = self.release_run_containers(&session_id, &run_id) {
+                errors.push(format!("{}: {}", error.code, error.message));
+            }
             if let Err(error) = self.desktop.release_run(&session_id, &run_id) {
                 errors.push(format!("computer_sharing_cleanup_failed: {error}"));
             }
@@ -1331,15 +1392,23 @@ impl LocalAgentKernel {
             if input.action == "start" {
                 let mut inner = request.clone();
                 inner.tool_name = input.tool.expect("validated start tool");
-                inner.tool_binding_ref = generation
+                let target_binding = generation
                     .catalog
                     .binding_for_name(&inner.tool_name)
-                    .map_err(catalog_error)?
-                    .binding_ref()
-                    .to_owned();
+                    .map_err(catalog_error)?;
+                if !target_binding.supports_background() {
+                    return Err(LocalAgentKernelError::input(
+                        "$.tool",
+                        "backgroundUnavailable",
+                        "Choose one of the installed background execution targets.",
+                        None,
+                    ));
+                }
+                inner.tool_binding_ref = target_binding.binding_ref().to_owned();
                 inner.input = input.input.expect("validated start input");
                 if inner.input.get("workspaceId").is_some()
-                    || inner.input.get("workspace").is_some()
+                    || !target_binding.uses_external_runtime()
+                        && inner.input.get("workspace").is_some()
                 {
                     return Err(LocalAgentKernelError::input(
                         "$.input",
@@ -1348,8 +1417,17 @@ impl LocalAgentKernel {
                         None,
                     ));
                 }
-                if let Some(workspace_id) = input.workspace_id {
-                    inner.input["workspaceId"] = json!(workspace_id);
+                if matches!(
+                    target_binding
+                        .effect_scope(&inner.input)
+                        .map_err(catalog_error)?,
+                    CatalogEffectScope::WorkspaceRead
+                        | CatalogEffectScope::WorkspaceMutation
+                        | CatalogEffectScope::Process
+                ) {
+                    if let Some(workspace_id) = input.workspace_id {
+                        inner.input["workspaceId"] = json!(workspace_id);
+                    }
                 }
                 let mut prepared = self.prepare_tool_internal(&inner, include_permissions)?;
                 prepared.source_binding = Some(binding);
@@ -1408,6 +1486,22 @@ impl LocalAgentKernel {
                 prepared.network_authority.is_some() || prepared.network_request.is_some();
         }
         Ok(prepared)
+    }
+
+    /// Uploaded snapshots and private workdirs are not project instruction roots.
+    /// Resolve addresses without reading an excluded resource or borrowing its owner.
+    pub(crate) fn project_instruction_roots(
+        &self,
+        workspace_ids: &[String],
+    ) -> Result<Vec<PathBuf>, LocalAgentKernelError> {
+        let mut roots = Vec::new();
+        for workspace_id in workspace_ids {
+            let workspace = self.resolver.resolve(workspace_id)?;
+            if matches!(workspace.access, WorkspaceAccess::Project) {
+                roots.push(PathBuf::from(workspace.root));
+            }
+        }
+        Ok(roots)
     }
 
     fn resolve_owned_workspace(
@@ -2327,6 +2421,7 @@ impl LocalAgentKernel {
                         )
                     }))
                 }
+                _ if inner.binding.uses_external_runtime() => Some(inner.operation.clone()),
                 _ => None,
             }
             .ok_or("Managed command missing")?;
@@ -6514,6 +6609,234 @@ mod attempt_control_tests {
 /// Storage names are portable; logical content hashes retain their original format.
 pub(crate) fn output_directory_key(identity: &str) -> String {
     achbit_kernel_tools::hash_bytes(identity.as_bytes()).replace(':', "-")
+}
+
+#[cfg(all(test, unix))]
+mod container_lifecycle_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct UnusedWorkspace;
+    impl WorkspaceResolverPort for UnusedWorkspace {
+        fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+            panic!("catalog lifecycle test supplies explicit container targets")
+        }
+    }
+
+    #[test]
+    fn temporary_containers_survive_catalog_retirement_until_run_release() {
+        for fail_cleanup in [false, true] {
+            let root = Fixture(
+                std::env::temp_dir().join(
+                    random_id("container-catalog-test")
+                        .unwrap()
+                        .replace(':', "-"),
+                ),
+            );
+            std::fs::create_dir_all(&root.0).unwrap();
+            let docker = root.0.join("docker");
+            std::fs::write(&docker, r#"#!/bin/sh
+root=${0%/*}
+printf '%s\n' "$*" >> "$root/commands"
+if [ "$1" = --context ]; then shift 2; fi
+case "$1" in
+  context)
+    if [ "$2" = show ]; then echo fixture; else
+      echo '[{"Endpoints":{"docker":{"Host":"unix:///fixture.sock"}}}]'
+    fi ;;
+  create) : > "$root/alive"; echo fixture-container ;;
+  start) test -f "$root/alive" ;;
+  container)
+    test -f "$root/alive" || exit 4
+    echo '[{"Id":"fixture-container","Image":"fixture-image","Name":"/fixture","Mounts":[],"Config":{"User":""},"HostConfig":{"NetworkMode":"bridge","Privileged":false,"CapAdd":[],"Devices":[]}}]' ;;
+  exec)
+    test -f "$root/alive" || exit 4
+    if [ "$7" = 'printf catalog-survived' ]; then printf catalog-survived; fi ;;
+  ps) if [ -f "$root/alive" ]; then echo fixture-container; fi ;;
+  rm)
+    if [ -f "$root/fail-remove" ]; then echo fixture-remove-failed >&2; exit 9; fi
+    /bin/rm -f "$root/alive" ;;
+  *) exit 8 ;;
+esac
+"#).unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+            let kernel =
+                LocalAgentKernel::open(Path::new(":memory:"), journal, Arc::new(UnusedWorkspace))
+                    .unwrap();
+            let session_id = "session:containers";
+            let run_id = "run:containers";
+            let prepare = |extension: &str| {
+                let adapter = kernel
+                    .prepare_run_containers(session_id, run_id, root.0.to_str().unwrap())
+                    .unwrap();
+                let mut product = crate::local_agent_product_tools::test_product_tools();
+                let config = Arc::get_mut(&mut product).unwrap();
+                config.container_instance = Some("plugin-instance:containers".into());
+                config.container_runtime = Some(adapter);
+                LocalAgentKernel::prepare_generation(
+                    extension,
+                    KernelExecutorConfig::default(),
+                    Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
+                    McpRuntime::default(),
+                    LocalAgentPermissionPolicy::from_settings(&json!({})).unwrap(),
+                    &Default::default(),
+                    false,
+                    product,
+                )
+                .unwrap()
+            };
+            let first = prepare("extension:containers-first");
+            assert!(kernel.lock_generations().unwrap().run_containers.is_empty());
+            let first_catalog = Arc::clone(&first.generation.catalog);
+            kernel
+                .bind_run_catalog(
+                    PrepareToolCatalogRequest::new(
+                        session_id,
+                        run_id,
+                        "extension:containers-first",
+                    ),
+                    first,
+                )
+                .unwrap();
+            let adapter = first_catalog.container_runtime().unwrap();
+            let other_run = kernel
+                .prepare_run_containers(session_id, "run:other", root.0.to_str().unwrap())
+                .unwrap();
+            assert!(!Arc::ptr_eq(&adapter, &other_run));
+            let context = |name: &str| KernelToolExecutionContext {
+                output_directory: Some(root.0.join(name)),
+                workspace_root: None,
+                workspace_id: None,
+                private_resolved_targets: vec![],
+                workspace_write_targets: None,
+                file_access: Default::default(),
+                cancellation: Default::default(),
+                progress: Default::default(),
+            };
+            let create = crate::container_tools::parse(json!({
+                "action":"create", "image":"fixture-image",
+            }))
+            .unwrap();
+            let create_target = adapter
+                .prepare(&create, root.0.to_str().unwrap(), Some(&root.0))
+                .unwrap();
+            let created = adapter
+                .invoke("create", &create, &create_target, &context("create"))
+                .unwrap();
+            assert_eq!(created.outcome, KernelToolExecutionOutcome::Completed);
+            assert_eq!(created.output["containerId"], "fixture-container");
+
+            // A plugin activation/registry refresh binds a new view before retiring the old one.
+            let second = prepare("extension:containers-refreshed");
+            let second_catalog = Arc::clone(&second.generation.catalog);
+            kernel
+                .bind_run_catalog(
+                    PrepareToolCatalogRequest::new(
+                        session_id,
+                        run_id,
+                        "extension:containers-refreshed",
+                    ),
+                    second,
+                )
+                .unwrap();
+            kernel
+                .retire_tool_views(session_id, run_id, second_catalog.snapshot_ref())
+                .unwrap();
+            assert!(root.0.join("alive").exists());
+            assert!(!std::fs::read_to_string(root.0.join("commands"))
+                .unwrap()
+                .contains(" rm "));
+            let binding = second_catalog.binding_for_name("container").unwrap();
+            let current = binding.container_adapter().unwrap();
+            let exec = crate::container_tools::parse(json!({
+                "action":"exec", "container":"fixture-container", "command":"printf catalog-survived",
+            })).unwrap();
+            let exec_target = current
+                .prepare(&exec, root.0.to_str().unwrap(), None)
+                .unwrap();
+            assert!(current.owns(&exec_target));
+            let executed = current
+                .invoke("exec", &exec, &exec_target, &context("exec"))
+                .unwrap();
+            assert_eq!(executed.outcome, KernelToolExecutionOutcome::Completed);
+            assert_eq!(executed.output["stdout"], "catalog-survived");
+
+            if fail_cleanup {
+                std::fs::write(root.0.join("fail-remove"), "").unwrap();
+                let error = kernel
+                    .release_catalog(ReleaseToolCatalogRequest::new(
+                        session_id,
+                        run_id,
+                        first_catalog.snapshot_ref(),
+                    ))
+                    .unwrap_err();
+                assert_eq!(error.code, "container_cleanup_failed");
+                assert!(error.message.contains("fixture-remove-failed"));
+                assert!(root.0.join("alive").exists());
+                assert!(current.owns(&exec_target));
+                assert_eq!(kernel.lock_generations().unwrap().run_containers.len(), 1);
+                std::fs::remove_file(root.0.join("fail-remove")).unwrap();
+            }
+            let released = kernel
+                .release_catalog(ReleaseToolCatalogRequest::new(
+                    session_id,
+                    run_id,
+                    first_catalog.snapshot_ref(),
+                ))
+                .unwrap();
+            assert_eq!(released["released"], true);
+            assert!(!root.0.join("alive").exists());
+            assert!(!current.owns(&exec_target));
+            assert!(kernel.lock_generations().unwrap().run_containers.is_empty());
+            kernel
+                .release_catalog(ReleaseToolCatalogRequest::new(
+                    session_id,
+                    run_id,
+                    second_catalog.snapshot_ref(),
+                ))
+                .unwrap();
+
+            // Debug components have a control-owned catalog without a Session run.
+            let mut standalone_product = crate::local_agent_product_tools::test_product_tools();
+            Arc::get_mut(&mut standalone_product)
+                .unwrap()
+                .container_instance = Some("plugin-instance:standalone-containers".into());
+            let standalone = ToolCatalogSnapshot::prepare(
+                "extension:standalone-containers",
+                KernelExecutorConfig {
+                    execution_path: Some(root.0.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+                Arc::new(achbit_kernel_runtime::executors::EmptySecretProvider),
+                McpRuntime::default(),
+                false,
+                standalone_product,
+                &Default::default(),
+            )
+            .unwrap();
+            let standalone_adapter = standalone.container_runtime().unwrap();
+            let created = standalone_adapter
+                .invoke(
+                    "standalone-create",
+                    &create,
+                    &create_target,
+                    &context("standalone-create"),
+                )
+                .unwrap();
+            assert_eq!(created.outcome, KernelToolExecutionOutcome::Completed);
+            assert!(root.0.join("alive").exists());
+            standalone.dispose().unwrap();
+            assert!(!root.0.join("alive").exists());
+        }
+    }
 }
 
 #[cfg(test)]

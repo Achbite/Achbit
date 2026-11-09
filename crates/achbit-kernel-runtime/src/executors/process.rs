@@ -162,6 +162,76 @@ impl KernelToolExecutor for ConfiguredShellExecutor {
     }
 }
 
+/// Check the selected Windows shell through the same LPAC launch, script,
+/// environment and cleanup path as a tool call, without accessing a project.
+#[cfg(windows)]
+pub(crate) fn probe_workspace_shell(
+    shell: &ShellProgram,
+    execution_path: &str,
+) -> Result<(), String> {
+    let scope = new_process_scope_id();
+    let mut temporary =
+        AgentShellTempDir::create(None, &scope).map_err(|error| error.to_string())?;
+    let result = (|| {
+        let root = temporary.path();
+        let mut files = crate::file_access::FileAccessScope::workspace(root)?;
+        let mut runtime_roots = std::env::split_paths(OsStr::new(execution_path))
+            .filter(|path| path.is_absolute() && path.is_dir())
+            .collect::<Vec<_>>();
+        runtime_roots.extend(crate::shell_environment::windows_runtime_read_roots(
+            &shell.executable,
+        ));
+        files.read.extend(runtime_roots.iter().cloned());
+        files.best_effort_read = runtime_roots;
+        files.home = Some(root.to_path_buf());
+        let context = KernelToolExecutionContext {
+            output_directory: Some(root.join("output")),
+            workspace_root: Some(root.to_string_lossy().into_owned()),
+            workspace_id: Some("shell-startup-check".into()),
+            private_resolved_targets: vec![root.to_string_lossy().into_owned()],
+            workspace_write_targets: None,
+            file_access: files,
+            cancellation: Default::default(),
+            progress: Default::default(),
+        };
+        let input = KernelToolRegistry::new()
+            .canonicalize(
+                &shell.tool,
+                serde_json::json!({"command":"exit 0","timeout":5}),
+            )
+            .map_err(|error| KernelError::Other(error.to_string()))?;
+        let result = invoke_shell_in_temp(
+            KernelToolInvocation {
+                id: scope.clone(),
+                input,
+            },
+            context,
+            Some(shell),
+            Some(execution_path),
+            &scope,
+            root,
+        )?;
+        if result.output["success"] != true {
+            return Err(KernelError::Other(format!(
+                "Selected {} failed in Windows LPAC (exit {}): {}; {}{}",
+                shell.executable.display(),
+                result.output["exitCode"],
+                result
+                    .error
+                    .as_ref()
+                    .map(|error| error.message.as_str())
+                    .unwrap_or_default(),
+                result.output["stdout"].as_str().unwrap_or_default(),
+                result.output["stderr"].as_str().unwrap_or_default(),
+            )));
+        }
+        Ok(())
+    })();
+    combine_shell_results(result, temporary.cleanup())
+        .map(|((), ())| ())
+        .map_err(|error| error.to_string())
+}
+
 pub(crate) fn invoke_workspace_shell(
     request: crate::workspace_sandbox::SandboxProcessRequest<'_>,
 ) -> KernelResult<KernelToolExecutionResult> {
@@ -301,7 +371,7 @@ fn invoke_shell_in_temp(
     }
 
     let terminal = terminal_stdin.is_some();
-    let arguments = prepare_script_arguments(&shell, &command_text, temporary)?;
+    let arguments = prepare_script_arguments(&shell, &command_text, temporary, terminal)?;
     let prepared_command = prepare_shell_command(
         &arguments,
         &shell,
@@ -463,7 +533,7 @@ fn invoke_terminal_shell(
             pixel_height: 0,
         })
         .map_err(|error| KernelError::Other(format!("open bash pty: {error}")))?;
-    let arguments = prepare_script_arguments(&shell, &command_text, temporary)?;
+    let arguments = prepare_script_arguments(&shell, &command_text, temporary, true)?;
     let prepared_command = prepare_shell_command(
         &arguments,
         &shell,

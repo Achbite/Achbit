@@ -2344,8 +2344,21 @@ fn validate_new_event(
             exact_object(
                 payload,
                 &["inputMessageId", "workspaceBindings", "runtimeSnapshot"],
-                &[],
+                &["contextStart"],
             )?;
+            if let Some(start) = payload.get("contextStart") {
+                exact_object(start, &["historyThroughSequence", "previousProfileId"], &[])?;
+                if required_u64(start, "historyThroughSequence")? == 0 {
+                    return Err(LocalAgentStoreError::new(
+                        "session_event_invalid",
+                        "历史截止点必须为正整数。",
+                    ));
+                }
+                validate_id(
+                    "previousProfileId",
+                    required_string(start, "previousProfileId")?,
+                )?;
+            }
             validate_id(
                 "inputMessageId",
                 required_string(payload, "inputMessageId")?,
@@ -5648,15 +5661,18 @@ fn validate_provider_runtime_snapshot(
             "thinking",
             "fileInputMediaTypes",
             "inputTokenCalibrationKey",
+            "continuationKey",
         ],
     )?;
-    if provider.get("inputTokenCalibrationKey").is_some() {
-        let key = required_string(provider, "inputTokenCalibrationKey")?;
-        if key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_graphic()) {
-            return Err(LocalAgentStoreError::new(
-                "session_event_invalid",
-                "inputTokenCalibrationKey 必须为 1 到 128 个非空白 ASCII 字符。",
-            ));
+    for field in ["inputTokenCalibrationKey", "continuationKey"] {
+        if provider.get(field).is_some() {
+            let key = required_string(provider, field)?;
+            if key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_graphic()) {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    "Provider identity 必须为 1 到 128 个非空白 ASCII 字符。",
+                ));
+            }
         }
     }
     let provider_runtime_ref = required_string(provider, "providerRuntimeRef")?;

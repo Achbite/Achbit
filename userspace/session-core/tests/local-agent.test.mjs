@@ -1060,7 +1060,7 @@ test('agent discovery appends contracts while preserving tool definitions and th
   const limitedMember = await buildAgentProviderRequest({ ...input, events: [...preparedEvents, completed, settled].map(event => event.type === 'session.created' ? { ...event, payload: { ...event.payload, agentContext: {} } } : event),
     runtime: { ...memberRuntime, agentCapabilities: { ...ALL_AGENT_CAPS, delegation: false } } });
   assert.deepEqual(limitedMember.request.tools.filter(tool => tool.name !== 'agent'), member.request.tools.filter(tool => tool.name !== 'agent'));
-  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /Coordinate directly with teammates/u);
+  assert.match(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /Coordinate with available teammates/u);
   assert.doesNotMatch(limitedMember.request.tools.find(tool => tool.name === 'agent').description, /spawns|presets|configuration/u);
   assert.deepEqual(agentOperationDefinitions({ ...ALL_AGENT_CAPS, delegation: false }).map(operation => operation.action), ['models', 'send']);
   assert.deepEqual(limitedMember.request.messages, discovered.request.messages);
@@ -3363,12 +3363,12 @@ test('Session service owns Host activity through background completion', async (
     },
   });
   t.after(async () => { finish(); await service.dispose(); });
-  assert.deepEqual(await service.activity(), { active: false });
+  assert.deepEqual(await service.activity(), { active: false, keepAwake: false });
   await service.submit(messageCommand(sessionId, 'command:host-background', 'Complete this work.'));
-  assert.deepEqual(await service.activity(), { active: true });
+  assert.deepEqual(await service.activity(), { active: true, keepAwake: true });
   finish();
   await waitUntil(async () => !(await service.activity()).active, 'background completion releases Host without a shell snapshot');
-  assert.deepEqual(await service.activity(), { active: false });
+  assert.deepEqual(await service.activity(), { active: false, keepAwake: false });
   assert.equal(preparation.released.length, 1);
 });
 
@@ -5917,6 +5917,11 @@ for (const failure of [
     source: 'providerTransport', phase: 'responseBody', category: 'network', retryable: true,
     isConnect: false, isTimeout: false, isBody: false,
     causes: [{ message: 'unexpected EOF during chunk size line', kind: 'UnexpectedEof' }],
+  } },
+  { code: 'provider_stream_read_failed', message: 'Provider read timed out.', diagnostics: {
+    source: 'providerTransport', phase: 'responseBody', category: 'network', retryable: true,
+    isConnect: false, isTimeout: true, isBody: true,
+    causes: [{ message: 'operation timed out' }],
   } },
 ]) test(`transient ${failure.code} attempts keep one request, discard partial output, and execute no partial tools`, async (t) => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:network-retry';

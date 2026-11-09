@@ -138,13 +138,16 @@ pub fn request_setup() -> Result<(), String> {
 /// Remove every recorded grant and this data root's profiles. Shells started
 /// afterwards grant their access again; run it with Achbit closed (uninstall).
 pub fn reset() -> Result<(), String> {
+    // Keep the snapshot, ACL revocation and retained ledger in one transaction
+    // with concurrent grants; otherwise an append can be forgotten.
+    let _lock = acl::AclLock::acquire()?;
     let state = state::state()?;
     let mut entries = state.entries()?;
+    let mut names = state.profiles()?;
     let failures = acl::revoke_all(&mut entries);
     let failed: Vec<_> = failures.iter().map(|(entry, _)| entry.clone()).collect();
     state.retain(&failed)?;
     let mut errors: Vec<String> = failures.into_iter().map(|(_, error)| error).collect();
-    let mut names = state.profiles();
     for network in [false, true] {
         let name = state.profile_name(network);
         if !names.contains(&name) {

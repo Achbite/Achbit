@@ -173,6 +173,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
+          unappliedRecovery={composer.unappliedRecovery}
           automaticReview={automaticReview}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks location="conversation" artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}

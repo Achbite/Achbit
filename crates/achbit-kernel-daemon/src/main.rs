@@ -16,6 +16,7 @@ mod debug_tools;
 mod host_connection;
 mod host_inspection;
 mod host_lifecycle;
+mod host_power;
 mod host_runtime;
 mod host_services;
 mod host_shutdown;
@@ -49,6 +50,7 @@ mod model_usage;
 mod plugin_installation;
 mod plugin_management;
 mod prelude;
+mod project_instructions;
 mod provider_transport;
 mod routes;
 mod service_plugins;
@@ -278,6 +280,7 @@ async fn run() {
     let app = routes::build_app(state.clone());
     achbit_host_connection::startup::timing("kernel.routes");
     let lifetime_monitor = tokio::spawn(monitor_host_lifetime(state.clone()));
+    let power_monitor = tokio::spawn(host_power::monitor_host_power(state.clone()));
     // Host bootstrap publishes transport credentials while the config-root lease
     // is held. Shells attach to this instance; they never copy Session state.
     let _connection_publication = achbit_host_connection::LocalHostConnection::new(
@@ -292,6 +295,8 @@ async fn run() {
         .with_graceful_shutdown(wait_for_host_shutdown())
         .await;
     lifetime_monitor.abort();
+    power_monitor.abort();
+    let _ = power_monitor.await;
     let cleanup_complete = shutdown_owned_host_resources(&state).await;
     assert!(cleanup_complete, "Achbit 本地资源未完整回收");
     if let Err(error) = result {

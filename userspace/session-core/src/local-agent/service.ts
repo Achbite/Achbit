@@ -86,6 +86,7 @@ export class SessionDeletionError extends AggregateError {
 
 export class SessionService implements ConversationPort {
   readonly #actors = new Map<string, Promise<SessionActor>>();
+  readonly #openingActors = new Set<string>();
   readonly #actorUsers = new Map<string, number>();
   readonly #retirements = new Map<string, Promise<void>>();
   readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
@@ -390,11 +391,12 @@ export class SessionService implements ConversationPort {
     return decisions;
   }
 
-  async activity(): Promise<{ active: boolean }> {
+  async activity(): Promise<{ active: boolean; keepAwake: boolean }> {
+    if (this.#openingActors.size) return { active: true, keepAwake: true };
     // Observe existing objects only; an idle read must never reopen a retiring child.
     const activity = await Promise.all([...this.#actors.values()].map(async pending =>
-      (await pending).hasActiveWork()));
-    return { active: activity.some(Boolean) };
+      (await pending).activity()));
+    return { active: activity.some(value => value.active), keepAwake: activity.some(value => value.keepAwake) };
   }
 
   async statuses(sessionIds: readonly string[]): Promise<ConversationSessionStatus[]> {
@@ -435,7 +437,7 @@ export class SessionService implements ConversationPort {
 
   async read(input: unknown): Promise<ConversationReadResult> {
     const query = decodeConversationReadQuery(input);
-    if (query.view === 'reasoning' && query.providerRequestId && this.#actors.has(query.sessionId)) {
+    if (query.throughSequence === undefined && query.view === 'reasoning' && query.providerRequestId && this.#actors.has(query.sessionId)) {
       const actor = await this.#actors.get(query.sessionId)!;
       const projection = await actor.snapshot();
       if (projection.assistantDraft?.turnId === query.providerRequestId) {
@@ -527,13 +529,23 @@ export class SessionService implements ConversationPort {
     this.assertOpen();
     let actor = this.#actors.get(sessionId);
     if (!actor) {
-      actor = this.openActor(sessionId);
+      this.#openingActors.add(sessionId);
+      this.notifyActivityChanged(sessionId);
+      actor = this.openActor(sessionId).finally(() => {
+        this.#openingActors.delete(sessionId);
+        this.notifyActivityChanged(sessionId);
+      });
       this.#actors.set(sessionId, actor);
       void actor.catch(() => {
         if (this.#actors.get(sessionId) === actor) this.#actors.delete(sessionId);
       });
     }
     return await actor;
+  }
+
+  private notifyActivityChanged(sessionId: string): void {
+    try { this.observation?.activityChanged?.(sessionId); }
+    catch (error) { try { this.observation?.failed(sessionId, error); } catch { /* Observers do not own execution. */ } }
   }
 
   private async openActor(sessionId: string): Promise<SessionActor> {
@@ -577,6 +589,7 @@ export class SessionService implements ConversationPort {
       ...(this.observation ? { observation: {
         accept: input => this.observation!.accept({ ...input, parentSessionId: first.payload.agentContext?.parentSessionId ?? null }),
         failed: (id, error) => this.observation!.failed(id, error),
+        activityChanged: id => this.observation!.activityChanged?.(id),
       } satisfies SessionObservationSink } : {}),
       ...(this.#agents ? { agents: this.#agents.forSession(sessionId) } : {}),
       ...(profileId ? { profileId } : {}),

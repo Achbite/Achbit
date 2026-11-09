@@ -356,11 +356,12 @@ impl RuntimeAccess {
     }
 }
 
-// Kernel tool workers are separate processes. Serialize DACL read/modify/write
-// across them; the mutex is held only while editing, never during execution.
-struct AclLock(Handle);
+// The Host and standalone support/reset commands can share this state across
+// processes. Serialize DACL and ledger changes, never Shell execution. Windows
+// mutexes are recursive on the owning thread, so recording can reuse the lock.
+pub(super) struct AclLock(Handle);
 impl AclLock {
-    fn acquire() -> Result<Self, String> {
+    pub(super) fn acquire() -> Result<Self, String> {
         let handle = unsafe {
             CreateMutexW(
                 null(),

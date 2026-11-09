@@ -1,6 +1,6 @@
 # Develop and install Achbit plugins
 
-Use the CLI path and Host data directory reported by the current execution environment. `instance` identifies the target; `--host-data-dir` selects an already running instance and fails if it is unavailable. Keep the normal and Debug instances distinct.
+Use `achbitCli` and `hostDataDirectory` from the `Achbit product resources` attached to the selection message or successful activation/Skill read result. Submit CLI commands through Host Shell with `requestHostPermission` and a specific reason, including read-only `plugins capabilities`, `plugins inspect` and `plugins status`; the active permission policy handles authorization. The CLI is unavailable when Host execution is disabled. `instance` identifies the target; `--host-data-dir` selects an already running instance and fails if it is unavailable. Keep the normal and Debug instances distinct.
 
 1. Run `plugins capabilities` for the small directory. Read only the needed `plugins guide plugins` or `plugins guide ui`, and `plugins template cli|service|ui|guidance`. These resources come from the running package; no source checkout is required.
 2. Author the returned template files in the task workspace. Customize its ID, contract and implementation. UI TypeScript needs compilation into a standalone browser module. Include dependencies/resources in the distributable, preserving the manifest's files contract.

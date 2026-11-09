@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ContextCompositionProjection, ContextUsageProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { useViewportBounds } from '../shared/useViewportBounds';
 import { lastCallInputCacheMetric } from '../../utils/providerUsage';
 import { buildContextCompositionLayout, CONTEXT_FOCUS_USED_PERCENT } from './contextCompositionLayout';
 import {
@@ -38,6 +39,8 @@ export function ContextUsageControl({
   onToggle,
 }: ContextUsageControlProps) {
   const identity = useUiOwner('composer.context');
+  const panelRef = useRef<HTMLElement>(null);
+  useViewportBounds(panelRef, contextOpen);
   const [hoverContextKey, setHoverContextKey] = useState<ContextFocusKey | null>(null);
   const displayedUsage = contextUsage;
   const contextPercent = displayedUsage
@@ -176,6 +179,8 @@ export function ContextUsageControl({
       {contextOpen && hasContextFacts && (
         <section
           {...identity.part('panel')}
+          ref={panelRef}
+          data-native-overlay
           className="achbit-session-model__context-popover"
           role="dialog"
           aria-label={t(language, 'agent.context.window')}

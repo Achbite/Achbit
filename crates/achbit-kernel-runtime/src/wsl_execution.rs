@@ -6,7 +6,7 @@ use achbit_kernel_abi::{KernelError, KernelResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,7 +49,9 @@ pub fn read_worker_frames(
     let mut reply = None;
     for line in reader.lines() {
         let line = line?;
-        let frame: WorkerFrame = serde_json::from_str(&line).map_err(std::io::Error::other)?;
+        let frame: WorkerFrame = serde_json::from_str(&line).map_err(|error| {
+            std::io::Error::other(format!("Invalid WSL worker frame: {error}; output: {line}"))
+        })?;
         if reply.is_some() {
             return Err(std::io::Error::other("WSL frame after final reply"));
         }
@@ -87,7 +89,8 @@ impl WslExecution {
             .map(std::path::PathBuf::from)
             .ok_or_else(|| failure("SystemRoot is unavailable."))?
             .join("System32/wsl.exe");
-        let mut child = Command::new(launcher)
+        let mut command = Command::new(launcher);
+        command
             .args([
                 "--distribution",
                 &self.distribution,
@@ -95,9 +98,17 @@ impl WslExecution {
                 &self.worker,
                 "--kernel-tool-worker",
             ])
+            // Launcher diagnostics otherwise use UTF-16, unlike worker frames.
+            .env("WSL_UTF8", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| failure(&format!("Cannot start WSL Kernel worker: {error}")))?;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -144,27 +155,36 @@ impl WslExecution {
         };
         let reply = output
             .join()
-            .map_err(|_| failure("WSL output reader failed."))?
-            .map_err(|error| failure(&error.to_string()))?;
+            .unwrap_or_else(|_| Err(std::io::Error::other("WSL output reader failed.")));
         let error_bytes = errors
             .join()
             .map_err(|_| failure("WSL error reader failed."))?
             .map_err(|error| failure(&error.to_string()))?;
-        write.map_err(|error| {
-            failure(&format!(
-                "WSL request write failed: {error}; {}",
-                String::from_utf8_lossy(&error_bytes)
-            ))
-        })?;
         let status = status.map_err(|error| failure(&error.to_string()))?;
-        if !status.success() {
-            return Err(failure(&format!(
-                "WSL worker exited {status}: {}",
-                String::from_utf8_lossy(&error_bytes)
-            )));
-        }
-        Ok(reply)
+        finish_reply(status, write, reply, &error_bytes)
     }
+}
+
+fn finish_reply(
+    status: ExitStatus,
+    write: std::io::Result<()>,
+    reply: std::io::Result<Value>,
+    stderr: &[u8],
+) -> KernelResult<Value> {
+    let diagnostics = String::from_utf8_lossy(stderr);
+    // Startup failures often have no JSON reply. Preserve the exit status and
+    // launcher/worker diagnostics before reporting a secondary protocol error.
+    if !status.success() {
+        let output_error = reply
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        return Err(failure(&format!(
+            "WSL worker exited {status}: {diagnostics}; {output_error}"
+        )));
+    }
+    write.map_err(|error| failure(&format!("WSL request write failed: {error}; {diagnostics}")))?;
+    reply.map_err(|error| failure(&format!("{error}; {diagnostics}")))
 }
 
 fn failure(message: &str) -> KernelError {
@@ -220,6 +240,48 @@ mod progress_tests {
         ));
         assert_eq!(result["outcome"], "completed");
         assert!(read_worker_frames(std::io::Cursor::new(""), Default::default()).is_err());
+    }
+
+    #[test]
+    fn launcher_output_is_preserved_when_it_is_not_a_worker_frame() {
+        let error = read_worker_frames(
+            std::io::Cursor::new("找不到指定的发行版。\n"),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("找不到指定的发行版。"));
+    }
+
+    #[test]
+    fn worker_exit_and_stderr_survive_a_missing_reply() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        let error = finish_reply(
+            ExitStatus::from_raw(256),
+            Err(std::io::ErrorKind::BrokenPipe.into()),
+            read_worker_frames(std::io::Cursor::new(""), Default::default()),
+            b"execv(/missing-worker) failed: No such file or directory",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("WSL worker exited"));
+        assert!(error.contains("execv(/missing-worker) failed"));
+        assert!(error.contains("WSL worker final reply missing"));
+        assert!(finish_reply(
+            ExitStatus::from_raw(0),
+            Ok(()),
+            read_worker_frames(std::io::Cursor::new(""), Default::default()),
+            b"worker diagnostic",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("worker diagnostic"));
+        assert_eq!(
+            finish_reply(ExitStatus::from_raw(0), Ok(()), Ok(json!({"ok":true})), b"").unwrap(),
+            json!({"ok":true})
+        );
     }
 }
 
