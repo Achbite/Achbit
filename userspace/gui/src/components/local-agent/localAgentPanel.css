@@ -2416,8 +2416,17 @@
 
 .local-agent__terminal-error details[open] { min-width:0; overflow-wrap:anywhere; }
 
-.local-agent__pasted-image-preview .conversation-image-review__open { width: 48px; height: 48px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
-.local-agent__pasted-image-preview .conversation-image-review__open > img { width: 100%; height: 100%; object-fit: contain; }
+/* Image attachments share a compact preview while keeping their original resource identities. */
+.local-agent__draft-attachments:has(.local-agent__image-attachment) { gap: 10px; padding-top: 8px; padding-bottom: 10px; align-items: center; }
+.local-agent__image-attachment { position: relative; flex: 0 0 82px; width: 82px; height: 74px; box-sizing: border-box; border: 1px solid var(--ac-border); border-radius: 9px; background: var(--ac-surface-subtle); overflow: hidden; }
+.local-agent__image-attachment > .conversation-image-review__open { display: block; width: 100%; height: 100%; padding: 5px; border-radius: 8px; }
+.local-agent__image-attachment > .conversation-image-review__open > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.local-agent__image-attachment > .local-agent__image-attachment-remove { position: absolute; z-index: 2; right: 3px; top: 3px; opacity: 0; }
+.local-agent__image-attachment:is(:hover, :focus-within) > .local-agent__image-attachment-remove { opacity: 1; }
+.local-agent__image-attachment:focus-within { border-color: var(--ac-accent); box-shadow: 0 0 0 2px var(--ac-accent-soft); }
+.local-agent__image-attachment-status { display: block; max-height: 100%; overflow: hidden; overflow-wrap: anywhere; font-size: var(--ac-font-caption); line-height: 1.3; }
+.local-agent__image-attachment[data-preview-state='error'] { border-color: var(--ac-danger); }
+@media (hover: none) { .local-agent__image-attachment > .local-agent__image-attachment-remove { opacity: 1; } }
 
 
 /* Reader expansion reuses the mounted input and send controls in a one-line capsule. */

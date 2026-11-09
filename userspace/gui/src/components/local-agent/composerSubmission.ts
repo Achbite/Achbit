@@ -13,6 +13,8 @@ export interface ComposerState {
   filesystemReferences?: FilesystemReference[];
   guidanceReferences?: GuidanceReference[];
   restoredInputIds?: string[];
+  /** GUI send ownership only; never included in a Session command. */
+  submissionId?: string;
   selectionStart: number;
   selectionEnd: number;
   focused: boolean;

@@ -1,5 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import { IconButton } from '../../ui-components';
+import { Button, IconButton } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { BrowserAnnotationDraft } from './browserReview';
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
@@ -15,7 +15,7 @@ import { pastedTextTitle } from '../../services/pastedText';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
-import { ImageReview } from './ImageReview';
+import { ComposerImageAttachment } from './ComposerImageAttachment';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
@@ -211,6 +211,11 @@ export function ConversationComposer({
       {uiActionError && <DismissibleError language={language} onDismiss={onDismissUiActionError}>{uiActionError.includes('\n')
         ? <details><summary>{uiActionError.split('\n')[0]}</summary><pre>{uiActionError.slice(uiActionError.indexOf('\n') + 1)}</pre></details>
         : uiActionError}</DismissibleError>}
+      {composer.unappliedRecovery?.canUndo && <div className="local-agent__continuity-line">
+        <Button size="compact" {...identity.action('undo-recovery', 'click')} onClick={() => composer.unappliedRecovery.undo()}>
+          {language === 'zh-CN' ? '撤销恢复' : 'Undo recovery'}
+        </Button>
+      </div>}
       <HostRebind run={projection?.run ?? null} />
       {composer.failedDrafts.map((failed, index) => <details className="local-agent__failed-draft" key={index}>
         <summary>{language === 'zh-CN' ? '未发送草稿已保留' : 'Unsent draft saved'}</summary>
@@ -392,17 +397,11 @@ export function ConversationComposer({
                 {paste.expanded && <textarea aria-label={t(language, 'agent.paste.original')} value={paste.text} onChange={(event) => composer.editPastedText(paste.inputId, event.target.value)} rows={8} />}
               </div>
             ))}
-            {composer.pastedImages.map((image) => (
-              <span className="local-agent__pasted-image" key={image.inputId} data-attachment-id={image.inputId}>
-                <span className="local-agent__pasted-image-preview"><ImageReview source={image.dataUrl} alt={image.name}
-                  triggerIdentity={identity.action('open-image', 'click', { inputId: image.inputId })} /></span>
-                <span className="local-agent__attachment-name" title={image.name}>{image.name}</span>
-                <button type="button" aria-label={t(language, 'agent.attachment.remove', { name: image.name })}
-                  onClick={() => composer.setPastedImages((current) => current.filter((item) => item.inputId !== image.inputId))}>
-                  <AchbitShellIcon name="close" size={14} />
-                </button>
-              </span>
-            ))}
+            {composer.pastedImages.map(image => <ComposerImageAttachment key={image.inputId} attachmentId={image.inputId}
+              name={image.name} source={{ dataUrl: image.dataUrl }} language={language}
+              openIdentity={identity.action('open-image', 'click', { attachmentId: image.inputId, inputId: image.inputId })}
+              removeIdentity={identity.action('remove-image', 'click', { attachmentId: image.inputId, inputId: image.inputId })}
+              onRemove={() => composer.setPastedImages(current => current.filter(item => item.inputId !== image.inputId))} />)}
             {pluginSelections.map((selection) => (
               <span className="local-agent__draft-plugin" key={selection.selectionId} data-attachment-id={selection.selectionId}>
                 <AchbitShellIcon name="extension" />
@@ -419,7 +418,13 @@ export function ConversationComposer({
                 ><AchbitShellIcon name="close" size={14} /></button>
               </span>
             ))}
-            {composer.recoveredContent.filesystemReferences.map(reference => <span key={reference.referenceId} data-attachment-id={reference.referenceId}>
+            {composer.recoveredContent.filesystemReferences.map(reference => reference.kind === 'file' && reference.mediaType.startsWith('image/')
+              ? <ComposerImageAttachment key={reference.referenceId} attachmentId={reference.referenceId} name={reference.displayName}
+                  source={{ sessionId: projection?.sessionId ?? null, workspaceId: reference.workspaceId, logicalPath: reference.logicalPath }} language={language}
+                  openIdentity={identity.action('open-image', 'click', { attachmentId: reference.referenceId })}
+                  removeIdentity={identity.action('remove-image', 'click', { attachmentId: reference.referenceId })}
+                  onRemove={() => composer.removeRecoveredReference(reference.referenceId)} />
+              : <span key={reference.referenceId} data-attachment-id={reference.referenceId}>
               <AchbitShellIcon name={reference.kind === 'directory' ? 'folder' : 'file'} />
               <span className="local-agent__attachment-name" title={reference.logicalPath}>{reference.displayName}</span>
               <IconButton size="compact" icon="close" aria-label={t(language, 'agent.attachment.remove', { name: reference.displayName })}
@@ -430,8 +435,14 @@ export function ConversationComposer({
               <IconButton size="compact" icon="close" aria-label={t(language, 'agent.attachment.remove', { name: reference.label })}
                 onClick={() => composer.removeRecoveredGuidance(reference.referenceId)} />
             </span>)}
-            {pendingFilesystemPaths.filter(reference => !composer.pastedTexts.some(paste => paste.browserReview?.screenshot === reference.path)).map((reference) => (
-              <span
+            {pendingFilesystemPaths.filter(reference => !composer.pastedTexts.some(paste => paste.browserReview?.screenshot === reference.path)).map(reference => (
+              reference.kind === 'file' && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(reference.path)
+              ? <ComposerImageAttachment key={`${reference.kind}:${reference.path}`} attachmentId={`${reference.kind}:${reference.path}`}
+                  name={filesystemPathDisplayName(reference.path)} source={{ path: reference.path }} language={language}
+                  openIdentity={identity.action('open-image', 'click', { attachmentId: `${reference.kind}:${reference.path}` })}
+                  removeIdentity={identity.action('remove-image', 'click', { attachmentId: `${reference.kind}:${reference.path}` })}
+                  onRemove={() => setPendingFilesystemPaths(current => current.filter(item => item.path !== reference.path || item.kind !== reference.kind))} />
+              : <span
                 className={reference.kind === 'directory'
                   ? 'local-agent__draft-directory'
                   : undefined}

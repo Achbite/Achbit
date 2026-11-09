@@ -6,6 +6,7 @@ import type { UiLanguage } from '../../i18n';
 
 export interface UnappliedRecovery {
   restoredIds: string[];
+  resubmittedIds?: readonly string[];
   inDecision: boolean;
   canUndo: boolean;
   restore(inputs: readonly QueuedInputProjection[], append?: boolean): void;
@@ -26,15 +27,16 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
   const [expanded, setExpanded] = useState(false);
   const [confirmation, setConfirmation] = useState<QueuedInputProjection[] | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const history = inputs.filter(input => input.status === 'notApplied');
+  const history = inputs.filter(input => input.status === 'notApplied'
+    && !recovery?.resubmittedIds?.includes(input.commandId)
+    && !recovery?.restoredIds.includes(input.commandId));
   if (!history.length) return null;
   const zh = language === 'zh-CN';
-  const remaining = history.filter(input => !recovery?.restoredIds.includes(input.commandId));
   const restore = (items: QueuedInputProjection[], append = false) => {
     try {
       recovery?.restore(items, append);
       setConfirmation(null);
-      setFeedback(recovery?.inDecision ? (zh ? '已存入普通消息草稿' : 'Saved to the message draft') : (zh ? '已恢复到草稿，尚未发送' : 'Restored to draft, not sent'));
+      setFeedback(null);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       if (message === 'composer_restore_append_confirmation') { setConfirmation(items); setFeedback(null); }
@@ -48,8 +50,8 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
     <div className="local-agent__continuity-line">
       <UiIcon name="session" size={15} />
       <span>{zh ? `${history.length} 条消息未处理` : `${history.length} unapplied messages`}</span>
-      {recovery && <Button size="compact" disabled={!remaining.length} {...identity.action('restore-all', 'click')}
-        onClick={event => { event.preventDefault(); restore(remaining); }}>{zh ? '恢复到草稿' : 'Restore to draft'}</Button>}
+      {recovery && <Button size="compact" {...identity.action('restore-all', 'click')}
+        onClick={event => { event.preventDefault(); restore(history); }}>{zh ? '恢复到草稿' : 'Restore to draft'}</Button>}
       <Button size="compact" {...identity.action('toggle', 'click')} aria-expanded={expanded}>
         {zh ? '详情' : 'Details'}<span style={{ display: 'inline-flex', transform: expanded ? 'rotate(180deg)' : undefined }}><UiIcon name="chevronDown" size={14} /></span>
       </Button>
@@ -59,9 +61,7 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
       <Button size="compact" {...identity.action('confirm-append', 'click')} onClick={event => { event.preventDefault(); restore(confirmation, true); }}>{zh ? '追加' : 'Append'}</Button>
       <Button size="compact" onClick={event => { event.preventDefault(); setConfirmation(null); }}>{zh ? '取消' : 'Cancel'}</Button>
     </div>}
-    {feedback && <div className="local-agent__continuity-line" role="status"><span>{feedback}</span>
-      {recovery?.canUndo && <Button size="compact" {...identity.action('undo-restore', 'click')} onClick={event => { event.preventDefault(); recovery.undo(); setFeedback(null); }}>{zh ? '撤销' : 'Undo'}</Button>}
-    </div>}
+    {feedback && <div className="local-agent__continuity-line" role="status"><span>{feedback}</span></div>}
     </summary>
     <div>
       <p>{zh ? '原任务已结束。恢复保留文字和附件，不会自动发送。' : 'The original runs ended. Recovery keeps text and attachments without sending.'}</p>
@@ -75,7 +75,7 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
           {!!input.guidanceReferences?.length && <div className="local-agent__unapplied-input-plugins">{input.guidanceReferences.map(item => <span key={item.referenceId}>{item.label}</span>)}</div>}
         </div>
         <div className="local-agent__continuity-actions">
-          {recovery && <Button size="compact" disabled={recovery.restoredIds.includes(input.commandId)}
+          {recovery && <Button size="compact"
             {...identity.action('restore', 'click', { commandId: input.commandId })} onClick={() => restore([input])}>{zh ? '恢复' : 'Restore'}</Button>}
           {input.text && <IconButton size="compact" icon={copiedId === `unapplied:${input.commandId}` ? 'check' : 'copy'}
             {...identity.action('copy', 'click', { commandId: input.commandId })}

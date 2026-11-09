@@ -128,8 +128,11 @@ test('answering during independent work uses the original question and leaves th
   renderToStaticMarkup(createElement(Probe));
   assert.equal(composer.draft, 'Inspect the current window');
   assert.equal(composer.canSend, true);
+  const submissionUuid = '00000000-0000-4000-8000-000000000086';
+  const nextSubmission = t.mock.method(globalThis.crypto, 'randomUUID', () => submissionUuid);
   await composer.submitDraft();
-  assert.deepEqual(answers, [['Inspect the current window', 'question:scope']]);
+  assert.deepEqual(answers, [['Inspect the current window', 'question:scope', `submission:${submissionUuid}`]]);
+  assert.equal(nextSubmission.mock.callCount(), 1, 'the reply carries the identity generated for this draft submission');
   assert.equal(JSON.parse(saved.get(ordinaryKey)).draft, 'Keep this unrelated follow-up');
   assert.equal(JSON.parse(saved.get(answerKey)).draft, '');
   assert.deepEqual(projection, before, 'only the Session response may change question/run facts');

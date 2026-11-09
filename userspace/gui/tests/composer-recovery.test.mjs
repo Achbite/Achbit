@@ -35,6 +35,7 @@ test('append confirmation and limits are atomic; undo fingerprint protects newer
   assert.equal(state.draft, 'Keep my work\n\none');
   const key = composerContentKey(state), focused = { ...state, focused: false, selectionStart: 0 };
   assert.equal(composerContentKey(focused), key);
+  assert.equal(composerContentKey({ ...state, submissionId: 'submission:failed' }), key, 'send ownership does not invalidate a content-preserving Undo');
   assert.notEqual(composerContentKey({ ...state, draft: state.draft + ' edit' }), key);
   const full = { ...emptyComposerState(), filesystemReferences: Array.from({ length: 8 }, (_, i) => reference(String(i))) };
   const before = cloneComposerState(full);
@@ -47,6 +48,7 @@ test('attachment-only recovered drafts are sendable data and submission failure 
     '/src/components/local-agent/composerRecovery.ts', '/src/components/local-agent/composerSubmission.ts']);
   let state = restoreUnappliedInputs(emptyComposerState(), [{ ...input('image-only', 1, ''), filesystemReferences: [reference('image')] }]);
   assert.equal(composerStateIsEmpty(state), false);
+  state.submissionId = 'submission:failed';
   const original = structuredClone(state);
   const result = await submitComposerState('session:a', state, { read: () => state, write: (_key, next) => { state = next; },
     retainFailed: () => assert.fail('empty draft should be restored directly'), send: async () => { throw new Error('resource_unavailable'); } });

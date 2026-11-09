@@ -21,6 +21,7 @@ test('only active queued inputs occupy the real composer; terminal evidence is n
     recoveredContent: { filesystemReferences: [], guidanceReferences: [], restoredInputIds: [] },
     profiles: [], selectedProfileId: null, draft: 'New draft', pastedTexts: [], pastedImages: [], failedDrafts: [],
     pendingFilesystemPaths: [], pluginSelections: [], filteredPlugins: [], commandSuggestions: [], textareaRef: { current: null },
+    unappliedRecovery: { canUndo: true, undo: () => calls.push('undo') },
     canSend: true, showStopAction: false, textDecision: false, submitDraft: () => calls.push('send'), cancelRun: () => calls.push('stop') };
   function Probe() { view = ConversationComposer({ language: 'zh-CN', composer, uiActionError: null, onDismissUiActionError() {}, onEditBrowserReview() {} }); return view; }
   const html = renderToStaticMarkup(createElement(Probe));
@@ -31,6 +32,9 @@ test('only active queued inputs occupy the real composer; terminal evidence is n
   assert.deepEqual(calls, []);
   const send = findReactElement(view, node => node.type === 'button' && node.props['data-ui-action'] === 'composer.controls.submit');
   send.props.onClick(); assert.deepEqual(calls, ['send']);
+  assert.match(html, /撤销恢复/);
+  findReactElement(view, node => node.props['data-ui-action'] === 'composer.controls.undo-recovery').props.onClick();
+  assert.deepEqual(calls, ['send', 'undo'], 'Undo stays in Composer when recovered reminders are removed');
 });
 
 test('unapplied history remains collapsed and preserves text, attachments, tools and original actions', async t => {
@@ -49,4 +53,33 @@ test('unapplied history remains collapsed and preserves text, attachments, tools
   assert.deepEqual(calls, [['copy', `unapplied:${history.commandId}`, history.text], ['open', reference]]);
   const empty = renderToStaticMarkup(createElement(UnappliedInputs, { sessionId: 'session:queue', inputs: [waiting], language: 'en-US', copiedId: null, onCopy() {}, onOpenReference() {} }));
   assert.equal(empty, '');
+});
+
+test('successful restoration removes only its reminder while receipts and original history remain distinct', async t => {
+  const [{ UnappliedInputs }] = await loadGuiModules(t, ['/src/components/local-agent/UnappliedInputs.tsx']);
+  const second = { ...history, commandId: 'command:second', text: 'Second unapplied input' };
+  const inputs = [history, second], before = structuredClone(inputs);
+  const props = { sessionId: 'session:queue', inputs, language: 'zh-CN', copiedId: null, onCopy() {}, onOpenReference() {} };
+  const recovery = { restoredIds: [history.commandId], resubmittedIds: [], inDecision: false, canUndo: true,
+    restore() {}, undo() {} };
+  let view;
+  function Probe() { view = UnappliedInputs({ ...props, recovery }); return view; }
+  const partial = renderToStaticMarkup(createElement(Probe));
+  assert.match(partial, /1 条消息未处理/);
+  assert.doesNotMatch(partial, /已恢复到草稿|Keep this unapplied text/);
+  assert.match(partial, /Second unapplied input/);
+  const undone = renderToStaticMarkup(createElement(UnappliedInputs, { ...props, recovery: { ...recovery, restoredIds: [] } }));
+  assert.match(undone, /2 条消息未处理/);
+  assert.match(undone, /Keep this unapplied text/);
+  const drafts = renderToStaticMarkup(createElement(UnappliedInputs, { ...props,
+    recovery: { ...recovery, restoredIds: inputs.map(item => item.commandId) } }));
+  assert.equal(drafts, '', 'successful draft restoration removes all resolved reminders before a send receipt');
+  const acknowledged = { ...recovery, restoredIds: [], resubmittedIds: inputs.map(item => item.commandId), canUndo: false };
+  assert.equal(renderToStaticMarkup(createElement(UnappliedInputs, { ...props, recovery: acknowledged })), '');
+  const repeated = { ...history, commandId: 'command:resubmission', text: 'Same task, new unprocessed submission' };
+  const next = renderToStaticMarkup(createElement(UnappliedInputs, { ...props, inputs: [...inputs, repeated], recovery: acknowledged }));
+  assert.match(next, /1 条消息未处理/);
+  assert.match(next, /Same task, new unprocessed submission/);
+  assert.doesNotMatch(next, /Second unapplied input/);
+  assert.deepEqual(inputs, before);
 });

@@ -2,8 +2,24 @@ import type { QueuedInputProjection } from '@achbit/protocol';
 import { cloneComposerState, composerStateIsEmpty, type ComposerState } from './composerSubmission';
 
 export function composerContentKey(state: ComposerState): string {
-  const { selectionStart: _start, selectionEnd: _end, focused: _focused, ...content } = cloneComposerState(state);
+  const { selectionStart: _start, selectionEnd: _end, focused: _focused, submissionId: _submission, ...content } = cloneComposerState(state);
   return JSON.stringify(content);
+}
+
+/** Window-local presentation receipts, separate from drafts and canonical Session history. */
+export function readResubmittedInputs(sessionId: string): string[] {
+  try {
+    const value: unknown = JSON.parse(sessionStorage.getItem(`achbit:composer-resubmitted:${sessionId}`) ?? '[]');
+    if (!Array.isArray(value) || !value.every(id => typeof id === 'string' && id.length > 0)) throw new Error('composer_recovery_receipt_invalid');
+    return value;
+  } catch (error) { console.error('Cannot read the message recovery receipt.', error); return []; }
+}
+
+export function rememberResubmittedInputs(sessionId: string, ids: readonly string[]): string[] {
+  const next = [...new Set([...readResubmittedInputs(sessionId), ...ids])];
+  try { sessionStorage.setItem(`achbit:composer-resubmitted:${sessionId}`, JSON.stringify(next)); }
+  catch (error) { console.error('Cannot preserve the message recovery receipt across a window reload.', error); }
+  return next;
 }
 
 /** Pure draft merge. Session history is never acknowledged, mutated or submitted here. */

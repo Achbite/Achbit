@@ -52,6 +52,8 @@ const EMPTY_CATALOG: ConversationCatalog = { projects: [], sessions: [] };
 const EMPTY_PLUGIN_CATALOG: PluginCatalogProjection = { revision: 'plugin-catalog:empty', plugins: [] };
 
 interface RetainedMessageResources {
+  /** GUI error ownership; excluded from command construction. */
+  submissionId?: string;
   filesystemReferences?: FilesystemReference[];
   guidanceReferences?: GuidanceReference[];
 }
@@ -68,7 +70,8 @@ type StoreErrorSource =
   | 'pluginCatalog'
   | 'profiles'
   | 'command'
-  | 'operation';
+  | 'operation'
+  | { kind: 'input'; submissionId: string };
 
 export interface LocalAgentState {
   welcomeIndex: number;
@@ -127,15 +130,15 @@ export interface LocalAgentState {
     retained?: RetainedMessageResources,
   ): Promise<CommandReply>;
   setMessageFeedback(messageId: string, feedback: MessageFeedback | null): Promise<CommandReply>;
-  editMessage(messageId: string, text: string, expectedRevision: number): Promise<CommandReply>;
+  editMessage(messageId: string, text: string, expectedRevision: number, submissionId?: string): Promise<CommandReply>;
   attachSessionDirectory(canonicalRoot: string): Promise<void>;
   detachSessionDirectory(workspaceId: string): Promise<void>;
-  respondInteraction(response: string, interactionId?: string): Promise<CommandReply>;
+  respondInteraction(response: string, interactionId?: string, submissionId?: string): Promise<CommandReply>;
   rebindHost(hostBinding: HostWindowBinding): Promise<CommandReply>;
   setPermissions(patches: UserSettings): Promise<CommandReply>;
   revokeAuthorization(authorityId: string): Promise<CommandReply>;
   respondApproval(decision: 'allow' | 'deny', authorizationScope?: ShellAuthorizationScope): Promise<CommandReply>;
-  respondPlan(response: PlanResponse): Promise<CommandReply>;
+  respondPlan(response: PlanResponse, submissionId?: string): Promise<CommandReply>;
   cancelRun(): Promise<CommandReply>;
   cancelTool(sessionId: string, runId: string, callId: string): Promise<CommandReply>;
   createProject(title: string, workspacePaths?: string[]): Promise<void>;
@@ -151,6 +154,7 @@ export interface LocalAgentState {
   updateSession(sessionId: string, input: { title?: string; projectId?: string | null }): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   clearError(): void;
+  clearInputError(submissionId: string | undefined): void;
 }
 
 type StoreSet = (
@@ -708,7 +712,7 @@ const store = create<LocalAgentState>((set, get) => ({
     });
   },
 
-  editMessage: async (messageId, text, expectedRevision) => {
+  editMessage: async (messageId, text, expectedRevision, submissionId) => {
     const state = get();
     const sessionId = requiredSession(state);
     const target = state.projection?.messages.find((message) => message.messageId === messageId);
@@ -716,7 +720,7 @@ const store = create<LocalAgentState>((set, get) => ({
     return await submitExisting(set, get, {
       schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'message.edit', commandId: nextId('command'),
       sessionId, messageId, text, expectedRevision,
-    });
+    }, submissionId);
   },
 
   attachSessionDirectory: async (canonicalRoot) => {
@@ -758,7 +762,7 @@ const store = create<LocalAgentState>((set, get) => ({
       sessionId, runId: run.runId, expectedHostBinding: run.hostBinding, hostBinding,
     });
   },
-  respondInteraction: async (response, interactionId) => {
+  respondInteraction: async (response, interactionId, submissionId) => {
     const state = get();
     const sessionId = requiredSession(state);
     const interaction = interactionId ? state.projection?.interactions.find(item => item.interactionId === interactionId)
@@ -777,6 +781,7 @@ const store = create<LocalAgentState>((set, get) => ({
         interactionId: interaction.interactionId,
         response: response.trim(),
       }),
+      submissionId,
     );
   },
 
@@ -820,7 +825,7 @@ const store = create<LocalAgentState>((set, get) => ({
     );
   },
 
-  respondPlan: async (response) => await submitPlanResponse(set, get, response),
+  respondPlan: async (response, submissionId) => await submitPlanResponse(set, get, response, submissionId),
 
   cancelTool: async (sessionId, runId, callId) => submitDecision(set, get, `cancel-tool:${sessionId}:${callId}`, () => ({
     schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'tool.cancel', commandId: nextId('command'), sessionId, runId, callId,
@@ -919,12 +924,19 @@ const store = create<LocalAgentState>((set, get) => ({
   },
 
   clearError: () => set({ error: null, errorSource: null }),
+  clearInputError: submissionId => {
+    const source = get().errorSource;
+    if (submissionId && typeof source === 'object' && source?.kind === 'input' && source.submissionId === submissionId) {
+      set({ error: null, errorSource: null });
+    }
+  },
 }));
 
 async function submitPlanResponse(
   set: StoreSet,
   get: () => LocalAgentState,
   response: PlanResponse,
+  submissionId?: string,
 ): Promise<CommandReply> {
   const state = get();
   const sessionId = requiredSession(state);
@@ -944,6 +956,7 @@ async function submitPlanResponse(
       revision: plan.revision,
       response,
     }),
+    submissionId,
   );
 }
 
@@ -1043,7 +1056,8 @@ async function submitNewRun(
     if (errorMessage(error).includes('plugin_selection_stale')) {
       await get().refreshPluginCatalog();
     }
-    if (generation === submissionGeneration) set({ error: errorMessage(error), errorSource: 'command' });
+    if (generation === submissionGeneration) set({ error: errorMessage(error),
+      errorSource: retained.submissionId ? { kind: 'input', submissionId: retained.submissionId } : 'command' });
     throw error;
   } finally {
     endSubmission(set, submissionGeneration);
@@ -1055,10 +1069,11 @@ async function submitDecision(
   get: StoreGet,
   decisionKey: string,
   command: () => ConversationCommand,
+  submissionId?: string,
 ): Promise<CommandReply> {
   const existing = decisionSubmissions.get(decisionKey);
   if (existing) return await existing;
-  const submission = submitExisting(set, get, command());
+  const submission = submitExisting(set, get, command(), submissionId);
   decisionSubmissions.set(decisionKey, submission);
   try {
     return await submission;
@@ -1073,12 +1088,14 @@ async function submitExisting(
   set: StoreSet,
   get: () => LocalAgentState,
   command: ConversationCommand,
+  submissionId?: string,
 ): Promise<CommandReply> {
   const submissionGeneration = beginSubmission(set);
   try {
     return await submitCommandAndReconcile(set, get, command);
   } catch (error) {
-    if (generation === submissionGeneration) set({ error: errorMessage(error), errorSource: 'command' });
+    if (generation === submissionGeneration) set({ error: errorMessage(error),
+      errorSource: submissionId ? { kind: 'input', submissionId } : 'command' });
     throw error;
   } finally {
     endSubmission(set, submissionGeneration);

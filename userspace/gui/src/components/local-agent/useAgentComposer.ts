@@ -1,4 +1,4 @@
-import { composerContentKey, restoreUnappliedInputs } from './composerRecovery';
+import { composerContentKey, readResubmittedInputs, rememberResubmittedInputs, restoreUnappliedInputs } from './composerRecovery';
 import type { QueuedInputProjection } from '@achbit/protocol';
 import { formatBrowserAnnotation, type BrowserAnnotation } from './browserReview';
 import { localizePlugin } from '../../pluginLocalization';
@@ -31,7 +31,8 @@ function saveComposerDraft(key:string,state:ComposerState):void {
 
 type PastedTextDraft = ComposerState['pastedTexts'][number];
 function recoveredDraftContent(state: ComposerState) {
-  return { filesystemReferences: state.filesystemReferences ?? [], guidanceReferences: state.guidanceReferences ?? [], restoredInputIds: state.restoredInputIds ?? [] };
+  return { filesystemReferences: state.filesystemReferences ?? [], guidanceReferences: state.guidanceReferences ?? [],
+    restoredInputIds: state.restoredInputIds ?? [], submissionId: state.submissionId };
 }
 
 interface PendingFilesystemPath {
@@ -98,6 +99,9 @@ export function useAgentComposer(
   const [draft, setDraft] = useState(initialComposer.draft);
   const [recoveredContent, setRecoveredContent] = useState(() => recoveredDraftContent(initialComposer));
   const [recoveryUndo, setRecoveryUndo] = useState<{ key: string; before: ComposerState; after: string } | null>(null);
+  const [resubmittedInputs, setResubmittedInputs] = useState<Record<string, string[]>>({});
+  const resubmittedIds = useMemo(() => sessionId && projection?.queuedInputs?.some(input => input.status === 'notApplied')
+    ? resubmittedInputs[sessionId] ?? readResubmittedInputs(sessionId) : [], [sessionId, projection?.queuedInputs, resubmittedInputs]);
   const [pastedImages, setPastedImages] = useState(initialComposer.pastedImages);
   const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>(initialComposer.pastedTexts);
   const [pendingFilesystemPaths, setPendingFilesystemPaths] = useState<
@@ -122,6 +126,7 @@ export function useAgentComposer(
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerStatesRef = useRef(new Map<string, ComposerState>());
+  const pendingSubmissionsRef = useRef(new Map<string, ComposerState>());
   const [failedDrafts, setFailedDrafts] = useState<Record<string, ComposerState[]>>({});
   const currentComposerStateRef = useRef<ComposerState>(emptyComposerState());
   currentComposerStateRef.current = { ...recoveredContent, draft, pastedTexts, pastedImages, filesystemPaths: pendingFilesystemPaths,
@@ -296,6 +301,11 @@ export function useAgentComposer(
       const cached = composerStatesRef.current.get(previousKey);
       if (cached) composerStatesRef.current.set(createdSessionId, cached);
       composerStatesRef.current.delete(previousKey);
+      const pending = pendingSubmissionsRef.current.get(previousKey);
+      if (pending) {
+        pendingSubmissionsRef.current.set(createdSessionId, pending);
+        pendingSubmissionsRef.current.delete(previousKey);
+      }
       if (activeComposerStateKeyRef.current === previousKey) activeComposerStateKeyRef.current = createdSessionId;
       setFailedDrafts((current) => {
         if (!current[previousKey]) return current;
@@ -309,6 +319,7 @@ export function useAgentComposer(
     const submittedTextarea = textareaRef.current;
     const submittedComposerState: ComposerState = {
       ...recoveredContent,
+      submissionId: nextPanelId('submission'),
       draft: submittedText,
       pastedTexts: pastedTexts.map((item) => ({ ...item })),
       pastedImages: pastedImages.map((item) => ({ ...item })),
@@ -320,6 +331,7 @@ export function useAgentComposer(
     };
     setPluginPickerOpen(false);
     setLatestFollowMode(true);
+    pendingSubmissionsRef.current.set(submission.key, submittedComposerState);
     const sent = await submitComposerState(submittedComposerKey, submittedComposerState, {
       read: () => activeComposerStateKeyRef.current === submission.key
         ? { ...currentComposerStateRef.current, draft: textareaRef.current?.value ?? currentComposerStateRef.current.draft }
@@ -328,27 +340,30 @@ export function useAgentComposer(
       retainFailed: (_key, state) => setFailedDrafts((current) => ({ ...current, [submission.key]: [...(current[submission.key] ?? []), state] })),
       send: async () => {
         if (editingMessage && !textDecision) {
-          await editMessage(editingMessage.message.messageId, submittedText, editingMessage.revision);
+          await editMessage(editingMessage.message.messageId, submittedText, editingMessage.revision, submittedComposerState.submissionId);
           return;
         }
         if (pendingPlan) {
-          await respondPlan({ kind: 'requestRevision', text: submittedText });
+          await respondPlan({ kind: 'requestRevision', text: submittedText }, submittedComposerState.submissionId);
           return;
         }
         if (pendingInteraction) {
-          await respondInteraction(submittedText, pendingInteraction.interactionId);
+          await respondInteraction(submittedText, pendingInteraction.interactionId, submittedComposerState.submissionId);
           return;
         }
         const command = parseComposerCommand(submittedText);
-        if (command?.name === 'focus' && command.argument) {
-          await focusContext(command.argument, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages, submittedComposerState);
-        } else {
-          const planTask = command?.name === 'plan' ? command.argument : undefined;
-          await sendMessage(planTask ?? submittedText, submittedFilesystemPaths, submittedPluginSelections,
+        const planTask = command?.name === 'plan' ? command.argument : undefined;
+        const reply = command?.name === 'focus' && command.argument
+          ? await focusContext(command.argument, submittedFilesystemPaths, submittedPluginSelections, submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages, submittedComposerState)
+          : await sendMessage(planTask ?? submittedText, submittedFilesystemPaths, submittedPluginSelections,
             submittedComposerState.pastedTexts, onSessionCreated, submittedComposerState.pastedImages, planTask ? 'manual' : undefined, submittedComposerState);
+        const restoredIds = submittedComposerState.restoredInputIds ?? [];
+        if (restoredIds.length && (reply.status === 'accepted' || reply.status === 'replayed')) {
+          const ids = rememberResubmittedInputs(reply.sessionId, restoredIds);
+          setResubmittedInputs(current => ({ ...current, [reply.sessionId]: ids }));
         }
       },
-    });
+    }).finally(() => pendingSubmissionsRef.current.delete(submission.key));
     if (sent && activeComposerStateKeyRef.current === submission.key) {
       setAttachmentError(null);
       if (editingMessage) setMessageEdit(null);
@@ -740,18 +755,24 @@ export function useAgentComposer(
     const saved = failedDrafts[composerStateKey]?.[index];
     if (!saved || !composerStateIsEmpty(currentComposerStateRef.current)) return;
     setComposerStateForKey(composerStateKey, { ...saved, focused: true });
+    useLocalAgentStore.getState().clearInputError(saved.submissionId);
     setFailedDrafts((current) => ({ ...current, [composerStateKey]: current[composerStateKey]!.filter((_, candidate) => candidate !== index) }));
   };
 
   const ordinaryDraft = () => activeComposerStateKeyRef.current === conversationKey
     ? currentComposerStateRef.current : composerStatesRef.current.get(conversationKey) ?? readComposerDraft(conversationKey);
   const unappliedRecovery = {
-    restoredIds: ordinaryDraft().restoredInputIds ?? [],
+    resubmittedIds,
+    restoredIds: [...new Set([
+      ...(ordinaryDraft().restoredInputIds ?? []),
+      ...(pendingSubmissionsRef.current.get(conversationKey)?.restoredInputIds ?? []),
+      ...(failedDrafts[conversationKey] ?? []).flatMap(item => item.restoredInputIds ?? []),
+    ])],
     inDecision: composerStateKey !== conversationKey,
     canUndo: recoveryUndo?.key === conversationKey && composerContentKey(ordinaryDraft()) === recoveryUndo.after,
     restore: (inputs: readonly QueuedInputProjection[], append = false) => {
       if (!sessionId || useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
-      const eligible = inputs.filter(input => projection?.queuedInputs.some(item => item.commandId === input.commandId && item.status === 'notApplied'));
+      const eligible = inputs.filter(input => !resubmittedIds.includes(input.commandId) && projection?.queuedInputs.some(item => item.commandId === input.commandId && item.status === 'notApplied'));
       const before = cloneComposerState(ordinaryDraft());
       const next = restoreUnappliedInputs(before, eligible, append);
       if (next === before) return;
