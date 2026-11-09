@@ -75,9 +75,7 @@
 .conversation-table td code { overflow-wrap: normal; word-break: normal; }
 .conversation-table :is(th, td) p { margin: 0; }
 .conversation-table tbody tr:last-child td { border-bottom: 0; }
-.conversation-table-dialog { box-sizing: border-box; padding: 0; margin: auto; width: min(1220px, calc(100vw - 32px)); max-width: none; height: min(760px, calc(100dvh - 48px)); max-height: none; overflow: hidden; border: 1px solid var(--ac-border); border-radius: 13px; background: var(--ac-surface); color: var(--ac-foreground); font: calc(14px * var(--ac-ui-font-scale, 1))/1.65 var(--ac-font-ui); box-shadow: 0 18px 70px color-mix(in srgb, var(--ac-shadow-color) 20.00%, transparent); }
-.conversation-table-dialog[open] { display: flex; flex-direction: column; }
-.conversation-table-dialog::backdrop { background: color-mix(in srgb, var(--ac-shadow-color) 20.00%, transparent); backdrop-filter: blur(4px); }
+.conversation-table-dialog { font: calc(14px * var(--ac-ui-font-scale, 1))/1.65 var(--ac-font-ui); }
 .conversation-table-dialog-header { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--ac-border); flex: none; }
 .conversation-table-dialog-header > div { flex: 1; min-width: 0; }
 .conversation-table-dialog-header strong { display: block; font-size: calc(14px * var(--ac-ui-font-scale, 1)); font-weight: 500; }
@@ -89,7 +87,6 @@
 .conversation-table-dialog th { position: sticky; top: -18px; z-index: 1; }
 @media (max-width: 620px) {
   .conversation-table-scroll :is(th, td):first-child { position: static; box-shadow: none; }
-  .conversation-table-dialog { width: calc(100vw - 16px); height: calc(100dvh - 24px); }
   .conversation-table-dialog-body { padding: 12px; }
   .conversation-table-dialog th { top: -12px; }
 }

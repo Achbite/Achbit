@@ -37,6 +37,23 @@ test('only active queued inputs occupy the real composer; terminal evidence is n
   assert.deepEqual(calls, ['send', 'undo'], 'Undo stays in Composer when recovered reminders are removed');
 });
 
+test('queued previews preserve long text and trailing newlines without changing queue facts', async t => {
+  const [{ QueuedInputPreview }] = await loadGuiModules(t, ['/src/components/local-agent/QueuedInputPreview.tsx']);
+  for (const text of ['Retain the trailing lines.' + '\n'.repeat(24), 'Long text '.repeat(100)]) {
+    const input = { ...waiting, text, filesystemReferences: [reference] };
+    const before = structuredClone(input);
+    let view;
+    function Probe() { view = QueuedInputPreview({ sessionId: 'session:queue', input, language: 'zh-CN' }); return view; }
+    const html = renderToStaticMarkup(createElement(Probe));
+    const trigger = findReactElement(view, node => node.props['data-ui-action'] === 'composer.queued-input.open');
+    assert.equal(trigger.props['aria-haspopup'], 'dialog');
+    assert.equal(trigger.props.children.props.children[0], text, 'display constraints never trim the queued input');
+    assert.match(html, /notes.txt/);
+    assert.doesNotMatch(html, /<dialog|<pre/);
+    assert.deepEqual(input, before);
+  }
+});
+
 test('unapplied history remains collapsed and preserves text, attachments, tools and original actions', async t => {
   const [{ UnappliedInputs }] = await loadGuiModules(t, ['/src/components/local-agent/UnappliedInputs.tsx']);
   const calls = []; let view;

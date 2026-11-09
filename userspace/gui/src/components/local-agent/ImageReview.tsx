@@ -1,16 +1,16 @@
-import { useEffectEvent, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type Ref } from 'react';
+import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { bindViewerZoom, captureZoomAnchor, centeredZoom, restoreZoomAnchor, type ZoomPoint } from './viewerZoom';
+import './viewerDialog.css';
 import './imageReview.css';
 
 /** Reuse the loaded image; fitting and zooming are local presentation state. */
-export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, diagram, triggerRef, hideTrigger }: {
+export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, intrinsicSize, triggerRef, hideTrigger }: {
   triggerIdentity?: Readonly<Record<`data-ui-${string}`, string>>;
   source?: string; alt: string; children?: ReactNode; className?: string; imageClassName?: string;
   title?: string; onError?(): void;
-  diagram?: { width: number; height: number; entryX: number };
+  intrinsicSize?: { width: number; height: number };
   triggerRef?: Ref<HTMLButtonElement>; hideTrigger?: boolean;
 }) {
   const language = useUiLanguage();
@@ -21,7 +21,7 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
   const [imageSize, setImageSize] = useState<{ source: string; width: number; height: number } | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState<number | null>(null);
-  const size = diagram ?? (imageSize?.source === source ? imageSize : null);
+  const size = intrinsicSize ?? (imageSize?.source === source ? imageSize : null);
   const anchor = useRef(centeredZoom);
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const fit = size && viewportSize.width && viewportSize.height
@@ -51,19 +51,10 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
   useLayoutEffect(() => {
     if (ready) return bindViewerZoom(viewport.current!, 'direct', gestureZoom);
   }, [ready, source]);
-  const show = (event?: MouseEvent<HTMLButtonElement>) => {
+  const resetFit = () => { anchor.current = centeredZoom; setZoom(null); };
+  const show = () => {
     dialog.current?.showModal();
-    anchor.current = centeredZoom;
-    if (diagram) {
-      const box = viewport.current!;
-      const thumb = event?.currentTarget.querySelector('img')?.getBoundingClientRect();
-      anchor.current = event?.detail && thumb?.width && thumb.height
-        ? { ...centeredZoom, x: Math.max(0, Math.min(1, (event.clientX - thumb.left) / thumb.width)),
-            y: Math.max(0, Math.min(1, (event.clientY - thumb.top) / thumb.height)) }
-        : { ...centeredZoom, x: diagram.entryX, y: 0 };
-      const fitView = Math.min(box.clientWidth / diagram.width, box.clientHeight / diagram.height);
-      setZoom(Math.max(1, fitView, (thumb?.width ?? 0) / diagram.width * 1.4));
-    } else { setZoom(null); }
+    resetFit();
     setOpen(true);
   };
   const frameless = !className && typeof navigator !== 'undefined' && /Win/.test(navigator.platform);
@@ -74,27 +65,28 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
       onClick={show}>
       {children ?? <img className={imageClassName} src={source} alt={alt} loading="lazy" onError={onError} />}
     </button>
-    <dialog ref={dialog} data-diagram={diagram ? true : undefined} className="conversation-image-review__dialog" aria-label={alt || t(language, 'content.image.expand')}
+    <dialog ref={dialog} className="conversation-viewer-dialog conversation-image-review__dialog" aria-label={alt || t(language, 'content.image.expand')}
       onClose={() => { setOpen(false); drag.current = null; }}
       onCancel={event => event.stopPropagation()}
+      onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}
       onKeyDown={event => {
         event.stopPropagation();
         if (event.key === '+' || event.key === '=') { event.preventDefault(); changeZoom(1.25); }
         else if (event.key === '-') { event.preventDefault(); changeZoom(1 / 1.25); }
-        else if (event.key === '0') { event.preventDefault(); setZoom(null); }
+        else if (event.key === '0') { event.preventDefault(); resetFit(); }
       }}>
       <div className="conversation-image-review__toolbar">
         <span className="conversation-image-review__title" title={alt}>{alt}</span>
         <div className="conversation-image-review__zoom" role="group" aria-label={t(language, 'content.image.zoom')}>
           <button type="button" aria-label={t(language, 'content.image.zoomOut')} title={t(language, 'content.image.zoomOut')}
-            disabled={scale === null || scale <= minScale} onClick={() => changeZoom(1 / 1.25)}>{diagram ? <AchbitShellIcon name="minus" /> : '−'}</button>
+            disabled={scale === null || scale <= minScale} onClick={() => changeZoom(1 / 1.25)}>−</button>
           <output aria-label={t(language, 'content.image.zoom')}>{scale === null ? '—' : `${Math.round(scale * 100)}%`}</output>
           <button type="button" aria-label={t(language, 'content.image.zoomIn')} title={t(language, 'content.image.zoomIn')}
-            disabled={scale === null || scale >= maxScale} onClick={() => changeZoom(1.25)}>{diagram ? <AchbitShellIcon name="plus" /> : '+'}</button>
-          <button type="button" aria-pressed={zoom === null} onClick={() => setZoom(null)}>{t(language, 'content.image.fit')}</button>
+            disabled={scale === null || scale >= maxScale} onClick={() => changeZoom(1.25)}>+</button>
+          <button type="button" aria-pressed={zoom === null} onClick={resetFit}>{t(language, 'content.image.fit')}</button>
         </div>
         <button type="button" className="conversation-image-review__close" aria-label={t(language, 'content.image.close')} onClick={() => dialog.current?.close()}>
-          {diagram ? <AchbitShellIcon name="close" /> : t(language, 'content.image.close')}</button>
+          {t(language, 'content.image.close')}</button>
       </div>
       <div ref={viewport} className="conversation-image-review__scroll" tabIndex={0} data-pannable={fit !== null && scale !== null && scale > fit || undefined}
         onPointerDown={event => {

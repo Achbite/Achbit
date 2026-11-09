@@ -5,6 +5,7 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { RichContentScope } from './RichContentIdentity';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { bindViewerZoom, captureZoomAnchor, restoreZoomAnchor } from './viewerZoom';
+import './viewerDialog.css';
 
 type ContentElement = React.ReactElement<{ children?: React.ReactNode; 'data-column'?: string }>;
 const isElement = (node: React.ReactNode): node is ContentElement => React.isValidElement(node);
@@ -108,7 +109,9 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
       onScroll={(event) => setScrolled(event.currentTarget.scrollLeft > 1)}>
       <table>{table.content}</table>
     </div>
-    <dialog {...(target ? identity.part('dialog') : {})} ref={dialog} className="conversation-table-dialog" aria-labelledby={titleId}
+    <dialog {...(target ? identity.part('dialog') : {})} ref={dialog} className="conversation-viewer-dialog conversation-table-dialog" aria-labelledby={titleId}
+      onCancel={event => event.stopPropagation()}
+      onKeyDown={event => event.stopPropagation()}
       onClose={() => { setExpanded(false); setZoom(1); zoomAnchor.current = null; }} onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
       {expanded && <>
         <header className="conversation-table-dialog-header">

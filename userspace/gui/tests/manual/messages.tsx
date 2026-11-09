@@ -45,6 +45,12 @@ const initial: SessionProjection = { ...base, revision: 4, messages, timeline: m
   kind: 'message', timelineId: `timeline:${message.messageId}`, messageId: message.messageId, sequence: message.sequence,
   ...(message.role === 'assistant' ? { streamId: `stream:${message.messageId}`, runId: message.runId } : {}),
 })) };
+if (previewParams.has('queue')) {
+  initial.queuedInputs = ['带末尾换行的排队消息。' + '\n'.repeat(24), '长文本不应撑开输入区域。'.repeat(100)].map((text, i) => ({
+    commandId: `command:queued:${i}`, messageId: `message:queued:${i}`, runId: 'run:second', status: 'queued', text,
+    filesystemReferences: [], pluginSelections: [], sequence: 10 + i, createdAt: '2026-11-09T14:00:00Z',
+  }));
+}
 if (layoutCheck) {
   const narrative = { narrativeId: 'narrative:layout', runId: 'run:second', providerRequestId: 'provider:second', sequence: 4,
     createdAt: '2026-10-15T08:00:00Z', content: '先检查字体、长命令和表格布局。执行完成后，这段过程说明会自动折叠，最终回答保持可见。' };

@@ -18,7 +18,6 @@ export async function renderMermaidImage(id: string, source: string, theme: stri
     svg.setAttribute('height', String(box.height));
     svg.style.removeProperty('max-width');
   }
-  let entryX = 0.5;
   if (rendered.diagramType.startsWith('flowchart')) {
     const dark = theme === 'dark';
     const ink = dark ? '#9fc8ff' : '#1466bb';
@@ -40,10 +39,7 @@ export async function renderMermaidImage(id: string, source: string, theme: stri
       rect.setAttribute('x', String(rect.x.baseVal.value - 4));
       rect.setAttribute('width', String(rect.width.baseVal.value + 8));
     }
-    const first = svg.querySelector<SVGGElement>('g.node');
-    const x = first?.transform.baseVal.consolidate()?.matrix.e;
-    if (x !== undefined && hasViewBox) entryX = Math.max(0, Math.min(1, (x - box.x) / box.width));
   }
   return { svg: new XMLSerializer().serializeToString(svg), title: svg.querySelector(':scope > title')?.textContent,
-    size: hasViewBox ? { width: box.width, height: box.height, entryX } : undefined };
+    size: hasViewBox ? { width: box.width, height: box.height } : undefined };
 }

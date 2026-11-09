@@ -2,11 +2,14 @@
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ImageReview } from '../../src/components/local-agent/ImageReview';
+import { MermaidContent } from '../../src/components/local-agent/MermaidContent';
+import { MarkdownTable } from '../../src/components/local-agent/MarkdownTable';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
 import '../../src/components/local-agent/localAgentPanel.css';
+import '../../src/components/local-agent/richContent.css';
 
 installPaletteDefaults();
 const samples = [
@@ -34,8 +37,17 @@ function Preview() {
     <style>{`body{margin:0;color:var(--ac-foreground);background:var(--ac-surface);font:var(--ac-font-body)/1.5 var(--ac-font-ui)}main.fixture{display:block;max-width:800px;height:auto;margin:40px auto;padding:24px}.fixture select{font:inherit}.fixture>p{margin:24px 0}.fixture>.conversation-image-review__open{max-width:360px;max-height:480px}`}</style>
     <main className="local-agent fixture">
       <label>图片样例 <select value={index} onChange={event => setIndex(Number(event.target.value))}>{samples.map((item, i) => <option key={item.name} value={i}>{item.name}</option>)}</select></label>
-      <p>点击图片检查全窗口适配。放大、缩小和恢复适配只修改本地查看比例，四角文字用于确认图片是否完整可见。</p>
+      <p>图片、Mermaid 和表格应使用相同的弹窗边界与留白。图片和图表默认完整适配，调整窗口后仍完整可见；放大后可恢复适配。</p>
       <ImageReview source={sample.source} alt={`${sample.name} · ${sample.width} × ${sample.height}`} />
+      <section className="conversation-markdown">
+        <h2>纵向流程图</h2>
+        <MermaidContent source={'flowchart TD\n' + Array.from({ length: 12 }, (_, i) => `N${i}[步骤 ${i + 1}] --> N${i + 1}[步骤 ${i + 2}]`).join('\n')} />
+        <h2>宽表格</h2>
+        <MarkdownTable>
+          <thead><tr>{['项目', '当前状态', '说明', '下一步', '结果'].map(title => <th key={title}>{title}</th>)}</tr></thead>
+          <tbody>{Array.from({ length: 8 }, (_, i) => <tr key={i}><td>项目 {i + 1}</td><td>已检查</td><td>保留表格可读性与独立滚动区域</td><td>调整窗口并检查缩放</td><td>待确认</td></tr>)}</tbody>
+        </MarkdownTable>
+      </section>
     </main>
   </>;
 }

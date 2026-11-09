@@ -98,7 +98,7 @@ export function MermaidContent({ source }: { source: string }) {
       {!showSource && !current && <span role="status">{t(language, 'content.diagram.loading')}</span>}
       {image && <div className="conversation-diagram__viewport">
         <ImageReview source={image.url} alt={title} className="conversation-diagram__open" title={t(language, 'content.diagram.expand')}
-          triggerRef={trigger} triggerIdentity={control('view')} hideTrigger={showSource} diagram={image.size} />
+          triggerRef={trigger} triggerIdentity={control('view')} hideTrigger={showSource} intrinsicSize={image.size} />
       </div>}
     </div>
   </figure>;
