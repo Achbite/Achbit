@@ -6,6 +6,8 @@ use achbit_kernel_tools::kernel_internal::{
 use achbit_kernel_tools::KernelToolRegistry;
 use achbit_kernel_tools::ToolAvailability;
 pub(crate) use process::invoke_workspace_shell as execute_workspace_shell;
+#[cfg(windows)]
+pub(crate) use process::probe_workspace_shell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;

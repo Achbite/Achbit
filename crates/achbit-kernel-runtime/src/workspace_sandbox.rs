@@ -148,21 +148,46 @@ impl SandboxStatus {
     }
 }
 
-static PROBED: std::sync::Mutex<Option<(u64, SandboxStatus)>> = std::sync::Mutex::new(None);
+struct ShellProbe {
+    revision: u64,
+    shell: crate::shell_environment::ShellProgram,
+    execution_path: String,
+    status: SandboxStatus,
+}
+
+static PROBED: std::sync::Mutex<Option<ShellProbe>> = std::sync::Mutex::new(None);
 
 /// The support check starts a real sandboxed process. Settings reads and new runs
 /// reuse its result until the environment revision changes or setup runs again.
-pub fn probe_for_revision(revision: u64) -> SandboxStatus {
+pub fn probe_for_revision(
+    revision: u64,
+    shell: &crate::shell_environment::ShellProgram,
+    execution_path: &str,
+) -> SandboxStatus {
     let mut probed = PROBED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((cached, status)) = probed.as_ref() {
-        if *cached == revision {
-            return status.clone();
+    if let Some(cached) = probed.as_ref() {
+        if cached.revision == revision
+            && cached.shell == *shell
+            && cached.execution_path == execution_path
+        {
+            return cached.status.clone();
         }
     }
+    #[cfg(windows)]
+    let status = SandboxStatus::observed(
+        "windows-lpac",
+        crate::executors::probe_workspace_shell(shell, execution_path),
+    );
+    #[cfg(not(windows))]
     let status = probe();
-    *probed = Some((revision, status.clone()));
+    *probed = Some(ShellProbe {
+        revision,
+        shell: shell.clone(),
+        execution_path: execution_path.into(),
+        status: status.clone(),
+    });
     status
 }
 

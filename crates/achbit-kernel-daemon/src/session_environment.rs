@@ -65,6 +65,8 @@ pub(crate) fn prepare(
     let commands: Vec<_> = command_paths.keys().cloned().collect();
     let sandbox = achbit_kernel_runtime::workspace_sandbox::probe_for_revision(
         configuration["revision"].as_u64().unwrap_or(0),
+        &shell,
+        &execution_path.to_string_lossy(),
     );
     let kernel_path = std::env::current_exe().map_err(|error| error.to_string())?;
     let executable_dir = kernel_path

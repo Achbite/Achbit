@@ -35,7 +35,7 @@ achbit-cli models default PROFILE_ID
 achbit-cli models probe PROFILE_ID
 ```
 
-`achbit-cli --help` and `achbit-cli models --help` show commands and input shapes without connecting to a Host. Apply the same `--host-data-dir` to subsequent commands when using a task Shell. `instance` reports the connected process, API address and actual config/data/profile/secret paths without secret contents. `services` lists installed service plugins and their current status, endpoint and state directory; `plugin.search` searches callable tools and is not this service inventory.
+`achbit-cli --help` and `achbit-cli models --help` show commands and input shapes without connecting to a Host. The packaged CLI still acquires its installation lease at startup. Submit task Shell calls with `requestHostPermission` and a specific reason, including read-only management queries. Apply the same `--host-data-dir` to subsequent commands. `instance` reports the connected process, API address and actual config/data/profile/secret paths without secret contents. `services` lists installed service plugins and their current status, endpoint and state directory; `plugin.search` searches callable tools and is not this service inventory.
 
 `connection.json` is `{ "connection": { "id": "local-web", "name": "Local Web", "adapterId": "custom", "billingMode": "metered", "baseUrl": "http://127.0.0.1:17632/v1", "credentialKind": "apiKey" } }`. Use the actual endpoint returned by `services`. Optional `profile` in the same file creates the first profile atomically with a new connection. Updating an existing connection preserves its credential unless `--api-key-file` is supplied; adapter and authentication kind follow the Host's existing edit rules.
 

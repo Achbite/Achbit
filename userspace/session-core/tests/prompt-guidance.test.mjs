@@ -94,6 +94,8 @@ test('product Shell paths require an installed slice and an actual product opera
   assert.equal(fact.toolName,'bash');
   assert.equal(fact.contributionId,'tool-result:call:product');
   for (const text of ['/product/docs','/host/cli','/host/data','/tools/git','--host-data-dir']) assert.ok(fact.text.includes(text));
+  assert.match(fact.text, /requestHostPermission/);
+  assert.match(fact.text, /read-only commands such as plugins status/);
   assert.deepEqual(contribute({...observed,tools:[]}), []);
   for (const recipe of [{permissionPolicy:{id:'workspace-only'},workspaceSandbox:{backendId:'platform'}},
     {permissionPolicy:{id:'local-standard'},workspaceSandbox:{backendId:'platform',requireIsolatedProcesses:true}}]) {
@@ -103,6 +105,7 @@ test('product Shell paths require an installed slice and an actual product opera
     const restricted=contribute({...observed,runtime:{...runtime,environment}})[0];
     assert.ok(restricted.text.includes('/product/docs'));
     assert.doesNotMatch(restricted.text,/achbitCli|\/host\/data|--host-data-dir/u);
+    assert.match(restricted.text, /Host execution is disabled.*CLI is unavailable/);
     assert.deepEqual(environment,before);
   }
   const selected={...runtime,selectedPlugins:{catalogRevision:'r',plugins:[{uri:'plugin://achbit-iteration@builtin'}]}};

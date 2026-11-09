@@ -61,7 +61,8 @@ const productShellGuidance: ToolGuidanceContributor = ({ runtime, events, runId,
     ...(hasCli ? { achbitCli: cli, hostDataDirectory: data.hostDataDirectory } : {}),
   };
   const text = `Achbit product resources: ${JSON.stringify(resources)}.`
-    + (hasCli ? ' Run achbitCli on the Host with --host-data-dir hostDataDirectory.' : '');
+    + (hasCli ? ' Run achbitCli on the Host with --host-data-dir hostDataDirectory. Submit the Shell call with requestHostPermission and an operation-specific reason, including read-only commands such as plugins status; the active permission policy handles authorization.'
+      : !hostExecutionAllowed ? ' Host execution is disabled in this session; the product administration CLI is unavailable.' : '');
   return shells.map(tool => ({ toolName: tool.name, text, contributionId }));
 };
 

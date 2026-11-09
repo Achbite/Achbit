@@ -50,7 +50,7 @@ impl Installation {
         self.root.as_deref()
     }
 
-    fn file(&self, kind: &str) -> io::Result<Option<File>> {
+    fn file(&self, kind: &str) -> io::Result<Option<(PathBuf, File)>> {
         let Some(root) = &self.root else {
             return Ok(None);
         };
@@ -61,13 +61,20 @@ impl Installation {
             .file_name()
             .ok_or_else(|| io::Error::other("Installation name is missing"))?
             .to_string_lossy();
-        OpenOptions::new()
+        let path = parent.join(format!(".{name}.{kind}.lock"));
+        let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(parent.join(format!(".{name}.{kind}.lock")))
-            .map(Some)
+            .open(&path)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("Open installation {kind} lease {}: {error}", path.display()),
+                )
+            })?;
+        Ok(Some((path, file)))
     }
 
     pub fn resume(&self) -> io::Result<()> {
@@ -78,8 +85,16 @@ impl Installation {
         if lease.is_some() {
             return Ok(());
         }
-        if let Some(file) = self.file("runtime")? {
-            FileExt::try_lock_shared(&file)?;
+        if let Some((path, file)) = self.file("runtime")? {
+            FileExt::try_lock_shared(&file).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Acquire shared installation lease {}: {error}",
+                        path.display()
+                    ),
+                )
+            })?;
             *lease = Some(file);
         }
         Ok(())
@@ -94,18 +109,34 @@ impl Installation {
     }
 
     pub fn exclusive(&self) -> io::Result<File> {
-        let file = self
+        let (path, file) = self
             .file("runtime")?
             .ok_or_else(|| io::Error::other("This is not an installed runtime"))?;
-        FileExt::try_lock_exclusive(&file)?;
+        FileExt::try_lock_exclusive(&file).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "Acquire exclusive installation lease {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
         Ok(file)
     }
 
     pub fn update_owner(&self) -> io::Result<File> {
-        let file = self
+        let (path, file) = self
             .file("update")?
             .ok_or_else(|| io::Error::other("This is not an installed runtime"))?;
-        FileExt::try_lock_exclusive(&file)?;
+        FileExt::try_lock_exclusive(&file).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "Acquire installation update lease {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
         Ok(file)
     }
 }
@@ -173,10 +204,72 @@ pub fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<()> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn installation_lease_open_failure_identifies_the_operation_and_path() {
+        let parent = std::env::temp_dir().join(format!(
+            "achbit-installation-open-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let lock = parent.join(".app.runtime.lock");
+        std::fs::create_dir_all(&lock).unwrap();
+        let installation = Installation {
+            root: Some(parent.join("app")),
+            lease: Mutex::new(None),
+        };
+        let error = installation.resume().unwrap_err().to_string();
+        std::fs::remove_dir_all(&parent).unwrap();
+        assert!(error.contains("Open installation runtime lease"), "{error}");
+        assert!(
+            error.contains(&lock.to_string_lossy().to_string()),
+            "{error}"
+        );
+        assert!(error.contains("os error"), "{error}");
+    }
+
+    #[test]
+    fn shared_installation_lease_blocks_an_exclusive_update() {
+        let parent = std::env::temp_dir().join(format!(
+            "achbit-installation-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&parent).unwrap();
+        let running = Installation {
+            root: Some(parent.join("app")),
+            lease: Mutex::new(None),
+        };
+        running.resume().unwrap();
+        let updater = Installation {
+            root: running.root.clone(),
+            lease: Mutex::new(None),
+        };
+        let error = updater.exclusive().unwrap_err().to_string();
+        running.release().unwrap();
+        drop(
+            updater
+                .exclusive()
+                .expect("update proceeds after the running client releases its lease"),
+        );
+        std::fs::remove_dir_all(&parent).unwrap();
+        assert!(
+            error.contains("Acquire exclusive installation lease"),
+            "{error}"
+        );
+        assert!(error.contains(".app.runtime.lock"), "{error}");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn update_wait_reaps_the_shared_host_child_after_its_handle_is_released() {
         let child = std::process::Command::new("/bin/sh")
