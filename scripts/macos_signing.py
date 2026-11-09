@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """One stable signing identity for native packages and updates to their resources."""
+import argparse
 import hashlib
 import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -27,6 +29,15 @@ def signing_identity():
                          f'Run bash scripts/setup-macos-signing.sh on the Mac, or set {IDENTITY_ENV} '
                          'to an existing certificate fingerprint.')
     return matches.pop()
+
+
+def check_private_key_access(identity):
+    """Identity enumeration can succeed while the login session cannot use its private key."""
+    with tempfile.TemporaryDirectory(prefix='achbit-signing-check-') as directory:
+        probe = Path(directory) / 'signing-probe'
+        shutil.copyfile('/usr/bin/true', probe)
+        subprocess.run(['codesign', '--force', '--sign', identity, str(probe)], check=True)
+        subprocess.run(['codesign', '--verify', '--strict', str(probe)], check=True)
 
 
 def require_same_identity(app, identity):
@@ -54,7 +65,15 @@ def sign_app(app, identity, *, native_components=False):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check-private-key', action='store_true',
+                        help='Sign and verify a temporary program before starting a native build.')
+    args = parser.parse_args()
     try:
-        print(signing_identity())
+        identity = signing_identity()
+        if args.check_private_key:
+            check_private_key_access(identity)
+        print(identity)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f'macOS signing preflight failed: {error}')
+        raise SystemExit(f'macOS signing preflight failed: {error}\n'
+                         'The signing identity was not replaced. Check the current macOS keychain/private-key access before retrying.')

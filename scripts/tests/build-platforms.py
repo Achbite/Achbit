@@ -899,6 +899,39 @@ exec "$ACHBIT_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]));
             self.assertEqual(families, {'Achbit TUI Reading SC', 'Achbit TUI Reading Sans SC',
                                        'Achbit TUI Mono Kai SC', 'Achbit TUI Mono SC'})
 
+    def test_signing_preflight_exercises_private_key_and_removes_its_probe(self):
+        paths = []
+        def copy_probe(source, destination):
+            self.assertEqual(source, '/usr/bin/true')
+            paths.append(destination)
+            destination.write_bytes(b'probe')
+        def execute(command, check):
+            self.assertTrue(check)
+            self.assertEqual(Path(command[-1]).read_bytes(), b'probe')
+        with patch.object(macos_signing.shutil, 'copyfile', side_effect=copy_probe), \
+                patch.object(macos_signing.subprocess, 'run', side_effect=execute) as command:
+            macos_signing.check_private_key_access('existing-certificate')
+        self.assertEqual([call.args[0] for call in command.call_args_list], [
+            ['codesign', '--force', '--sign', 'existing-certificate', str(paths[0])],
+            ['codesign', '--verify', '--strict', str(paths[0])],
+        ])
+        self.assertFalse(paths[0].parent.exists())
+
+    def test_signing_preflight_preserves_the_first_failure_without_retry_or_fallback(self):
+        paths = []
+        def copy_probe(source, destination):
+            paths.append(destination)
+            destination.write_bytes(b'probe')
+        failure = subprocess.CalledProcessError(1, ['codesign'], stderr='errSecInternalComponent')
+        with patch.object(macos_signing.shutil, 'copyfile', side_effect=copy_probe), \
+                patch.object(macos_signing.subprocess, 'run', side_effect=failure) as command:
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                macos_signing.check_private_key_access('existing-certificate')
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0][3], 'existing-certificate')
+        self.assertFalse(paths[0].parent.exists())
+
     def test_identity_is_explicit_and_never_falls_back_to_ad_hoc(self):
         fingerprint = 'A' * 40
         listing = f'  1) {fingerprint} "Achbit Local Development"\n  1 valid identities found\n'
