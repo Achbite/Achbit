@@ -504,7 +504,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'environment',
       'agentCapabilities',
       'contextManagement',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -577,6 +577,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
             ...this.#instructions, environmentInstruction(value.environment),
+            ...projectInstructionContributions(value.projectInstructions),
             ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
           ])],
           tools,
@@ -616,6 +617,23 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       alreadyReleased: released.alreadyReleased,
     });
   }
+}
+
+function projectInstructionContributions(value: unknown): InstructionContribution[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('run_runtime_project_instructions_invalid');
+  const sources = value.map(source => {
+    if (!isExactRecord(source, ['path', 'text']) || !isNonEmptyText(source.path)
+      || typeof source.text !== 'string') throw new Error('run_runtime_project_instructions_invalid');
+    return { path: source.path, text: source.text };
+  }).filter(source => source.text.trim().length > 0);
+  if (sources.length === 0) return [];
+  return [{
+    id: 'achbit.project-instructions',
+    text: 'Project instructions apply to the directory containing each file and its descendants. '
+      + 'More specific instructions take precedence within their scope.\n\n'
+      + sources.map(source => `Instructions from ${JSON.stringify(source.path)}:\n${source.text}`).join('\n\n'),
+  }];
 }
 
 function decodeProviderRuntime(value: unknown): ProviderRuntimeSnapshot {

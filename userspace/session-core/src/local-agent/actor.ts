@@ -913,6 +913,7 @@ export class SessionActor {
     const prepared = await this.prepareRun({
       sessionId: this.sessionId,
       runId,
+      workspaceBindingIds: runWorkspaceBindings.map(binding => binding.workspaceId),
       previousProviderToolAliases: previousView?.providerToolAliases,
       ...(previousView?.selectedPlugins.plugins.length ? {
         inheritedPluginSelections: previousView.selectedPlugins.plugins.map(plugin => ({

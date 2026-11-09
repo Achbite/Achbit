@@ -2106,6 +2106,8 @@ export interface PrepareRunRuntimeRequest {
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;
+  /** Initial run project bindings; omitted means no project bindings. */
+  workspaceBindingIds?: readonly string[];
   environment?: JsonObject;
   hostBinding?: { hostInstanceId: string; windowLabel: string };
   restoreEnvironment?: boolean;

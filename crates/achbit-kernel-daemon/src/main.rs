@@ -50,6 +50,7 @@ mod model_usage;
 mod plugin_installation;
 mod plugin_management;
 mod prelude;
+mod project_instructions;
 mod provider_transport;
 mod routes;
 mod service_plugins;
