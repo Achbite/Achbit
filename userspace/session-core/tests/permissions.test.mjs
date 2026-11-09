@@ -37,6 +37,16 @@ test('runtime read roots use shared defaults and validate their setting shape', 
   assert.throws(() => validatePermissionPatches({ 'agent.permissions.commandDenylist': [''] }), /command_denylist_invalid/);
 });
 
+test('network and external permissions accept independent review without changing other domains', () => {
+  for (const key of ['agent.permissions.networkRead', 'agent.permissions.external']) {
+    const defaults = permissionSettings({});
+    for (const mode of ['ask', 'review', 'allow', 'deny']) {
+      assert.deepEqual(permissionSettings({ [key]: mode }), { ...defaults, [key]: mode });
+    }
+    assert.throws(() => validatePermissionPatches({ [key]: 'invalid' }), /permission_setting_invalid/);
+  }
+});
+
 test('approval review retains original user constraints without main-model summaries', () => {
   const sessionId = 'session:review-context', runId = 'run:review-context';
   const runtime = runtimeSnapshot(runId);
@@ -376,6 +386,48 @@ for (const mode of ['ask', 'review', 'allow']) test(`Shell ${mode} has a distinc
     assert.equal(completed.tokenUsage.outputTokens, 54);
   }
   else if (mode === 'allow') assert.equal(resolved, undefined);
+});
+
+for (const [key, subject, name, input] of [
+  ['agent.permissions.networkRead', 'network', 'web.fetch', { url: 'https://example.com/' }],
+  ['agent.permissions.external', 'external', 'computer.control', { action: 'listApps' }],
+]) test(`${subject} review uses the existing reviewer lifecycle while Shell remains ask`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:${subject}-review`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const tool = { ...shell, name, toolBindingRef: `binding:${subject}`, possibleEffects: [subject],
+    inputSchema: { type: 'object', properties: {} } };
+  const preparation = reviewerPreparation({ tools: [tool], permissions: { [key]: 'review', 'agent.permissions.shell': 'ask' } });
+  let turns = 0, reviews = 0, executions = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (request.purpose === 'approvalReview') {
+      reviews++;
+      const packet = JSON.parse(request.messages[1].content);
+      assert.equal(packet.reviewPolicy.subject, subject);
+      assert.equal(packet.reviewPolicy.mode, 'review');
+      assert.equal(packet.grant, 'thisCallOnly');
+      yield providerEvent(request.requestId, 'assistant.message', { content: '{"decision":"allow","reason":"This operation is within the requested task."}' });
+    } else if (++turns === 1) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: `provider:${subject}`, name: name.replace('.', '_'), input });
+    } else yield providerEvent(request.requestId, 'assistant.message', { content: 'Finished.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    if (!request.nonWorkspaceAuthority) return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution',
+      requestId: request.requestId, callId: request.callId, status: 'approvalRequired', preview: {
+        summary: name, effects: [subject], logicalTargets: ['requested-target'], approvalReviewer: 'agent',
+        reviewPolicy: { subject, mode: 'review', reviewGrant: 'thisCallOnly' }, operation: { toolName: name, arguments: input },
+      } };
+    executions++;
+    return completedExecutionReply(request, { result: 'done' });
+  } }), preparation.port, `${subject}-review`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', `Perform the requested ${subject} operation.`));
+  const completed = await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(reviews, 1); assert.equal(executions, 1);
+  assert.equal(completed.effectivePermissions['agent.permissions.shell'], 'ask');
+  assert.deepEqual(completed.shellAuthorizations, []);
+  const resolved = (await readEvents(journal, sessionId)).find(event => event.type === 'approval.resolved');
+  assert.equal(resolved.payload.source, 'agent');
+  assert.equal(resolved.payload.authorizationScope, undefined);
 });
 
 for (const needsReview of [false, true]) test(`a frozen reviewer configuration error affects only an actual review: ${needsReview}`, async t => {

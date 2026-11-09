@@ -6,7 +6,7 @@ import React, { useEffect, useState } from 'react';
 import { DEFAULT_USER_SETTINGS, type UserSettingValue } from '@achbit/protocol';
 import { useSettingsStore, type SettingDefinition } from '../../state/settingsStore';
 import { parseSettingDraft, reconcileSettingDraft } from './settingDraft';
-import { t, type UiLanguage } from '../../i18n';
+import { settingText, t, type UiLanguage } from '../../i18n';
 
 interface SettingsFieldProps {
   definition: SettingDefinition;
@@ -103,6 +103,9 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
           disabled={disabled || saving}
           onChange={(event) => { const next = event.target.value; void perform(() => onChange(definition.key, next)); }}
         >
+          {!definition.options?.some(option => option.value === savedText) && <option value={savedText} disabled>
+            {settingText(language, definition.key)?.options?.[savedText] ?? savedText}
+          </option>}
           {(definition.options ?? []).map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}

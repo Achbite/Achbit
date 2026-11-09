@@ -948,7 +948,10 @@ fn debug_admission(prepared: &PreparedEffect, approved: bool) -> Admission {
         || (prepared.scope == PreparedEffectScope::WorkspaceMutation
             || is_shell_tool(&prepared.operation))
             && prepared.permissions.workspace_mutation == WorkspaceMutationMode::Plan
-        || prepared.permissions.mode(prepared.scope) == Some(PermissionMode::Ask)
+        || matches!(
+            prepared.permissions.mode(prepared.scope),
+            Some(PermissionMode::Ask | PermissionMode::Review)
+        )
         || is_shell_tool(&prepared.operation)
             && (prepared.permissions.shell != ShellApprovalMode::Allow
                 || prepared.command_rule() == Some("ask"))

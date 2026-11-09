@@ -206,7 +206,7 @@ const SETTING_DEFINITION_SCHEMAS: SettingDefinitionSchema[] = [
 ];
 
 function permissionPolicyOptionValues(): string[] {
-  return ['allow', 'ask', 'deny'];
+  return ['ask', 'review', 'allow'];
 }
 
 function settingDefinitionFromSchema(schema: SettingDefinitionSchema): SettingDefinition {

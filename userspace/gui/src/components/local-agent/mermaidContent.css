@@ -17,8 +17,6 @@
 .conversation-diagram .conversation-diagram__open[hidden] { display: none; }
 .conversation-diagram .conversation-code .conversation-copy-button { opacity: 1; pointer-events: auto; }
 .conversation-diagram .conversation-code pre { max-height: 340px; }
-.conversation-image-review__dialog[data-diagram] .conversation-image-review__toolbar button { display: inline-grid; place-items: center; border: 0; background: transparent; color: var(--ac-muted); }
-.conversation-image-review__dialog[data-diagram] .conversation-image-review__toolbar button:hover { background: var(--ac-surface-hover); color: var(--ac-foreground); }
 @media (pointer: coarse) {
   .conversation-diagram__actions .reader-icon-button, .conversation-diagram .conversation-diagram__menu button { min-width: 44px; min-height: 44px; }
 }

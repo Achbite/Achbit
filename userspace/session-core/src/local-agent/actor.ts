@@ -560,8 +560,8 @@ export class SessionActor {
     const snapshot = await this.loadSnapshot();
     const events: NewSessionEvent[] = [{ type: 'session.permissions.updated', sessionId: this.sessionId,
       payload: { commandId: command.commandId, patches: command.patches } }];
-    // A change to Shell policy invalidates outstanding reusable grants, visibly.
-    if (Object.keys(command.patches).some(key => ['agent.permissions.shell', 'agent.permissions.shellAccess', 'agent.permissions.commandRules', 'agent.permissions.commandDenylist', 'agent.permissions.networkRead'].includes(key))) {
+    // A change to execution/access policy invalidates outstanding reusable grants, visibly.
+    if (Object.keys(command.patches).some(key => ['agent.permissions.shell', 'agent.permissions.shellAccess', 'agent.permissions.commandRules', 'agent.permissions.commandDenylist', 'agent.permissions.networkRead', 'agent.permissions.external'].includes(key))) {
       events.push(...snapshot.state.shellAuthorizations.map(grant => ({ type: 'approval.revoked' as const,
         sessionId: this.sessionId, runId: grant.runId, payload: { commandId: command.commandId, authorityId: grant.authorityId } })));
     }

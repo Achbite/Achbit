@@ -22,7 +22,7 @@ fi
 if [ "${1:-}" = --computer-use ]; then
   [ "$#" -eq 2 ] || exit 2
   export CARGO_TARGET_DIR="${ACHBIT_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
-  python3 scripts/macos_signing.py
+  python3 scripts/macos_signing.py --check-private-key
   "$CARGO" build --release -p achbit-computer-use
   python3 scripts/computer_use_package.py --native "$CARGO_TARGET_DIR/release" --output "$2/macos-arm64"
   exit 0
@@ -34,8 +34,11 @@ xcrun --sdk macosx --show-sdk-path >/dev/null
 [ -x "$NODE" ] || { printf 'Set ACHBIT_MACOS_NODE_BIN to the installed Node runtime.\n' >&2; exit 1; }
 NODE_LICENSE="${ACHBIT_MACOS_NODE_LICENSE:-$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve().parent.parent / "LICENSE")' "$NODE")}"
 [ -f "$NODE_LICENSE" ] || { printf 'Node license missing: %s\n' "$NODE_LICENSE" >&2; exit 1; }
+if [ "${1:-}" = --check ]; then
+  python3 scripts/macos_signing.py --check-private-key
+  exit 0
+fi
 python3 scripts/macos_signing.py
-[ "${1:-}" != --check ] || exit 0
 [ "$#" -eq 2 ] || { printf 'Use build.sh --stage package-macos; shared assets are supplied by that invocation.\n' >&2; exit 2; }
 SHARED="$1"
 OUTPUT="$2"

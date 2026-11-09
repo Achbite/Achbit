@@ -2604,6 +2604,14 @@ mod tests {
             json!({ "owner": "kernelAdapter", "toolName": "web.search" })
         );
         assert_eq!(
+            prepare_web_search_binding(&responses, permission_policy("review"), true),
+            json!({ "owner": "kernelAdapter", "toolName": "web.search" })
+        );
+        assert_eq!(
+            prepare_web_search_binding(&responses, permission_policy("review"), false),
+            json!({ "owner": "unavailable" })
+        );
+        assert_eq!(
             prepare_web_search_binding(&chat, permission_policy("allow"), true),
             json!({ "owner": "kernelAdapter", "toolName": "web.search" })
         );

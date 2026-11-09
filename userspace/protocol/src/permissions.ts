@@ -49,8 +49,8 @@ export function validatePermissionPatches(value: unknown): asserts value is Reco
     'agent.permissions.engineeringDecisions': ['ask', 'delegate'],
     'agent.permissions.shell': ['ask', 'review', 'allow'],
     'agent.permissions.shellAccess': ['workspace', 'full'],
-    'agent.permissions.networkRead': ['allow', 'ask', 'deny'],
-    'agent.permissions.external': ['allow', 'ask', 'deny'],
+    'agent.permissions.networkRead': ['ask', 'review', 'allow', 'deny'],
+    'agent.permissions.external': ['ask', 'review', 'allow', 'deny'],
   };
   for (const [key, setting] of Object.entries(value)) {
     if (choices[key]) {

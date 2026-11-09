@@ -16,6 +16,7 @@ import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
+import { QueuedInputPreview } from './QueuedInputPreview';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
@@ -248,10 +249,8 @@ export function ConversationComposer({
           }}
         />}
       </div>
-      {projection?.queuedInputs.filter(input => input.status === 'queued').map((input) => <div className="local-agent__queued-input" key={input.commandId} role="status">
-        <strong>{language === 'zh-CN' ? '等待加入当前任务' : 'Waiting to join this run'}</strong>
-        <span>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map((item) => item.displayName).join(', ')}` : ''}</span>
-      </div>)}
+      {projection?.queuedInputs.filter(input => input.status === 'queued').map(input => <QueuedInputPreview
+        key={input.commandId} sessionId={projection.sessionId} input={input} language={language} />)}
       {concurrentDecisionKey && <div className="local-agent__decision-switcher" role="group"
         aria-label={t(language, 'agent.decision.pending')}>
         <button type="button" aria-pressed={showApproval} aria-controls={decisionContentId}

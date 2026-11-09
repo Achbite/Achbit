@@ -29,6 +29,29 @@ test('image review keeps its native dialog and image source with explicit zoom a
   }
 });
 
+test('intrinsic SVG sizes use the same fit controls and native dismissal as decoded images', async t => {
+  const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
+  for (const intrinsicSize of [undefined, { width: 500, height: 4200 }]) {
+    let view;
+    function Probe() {
+      view = ImageReview({ source: 'blob:diagram', alt: 'Tall diagram', intrinsicSize });
+      return view;
+    }
+    renderToStaticMarkup(createElement(Probe));
+    const dialog = findReactElement(view, node => node.type === 'dialog');
+    const calls = [];
+    const element = { showModal: () => calls.push('open'), close: () => calls.push('close') };
+    dialog.props.ref.current = element;
+    findReactElement(view, node => node.type === 'button' && node.props['aria-label']?.includes('Tall diagram')).props.onClick();
+    assert.equal(findReactElement(dialog, node => node.type === 'button' && /^(Fit to window|适应窗口)$/.test(node.props.children)).props['aria-pressed'], true);
+    dialog.props.onClick({ target: {}, currentTarget: element });
+    assert.deepEqual(calls, ['open'], 'content clicks do not dismiss the viewer');
+    dialog.props.onClick({ target: element, currentTarget: element });
+    dialog.props.onCancel({ stopPropagation: () => calls.push('cancel') });
+    assert.deepEqual(calls, ['open', 'close', 'cancel']);
+  }
+});
+
 test('artifact image card is a single viewer trigger and stays unavailable until its image is loaded', async t => {
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
   const { ArtifactLinks } = await loadGuiModule(t, '/src/components/local-agent/ArtifactLinks.tsx');
