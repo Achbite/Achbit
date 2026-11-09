@@ -2,16 +2,17 @@ import React, { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { permissionSettings } from '@achbit/protocol';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
-import { CloseButton, IconButton, PanelHeader } from '../../ui-components';
+import { CloseButton, IconButton, NativeSelect, PanelHeader } from '../../ui-components';
 import { settingText, t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
 import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
+import { currentPermissionPreset, PERMISSION_PRESETS } from './permissionPresets';
 
 type PermissionRow = { key: string; label: string; values: readonly (readonly [string, string])[] };
-const askAllowDeny = [['ask', 'agent.permission.ask'], ['allow', 'agent.permission.allow'], ['deny', 'agent.permission.deny']] as const;
+const approvalModes = [['ask', 'agent.permission.ask'], ['review', 'agent.permission.review'], ['allow', 'agent.permission.allow']] as const;
 type PermissionGroup = 'workflow' | 'access';
 const groups: Record<PermissionGroup, PermissionRow[]> = {
   workflow: [
@@ -19,10 +20,10 @@ const groups: Record<PermissionGroup, PermissionRow[]> = {
     { key: 'agent.permissions.engineeringDecisions', label: 'agent.permission.engineeringDecisions', values: [['ask', 'agent.permission.ask'], ['delegate', 'agent.permission.delegate']] },
   ],
   access: [
-    { key: 'agent.permissions.shell', label: 'agent.permission.shell', values: [['ask', 'agent.permission.ask'], ['review', 'agent.permission.review'], ['allow', 'agent.permission.allow']] },
+    { key: 'agent.permissions.shell', label: 'agent.permission.shell', values: approvalModes },
     { key: 'agent.permissions.shellAccess', label: 'agent.permission.shellAccess', values: [['workspace', 'agent.permission.workspaceScope'], ['full', 'agent.permission.fullScope']] },
-    { key: 'agent.permissions.networkRead', label: 'agent.permission.networkRead', values: askAllowDeny },
-    { key: 'agent.permissions.external', label: 'agent.permission.externalEffects', values: askAllowDeny },
+    { key: 'agent.permissions.networkRead', label: 'agent.permission.networkRead', values: approvalModes },
+    { key: 'agent.permissions.external', label: 'agent.permission.externalEffects', values: approvalModes },
   ],
 };
 
@@ -30,7 +31,7 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   const interaction = useInteractionFocus();
   const { permissionControlRef, permissionMenuRef, permissionMenuOpen, setPermissionMenuOpen, setAttachmentMenuOpen } = composer;
   const defaults = useSettingsStore(state => state.effectiveSettings);
-  const patchDefault = useSettingsStore(state => state.patchUserSetting);
+  const patchDefaults = useSettingsStore(state => state.patchUserSettingsBatch);
   const settingsError = useSettingsStore(state => state.errorMessage);
   const sessionId = useLocalAgentStore(state => state.sessionId);
   const identity = useUiOwner('composer.permissions', undefined, { sessionId });
@@ -39,16 +40,16 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   const revoke = useLocalAgentStore(state => state.revokeAuthorization);
   const taskError = useLocalAgentStore(state => state.error);
   const [busy, setBusy] = useState(false);
-  const [page, setPage] = useState<PermissionRow | PermissionGroup | 'grants' | null>(null);
-  const detail = typeof page === 'object' ? page : null;
+  const [page, setPage] = useState<'details' | 'grants' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const grants = projection?.shellAuthorizations ?? [];
-  const group = page === 'workflow' || page === 'access' ? page : null;
-  const back = () => setPage(detail ? (groups.workflow.includes(detail) ? 'workflow' : 'access') : null);
-  const heading = page === 'grants' ? 'agent.permission.runGrants' : detail?.label
-    ?? (group ? `agent.permission.${group}` : 'agent.permission.menuTitle');
+  const back = () => setPage(null);
+  const heading = page === 'grants' ? 'agent.permission.runGrants'
+    : page === 'details' ? 'agent.permission.details' : 'agent.permission.menuTitle';
   const [position, setPosition] = useState<React.CSSProperties>({});
   const settings = projection?.effectivePermissions ?? permissionSettings({ ...defaults, ...projection?.permissionOverrides });
-  const summary = `${t(language, 'agent.permission.shell')}: ${t(language, `agent.permission.${settings['agent.permissions.shell']}`)}`;
+  const preset = currentPermissionPreset(settings);
+  const summary = t(language, preset?.label ?? 'agent.permission.custom');
   useLayoutEffect(() => {
     if (!permissionMenuOpen) { setPage(null); return; }
     const place = () => {
@@ -66,18 +67,20 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
     return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [permissionMenuOpen, permissionControlRef]);
   useLayoutEffect(() => {
-    if (permissionMenuOpen) permissionMenuRef.current?.querySelector<HTMLElement>(detail ? '[aria-checked="true"]' : 'button')?.focus({ preventScroll: true });
+    if (!permissionMenuOpen) return;
+    const menu = permissionMenuRef.current;
+    const selected = menu?.querySelector<HTMLElement>(page === 'details' ? 'select' : '[aria-checked="true"]');
+    (selected ?? menu?.querySelector<HTMLElement>('[role="radio"], button'))?.focus({ preventScroll: true });
   }, [permissionMenuOpen, page, permissionMenuRef]);
   const close = () => { setPermissionMenuOpen(false); returnFocusTo(permissionControlRef.current?.querySelector('button'), interaction, permissionMenuRef.current); };
-  const change = async (key: string, value: string) => {
-    setBusy(true);
+  const change = async (patches: Record<string, string>) => {
+    setBusy(true); setActionError(null);
     try {
-      if (sessionId) await setPermissions({ [key]: value });
-      // Keep the current Session control and the shared preference in sync.
-      const activation = await patchDefault(key, value);
-      if (activation !== null) setPage(null);
+      if (sessionId) await setPermissions(patches);
+      // Publish a preset as one patch to each existing owner, never four independent updates.
+      await patchDefaults(patches);
     }
-    catch { /* Stores expose the original command error. */ }
+    catch (reason) { setActionError(String(reason)); }
     finally { setBusy(false); }
   };
   if (!sessionId && defaults['agent.minimalMode'] === true) {
@@ -92,11 +95,11 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
       <AchbitShellIcon name="shield" /><span>{summary}</span>
     </button>
     {permissionMenuOpen && createPortal(<div ref={permissionMenuRef} className="local-agent__permission-menu" style={position}
-      data-native-overlay role="dialog" aria-label={t(language, heading)}
+      data-native-overlay role="dialog" aria-label={t(language, heading)} aria-busy={busy}
       onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (page) back(); else close(); }
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-          const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"], .local-agent__permission-row')];
+        if (!(event.target instanceof HTMLSelectElement) && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+          const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]:not(:disabled), button.local-agent__permission-row:not(:disabled)')];
           const index = options.indexOf(document.activeElement as HTMLButtonElement);
           if (options.length) { event.preventDefault(); options[(index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length].focus(); }
         }
@@ -117,34 +120,38 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
             </> : String(grant.context.command)}</span>
           <button {...identity.action('revoke', 'click', { authorityId: grant.authorityId })} type="button" disabled={busy} onClick={async () => { setBusy(true); try { await revoke(grant.authorityId); } catch {} finally { setBusy(false); } }}>{t(language, 'agent.permission.revoke')}</button>
         </div>)}
-      </div> : detail ? <div role="radiogroup" aria-label={t(language, detail.label)}>
-        {detail.values.map(([value, label]) => <button {...identity.action('select', 'click', { setting: detail.key, value })} key={value} type="button" className="local-agent__permission-option" role="radio"
-          aria-checked={settings[detail.key] === value} disabled={busy} onClick={() => void change(detail.key, value)}>
-          <span className="local-agent__permission-radio" aria-hidden="true" /><span>{t(language, label)}
-            {detail.key === 'agent.permissions.shell' && value === 'review' && <small>{t(language, 'agent.permission.reviewHelp')}</small>}
-            {detail.key === 'agent.permissions.shellAccess' && value === 'full' && <small>{t(language, 'agent.permission.fullHelp')}</small>}
-          </span>
-        </button>)}
-      </div> : group ? <>
-        {group === 'access' && <div className="local-agent__permission-invariant"><span>{t(language, 'agent.permission.workspaceRead')}</span><strong>{t(language, 'agent.permission.workspaceReadAllowed')}</strong></div>}
-        {groups[group].map(row => <button {...identity.action('open-setting', 'click', { setting: row.key })} key={row.key} type="button" className="local-agent__permission-row" disabled={busy} onClick={() => setPage(row)}>
-          <span>{t(language, row.label)}</span><span>{t(language, row.values.find(([value]) => value === settings[row.key])![1])}<AchbitShellIcon name="chevronRight" /></span>
-        </button>)}
+      </div> : page === 'details' ? <>
+        {(['access', 'workflow'] as const).map(group => <section key={group} aria-label={t(language, `agent.permission.${group}`)}>
+          <div className="local-agent__permission-group"><strong>{t(language, `agent.permission.${group}`)}</strong></div>
+          {group === 'access' && <div className="local-agent__permission-invariant"><span>{t(language, 'agent.permission.workspaceRead')}</span><strong>{t(language, 'agent.permission.workspaceReadAllowed')}</strong></div>}
+          {groups[group].map(row => <label key={row.key} className="local-agent__permission-row">
+            <span>{t(language, row.label)}</span>
+            <NativeSelect {...identity.action('select', 'select', { setting: row.key })} className="settings-field__select"
+              aria-label={t(language, row.label)} title={settingText(language, row.key)?.description}
+              value={String(settings[row.key])} disabled={busy} onChange={event => void change({ [row.key]: event.target.value })}>
+              {!row.values.some(([value]) => value === settings[row.key]) && <option value={String(settings[row.key])} disabled>
+                {settingText(language, row.key)?.options?.[String(settings[row.key])] ?? String(settings[row.key])}
+              </option>}
+              {row.values.map(([value, label]) => <option key={value} value={value}>{t(language, label)}</option>)}
+            </NativeSelect>
+          </label>)}
+        </section>)}
       </> : <>
-        {(['workflow', 'access'] as const).map(key => {
-          const row = groups[key][0];
-          const current = row.values.find(([value]) => value === settings[row.key])!;
-          return <button {...identity.action('open-group', 'click', { group: key })} key={key} type="button"
-            className="local-agent__permission-row" onClick={() => setPage(key)}>
-            <span>{t(language, `agent.permission.${key}`)}</span>
-            <span>{t(language, row.label)} · {t(language, current[1])}<AchbitShellIcon name="chevronRight" /></span>
-          </button>;
-        })}
+        <div role="radiogroup" aria-label={t(language, 'agent.permission.preset')}>
+          {PERMISSION_PRESETS.map(option => <button {...identity.action('preset', 'click', { value: option.id })} key={option.id} type="button"
+            className="local-agent__permission-option" role="radio" aria-checked={preset?.id === option.id} disabled={busy}
+            onClick={() => void change(option.patches)}>
+            <span className="local-agent__permission-radio" aria-hidden="true" /><span>{t(language, option.label)}<small>{t(language, option.help)}</small></span>
+          </button>)}
+        </div>
+        <button {...identity.action('details', 'click')} type="button" className="local-agent__permission-row" onClick={() => setPage('details')}>
+          <span>{t(language, 'agent.permission.details')}</span><AchbitShellIcon name="chevronRight" />
+        </button>
         {grants.length > 0 && <button {...identity.action('grants', 'click')} type="button" className="local-agent__permission-row" onClick={() => setPage('grants')}>
           <span>{t(language, 'agent.permission.runGrants')}</span><span>{grants.length}<AchbitShellIcon name="chevronRight" /></span>
         </button>}
       </>}
-      {(taskError || settingsError) && <div className="local-agent__error" role="alert">{taskError || settingsError}</div>}
+      {(actionError || taskError || settingsError) && <div className="local-agent__error" role="alert">{actionError || taskError || settingsError}</div>}
     </div>, document.body)}
   </div>;
 }

@@ -681,6 +681,13 @@
     "agent.permission.menuTitle": "协作与权限",
     "agent.permission.workflow": "工作方式",
     "agent.permission.access": "工具访问",
+    "agent.permission.preset": "权限级别",
+    "agent.permission.fullAccess": "完全访问",
+    "agent.permission.custom": "自定义",
+    "agent.permission.details": "自定义权限",
+    "agent.permission.preset.askHelp": "需要额外权限时询问你。",
+    "agent.permission.preset.reviewHelp": "由审批模型审查操作，无法判断时询问你。",
+    "agent.permission.preset.fullHelp": "允许执行、网络读取及外部操作，并使用完整执行范围。计划、工程路线和命令规则保持不变。",
     "agent.permission.workspaceRead": "工作区读取",
     "agent.permission.workspaceReadAllowed": "绑定目录内允许",
     "agent.permission.workspaceMutation": "Plan",
@@ -1330,8 +1337,6 @@
     "agent.permission.delegate": "委托 Agent",
     "agent.permission.workspaceScope": "工作区与已授权资源",
     "agent.permission.fullScope": "完整执行环境",
-    "agent.permission.reviewHelp": "代为审查本次额外访问或命令执行权限；无法判断时询问。计划和问题仍由你确认。",
-    "agent.permission.fullHelp": "使用当前执行环境的完整用户权限。审批方式和命令规则仍然有效。",
     "agent.permission.file.read": "读取",
     "agent.permission.file.write": "写入",
     "agent.permission.file.run": "本轮文件权限",
@@ -1551,19 +1556,21 @@
     },
     "agent.permissions.networkRead": {
       "label": "读取公网",
-      "description": "公网搜索与网页读取的默认权限。",
+      "description": "公网搜索与网页读取的默认权限。替我批准会由审批模型审查本次访问，无法判断时询问。",
       "options": {
+        "ask": "询问",
+        "review": "替我批准",
         "allow": "允许",
-        "ask": "每次询问",
         "deny": "拒绝"
       }
     },
     "agent.permissions.external": {
       "label": "外部操作",
-      "description": "控制外部工具的默认权限；Shell 使用单独的权限设置。",
+      "description": "控制外部工具的默认权限。替我批准会由审批模型审查本次操作，无法判断时询问；Shell 使用单独的权限设置。",
       "options": {
+        "ask": "询问",
+        "review": "替我批准",
         "allow": "允许",
-        "ask": "每次询问",
         "deny": "拒绝"
       }
     },

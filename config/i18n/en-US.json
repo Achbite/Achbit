@@ -681,6 +681,13 @@
     "agent.permission.menuTitle": "Workflow & permissions",
     "agent.permission.workflow": "Workflow",
     "agent.permission.access": "Tool access",
+    "agent.permission.preset": "Permission level",
+    "agent.permission.fullAccess": "Full access",
+    "agent.permission.custom": "Custom",
+    "agent.permission.details": "Custom permissions",
+    "agent.permission.preset.askHelp": "Ask you when additional permission is needed.",
+    "agent.permission.preset.reviewHelp": "Let the approval model review operations and ask you when uncertain.",
+    "agent.permission.preset.fullHelp": "Allow execution, network reads and external actions with full execution scope. Plan settings, engineering decisions and command rules stay unchanged.",
     "agent.permission.workspaceRead": "Workspace read",
     "agent.permission.workspaceReadAllowed": "Allowed when bound",
     "agent.permission.workspaceMutation": "Plan",
@@ -1330,8 +1337,6 @@
     "agent.permission.delegate": "Delegate to Agent",
     "agent.permission.workspaceScope": "Workspace and grants",
     "agent.permission.fullScope": "Full environment",
-    "agent.permission.reviewHelp": "Review additional access or command execution for this call; ask when uncertain. Plans and questions remain yours to confirm.",
-    "agent.permission.fullHelp": "Use full user privileges in the selected environment. Approval mode and command rules still apply.",
     "agent.permission.file.read": "Read",
     "agent.permission.file.write": "Write",
     "agent.permission.file.run": "Files for this turn",
@@ -1551,19 +1556,21 @@
     },
     "agent.permissions.networkRead": {
       "label": "Public network read",
-      "description": "Default permission for web search and reading public pages.",
+      "description": "Default permission for web search and reading public pages. Review for me evaluates each access and asks when uncertain.",
       "options": {
+        "ask": "Ask",
+        "review": "Review for me",
         "allow": "Allow",
-        "ask": "Ask every time",
         "deny": "Deny"
       }
     },
     "agent.permissions.external": {
       "label": "External actions",
-      "description": "Default permissions for external tools. Shell has separate permission settings.",
+      "description": "Default permission for external tools. Review for me evaluates each operation and asks when uncertain. Shell has separate permission settings.",
       "options": {
+        "ask": "Ask",
+        "review": "Review for me",
         "allow": "Allow",
-        "ask": "Ask every time",
         "deny": "Deny"
       }
     },

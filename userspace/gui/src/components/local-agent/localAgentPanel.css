@@ -1946,11 +1946,13 @@
 .local-agent__permission-menu button:not(.ac-button):is(:hover, :focus-visible) { background: var(--ac-surface-hover); }
 .local-agent__permission-heading { display: flex; align-items: center; gap: 8px; padding: 7px 8px 12px; font-size: var(--ac-font-caption); }
 .local-agent__permission-heading button:last-child { margin-left: auto; }
-.local-agent__permission-row, .local-agent__permission-invariant { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 12px 10px; font-size: var(--ac-font-caption); text-align: left; line-height: 1.5; }
+.local-agent__permission-row, .local-agent__permission-invariant, .local-agent__permission-group { box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 12px 10px; font-size: var(--ac-font-caption); text-align: left; line-height: 1.5; }
 .local-agent__permission-row > span:last-child { display: flex; align-items: center; gap: 8px; text-align: right; }
 .local-agent__permission-row svg { flex: none; width: 13px; }
-.local-agent__permission-invariant { color: var(--ac-muted); border-bottom: 1px solid var(--ac-border); }
-.local-agent__permission-invariant strong { font-size: inherit; font-weight: var(--ac-weight-medium); }
+.local-agent__permission-row select { width: auto; min-width: 0; max-width: 62%; }
+.local-agent__permission-invariant, .local-agent__permission-group { color: var(--ac-muted); }
+.local-agent__permission-group { padding-top: 16px; }
+.local-agent__permission-invariant strong, .local-agent__permission-group strong { font-size: inherit; font-weight: var(--ac-weight-medium); }
 .local-agent__permission-option { display: flex; align-items: flex-start; gap: 11px; width: 100%; padding: 13px 12px; text-align: left; }
 .local-agent__permission-option[aria-checked=true] { background: var(--ac-surface-hover); }
 .local-agent__permission-option small { display: block; margin-top: 5px; color: var(--ac-muted); font-size: var(--ac-font-caption); line-height: 1.6; }

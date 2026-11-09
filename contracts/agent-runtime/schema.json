@@ -3725,10 +3725,10 @@
         },
         "agent.permissions.runtimeReadRoots": { "type": "array", "items": { "$ref": "#/$defs/Id" } },
         "agent.permissions.networkRead": {
-          "enum": ["ask", "allow", "deny"]
+          "enum": ["ask", "review", "allow", "deny"]
         },
         "agent.permissions.external": {
-          "enum": ["ask", "allow", "deny"]
+          "enum": ["ask", "review", "allow", "deny"]
         },
         "agent.permissions.commandRules": { "type": "string" },
         "agent.permissions.commandDenylist": {

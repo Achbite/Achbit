@@ -154,6 +154,7 @@ impl WorkspaceResolverPort for HostWorkspaceResolver {
 pub(crate) enum PermissionMode {
     Allow,
     Ask,
+    Review,
     Deny,
 }
 
@@ -2001,7 +2002,7 @@ impl LocalAgentKernel {
                 "source": "userSetting",
                 "authorityId": permission_setting_id(scope),
             }))),
-            PermissionMode::Ask => {
+            PermissionMode::Ask | PermissionMode::Review => {
                 if scope == PreparedEffectScope::Network {
                     for grant_scope in ["runNetwork", "sessionNetwork"] {
                         if let Some(authority) = self.journal.execution_authority(
@@ -3071,9 +3072,38 @@ struct PreparedEffect {
 }
 
 impl PreparedEffect {
+    fn review_policy(&self) -> (&'static str, &'static str) {
+        let shell_mode = match self.permissions.shell {
+            ShellApprovalMode::Ask => "ask",
+            ShellApprovalMode::Review => "review",
+            ShellApprovalMode::Allow => "allow",
+        };
+        if is_shell_tool(&self.operation) || self.is_host_process() {
+            ("shell", shell_mode)
+        } else if matches!(self.input, PreparedToolInput::Container { .. }) {
+            ("container", shell_mode)
+        } else if self.file_authority_required {
+            ("files", shell_mode)
+        } else {
+            let (subject, mode) = if self.scope == PreparedEffectScope::Network {
+                ("network", self.permissions.network)
+            } else {
+                ("external", self.permissions.external)
+            };
+            (
+                subject,
+                match mode {
+                    PermissionMode::Ask => "ask",
+                    PermissionMode::Review => "review",
+                    PermissionMode::Allow => "allow",
+                    PermissionMode::Deny => "deny",
+                },
+            )
+        }
+    }
+
     fn agent_can_review(&self) -> bool {
-        self.permissions.shell == ShellApprovalMode::Review
-            && self.command_rule().is_none_or(|rule| rule == "allow")
+        self.review_policy().1 == "review" && self.command_rule().is_none_or(|rule| rule == "allow")
     }
 
     fn is_host_process(&self) -> bool {
@@ -3648,10 +3678,11 @@ fn permission_mode(
     match value.as_str() {
         Some("allow") => Ok(PermissionMode::Allow),
         Some("ask") => Ok(PermissionMode::Ask),
+        Some("review") => Ok(PermissionMode::Review),
         Some("deny") => Ok(PermissionMode::Deny),
         _ => Err(LocalAgentKernelError::new(
             "agent_permission_setting_invalid",
-            format!("{key} 必须是 allow、ask 或 deny。"),
+            format!("{key} 必须是 ask、review、allow 或 deny。"),
         )),
     }
 }
@@ -3872,35 +3903,7 @@ fn approval_reply(
             })?;
         preview["revalidation"] = json!({"authorityId":authority.authority_id,"reason":reason});
     }
-    let shell_mode = match prepared.permissions.shell {
-        ShellApprovalMode::Ask => "ask",
-        ShellApprovalMode::Review => "review",
-        ShellApprovalMode::Allow => "allow",
-    };
-    let (subject, mode) = if is_shell_tool(&prepared.operation)
-        || matches!(prepared.input, PreparedToolInput::Container { .. })
-    {
-        (
-            if is_shell_tool(&prepared.operation) {
-                "shell"
-            } else {
-                "container"
-            },
-            json!(shell_mode),
-        )
-    } else if prepared.file_authority_required {
-        ("files", json!(shell_mode))
-    } else if prepared.scope == PreparedEffectScope::Network {
-        (
-            "network",
-            prepared.permissions.settings["agent.permissions.networkRead"].clone(),
-        )
-    } else {
-        (
-            "external",
-            prepared.permissions.settings["agent.permissions.external"].clone(),
-        )
-    };
+    let (subject, mode) = prepared.review_policy();
     preview["reviewPolicy"] = json!({"subject":subject,"mode":mode,
         "commandRule":prepared.command_rule(),"constraints":prepared.permissions.constraints,
         "reviewGrant":"thisCallOnly"});
@@ -4304,6 +4307,48 @@ mod attempt_control_tests {
             .is_empty());
         kernel.shutdown_plugins().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn network_review_uses_its_own_policy_without_executing_the_request() {
+        struct Workspace;
+        impl WorkspaceResolverPort for Workspace {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                Ok(ResolvedWorkspace {
+                    root: std::env::current_dir().unwrap().to_string_lossy().into(),
+                    access: WorkspaceAccess::Project,
+                })
+            }
+        }
+        let (kernel, request, _) = kernel_with_request(
+            Arc::new(Workspace),
+            "web.fetch",
+            json!({"url":"https://example.com/"}),
+        );
+        let mut effect = kernel.prepare_tool(&request).unwrap();
+        for mode in ["ask", "review", "allow", "deny"] {
+            effect.permissions = LocalAgentPermissionPolicy::from_settings(&json!({
+                "agent.permissions.networkRead":mode,
+                "agent.permissions.shell":if mode == "review" { "ask" } else { "review" },
+            }))
+            .unwrap();
+            assert_eq!(effect.agent_can_review(), mode == "review");
+            match (mode, kernel.admit(&request, &effect).unwrap()) {
+                ("ask" | "review", Admission::ApprovalRequired) => {
+                    let reply = approval_reply(&kernel, &request, &effect).unwrap();
+                    assert_eq!(reply["preview"]["reviewPolicy"]["subject"], "network");
+                    assert_eq!(reply["preview"]["reviewPolicy"]["mode"], mode);
+                    assert_eq!(
+                        reply["preview"]["approvalReviewer"],
+                        if mode == "review" { "agent" } else { "user" }
+                    );
+                }
+                ("allow", Admission::Allowed(_)) | ("deny", Admission::Denied { .. }) => {}
+                _ => panic!("unexpected network admission for {mode}"),
+            }
+        }
+        assert!(kernel.records.read(&request.call_id).unwrap().is_none());
+        std::fs::remove_dir_all(&kernel.output_root).ok();
     }
 
     #[test]
@@ -5967,7 +6012,25 @@ mod attempt_control_tests {
         let computer = kernel.prepare_tool(&request).unwrap();
         let mut delegated_computer = computer.clone();
         delegated_computer.permissions.shell = ShellApprovalMode::Review;
+        assert!(
+            !delegated_computer.agent_can_review(),
+            "Shell review cannot approve external operations"
+        );
+        delegated_computer.permissions.external = PermissionMode::Review;
         assert!(delegated_computer.agent_can_review());
+        delegated_computer.permissions.shell = ShellApprovalMode::Ask;
+        assert!(
+            delegated_computer.agent_can_review(),
+            "External review is independent of Shell"
+        );
+        assert!(matches!(
+            kernel.admit(&request, &delegated_computer).unwrap(),
+            Admission::ApprovalRequired
+        ));
+        let review = approval_reply(&kernel, &request, &delegated_computer).unwrap();
+        assert_eq!(review["preview"]["reviewPolicy"]["subject"], "external");
+        assert_eq!(review["preview"]["reviewPolicy"]["mode"], "review");
+        assert_eq!(review["preview"]["approvalReviewer"], "agent");
         assert!(!computer.agent_can_review());
         assert!(matches!(
             kernel.admit(&request, &computer).unwrap(),

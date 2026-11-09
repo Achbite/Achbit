@@ -198,6 +198,7 @@ impl KernelPermissionModel {
                                     | "agent.permissions.commandRules"
                                     | "agent.permissions.commandDenylist"
                                     | "agent.permissions.networkRead"
+                                    | "agent.permissions.external"
                             )
                         })
                     }) {
@@ -215,8 +216,18 @@ impl KernelPermissionModel {
                 }
                 Some("approval.requested") => {
                     if payload["preview"]["approvalReviewer"] == "agent" {
+                        let policy = &payload["preview"]["reviewPolicy"];
+                        let key = match policy["subject"].as_str() {
+                            Some("shell" | "container" | "files") => {
+                                Some("agent.permissions.shell")
+                            }
+                            Some("network") => Some("agent.permissions.networkRead"),
+                            Some("external") => Some("agent.permissions.external"),
+                            _ => None,
+                        };
                         let reviews = if session.attached
-                            && session.effective.settings["agent.permissions.shell"] == "review"
+                            && policy["mode"] == "review"
+                            && key.is_some_and(|key| session.effective.settings[key] == "review")
                         {
                             &mut session.pending_reviews
                         } else {
@@ -234,10 +245,8 @@ impl KernelPermissionModel {
                 Some("approval.resolved") => {
                     if payload["source"] == "agent" {
                         let id = payload["approvalId"].as_str().ok_or_else(invalid_model)?;
-                        session.pending_reviews.remove(id);
-                        if session.cancelled_reviews.contains(id)
-                            || session.effective.settings["agent.permissions.shell"] != "review"
-                        {
+                        let was_pending = session.pending_reviews.remove(id);
+                        if session.cancelled_reviews.contains(id) || !was_pending {
                             // Retain the review as a fact; it cannot mint a grant after
                             // the producer withdrew the authority that requested it.
                             session.revoked.insert(
@@ -575,8 +584,8 @@ fn intersect(settings: &mut Value, ceiling: &Value) -> Result<(), LocalAgentStor
         ("engineeringDecisions", &["ask", "delegate"]),
         ("shell", &["ask", "review", "allow"]),
         ("shellAccess", &["workspace", "full"]),
-        ("networkRead", &["deny", "ask", "allow"]),
-        ("external", &["deny", "ask", "allow"]),
+        ("networkRead", &["deny", "ask", "review", "allow"]),
+        ("external", &["deny", "ask", "review", "allow"]),
     ] {
         let key = format!("agent.permissions.{key}");
         let rank = |value: &Value| {
@@ -684,7 +693,7 @@ mod tests {
         let environment = json!({"workspaceId":"workspace:test","shell":"bash"});
         let files = json!({"read":["/references"],"write":[]});
         let preview = json!({"approvalReviewer":"agent","authorizationScopes":["runFiles","sessionFiles"],
-            "reviewPolicy":{"mode":"review","reviewGrant":"runFiles","commandRule":null},
+            "reviewPolicy":{"subject":"files","mode":"review","reviewGrant":"runFiles","commandRule":null},
             "operation":{"toolName":"fs.read"},"fileAccess":files,
             "authorizationContext":{"fileEnvironment":environment,"fileAccess":files}});
         let event = |kind: &str, payload: Value| json!({"type":kind,"sessionId":"s","runId":"r","callId":"c","payload":payload});
@@ -745,6 +754,48 @@ mod tests {
     }
 
     #[test]
+    fn independent_access_reviews_respect_parent_limits_and_policy_revocation() {
+        for (key, subject) in [
+            ("agent.permissions.networkRead", "network"),
+            ("agent.permissions.external", "external"),
+        ] {
+            let mut model = KernelPermissionModel::default();
+            let mut permissions = json!({});
+            permissions[key] = json!("review");
+            create(&mut model, "parent", None, permissions.clone());
+            create(&mut model, "child", Some("parent"), permissions);
+            assert_eq!(
+                model.effective("child").unwrap().settings["agent.permissions.shell"],
+                "ask"
+            );
+            let request = |id: &str| {
+                json!({"type":"approval.requested","sessionId":"child","payload":{
+                "approvalId":id,"preview":{"approvalReviewer":"agent","reviewPolicy":{"subject":subject,"mode":"review"}}}})
+            };
+            let resolve = |id: &str| {
+                json!({"type":"approval.resolved","sessionId":"child","payload":{
+                "approvalId":id,"authorityId":id,"source":"agent","decision":"allow"}})
+            };
+            model.apply(&request("current")).unwrap();
+            model.apply(&resolve("current")).unwrap();
+            assert!(!model.revoked("child", "current"));
+            model.apply(&request("late")).unwrap();
+            let mut patches = json!({});
+            patches[key] = json!("ask");
+            model.apply(&json!({"type":"session.permissions.updated","sessionId":"parent","payload":{"patches":patches}})).unwrap();
+            assert_eq!(model.effective("child").unwrap().settings[key], "ask");
+            assert!(model.revoked("child", "current"));
+            patches[key] = json!("review");
+            model.apply(&json!({"type":"session.permissions.updated","sessionId":"parent","payload":{"patches":patches}})).unwrap();
+            model.apply(&resolve("late")).unwrap();
+            assert!(model.revoked("child", "late"));
+            model.apply(&request("new")).unwrap();
+            model.apply(&resolve("new")).unwrap();
+            assert!(!model.revoked("child", "new"));
+        }
+    }
+
+    #[test]
     fn parent_updates_invalidate_pending_reviews_before_the_results_arrive() {
         let mut model = KernelPermissionModel::default();
         let permissions = json!({"agent.permissions.shell":"review"});
@@ -753,7 +804,7 @@ mod tests {
         model
             .apply(
                 &json!({"type":"approval.requested", "sessionId":"child", "payload":{
-            "approvalId":"review:pending", "preview":{"approvalReviewer":"agent"}}}),
+            "approvalId":"review:pending", "preview":{"approvalReviewer":"agent","reviewPolicy":{"subject":"shell","mode":"review"}}}}),
             )
             .unwrap();
         for mode in ["ask", "review"] {
@@ -770,7 +821,7 @@ mod tests {
         model
             .apply(
                 &json!({"type":"approval.requested", "sessionId":"child", "payload":{
-            "approvalId":"review:new", "preview":{"approvalReviewer":"agent"}}}),
+            "approvalId":"review:new", "preview":{"approvalReviewer":"agent","reviewPolicy":{"subject":"shell","mode":"review"}}}}),
             )
             .unwrap();
         model.apply(&json!({"type":"approval.resolved", "sessionId":"child", "payload":{
@@ -820,7 +871,7 @@ mod tests {
             model.apply(&plan).unwrap_err().code,
             "plan_delegation_missing"
         );
-        model.apply(&json!({"type":"approval.requested","sessionId":"root","payload":{"approvalId":"shell:review","preview":{"approvalReviewer":"agent"}}})).unwrap();
+        model.apply(&json!({"type":"approval.requested","sessionId":"root","payload":{"approvalId":"shell:review","preview":{"approvalReviewer":"agent","reviewPolicy":{"subject":"shell","mode":"review"}}}})).unwrap();
         model.apply(&json!({"type":"approval.resolved","sessionId":"root","payload":{"approvalId":"shell:review","authorityId":"grant:shell","source":"agent","decision":"allow"}})).unwrap();
         assert_eq!(
             model.apply(&plan).unwrap_err().code,

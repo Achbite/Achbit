@@ -373,7 +373,7 @@ pub(crate) fn inherit_permissions(parent: &Value, patch: Option<&Value>) -> Resu
                 "agent.permissions.shell" => &["ask", "review", "allow"],
                 "agent.permissions.shellAccess" => &["workspace", "full"],
                 "agent.permissions.networkRead" | "agent.permissions.external" => {
-                    &["deny", "ask", "allow"]
+                    &["deny", "ask", "review", "allow"]
                 }
                 _ => &[],
             };
