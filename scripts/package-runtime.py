@@ -171,6 +171,8 @@ def assemble(args):
         info = {'CFBundleDevelopmentRegion': 'en', 'CFBundleDisplayName': 'Achbit', 'CFBundleExecutable': 'Achbit', 'CFBundleIdentifier': 'com.achbite.achbit.gui', 'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': 'Achbit', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version, 'LSMinimumSystemVersion': '12.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication'}
         if debug:
             info.update(CFBundleDisplayName='Achbit Debug', CFBundleName='Achbit Debug', CFBundleIdentifier='com.achbite.achbit.debug')
+        info['CFBundleLocalizations'] = ['zh-Hans', 'en']
+        info['CFBundleDevelopmentRegion'] = 'zh-Hans'
         info['CFBundleIconFile'] = 'icon.icns'
         shutil.copy2(root / 'shells/achbit-gui/src-tauri/icons/icon.icns', resources / 'icon.icns')
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))

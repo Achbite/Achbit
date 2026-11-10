@@ -259,6 +259,9 @@ const AchbitGuiApp: React.FC = () => {
     setActiveUiLanguage(language);
     document.documentElement.lang = language;
     window.localStorage.setItem('achbit.ui.language', language);
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (invoke) void invoke('achbit_set_ui_language', { language })
+      .catch(error => console.error('Native UI language update failed:', error));
   }, [language]);
 
   useEffect(() => {

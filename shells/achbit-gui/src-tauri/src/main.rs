@@ -10,10 +10,12 @@ mod completion_sound;
 mod native_browser;
 #[path = "../../../shared/native_path_dialog/mod.rs"]
 mod native_path_dialog;
+mod native_ui;
 mod notifications;
 mod product_update;
 mod ssh_auth;
 mod ssh_gui;
+mod window_state;
 
 use achbit_host_connection::loopback_http::{
     connect_loopback, parse_port, request_loopback_json_until,
@@ -330,6 +332,7 @@ fn main() {
         open_file::achbit_open_file,
         file_reader::achbit_read_local_file,
         achbit_save_image,
+        native_ui::achbit_set_ui_language,
         open_file::achbit_locate_path,
         product_update::achbit_update_status,
         product_update::achbit_update_check,
@@ -544,6 +547,13 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            WindowEvent::Resized(_) if window.label() == "main" => {
+                if let Some(state) = window.try_state::<window_state::WindowState>() {
+                    if let Err(error) = state.observe(window) {
+                        eprintln!("[window-state] {error}");
+                    }
+                }
+            }
             WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
                 if window.label() == "ssh-auth" {
                     window.state::<ssh_auth::AuthUi>().close_prompt();
@@ -551,6 +561,9 @@ fn main() {
                 }
                 if window.label() != "main" {
                     return;
+                }
+                if matches!(event, WindowEvent::CloseRequested { .. }) {
+                    window_state::save_main(window.app_handle());
                 }
                 window.state::<ssh_auth::AuthUi>().cancel();
                 if let Some(browser) = window.try_state::<native_browser::NativeBrowser>() {
@@ -566,6 +579,9 @@ fn main() {
 
     app.run(|app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                window_state::save_main(app_handle);
+            }
             if let Some(auth) = app_handle.try_state::<ssh_auth::AuthUi>() {
                 auth.cancel();
             }
@@ -953,34 +969,18 @@ fn initialize_main_window(
     target: &LaunchTarget,
     host_tokens: &HostConnectionTokens,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    create_main_window(app, target, host_tokens)?;
-    let menu = tauri::menu::Menu::default(app.handle())?;
-    let reload = tauri::menu::MenuItem::with_id(
-        app,
-        "reload-interface",
-        "重新加载界面",
-        true,
-        Some("CmdOrCtrl+Shift+R"),
+    let state = window_state::WindowState::load(
+        runtime_locations()
+            .user
+            .data_dir
+            .join("gui-window-state.json"),
     )?;
-    let mut added = false;
-    for item in menu.items()? {
-        if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
-            if submenu.text()? == "View" {
-                submenu.insert(&reload, 0)?;
-                added = true;
-                break;
-            }
-        }
-    }
-    if !added {
-        menu.append(&tauri::menu::Submenu::with_items(
-            app,
-            "视图",
-            true,
-            &[&reload],
-        )?)?;
-    }
-    app.set_menu(menu)?;
+    app.manage(state);
+    create_main_window(app, target, host_tokens)?;
+    native_ui::install_menu(
+        app.handle(),
+        &native_ui::configured_language(&runtime_locations().user.config_dir)?,
+    )?;
     app.on_menu_event(|app, event| {
         if event.id().as_ref() == "reload-interface" {
             let _ = tauri::Emitter::emit_to(app, "main", "achbit:reload-interface", ());
@@ -994,6 +994,7 @@ fn create_main_window(
     target: &LaunchTarget,
     host_tokens: &HostConnectionTokens,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let geometry = app.state::<window_state::WindowState>().geometry();
     let boot_url = format!("{APP_ASSET_SCHEME}://localhost/index.html");
     let initialization_script = host_bootstrap_script(target, host_tokens, false);
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(boot_url.parse()?))
@@ -1005,10 +1006,11 @@ fn create_main_window(
         } else {
             "Achbit"
         })
-        .inner_size(1500.0, 920.0)
+        .inner_size(geometry.width, geometry.height)
         .min_inner_size(1120.0, 720.0)
         .resizable(true)
-        .fullscreen(false);
+        .maximized(geometry.maximized)
+        .fullscreen(geometry.fullscreen);
 
     #[cfg(feature = "debug-control")]
     let builder = builder
