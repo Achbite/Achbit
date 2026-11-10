@@ -1,3 +1,6 @@
+import { showContentDialog } from '../shared/interactionFocus';
+import { ContentImageSave } from './ContentImageSave';
+import { elementImage } from './contentImage';
 import React, { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { normalizeUiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
@@ -77,7 +80,7 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
   }, []);
   useEffect(() => {
     const element = dialog.current!;
-    if (expanded && !element.open) element.showModal();
+    if (expanded && !element.open) showContentDialog(element, dialogBody.current);
     else if (!expanded && element.open) element.close();
     const body = dialogBody.current;
     if (!expanded || !body) return;
@@ -99,6 +102,8 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
       <span className="conversation-table-hint" style={{ visibility: overflowing ? 'visible' : 'hidden' }} aria-hidden={!overflowing}>
         {chinese ? '横向滚动查看' : 'Scroll horizontally'}
       </span>
+      <ContentImageSave {...(target ? identity.action('save', 'click') : {})}
+        createImage={() => elementImage(viewport.current?.querySelector('table') ?? null, 'table')} />
       <button {...(target ? identity.action('expand', 'click') : {})} type="button" aria-expanded={expanded} aria-haspopup="dialog" className="conversation-table-expand" onClick={() => setExpanded(true)}>
         <AchbitShellIcon name="expand" />
         {chinese ? '放大表格' : 'Expand table'}
@@ -116,6 +121,8 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
       {expanded && <>
         <header className="conversation-table-dialog-header">
           <div><strong id={titleId}>{chinese ? '表格' : 'Table'}</strong><small>{chinese ? `${table.rows} 行 · ${table.columns} 列` : `${table.rows} rows · ${table.columns} columns`}</small></div>
+          <ContentImageSave {...(target ? identity.action('save-expanded', 'click') : {})}
+            createImage={() => elementImage(viewport.current?.querySelector('table') ?? null, 'table')} />
           {zoom !== 1 && <button type="button" className="conversation-table-zoom-reset" title={chinese ? '恢复 100% 缩放' : 'Reset zoom to 100%'}
             onClick={() => { zoomAnchor.current = null; setZoom(1); }}>{Math.round(zoom * 100)}%</button>}
           <button {...(target ? identity.action('close', 'click') : {})} type="button" className="conversation-table-close" aria-label={chinese ? '关闭表格' : 'Close table'} onClick={() => dialog.current?.close()}><AchbitShellIcon name="close" /></button>

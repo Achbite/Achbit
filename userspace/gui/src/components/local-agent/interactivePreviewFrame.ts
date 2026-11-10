@@ -1,11 +1,20 @@
+import imageRenderer from 'html-to-image/dist/html-to-image.js?raw';
+import { renderElementPng, rasterizeSvg } from './contentImage';
+
 /** Display-only reference: archived bytes and identity remain owned by Kernel/Session. */
 export function previewArtifactId(source: string): string | null {
   return /^artifact:\/\/([^\s/?#]+)$/u.exec(source.trim())?.[1] ?? null;
 }
 
 /** Runs inside the preview frame. No Host APIs, settings or model messages cross this bridge. */
-function installPreviewBridge() {
+function installPreviewBridge(exportElement: typeof renderElementPng, toSvg: typeof import('html-to-image').toSvg, rasterize: typeof rasterizeSvg) {
   const send = (message: Record<string, unknown>) => parent.postMessage({ type: 'achbit:preview', ...message }, '*');
+  addEventListener('message', event => {
+    if (event.source !== parent || event.data?.type !== 'achbit:preview-export' || typeof event.data.requestId !== 'string') return;
+    const requestId = event.data.requestId;
+    void exportElement(document.body, toSvg, rasterize).then(blob => send({ kind: 'export', requestId, blob }))
+      .catch(error => send({ kind: 'export', requestId, error: error instanceof Error ? error.message : String(error) }));
+  });
   let scheduled = 0, previousHeight = 0;
   const measure = () => {
     scheduled = 0;
@@ -32,7 +41,7 @@ function installPreviewBridge() {
 export function interactivePreviewDocument(content: string): string {
   const document = new DOMParser().parseFromString(content, 'text/html');
   const bridge = document.createElement('script');
-  bridge.textContent = `(${installPreviewBridge.toString()})();`;
+  bridge.textContent = imageRenderer + ';\n(' + installPreviewBridge.toString() + ')(' + renderElementPng.toString() + ',htmlToImage.toSvg,' + rasterizeSvg.toString() + ');';
   document.head.prepend(bridge);
   return '<!doctype html>\n' + document.documentElement.outerHTML;
 }

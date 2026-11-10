@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 
+from version import build_version
 from macos_signing import require_same_identity, sign_app, signing_identity
 
 APP_NAME = 'Achbit Computer Use.app'
@@ -58,7 +59,7 @@ def assemble(root, native, destination, identity):
     binaries.mkdir(parents=True)
     resources.mkdir()
     shutil.copy2(native / 'Achbit-Computer-Use', binaries / 'Achbit-Computer-Use')
-    version = os.environ.get('ACHBIT_BUILD_VERSION') or json.loads((root / 'package.json').read_text())['version']
+    version = build_version(root)
     info = dict(CFBundleIdentifier='com.achbite.achbit.computer-use', CFBundleExecutable='Achbit-Computer-Use',
         CFBundleName='Achbit Computer Use', CFBundleDisplayName='Achbit Computer Use', CFBundlePackageType='APPL',
         CFBundleInfoDictionaryVersion='6.0', CFBundleVersion=version, CFBundleShortVersionString=version,

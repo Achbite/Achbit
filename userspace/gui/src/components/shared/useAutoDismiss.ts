@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
+import { UI_EVENT_TTL_MS } from '../../state/uiEvents';
 
-/** For local action feedback only. Session failures are never timed away. */
-export function useAutoDismiss(message: unknown, dismiss: () => void, delay = 6000) {
+/** For transient success feedback only. Errors and actionable state retain their owner. */
+export function useAutoDismiss(message: unknown, dismiss: () => void, delay = UI_EVENT_TTL_MS) {
   const latest = useRef(dismiss);
   latest.current = dismiss;
   useEffect(() => {

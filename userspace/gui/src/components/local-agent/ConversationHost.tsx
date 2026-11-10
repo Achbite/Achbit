@@ -1,3 +1,4 @@
+import type { ContentImage } from './contentImage';
 import * as resources from '../../services/conversationResources';
 import { useEffect, useState } from 'react';
 import { readConversation, readConversationImage, readFileChange, resolveConversationResource, readConversationArtifact } from '../../services/localAgentApi';
@@ -9,7 +10,7 @@ import { isRemoteHost, getKernelApiBase, getHostConnectionHeaders } from '../../
 export interface ConversationHost {
   resources: typeof resources;
   copyText(text: string): Promise<void>;
-  saveDiagramSvg(image: { svg: string; url: string }): Promise<void>;
+  saveImage(image: ContentImage): Promise<void>;
   openExternalLink(url: string): Promise<void>;
   readLocalFile?(path: string): Promise<Blob>;
   readArtifact: typeof readConversationArtifact;
@@ -25,12 +26,15 @@ const desktopInvoke = typeof window === 'undefined' ? undefined : window.__TAURI
 const defaultHost: ConversationHost = {
   resources,
   copyText: async (text) => navigator.clipboard.writeText(text),
-  saveDiagramSvg: async ({ svg, url }) => {
-    if (desktopInvoke) return desktopInvoke<void>('achbit_save_diagram_svg', { svg });
+  saveImage: async ({ blob, filename }) => {
+    if (desktopInvoke) return desktopInvoke<void>('achbit_save_image', {
+      filename, data: Array.from(new Uint8Array(await blob.arrayBuffer())),
+    });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url; link.download = 'mermaid.svg';
+    link.href = url; link.download = filename;
     document.body.append(link);
-    try { link.click(); } finally { link.remove(); }
+    try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0); }
   },
   openExternalLink: openExternalUrl,
   readLocalFile: async (path) => {

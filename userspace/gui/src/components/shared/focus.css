@@ -12,7 +12,7 @@
   accent-color: var(--ac-foreground);
 }
 
-:root[data-product='achbit-gui'] body :is(button, [role='button'], [role='tab'], summary):focus-visible {
+:root[data-product='achbit-gui'] body :is(button, [role='button'], [role='tab'], summary):not(.ac-button):focus-visible {
   box-shadow: none;
   background-color: var(--ac-surface-hover);
   color: var(--ac-foreground);

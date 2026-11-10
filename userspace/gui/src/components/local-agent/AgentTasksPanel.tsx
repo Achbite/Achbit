@@ -14,6 +14,7 @@ import { ArtifactLinks } from './ArtifactLinks';
 import { requestWorkspacePreview, type AgentReaderTarget } from './readerState';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { projectionItems, assistantDraftItems } from './conversationItems';
 import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
 import PlanCard from './PlanCard';
@@ -93,14 +94,15 @@ export function AgentPageInformation({ name, sessionId, projection, language, on
   name: string; sessionId: string; projection: SessionProjection | null; language: UiLanguage; onBack?(): void; status?: string;
 }) {
   const host = useConversationHost();
-  const [copied, setCopied] = useState<string | null>(null);
+  const [copied, setCopied] = useState<{ key: string; sessionId: string } | null>(null);
+  useAutoDismiss(copied, () => setCopied(null), 1500);
   const [copyError, setCopyError] = useState<string | null>(null);
   const model = projection?.agentContext?.model;
   const effort = projection?.run?.reasoningEffort ?? model?.reasoningEffort;
   const thinking = projection?.run?.thinking ?? model?.thinking;
   const modelDetails = model ? `${t(language, 'agent.page.profile')}: ${model.profileId}\n${t(language, 'agent.page.contextWindow')}: ${model.parameters.contextWindowTokens.toLocaleString(language)}\n${t(language, 'agent.page.maxOutput')}: ${model.parameters.maxOutputTokens.toLocaleString(language)}` : undefined;
   const copy = async (key: string, text: string) => {
-    try { await host.copyText(text); setCopied(key); setCopyError(null); }
+    try { await host.copyText(text); setCopied({ key, sessionId }); setCopyError(null); }
     catch (error) { setCopyError(error instanceof Error ? error.message : String(error)); }
   };
   const modelName = model?.model ?? t(language, projection ? 'agent.page.unavailable' : 'agent.team.loading');
@@ -110,7 +112,7 @@ export function AgentPageInformation({ name, sessionId, projection, language, on
       <AchbitShellIcon name="subagents" />
       <div className="agent-tasks__identity">
         {([['name', name], ['id', sessionId]] as const).map(([key, value]) => <button key={key} type="button" className={`agent-tasks__identity-${key}`}
-          onClick={() => void copy(key, value)} aria-label={t(language, copied === key ? 'agent.message.copied' : `agent.page.copy${key === 'name' ? 'Name' : 'Id'}`)}
+          onClick={() => void copy(key, value)} aria-label={t(language, copied?.sessionId === sessionId && copied.key === key ? 'agent.message.copied' : `agent.page.copy${key === 'name' ? 'Name' : 'Id'}`)}
           title={`${t(language, `agent.page.${key}`)}: ${value}${status ? ` · ${status}` : ''}`}><span>{value}</span></button>)}
       </div>
       <div className="agent-tasks__model" title={modelDetails} aria-label={t(language, 'agent.page.model')}>

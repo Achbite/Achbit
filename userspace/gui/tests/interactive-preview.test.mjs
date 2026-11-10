@@ -98,9 +98,14 @@ test('preview actions distinguish repeated inline blocks and the Reader of the s
     createElement(ArtifactInteractivePreview, { sessionId: scope.sessionId, artifact })));
   const actions = [...html.matchAll(/<button\b[^>]*data-ui-action="conversation.preview.([^"]+)"[^>]*>/g)]
     .map(([tag, action]) => ({ action, target: JSON.parse(/data-ui-target="([^"]+)"/.exec(tag)[1].replaceAll('&quot;', '"')) }));
-  assert.equal(actions.length, 8);
-  assert.equal(new Set(actions.map(item => JSON.stringify(item))).size, 8);
-  assert.equal(actions.filter(item => item.target.location === 'inline').length, 6);
-  assert.equal(actions.filter(item => item.target.location === 'reader').length, 2);
+  const saveActions = actions.filter(item => item.action === 'save');
+  assert.equal(saveActions.length, 3);
+  assert.equal(new Set(saveActions.map(item => JSON.stringify(item))).size, 3);
+  assert.ok(saveActions.every(item => item.target.artifactId === artifact.artifactId && item.target.sessionId === scope.sessionId));
+  const originalActions = actions.filter(item => item.action !== 'save');
+  assert.equal(originalActions.length, 8);
+  assert.equal(new Set(originalActions.map(item => JSON.stringify(item))).size, 8);
+  assert.equal(originalActions.filter(item => item.target.location === 'inline').length, 6);
+  assert.equal(originalActions.filter(item => item.target.location === 'reader').length, 2);
   assert.ok(actions.every(item => item.target.artifactId === artifact.artifactId && item.target.sessionId === scope.sessionId));
 });

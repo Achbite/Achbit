@@ -1,0 +1,11 @@
+.content-image-action { display: inline-flex; align-items: center; position: relative; }
+.content-image-error { position: absolute; z-index: 4; top: 100%; right: 0; width: max-content; max-width: 320px; padding: 8px 10px; white-space: normal; color: var(--ac-danger); background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: 6px; font: var(--ac-font-caption)/1.5 var(--ac-font-ui); }
+.conversation-code header > .content-image-action { margin-left: auto; }
+.conversation-code header > .content-image-action + .conversation-copy-button { margin-left: 0; }
+.conversation-table-toolbar > .content-image-action { margin-left: auto; }
+.conversation-table-toolbar > .content-image-action + .conversation-table-expand { margin-left: 0; }
+.conversation-image-review { position: relative; }
+.conversation-image-review > .content-image-action { position: absolute; top: 4px; right: 4px; background: var(--ac-surface); border-radius: var(--ac-radius-sm, 6px); }
+.conversation-math { position: relative; }
+.conversation-math > .content-image-action { display: flex; justify-content: flex-end; }
+.conversation-math__content { overflow-x: auto; }

@@ -885,6 +885,16 @@
 .local-agent__continuity-details > p { margin: 4px 0; white-space: pre-wrap; }
 .local-agent__continuity-details summary { cursor: pointer; }
 
+/* Notification-type UI: published once, scoped to its Session and expired by the store. */
+.local-agent__ui-events { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; }
+.local-agent__ui-event { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px;
+  color: var(--ac-muted); font-size: var(--ac-font-caption); }
+.local-agent__ui-event > svg { flex: none; }
+.local-agent__ui-event > span { min-width: 0; overflow-wrap: anywhere; }
+.local-agent__ui-event--success > svg { color: var(--ac-success); }
+.local-agent__ui-event--warning > svg { color: var(--ac-warning); }
+.local-agent__ui-event > button { flex: none; margin-left: auto; }
+
 .local-agent__plan-card {
   width: 100%;
   margin: 18px 0 24px;

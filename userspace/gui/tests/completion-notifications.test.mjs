@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import { loadGuiModule } from './gui-projection-contract.mjs';
 
 const settled = (sessionId, eventSequence, outcome = 'completed', runId = 'run-1') => ({
@@ -82,4 +84,40 @@ test('background conversation changes refresh immediately without visibility tim
   await Promise.resolve(); assert.equal(reads, 2, 'idle produces no new read');
   assert.equal(timers.size, 0); assert.equal(listeners.size, 0);
   stop(); assert.equal(signal.aborted, true);
+});
+
+test('the completion reminder names and opens the exact task, retaining bridge failures', async () => {
+  const html = await readFile(new URL('../public/completion.html', import.meta.url), 'utf8');
+  assert.match(html, /<span id="id"><\/span>/, 'the card reserves a place for the task identity');
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const sessionId = 'session:0123456789abcdef0123456789abcdef';
+  const body = '长标题 <script>literal content</script>';
+  const nodes = Object.fromEntries(['title', 'body', 'id', 'open', 'dismiss', 'error'].map(id => [id, {
+    textContent: '', title: '', hidden: false, setAttribute(name, value) { this[name] = value; },
+  }]));
+  const calls = [], listeners = {};
+  const context = { URLSearchParams, location: { search: '?' + new URLSearchParams({ session: sessionId,
+    title: '任务已完成', body, open: '查看会话', dismiss: '关闭提醒' }) },
+    document: { getElementById: id => nodes[id], addEventListener: (name, callback) => { listeners[name] = callback; } },
+    window: { __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); } } } },
+  };
+  runInNewContext(script, context);
+  assert.equal(nodes.title.textContent, '任务已完成');
+  assert.equal(nodes.body.textContent, body, 'task titles are text, not HTML');
+  assert.equal(nodes.body.title, body);
+  assert.equal(nodes.id.textContent, sessionId);
+  assert.equal(nodes.id.title, sessionId, 'the full identity stays accessible when visually truncated');
+  await nodes.open.onclick();
+  assert.equal(calls[0].command, 'achbit_open_completion');
+  assert.equal(calls[0].args.sessionId, sessionId);
+  await nodes.dismiss.onclick();
+  assert.equal(calls[1].command, 'achbit_dismiss_completion');
+  listeners.keydown({ key: 'Escape' });
+  assert.equal(calls[2].command, 'achbit_dismiss_completion');
+  context.window.__TAURI__.core.invoke = async () => { throw new Error('original_bridge_failure'); };
+  await nodes.open.onclick();
+  assert.match(nodes.error.textContent, /original_bridge_failure/);
+  context.location.search = '';
+  runInNewContext(script, { ...context });
+  assert.equal(nodes.id.hidden, true, 'a missing identity is not fabricated');
 });

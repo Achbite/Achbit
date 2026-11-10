@@ -286,3 +286,17 @@ test('manual approval focuses only an idle body in the document that owns keyboa
     if (scenario.expectedCalls) assert.deepEqual(focusCalls, [{ preventScroll: true }]);
   }
 });
+
+test('content viewers focus their scrollable content after opening rather than the first toolbar action', async t => {
+  const { showContentDialog } = await loadGuiModule(t, '/src/components/shared/interactionFocus.ts');
+  const { document, element } = documentFixture(t);
+  const save = element('button'), content = element('div');
+  let opened = false;
+  const dialog = { showModal() { opened = true; save.focus(); } };
+  showContentDialog(dialog, content);
+  assert.equal(opened, true);
+  assert.equal(document.activeElement, content);
+  assert.notEqual(document.activeElement, save);
+  save.focus();
+  assert.equal(document.activeElement, save, 'toolbar actions remain keyboard reachable');
+});

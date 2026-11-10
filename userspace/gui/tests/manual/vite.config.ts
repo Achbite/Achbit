@@ -13,6 +13,7 @@ export default defineConfig({
       contextSettings: fileURLToPath(new URL('./context-settings.html', import.meta.url)),
       composer: fileURLToPath(new URL('./composer.html', import.meta.url)),
       permissions: fileURLToPath(new URL('./permissions.html', import.meta.url)),
+      contentImageExport: fileURLToPath(new URL('./content-image-export.html', import.meta.url)),
       imageReview: fileURLToPath(new URL('./image-review.html', import.meta.url)),
       followModel: fileURLToPath(new URL('./follow-model.html', import.meta.url)),
       usageWidget: fileURLToPath(new URL('./usage-widget.html', import.meta.url)),

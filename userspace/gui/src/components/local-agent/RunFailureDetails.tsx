@@ -81,7 +81,6 @@ export function RunFailureDetails({ projection, language, onError }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const profiles = useLocalAgentStore(state => state.profiles);
   const run = projection.run;
   const snapshot = run && ['failed', 'cancelled', 'indeterminate', 'releaseFailed'].includes(run.status) ? projection.failureSnapshot : undefined;
   const error = projection.terminalError ?? snapshot?.error;
@@ -89,19 +88,17 @@ export function RunFailureDetails({ projection, language, onError }: {
   const handoff = projection.contextHandoff;
   const reading = handoff?.status === 'reading';
   const switching = reading && run?.status === 'running';
-  const switched = handoff?.status === 'ready' && handoff.runId === run?.runId;
-  if (!run || (!error && !switching && !switched && !['cancelled', 'indeterminate', 'releasing', 'releaseFailed'].includes(run.status))) return null;
+  // A completed handoff is published as a transient notice; it is not a state this panel keeps.
+  if (!run || (!error && !switching && !['cancelled', 'indeterminate', 'releasing', 'releaseFailed'].includes(run.status))) return null;
   const zh = language === 'zh-CN';
   const canContinue = !busy && ['failed', 'cancelled'].includes(run.status);
-  const targetName = profiles.find(item => item.id === handoff?.profileId)?.name ?? handoff?.profileId;
   const label = switching ? (zh ? '正在读取此前工作' : 'Reading previous work')
     : run.status === 'releasing' ? (zh ? '正在结束运行' : 'Finishing the run')
     : run.status === 'releaseFailed' ? (zh ? '资源释放失败' : 'Resource release failed')
     : run.status === 'indeterminate' ? (zh ? '结果待确认' : 'Outcome needs verification')
     : run.status === 'cancelled' ? (zh ? '已停止' : 'Stopped')
     : reading ? (zh ? '接手未完成' : 'Handoff incomplete')
-    : error ? (zh ? '运行失败' : 'Run failed')
-    : (zh ? `已切换至 ${targetName}` : `Switched to ${targetName}`);
+    : (zh ? '运行失败' : 'Run failed');
   const requests = groupProviderAttempts((projection.providerAttempts ?? [])
     .filter(attempt => snapshot?.providerAttemptIds.includes(attempt.providerAttemptId)));
   const continueTask = async (inNewSession: boolean) => {

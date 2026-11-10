@@ -22,6 +22,9 @@ import type {
 import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
+import { normalizeUiLanguage } from '../i18n';
+import { runHandoffNotice } from './handoffNotice';
+import { uiEvents } from './uiEvents';
 import type { PastedTextInput } from '../services/pastedText';
 import { supportsNativeFileInput } from '../services/modelFileInput';
 import {
@@ -203,7 +206,11 @@ function readProjection(sessionId: string, signal?: AbortSignal): Promise<Sessio
       signal?.throwIfAborted();
       const cached = projectionCache.get(sessionId);
       const current = cached && !shouldApplyProjection(cached, projection) ? cached : projection;
+      const notice = runHandoffNotice(cached, current,
+        store.getState().profiles.find(profile => profile.id === current.contextHandoff?.profileId)?.name,
+        normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
       cacheProjection(current);
+      if (notice) uiEvents.publish(notice);
       return current;
     });
   const queue = read.then(() => undefined, () => undefined);
@@ -920,6 +927,7 @@ const store = create<LocalAgentState>((set, get) => ({
     const projectId = summary.projectId;
     await mutateCatalog(set, async () => await deleteSessionRequest(sessionId));
     projectionCache.delete(sessionId);
+    uiEvents.clear(sessionId);
     if (get().sessionId === sessionId) get().startNewSession(projectId ?? null);
   },
 

@@ -1,3 +1,6 @@
+import { showContentDialog } from '../shared/interactionFocus';
+import { ContentImageSave } from './ContentImageSave';
+import { readContentImage, type ContentImage } from './contentImage';
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
@@ -6,7 +9,8 @@ import './viewerDialog.css';
 import './imageReview.css';
 
 /** Reuse the loaded image; fitting and zooming are local presentation state. */
-export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, intrinsicSize, triggerRef, hideTrigger }: {
+export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, intrinsicSize, triggerRef, hideTrigger, createImage }: {
+  createImage?(signal: AbortSignal): Promise<ContentImage>;
   triggerIdentity?: Readonly<Record<`data-ui-${string}`, string>>;
   source?: string; alt: string; children?: ReactNode; className?: string; imageClassName?: string;
   title?: string; onError?(): void;
@@ -53,7 +57,7 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
   }, [ready, source]);
   const resetFit = () => { anchor.current = centeredZoom; setZoom(null); };
   const show = () => {
-    dialog.current?.showModal();
+    if (dialog.current) showContentDialog(dialog.current, viewport.current);
     resetFit();
     setOpen(true);
   };
@@ -77,6 +81,7 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
       }}>
       <div className="conversation-image-review__toolbar">
         <span className="conversation-image-review__title" title={alt}>{alt}</span>
+        <ContentImageSave disabled={!source} createImage={createImage ?? (signal => readContentImage(source!, alt || 'image', signal))} />
         <div className="conversation-image-review__zoom" role="group" aria-label={t(language, 'content.image.zoom')}>
           <button type="button" aria-label={t(language, 'content.image.zoomOut')} title={t(language, 'content.image.zoomOut')}
             disabled={scale === null || scale <= minScale} onClick={() => changeZoom(1 / 1.25)}>−</button>

@@ -1,3 +1,5 @@
+import { ContentImageSave } from './ContentImageSave';
+import { diagramImage } from './contentImage';
 import { useContext, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { t } from '../../i18n';
 import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
@@ -30,13 +32,14 @@ export function MermaidContent({ source }: { source: string }) {
   const [result, setResult] = useState<DiagramResult | null>(null);
   const [showSource, setShowSource] = useState(false);
   const [menu, setMenu] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<{ source: string } | null>(null);
+  const copied = copyFeedback?.source === source;
   const [actionError, setActionError] = useState('');
-  useAutoDismiss(copied, () => setCopied(false), 1500);
+  useAutoDismiss(copyFeedback, () => setCopyFeedback(null), 1500);
   useEffect(() => {
     let current = true;
     let url: string | undefined;
-    setActionError(''); setCopied(false); setMenu(false);
+    setActionError(''); setCopyFeedback(null); setMenu(false);
     void renderMermaidImage(id, source, theme).then(rendered => {
       if (!current) return;
       url = URL.createObjectURL(new Blob([rendered.svg], { type: 'image/svg+xml;charset=utf-8' }));
@@ -59,9 +62,11 @@ export function MermaidContent({ source }: { source: string }) {
   return <figure ref={figure} className="conversation-diagram" aria-label={title} style={image?.size ? {
     '--diagram-width': image.size.width + 'px', '--diagram-min-width': Math.min(550, image.size.width * .75) + 'px',
   } as CSSProperties : undefined}>
-    <div className="conversation-diagram__actions" role="group" aria-label={t(language, 'content.diagram.more')}>
+    <div data-image-export-exclude="" className="conversation-diagram__actions" role="group" aria-label={t(language, 'content.diagram.more')}>
       <button {...control('source')} type="button" className="reader-icon-button" aria-label={label} title={label}
         aria-pressed={showSource} aria-controls={id + '-content'} onClick={() => { setShowSource(!showSource); setMenu(false); }}><AchbitShellIcon name="code" /></button>
+      <ContentImageSave {...control('save')} disabled={!image}
+        createImage={() => diagramImage(image!.svg, title, 'png', theme === 'dark' ? '#1e1f22' : '#fff')} />
       <div className="conversation-diagram__more" ref={popup} onKeyDown={event => {
         if (event.key === 'Tab' && menu) { closeMenu(); return; }
         if (event.key === 'Escape' && menu) { event.stopPropagation(); closeMenu(); }
@@ -77,13 +82,13 @@ export function MermaidContent({ source }: { source: string }) {
           onClick={() => setMenu(!menu)}><AchbitShellIcon name={copied ? 'check' : 'more'} /></button>
         {menu && <div id={id + '-menu'} className="conversation-diagram__menu" role="menu" aria-label={t(language, 'content.diagram.more')}>
           <button {...control('copy')} type="button" role="menuitem" autoFocus onClick={() => {
-            closeMenu(); setActionError(''); setCopied(false);
-            void host.copyText(source).then(() => setCopied(true)).catch(reason => setActionError(String(reason)));
+            closeMenu(); setActionError(''); setCopyFeedback(null);
+            void host.copyText(source).then(() => setCopyFeedback({ source })).catch(reason => setActionError(String(reason)));
           }}><AchbitShellIcon name="code" />{t(language, 'content.diagram.copy')}</button>
           <button {...control('download')} type="button" role="menuitem" disabled={!image} onClick={() => {
             if (!image) return;
             closeMenu(); setActionError('');
-            void host.saveDiagramSvg(image).catch(reason => setActionError(String(reason)));
+            void diagramImage(image.svg, title, 'svg', '').then(file => host.saveImage(file)).catch(reason => setActionError(String(reason)));
           }}><AchbitShellIcon name="download" />{t(language, 'content.diagram.download')}<small>SVG</small></button>
         </div>}
       </div>
@@ -98,6 +103,7 @@ export function MermaidContent({ source }: { source: string }) {
       {!showSource && !current && <span role="status">{t(language, 'content.diagram.loading')}</span>}
       {image && <div className="conversation-diagram__viewport">
         <ImageReview source={image.url} alt={title} className="conversation-diagram__open" title={t(language, 'content.diagram.expand')}
+          createImage={() => diagramImage(image!.svg, title, 'png', theme === 'dark' ? '#1e1f22' : '#fff')}
           triggerRef={trigger} triggerIdentity={control('view')} hideTrigger={showSource} intrinsicSize={image.size} />
       </div>}
     </div>
