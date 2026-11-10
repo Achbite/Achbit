@@ -10,19 +10,29 @@
   button { font: inherit; cursor: pointer; }
   #open { min-width: 0; border: 0; padding: 0; text-align: left; background: none; color: inherit; }
   small { display: block; color: #797979; font-size: 11px; margin-bottom: 5px; }
-  strong { font-size: 14px; font-weight: 600; }
-  #body { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 5px 0 0; line-height: 1.4; color: #696969; overflow-wrap: anywhere; }
+  strong { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #id { display: block; margin-top: 3px; font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace; font-size: 11px;
+    color: #6b6b6b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #id[hidden] { display: none; }
+  #body { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 5px 0 0; line-height: 1.4; color: #696969; }
   #dismiss { align-self: start; border: 0; padding: 0; background: none; color: #797979; font-size: 19px; }
   #error { position: fixed; inset: auto 8px 2px; font-size: 10px; color: #b42929; }
   button:focus-visible { outline: 2px solid #428765; outline-offset: 3px; border-radius: 3px; }
-  @media (prefers-color-scheme: dark) { body { background: #242424; color: #f1f1f1; } #body, small, #dismiss { color: #b5b5b5; } .icon { background: #293e32; color: #a7d6b7; } }
+  @media (prefers-color-scheme: dark) { body { background: #242424; color: #f1f1f1; } #body, small, #dismiss { color: #b5b5b5; } #id { color: #cfcfcf; } .icon { background: #293e32; color: #a7d6b7; } }
 </style></head><body>
-<main><span class="icon" aria-hidden="true">✓</span><button id="open"><small>Achbit</small><strong id="title"></strong><span id="body"></span></button><button id="dismiss">×</button></main>
+<main><span class="icon" aria-hidden="true">✓</span><button id="open"><small>Achbit</small><strong id="title"></strong><span id="body"></span><span id="id"></span></button><button id="dismiss">×</button></main>
 <div id="error" role="alert"></div>
 <script>
   const params = new URLSearchParams(location.search);
+  const taskId = params.get('session') || '';
   document.getElementById('title').textContent = params.get('title');
   document.getElementById('body').textContent = params.get('body');
+  document.getElementById('body').title = params.get('body');
+  // The reminder names what finished: the conversation title and its task identity.
+  const identity = document.getElementById('id');
+  identity.textContent = taskId;
+  identity.title = taskId;
+  if (!taskId) identity.hidden = true;
   document.getElementById('open').setAttribute('aria-label', params.get('open'));
   document.getElementById('dismiss').setAttribute('aria-label', params.get('dismiss'));
   async function invoke(command, args) {
