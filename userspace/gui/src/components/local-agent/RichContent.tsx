@@ -5,6 +5,7 @@ import type { CodeSpan } from './codeLanguage';
 import { memo, useContext, useEffect, useState } from 'react';
 import { useConversationSessionId } from './ConversationSessionScope';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { ImageReview } from './ImageReview';
 import { RichContentScope } from './RichContentIdentity';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
@@ -16,13 +17,10 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
   const host = useConversationHost();
   const [highlightError, setHighlightError] = useState('');
   const [rendered, setRendered] = useState<{ code: string; spans: CodeSpan[] } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<{ code: string } | null>(null);
+  const copied = copyFeedback?.code === code;
   const [copyError, setCopyError] = useState('');
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1_500);
-    return () => clearTimeout(timer);
-  }, [copied]);
+  useAutoDismiss(copyFeedback, () => setCopyFeedback(null), 1500);
   useEffect(() => {
     if (streaming) return;
     let current = true;
@@ -33,8 +31,8 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
   }, [code, language, streaming]);
   return <div className="conversation-code">
     <header><span>{language || 'text'}</span><button {...(target ? identity.action('copy', 'click') : {})} type="button" className="conversation-copy-button" aria-label={t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')} onClick={() => {
-      setCopied(false); setCopyError('');
-      void host.copyText(code).then(() => setCopied(true)).catch((error: unknown) => setCopyError(String(error)));
+      setCopyFeedback(null); setCopyError('');
+      void host.copyText(code).then(() => setCopyFeedback({ code })).catch((error: unknown) => setCopyError(String(error)));
     }}><AchbitShellIcon name={copied ? 'check' : 'copy'} /><span className="conversation-copy-hint" role="status">{t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')}</span></button></header>
     {copyError && <small className="conversation-copy-error" role="alert">{copyError}</small>}
     {highlightError && <small role="status">{t(uiLanguage, 'content.code.highlightError', { error: highlightError })}</small>}

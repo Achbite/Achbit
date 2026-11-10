@@ -10,6 +10,7 @@ import { requestReader } from './readerState';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { PresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ReasoningHistory } from './ReasoningDetails';
 import { PlanPreviewCard } from './PlanPreviewCard';
@@ -28,6 +29,7 @@ import { ConversationLayoutCache, ConversationVirtualizer } from './conversation
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
 import { RunFailureDetails, StoppedRunStatus, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
+import { UiEventStack } from './UiEventStack';
 import { InteractionCard } from './InteractionCard';
 import { UnappliedInputs, type UnappliedRecovery } from './UnappliedInputs';
 import { messageDisplayText } from './interactionPresentation';
@@ -95,19 +97,19 @@ export function ConversationTranscript({
   const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
   const welcomeSuffix = welcomeIndex === 0 ? '' : `.${welcomeIndex}`;
   const setMessageFeedback = useLocalAgentStore((state) => state.setMessageFeedback);
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<{ messageId: string } | null>(null);
+  const copiedMessageId = copyFeedback?.messageId ?? null;
+  useAutoDismiss(copyFeedback, () => setCopyFeedback(null), 1500);
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const linkRequest = useRef(0);
   const [linkChoices, setLinkChoices] = useState<{ sessionId: string; request: number; targets: ResolvedLocalTarget[] } | null>(null);
   const currentSessionRef = useRef({ sessionId: projection?.sessionId });
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   if (currentSessionRef.current.sessionId !== projection?.sessionId) currentSessionRef.current = { sessionId: projection?.sessionId };
   useLayoutEffect(() => {
-    setCopiedMessageId(null);
+    setCopyFeedback(null);
     setPathMenu(null);
     setLinkChoices(null);
     linkRequest.current += 1;
-    return () => clearTimeout(copyTimerRef.current);
   }, [projection?.sessionId]);
   useEffect(() => {
     if (!pathMenu) return;
@@ -130,12 +132,8 @@ export function ConversationTranscript({
     try {
       await host.copyText(content);
       if (currentSessionRef.current !== requestedView) return;
-      setCopiedMessageId(messageId);
+      setCopyFeedback({ messageId });
       setUiActionError(null);
-      clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = setTimeout(() => {
-        setCopiedMessageId((current) => current === messageId ? null : current);
-      }, 1_500);
     } catch (copyError) {
       if (currentSessionRef.current !== requestedView) return;
       setUiActionError(copyError instanceof Error ? copyError.message : String(copyError));
@@ -441,6 +439,7 @@ export function ConversationTranscript({
           {hasFileChanges ? <FileChanges activities={changeActivities} /> : null}
         </ConversationRoundView>;
       })}
+      {projection && <UiEventStack sessionId={projection.sessionId} language={language} />}
       {projection && <StoppedRunStatus projection={projection} language={language} onError={setUiActionError} />}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
       {projection && <UnappliedInputs key={projection.sessionId} sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language} recovery={unappliedRecovery}

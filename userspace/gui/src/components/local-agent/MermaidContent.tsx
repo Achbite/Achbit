@@ -30,13 +30,14 @@ export function MermaidContent({ source }: { source: string }) {
   const [result, setResult] = useState<DiagramResult | null>(null);
   const [showSource, setShowSource] = useState(false);
   const [menu, setMenu] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<{ source: string } | null>(null);
+  const copied = copyFeedback?.source === source;
   const [actionError, setActionError] = useState('');
-  useAutoDismiss(copied, () => setCopied(false), 1500);
+  useAutoDismiss(copyFeedback, () => setCopyFeedback(null), 1500);
   useEffect(() => {
     let current = true;
     let url: string | undefined;
-    setActionError(''); setCopied(false); setMenu(false);
+    setActionError(''); setCopyFeedback(null); setMenu(false);
     void renderMermaidImage(id, source, theme).then(rendered => {
       if (!current) return;
       url = URL.createObjectURL(new Blob([rendered.svg], { type: 'image/svg+xml;charset=utf-8' }));
@@ -77,8 +78,8 @@ export function MermaidContent({ source }: { source: string }) {
           onClick={() => setMenu(!menu)}><AchbitShellIcon name={copied ? 'check' : 'more'} /></button>
         {menu && <div id={id + '-menu'} className="conversation-diagram__menu" role="menu" aria-label={t(language, 'content.diagram.more')}>
           <button {...control('copy')} type="button" role="menuitem" autoFocus onClick={() => {
-            closeMenu(); setActionError(''); setCopied(false);
-            void host.copyText(source).then(() => setCopied(true)).catch(reason => setActionError(String(reason)));
+            closeMenu(); setActionError(''); setCopyFeedback(null);
+            void host.copyText(source).then(() => setCopyFeedback({ source })).catch(reason => setActionError(String(reason)));
           }}><AchbitShellIcon name="code" />{t(language, 'content.diagram.copy')}</button>
           <button {...control('download')} type="button" role="menuitem" disabled={!image} onClick={() => {
             if (!image) return;

@@ -5,7 +5,6 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import SubagentModelFields from '../shared/SubagentModelFields';
 import { ToggleSwitch } from '../../ui-components';
-import { useAutoDismiss } from '../shared/useAutoDismiss';
 
 export default function SubagentQuickSettings({ profiles, connections, mainProfileId, language }: {
   profiles: readonly LlmProviderProfile[];
@@ -22,7 +21,6 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
   const saving = useLocalAgentStore(state => state.subagentSettingsBusy);
   const settings = sessionId ? saved : draft ?? subagentDefaults(defaults);
   const [error, setError] = useState<string | null>(null);
-  useAutoDismiss(error, () => setError(null));
   const save = async (next: AgentSettings) => {
     if (saving || loading) return;
     setError(null);
