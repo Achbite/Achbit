@@ -1,3 +1,4 @@
+import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { ContentImageSave } from './ContentImageSave';
 import { previewImage } from './previewImage';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -51,6 +52,7 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
   const [height, setHeight] = useConversationRowState(`preview:${artifact.artifactId}:height`, 360);
   const [previouslyLoaded, setPreviouslyLoaded] = useConversationRowState(`preview:${artifact.artifactId}:loaded`, false);
   const [reloaded, setReloaded] = useState(previouslyLoaded);
+  useAutoDismiss(reloaded && ready, () => setReloaded(false));
   const title = artifact.label.split(/[\\/]/u).at(-1) || (chinese ? '交互预览' : 'Interactive preview');
   useEffect(() => {
     const controller = new AbortController();

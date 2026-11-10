@@ -37,6 +37,14 @@
   background: color-mix(in srgb, var(--ac-danger) 18%, transparent);
   color: var(--ac-danger);
 }
+.ac-button[data-variant='primary']:active:not(:disabled) {
+  background: color-mix(in srgb, var(--ac-accent) 76%, var(--ac-foreground));
+  color: var(--ac-accent-contrast);
+}
+.ac-button[data-variant='danger']:active:not(:disabled) {
+  background: color-mix(in srgb, var(--ac-danger) 28%, transparent);
+  color: var(--ac-danger);
+}
 .ac-button:disabled { opacity: .45; cursor: default; }
 .ac-icon-button {
   width: var(--ac-button-height);

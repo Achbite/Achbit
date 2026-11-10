@@ -110,3 +110,10 @@ export function returnFocusTo(target: HTMLElement | null | undefined, interactio
 
 export const InteractionFocusContext = createContext<ReturnType<typeof createInteractionFocus> | null>(null);
 export const useInteractionFocus = () => useContext(InteractionFocusContext);
+
+
+/** A content viewer starts at its scrollable content, not an unrelated toolbar action. */
+export function showContentDialog(dialog: HTMLDialogElement, content: HTMLElement | null) {
+  dialog.showModal();
+  content?.focus({ preventScroll: true });
+}

@@ -1,3 +1,4 @@
+import { showContentDialog } from '../shared/interactionFocus';
 import { ContentImageSave } from './ContentImageSave';
 import { readContentImage, type ContentImage } from './contentImage';
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
@@ -56,7 +57,7 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
   }, [ready, source]);
   const resetFit = () => { anchor.current = centeredZoom; setZoom(null); };
   const show = () => {
-    dialog.current?.showModal();
+    if (dialog.current) showContentDialog(dialog.current, viewport.current);
     resetFit();
     setOpen(true);
   };

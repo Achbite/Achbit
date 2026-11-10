@@ -1,3 +1,4 @@
+import { showContentDialog } from '../shared/interactionFocus';
 import { ContentImageSave } from './ContentImageSave';
 import { elementImage } from './contentImage';
 import React, { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -79,7 +80,7 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
   }, []);
   useEffect(() => {
     const element = dialog.current!;
-    if (expanded && !element.open) element.showModal();
+    if (expanded && !element.open) showContentDialog(element, dialogBody.current);
     else if (!expanded && element.open) element.close();
     const body = dialogBody.current;
     if (!expanded || !body) return;
