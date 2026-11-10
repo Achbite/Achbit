@@ -1,3 +1,5 @@
+import { ContentImageSave } from './ContentImageSave';
+import { previewImage } from './previewImage';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtifactProjection, SessionProjection } from '@achbit/protocol';
 import { useUiLanguage } from '../../useUiLanguage';
@@ -82,6 +84,8 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
       <strong>{title}</strong>
       <button {...identity.action('toggle-source', 'click')} type="button" className="reader-icon-button" title={sourceLabel} aria-label={sourceLabel} aria-pressed={showSource}
         disabled={content === null} onClick={() => { setShowSource(value => !value); retain(); }}><AchbitShellIcon name="code" /></button>
+      <ContentImageSave {...identity.action('save', 'click')} disabled={!ready || showSource}
+        createImage={signal => previewImage(frame.current?.contentWindow ?? null, title, signal)} />
       <button {...identity.action('reload', 'click')} type="button" className="reader-icon-button" title={reloadLabel} aria-label={reloadLabel}
         onClick={() => { setRevision(value => value + 1); setReloaded(false); retain(); }}><AchbitShellIcon name="refresh" /></button>
       {inline && <button {...identity.action('open-reader', 'click')} type="button" className="reader-icon-button" title={openLabel} aria-label={openLabel}

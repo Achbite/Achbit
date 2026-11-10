@@ -2,6 +2,7 @@ import React, { createContext, memo, useContext, useLayoutEffect, useMemo, useRe
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime';
 import { toJsxRuntime } from 'hast-util-to-jsx-runtime';
 import { CodeContent, ImageContent } from './RichContent';
+import { MathContent } from './MathContent';
 import { MermaidContent } from './MermaidContent';
 import { MarkdownTable } from './MarkdownTable';
 import { formatDecisionProse, StreamingMarkdownParser, type MarkdownBlock } from './streamingMarkdown';
@@ -46,6 +47,11 @@ const COMPONENTS = {
     return <MarkdownNodeScope node={node}><MarkdownTable>{children}</MarkdownTable></MarkdownNodeScope>;
   },
   img: function MarkdownImage({ src, alt }: { src?: string; alt?: string }) { return <ImageContent source={src ?? ''} alt={alt ?? ''} />; },
+  span: function MarkdownSpan({ node, children, ...attributes }: React.ComponentPropsWithoutRef<'span'> & { node?: Element }) {
+    const span = <span {...attributes}>{children}</span>;
+    return attributes.className?.split(' ').includes('katex-display')
+      ? <MarkdownNodeScope node={node}><MathContent>{span}</MathContent></MarkdownNodeScope> : span;
+  },
   a: ScopedMarkdownLink,
 };
 

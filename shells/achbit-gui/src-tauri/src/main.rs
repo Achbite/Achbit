@@ -329,7 +329,7 @@ fn main() {
         native_path_dialog::achbit_pick_path,
         open_file::achbit_open_file,
         file_reader::achbit_read_local_file,
-        achbit_save_diagram_svg,
+        achbit_save_image,
         open_file::achbit_locate_path,
         product_update::achbit_update_status,
         product_update::achbit_update_check,
@@ -857,18 +857,30 @@ async fn achbit_open_external_url(url: String) -> Result<(), String> {
 
 /// Export the rendered image only to the location selected in the native save panel.
 #[tauri::command]
-async fn achbit_save_diagram_svg(window: tauri::WebviewWindow, svg: String) -> Result<(), String> {
+async fn achbit_save_image(
+    window: tauri::WebviewWindow,
+    filename: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let filename = Path::new(&filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .ok_or("An image filename is required.")?
+        .to_owned();
+    if data.is_empty() {
+        return Err("The image is empty.".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let selection = window
             .dialog()
             .file()
             .set_parent(&window)
-            .set_file_name("mermaid.svg")
-            .add_filter("SVG", &["svg"])
+            .set_file_name(&filename)
             .blocking_save_file();
         if let Some(file) = selection {
             let path = file.into_path().map_err(|error| error.to_string())?;
-            std::fs::write(path, svg).map_err(|error| error.to_string())?;
+            std::fs::write(path, data).map_err(|error| error.to_string())?;
         }
         Ok(())
     })

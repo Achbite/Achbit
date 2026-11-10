@@ -385,7 +385,12 @@ test('rich content targets distinguish repeated nested blocks and survive indepe
   const first = read(render(target, 'first'));
   assert.equal(first.filter(item => item.id === 'conversation.table.expand').length, 4);
   assert.equal(first.filter(item => item.id === 'conversation.code.copy').length, 4);
-  assert.equal(new Set(first.map(item => JSON.stringify(item))).size, 8);
+  const originalActions = first.filter(item => item.id === 'conversation.table.expand' || item.id === 'conversation.code.copy');
+  assert.equal(new Set(originalActions.map(item => JSON.stringify(item))).size, 8);
+  assert.equal(first.filter(item => item.id === 'conversation.table.save').length, 4);
+  assert.equal(first.filter(item => item.id === 'conversation.code.save').length, 4);
+  assert.equal(first.length, 16);
+  assert.equal(new Set(first.map(item => JSON.stringify(item))).size, 16);
   assert.deepEqual(read(render(target, 'remounted')), first, 'semantic targets survive fresh React instance IDs');
   assert.deepEqual(read(render(target, 'streaming', true)), first, 'settling a parsed document keeps block targets');
   for (const change of [{ rowKey: 'stream:other' }, { contentKey: 'interaction-reply' }]) {
