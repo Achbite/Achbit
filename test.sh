@@ -38,6 +38,7 @@ if [ "$profile" != 'static' ]; then
   done
 fi
 run_static() {
+  python3 scripts/version.py check
   printf '[test] 脚本语法与 diff 格式\n'
   local script
   for script in ./test.sh ./build.sh ./entrypoint.sh ./scripts/*.sh; do
@@ -59,6 +60,7 @@ run_required() {
   printf '[test] Debug 控制专用合同\n'
   cargo test -p achbit-kernel-daemon -p achbit-cli --features achbit-kernel-daemon/debug-control,achbit-cli/debug-control debug
   printf '[test] 构建编排与程序发布\n'
+  python3 -I -S ./scripts/tests/version.py
   python3 -I -S ./scripts/tests/build-platforms.py
   printf '[test] GUI 资源发布\n'
   python3 -I -S ./scripts/tests/ui-update.py

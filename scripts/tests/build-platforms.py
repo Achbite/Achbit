@@ -77,7 +77,7 @@ class ProgramCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='achbit-clean-dry-run-') as directory:
             root = Path(directory)
             (root / 'scripts').mkdir()
-            for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py'):
+            for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py', 'version.py'):
                 shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
             write(root, 'bin/macos-arm64/achbit-cli', b'program')
             write(root, 'bin/macos-arm64/config/settings.json', b'user settings')
@@ -627,6 +627,8 @@ class NativeMacArgumentsTests(unittest.TestCase):
             (root / 'shared').mkdir()
             shutil.copy2(ROOT / 'scripts/package-macos.sh', root / 'scripts/package-macos.sh')
             shutil.copy2(ROOT / 'scripts/package-updates.py', root / 'scripts/package-updates.py')
+            shutil.copy2(ROOT / 'scripts/version.py', root / 'scripts/version.py')
+            write(root, 'Cargo.toml', b'[workspace.package]\nversion = "0.0.0"\n')
             write(root, 'package.json', b'{"version":"0.0.0"}')
             write(root, 'NODE-LICENSE', b'fixture license')
             stub = ('#!' + sys.executable + '\n' + r'''import json,os,sys

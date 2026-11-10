@@ -16,6 +16,33 @@ make shell CONTAINER_NAME=achbit-my-task CONTAINER_HOSTNAME=achbit-my-task ACHBI
 
 Reuse those settings for host-side entrypoints. `make docker-info` prints the selected checkout, container, port, and cache volume names. macOS `make shell` also prepares the checkout's native build bridge.
 
+## Version updates and delivery
+
+The product version is owned by `Cargo.toml` under `[workspace.package].version`. Required package manifests are synchronized mirrors. Use the version command inside the development container:
+
+```bash
+python3 scripts/version.py show             # Read the canonical version
+python3 scripts/version.py set <next-version>
+python3 scripts/version.py sync             # After editing the canonical field directly
+python3 scripts/version.py check            # Read-only consistency check
+```
+
+Replace `<next-version>` with the intended semantic version, without a `v` prefix. `set` changes the canonical field and synchronizes the mirrors; `sync` uses the value already in that field. These are alternative update paths. Repeating either with an already synchronized version leaves files unchanged. `show` and `check` also work on the host.
+
+`scripts/version.py` owns the mirror list: package JSON versions, the separate GUI Cargo manifest, Tauri configuration, citation metadata, and local Achbit packages in the GUI Cargo lockfile. It uses `cargo update --workspace --offline` to refresh that lockfile while retaining unrelated locked dependencies. The root Cargo lockfile is generated and ignored. Dependency constraints, protocol versions and historical release text retain their own versions. If Cargo fails, its error remains visible and the metadata changes remain available for review; resolve the reported cause and run `sync` again.
+
+Build and package producers read the canonical version. `package-updates.py manifest` also defaults to it; an explicit `--version` remains available when preparing a feed for an isolated Debug build or an existing release. `ACHBIT_BUILD_VERSION` applies only to isolated Debug builds and leaves source metadata unchanged.
+
+Follow the authorized delivery scope:
+
+1. Review the version diff and run the applicable checks. Group complete changes by responsibility, with release metadata in its own commit when it forms a separate change.
+2. When code synchronization is requested, inspect the current local and remote branches, stage the intended changes, commit with a description of their behavior, and push the agreed branch. Handle PRs and merges according to the current repository settings and agreed target. Preserve the requested local development branch after synchronization.
+3. When local products are requested, use the [build entrypoints](#build-and-update). `bash ./build.sh` updates runnable products; `bash ./build.sh --stage package` additionally produces distribution archives and installers. Select explicit platform stages when the delivery calls for particular targets, and record any requested platform that is unavailable.
+4. For an authorized release, derive the tag and asset names from `release_version=$(python3 scripts/version.py show)` at the intended release source. Create that tag on the agreed commit, build the requested platforms from that source, then follow [automatic application updates](#automatic-application-updates) to sign updater assets, generate the feed and upload the distribution files. Complete the applicable standard-package acceptance before publishing.
+5. Confirm the pushed branch/tag and the published assets/feed from the remote service. Report source synchronization, local package updates and publication separately.
+
+A version edit changes source metadata; Git operations, builds and publication are separate requested actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
+
 ## Build and update
 
 Inside the container:
@@ -74,16 +101,17 @@ The Mac App contains the separately signed Computer Use helper in `Contents/Help
 After building the intended release targets, sign their updater assets and create the feed on the host (the signer delegates to the configured Docker container). The following example includes the Linux architecture produced by an ARM64 development container:
 
 ```bash
+release_version=$(python3 scripts/version.py show)
 python3 scripts/package-updates.py sign \
-  bin/Achbit-0.7.75-macos-arm64.app.tar.gz \
-  bin/Achbit-0.7.75-win64-setup.exe \
-  bin/Achbit-0.7.75-linux-arm64.AppImage
+  "bin/Achbit-${release_version}-macos-arm64.app.tar.gz" \
+  "bin/Achbit-${release_version}-win64-setup.exe" \
+  "bin/Achbit-${release_version}-linux-arm64.AppImage"
 
-python3 scripts/package-updates.py manifest --version 0.7.75 \
-  --base-url https://github.com/Achbite/Achbit/releases/download/0.7.75 \
-  --artifact darwin-aarch64=bin/Achbit-0.7.75-macos-arm64.app.tar.gz \
-  --artifact windows-x86_64=bin/Achbit-0.7.75-win64-setup.exe \
-  --artifact linux-aarch64=bin/Achbit-0.7.75-linux-arm64.AppImage \
+python3 scripts/package-updates.py manifest \
+  --base-url "https://github.com/Achbite/Achbit/releases/download/${release_version}" \
+  --artifact "darwin-aarch64=bin/Achbit-${release_version}-macos-arm64.app.tar.gz" \
+  --artifact "windows-x86_64=bin/Achbit-${release_version}-win64-setup.exe" \
+  --artifact "linux-aarch64=bin/Achbit-${release_version}-linux-arm64.AppImage" \
   --output bin/latest.json
 ```
 
@@ -96,9 +124,10 @@ The GUI checks after startup and every 30 minutes when the saved `gui.autoUpdate
 For a local macOS Debug upgrade, build two distinct versions through the existing Docker/native bridge:
 
 ```bash
-ACHBIT_BUILD_VERSION=0.7.75-debug.1 bash ./build.sh -debug --stage package-macos
+release_version=$(python3 scripts/version.py show)
+ACHBIT_BUILD_VERSION="${release_version}-debug.1" bash ./build.sh -debug --stage package-macos
 # Preserve this bin/debug/macos-arm64 in a separate test installation.
-ACHBIT_BUILD_VERSION=0.7.75-debug.2 bash ./build.sh -debug --stage package-macos
+ACHBIT_BUILD_VERSION="${release_version}-debug.2" bash ./build.sh -debug --stage package-macos
 ```
 
 Sign the second App archive and serve it with a generated static feed from a loopback-only HTTP server. Start the first Debug App with explicit `ACHBIT_USER_ROOT`, `ACHBIT_DEFAULT_WORKSPACE` and `ACHBIT_DEBUG_UPDATE_URL`, then use `achbit-debug attach` with that state root and an absolute test-workspace path. This exercises the normal GUI-owned automatic Host lifetime. `achbit-debug launch` intentionally creates a persistent Host and therefore is unsuitable for an idle-shutdown acceptance run. Debug updates are disabled unless the loopback endpoint is explicitly supplied; production builds do not read that override. Current local Debug packaging supports this updater chain on macOS; Windows Debug ZIPs are not NSIS update assets.
@@ -145,7 +174,7 @@ bash ./test.sh cli        # Required checks plus CLI → Session → Kernel inte
 bash ./test.sh full       # Complete registered suite, including shared shells and document output
 ```
 
-`bash ./test.sh static` checks shell syntax and Git whitespace and can run on the host. A container snapshot without accessible host-owned Git metadata reports that diff check as skipped; run it on the host separately. Skipped checks are not passing checks.
+`bash ./test.sh static` checks version consistency, shell syntax and Git whitespace and can run on the host. A container snapshot without accessible host-owned Git metadata reports that diff check as skipped; run it on the host separately. Skipped checks are not passing checks.
 
 On Windows, `node --test scripts/tests/windows-installer.test.mjs` executes the replacement script with Windows PowerShell 5.1 against disposable installations. It covers fresh installation, upgrades, ownership preservation, and rollback. The cross-volume case requires the checkout and TEMP to be on different volumes; otherwise that case reports a skip.
 
@@ -167,4 +196,4 @@ PowerShell verification scripts should stop on errors and check native command e
 
 ## Contributing
 
-Read the effective project instructions before changing source or tests. Keep changes scoped to their behavior and run the relevant registered checks. Public development changes enter `dev-main` through a task-branch PR; stable-source updates enter `main` through a separate PR. Both use merge commits. Product operation details belong in the [product documentation](product/operations.md), while version changes belong in [Release notes](https://github.com/Achbite/Achbit/releases).
+Read the effective project instructions before changing source or tests. Keep changes scoped to their behavior and run the relevant registered checks. Use the current agreed branch, PR and merge policy for the intended delivery; the [version and delivery workflow](#version-updates-and-delivery) separates source synchronization from package publication. Product operation details belong in the [product documentation](product/operations.md), while version changes belong in [Release notes](https://github.com/Achbite/Achbit/releases).

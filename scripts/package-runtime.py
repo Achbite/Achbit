@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import zipfile
 
+from version import build_version
 from macos_signing import require_same_identity, sign_app, signing_identity
 from computer_use_package import assemble as assemble_computer_use, APP_NAME as COMPUTER_USE_APP
 
@@ -116,7 +117,7 @@ def tui_fonts(root, target):
 def assemble(args):
     root, stage = args.root, args.stage
     debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
-    version = os.environ.get('ACHBIT_BUILD_VERSION') or json.loads((root / 'package.json').read_text())['version']
+    version = build_version(root)
     macos = args.platform == 'macos-arm64'
     windows = args.platform == 'win64'
     identity = signing_identity() if macos else None

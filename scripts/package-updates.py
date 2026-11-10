@@ -10,15 +10,13 @@ import tarfile
 import tempfile
 from urllib.parse import quote
 
+from version import build_version, project_version, valid_version
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def version():
-    base = json.loads((ROOT / 'package.json').read_text())['version']
-    selected = os.environ.get('ACHBIT_BUILD_VERSION', base)
-    if selected != base and os.environ.get('ACHBIT_BUILD_KIND') != 'debug':
-        raise ValueError('ACHBIT_BUILD_VERSION is only supported for isolated Debug builds.')
-    return selected
+    return build_version(ROOT)
 
 
 def config():
@@ -108,7 +106,7 @@ def main():
     signing = sub.add_parser('sign')
     signing.add_argument('artifacts', type=Path, nargs='+')
     feed = sub.add_parser('manifest')
-    feed.add_argument('--version', required=True)
+    feed.add_argument('--version', type=valid_version, help='Defaults to the root Cargo.toml version')
     feed.add_argument('--base-url', required=True)
     feed.add_argument('--artifact', action='append', required=True, help='target=path')
     feed.add_argument('--output', type=Path, required=True)
@@ -130,7 +128,7 @@ def main():
             entries[target] = {'url': args.base_url.rstrip('/') + '/' + quote(artifact.name),
                                'signature': signature}
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps({'version': args.version, 'platforms': entries}, indent=2) + '\n')
+        args.output.write_text(json.dumps({'version': args.version if args.version is not None else project_version(ROOT), 'platforms': entries}, indent=2) + '\n')
         print(f'Update manifest {args.output}')
 
 
