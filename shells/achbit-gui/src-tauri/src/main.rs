@@ -1002,8 +1002,10 @@ fn create_main_window(
     let builder = builder
         .initialization_script_for_all_frames(native_browser::debug::initialization_script());
 
+    // Live completion events must remain consumable while the workbench is minimized.
     #[cfg(target_os = "macos")]
     let builder = builder
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .decorations(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .traffic_light_position(tauri::LogicalPosition::new(14.0, 12.0))

@@ -89,6 +89,10 @@ fn show_reminder(app: &tauri::AppHandle, reminder: Reminder) -> Result<(), Strin
             .focused(false)
             .visible(false)
             .on_navigation(crate::trusted_app_navigation);
+        // A hidden, reused reminder must load its next completion without throttling.
+        #[cfg(target_os = "macos")]
+        let builder = builder
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
         #[cfg(feature = "debug-control")]
         let builder = builder.initialization_script_for_all_frames(
             crate::native_browser::debug::initialization_script(),
