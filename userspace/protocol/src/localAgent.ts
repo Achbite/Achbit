@@ -263,7 +263,7 @@ export interface ErrorDiagnostics {
   isBody?: boolean;
   stopReason?: string;
   archivePath?: string;
-  providerError?: { code?: string; type?: string; retryDirective?: string };
+  providerError?: { code?: string; type?: string; status?: string; httpStatus?: number; retryDirective?: string };
   secondary?: Array<{ code: string; message: string }>;
 }
 

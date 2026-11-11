@@ -2026,13 +2026,15 @@ fn provider_http_failure(
         Some(detail) => format!("Provider 返回 HTTP {status}：{detail}"),
         None => format!("Provider 返回 HTTP {status}。"),
     };
-    crate::provider_transport::upstream_failure(
+    let mut failure = crate::provider_transport::upstream_failure(
         "provider_http_failed",
         &message,
         error.unwrap_or(&Value::Null),
         retry_directive,
         secret,
-    )
+    );
+    failure["diagnostics"]["providerError"]["httpStatus"] = json!(status);
+    failure
 }
 
 fn provider_event(
@@ -2662,7 +2664,7 @@ mod tests {
             failure["diagnostics"]["providerError"],
             json!({
                 "code":"server_is_overloaded", "type":"service_unavailable_error",
-                "retryDirective":"NO_MORE_RETRY",
+                "retryDirective":"NO_MORE_RETRY", "httpStatus":503,
             })
         );
         assert!(crate::provider_transport::valid_diagnostics(
@@ -2671,7 +2673,43 @@ mod tests {
         let failure = provider_http_failure(502, b"upstream unavailable", None, None);
         assert_eq!(failure["message"], "Provider 返回 HTTP 502。");
         assert_eq!(failure["diagnostics"]["category"], "provider");
-        assert!(failure["diagnostics"].get("providerError").is_none());
+        assert_eq!(
+            failure["diagnostics"]["providerError"],
+            json!({"httpStatus":502})
+        );
+    }
+
+    #[test]
+    fn upstream_http_errors_keep_vendor_status_and_numeric_code() {
+        for (status, body, expected) in [
+            (
+                529,
+                r#"{"error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+                json!({"httpStatus":529,"type":"overloaded_error"}),
+            ),
+            (
+                503,
+                r#"{"error":{"code":503,"status":"UNAVAILABLE","message":"High demand"}}"#,
+                json!({"httpStatus":503,"code":"503","status":"UNAVAILABLE"}),
+            ),
+            (
+                429,
+                r#"{"error":{"code":"insufficient_quota","message":"Quota exceeded"}}"#,
+                json!({"httpStatus":429,"code":"insufficient_quota"}),
+            ),
+            (
+                402,
+                r#"{"error":{"message":"Insufficient Balance"}}"#,
+                json!({"httpStatus":402}),
+            ),
+        ] {
+            let failure = provider_http_failure(status, body.as_bytes(), None, None);
+            assert_eq!(failure["diagnostics"]["providerError"], expected);
+            assert_eq!(failure["diagnostics"]["retryable"], false);
+            assert!(crate::provider_transport::valid_diagnostics(
+                &failure["diagnostics"]
+            ));
+        }
     }
 
     async fn failed_loopback_probe(base_url: String) -> ProviderTransportError {

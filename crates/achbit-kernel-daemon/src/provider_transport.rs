@@ -123,6 +123,7 @@ pub(crate) fn upstream_failure(
     for (key, value) in [
         ("code", error.get("code").and_then(Value::as_str)),
         ("type", error.get("type").and_then(Value::as_str)),
+        ("status", error.get("status").and_then(Value::as_str)),
         (
             "retryDirective",
             retry_directive.or_else(|| {
@@ -138,6 +139,9 @@ pub(crate) fn upstream_failure(
                 details.insert(key.into(), json!(value));
             }
         }
+    }
+    if let Some(code) = error.get("code").and_then(Value::as_u64) {
+        details.insert("code".into(), json!(code.to_string()));
     }
     let mut failure = json!({
         "code": code,
@@ -207,7 +211,14 @@ pub(crate) fn valid_diagnostics(value: &Value) -> bool {
             details.as_object().is_some_and(|details| {
                 !details.is_empty()
                     && details.iter().all(|(key, value)| {
-                        ["code", "type", "retryDirective"].contains(&key.as_str()) && text(value)
+                        if key == "httpStatus" {
+                            value
+                                .as_u64()
+                                .is_some_and(|status| (100..=599).contains(&status))
+                        } else {
+                            ["code", "type", "status", "retryDirective"].contains(&key.as_str())
+                                && text(value)
+                        }
                     })
             })
         })

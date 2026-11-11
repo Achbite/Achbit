@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { LocalAgentError, ProviderActivityProjection, ProviderAttemptFact, SessionProjection } from '@achbit/protocol';
+import { runFailureKind } from '@achbit/protocol';
 import type { UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -14,13 +15,34 @@ function ErrorDetails({ error, language }: { error: LocalAgentError; language: U
       <p>{d.source} · {d.phase} · {d.category}</p>
       <dl>{(['isConnect', 'isTimeout', 'isBody'] as const).map((key) => d[key] === undefined ? null : <React.Fragment key={key}><dt>{key}</dt><dd>{String(d[key])}</dd></React.Fragment>)}</dl>
       {d.stopReason && <p>{d.stopReason}</p>}
-      {d.providerError && <dl>{(['code', 'type', 'retryDirective'] as const).map(key => d.providerError?.[key]
+      {d.providerError && <dl>{(['httpStatus', 'code', 'type', 'status', 'retryDirective'] as const).map(key => d.providerError?.[key]
         ? <React.Fragment key={key}><dt>{key}</dt><dd><code>{d.providerError[key]}</code></dd></React.Fragment> : null)}</dl>}
       {d.causes.length > 0 && <ol>{d.causes.map((cause, index) => <li key={index}>{cause.message}{cause.kind && ` (${cause.kind})`}{cause.osCode !== undefined && ` [OS ${cause.osCode}]`}</li>)}</ol>}
       {d.archivePath && <p>{d.archivePath}</p>}
       {d.secondary?.map((secondary, index) => <p key={index}>{secondary.code}: {secondary.message}</p>)}
     </>}
   </details>;
+}
+
+function failureLabel(error: LocalAgentError | undefined, language: UiLanguage) {
+  const labels = {
+    overloaded: ['模型服务过载', 'Model service overloaded'],
+    unavailable: ['模型服务过载或暂不可用', 'Model service overloaded or unavailable'],
+    timeout: ['模型请求超时', 'Model request timed out'],
+    connection: ['模型连接失败', 'Model connection failed'],
+    rateLimit: ['模型请求受到限流', 'Model rate limit reached'],
+    quota: ['模型服务额度或余额不足', 'Model service quota or balance exhausted'],
+    authentication: ['模型服务认证失败', 'Model service authentication failed'],
+    permission: ['模型服务访问被拒绝', 'Model service access denied'],
+    providerInternal: ['模型服务内部错误', 'Model service internal error'],
+    providerProtocol: ['模型响应格式异常', 'Invalid model response'],
+    providerRejected: ['模型服务拒绝了请求', 'Model service rejected the request'],
+    providerFailure: ['模型请求失败', 'Model request failed'],
+    contextLimit: ['上下文预算不足', 'Context budget exceeded'],
+    loop: ['Loop 运行失败', 'Loop failed'],
+    unclassified: ['任务未完成', 'Task incomplete'],
+  };
+  return labels[runFailureKind(error)][language === 'zh-CN' ? 0 : 1];
 }
 
 export function providerRetryAttempt(projection: SessionProjection, activity?: ProviderActivityProjection) {
@@ -97,8 +119,7 @@ export function RunFailureDetails({ projection, language, onError }: {
     : run.status === 'releaseFailed' ? (zh ? '资源释放失败' : 'Resource release failed')
     : run.status === 'indeterminate' ? (zh ? '结果待确认' : 'Outcome needs verification')
     : run.status === 'cancelled' ? (zh ? '已停止' : 'Stopped')
-    : reading ? (zh ? '接手未完成' : 'Handoff incomplete')
-    : (zh ? '运行失败' : 'Run failed');
+    : failureLabel(error, language);
   const requests = groupProviderAttempts((projection.providerAttempts ?? [])
     .filter(attempt => snapshot?.providerAttemptIds.includes(attempt.providerAttemptId)));
   const continueTask = async (inNewSession: boolean) => {
