@@ -10,11 +10,16 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::HANDLE,
+    Foundation::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+        JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    },
+    System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     },
 };
 
@@ -28,6 +33,7 @@ pub struct OwnedHostProcess {
 #[cfg(windows)]
 pub struct WindowsKillOnCloseJob {
     handle: Option<OwnedHandle>,
+    exit_watches: Vec<OwnedHandle>,
 }
 
 /// A user-facing shell outlives the command or window that opened it. It must
@@ -103,7 +109,7 @@ pub fn terminate_owned_process_tree_until(
     #[cfg(unix)]
     signal_owned_process_group(process, libc::SIGKILL)?;
     #[cfg(windows)]
-    process.job.close_checked()?;
+    process.job.terminate_until(deadline)?;
     loop {
         let child_exited = process.child.try_wait()?.is_some();
         #[cfg(unix)]
@@ -202,6 +208,131 @@ pub fn spawn_owned_host_process(command: &mut Command) -> std::io::Result<OwnedH
 
 #[cfg(windows)]
 impl WindowsKillOnCloseJob {
+    /// Confirm no active members and that retained process handles have signalled.
+    pub fn is_empty(&self) -> std::io::Result<bool> {
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Host Job Object is closed"))?;
+        let mut information = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        if unsafe {
+            QueryInformationJobObject(
+                handle.as_raw_handle() as HANDLE,
+                JobObjectBasicAccountingInformation,
+                (&mut information as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        for process in &self.exit_watches {
+            match unsafe { WaitForSingleObject(process.as_raw_handle() as HANDLE, 0) } {
+                WAIT_OBJECT_0 => {}
+                WAIT_TIMEOUT => return Ok(false),
+                _ => return Err(std::io::Error::last_os_error()),
+            }
+        }
+        Ok(information.ActiveProcesses == 0)
+    }
+
+    fn terminate_until(&mut self, deadline: Instant) -> std::io::Result<()> {
+        // Job accounting can reach zero before process handles become signalled.
+        // Keep the exact members' handles through termination and cleanup retry.
+        self.watch_members(deadline)?;
+        let Some(handle) = self.handle.as_ref() else {
+            return Err(std::io::Error::other("Host Job Object is closed"));
+        };
+        if unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(
+                handle.as_raw_handle() as HANDLE,
+                1,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        while !self.is_empty()? {
+            let left = crate::startup::remaining(deadline)?;
+            std::thread::sleep(Duration::from_millis(10).min(left));
+        }
+        // Retain the empty Job for idempotent retries and the caller's exit check.
+        Ok(())
+    }
+
+    fn watch_members(&mut self, deadline: Instant) -> std::io::Result<()> {
+        let job = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Host Job Object is closed"))?
+            .as_raw_handle() as HANDLE;
+        let mut capacity = 16usize;
+        loop {
+            crate::startup::remaining(deadline)?;
+            // usize storage provides the alignment of the variable-length PID list.
+            let header = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let mut buffer = vec![0usize; header / std::mem::size_of::<usize>() + capacity];
+            let list = buffer
+                .as_mut_ptr()
+                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let length = u32::try_from(std::mem::size_of_val(buffer.as_slice()))
+                .map_err(|_| std::io::Error::other("Host Job process list is too large"))?;
+            if unsafe {
+                QueryInformationJobObject(
+                    job,
+                    JobObjectBasicProcessIdList,
+                    list.cast(),
+                    length,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(ERROR_MORE_DATA as i32) {
+                    capacity =
+                        (unsafe { (*list).NumberOfAssignedProcesses } as usize).max(capacity * 2);
+                    continue;
+                }
+                return Err(error);
+            }
+            let ids = unsafe {
+                std::slice::from_raw_parts(
+                    (*list).ProcessIdList.as_ptr(),
+                    (*list).NumberOfProcessIdsInList as usize,
+                )
+            };
+            for &pid in ids {
+                let handle = unsafe {
+                    OpenProcess(
+                        PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                        0,
+                        pid as u32,
+                    )
+                };
+                if handle.is_null() {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                let handle = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
+                let mut member = 0;
+                if unsafe { IsProcessInJob(handle.as_raw_handle() as HANDLE, job, &mut member) }
+                    == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // A recycled PID cannot lend an unrelated process's exit proof.
+                if member != 0 {
+                    self.exit_watches.push(handle);
+                }
+            }
+            return Ok(());
+        }
+    }
+
     pub fn new() -> std::io::Result<Self> {
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
@@ -223,6 +354,7 @@ impl WindowsKillOnCloseJob {
         }
         Ok(Self {
             handle: Some(handle),
+            exit_watches: Vec::new(),
         })
     }
 
