@@ -195,6 +195,82 @@ test('child context budget is enforced independently of the larger model window 
   assert.ok((await readEvents(journal, sessionId)).some(event => event.type === 'message.committed' && event.payload.content === oldText));
 });
 
+test('one tool loop works bare, with controls, and with controls plus summary', async t => {
+  for (const mode of ['bare', 'controls', 'summary']) {
+    const journal = new InMemoryCommandJournal(), sessionId = `session:assembly-${mode}`;
+    await createSession(journal, sessionId, [workspaceBinding]);
+    const registry = new SessionConfigurationRegistry();
+    const capabilities = await registry.create(registry.resolve(undefined, {
+      context: { id: 'coding' },
+      controls: mode === 'bare' ? { id: 'none' } : { id: 'standard', parameters: { optionalTools: ['todo.update'] } },
+      compaction: mode === 'summary' ? { id: 'summary', parameters: { enabled: true, thresholdTokens: 1 } } : { id: 'none' },
+    }, true));
+    const preparation = fakeRunPreparation({ contextWindowTokens: 100_000, tools: [readTool] });
+    let turns = 0, executions = 0;
+    const purposes = [];
+    const actor = new SessionActor(sessionId, journal, { capabilities, async dispose() {},
+      runPreparation: { ...preparation.port, async prepare(input) {
+        const prepared = await preparation.port.prepare(input);
+        prepared.runtimeSnapshot.toolSelection = { kernel: ['fs.read'], controls: mode === 'bare' ? [] : ['todo.update'], plugins: false };
+        prepared.runtimeSnapshot.providerToolAliases.find(alias => alias.canonicalName === 'fs.read').wireName = 'read';
+        return prepared;
+      } },
+      kernel: emptyKernel({ async execute(request) {
+        executions++;
+        assert.equal(request.toolName, 'fs.read');
+        return completedExecutionReply(request, { content: 'Observed file evidence.' });
+      } }),
+      provider: { async *stream(request) {
+        purposes.push(request.purpose);
+        if (request.purpose === 'contextCompaction') yield answer(request, 'File read completed; evidence retained.');
+        else {
+          assert.deepEqual(request.tools.map(tool => tool.name), mode === 'bare' ? ['read'] : ['read', 'todo_update']);
+          if (++turns === 1) {
+            if (mode !== 'bare') yield providerEvent(request.requestId, 'tool.call', { callId: 'native:progress', name: 'todo_update',
+              input: { items: [{ text: 'Read evidence', status: 'inProgress' }] } });
+            yield providerEvent(request.requestId, 'tool.call', { callId: 'native:read', name: 'read', input: { path: 'module.ts' } });
+          } else {
+            assert.ok(request.messages.some(message => message.role === 'tool' && message.content.includes('Observed file evidence.')));
+            yield answer(request, 'Read complete.');
+          }
+        }
+        yield done(request);
+      } },
+    });
+    t.after(() => actor.dispose());
+    await actor.submit(messageCommand(sessionId, `command:assembly-${mode}`, 'Read the file and report.'));
+    const projection = await completed(actor);
+    assert.equal(executions, 1);
+    assert.equal(turns, 2);
+    assert.equal(Boolean(projection.todoList), mode !== 'bare');
+    assert.deepEqual(purposes, mode === 'summary' ? ['agent', 'agent', 'contextCompaction'] : ['agent', 'agent']);
+  }
+});
+
+test('minimal loop without compaction still enforces input and output budgets before contacting the provider', async t => {
+  for (const [budget, text, code] of [[8000, oldText, 'context_input_budget_exceeded'], [1, 'Small input', 'context_budget_invalid']]) {
+    const journal = new InMemoryCommandJournal(), sessionId = `session:no-compaction-${budget}`;
+    await createSession(journal, sessionId);
+    const registry = new SessionConfigurationRegistry();
+    const capabilities = await registry.create(registry.resolve(undefined, {
+      context: { id: 'journal', parameters: { maxTokens: budget } }, compaction: { id: 'none' }, controls: { id: 'none' },
+    }, true));
+    let calls = 0;
+    const actor = new SessionActor(sessionId, journal, { capabilities, kernel: emptyKernel(),
+      runPreparation: fakeRunPreparation({ contextWindowTokens: 200_000 }).port,
+      provider: { async *stream() { calls++; throw new Error('invalid_budget_reached_provider'); } }, async dispose() {} });
+    t.after(() => actor.dispose());
+    await actor.submit(messageCommand(sessionId, `command:no-compaction-${budget}`, text));
+    const projection = await waitForProjection(actor, terminal);
+    assert.equal(projection.run.status, 'failed');
+    assert.equal(projection.terminalError.code, code);
+    assert.equal(calls, 0);
+    const events = await readEvents(journal, sessionId);
+    assert.ok(events.some(event => event.type === 'message.committed' && event.payload.content === text));
+    assert.ok(!events.some(event => ['context.compaction.requested', 'context.composed'].includes(event.type)));
+  }
+});
+
 test('a failed automatic summary retains the final answer, original history and failure without committing a checkpoint', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:auto-failure';
   await createSession(journal, sessionId);

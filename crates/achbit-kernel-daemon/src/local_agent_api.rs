@@ -2411,7 +2411,10 @@ fn validate_provider_search_binding(
     match runtime.web_search_owner.as_str() {
         "providerHosted" => {
             let request_matches_purpose = match purpose {
-                "agent" | "contextCompaction" => hosted_search_requested,
+                // The frozen binding is a capability ceiling, not a requirement to
+                // expose search in every request. History handoff and unconfirmed
+                // Plans narrow the tool surface; their compaction uses that surface.
+                "agent" | "contextCompaction" => hosted_tools.is_empty() || hosted_search_requested,
                 "approvalReview" => hosted_tools.is_empty(),
                 _ => false,
             };
@@ -2626,8 +2629,8 @@ mod tests {
     }
 
     #[test]
-    fn compaction_retains_hosted_definitions_and_approval_disables_hosted_search() {
-        let runtime = RunProviderRuntime {
+    fn provider_search_binding_allows_stage_narrowing_but_never_expansion() {
+        let mut runtime = RunProviderRuntime {
             reasoning_effort_override: None,
             provider_runtime_ref: "provider-runtime:test".to_string(),
             profile_id: "profile:test".to_string(),
@@ -2643,24 +2646,45 @@ mod tests {
             provider_tool_type: "web_search".to_string(),
         };
 
+        for purpose in ["agent", "contextCompaction"] {
+            assert!(validate_provider_search_binding(&runtime, purpose, &[]).is_ok());
+            assert!(validate_provider_search_binding(
+                &runtime,
+                purpose,
+                std::slice::from_ref(&hosted_tool),
+            )
+            .is_ok());
+            let wrong_tool = LocalProviderHostedTool {
+                tool_type: "webSearch".to_string(),
+                provider_tool_type: "other_tool".to_string(),
+            };
+            assert!(validate_provider_search_binding(&runtime, purpose, &[wrong_tool]).is_err());
+        }
+        assert!(validate_provider_search_binding(&runtime, "approvalReview", &[]).is_ok());
         assert!(validate_provider_search_binding(
             &runtime,
-            "agent",
+            "approvalReview",
             std::slice::from_ref(&hosted_tool),
         )
-        .is_ok());
-        assert!(validate_provider_search_binding(&runtime, "approvalReview", &[]).is_ok());
+        .is_err());
+        assert!(validate_provider_search_binding(&runtime, "unknown", &[]).is_err());
+
+        for owner in ["kernelAdapter", "unavailable"] {
+            runtime.web_search_owner = owner.to_string();
+            assert!(validate_provider_search_binding(&runtime, "agent", &[]).is_ok());
+            assert!(validate_provider_search_binding(
+                &runtime,
+                "agent",
+                std::slice::from_ref(&hosted_tool),
+            )
+            .is_err());
+        }
+        runtime.web_search_owner = "providerHosted".to_string();
+        runtime.api_surface = "chatCompletions".to_string();
         assert!(validate_provider_search_binding(&runtime, "agent", &[]).is_err());
-        assert!(validate_provider_search_binding(&runtime, "contextCompaction", &[]).is_err());
-        assert!(validate_provider_search_binding(
-            &runtime,
-            "contextCompaction",
-            std::slice::from_ref(&hosted_tool)
-        )
-        .is_ok());
-        assert!(
-            validate_provider_search_binding(&runtime, "approvalReview", &[hosted_tool]).is_err()
-        );
+        runtime.api_surface = "responses".to_string();
+        runtime.hosted_web_search = "none".to_string();
+        assert!(validate_provider_search_binding(&runtime, "agent", &[]).is_err());
     }
 
     #[test]

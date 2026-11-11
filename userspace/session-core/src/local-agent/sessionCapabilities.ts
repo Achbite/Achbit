@@ -1,6 +1,7 @@
 import { LoopFailure } from './loopFailure.js';
 import { buildAgentProviderRequest } from './contextComposer.js';
-import { estimateContextInput, prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
+import { estimateContextInput } from './contextBudget.js';
+import { prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
 import { presentArtifacts } from './deliverables.js';
 import { publishPlan, requestedPlanToolStage } from './planStage.js';
 import { preparePluginActivation } from './pluginActivation.js';
@@ -12,23 +13,25 @@ import type { SessionState } from './reducer.js';
 
 export function createSessionCapabilities(): Required<SessionCapabilities> {
   return {
-    context: { prepare: buildAgentProviderRequest, windowTokens: runtime => runtime.provider.contextWindowTokens },
-    compaction: {
-      settings: runtime => runtime.contextManagement,
-      prepare: prepareContextCompaction,
-      pressureCutoff: pressureCompactionCutoff,
-      estimateInput: estimateContextInput,
-    },
-    controls: {
-      decode: decodeSessionControlCall,
-      preparePlugins: preparePluginActivation,
-      toolStage: requestedPlanToolStage,
-      publishPlan,
-      presentArtifacts,
-      updateTodo: todoUpdateFact,
-    },
+    context: createContextCapability(),
+    compaction: createCompactionCapability(),
+    controls: createControlCapability(),
     async dispose() {},
   };
+}
+
+export function createContextCapability(): SessionCapabilities['context'] {
+  return { prepare: buildAgentProviderRequest, windowTokens: runtime => runtime.provider.contextWindowTokens };
+}
+
+export function createCompactionCapability(): NonNullable<SessionCapabilities['compaction']> {
+  return { settings: runtime => runtime.contextManagement, prepare: prepareContextCompaction,
+    pressureCutoff: pressureCompactionCutoff, estimateInput: estimateContextInput };
+}
+
+export function createControlCapability(): NonNullable<SessionCapabilities['controls']> {
+  return { decode: decodeSessionControlCall, preparePlugins: preparePluginActivation,
+    toolStage: requestedPlanToolStage, publishPlan, presentArtifacts, updateTodo: todoUpdateFact };
 }
 
 export function stageForRequest(capabilities: SessionCapabilities, runtime: RunRuntimeSnapshot, state: SessionState): SessionToolStage | undefined {

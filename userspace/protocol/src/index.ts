@@ -6,7 +6,7 @@ export * from './llm.js';
 export * from './modelServices.js';
 export * from './localAgent.js';
 
-export { isErrorDiagnostics, isLocalAgentErrorValue } from './errorDiagnostics.js';
+export { isErrorDiagnostics, isLocalAgentErrorValue, runFailureKind } from './errorDiagnostics.js';
 
 export * from './permissions.js';
 export * from './agentRecipe.js';

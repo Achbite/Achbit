@@ -204,12 +204,16 @@ test('the tool stage owns Plan guidance and only callable basic operations are n
   };
   const ordinary = compose({});
   assert.equal(ordinary.has('session:tool-stage'), false);
+  assert.match(ordinary.get('instruction:achbit.workspace-autonomy'), /Distinguish missing dependencies from denied access/u);
+  assert.match(ordinary.get('instruction:achbit.workspace-autonomy'), /Do not widen access or retry a denied operation without authorization/u);
   assert.match(ordinary.get('instruction:achbit.coding-tools'), /inspect_file:.*contents/u);
   assert.match(ordinary.get('instruction:achbit.coding-tools'), /powershell:/u);
   const [descriptions, rules] = ordinary.get('instruction:achbit.coding-tools').split('\n\n');
   assert.match(descriptions, /^<tools>[\s\S]*inspect_file:[\s\S]*powershell:[\s\S]*fs_edit:[\s\S]*fs_write:[\s\S]*<\/tools>$/u);
   assert.doesNotMatch(descriptions, /edits\[\]\.oldText/u);
   assert.match(rules, /^<rules>[\s\S]*Use inspect_file[\s\S]*edits\[\]\.oldText[\s\S]*<\/rules>$/u);
+  assert.match(rules, /paths observed in listings[\s\S]*after its producing command has completed/u);
+  assert.match(rules, /keep ownership of test processes until they exit/u);
   assert.doesNotMatch(ordinary.get('instruction:achbit.coding-tools'), /bash:|fs_read:/u);
   runtime.planMode = 'manual';
   runtime.permissions['agent.permissions.workspaceMutation'] = 'plan';

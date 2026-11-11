@@ -67,9 +67,9 @@ For compiler outputs alone, use `bash ./build.sh --stage code`. It compiles shar
 
 Package stages compile the selected targets before assembling complete runtime directories and distribution files. Unavailable targets are reported explicitly; a failed build returns an error. Windows builds run in the Docker toolchain, and Linux packages match the container's architecture. Native macOS packaging needs an Apple Silicon Mac and the host requirements described in the README.
 
-For macOS local development, including forks, run `bash scripts/setup-macos-signing.sh` once on the Mac before packaging. It prepares a persistent signing identity in your login Keychain. It does not require an Apple Developer account or put the private key in the repository or package. An existing identity can be selected with `ACHBIT_MACOS_SIGN_IDENTITY`. See [macOS signing](product/operations.md#macos-signing).
+For macOS local development, including forks, run `bash scripts/setup-macos-signing.sh` once on the Mac before packaging. It prepares a persistent signing identity in your login Keychain. It does not require an Apple Developer account or put the private key in the repository or package. An existing identity can be selected with `ACHBIT_MACOS_SIGN_IDENTITY`. For a dedicated development keychain, configure the Mac-host signing profile described in [macOS signing](product/operations.md#macos-signing); setup then validates that profile, and subsequent native signing unlocks and explicitly selects its keychain.
 
-Daily runtime builds reuse that identity and the existing application identifiers. They sign updated contents automatically and refuse to replace an existing App signed with a different certificate; they do not generate or rotate certificates, modify the Keychain, or reset system permissions.
+Daily runtime builds reuse that identity and the existing application identifiers. They sign updated contents automatically and refuse to replace an existing App signed with a different certificate; they do not generate or rotate certificates, change keychain items or access policies, or reset system permissions. A configured dedicated signing keychain is unlocked before use.
 
 To update only GUI resources in an existing package, run this on the host after preparing its container:
 
@@ -151,6 +151,31 @@ For historical-session latency, measure process startup, navigation readiness an
 Function-tool usage travels with the active wire declaration and its prepared binding. A selected Host product component can contribute stable text to that declaration with `SessionProductComponent.toolGuidance`. On-demand resources use a `contributionId` to join the originating user message or tool result; the journal model view freezes that contribution once sent. Skill entry paths follow the same message/result path, so selecting or reading a Skill does not rewrite core tool declarations. The contributor receives the tools in the current stage and is shared by the main request and compaction. Tool availability, schemas and authorization remain owned by their existing producers.
 
 Product guides are ordinary Markdown files under `productDocsPath`. When selected, the product operations component contributes an on-demand documentation index using the run’s actual product guide directory, including the plugin interface guide under `../plugins/README.md`. The component also supplies Shell resource details after the product or iteration Skill is selected or read. Search and read the guides with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
+
+### Loop assembly
+
+The standard driver follows the request → tools → follow-up/settlement shape of [PI's agent loop](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts). `local-agent/loop.ts` owns orchestration and terminal recovery. `loopProvider.ts` owns stream interpretation, `loopTools.ts` owns Kernel dispatch/cancellation, `loopTurn.ts` owns control and answer settlement, and `loopContext.ts` owns request budgets and optional summaries. `loopCapabilities.ts` owns per-turn implementation leases. Existing journal facts, execution identities and resource ownership remain authoritative.
+
+`SessionConfigurationRegistry` instantiates only the selected context, controls and compaction implementations. `AgentLoopRegistry` selects installed drivers; it does not load code from model-supplied paths. This follows the service ownership and explicit composition separation in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md), using Achbit's existing registries rather than another plugin runtime.
+
+A minimal read-only `AgentRecipe` is:
+
+```json
+{
+  "runner": { "id": "standard" },
+  "configuration": {
+    "context": { "id": "coding" },
+    "compaction": { "id": "none" },
+    "controls": { "id": "none" }
+  },
+  "tools": { "kernel": ["fs.read"], "controls": [], "plugins": false },
+  "productComponents": []
+}
+```
+
+Add the available shell, `fs.edit` and `fs.write` to the selected Kernel tools when the task needs them; the existing permissions still apply. The coding context exposes their actual read/shell/edit/write wire names and generates guidance only for the declared tools, following [PI's tool-aware prompt assembly](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts). Add `controls: {"id":"standard","parameters":{"optionalTools":["todo.update"]}}` and select `todo.update` in `tools.controls` for progress. Select `compaction: {"id":"summary"}` for context summaries. The default product assembly also includes the existing Plan, interaction, Session, artifact and agent components according to the recipe and permissions. Context admission, cancellation and durable recovery remain active in the minimal assembly.
+
+For focused configuration debugging, `context-management.test.mjs` exercises bare read → result → answer, then adds controls and summaries through the same registry. `provider-stages.test.mjs` checks narrowed tool stages; `subagent-configuration.test.mjs` checks recipe propagation. Inspect `context.composed`, `provider.attempt`, tool results and `run.finishing`/`run.settled` in that order. A live managed process continues to belong to its owner; an assistant answer does not transfer process ownership or prove that the run has finished.
 
 ### Shared UI components and regions
 

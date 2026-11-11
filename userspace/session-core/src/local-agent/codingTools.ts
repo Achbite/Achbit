@@ -15,7 +15,8 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
     switch (canonical) {
       case 'fs.read':
         descriptions.push(`- ${name}: Read file or directory contents.`);
-        rules.push(`- Use ${name} to examine files.`);
+        rules.push(`- Use ${name} to examine files. Use paths observed in listings, tool results or user input; do not guess generated filenames.`,
+          '- Read generated output after its producing command has completed. If a path is missing, inspect the producer result and containing directory before retrying.');
         break;
       case 'bash':
         descriptions.push(`- ${name}: Execute Bash commands.`);
@@ -37,6 +38,9 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
     }
   }
   if (!descriptions.length) return;
+  if (active.has('bash') || active.has('powershell')) rules.push(
+    '- Track commands through completion and check their exit status before using their outputs. Use bounded validation runs for interactive applications; keep ownership of test processes until they exit or are explicitly stopped.',
+  );
   return { id: 'achbit.coding-tools', text: [
     '<tools>', ...descriptions, '</tools>', '', '<rules>', ...rules, '</rules>',
   ].join('\n') };

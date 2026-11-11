@@ -158,7 +158,23 @@ impl Connection {
     }
 
     fn stop_and_wait(&mut self) -> Result<(), String> {
+        if self.exited()? {
+            return Ok(());
+        }
         let deadline = Instant::now() + Duration::from_secs(5);
+        // The channel and the owned process have independent lifetimes. A reset
+        // or timeout must not skip process cleanup or replace its exit proof.
+        let channel = self.close_channel(deadline);
+        match self.wait_for_exit(deadline) {
+            Ok(()) => Ok(()),
+            Err(cleanup) => Err(match channel {
+                Ok(()) => cleanup,
+                Err(channel) => format!("{channel}; cleanup: {cleanup}"),
+            }),
+        }
+    }
+
+    fn close_channel(&mut self, deadline: Instant) -> Result<(), String> {
         if let Err(error) = self.stream.get_mut().shutdown(Shutdown::Write) {
             if error.kind() != std::io::ErrorKind::NotConnected {
                 return Err(format!("computer_component_shutdown_failed: {error}"));
@@ -182,7 +198,7 @@ impl Connection {
                 Err(error) => return Err(format!("computer_component_shutdown_failed: {error}")),
             }
         }
-        self.wait_for_exit(deadline)
+        Ok(())
     }
 
     /// EOF confirms channel closure, not App exit: termination is dispatched
@@ -219,10 +235,17 @@ impl Connection {
 
     #[cfg(windows)]
     fn exited(&mut self) -> Result<bool, String> {
-        self.process_exit
+        let child_exited = self
+            .process_exit
             .child
             .try_wait()
             .map(|status| status.is_some())
+            .map_err(|error| format!("computer_component_exit_wait_failed: {error}"))?;
+        // The helper can exit while a child still owns resources in its Job.
+        self.process_exit
+            .job
+            .is_empty()
+            .map(|tree_exited| child_exited && tree_exited)
             .map_err(|error| format!("computer_component_exit_wait_failed: {error}"))
     }
 
@@ -570,7 +593,23 @@ impl ComputerUseHost {
             }
         }
         let connection = slot.as_mut().expect("started component");
-        Self::exchange(connection, binding, input)
+        let result = Self::exchange(connection, binding, input);
+        if input["action"] == "computer:releaseRun" {
+            if let Err(channel) = result {
+                // A disconnect first observed by release needs cleanup in this
+                // same call. Never start a replacement or replay a desktop action.
+                connection
+                    .stop()
+                    .map_err(|cleanup| format!("{channel}; cleanup: {cleanup}"))?;
+                *slot = None;
+                *self
+                    .preview_endpoint
+                    .lock()
+                    .map_err(|_| "computer_preview_state_unavailable")? = None;
+                return Ok(json!({"ok":true,"data":{"released":true}}));
+            }
+        }
+        result
     }
 
     /// GUI presentation uses an existing executor only. It must not launch or
@@ -684,6 +723,10 @@ impl ComputerUseHost {
         result
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "computer_use/windows_cleanup_tests.rs"]
+mod cleanup_tests;
 
 #[cfg(all(test, windows))]
 mod tests {

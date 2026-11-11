@@ -263,7 +263,7 @@ export interface ErrorDiagnostics {
   isBody?: boolean;
   stopReason?: string;
   archivePath?: string;
-  providerError?: { code?: string; type?: string; retryDirective?: string };
+  providerError?: { code?: string; type?: string; status?: string; httpStatus?: number; retryDirective?: string };
   secondary?: Array<{ code: string; message: string }>;
 }
 
@@ -1930,6 +1930,7 @@ export interface ProviderRequest {
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   messages: readonly ModelMessage[];
   tools: readonly ProviderToolDefinition[];
+  /** Stage-selected subset of the frozen run's hosted capabilities; omission never changes ownership. */
   hostedTools: readonly ProviderHostedToolDefinition[];
 }
 

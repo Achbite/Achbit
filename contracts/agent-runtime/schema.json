@@ -3766,7 +3766,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [],
-          "properties": {"code": {"$ref": "#/$defs/Id"}, "type": {"$ref": "#/$defs/Id"}, "retryDirective": {"$ref": "#/$defs/Id"}},
+          "properties": {"code": {"$ref": "#/$defs/Id"}, "type": {"$ref": "#/$defs/Id"}, "status": {"$ref": "#/$defs/Id"}, "httpStatus": {"type": "integer", "minimum": 100, "maximum": 599}, "retryDirective": {"$ref": "#/$defs/Id"}},
           "minProperties": 1
         },
         "secondary": {

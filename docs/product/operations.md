@@ -146,6 +146,18 @@ Archive an existing file with `artifact.prepare`, or register a live URL with `a
 
 Authorized macOS builds use a persistent signer, defaulting to `Achbit Local Development`; `ACHBIT_MACOS_SIGN_IDENTITY` selects another. Initial setup is `bash scripts/setup-macos-signing.sh` on the Mac. The private key stays in that user's keychain; system password/trust prompts require human handling.
 
+A Mac can isolate an existing development identity in a dedicated file-based keychain. Keep the same certificate and private key, grant `/usr/bin/codesign` access and the `apple-tool:,apple:` partition list, and configure `~/Library/Application Support/Achbit-build/macos-signing.json`:
+
+```json
+{
+  "identity": "<existing certificate SHA-1 fingerprint>",
+  "keychain": "/absolute/path/to/development.keychain-db",
+  "passwordFile": "/absolute/path/to/development-keychain.password"
+}
+```
+
+The password file contains one nonempty line, must belong to the current user, and must grant no permissions to group or other users; mode `0600` is recommended. Use a separate random development-keychain password; keep both files outside the checkout and container. Native packaging, Computer Use packaging and UI updates read this host profile at invocation time, unlock that keychain through `security` stdin, and restrict identity lookup and signing to it. `ACHBIT_MACOS_SIGN_IDENTITY` still overrides the profile's identity selector. Missing or invalid configured files, unlock failures and missing identities stop the build; they do not fall back to the login keychain. Without a profile, the existing default-keychain workflow is unchanged. Running setup with a profile validates the configured identity instead of creating another certificate. This isolates signing from login-keychain state; it does not change macOS screen-unlock settings.
+
 Keep signer and bundle identity stable across updates. The Computer Use helper has its own Accessibility/Screen Recording grants. Use its `status` to inspect the actual running helper and permission error; do not reset OS permissions or replace unrelated apps as a generic fix. From a source checkout, `bash ./build.sh` updates the local runnable product; `bash ./build.sh --stage package-macos` explicitly builds the macOS distribution package. For isolated Debug builds, use [Debug control](debug-control.md).
 
 ## Completion reminders

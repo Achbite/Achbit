@@ -143,6 +143,8 @@ pub struct ErrorDiagnostics {
 pub struct ProviderErrorDetails {
     pub code: Option<String>,
     pub r#type: Option<String>,
+    pub status: Option<String>,
+    pub http_status: Option<u16>,
     pub retry_directive: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

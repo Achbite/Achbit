@@ -16,6 +16,20 @@ export ACHBIT_USER_ROOT=/absolute/debug-state
 
 On Windows, use `.\achbit-debug.cmd` and set `$env:ACHBIT_USER_ROOT = 'E:\debug-state'` in PowerShell. Each connection command requires an explicit state directory. Do not reuse standard application data or copy its credentials by default.
 
+## Packaged Provider-stage checks
+
+After building, run the existing fixture script on the target host from the checkout:
+
+```sh
+node scripts/tests/provider-stages-debug.mjs \
+  --artifact "$PWD/bin/debug/macos-arm64" \
+  --work-root "$PWD/.task-artifacts/provider-stages-run-001"
+```
+
+The work-root parent must exist and the run directory must be new. On Windows, use absolute paths for `bin/debug/win64` and a new work-root. Pass the package directory containing `Achbit-Debug.app` on macOS; the script resolves its `Contents/Resources` and `Contents/MacOS` paths. Windows uses the flat package directory.
+
+The eight scenarios cover ordinary work, model handoff, manual Plan confirmation, compaction, disabled hosted search, handoff input budgets, HTTP 503, and an incomplete response caused by `max_output_tokens`. The last two assert the packaged shared classifier, retain the original error, and require one request with no automatic retry. `report.json` records the package identity, cases and request counts. These checks use a loopback Responses fixture through the packaged Host/Session/Kernel, stop their owned Debug instance, and do not establish real-Provider or GUI rendering acceptance.
+
 ## Startup timing
 
 To investigate startup latency, set `ACHBIT_STARTUP_TIMING=1` for the target process. The GUI and its Host emit `[startup-timing]` records to stderr with stage, PID, wall-clock microseconds, and elapsed process time. This is disabled by default and excludes connection tokens and user content. GUI records are in its stderr; Host records are in the instance's startup diagnostics directory, in `daemon.stderr.log`.

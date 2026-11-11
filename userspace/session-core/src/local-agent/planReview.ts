@@ -5,7 +5,7 @@ import { buildContextCompositionReceipt } from './contextComposer.js';
 import { LoopFailure } from './loopFailure.js';
 import type { LoopSnapshot } from './loop.js';
 import type { ContextMessageContribution } from './plugins.js';
-import { estimateContextInput } from './compaction.js';
+import { estimateContextInput } from './contextBudget.js';
 import { requestResourceBindings } from './workspaceBindings.js';
 
 export const PLAN_REVIEW_INSTRUCTIONS = `Review one proposed Plan revision on the user's behalf. This is a fresh Plan-only review, separate from the working Agent and every execution/Shell review.

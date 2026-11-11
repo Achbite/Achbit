@@ -303,7 +303,6 @@ fn binary_extension(extension: &str) -> bool {
             | "lib"
             | "node"
             | "o"
-            | "obj"
             | "pdf"
             | "png"
             | "jpg"
@@ -448,6 +447,20 @@ mod tests {
         let skipped = read_text_file_for_llm(file.path()).expect_err("ELF must be skipped");
         assert_eq!(skipped.reason, "binary_magic");
         assert_eq!(skipped.classification.magic.as_deref(), Some("elf"));
+    }
+
+    #[test]
+    fn obj_uses_content_to_distinguish_wavefront_text_from_binary_object_files() {
+        let wavefront = b"# Wavefront mesh\no track\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let file = temp_file("track.obj", wavefront);
+        let read = read_text_file_for_llm(file.path()).expect("Wavefront OBJ is text");
+        assert_eq!(read.content.as_bytes(), wavefront);
+        assert!(!read.classification.binary);
+        let binary = temp_file("compiled.obj", b"\x64\x86\x01\x00\x00\x00COFF");
+        assert_eq!(
+            read_text_file_for_llm(binary.path()).unwrap_err().reason,
+            "binary_content"
+        );
     }
 
     #[test]
