@@ -14,6 +14,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 require = fixture.require
 COMMAND = "[IO.File]::AppendAllText((Join-Path (Get-Location) 'approved.txt'), \"approved`n\")" if os.name == 'nt' else "printf 'approved\\n' >> approved.txt"
+NETWORK_FAILURES = 6
 PARTIAL_COMMAND = "Set-Content partial.txt unexpected" if os.name == 'nt' else "printf unexpected > partial.txt"
 
 
@@ -25,14 +26,15 @@ class Provider(fixture.MockProviderHandler):
             if self.respond_to_title(body):
                 return
             ordinal, names, results = state.inspect(body)
-            require(ordinal <= 4, 'Retry or continuation sent an extra Agent request')
+            require(ordinal <= NETWORK_FAILURES + 2, 'Retry or continuation sent an extra Agent request')
             self.send_response(200)
             self.send_header('content-type', 'text/event-stream')
             self.send_header('connection', 'close')
-            if ordinal <= 2:
+            if ordinal <= NETWORK_FAILURES:
                 # A valid HTTP chunk followed by EOF without its terminating zero chunk.
                 # This exercises the real transport diagnostic, not a mocked retry flag.
-                self.send_header('transfer-encoding', 'chunked')
+                if ordinal <= 2:
+                    self.send_header('transfer-encoding', 'chunked')
                 self.end_headers()
                 payload = {'choices': [{'index': 0, 'delta': {
                     'content': 'Discard this incomplete answer.',
@@ -41,10 +43,17 @@ class Provider(fixture.MockProviderHandler):
                     }}],
                 }, 'finish_reason': None}]}
                 chunk = ('data: ' + json.dumps(payload) + '\n\n').encode()
-                self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                if ordinal <= 2:
+                    self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                elif ordinal <= 4:
+                    # Complete HTTP body, but the model never sent its terminal marker.
+                    self.wfile.write(chunk)
+                else:
+                    # The last SSE frame itself was cut in half.
+                    self.wfile.write(chunk + b'data: {"choices":')
                 self.wfile.flush()
                 self.close_connection = True
-            elif ordinal == 3:
+            elif ordinal == NETWORK_FAILURES + 1:
                 self.end_headers()
                 self._send_tool_calls([('approved-command', names['bash'], {
                     'command': COMMAND, 'requestHostPermission': 'Append the requested line after user approval.',
@@ -85,7 +94,7 @@ def run():
             fixture.cli(daemon, session, '/permissions ' + json.dumps({
                 'agent.permissions.shell': 'ask', 'agent.permissions.shellAccess': 'full',
             }))
-            fixture.cli(daemon, session, 'Append approved to approved.txt once after permission is granted.', expected=5)
+            fixture.cli(daemon, session, 'Append approved to approved.txt once after permission is granted.', expected=5, run_timeout_seconds=90)
             state.assert_healthy()
             waiting = fixture.projection(daemon, session)
             run_id = waiting['run']['runId']
@@ -95,7 +104,7 @@ def run():
             require(approval is not None, 'The recovered command bypassed user approval')
             require(not (workspace / 'approved.txt').exists() and not (workspace / 'partial.txt').exists(),
                     'A partial attempt or unapproved command executed')
-            require(len(state.requests) == 3, 'The second network failure prematurely stopped retries')
+            require(len(state.requests) == NETWORK_FAILURES + 1, 'Network failures prematurely stopped retries')
             for request in state.requests[1:]:
                 require(request['messages'] == state.requests[0]['messages']
                         and request['tools'] == state.requests[0]['tools'], 'Retry changed the logical request')
@@ -105,17 +114,18 @@ def run():
                     'Waiting for approval started a tool or terminated the Loop')
             attempts = [event['payload'] for event in journal if event['type'] == 'provider.attempt.updated']
             started = [attempt for attempt in attempts if attempt['phase'] == 'started']
-            require([attempt['attempt'] for attempt in started] == [1, 2, 3], 'Missing retry attempt')
+            require([attempt['attempt'] for attempt in started] == list(range(1, NETWORK_FAILURES + 2)), 'Missing retry attempt')
             require(len({attempt['providerRequestId'] for attempt in started}) == 1
-                    and len({attempt['providerAttemptId'] for attempt in started}) == 3,
+                    and len({attempt['providerAttemptId'] for attempt in started}) == NETWORK_FAILURES + 1,
                     'Retries lost their shared request or distinct attempt identity')
             failures = [attempt for attempt in attempts if attempt['phase'] == 'failed']
             retries = [attempt for attempt in attempts if attempt['phase'] == 'retryWaiting']
-            require(len(failures) == len(retries) == 2, 'Network failure or retry facts were lost')
-            for failure, retry in zip(failures, retries):
+            require(len(failures) == len(retries) == NETWORK_FAILURES, 'Network failure or retry facts were lost')
+            expected_codes = ['provider_stream_read_failed'] * 2 + ['provider_stream_native_terminal_missing'] * 2 + ['provider_stream_incomplete'] * 2
+            for failure, retry, expected_code in zip(failures, retries, expected_codes):
                 error = failure['error']
                 diagnostics = error['diagnostics']
-                require(error['code'] == 'provider_stream_read_failed' and diagnostics['phase'] == 'responseBody'
+                require(error['code'] == expected_code and diagnostics['phase'] == 'responseBody'
                         and diagnostics['category'] == 'network' and diagnostics['retryable'] is True
                         and any(cause.get('kind') == 'UnexpectedEof' for cause in diagnostics['causes']),
                         'Truncated response lost the original transient EOF diagnostic')
@@ -127,7 +137,7 @@ def run():
             require(done['run']['runId'] == run_id and done['run']['status'] == 'completed',
                     'Approval failed to resume and complete the same run')
             require(done['pendingApproval'] is None and not done.get('failureSnapshot'), 'Stale wait or failure remained')
-            require('retry-approval-complete' in reply.stdout and len(state.requests) == 4,
+            require('retry-approval-complete' in reply.stdout and len(state.requests) == NETWORK_FAILURES + 2,
                     'The CLI did not receive the post-tool answer exactly once')
             require((workspace / 'approved.txt').read_text() == 'approved\n' and not (workspace / 'partial.txt').exists(),
                     'Tool effects were missing, duplicated or included an incomplete attempt')
@@ -148,7 +158,7 @@ def run():
                     'Approval, execution, release and settlement were out of order')
             require(single('tool.requested')['callId'] == approval['callId'], 'Incomplete tools were dispatched')
             require(len(state.title_requests) == 1, 'Auxiliary title request was not independently served')
-            print('[provider-retry-cli] PASS: two real HTTP EOF failures, three attempts on one request, no partial effects, '
+            print('[provider-retry-cli] PASS: six real HTTP/SSE EOF failures, seven attempts on one request, no partial effects, '
                   'CLI waits for approval, one execution and same-run settlement with owned cleanup')
         except BaseException:
             print(daemon.log_tail())

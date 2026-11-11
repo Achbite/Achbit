@@ -40,7 +40,6 @@ const EXIT_RUN_INDETERMINATE: i32 = 7;
 const EXIT_RUN_CANCELLED: i32 = 8;
 const EXIT_INTERRUPTED: i32 = 130;
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
-const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(600);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
@@ -932,12 +931,10 @@ async fn wait_for_projection(
     before: &SessionProjection,
     plain: bool,
 ) -> Result<Outcome, String> {
-    let timeout = env::var("ACHBIT_CLI_RUN_TIMEOUT_MS")
+    let deadline = env::var("ACHBIT_CLI_RUN_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_RUN_TIMEOUT);
-    let deadline = Instant::now() + timeout;
+        .map(|milliseconds| Instant::now() + Duration::from_millis(milliseconds));
     let session_id = &before.session_id;
     let mut output = if plain {
         CliRenderState::default()
@@ -945,7 +942,7 @@ async fn wait_for_projection(
         CliRenderState::after(before)
     };
     loop {
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             output
                 .finish_text(&mut io::stdout().lock())
                 .map_err(|error| error.to_string())?;

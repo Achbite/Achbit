@@ -22,6 +22,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 tokio = { workspace = true, features = ["process", "io-util"] }
 tower-http.workspace = true
 reqwest.workspace = true
+hyper.workspace = true
 async-stream.workspace = true
 bytes.workspace = true
 getrandom = "0.3"

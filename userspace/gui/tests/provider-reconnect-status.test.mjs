@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
 import { runFailureKind } from '@achbit/protocol';
-import { loadGuiModule } from './gui-projection-contract.mjs';
+import { decodeGuiProjection, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('reconnect status spans retry wait and reconnect send, and clears when content resumes or run settles', async t => {
   const { providerRetryAttempt, ProviderRetryStatus } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
@@ -11,11 +11,11 @@ test('reconnect status spans retry wait and reconnect send, and clears when cont
   const fact = { providerRequestId: 'request:1', providerAttemptId: 'attempt:1', purpose: 'agent', attempt: 1, phase: 'retryWaiting', error };
   const projection = { run: { status: 'running' }, providerAttempts: [fact] };
   assert.equal(providerRetryAttempt(projection), 2);
-  assert.match(renderToStaticMarkup(ProviderRetryStatus({ projection, language: 'zh-CN' })), /正在重新连接 2\/5/);
+  assert.match(renderToStaticMarkup(ProviderRetryStatus({ projection, language: 'zh-CN' })), /正在重新连接 · 第 2 次尝试/);
   assert.deepEqual(projection.providerAttempts[0].error, error, 'presentation never removes original diagnostics');
   projection.providerAttempts.push({ ...fact, providerAttemptId: 'attempt:2', attempt: 2, phase: 'started', error: undefined });
   assert.equal(providerRetryAttempt(projection, { phase: 'waitingResponse' }), 2);
-  assert.match(renderToStaticMarkup(ProviderRetryStatus({ projection, language: 'en-US' })), /Reconnecting 2\/5/);
+  assert.match(renderToStaticMarkup(ProviderRetryStatus({ projection, language: 'en-US' })), /Reconnecting · attempt 2/);
   for (const phase of ['reasoning', 'awaitingOutput', 'generatingOutput']) assert.equal(providerRetryAttempt(projection, { phase }), null);
   projection.providerAttempts.at(-1).phase = 'completed';
   assert.equal(providerRetryAttempt(projection), null);
@@ -27,6 +27,11 @@ test('reconnect status spans retry wait and reconnect send, and clears when cont
   projection.run.status = 'running';
   projection.providerAttempts = [{ ...fact, phase: 'started' }];
   assert.equal(providerRetryAttempt(projection), null, 'first send is not a reconnection');
+  projection.providerAttempts.push({ ...fact, providerAttemptId: 'attempt:9', attempt: 9, phase: 'retryWaiting' });
+  assert.equal(providerRetryAttempt(projection), 10);
+  const recovering = renderToStaticMarkup(ProviderRetryStatus({ projection, language: 'zh-CN' }));
+  assert.match(recovering, /第 10 次尝试/);
+  assert.doesNotMatch(recovering, /\/5/);
 });
 
 test('terminal status names the provider failure and reserves Loop failure for internal errors', async t => {
@@ -43,6 +48,8 @@ test('terminal status names the provider failure and reserves Loop failure for i
     [provider({ code: '503', status: 'UNAVAILABLE', httpStatus: 503 }), '模型服务过载或暂不可用'],
     [provider({ code: 'insufficient_quota', httpStatus: 429 }), '模型服务额度或余额不足'],
     [provider({ httpStatus: 402 }), '模型服务额度或余额不足'],
+    ...['credit_balance_exhausted', 'organization_spend_limit_exceeded', 'project_spend_limit_exceeded']
+      .map(code => [provider({ code, httpStatus: 429 }), '模型服务额度或余额不足']),
     [provider({ type: 'rate_limit_error' }), '模型请求受到限流'],
     [provider({ status: 'RESOURCE_EXHAUSTED' }), '模型请求受到限流'],
     [provider({ httpStatus: 429 }), '模型请求受到限流'],
@@ -105,5 +112,19 @@ test('incomplete Responses output keeps its cause and is not presented as a reje
       assert.match(html, /response\.incomplete/);
       assert.deepEqual(error, before, 'presentation preserves the original failure, diagnostics and retry policy');
     }
+  }
+});
+
+
+test('GUI projection accepts continued reconnects while rejecting invalid attempt ordinals', async () => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const projection = projectSession(emptySessionState('session:reconnecting'));
+  projection.providerAttempts = [{ providerRequestId: 'request:reconnecting', providerAttemptId: 'attempt:eleven',
+    runId: 'run:reconnecting', updatedAt: '2026-11-11T00:00:00Z', purpose: 'agent', attempt: 11, phase: 'started' }];
+  assert.deepEqual(await decodeGuiProjection(projection), projection);
+  for (const attempt of [0, -1, 1.5]) {
+    const invalid = structuredClone(projection);
+    invalid.providerAttempts[0].attempt = attempt;
+    await assert.rejects(decodeGuiProjection(invalid), /conversation_projection_invalid/);
   }
 });

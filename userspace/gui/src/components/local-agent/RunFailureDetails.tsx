@@ -60,7 +60,7 @@ export function ProviderRetryStatus({ projection, language, activity }: {
   const attempt = providerRetryAttempt(projection, activity);
   if (attempt === null) return null;
   return <aside className="local-agent__retry-status" role="status">
-    <p><AchbitShellIcon name="network" size={16} />{language === 'zh-CN' ? `正在重新连接 ${attempt}/5` : `Reconnecting ${attempt}/5`}</p>
+    <p><AchbitShellIcon name="network" size={16} />{language === 'zh-CN' ? `正在重新连接 · 第 ${attempt} 次尝试` : `Reconnecting · attempt ${attempt}`}</p>
   </aside>;
 }
 

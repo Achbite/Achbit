@@ -3840,7 +3840,7 @@ test('GUI consumes diagnostic attempts and failure snapshots while rejecting mal
   assert.equal(projection.failureSnapshot.error.diagnostics.retryable, false);
   assert.deepEqual(await decodeGuiProjection(projection), projection);
   for (const mutate of [
-    (p) => { p.providerAttempts[0].attempt = 6; },
+    (p) => { p.providerAttempts[0].attempt = 0; },
     (p) => { p.terminalError.diagnostics.retryable = 'yes'; },
     (p) => { p.failureSnapshot.error.diagnostics.causes[0].osCode = 'unknown'; },
     (p) => { p.failureSnapshot.revision = -1; },

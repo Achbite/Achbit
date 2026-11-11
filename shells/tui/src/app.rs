@@ -3083,7 +3083,7 @@ mod input_tests {
         assert!(app
             .renderer()
             .render_plain(&app)
-            .contains("等待第 3/5 次尝试"));
+            .contains("等待第 3 次尝试"));
         let error = json!({"code":"provider_transport_failed","message":"原始连接失败", "diagnostics":{
             "source":"providerTransport","phase":"send","category":"network","retryable":true,
             "causes":[{"message":"Connection refused","osCode":61}]
@@ -3099,7 +3099,7 @@ mod input_tests {
             .unwrap(),
         );
         let text = app.renderer().render_plain(&app);
-        assert!(!text.contains("等待第 3/5 次尝试"));
+        assert!(!text.contains("等待第 3 次尝试"));
         for fact in [
             "原始连接失败",
             "Connection refused",

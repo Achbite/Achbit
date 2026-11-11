@@ -28,7 +28,7 @@ impl ProviderTransport {
                 .connect_timeout(Duration::from_secs(10))
                 // Bound a silent connection, not the total time spent reasoning or streaming.
                 // Session alone decides whether the resulting network failure is retried.
-                .read_timeout(Duration::from_secs(120))
+                .read_timeout(Duration::from_secs(300))
                 .build()?,
         })
     }
@@ -88,6 +88,11 @@ pub(crate) fn network_failure(error: reqwest::Error, phase: &str, secret: Option
             // Session owns the retry budget and never resends a completed turn.
             retryable |= io.kind() == ErrorKind::UnexpectedEof
                 && ((is_connect && phase == "send") || phase == "responseBody");
+        }
+        // HTTP header EOF is a typed Hyper error without an underlying io::Error.
+        // Keep malformed HTTP and explicit upstream failures out of network retries.
+        if let Some(http) = current.downcast_ref::<hyper::Error>() {
+            retryable |= http.is_incomplete_message();
         }
         causes.push(item);
         if causes.len() == 16 {
@@ -283,7 +288,7 @@ mod tests {
             request_received.await.unwrap();
             let error = if phase == "send" {
                 tokio::time::pause();
-                tokio::time::timeout(Duration::from_secs(121), send)
+                tokio::time::timeout(Duration::from_secs(301), send)
                     .await
                     .expect("response headers must have a transport-owned idle timeout")
                     .unwrap()
@@ -292,7 +297,7 @@ mod tests {
                 let mut response = send.await.unwrap().unwrap();
                 assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"x");
                 tokio::time::pause();
-                tokio::time::timeout(Duration::from_secs(121), response.chunk())
+                tokio::time::timeout(Duration::from_secs(301), response.chunk())
                     .await
                     .expect("response body must have a transport-owned idle timeout")
                     .unwrap_err()
@@ -350,7 +355,7 @@ mod tests {
                 Poll::Ready(())
             })
             .await;
-            tokio::time::advance(Duration::from_secs(90)).await;
+            tokio::time::advance(Duration::from_secs(180)).await;
             tokio::time::resume();
             next.send(()).await.unwrap();
             assert_eq!(read.await.unwrap().unwrap().as_ref(), b"x");
@@ -429,6 +434,51 @@ mod tests {
                     "{failure}"
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn response_header_eof_is_transient_but_invalid_http_is_not() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for (reply, retryable) in [
+            (b"".as_slice(), true),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n".as_slice(),
+                true,
+            ),
+            (b"invalid HTTP\r\n\r\n".as_slice(), false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                socket.write_all(reply).await.unwrap();
+                socket.shutdown().await.unwrap();
+            });
+            let error = ProviderTransport::new()
+                .unwrap()
+                .client
+                .get(format!("http://{address}/responses"))
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+                .unwrap_err();
+            peer.await.unwrap();
+            let failure = network_failure(error, "send", None);
+            assert!(valid_diagnostics(&failure["diagnostics"]));
+            assert_eq!(failure["diagnostics"]["retryable"], retryable, "{failure}");
+            assert_eq!(
+                failure["diagnostics"]["category"],
+                if retryable { "network" } else { "transport" }
+            );
         }
     }
 

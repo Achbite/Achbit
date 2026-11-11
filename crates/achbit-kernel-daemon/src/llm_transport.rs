@@ -1905,7 +1905,18 @@ fn archived_provider_event(
 ) -> (String, bool) {
     if event_type == "failed" {
         if !data["diagnostics"].is_object() {
-            data["diagnostics"] = json!({"source":"providerTransport", "phase":"response", "category":"protocol", "retryable":false, "causes":[]});
+            // EOF without the provider's completion marker is an interrupted
+            // transport, not an explicit upstream rejection or a completed turn.
+            let interrupted = matches!(
+                data["code"].as_str(),
+                Some("provider_stream_incomplete" | "provider_stream_native_terminal_missing")
+            );
+            data["diagnostics"] = if interrupted {
+                json!({"source":"providerTransport", "phase":"responseBody", "category":"network", "retryable":true,
+                    "causes":[{"message":data["message"], "kind":"UnexpectedEof"}]})
+            } else {
+                json!({"source":"providerTransport", "phase":"response", "category":"protocol", "retryable":false, "causes":[]})
+            };
         }
         if let Some(path) = archive.path() {
             data["diagnostics"]["archivePath"] = json!(path.to_string_lossy());
@@ -3665,9 +3676,12 @@ mod tests {
             "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4}}\n\n",
             "data: [DONE]\n\n"
         ).as_bytes().to_vec();
-        for (raw, outcome) in [
-            (valid, "completed"),
-            (b"data: {invalid}\n\n".to_vec(), "failed"),
+        for (raw, outcome, retryable) in [
+            (valid, "completed", None),
+            (b"data: {invalid}\n\n".to_vec(), "failed", Some(false)),
+            (b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n".to_vec(), "failed", Some(true)),
+            (b"data: {\"choices\":".to_vec(), "failed", Some(true)),
+            (b"data: {\"error\":{\"code\":\"insufficient_quota\",\"message\":\"Quota exhausted.\"}}\n\n".to_vec(), "failed", Some(false)),
         ] {
             let directory = std::env::temp_dir().join(format!(
                 "achbit-provider-archive-{}-{}",
@@ -3779,6 +3793,17 @@ mod tests {
                 .collect();
             assert_eq!(replay.as_bytes(), delivered.as_ref());
             assert_eq!(lines.last().unwrap()["data"]["outcome"], outcome);
+            if let Some(retryable) = retryable {
+                let failure = &lines.iter().find(|line| line["type"] == "session.event"
+                    && line["data"]["type"] == "failed").unwrap()["data"]["data"];
+                assert!(crate::provider_transport::valid_diagnostics(&failure["diagnostics"]));
+                assert_eq!(failure["diagnostics"]["retryable"], retryable, "{failure}");
+                if retryable {
+                    assert_eq!(failure["diagnostics"]["category"], "network");
+                    assert_eq!(failure["diagnostics"]["causes"][0]["kind"], "UnexpectedEof");
+                    assert!(matches!(failure["code"].as_str(), Some("provider_stream_incomplete" | "provider_stream_native_terminal_missing")));
+                }
+            }
             std::fs::remove_dir_all(directory).unwrap();
         }
     }

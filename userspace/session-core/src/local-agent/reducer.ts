@@ -227,7 +227,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       const composition = next.contextCompositions[compositionIndex(next, fact.providerRequestId, replay)];
       if (!composition || composition.runId !== event.runId || composition.purpose !== fact.purpose) throw new Error('provider_attempt_composition_missing');
       if (fact.phase === 'started') {
-        if (previousAttempt || fact.attempt !== related.length + 1 || fact.attempt > 5
+        if (previousAttempt || fact.attempt !== related.length + 1
           || related.some((item) => !['retryWaiting'].includes(item.phase))) throw new Error('provider_attempt_start_invalid');
       } else if (!previousAttempt || previousAttempt.runId !== event.runId || previousAttempt.providerRequestId !== fact.providerRequestId
         || previousAttempt.attempt !== fact.attempt
