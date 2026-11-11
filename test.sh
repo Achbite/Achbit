@@ -104,6 +104,7 @@ run_cli_e2e() {
   python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
   python3 -I -S ./scripts/tests/provider-retry-cli.py
   python3 -I -S ./scripts/tests/host-update-cli.py
+  python3 -I -S ./scripts/tests/host-restart-cli.py
   python3 -I -S ./scripts/tests/permission-delegation-cli.py
   python3 -I -S ./scripts/tests/agent-composition-cli.py
   python3 -I -S ./scripts/tests/file-access-cli.py

@@ -3,8 +3,10 @@ use crate::prelude::*;
 use crate::{
     request_host_shutdown, shutdown_owned_host_resources, wait_for_host_shutdown, HostState,
 };
+use achbit_host_connection::HostStartGuard;
 use axum::body::Body;
 use std::convert::Infallible;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Default)]
@@ -14,6 +16,8 @@ struct Lifetime {
     clients: usize,
     revision: u64,
     stopping: bool,
+    // Retained until process exit, after publication and the data-root lease are gone.
+    _shutdown_start_guard: Option<HostStartGuard>,
 }
 
 impl Lifetime {
@@ -109,8 +113,8 @@ pub(crate) async fn host_client(Query(query): Query<ClientQuery>) -> Response {
         .expect("Host client response")
 }
 
-pub(crate) async fn monitor_host_lifetime(state: HostState) {
-    if let Err(error) = observe_host_lifetime(&state).await {
+pub(crate) async fn monitor_host_lifetime(state: HostState, data_root: PathBuf) {
+    if let Err(error) = observe_host_lifetime(&state, &data_root).await {
         if !begin_host_shutdown() {
             return;
         }
@@ -141,7 +145,7 @@ pub(crate) fn begin_host_shutdown() -> bool {
     started
 }
 
-async fn observe_host_lifetime(state: &HostState) -> Result<(), String> {
+async fn observe_host_lifetime(state: &HostState, data_root: &Path) -> Result<(), String> {
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if LIFETIME
@@ -193,12 +197,30 @@ async fn observe_host_lifetime(state: &HostState) -> Result<(), String> {
         } else {
             false
         };
-        let stopping = LIFETIME
-            .get()
-            .expect("Host lifetime configured")
-            .lock()
-            .expect("Host lifetime lock")
-            .stop_if_idle(revision, active);
+        if active {
+            continue;
+        }
+        // A shell holds this same lock through discovery, health and its client
+        // lease. Either it attaches before we recheck idle, or waits until this
+        // Host has exited; it cannot observe a half-disposed Session Service.
+        let Some(start_guard) =
+            HostStartGuard::try_acquire(data_root).map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let stopping = {
+            let mut lifetime = LIFETIME
+                .get()
+                .expect("Host lifetime configured")
+                .lock()
+                .expect("Host lifetime lock");
+            if lifetime.stop_if_idle(revision, active) {
+                lifetime._shutdown_start_guard = Some(start_guard);
+                true
+            } else {
+                false
+            }
+        };
         if stopping {
             // Passive HTTP observers do not own Host lifetime. Release owned
             // processes before graceful HTTP draining can wait on those observers.
