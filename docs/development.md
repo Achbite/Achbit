@@ -67,9 +67,9 @@ For compiler outputs alone, use `bash ./build.sh --stage code`. It compiles shar
 
 Package stages compile the selected targets before assembling complete runtime directories and distribution files. Unavailable targets are reported explicitly; a failed build returns an error. Windows builds run in the Docker toolchain, and Linux packages match the container's architecture. Native macOS packaging needs an Apple Silicon Mac and the host requirements described in the README.
 
-For macOS local development, including forks, run `bash scripts/setup-macos-signing.sh` once on the Mac before packaging. It prepares a persistent signing identity in your login Keychain. It does not require an Apple Developer account or put the private key in the repository or package. An existing identity can be selected with `ACHBIT_MACOS_SIGN_IDENTITY`. See [macOS signing](product/operations.md#macos-signing).
+For macOS local development, including forks, run `bash scripts/setup-macos-signing.sh` once on the Mac before packaging. It prepares a persistent signing identity in your login Keychain. It does not require an Apple Developer account or put the private key in the repository or package. An existing identity can be selected with `ACHBIT_MACOS_SIGN_IDENTITY`. For a dedicated development keychain, configure the Mac-host signing profile described in [macOS signing](product/operations.md#macos-signing); setup then validates that profile, and subsequent native signing unlocks and explicitly selects its keychain.
 
-Daily runtime builds reuse that identity and the existing application identifiers. They sign updated contents automatically and refuse to replace an existing App signed with a different certificate; they do not generate or rotate certificates, modify the Keychain, or reset system permissions.
+Daily runtime builds reuse that identity and the existing application identifiers. They sign updated contents automatically and refuse to replace an existing App signed with a different certificate; they do not generate or rotate certificates, change keychain items or access policies, or reset system permissions. A configured dedicated signing keychain is unlocked before use.
 
 To update only GUI resources in an existing package, run this on the host after preparing its container:
 
