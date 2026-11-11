@@ -8,21 +8,29 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
 assert.ok(args.get('--artifact') && args.get('--work-root'), 'Supply --artifact and a new --work-root');
 const artifact = resolve(args.get('--artifact')), root = resolve(args.get('--work-root'));
-const build = JSON.parse(await readFile(join(artifact, 'BUILDINFO.json'), 'utf8'));
+const macos = process.platform === 'darwin';
+const contents = join(artifact, 'Achbit-Debug.app', 'Contents');
+const runtime = macos ? join(contents, 'Resources') : artifact;
+const executables = macos ? join(contents, 'MacOS') : artifact;
+const build = JSON.parse(await readFile(join(runtime, 'BUILDINFO.json'), 'utf8'));
 assert.equal(build.buildKind, 'debug');
 assert.equal(build.debugControl, true);
+// Validate the classifier shipped with this runtime, not the source checkout.
+const { runFailureKind } = await import(pathToFileURL(join(runtime, 'node_modules', '@achbit', 'protocol', 'dist', 'errorDiagnostics.js')).href);
+assert.equal(typeof runFailureKind, 'function');
 await mkdir(root); // Refuse to reuse another test's state or receipts.
 const stateRoot = join(root, 'state'), workspace = join(root, 'workspace');
 await mkdir(workspace);
 const windows = process.platform === 'win32';
-const cli = join(artifact, windows ? 'achbit-cli.exe' : 'achbit-cli');
-const env = { ...process.env, ACHBIT_RUNTIME_DIR: artifact,
-  ACHBIT_KERNEL_BIN: join(artifact, windows ? 'achbit-kernel.exe' : 'achbit-kernel'),
+const cli = join(executables, windows ? 'achbit-cli.exe' : 'achbit-cli');
+const env = { ...process.env, ACHBIT_RUNTIME_DIR: runtime,
+  ACHBIT_KERNEL_BIN: join(executables, windows ? 'achbit-kernel.exe' : 'achbit-kernel'),
   NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
 for (const key of Object.keys(env)) if (/^(?:https?|all)_proxy$/i.test(key)) delete env[key];
 let fileId = 0;
@@ -68,6 +76,20 @@ const server = createServer(async (req, res) => {
     assert.equal(req.url, '/v1/responses');
     let text = ''; for await (const chunk of req) text += chunk;
     const body = JSON.parse(text), tools = body.tools ?? [];
+    if (body.model === 'error-http-503' || body.model === 'error-incomplete') {
+      requests.push({ model: body.model, errorFixture: true });
+      assert.equal(requests.filter(item => item.model === body.model).length, 1, 'Failure must not be retried');
+      if (body.model === 'error-http-503') {
+        res.writeHead(503, { 'content-type': 'application/json', connection: 'close' });
+        res.end(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'Fixture high demand' } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'text/event-stream', connection: 'close' });
+        res.end(`data: ${JSON.stringify({ type: 'response.incomplete', response: {
+          id: 'fixture-incomplete', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
+        } })}\n\n`);
+      }
+      return;
+    }
     const functions = tools.filter(tool => tool.type === 'function');
     const hosted = tools.filter(tool => tool.type === 'web_search');
     const content = JSON.stringify(body.input);
@@ -154,7 +176,7 @@ try {
     baseUrl: `http://127.0.0.1:${server.address().port}/v1`, credentialKind: 'apiKey' };
   await run(['--host-data-dir', join(stateRoot, 'data'), 'connections', 'set', '--input',
     await jsonFile('connection', { connection }), '--api-key-file', keyFile]);
-  for (const id of ['stage-a', 'stage-b', 'stage-disabled', 'stage-small']) {
+  for (const id of ['stage-a', 'stage-b', 'stage-disabled', 'stage-small', 'error-http-503', 'error-incomplete']) {
     await run(['--host-data-dir', join(stateRoot, 'data'), 'models', 'set', '--input', await jsonFile(id, {
       id, connectionId: connection.id, name: id, model: id, kind: 'responses', providerFlavor: 'openai',
       enabled: true, contextWindowTokens: id === 'stage-small' ? 4096 : 200000, maxOutputTokens: 512,
@@ -180,8 +202,30 @@ try {
   assert.equal(oversized.projection.terminalError.code, 'context_input_budget_exceeded');
   assert.equal(oversized.requests.length, 0, 'Over-budget handoff reached the Provider');
   assert.equal(oversized.projection.contextHandoff.status, 'reading');
-  await writeFile(join(root, 'report.json'), JSON.stringify({ build, cases: 6, requests, fixtureErrors }, null, 2));
-  console.log('[provider-stages-debug] PASS all six scenarios through the packaged Debug runtime; no real Provider was called.');
+  const errorCases = [];
+  for (const [profileId, expectedKind] of [['error-http-503', 'unavailable'], ['error-incomplete', 'providerIncomplete']]) {
+    const result = await task(profileId, { text: 'Exercise the local Provider failure fixture.', profileId, recipe }, 'failed');
+    assert.equal(result.requests.length, 1, 'Failure must make exactly one Provider request');
+    const error = result.projection.terminalError;
+    assert.equal(error.diagnostics.source, 'providerTransport');
+    assert.equal(error.diagnostics.category, 'provider');
+    assert.equal(error.diagnostics.retryable, false);
+    if (profileId === 'error-http-503') {
+      assert.equal(error.code, 'provider_http_failed');
+      assert.deepEqual(error.diagnostics.providerError, { code: '503', status: 'UNAVAILABLE', httpStatus: 503 });
+      assert.match(error.message, /Fixture high demand/);
+    } else {
+      assert.equal(error.code, 'provider_response_failed');
+      assert.equal(error.diagnostics.providerError.type, 'response.incomplete');
+      assert.match(error.message, /max_output_tokens/);
+    }
+    const kind = runFailureKind(error);
+    assert.equal(kind, expectedKind);
+    errorCases.push({ profileId, kind, requestCount: result.requests.length, error });
+  }
+  await writeFile(join(root, 'report.json'), JSON.stringify({ build, artifact, runtime, cases: 8,
+    stageCases: 6, errorCases, requestCount: requests.length, requests, fixtureErrors }, null, 2));
+  console.log('[provider-stages-debug] PASS all eight scenarios through the packaged Debug runtime; no real Provider was called.');
 } finally {
   await writeFile(join(root, 'requests.json'), JSON.stringify({ requests, fixtureErrors }, null, 2));
   try {
