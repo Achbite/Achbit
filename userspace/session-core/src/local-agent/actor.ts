@@ -399,11 +399,14 @@ export class SessionActor {
 
   dispose(cancelActiveRun = false): Promise<void> {
     if (this.#disposeTask) return this.#disposeTask;
-    this.#disposed = true;
+    // A confirmed update must deliver cancellation before observers see disposal.
+    this.#disposed = !cancelActiveRun;
     for (const timer of this.#wakeTimers.values()) clearTimeout(timer);
     this.#wakeTimers.clear();
-    for (const wake of this.#changes) wake();
-    if (!cancelActiveRun) this.#active?.controller.abort('session_service_stopped');
+    if (!cancelActiveRun) {
+      for (const wake of this.#changes) wake();
+      this.#active?.controller.abort('session_service_stopped');
+    }
     this.#disposeTask = this.disposeResources(cancelActiveRun);
     return this.#disposeTask;
   }
@@ -424,6 +427,10 @@ export class SessionActor {
         errors.push(error);
       }
     }
+    this.#disposed = true;
+    for (const timer of this.#wakeTimers.values()) clearTimeout(timer);
+    this.#wakeTimers.clear();
+    for (const wake of this.#changes) wake();
     this.#active?.controller.abort('session_service_stopped');
     try {
       await this.#active?.task;
@@ -457,7 +464,7 @@ export class SessionActor {
   /** Trusted idle-Session entry; an admitted run keeps its Loop policy until settlement. */
   async replaceCapabilities(implementation: SessionCapabilities): Promise<void> {
     await this.enqueue(async () => {
-      if (this.#disposed) throw new Error('session_actor_disposed');
+      if (this.#disposed || this.#disposeTask) throw new Error('session_actor_disposed');
       this.assertOperational();
       const { state } = await this.loadSnapshot();
       if (this.#active || state.run && !isTerminal(state.run.status)) {
@@ -468,7 +475,7 @@ export class SessionActor {
   }
 
   private async handleCommand(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
-    if (this.#disposed) throw new Error('session_actor_disposed');
+    if (this.#disposed || this.#disposeTask) throw new Error('session_actor_disposed');
     if (command.sessionId !== this.sessionId) {
       return this.reject(command, 'session_identity_mismatch', '命令不属于当前会话。');
     }

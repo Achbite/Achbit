@@ -83,3 +83,47 @@ test('settled children release Actors; management and history reads stay cold; c
     parent.agentTasks.map(({ text: _text, result: _result, ...task }) => task));
   assert.equal((await readEvents(journal, memberId)).filter(event => event.type === 'session.created').length, 1);
 });
+
+test('confirmed update cancels parent and child before releasing their Actors', async t => {
+  const journal = new InMemoryCommandJournal(), ownerId = 'session:update-owner';
+  const sends = new Map();
+  let service, childId;
+  service = new SessionService(journal, { async create({ sessionId }) {
+    const preparation = fakeRunPreparation();
+    return { composition: { kernel: emptyKernel(), runPreparation: { ...preparation.port, async prepare(input) {
+      const prepared = await preparation.port.prepare(input);
+      prepared.runtimeSnapshot.agentToolsEnabled = true;
+      const creation = (await readEvents(journal, sessionId))[0];
+      if (creation.payload.agentContext) prepared.runtimeSnapshot.agentCapabilities = creation.payload.agentContext.capabilities;
+      return prepared;
+    } }, provider: { async *stream(request, signal) {
+      sends.set(sessionId, (sends.get(sessionId) ?? 0) + 1);
+      if (sessionId === ownerId) {
+        yield providerEvent(request.requestId, 'tool.call', { callId: 'call:update-child', name: 'agent',
+          input: { action: 'spawn', name: 'Child', task: 'Wait for cancellation.', delivery: 'wait' } });
+        yield providerEvent(request.requestId, 'completed', {});
+      } else {
+        childId = sessionId;
+        await new Promise(resolve => signal.aborted ? resolve() : signal.addEventListener('abort', resolve, { once: true }));
+        throw signal.reason;
+      }
+    } }, async dispose() {} } };
+  } }, {
+    async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
+      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' }; },
+    async models() { return [{ profileId: 'profile:default', name: 'Default', model: 'fixture-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] }]; },
+    async createSession(input) { return service.createSession(input); },
+  });
+  await service.createSession({ sessionId: ownerId, displayTitle: 'Owner', workspaceBindings: [] });
+  await service.submit(messageCommand(ownerId, 'command:update', 'Start child.'));
+  await waitUntil(() => Boolean(childId), 'active child');
+  await service.dispose(true);
+  for (const id of [ownerId, childId]) {
+    const events = await readEvents(journal, id);
+    assert.deepEqual(events.filter(e => e.type === 'run.settled').map(e => e.payload.outcome), ['cancelled'], JSON.stringify({ id, events: events.filter(e => e.type === 'run.settled' || e.type === 'run.failure.snapshot') }));
+    assert.equal(events.filter(e => e.type === 'run.runtime.released').length, 1);
+    assert.equal(sends.get(id), 1);
+  }
+  const parent = await readEvents(journal, ownerId);
+  assert.deepEqual(parent.filter(e => e.type === 'agent.task.completed').map(e => e.payload.result.outcome), ['cancelled']);
+});

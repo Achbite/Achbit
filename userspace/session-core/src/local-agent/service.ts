@@ -459,6 +459,14 @@ export class SessionService implements ConversationPort {
     let agentError: unknown;
     if (!cancelActiveRuns) try { await this.#agents?.dispose(); } catch (error) { agentError = error; }
     const actorPromises = [...this.#actors.values()];
+    if (cancelActiveRuns) {
+      // Parents cancel and collect their children while the child Actors are still live.
+      // The final pass below drains every Actor and retains all disposal failures.
+      await Promise.allSettled(actorPromises.map(async pending => {
+        const actor = await pending;
+        if (!(await actor.agentSnapshot()).agentContext) await actor.dispose(true);
+      }));
+    }
     const results = await Promise.allSettled(actorPromises.map(async pending => {
       let actor: SessionActor;
       try {
