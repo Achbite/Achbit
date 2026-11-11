@@ -1,13 +1,17 @@
 import { useState, useSyncExternalStore } from 'react';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
-import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate } from '../../services/productUpdates';
+import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate, productUpdateConfirmation, respondProductUpdate } from '../../services/productUpdates';
 import { useSettingsStore } from '../../state/settingsStore';
 import AchbitShellIcon from './AchbitShellIcon';
 import './productUpdateNotice.css';
+import { ModalDialog } from '../../ui-components';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 
 export function ProductUpdateNotice() {
+  const identity = useUiOwner('product.update');
   const language = useUiLanguage();
+  const confirmation = useSyncExternalStore(subscribeProductUpdates, productUpdateConfirmation, productUpdateConfirmation);
   const update = useSyncExternalStore(subscribeProductUpdates, productUpdateSnapshot, productUpdateSnapshot);
   const automatic = useSettingsStore(state => state.effectiveSettings['gui.autoUpdate'] === true);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -22,11 +26,11 @@ export function ProductUpdateNotice() {
     .filter(Boolean).join(' · ');
   const error = retryError ?? update.error;
   const action = t(language, update.phase === 'waiting' ? 'productUpdate.installNow' : 'productUpdate.retry');
-  return <div className="product-update-notice" role="status" data-product-update={update.phase}>
+  return <><div {...identity.part('notice')} className="product-update-notice" role="status" data-product-update={update.phase}>
     {['waiting', 'error'].includes(update.phase) ? <button type="button" className="product-update-notice__icon"
       title={[description, error, action].filter(Boolean).join('\n')}
       aria-label={`${description}. ${action}`}
-      onClick={() => {
+      {...identity.action('install', 'click')} onClick={() => {
         setRetryError(null);
         void requestProductUpdate().catch(reason => setRetryError(String(reason)));
       }}><AchbitShellIcon name="download" /></button>
@@ -41,5 +45,19 @@ export function ProductUpdateNotice() {
         </svg>}
         <AchbitShellIcon name="download" />
       </span>}
-  </div>;
+  </div>
+    {confirmation && <ModalDialog aria-label={t(language, 'productUpdate.confirmTitle')}
+      className="achbit-gui-text-dialog-backdrop" onClose={() => respondProductUpdate(false)}>
+      <div {...identity.part('confirmation')} className="achbit-gui-text-dialog">
+        <header><h2>{t(language, 'productUpdate.confirmTitle')}</h2></header>
+        <p className="achbit-gui-text-dialog__message">{t(language, confirmation.busy ? 'productUpdate.confirmBusy' : 'productUpdate.confirmRestart')}</p>
+        {confirmation.unsaved.length > 0 && <div className="achbit-gui-text-dialog__message">
+          <p>{t(language, 'productUpdate.confirmUnsaved')}</p>
+          <ul>{[...new Set(confirmation.unsaved)].map(label => <li key={label}>{label}</li>)}</ul>
+        </div>}
+        <footer><button {...identity.action('cancel', 'click')} autoFocus onClick={() => respondProductUpdate(false)}>{t(language, 'productUpdate.cancel')}</button>
+          <button {...identity.action('confirm', 'click')} onClick={() => respondProductUpdate(true)}>{t(language, 'productUpdate.confirm')}</button></footer>
+      </div>
+    </ModalDialog>}
+  </>;
 }

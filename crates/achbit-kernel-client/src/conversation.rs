@@ -574,7 +574,7 @@ impl SessionProjection {
             return Err("shared Agent projection is invalid".into());
         }
         if self.provider_attempts.iter().any(|attempt| {
-            !(1..=5).contains(&attempt.attempt)
+            attempt.attempt == 0
                 || !matches!(
                     attempt.purpose.as_str(),
                     "agent" | "contextCompaction" | "approvalReview"

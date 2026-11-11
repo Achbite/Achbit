@@ -2078,7 +2078,7 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
             .provider_attempt_id
             .as_deref()
             .is_some_and(|id| !valid_provider_text(id))
-        || body.attempt.is_some_and(|n| !(1..=5).contains(&n))
+        || body.attempt.is_some_and(|n| n == 0)
     {
         return Err("Provider 尝试身份或序号无效。".into());
     }

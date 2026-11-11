@@ -141,7 +141,7 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
   } finally {
     extension?.dispose();
     await Promise.allSettled(pending);
-    await service.dispose();
+    await service.dispose(shutdownRequest?.data.cancelActiveRuns === true);
     await notifications.close();
     await outputTail;
   }

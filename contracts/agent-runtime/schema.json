@@ -863,7 +863,7 @@
           }
         },
         "providerAttemptId": {"$ref": "#/$defs/Id"},
-        "attempt": {"type": "integer", "minimum": 1, "maximum": 5}
+        "attempt": {"type": "integer", "minimum": 1}
       },
       "allOf": [
         {
@@ -4045,7 +4045,7 @@
         "timing": {"$ref": "#/$defs/ProviderAttemptTiming"},
         "providerRequestId": {"$ref": "#/$defs/Id"},
         "providerAttemptId": {"$ref": "#/$defs/Id"},
-        "attempt": {"type": "integer", "minimum": 1, "maximum": 5},
+        "attempt": {"type": "integer", "minimum": 1},
         "purpose": {"enum": ["agent", "contextCompaction", "approvalReview"]},
         "phase": {"enum": ["started", "completed", "failed", "retryWaiting"]},
         "error": {"$ref": "#/$defs/LocalAgentError"},
@@ -4072,7 +4072,7 @@
         "timing": {"$ref": "#/$defs/ProviderAttemptTiming"},
         "providerRequestId": {"$ref": "#/$defs/Id"},
         "providerAttemptId": {"$ref": "#/$defs/Id"},
-        "attempt": {"type": "integer", "minimum": 1, "maximum": 5},
+        "attempt": {"type": "integer", "minimum": 1},
         "purpose": {"enum": ["agent", "contextCompaction", "approvalReview"]},
         "phase": {"enum": ["started", "completed", "failed", "retryWaiting"]},
         "error": {"$ref": "#/$defs/LocalAgentError"},

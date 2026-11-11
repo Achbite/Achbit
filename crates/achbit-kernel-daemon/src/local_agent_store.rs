@@ -1989,9 +1989,7 @@ fn validate_new_event(
                 validate_id(field, required_string(payload, field)?)?;
             }
             let phase = required_string(payload, "phase")?;
-            if !payload["attempt"]
-                .as_u64()
-                .is_some_and(|n| (1..=5).contains(&n))
+            if !payload["attempt"].as_u64().is_some_and(|n| n >= 1)
                 || !matches!(
                     payload["purpose"].as_str(),
                     Some("agent" | "contextCompaction" | "approvalReview")

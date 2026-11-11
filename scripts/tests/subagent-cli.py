@@ -270,7 +270,7 @@ class Provider(fixture.MockProviderHandler):
 
 def configure(daemon, server):
     fixture.write_configuration(daemon.config_root, f'http://127.0.0.1:{server.server_port}/v1', {
-        'agent.subagents.enabled': True, 'agent.subagents.profileId': 'e2e-agent',
+        'agent.subagents.enabled': True, 'agent.subagents.allowFullConfiguration': True, 'agent.subagents.profileId': 'e2e-agent',
         'agent.subagents.reasoningEffort': 'xhigh', 'agent.subagents.maxCallsPerRun': 3,
         # The family retains both the collaborator and its nested reader until explicit close.
         'agent.subagents.maxConcurrent': 4, 'agent.subagents.maxMembersPerSession': 2,

@@ -2,7 +2,7 @@ import type { NewSessionEvent, ProviderAttemptFact, ProviderAttemptTiming, Provi
 import { errorFact, ProviderCompletedFailure, ProviderReportedFailure } from './loopFailure.js';
 import type { AgentLoopDeps } from './loop.js';
 
-export const PROVIDER_MAX_ATTEMPTS = 5;
+const PROVIDER_MAX_RETRY_DELAY_MS = 60_000;
 
 export function waitForRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -20,7 +20,7 @@ export async function withProviderAttempts<T>(
   signal: AbortSignal,
   consume: (attempt: ProviderRequest, onCompleted: () => void, onEvent: (event: ProviderEvent) => void) => Promise<T>,
 ): Promise<T> {
-  for (let attempt = 1; attempt <= PROVIDER_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     if (signal.aborted) throw signal.reason;
     const providerAttemptId = deps.nextId('provider-attempt');
     const started = performance.now();
@@ -91,8 +91,8 @@ export async function withProviderAttempts<T>(
       if (completed || signal.aborted) throw classifyFailure(error);
       const diagnostic = failure.diagnostics;
       if (!(error instanceof ProviderReportedFailure) || diagnostic?.source !== 'providerTransport'
-        || diagnostic.category !== 'network' || !diagnostic.retryable || attempt === PROVIDER_MAX_ATTEMPTS) throw error;
-      const delay = 1000 * 2 ** (attempt - 1);
+        || diagnostic.category !== 'network' || !diagnostic.retryable) throw error;
+      const delay = Math.min(PROVIDER_MAX_RETRY_DELAY_MS, 1000 * 2 ** Math.min(attempt - 1, 6));
       await record('retryWaiting', { error: failure, retryAt: String(Date.now() + delay) });
       await waitForRetry(delay, signal);
       continue;
@@ -103,5 +103,4 @@ export async function withProviderAttempts<T>(
     catch (error) { throw classifyFailure(error); }
     return result;
   }
-  throw new Error('provider_attempt_budget_invalid');
 }

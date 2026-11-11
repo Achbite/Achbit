@@ -379,13 +379,24 @@ impl SessionServiceProcess {
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), SessionServiceError> {
+        self.shutdown_for_update(false)
+    }
+
+    pub(crate) fn shutdown_for_update(
+        &self,
+        cancel_active_runs: bool,
+    ) -> Result<(), SessionServiceError> {
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         let receiver = {
             let mut process = self.process.lock().map_err(|_| transport_lock_error())?;
             if process.stopped {
                 return Ok(());
             }
-            let receiver = process.begin_request("host:shutdown", "shutdown", json!({}))?;
+            let receiver = process.begin_request(
+                "host:shutdown",
+                "shutdown",
+                json!({"cancelActiveRuns":cancel_active_runs}),
+            )?;
             process.closing = true;
             receiver
         };

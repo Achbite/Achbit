@@ -39,7 +39,8 @@ export function runFailureKind(error?: LocalAgentError) {
     const has = (...values: string[]) => values.some(value => codes.includes(value));
     const status = details?.httpStatus;
     if (has('server_is_overloaded', 'overloaded_error') || status === 529) return 'overloaded';
-    if (has('insufficient_quota', 'insufficient_balance', 'billing_hard_limit_reached', 'payment_required') || status === 402) return 'quota';
+    if (has('insufficient_quota', 'insufficient_balance', 'billing_hard_limit_reached', 'payment_required',
+      'credit_balance_exhausted', 'organization_spend_limit_exceeded', 'project_spend_limit_exceeded') || status === 402) return 'quota';
     if (has('authentication_error', 'invalid_api_key', 'authentication', 'unauthenticated') || status === 401) return 'authentication';
     if (has('permission_error', 'permission_denied') || status === 403) return 'permission';
     if (has('rate_limit_exceeded', 'rate_limit_error', 'rate_limit', 'resource_exhausted') || status === 429) return 'rateLimit';

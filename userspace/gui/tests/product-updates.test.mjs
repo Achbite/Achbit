@@ -106,12 +106,12 @@ test('unsaved settings and IME input defer an automatic restart; idle preparatio
   now = 60_000;
   b.handlers.get('achbit:update-prepare')({ payload: { nonce: 3, manual: false } }); await flush();
   assert.equal(b.root.inert, true);
-  assert.equal(JSON.parse(b.calls.at(-1).args.storage['achbit:composer:new:independent']).draft, 'Unsent draft');
+  assert.equal(JSON.parse(b.calls.at(-1).args.storage.storage['achbit:composer:new:independent']).draft, 'Unsent draft');
   b.handlers.get('achbit:update-resume')({ payload: null });
   assert.equal(b.root.inert, false);
 });
 
-test('automatic updates follow loaded settings; manual installation only bypasses the input grace period', async t => {
+test('automatic updates follow loaded settings; manual installation confirms actual work and unsaved state', async t => {
   const b = browser(t);
   let now = 0;
   const [updates, views, { useLocalAgentStore }, { useSettingsStore }] = await loadGuiModules(t, [
@@ -129,6 +129,7 @@ test('automatic updates follow loaded settings; manual installation only bypasse
   let nonce = 0;
   const prepare = async manual => {
     b.handlers.get('achbit:update-prepare')({ payload: { nonce: ++nonce, manual } }); await flush();
+    while (updates.productUpdateConfirmation()) await flush();
     const reply = b.calls.findLast(call => call.command === 'achbit_update_prepare_response');
     assert.equal(reply.args.nonce, nonce);
     return reply.args.storage;
@@ -142,13 +143,20 @@ test('automatic updates follow loaded settings; manual installation only bypasse
   b.handlers.get('achbit:update-resume')({});
   for (const key of ['submitting', 'loading', 'catalogBusy', 'modelSettingsBusy', 'subagentSettingsBusy']) {
     useLocalAgentStore.setState({ [key]: true });
-    assert.equal(await prepare(true), null, `${key} must still block a manual update`);
+    assert.notEqual(await prepare(true), null, `${key} alone must not silently block explicit installation`);
+    b.handlers.get('achbit:update-resume')({});
     useLocalAgentStore.setState({ [key]: false });
   }
   const removeGuard = views.registerInterfaceReloadGuard(() => ({ label: 'Unsaved settings', busy: false }));
-  assert.equal(await prepare(true), null); removeGuard();
+  const unsaved = prepare(true); await flush();
+  assert.deepEqual(updates.productUpdateConfirmation(), { busy: undefined, unsaved: ['Unsaved settings'] });
+  updates.respondProductUpdate(false);
+  assert.equal(await unsaved, null); removeGuard();
   b.window.dispatchEvent(new Event('compositionstart'));
-  assert.equal(await prepare(true), null);
+  const composing = prepare(true); await flush();
+  assert.notEqual(updates.productUpdateConfirmation(), null);
+  updates.respondProductUpdate(false);
+  assert.equal(await composing, null);
   b.window.dispatchEvent(new Event('compositionend'));
   useSettingsStore.setState({ effectiveSettings: { ...settings, 'gui.autoUpdate': true } }); await flush();
   assert.equal(b.calls.at(-1).args.enabled, true);
@@ -213,4 +221,45 @@ test('failed restoration retains the native snapshot for a later retry', async t
   globalThis.sessionStorage.setItem = () => { throw new Error('storage unavailable'); };
   await assert.rejects(updates.restoreAfterProductUpdate(), /storage unavailable/);
   assert.equal(b.calls.some(call => call.command === 'achbit_update_restored'), false);
+});
+
+
+test('busy manual updates require a decision before freezing inputs or requesting Session shutdown', async t => {
+  const b = browser(t);
+  const [updates] = await loadGuiModules(t, ['/src/services/productUpdates.ts']);
+  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
+  for (const accepted of [false, true]) {
+    const before = b.calls.filter(call => call.command === 'achbit_update_prepare_response').length;
+    b.handlers.get('achbit:update-prepare')({ payload: { nonce: accepted ? 2 : 1, manual: true, busy: true } });
+    await flush();
+    assert.deepEqual(updates.productUpdateConfirmation(), { busy: true, unsaved: [] });
+    assert.equal(b.root.inert, false);
+    assert.equal(b.calls.filter(call => call.command === 'achbit_update_prepare_response').length, before);
+    updates.respondProductUpdate(accepted); await flush();
+    const reply = b.calls.findLast(call => call.command === 'achbit_update_prepare_response').args.storage;
+    assert.equal(b.root.inert, accepted);
+    if (accepted) assert.equal(reply.confirmed, true); else assert.equal(reply, null);
+    b.handlers.get('achbit:update-resume')({});
+  }
+});
+
+test('General settings exposes an operable automatic update switch', async t => {
+  browser(t);
+  const [{ GuiSettingsSection }, { default: SettingsField }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+    '/src/components/settings-center/SettingsField.tsx', '/src/state/settingsStore.ts',
+  ]);
+  const patches = [];
+  useSettingsStore.setState({ storePath: '/settings.json', loading: false });
+  installGuiFetch(t, (url, init) => {
+    assert.equal(url.pathname, '/api/user-settings');
+    const { patches: values } = JSON.parse(init.body);
+    for (const [key, value] of Object.entries(values)) patches.push({ key, value });
+    return Response.json({ ok: true, data: { settings: values, changedKeys: Object.keys(values), activation: 'immediate' } });
+  });
+  const field = findReactElement(capture(GuiSettingsSection, { category: 'general', apiStatus: 'connected' }).tree,
+    node => node.type === SettingsField && node.props.definition.key === 'gui.autoUpdate');
+  const control = findReactElement(capture(SettingsField, field.props).tree, node => node.props.checked === true);
+  control.props.onChange({ target: { checked: false } }); await flush();
+  assert.deepEqual(patches, [{ key: 'gui.autoUpdate', value: false }]);
 });

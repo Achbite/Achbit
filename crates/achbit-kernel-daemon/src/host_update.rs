@@ -9,6 +9,7 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 struct Prepared {
     token: u64,
+    manual: bool,
     _guard: OwnedRwLockWriteGuard<()>,
 }
 
@@ -74,6 +75,10 @@ pub(crate) struct UpdateRequest {
     action: String,
     expected_identity: HostProcessIdentity,
     token: Option<u64>,
+    #[serde(default)]
+    manual: bool,
+    #[serde(default)]
+    confirmed: bool,
 }
 
 pub(crate) async fn update(
@@ -100,36 +105,40 @@ pub(crate) async fn update(
     }
 }
 
+async fn has_active_work(host: &HostState) -> Result<bool, String> {
+    let services = host
+        .execution
+        .current()
+        .ok_or("Host is still starting")?
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let service = services.session_service;
+    let activity = tokio::task::spawn_blocking(move || service.request("activity", json!({})))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let active = activity
+        .get("active")
+        .and_then(Value::as_bool)
+        .ok_or("Invalid Session activity response")?;
+    let executing = services
+        .local_agent
+        .kernel
+        .has_active_work()
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    Ok(active || executing)
+}
+
 async fn handle(host: &HostState, request: UpdateRequest) -> Result<Value, String> {
     match request.action.as_str() {
+        "status" => Ok(json!({"active":has_active_work(host).await?})),
         "prepare" => {
             let Ok(guard) = host.updates.admission.clone().try_write_owned() else {
                 return Ok(json!({"prepared":false,"reason":"requests"}));
             };
-            if !crate::host_lifecycle::can_prepare_update() {
+            if !request.manual && !crate::host_lifecycle::can_prepare_update() {
                 return Ok(json!({"prepared":false,"reason":"clients"}));
             }
-            let services = host
-                .execution
-                .current()
-                .ok_or("Host is still starting")?
-                .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            let service = services.session_service;
-            let activity =
-                tokio::task::spawn_blocking(move || service.request("activity", json!({})))
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            let active = activity
-                .get("active")
-                .and_then(Value::as_bool)
-                .ok_or("Invalid Session activity response")?;
-            let executing = services
-                .local_agent
-                .kernel
-                .has_active_work()
-                .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            if active || executing {
+            if has_active_work(host).await? && !(request.manual && request.confirmed) {
                 return Ok(json!({"prepared":false,"reason":"tasks"}));
             }
             host.updates
@@ -143,6 +152,7 @@ async fn handle(host: &HostState, request: UpdateRequest) -> Result<Value, Strin
                 .lock()
                 .map_err(|_| "Update state lock poisoned")? = Some(Prepared {
                 token,
+                manual: request.manual,
                 _guard: guard,
             });
             let watched = host.clone();
@@ -173,7 +183,11 @@ async fn handle(host: &HostState, request: UpdateRequest) -> Result<Value, Strin
                 }
                 slot.take().ok_or("Host has not prepared an update")?
             };
-            let cleanup_complete = shutdown_owned_host_resources(host).await;
+            let cleanup_complete = crate::host_shutdown::shutdown_owned_host_resources_for_update(
+                host,
+                prepared.manual,
+            )
+            .await;
             request_host_shutdown();
             drop(prepared);
             Ok(serde_json::to_value(HostShutdownReceipt {

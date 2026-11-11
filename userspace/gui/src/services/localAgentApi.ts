@@ -1660,7 +1660,7 @@ export async function readFileChange(sessionId: string, recordId: string, index:
 function isProviderAttempt(value: unknown): boolean {
   return isExactRecord(value, ['providerRequestId', 'providerAttemptId', 'attempt', 'purpose', 'phase', 'runId', 'updatedAt'], ['error', 'retryAt', 'timing'])
     && ['providerRequestId', 'providerAttemptId', 'runId'].every((key) => isIdentifier(value[key]))
-    && Number.isInteger(value.attempt) && Number(value.attempt) >= 1 && Number(value.attempt) <= 5
+    && Number.isInteger(value.attempt) && Number(value.attempt) >= 1
     && ['agent', 'contextCompaction', 'approvalReview'].includes(String(value.purpose))
     && ['started', 'completed', 'failed', 'retryWaiting'].includes(String(value.phase))
     && isNonEmptyText(value.updatedAt)
