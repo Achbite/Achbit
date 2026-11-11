@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
+import { runFailureKind } from '@achbit/protocol';
 import { loadGuiModule } from './gui-projection-contract.mjs';
 
 test('reconnect status spans retry wait and reconnect send, and clears when content resumes or run settles', async t => {
@@ -79,4 +80,30 @@ test('terminal status names the provider failure and reserves Loop failure for i
   } }));
   assert.match(html, /Model service overloaded/);
   assert.match(html, /NO_MORE_RETRY/);
+});
+
+test('incomplete Responses output keeps its cause and is not presented as a rejected request', async t => {
+  const { RunFailureDetails } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
+  const error = {
+    code: 'provider_response_failed', message: 'Responses 请求未完成：max_output_tokens',
+    diagnostics: { source: 'providerTransport', phase: 'response', category: 'provider',
+      retryable: false, causes: [], providerError: { type: 'response.incomplete' } },
+  };
+  const before = structuredClone(error);
+  assert.equal(runFailureKind(error), 'providerIncomplete');
+  for (const [language, label] of [['zh-CN', '模型响应未完成'], ['en-US', 'Model response incomplete']]) {
+    for (const source of ['terminalError', 'failureSnapshot']) {
+      const projection = { sessionId: 'session:incomplete-response', run: { status: 'failed' },
+        ...(source === 'terminalError' ? { terminalError: error } : { failureSnapshot: {
+          error, revision: 1, phase: 'provider', providerAttemptIds: [], toolRecordIds: [], pendingCallIds: [],
+        } }),
+      };
+      const html = renderToStaticMarkup(createElement(RunFailureDetails, { projection, language, onError() {} }));
+      assert.ok(html.includes(`<span>${label}</span>`), `${language} ${source}: ${html}`);
+      assert.doesNotMatch(html, /模型服务拒绝了请求|Model service rejected the request/);
+      assert.ok(html.includes(error.message));
+      assert.match(html, /response\.incomplete/);
+      assert.deepEqual(error, before, 'presentation preserves the original failure, diagnostics and retry policy');
+    }
+  }
 });

@@ -36,6 +36,7 @@ function failureLabel(error: LocalAgentError | undefined, language: UiLanguage) 
     permission: ['模型服务访问被拒绝', 'Model service access denied'],
     providerInternal: ['模型服务内部错误', 'Model service internal error'],
     providerProtocol: ['模型响应格式异常', 'Invalid model response'],
+    providerIncomplete: ['模型响应未完成', 'Model response incomplete'],
     providerRejected: ['模型服务拒绝了请求', 'Model service rejected the request'],
     providerFailure: ['模型请求失败', 'Model request failed'],
     contextLimit: ['上下文预算不足', 'Context budget exceeded'],

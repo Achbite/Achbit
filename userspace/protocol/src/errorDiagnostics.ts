@@ -34,6 +34,7 @@ export function runFailureKind(error?: LocalAgentError) {
   if (upstream && d.category === 'protocol') return 'providerProtocol';
   if (upstream && d.category === 'provider') {
     const details = d.providerError;
+    if (details?.type === 'response.incomplete') return 'providerIncomplete';
     const codes = [details?.code, details?.type, details?.status].map(value => value?.toLowerCase());
     const has = (...values: string[]) => values.some(value => codes.includes(value));
     const status = details?.httpStatus;
