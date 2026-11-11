@@ -3,6 +3,13 @@
 set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { printf 'Run this setup on the Mac development host.\n' >&2; exit 1; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# A configured dedicated keychain owns its existing identity and unlock policy.
+if [ -e "$HOME/Library/Application Support/Achbit-build/macos-signing.json" ] || \
+   [ -L "$HOME/Library/Application Support/Achbit-build/macos-signing.json" ]; then
+  python3 "$ROOT_DIR/scripts/macos_signing.py" --check-private-key
+  printf 'Existing local signing profile is ready.\n'
+  exit 0
+fi
 IDENTITY='Achbit Local Development'
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 [ -f "$KEYCHAIN" ] || { printf 'The login keychain is missing: %s\n' "$KEYCHAIN" >&2; exit 1; }

@@ -973,6 +973,198 @@ exec "$ACHBIT_TEST_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]));
             self.assertIn('--verify', commands[-1])
 
 
+class DedicatedMacosSigningTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix='achbit-dedicated-signing-')
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+        self.profile_path = self.root / 'profile.json'
+        self.password_file = self.root / 'password'
+        self.password = 'fixture-only-password'
+        self.password_file.write_text(self.password + '\n')
+        self.password_file.chmod(0o600)
+        self.fingerprint = 'A' * 40
+        self.keychain = str(self.root / 'Development Signing.keychain-db')
+        self.profile_path.write_text(json.dumps({
+            'identity': self.fingerprint, 'keychain': self.keychain,
+            'passwordFile': str(self.password_file),
+        }))
+        profile_patch = patch.object(macos_signing, 'SIGNING_PROFILE', self.profile_path)
+        profile_patch.start()
+        self.addCleanup(profile_patch.stop)
+        environment = patch.dict(os.environ, {}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_dedicated_keychain_is_used_for_lookup_probe_and_every_owned_component(self):
+        def execute(command, **kwargs):
+            if command[:2] == ['security', '-i']:
+                self.assertEqual(kwargs['input'],
+                                 f'"unlock-keychain" "-p" "fixture-only-password" "{self.keychain}"\n')
+                return Mock(returncode=0)
+            return Mock(stdout=f'  1) {self.fingerprint} "Existing Development"\n')
+        app = self.root / 'Achbit.app'
+        write(app, 'Contents/Info.plist', macos_signing.plistlib.dumps({
+            'CFBundleIdentifier': 'com.achbite.achbit.gui', 'CFBundleExecutable': 'Achbit'}))
+        for name in ('Achbit', 'achbit-kernel', 'achbit-host-web'):
+            write(app, 'Contents/MacOS/' + name, b'owned native binary')
+        with patch.object(macos_signing.subprocess, 'run', side_effect=execute) as command:
+            self.assertEqual(macos_signing.signing_identity(), self.fingerprint)
+            macos_signing.check_private_key_access(self.fingerprint)
+            macos_signing.sign_app(app, self.fingerprint, native_components=True)
+        commands = [call.args[0] for call in command.call_args_list]
+        self.assertIn(['security', 'find-identity', '-v', '-p', 'codesigning', self.keychain], commands)
+        signed = [args for args in commands if '--sign' in args]
+        self.assertEqual(len(signed), 4)  # probe, two helpers, enclosing app
+        for args in signed:
+            self.assertEqual(args[args.index('--keychain') + 1], self.keychain)
+            self.assertEqual(args[args.index('--sign') + 1], self.fingerprint)
+        self.assertTrue(all(self.password not in ' '.join(args) for args in commands))
+
+    def test_interactive_arguments_preserve_quotes_and_backslashes_without_exposing_password(self):
+        password = r'''fixture's \ path "quoted"'''
+        keychain = str(self.root / r'''Signing's \ "quoted".keychain-db''')
+        self.password_file.write_text(password + '\n')
+        profile = {'identity': self.fingerprint, 'keychain': keychain,
+                   'passwordFile': str(self.password_file)}
+        expected = (r'''"unlock-keychain" "-p" "fixture's \\ path \"quoted\"" '''
+                    + '"' + str(self.root) + r'''/Signing's \\ \"quoted\".keychain-db"''' + '\n')
+        with patch.object(macos_signing.subprocess, 'run', return_value=Mock(returncode=0)) as command:
+            self.assertEqual(macos_signing.prepare_signing_keychain(profile), keychain)
+        command.assert_called_once()
+        self.assertEqual(command.call_args.args[0], ['security', '-i'])
+        self.assertEqual(command.call_args.kwargs['input'], expected)
+        self.assertNotIn(password, ' '.join(command.call_args.args[0]))
+
+    def test_interactive_arguments_reject_command_separators_before_system_commands(self):
+        for separator in ('\0', '\r', '\n'):
+            with self.subTest(separator=repr(separator)):
+                profile = {'identity': self.fingerprint,
+                           'keychain': self.keychain + separator + 'invalid',
+                           'passwordFile': str(self.password_file)}
+                with patch.object(macos_signing.subprocess, 'run') as command:
+                    with self.assertRaises(ValueError):
+                        macos_signing.prepare_signing_keychain(profile)
+                command.assert_not_called()
+
+    def test_explicit_identity_selector_overrides_profile_without_searching_other_keychains(self):
+        other = 'B' * 40
+        listing = f'  1) {self.fingerprint} "Original"\n  2) {other} "Explicit"\n'
+        with patch.dict(os.environ, {'ACHBIT_MACOS_SIGN_IDENTITY': other}), \
+                patch.object(macos_signing.subprocess, 'run', side_effect=[
+                    Mock(returncode=0), Mock(stdout=listing)]) as command:
+            self.assertEqual(macos_signing.signing_identity(), other)
+        self.assertEqual(command.call_args.args[0][-1], self.keychain)
+
+    def test_unlock_failure_stops_before_lookup_or_signing_and_redacts_password(self):
+        failure = Mock(returncode=51, stderr=f'errSecAuthFailed {self.password}')
+        with patch.object(macos_signing.subprocess, 'run', return_value=failure) as command:
+            with self.assertRaisesRegex(ValueError, 'exit 51.*errSecAuthFailed') as raised:
+                macos_signing.signing_identity()
+        self.assertNotIn(self.password, str(raised.exception))
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0], ['security', '-i'])
+
+    def test_missing_password_file_does_not_fall_back_to_login(self):
+        self.password_file.unlink()
+        with patch.object(macos_signing.subprocess, 'run') as command:
+            with self.assertRaises(FileNotFoundError):
+                macos_signing.signing_identity()
+        command.assert_not_called()
+
+    def test_invalid_profile_stops_before_any_keychain_command(self):
+        for content in ('{', '{}', json.dumps({
+                'identity': self.fingerprint, 'keychain': 'relative.keychain-db',
+                'passwordFile': str(self.password_file)})):
+            with self.subTest(content=content):
+                self.profile_path.write_text(content)
+                with patch.object(macos_signing.subprocess, 'run') as command:
+                    with self.assertRaises(ValueError):
+                        macos_signing.signing_identity()
+                command.assert_not_called()
+
+    def test_absent_profile_keeps_default_keychain_lookup(self):
+        self.profile_path.unlink()
+        listing = f'  1) {self.fingerprint} "Achbit Local Development"\n'
+        with patch.object(macos_signing.subprocess, 'run', return_value=Mock(stdout=listing)) as command:
+            self.assertEqual(macos_signing.signing_identity(), self.fingerprint)
+        command.assert_called_once_with(['security', 'find-identity', '-v', '-p', 'codesigning'],
+                                        check=True, stdout=subprocess.PIPE, text=True)
+
+    def test_directory_and_dangling_profile_stop_before_system_commands(self):
+        self.profile_path.unlink()
+        for kind, expected_error in (('directory', IsADirectoryError), ('dangling', FileNotFoundError)):
+            with self.subTest(kind=kind):
+                if kind == 'directory':
+                    self.profile_path.mkdir()
+                else:
+                    self.profile_path.symlink_to(self.root / 'missing-profile')
+                try:
+                    with patch.object(macos_signing.subprocess, 'run') as command:
+                        with self.assertRaises(expected_error):
+                            macos_signing.signing_identity()
+                    command.assert_not_called()
+                finally:
+                    if kind == 'directory':
+                        self.profile_path.rmdir()
+                    else:
+                        self.profile_path.unlink()
+
+    def test_setup_rejects_directory_and_dangling_profile_without_initializing_login(self):
+        fixture_home = self.root / 'home'
+        profile_path = fixture_home / 'Library/Application Support/Achbit-build/macos-signing.json'
+        profile_path.parent.mkdir(parents=True)
+        write(fixture_home, 'Library/Keychains/login.keychain-db', b'untouched login fixture')
+        scripts = self.root / 'scripts'
+        scripts.mkdir()
+        for name in ('setup-macos-signing.sh', 'macos_signing.py'):
+            shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+        commands = self.root / 'commands'
+        commands.mkdir()
+        write(commands, 'uname', b'#!/bin/sh\nprintf "Darwin\\n"\n')
+        (commands / 'uname').chmod(0o755)
+        (commands / 'python3').symlink_to(sys.executable)
+        stub = '#!' + sys.executable + '\n' + r'''import sys
+from pathlib import Path
+with (Path(__file__).resolve().parents[1] / 'side-effects.log').open('a') as log:
+    log.write(Path(__file__).name + '\n')
+sys.exit(71)
+'''
+        for name in ('security', 'codesign', 'openssl'):
+            write(commands, name, stub.encode())
+            (commands / name).chmod(0o755)
+        environment = {**os.environ, 'HOME': str(fixture_home),
+                       'PATH': str(commands) + os.pathsep + os.defpath}
+        for kind in ('directory', 'dangling'):
+            with self.subTest(kind=kind):
+                if kind == 'directory':
+                    profile_path.mkdir()
+                else:
+                    profile_path.symlink_to(fixture_home / 'missing-profile')
+                try:
+                    result = subprocess.run(['/bin/bash', str(scripts / 'setup-macos-signing.sh')],
+                                            env=environment, text=True, capture_output=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('macOS signing preflight failed', result.stderr)
+                    self.assertNotIn('Existing local signing profile is ready', result.stdout)
+                    self.assertFalse((self.root / 'side-effects.log').exists())
+                    self.assertEqual((fixture_home / 'Library/Keychains/login.keychain-db').read_bytes(),
+                                     b'untouched login fixture')
+                finally:
+                    if kind == 'directory':
+                        profile_path.rmdir()
+                    else:
+                        profile_path.unlink()
+
+    def test_password_file_cannot_be_readable_by_other_users(self):
+        self.password_file.chmod(0o644)
+        with patch.object(macos_signing.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'mode 0600'):
+                macos_signing.signing_identity()
+        command.assert_not_called()
+
+
+
 class PublicationTests(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix='achbit-publish-')
